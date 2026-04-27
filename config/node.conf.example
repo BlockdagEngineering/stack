@@ -41,3 +41,5 @@ logdir=/var/log/bdagStack
 # Native metrics endpoint scraped by Netdata
 metrics=true
 profile=0.0.0.0:6060
+
+mining_address=0xEd5e2dD1377aBe28907673cdEa8c2c04Fb715dcd
