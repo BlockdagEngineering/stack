@@ -2,7 +2,7 @@
 .env
 .env.local
 .env.*.local
-
+.secrets
 # User-specific config copies (keep examples, ignore active config)
 config/node.conf
 config/pool.env
