@@ -1,6 +1,10 @@
 #!/bin/bash
-# Split a .bdsnap into chunks under 2 GiB for Git LFS servers with a 2GB object limit
-# (e.g. error: Size must be less than or equal to 2147483648).
+# Split a .bdsnap into chunks for Git LFS servers with a hard 2 GiB (2^31 byte)
+# per-object cap, e.g.:
+#   [oid] Size must be less than or equal to 2147483648: [422]
+#
+# Chunks must stay *strictly* below that ceiling: a 2.0G (2147483648 B) part is
+# often rejected. Default is 1800 MiB; override with env LFS_CHUNK_BYTES.
 #
 # Usage: ./scripts/split-snapshot-for-lfs.sh snapshots/exported-snapshot.bdsnap [stem]
 #   stem defaults to basename without .bdsnap; chunks go to snapshots/lfs-parts/<stem>.000, .001, ...
@@ -13,7 +17,8 @@ cd "$REPO_ROOT"
 INPUT="${1:?Usage: $0 <path/to/file.bdsnap> [stem]}"
 STEM="${2:-$(basename "$INPUT" .bdsnap)}"
 CHUNK_DIR="snapshots/lfs-parts"
-MAX_CHUNK_BYTES=$((2000 * 1024 * 1024)) # 2000 MiB — safely under 2^31 server cap
+# 1800 MiB = 1887436800 B — clear margin under 2147483648 (some remotes are strict)
+MAX_CHUNK_BYTES="${LFS_CHUNK_BYTES:-$((1800 * 1024 * 1024))}"
 
 if [[ ! -f "$INPUT" ]]; then
   echo "Not found: $INPUT" >&2
@@ -23,7 +28,9 @@ fi
 mkdir -p "$CHUNK_DIR"
 rm -f "$CHUNK_DIR/${STEM}".[0-9][0-9][0-9]
 
-# GNU split: numeric suffixes, 3 digits (000..999) — enough for ~6 TB at 2GB/chunk
+echo "Chunk size: $MAX_CHUNK_BYTES bytes (override with LFS_CHUNK_BYTES=... )" >&2
+
+# GNU split: numeric suffixes, 3 digits (000..999) — enough for multi-TB at ~1.8GB/chunk
 split -b "$MAX_CHUNK_BYTES" -d -a 3 "$INPUT" "$CHUNK_DIR/${STEM}."
 
 echo "Created chunks under $CHUNK_DIR/${STEM}.*"
