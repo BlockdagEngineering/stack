@@ -45,13 +45,13 @@ RUN set -eu; \
     fi; \
     git clone --depth 1 --branch "$BLOCKDAG_REF"   "${AUTH}/${BLOCKDAG_REPO}.git"   blockdag-node; \
     git clone --depth 1 --branch "$POOL_REF"       "${AUTH}/${POOL_REPO}.git"       asic-pool; \
-    git clone --depth 1 --branch "$POOL_STACK_REF" "${AUTH}/${POOL_STACK_REPO}.git" pool-stack
+    git clone --depth 1 --branch "$POOL_STACK_REF" "${AUTH}/${POOL_STACK_REPO}.git" pool-stack \
     git clone --depth 1 --branch "$CPU_MINER_REF" "${AUTH}/${CPU_MINER_REPO}.git" cpu-miner
 
 # ----------------------------------------------------------------------------
 # Build Stage (replicates the GH Actions "Build" steps)
 # ----------------------------------------------------------------------------
-FROM base AS build
+FROM base AS buildf
 WORKDIR /workspace
 COPY --from=sources /src/blockdag-node /workspace/src/blockdag-node
 COPY --from=sources /src/asic-pool     /workspace/src/asic-pool

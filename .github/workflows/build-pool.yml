@@ -146,7 +146,7 @@ jobs:
           --exclude=".github" \
           --exclude=".git" \
           --exclude="src" \
-          docker-compose.yml  Dockerfile-pool-release .env .github .git README.md \
+          docker-compose.yml  dockerfile-pool-release .env .github .git README.md \
           ${SNAPSHOT_ARGS}   
           echo "artifact=${OUT}" >> "$GITHUB_OUTPUT"
 
