@@ -15,11 +15,13 @@ permissions:
 
 env:
   GO_VERSION: "1.22.x"
-  PACKAGE_NAME: "blockdag-docker-stack"
+  PACKAGE_NAME: "pool-stack-docker"
 
 jobs:
   build-and-package:
     runs-on: ubuntu-latest
+    # Snapshots: Git LFS files under snapshots/lfs-parts/ are joined to snapshots/latest.bdsnap
+    # by scripts/ci-assemble-snapshot.sh. Optional env SNAPSHOT_LFS_STEM=chunk if autodetect fails.
     steps:
       - name: Determine version
         id: version
@@ -34,6 +36,8 @@ jobs:
 
       - name: Checkout packaging repo
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
       # Use PRIVATE_REPO_TOKEN when set (PAT with Contents: Read on both repos).
       # If unset, falls back to github.token (works only if org allows this workflow to read those private repos).
@@ -80,20 +84,16 @@ jobs:
         run: |
           sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool > checksums.txt
 
-      - name: Download snapshot from LFS
+      - name: Download snapshot (Git LFS) and assemble chunks
+        shell: bash
         run: |
-          # Install Git LFS if not available
+          set -euo pipefail
           sudo apt-get update && sudo apt-get install -y git-lfs
-          
-          # Initialize and pull LFS files
-          cd ${{ github.workspace }}
+          cd "${{ github.workspace }}"
           git lfs install
-          git lfs pull "snapshots/latest.bdsnap" || {
-            echo "No snapshot found in LFS, creating one..."
-            mkdir -p snapshots
-            touch snapshots/latest.bdsnap  # Create placeholder
-          }
-          
+          git lfs pull
+          bash ./scripts/ci-assemble-snapshot.sh
+
       - name: Import snapshot into node (build-time)
         run: |
           # Copy snapshot to a temp location for Docker build context
