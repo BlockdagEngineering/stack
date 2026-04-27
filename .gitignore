@@ -1,0 +1,16 @@
+# Local environment
+.env
+.env.local
+.env.*.local
+
+# User-specific config copies (keep examples, ignore active config)
+config/node.conf
+config/pool.env
+config/bdag-exporter.env
+
+# Editor / OS
+*.swp
+.DS_Store
+
+# Local volumes if anyone bind-mounts them here
+data/

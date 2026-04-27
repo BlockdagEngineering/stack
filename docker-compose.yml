@@ -1,0 +1,169 @@
+# Pool-Stack Docker Compose
+#
+# The DEV flag in .env selects which Dockerfile is used for every build target:
+#   DEV=true   -> dockerfile-dev      (builds from local clones in ../)
+#   DEV=false  -> dockerfile-release  (builds from git, mirrors pool-stack
+#                                       .github/workflows/build.yml)
+#
+# Optional build-time snapshot: SNAPSHOT_PATH is a .bdsnap path relative to
+# BUILD_CONTEXT (see Makefile when unset). No HTTP download.
+#
+# Build context for DEV=true is the parent directory so the COPY commands
+# can reach ../blockdag-corechain, ../asic-pool, ../cpu-miner, ../pool-stack.
+#
+# Usage:
+#   cp .env.example .env && $EDITOR .env
+#   docker compose build
+#   docker compose up -d
+
+x-build-args: &build-args
+  SNAPSHOT_PATH: ${SNAPSHOT_PATH}
+
+# Dev mode reaches up one directory to copy local repo clones; release mode
+# uses this directory as the context (it pulls source via git inside the
+# build) so we vary the context per-mode using YAML anchors below.
+x-dev-context: &dev-context
+  context: ..
+  dockerfile: pool-stack-docker-stack/dockerfile-dev
+
+x-release-context: &release-context
+  context: .
+  dockerfile: dockerfile-release
+
+services:
+
+  # --------------------------------------------------------------------------
+  # PostgreSQL for the mining pool. Schema is applied automatically on first
+  # boot via /docker-entrypoint-initdb.d.
+  # --------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER:-bdag_pool}
+      POSTGRES_DB:       ${POSTGRES_DB:-bdagpool}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    volumes:
+      # - postgres-data:/var/lib/postgresql/data
+      - ./sql/pool-schema.sql:/docker-entrypoint-initdb.d/01-pool-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bdag_pool} -d ${POSTGRES_DB:-bdagpool}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # --------------------------------------------------------------------------
+  # BlockDAG node + nodeworker supervisor. Optional SNAPSHOT_PATH at build time.
+  # --------------------------------------------------------------------------
+  node:
+    build:
+      context: ${BUILD_CONTEXT:-..}
+      dockerfile: ${DOCKERFILE:-pool-stack-docker-stack/dockerfile-dev}
+      target: node
+      args:
+        <<: *build-args
+    restart: unless-stopped
+    ports:
+      - "${P2P_PORT:-8150}:8150"
+      - "${BDAG_RPC_PORT:-38131}:38131"
+      - "${EVM_HTTP_PORT:-18545}:18545"
+      - "${EVM_WS_PORT:-18546}:18546"
+      - "${NODE_METRICS_PORT:-6060}:6060"
+    volumes:
+      # - node-data:/var/lib/bdagStack/node
+      # - nodeworker-data:/var/lib/bdagStack/nodeworker
+      - ./config/node.conf:/etc/bdagStack/node.conf:ro
+
+  # --------------------------------------------------------------------------
+  # Mining pool. Connects to node RPC and Postgres.
+  # --------------------------------------------------------------------------
+  pool:
+    build:
+      context: ${BUILD_CONTEXT:-..}
+      dockerfile: ${DOCKERFILE:-pool-stack-docker-stack/dockerfile-dev}
+      target: pool
+      args:
+        <<: *build-args
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      node:     { condition: service_started }
+    environment:
+      # Service-discovery overrides (host names inside the compose network)
+      NODE_RPC_URL: http://node:38131
+      PG_URL:       postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bdagpool}?sslmode=disable
+    ports:
+      - "${POOL_BIND_PORT:-3334}:3334"
+      - "${POOL_API_PORT:-8080}:8080"
+
+  # --------------------------------------------------------------------------
+  # Netdata exporter (Python; scrapes node RPC + pool API, exposes Prometheus
+  # text on :9198 for Netdata to scrape).
+  # --------------------------------------------------------------------------
+  exporter:
+    build:
+      context: ${BUILD_CONTEXT:-..}
+      dockerfile: ${DOCKERFILE:-pool-stack-docker-stack/dockerfile-dev}
+      target: exporter
+      args:
+        <<: *build-args
+    restart: unless-stopped
+    depends_on:
+      node: { condition: service_started }
+      pool: { condition: service_started }
+    environment:
+      POOL_API_URL:      http://pool:8080/stats
+      BDAG_RPC_URL:      http://node:38131
+      BDAG_RPC_USER:     ${NODE_RPC_USER:-test}
+      BDAG_RPC_PASSWORD: ${NODE_RPC_PASS:-test}
+      BDAG_NETWORK:      ${NETWORK:-mainnet}
+    ports:
+      - "${EXPORTER_PORT:-9198}:9198"
+
+  # --------------------------------------------------------------------------
+  # Netdata dashboard. Scrapes the exporter at exporter:9198 and the node's
+  # native metrics at node:6060.
+  # --------------------------------------------------------------------------
+  # netdata:
+  #   image: netdata/netdata:stable
+  #   restart: unless-stopped
+  #   cap_add: [SYS_PTRACE]
+  #   security_opt: [apparmor:unconfined]
+  #   depends_on:
+  #     exporter: { condition: service_started }
+  #   ports:
+  #     - "${NETDATA_PORT:-19999}:19999"
+  #   volumes:
+  #     - netdata-config:/etc/netdata
+  #     - netdata-lib:/var/lib/netdata
+  #     - netdata-cache:/var/cache/netdata
+  #     - /etc/passwd:/host/etc/passwd:ro
+  #     - /etc/group:/host/etc/group:ro
+  #     - /proc:/host/proc:ro
+  #     - /sys:/host/sys:ro
+  #     - /etc/os-release:/host/etc/os-release:ro
+
+  # --------------------------------------------------------------------------
+  # Optional CPU miner (cpu-miner). Disabled by default; enable with
+  # `docker compose --profile miner up -d`.
+  # --------------------------------------------------------------------------
+  miner:
+    build:
+      context: ${BUILD_CONTEXT:-..}
+      dockerfile: ${DOCKERFILE:-pool-stack-docker-stack/dockerfile-dev}
+      target: miner
+      args:
+        <<: *build-args
+    profiles: [miner]
+    restart: unless-stopped
+    depends_on:
+      pool: { condition: service_started }
+    environment:
+      POOL_URL:  stratum+tcp://pool:3334
+      POOL_USER: ${MINER_ADDRESS:-0x0000000000000000000000000000000000000000}
+      POOL_PASS: ${MINER_PASSWORD:-x}
+      WORKERS:   ${MINER_WORKERS:-1}
+
+
+
+
