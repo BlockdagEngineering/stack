@@ -1,0 +1,5 @@
+# Git LFS configuration for Blockdag Pool-Stack snapshots
+# Large binary files that should be tracked by LFS instead of regular git
+# Snapshot files (can be several GB)
+snapshots/*.bdsnap filter=lfs diff=lfs merge=lfs -text
+*.bdsnap filter=lfs diff=lfs merge=lfs -text

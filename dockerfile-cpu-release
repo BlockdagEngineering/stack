@@ -1,0 +1,182 @@
+# Pool-Stack Docker Compose Release Build
+#
+# Mirrors pool-stack/.github/workflows/build.yml exactly:
+#   - Clones blockdag-corechain (private)
+#   - Clones asic-pool          (private)
+#   - Builds blockdag-node + nodeworker via `make all`
+#   - Builds mining-pool         via `go build ./cmd/pool`
+#   - Generates checksums
+#
+# Authentication:
+#   Pass GITHUB_TOKEN as a build-arg or via secret. The workflow's
+#   PRIVATE_REPO_TOKEN secret is the same kind of value (PAT with Contents:Read
+#   on both private repos).
+#
+# Optional snapshot import: copy SNAPSHOT_PATH (.bdsnap) from build context only.
+
+ARG GO_VERSION=1.25
+
+# ----------------------------------------------------------------------------
+# Common base
+# ----------------------------------------------------------------------------
+FROM golang:${GO_VERSION}-bookworm AS base
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    make git gcc g++ libc6-dev jq ca-certificates wget coreutils \
+ && rm -rf /var/lib/apt/lists/*
+
+# ----------------------------------------------------------------------------
+# Source Fetch Stage (HTTPS via PAT, like the GH Actions workflow)
+# ----------------------------------------------------------------------------
+FROM base AS sources
+ARG GITHUB_TOKEN=""
+ARG BLOCKDAG_REPO="BlockdagEngineering/blockdag-corechain"
+ARG POOL_REPO="BlockdagEngineering/asic-pool"
+ARG POOL_STACK_REPO="BlockdagEngineering/pool-stack"
+ARG CPU_MINER_REPO="BlockdagEngineering/cpu-miner"
+ARG BLOCKDAG_REF="main"
+ARG POOL_REF="main"
+ARG POOL_STACK_REF="main"
+ARG CPU_MINER_REF="main"
+WORKDIR /src
+RUN set -eu; \
+    if [ -n "$GITHUB_TOKEN" ]; then \
+      AUTH="https://x-access-token:${GITHUB_TOKEN}@github.com"; \
+    else \
+      AUTH="https://github.com"; \
+    fi; \
+    git clone --depth 1 --branch "$BLOCKDAG_REF"   "${AUTH}/${BLOCKDAG_REPO}.git"   blockdag-node; \
+    git clone --depth 1 --branch "$POOL_REF"       "${AUTH}/${POOL_REPO}.git"       asic-pool; \
+    git clone --depth 1 --branch "$POOL_STACK_REF" "${AUTH}/${POOL_STACK_REPO}.git" pool-stack; \
+    git clone --depth 1 --branch "$CPU_MINER_REF" "${AUTH}/${CPU_MINER_REPO}.git" cpu-miner; 
+
+# ----------------------------------------------------------------------------
+# Build Stage (replicates the GH Actions "Build" steps)
+# ----------------------------------------------------------------------------
+FROM base AS build
+WORKDIR /workspace
+COPY --from=sources /src/blockdag-node /workspace/src/blockdag-node
+COPY --from=sources /src/asic-pool     /workspace/src/asic-pool
+COPY --from=sources /src/pool-stack    /workspace/src/pool-stack
+COPY --from=sources /src/cpu-miner     /workspace/src/cpu-miner
+
+# Build blockdag-node
+RUN mkdir -p ./bin && \
+    cd src/blockdag-node && \
+    make all && \
+    cp -f ./build/bin/bdag        ../../bin/blockdag-node && \
+    cp -f ./build/bin/nodeworker  ../../bin/nodeworker
+
+
+# Ensure executables and generate checksums (matches build.yml)
+RUN chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool bin/cpu-miner && \
+    sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool bin/cpu-miner > bin/checksums.txt && \
+      cat bin/checksums.txt
+
+
+# Build mining-pool (matches build.yml: `go build -o build/bin/pool ./cmd/pool`)
+RUN cd src/asic-pool && \
+    go build -o build/bin/pool ./cmd/pool && \
+    cp -f ./build/bin/pool ../../bin/mining-pool; 
+
+# Build cpu-miner (matches build.yml: `go build -o build/bin/miner ./cmd/miner`)
+RUN cd src/cpu-miner && \
+    go build -o build/bin/miner ./cmd/miner && \
+    cp -f ./build/bin/miner ../../bin/cpu-miner
+
+# ----------------------------------------------------------------------------
+# Node Runtime Stage (with optional snapshot import)
+# ----------------------------------------------------------------------------
+FROM debian:bookworm-slim AS node
+ARG SNAPSHOT_PATH=docker/no-snapshot.marker
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates tzdata \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack \
+ && mkdir -p /etc/bdagStack /var/lib/bdagStack/node/mainnet /var/lib/bdagStack/nodeworker /var/log/bdagStack /opt/bdagStack/bin \
+ && chown -R bdagStack:bdagStack /var/lib/bdagStack /var/log/bdagStack /etc/bdagStack
+
+COPY --from=build /workspace/bin/blockdag-node  /usr/local/bin/blockdag-node
+COPY --from=build /workspace/bin/nodeworker     /usr/local/bin/nodeworker
+COPY --from=build /workspace/bin/checksums.txt  /opt/bdagStack/bin/checksums.txt
+RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker
+
+COPY ${SNAPSHOT_PATH} /tmp/snapshot-candidate.bdsnap
+
+RUN set -eu; \
+    if [ "$(stat -c%s /tmp/snapshot-candidate.bdsnap)" -ge 1024 ]; then \
+      echo "Importing local snapshot ($(stat -c%s /tmp/snapshot-candidate.bdsnap) bytes)"; \
+      /usr/local/bin/blockdag-node snap import \
+        --datadir /var/lib/bdagStack/node/mainnet \
+        --path /tmp/snapshot-candidate.bdsnap; \
+      chown -R bdagStack:bdagStack /var/lib/bdagStack/node /var/log/bdagStack; \
+      echo "Snapshot import finished"; \
+    else \
+      echo "No snapshot file; node will sync from genesis or P2P"; \
+    fi; \
+    rm -f /tmp/snapshot-candidate.bdsnap
+
+USER bdagStack
+WORKDIR /var/lib/bdagStack/node
+EXPOSE 8150 38131 38132 18545 18546 6060
+ENTRYPOINT ["/usr/local/bin/nodeworker", \
+    "--node-binary=/usr/local/bin/blockdag-node", \
+    "--node-args=--configfile /etc/bdagStack/node.conf", \
+    "--rpc-url=ws://127.0.0.1:18546", \
+    "--dag-rpc-url=http://127.0.0.1:38131", \
+    "--persist-root=/var/lib/bdagStack/nodeworker", \
+    "--health-min-peers=1", \
+    "--rollout-window=30m"]
+
+# ----------------------------------------------------------------------------
+# Pool Runtime Stage
+# ----------------------------------------------------------------------------
+FROM debian:bookworm-slim AS pool
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates tzdata \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack \
+ && mkdir -p /etc/bdagStack /var/lib/bdagStack/pool /var/log/bdagStack \
+ && chown -R bdagStack:bdagStack /var/lib/bdagStack /var/log/bdagStack /etc/bdagStack
+
+COPY --from=build /workspace/bin/mining-pool /usr/local/bin/mining-pool
+RUN chmod +x /usr/local/bin/mining-pool
+
+USER bdagStack
+WORKDIR /var/lib/bdagStack/pool
+EXPOSE 3334 8080
+ENTRYPOINT ["/usr/local/bin/mining-pool"]
+
+# ----------------------------------------------------------------------------
+# Miner Runtime Stage
+# ----------------------------------------------------------------------------
+FROM debian:bookworm-slim AS miner
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates tzdata \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /workspace/bin/cpu-miner /usr/local/bin/cpu-miner
+RUN chmod +x /usr/local/bin/cpu-miner
+
+USER bdagStack
+WORKDIR /var/lib/bdagStack/miner
+ENTRYPOINT ["/usr/local/bin/cpu-miner"]
+
+# ----------------------------------------------------------------------------
+# Exporter Runtime Stage (Python; reads node + pool, exposes Prometheus text)
+# ----------------------------------------------------------------------------
+FROM python:3.11-slim-bookworm AS exporter
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack
+COPY --from=build /workspace/src/pool-stack/scripts/bdag_netdata_exporter.py \
+                  /usr/local/bin/bdag-netdata-exporter
+RUN chmod +x /usr/local/bin/bdag-netdata-exporter
+
+USER bdagStack
+EXPOSE 9198
+ENTRYPOINT ["/usr/local/bin/bdag-netdata-exporter", \
+    "--listen-address=0.0.0.0", "--listen-port=9198"]
