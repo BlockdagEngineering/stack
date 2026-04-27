@@ -32,6 +32,7 @@ ARG GITHUB_TOKEN=""
 ARG BLOCKDAG_REPO="BlockdagEngineering/blockdag-corechain"
 ARG POOL_REPO="BlockdagEngineering/asic-pool"
 ARG POOL_STACK_REPO="BlockdagEngineering/pool-stack"
+ARG CPU_MINER_REPO="BlockdagEngineering/cpu-miner"
 ARG BLOCKDAG_REF="main"
 ARG POOL_REF="main"
 ARG POOL_STACK_REF="main"
@@ -45,6 +46,7 @@ RUN set -eu; \
     git clone --depth 1 --branch "$BLOCKDAG_REF"   "${AUTH}/${BLOCKDAG_REPO}.git"   blockdag-node; \
     git clone --depth 1 --branch "$POOL_REF"       "${AUTH}/${POOL_REPO}.git"       asic-pool; \
     git clone --depth 1 --branch "$POOL_STACK_REF" "${AUTH}/${POOL_STACK_REPO}.git" pool-stack
+    git clone --depth 1 --branch "$CPU_MINER_REF" "${AUTH}/${CPU_MINER_REPO}.git" cpu-miner
 
 # ----------------------------------------------------------------------------
 # Build Stage (replicates the GH Actions "Build" steps)

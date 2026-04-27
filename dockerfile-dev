@@ -17,7 +17,7 @@
 # ----------------------------------------------------------------------------
 # Common base
 # ----------------------------------------------------------------------------
-FROM golang:1.25-bookworm AS base
+FROM golang:1.26-bookworm AS base
 RUN apt-get update && apt-get install -y --no-install-recommends \
     make git gcc g++ libc6-dev jq ca-certificates wget \
  && rm -rf /var/lib/apt/lists/*
@@ -157,7 +157,7 @@ RUN chmod +x /usr/local/bin/scrypt-miner \
 USER miner
 
 ENV POOL_URL=stratum+tcp://pool:3334 \
-    POOL_USER=0x0000000000000000000000000000000000000000 \
-    POOL_PASS=x \
+    POOL_USER=test\
+    POOL_PASS=test \
     WORKERS=1
 ENTRYPOINT ["/usr/local/bin/scrypt-miner"]

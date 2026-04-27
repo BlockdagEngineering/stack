@@ -1,0 +1,174 @@
+name: Build binaries for blockdag-pool-stack
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. v1.2.3"
+        required: true
+  push:
+    tags:
+      - "cpu-v*"
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.22.x"
+  PACKAGE_NAME: "blockdag-docker-stack"
+
+jobs:
+  build-and-package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout packaging repo
+        uses: actions/checkout@v4
+
+      # Use PRIVATE_REPO_TOKEN when set (PAT with Contents: Read on both repos).
+      # If unset, falls back to github.token (works only if org allows this workflow to read those private repos).
+      - name: Checkout private blockdag repo
+        uses: actions/checkout@v4
+        with:
+          repository: BlockdagEngineering/blockdag-corechain
+          token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
+          path: src/blockdag-node
+
+      - name: Checkout private mining pool repo
+        uses: actions/checkout@v4
+        with:
+          repository: BlockdagEngineering/asic-pool
+          token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
+          path: src/asic-pool
+
+      - name: Checkout private cpu miner repo
+        uses: actions/checkout@v4
+        with:
+          repository: BlockdagEngineering/cpu-miner
+          token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
+          path: src/cpu-miner
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build blockdag-node
+        shell: bash
+        run: |
+          mkdir -p ./bin
+          cd src/blockdag-node
+          make all
+          cp -f ./build/bin/bdag ../../bin/blockdag-node
+          cp -f ./build/bin/nodeworker ../../bin/nodeworker
+
+      - name: Build mining-pool
+        shell: bash
+        run: |
+          cd src/asic-pool
+          go build -o build/bin/pool ./cmd/pool
+          cp -f ./build/bin/pool ../../bin/mining-pool
+
+      - name: Build cpu-miner
+        shell: bash
+        run: |
+          cd src/cpu-miner
+          go build -o build/bin/miner ./cmd/miner
+          cp -f ./build/bin/miner ../../bin/cpu-miner
+
+      - name: Ensure executables
+        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool > checksums.txt
+
+      - name: Download snapshot from LFS
+        run: |
+          # Install Git LFS if not available
+          sudo apt-get update && sudo apt-get install -y git-lfs
+          
+          # Initialize and pull LFS files
+          cd ${{ github.workspace }}
+          git lfs install
+          git lfs pull "snapshots/latest.bdsnap" || {
+            echo "No snapshot found in LFS, creating one..."
+            mkdir -p snapshots
+            touch snapshots/latest.bdsnap  # Create placeholder
+          }
+          
+      - name: Import snapshot into node (build-time)
+        run: |
+          # Copy snapshot to a temp location for Docker build context
+          mkdir -p ./snapshot-import
+          
+          if [ -f snapshots/latest.bdsnap ] && [ $(stat -c%s snapshots/latest.bdsnap) -ge 1024 ]; then
+            echo "Snapshot found, copying to build context..."
+            cp snapshots/latest.bdsnap ./snapshot-import/snapshot.bdsnap
+            echo "Snapshot size: $(stat -c%s ./snapshot-import/snapshot.bdsnap) bytes"
+          else
+            # Create a marker file indicating no snapshot
+            echo "No valid snapshot found, creating placeholder"
+            mkdir -p ./snapshot-import
+            touch ./snapshot-import/no-snapshot.marker
+          fi
+
+      - name: Export updated snapshot
+        run: |
+          # The Dockerfile handles snapshot import at build time via SNAPSHOT_PATH arg
+          # This step validates and prepares for the next release cycle
+          
+          if [ -f snapshots/latest.bdsnap ]; then
+            echo "Current snapshot status:"
+            ls -lh snapshots/latest.bdsnap
+            
+            # Validate snapshot integrity (basic check)
+            if [ $(stat -c%s snapshots/latest.bdsnap) -ge 1024 ]; then
+              echo "Snapshot appears valid for next release"
+            else
+              echo "Warning: Snapshot too small, will be regenerated in next build"
+            fi
+          else
+            echo "No snapshot file found - will be created during Docker build"
+          fi
+
+      - name: Create release tarball
+        id: package
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.value }}"
+          OUT="${PACKAGE_NAME}-${VERSION}.tar.gz"
+          
+          # Include snapshot in the tarball if available
+          SNAPSHOT_ARGS=""
+          if [ -f snapshots/latest.bdsnap ] && [ $(stat -c%s snapshots/latest.bdsnap) -ge 1024 ]; then
+            SNAPSHOT_ARGS="--exclude-from=/dev/null snapshots/latest.bdsnap"
+          fi
+          
+          tar -czf "${OUT}" --exclude="${OUT}" \
+          --exclude=".github" \
+          --exclude=".git" \
+          --exclude="src" \
+          docker-compose.yml  Dockerfile-cpu-release .env .github .git README.md \
+          ${SNAPSHOT_ARGS}   
+          echo "artifact=${OUT}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.value }}
+          files: ${{ steps.package.outputs.artifact }}
+          draft: false
+          prerelease: false
+
