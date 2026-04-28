@@ -20,8 +20,6 @@ env:
 jobs:
   build-and-package:
     runs-on: ubuntu-latest
-    # Snapshots: Git LFS files under snapshots/lfs-parts/ are joined to snapshots/latest.bdsnap
-    # by scripts/ci-assemble-snapshot.sh. Optional env SNAPSHOT_LFS_STEM=chunk if autodetect fails.
     steps:
       - name: Determine version
         id: version
@@ -36,9 +34,6 @@ jobs:
 
       - name: Checkout packaging repo
         uses: actions/checkout@v4
-        with:
-          lfs: true
-
       # Use PRIVATE_REPO_TOKEN when set (PAT with Contents: Read on both repos).
       # If unset, falls back to github.token (works only if org allows this workflow to read those private repos).
       - name: Checkout private blockdag repo
@@ -91,9 +86,7 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.value }}"
           OUT="${PACKAGE_NAME}-${VERSION}.tar.gz"
-          # GitHub Release assets are capped at 2GiB per file — embedding snapshots/latest.bdsnap
-          # blows past that easily. Ship compose/config/scripts only; obtain snapshots via
-          # SNAPSHOT-README.md (Git LFS, manual copy, or network sync).
+
 
           # Ship .env.example only; real .env is local/gitignored (tar fails if .env is listed).
           test -f .env.example || { echo "::error::Missing .env.example in repo root"; exit 1; }

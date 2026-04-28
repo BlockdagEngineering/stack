@@ -20,7 +20,6 @@ env:
 jobs:
   build-and-package:
     runs-on: ubuntu-latest
-    # Snapshots: see scripts/ci-assemble-snapshot.sh (joins snapshots/lfs-parts/*.??? to latest.bdsnap).
     steps:
       - name: Determine version
         id: version
@@ -35,8 +34,6 @@ jobs:
 
       - name: Checkout packaging repo
         uses: actions/checkout@v4
-        with:
-          lfs: true
 
       # Use PRIVATE_REPO_TOKEN when set (PAT with Contents: Read on both repos).
       # If unset, falls back to github.token (works only if org allows this workflow to read those private repos).
