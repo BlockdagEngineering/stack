@@ -159,12 +159,7 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.value }}"
           OUT="${PACKAGE_NAME}-${VERSION}.tar.gz"
-          
-          # Include snapshot in the tarball if available
-          SNAPSHOT_ARGS=""
-          if [ -f snapshots/latest.bdsnap ] && [ $(stat -c%s snapshots/latest.bdsnap) -ge 1024 ]; then
-            SNAPSHOT_ARGS="--exclude-from=/dev/null snapshots/latest.bdsnap"
-          fi
+          # Do not bundle snapshots/latest.bdsnap — exceeds GitHub's 2GiB-per-asset limit.
 
           # Ship .env.example only; real .env is local/gitignored (tar fails if .env is listed).
           test -f .env.example || { echo "::error::Missing .env.example in repo root"; exit 1; }
@@ -173,6 +168,7 @@ jobs:
           --exclude=".github" \
           --exclude=".git" \
           --exclude="src" \
+          --exclude="snapshots" \
           docker-compose.yml \
           dockerfile-cpu-release \
           .env.example \
@@ -181,8 +177,15 @@ jobs:
           SNAPSHOT-README.md \
           sql \
           config \
-          docker \
-          ${SNAPSHOT_ARGS}
+          docker
+
+          ls -lh "${OUT}"
+          SZ="$(stat -c%s "${OUT}")"
+          MAX=$((2 * 1024 * 1024 * 1024 - 256 * 1024 * 1024))
+          if [ "${SZ}" -gt "${MAX}" ]; then
+            echo "::error::Tarball ${SZ} bytes exceeds safe GitHub limit (~2GiB cap minus headroom)"
+            exit 1
+          fi
           echo "artifact=${OUT}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release

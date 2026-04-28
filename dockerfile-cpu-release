@@ -161,6 +161,13 @@ RUN chmod +x /usr/local/bin/cpu-miner
 
 USER bdagStack
 WORKDIR /var/lib/bdagStack/miner
+
+# Defaults when config/miner.env is not mounted (see docker-compose miner service)
+ENV POOL_URL=stratum+tcp://pool:3334 \
+    POOL_USER=0x0000000000000000000000000000000000000000 \
+    POOL_PASS=x \
+    WORKERS=1
+
 ENTRYPOINT ["/usr/local/bin/cpu-miner"]
 
 # ----------------------------------------------------------------------------
