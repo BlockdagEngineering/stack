@@ -8,7 +8,7 @@ config/node.conf
 config/pool.env
 config/miner.env
 config/bdag-exporter.env
-
+snapshots/
 # Editor / OS
 *.swp
 .DS_Store

@@ -64,16 +64,19 @@ The **`pool`** image also embeds a copy of **`.env`** at build time for `godoten
 
 To bake a local `.bdsnap` into the `node` image at build time, set
 `SNAPSHOT_PATH` in `.env` to a path **relative to the compose build context**
-(`..` when `DEV=true`, this repo when `DEV=false`). Example for dev:
-`blockdag-corechain/snapshot/snapshot.bdsnap`. If `SNAPSHOT_PATH` is empty,
-`make build` supplies a tiny placeholder file so the image still builds but no
-import runs (the node syncs from the network).
+(the parent directory when `BUILD_CONTEXT` is `..`). Example:
+`blockdag-corechain/snapshot/snapshot.bdsnap`.
+
+To **build without importing** any snapshot, leave `SNAPSHOT_PATH` unset or
+empty in `.env`. Compose defaults it to `pool-stack-docker/docker/no-snapshot.marker`
+(a tiny file). The Dockerfile only runs `snap import` when that file is **≥ 1KB**,
+so the node syncs from the network instead.
 
 ## Quick start
 
 ```bash
-git clone <this repo> pool-stack-docker-stack
-cd pool-stack-docker-stack
+git clone <this repo> pool-stack-docker
+cd pool-stack-docker
 
 # 1. Configure
 cp .env.example .env

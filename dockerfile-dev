@@ -5,7 +5,7 @@
 # Expected directory structure (build context = parent directory):
 #
 #   parent/
-#   ├── pool-stack-docker-stack/   (this repo - build context root for compose)
+#   ├── pool-stack-docker/         (this repo - must match DOCKERFILE path in compose)
 #   ├── blockdag-corechain/         (local clone of blockdag node)
 #   ├── asic-pool/                  (local clone of mining pool)
 #   ├── cpu-miner/                  (local clone of cpu miner)
@@ -58,7 +58,7 @@ RUN CGO_ENABLED=1 CGO_CFLAGS='-O2' go build -o /out/scrypt-miner ./cmd/miner
 # Node Runtime Stage (with optional snapshot import)
 # ----------------------------------------------------------------------------
 FROM debian:bookworm-slim AS node
-ARG SNAPSHOT_PATH=pool-stack-docker-stack/docker/no-snapshot.marker
+ARG SNAPSHOT_PATH=pool-stack-docker/docker/no-snapshot.marker
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates tzdata \
@@ -117,7 +117,7 @@ COPY --from=pool-build /out/dashboard-api  /usr/local/bin/dashboard-api
 RUN chmod +x /usr/local/bin/mining-pool /usr/local/bin/dashboard-api
 
 # Copy .env from build context root (parent of dockerfile-dev dir)
-COPY pool-stack-docker-stack/.env /var/lib/bdagStack/pool/.env
+COPY pool-stack-docker/.env /var/lib/bdagStack/pool/.env
 RUN chown bdagStack:bdagStack /var/lib/bdagStack/pool/.env
 
 USER bdagStack
