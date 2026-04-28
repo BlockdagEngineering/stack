@@ -7,7 +7,8 @@ set -euo pipefail
 # This script:
 # 1. Stops the node container cleanly (if it was running) so DB/freezer files are consistent
 # 2. Copies the datadir from the stopped container (docker cp works on stopped containers)
-# 3. Creates a snapshot export using blockdag-node (host PATH, repo bin/, or copied from the container image)
+# 3. Creates a snapshot export using blockdag-node (PATH, repo bin/, ../blockdag-corechain/build/bin/bdag,
+#    or copy from container — prefer host paths to avoid docker cp when /var/lib/docker is full).
 #
 # Usage: ./scripts/export-snapshot.sh [container_name] [output_file]
 # =============================================================================
@@ -16,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Default values
-CONTAINER_NAME="${1:-pool-stack-docker-stack-node-1}"
+CONTAINER_NAME="${1:-pool-stack-docker-node-1}"
 OUTPUT_FILE="${2:-$SCRIPT_DIR/../snapshots/latest.bdsnap}"
 
 # Colors for output
@@ -147,9 +148,11 @@ verify_data() {
     return 0
 }
 
-# Prefer host binary; otherwise copy from the node container (works even when stopped).
+# Prefer host binary so we avoid docker cp (requires free space under Docker's graph driver).
 resolve_bdag_binary() {
     local extract_to="$1"
+    local sibling_bdag=""
+    sibling_bdag="$(dirname "$PROJECT_ROOT")/blockdag-corechain/build/bin/bdag"
 
     if command -v blockdag-node &>/dev/null; then
         command -v blockdag-node
@@ -159,20 +162,21 @@ resolve_bdag_binary() {
         echo "$PROJECT_ROOT/bin/blockdag-node"
         return 0
     fi
+    if [ -x "$sibling_bdag" ]; then
+        log "Using blockdag sibling build (avoids docker cp): $sibling_bdag"
+        echo "$sibling_bdag"
+        return 0
+    fi
 
-    log "No blockdag-node on host; copying from container '$CONTAINER_NAME'..."
+    log "No blockdag-node on host; copying from container '$CONTAINER_NAME' → $extract_to..."
     mkdir -p "$(dirname "$extract_to")"
-    if docker cp "$CONTAINER_NAME:/usr/local/bin/blockdag-node" "$extract_to" 2>/dev/null; then
-        chmod +x "$extract_to"
-        echo "$extract_to"
-        return 0
-    fi
-    if docker cp "$CONTAINER_NAME:/usr/local/bin/bdag" "$extract_to" 2>/dev/null; then
+    if docker cp "$CONTAINER_NAME:/usr/local/bin/blockdag-node" "$extract_to"; then
         chmod +x "$extract_to"
         echo "$extract_to"
         return 0
     fi
 
+    log_error "docker cp failed for $CONTAINER_NAME:/usr/local/bin/blockdag-node → $extract_to"
     return 1
 }
 
@@ -187,10 +191,11 @@ create_snapshot() {
     mkdir -p "$output_path"
     
     local bdag_binary=""
-    local bdag_cache="/tmp/bdag-node-snap-$$/blockdag-node"
+    # Cache container copy under repo bin/ so the next run hits resolve_bdag_binary without docker cp.
+    local bdag_cache="$PROJECT_ROOT/bin/blockdag-node"
     if ! bdag_binary="$(resolve_bdag_binary "$bdag_cache")"; then
         log_error "blockdag-node binary not found!"
-        log "Build blockdag (pool-stack-docker-stack/bin/blockdag-node), install on PATH, or keep the node image so we can copy /usr/local/bin/blockdag-node from the container."
+        log "Options: build/copy to pool-stack-docker/bin/blockdag-node, install on PATH, keep ../blockdag-corechain/build/bin/bdag, or free Docker disk (docker system df; docker builder prune -af) so copying from the container works."
         return 1
     fi
     log "Using blockdag-node: $bdag_binary"
