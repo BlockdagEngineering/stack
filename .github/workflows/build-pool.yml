@@ -103,6 +103,8 @@ jobs:
           SNAPSHOT-README.md \
           sql \
           config \
+          scripts \
+          bin \
           docker
 
           ls -lh "${OUT}"
