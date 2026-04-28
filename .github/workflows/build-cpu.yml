@@ -115,22 +115,14 @@ jobs:
           # Ship .env.example only; real .env is local/gitignored (tar fails if .env is listed).
           test -f .env.example || { echo "::error::Missing .env.example in repo root"; exit 1; }
 
-          tar -czf "${OUT}" --exclude="${OUT}" \
-          --exclude=".github" \
-          --exclude=".git" \
-          --exclude="src" \
-          --exclude="snapshots" \
-          docker-compose.yml \
-          dockerfile-cpu-release \
-          .env.example \
-          .env.cpu.example \
-          README.md \
-          SNAPSHOT-README.md \
-          sql \
-          config \
-          scripts \
-          bin \
-          docker
+          ROOT="${PACKAGE_NAME}-${VERSION}"
+          rm -rf "${ROOT}"
+          mkdir "${ROOT}"
+          cp docker-compose.yml dockerfile-cpu-release .env.example .env.cpu.example README.md SNAPSHOT-README.md checksums.txt "${ROOT}/"
+          cp -a sql config scripts bin docker "${ROOT}/"
+
+          tar -czf "${OUT}" "${ROOT}"
+          rm -rf "${ROOT}"
 
           ls -lh "${OUT}"
           SZ="$(stat -c%s "${OUT}")"
