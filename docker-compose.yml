@@ -16,19 +16,11 @@
 #   docker compose build
 #   docker compose up -d
 
+# When unset or empty in .env, use the marker file (< 1KB) so the node image skips snap import.
+# Override with a path relative to BUILD_CONTEXT (parent dir in dev), e.g.
+# blockdag-corechain/snapshot/foo.bdsnap — see .env.example.
 x-build-args: &build-args
-  SNAPSHOT_PATH: ${SNAPSHOT_PATH}
-
-# Dev mode reaches up one directory to copy local repo clones; release mode
-# uses this directory as the context (it pulls source via git inside the
-# build) so we vary the context per-mode using YAML anchors below.
-x-dev-context: &dev-context
-  context: ..
-  dockerfile: pool-stack-docker-stack/dockerfile-dev
-
-x-release-context: &release-context
-  context: .
-  dockerfile: dockerfile-release
+  SNAPSHOT_PATH: ${SNAPSHOT_PATH:-pool-stack-docker/docker/no-snapshot.marker}
 
 services:
 
@@ -58,7 +50,7 @@ services:
   node:
     build:
       context: ${BUILD_CONTEXT:-..}
-      dockerfile: ${DOCKERFILE:-pool-stack-docker-stack/dockerfile-dev}
+      dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile-dev}
       target: node
       args:
         <<: *build-args
@@ -70,6 +62,10 @@ services:
       - "${EVM_WS_PORT:-18546}:18546"
       - "${NODE_METRICS_PORT:-6060}:6060"
     volumes:
+      # Named volume hides `/var/lib/bdagStack/node` from the image. Snapshots imported
+      # at **build** time live in the image layers; if this volume already existed from an
+      # older run (e.g. genesis-only sync), it masks that chain state — delete it after
+      # rebuilding with a new SNAPSHOT_PATH: `docker compose down && docker volume rm <project>_node-data`
       - node-data:/var/lib/bdagStack/node
       - nodeworker-data:/var/lib/bdagStack/nodeworker
       # Use config/node.conf (copy from node.conf.example). node.conf is gitignored for local overrides.
@@ -81,7 +77,7 @@ services:
   pool:
     build:
       context: ${BUILD_CONTEXT:-..}
-      dockerfile: ${DOCKERFILE:-pool-stack-docker-stack/dockerfile-dev}
+      dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile-dev}
       target: pool
       args:
         <<: *build-args
@@ -107,7 +103,7 @@ services:
   exporter:
     build:
       context: ${BUILD_CONTEXT:-..}
-      dockerfile: ${DOCKERFILE:-pool-stack-docker-stack/dockerfile-dev}
+      dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile-dev}
       target: exporter
       args:
         <<: *build-args
@@ -164,7 +160,7 @@ services:
   miner:
     build:
       context: ${BUILD_CONTEXT:-..}
-      dockerfile: ${DOCKERFILE:-pool-stack-docker-stack/dockerfile-dev}
+      dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile-dev}
       target: miner
       args:
         <<: *build-args
