@@ -6,7 +6,7 @@ Snapshots (`.bdsnap`) for pool-stack builds are stored in **Git LFS** and assemb
 
 ## Git LFS layout
 
-- **Assembled file:** `snapshots/latest.bdsnap` — this is what CI copies into the Docker build and (when valid) into the release tarball.
+- **Assembled file:** `snapshots/latest.bdsnap` — CI uses this for the **Docker image build** on the runner. **GitHub Releases do not attach** this file (multi‑GiB snapshots exceed GitHub’s **2GiB-per-asset** limit); download via Git LFS locally or sync from the network; see README release notes.
 - **Chunked storage (optional):** `snapshots/lfs-parts/<stem>.000`, `.001`, … — `scripts/ci-assemble-snapshot.sh` joins these into `latest.bdsnap` at the start of CI. After assembly, CI may delete the chunk directory on the runner to save disk space.
 - **Single-file workflow:** You can track `snapshots/latest.bdsnap` directly in LFS if you are not using split parts.
 

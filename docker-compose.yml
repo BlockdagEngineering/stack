@@ -72,7 +72,8 @@ services:
     volumes:
       - node-data:/var/lib/bdagStack/node
       - nodeworker-data:/var/lib/bdagStack/nodeworker
-      - ./config/node.conf.example:/etc/bdagStack/node.conf:ro
+      # Use config/node.conf (copy from node.conf.example). node.conf is gitignored for local overrides.
+      - ./config/node.conf:/etc/bdagStack/node.conf:ro
 
   # --------------------------------------------------------------------------
   # Mining pool. Connects to node RPC and Postgres.
@@ -88,8 +89,11 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       node:     { condition: service_started }
+    env_file:
+      - path: ./config/pool.env
+        required: false
     environment:
-      # Service-discovery overrides (host names inside the compose network)
+      # Overrides env_file + baked image .env (must point at compose service names)
       NODE_RPC_URL: http://node:38131
       PG_URL:       postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bdagpool}?sslmode=disable
     ports:
@@ -168,11 +172,11 @@ services:
     restart: unless-stopped
     depends_on:
       pool: { condition: service_started }
-    environment:
-      POOL_URL:  stratum+tcp://pool:3334
-      POOL_USER: ${MINER_ADDRESS:-0x0000000000000000000000000000000000000000}
-      POOL_PASS: ${MINER_PASSWORD:-x}
-      WORKERS:   ${MINER_WORKERS:-1}
+    # Defaults come from the miner image ENV; override by copying
+    # config/miner.env.example -> config/miner.env (see config/miner.env.example).
+    env_file:
+      - path: ./config/miner.env
+        required: false
 
 volumes:
   postgres-data:

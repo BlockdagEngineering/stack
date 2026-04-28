@@ -6,6 +6,7 @@
 # User-specific config copies (keep examples, ignore active config)
 config/node.conf
 config/pool.env
+config/miner.env
 config/bdag-exporter.env
 
 # Editor / OS
