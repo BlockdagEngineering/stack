@@ -106,15 +106,18 @@ jobs:
           git lfs install
           git lfs pull
           bash ./scripts/ci-assemble-snapshot.sh
+          # Assembled latest.bdsnap is authoritative; chunk files duplicate space on small runners
+          rm -rf snapshots/lfs-parts/*
 
       - name: Import snapshot into node (build-time)
         run: |
-          # Copy snapshot to a temp location for Docker build context
+          # Same inode as latest.bdsnap (hardlink) — avoids ENOSPC from duplicating multi-GB files
           mkdir -p ./snapshot-import
           
           if [ -f snapshots/latest.bdsnap ] && [ $(stat -c%s snapshots/latest.bdsnap) -ge 1024 ]; then
-            echo "Snapshot found, copying to build context..."
-            cp snapshots/latest.bdsnap ./snapshot-import/snapshot.bdsnap
+            echo "Snapshot found, hardlinking to build context..."
+            ln -f snapshots/latest.bdsnap ./snapshot-import/snapshot.bdsnap || \
+              cp snapshots/latest.bdsnap ./snapshot-import/snapshot.bdsnap
             echo "Snapshot size: $(stat -c%s ./snapshot-import/snapshot.bdsnap) bytes"
           else
             # Create a marker file indicating no snapshot
@@ -159,7 +162,7 @@ jobs:
           --exclude=".github" \
           --exclude=".git" \
           --exclude="src" \
-          docker-compose.yml  Dockerfile-cpu-release .env .github .git README.md \
+          docker-compose.yml  dockerfile-cpu-release .env .github .git README.md \
           ${SNAPSHOT_ARGS}   
           echo "artifact=${OUT}" >> "$GITHUB_OUTPUT"
 
