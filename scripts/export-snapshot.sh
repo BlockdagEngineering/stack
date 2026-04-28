@@ -17,7 +17,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Default values
 CONTAINER_NAME="${1:-pool-stack-docker-stack-node-1}"
-OUTPUT_FILE="${2:-$SCRIPT_DIR/../snapshots/exported-snapshot.bdsnap}"
+OUTPUT_FILE="${2:-$SCRIPT_DIR/../snapshots/latest.bdsnap}"
 
 # Colors for output
 RED='\033[0;31m'

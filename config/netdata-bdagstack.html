@@ -5,26 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>bdagStack — Netdata</title>
   <link rel="icon" href="data:," />
-  <script>
-  (function() {
-    if (window.location.hash.indexOf('noredirect') !== -1) return;
-    var infoUrl = '/api/v1/info';
-    fetch(infoUrl).then(function(r) { return r.json(); }).then(function(info) {
-      var uid = info.uid;
-      if (!uid) return;
-      var hostname = info.hostname || window.location.hostname;
-      fetch('/api/v1/charts').then(function(r) { return r.json(); }).then(function(data) {
-        var charts = data && data.charts ? data.charts : {};
-        var hasBdag = Object.keys(charts).some(function(k) { return k.indexOf('bdag_pool') !== -1; });
-        if (!hasBdag) return;
-        var path = '/spaces/' + hostname + '/rooms/local/nodes/' + uid;
-        var hash = '#metrics_correlation=false&after=-900&before=0';
-        var target = path + hash;
-        window.location.replace(target);
-      });
-    }).catch(function() { /* fallback: stay on this page */ });
-  })();
-  </script>
   <style>
     body { font-family: system-ui, sans-serif; margin: 1rem 1.25rem 2rem; background: #0d1117; color: #e6edf3; }
     a { color: #58a6ff; }
