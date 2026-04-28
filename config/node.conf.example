@@ -45,16 +45,19 @@ profile=0.0.0.0:6060
 # Reward address when mining is enabled (--miner); repeat miningaddr= for multiple addresses.
 miningaddr=
 
-#modules
-modules=Blockdag,miner 
+# API modules for DAG JSON-RPC (whitelist). Use one assignment per module — a
+# single line "modules=Blockdag,miner" is parsed as ONE module name and breaks
+# RPC (getBlockTemplate/getNodeInfo return -32601).
+modules=Blockdag
+modules=miner
 
 evm.http.api=eth,net,web3,txpool,debug
 http.readtimeout=45s
 http.writetimeout=45s
 http.idletimeout=45s
-evmenv=" --rpc.allow-unprotected-txs --metrics --metrics.addr 0.0.0.0 --metrics.port 6060"
-rpcmaxconcurrentreqs=500 
-maxpeers=350 
+evmenv="--rpc.allow-unprotected-txs --metrics --metrics.addr 0.0.0.0 --metrics.port 6060"
+rpcmaxconcurrentreqs=500
+maxpeers=350
 http.ratelimit=1800
 http.rateburst=3200
-          
+
