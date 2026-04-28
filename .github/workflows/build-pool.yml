@@ -84,54 +84,7 @@ jobs:
         run: |
           sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool > checksums.txt
 
-      - name: Download snapshot (Git LFS) and assemble chunks
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update && sudo apt-get install -y git-lfs
-          cd "${{ github.workspace }}"
-          git lfs install
-          git lfs pull
-          bash ./scripts/ci-assemble-snapshot.sh
-          # Assembled latest.bdsnap is authoritative; chunk files duplicate space on small runners
-          rm -rf snapshots/lfs-parts/*
-
-      - name: Import snapshot into node (build-time)
-        run: |
-          # Same inode as latest.bdsnap (hardlink) — avoids ENOSPC from duplicating multi-GB files
-          mkdir -p ./snapshot-import
-          
-          if [ -f snapshots/latest.bdsnap ] && [ $(stat -c%s snapshots/latest.bdsnap) -ge 1024 ]; then
-            echo "Snapshot found, hardlinking to build context..."
-            ln -f snapshots/latest.bdsnap ./snapshot-import/snapshot.bdsnap || \
-              cp snapshots/latest.bdsnap ./snapshot-import/snapshot.bdsnap
-            echo "Snapshot size: $(stat -c%s ./snapshot-import/snapshot.bdsnap) bytes"
-          else
-            # Create a marker file indicating no snapshot
-            echo "No valid snapshot found, creating placeholder"
-            mkdir -p ./snapshot-import
-            touch ./snapshot-import/no-snapshot.marker
-          fi
-
-      - name: Export updated snapshot
-        run: |
-          # The Dockerfile handles snapshot import at build time via SNAPSHOT_PATH arg
-          # This step validates and prepares for the next release cycle
-          
-          if [ -f snapshots/latest.bdsnap ]; then
-            echo "Current snapshot status:"
-            ls -lh snapshots/latest.bdsnap
-            
-            # Validate snapshot integrity (basic check)
-            if [ $(stat -c%s snapshots/latest.bdsnap) -ge 1024 ]; then
-              echo "Snapshot appears valid for next release"
-            else
-              echo "Warning: Snapshot too small, will be regenerated in next build"
-            fi
-          else
-            echo "No snapshot file found - will be created during Docker build"
-          fi
-
+ 
       - name: Create release tarball
         id: package
         shell: bash
