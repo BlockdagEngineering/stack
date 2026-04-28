@@ -157,13 +157,23 @@ jobs:
           if [ -f snapshots/latest.bdsnap ] && [ $(stat -c%s snapshots/latest.bdsnap) -ge 1024 ]; then
             SNAPSHOT_ARGS="--exclude-from=/dev/null snapshots/latest.bdsnap"
           fi
-          
+
+          # Ship .env.example only; real .env is local/gitignored (tar fails if .env is listed).
+          test -f .env.example || { echo "::error::Missing .env.example in repo root"; exit 1; }
+
           tar -czf "${OUT}" --exclude="${OUT}" \
           --exclude=".github" \
           --exclude=".git" \
           --exclude="src" \
-          docker-compose.yml  dockerfile-cpu-release .env .github .git README.md \
-          ${SNAPSHOT_ARGS}   
+          docker-compose.yml \
+          dockerfile-cpu-release \
+          .env.example \
+          README.md \
+          SNAPSHOT-README.md \
+          sql \
+          config \
+          docker \
+          ${SNAPSHOT_ARGS}
           echo "artifact=${OUT}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release

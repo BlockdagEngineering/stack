@@ -72,7 +72,7 @@ services:
     volumes:
       - node-data:/var/lib/bdagStack/node
       - nodeworker-data:/var/lib/bdagStack/nodeworker
-      - ./config/node.conf:/etc/bdagStack/node.conf:ro
+      - ./config/node.conf.example:/etc/bdagStack/node.conf:ro
 
   # --------------------------------------------------------------------------
   # Mining pool. Connects to node RPC and Postgres.

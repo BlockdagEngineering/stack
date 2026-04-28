@@ -58,9 +58,9 @@ cd pool-stack-docker-stack
 
 # 1. Configure
 cp .env.example .env
-cp config/node.conf.example config/node.conf
 cp config/pool.env.example  config/pool.env
 $EDITOR .env                    # set DEV, POSTGRES_PASSWORD, optionally SNAPSHOT_PATH
+# Optional: edit config/node.conf.example (generic defaults; mounted read-only as the node config)
 
 # 2. (DEV=true only) Make sure local clones are next to this repo
 ls ../blockdag-corechain ../asic-pool ../cpu-miner ../pool-stack >/dev/null
@@ -133,6 +133,6 @@ pool-stack-docker-stack/
 | `install.sh` provisions packages + units      | `make build && make up`                         |
 | Postgres installed via apt                    | `postgres:15` container, schema auto-loaded     |
 | Netdata installed via kickstart               | `netdata/netdata:stable` container              |
-| Configs in `/etc/bdagStack/`                  | `config/*.env` and `config/node.conf` mounted   |
+| Configs in `/etc/bdagStack/`                  | `config/*.env` and `config/node.conf.example` mounted as node config |
 | Logs in journald                              | `docker compose logs <service>`                 |
 | Snapshot import via manual `bdag snapshot ...`| Build-time, optional `SNAPSHOT_PATH` (.bdsnap)  |
