@@ -205,3 +205,6 @@
 2026-04-28|22:38:28.339 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=32909117 total_keys=65499607 chunks=666 bytes=3041172802
 2026-04-28|22:38:36.339 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=34398795 total_keys=66989285 chunks=679 bytes=3081327712
 2026-04-28|22:38:44.478 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=35872477 total_keys=68462967 chunks=693 bytes=3122641870
+2026-04-28|22:40:52.549 [INFO ] Snapshot export complete            module=SNAP  path=/home/ubuntu/repos/pool-stack-docker/scripts/../snapshots/latest.bdsnap chunks=697 keys=68900199 compressed=3133483606
+2026-04-28|22:40:52.713 [INFO ] Snapshot export complete            archive=/home/ubuntu/repos/pool-stack-docker/scripts/../snapshots/latest.bdsnap manifest=/home/ubuntu/repos/pool-stack-docker/scripts/../snapshots/latest.bdsnap.manifest.json tip=0x547377b1830c5cb1cef990925d7d27e2ba03fc2b107643acd902701d00b18392 order=5421328 chunks=697 sources="[chain=32590490/1818MB evm=36309709/1169MB]" root=61638f6c7ed492747d8f9f2a497719d17d0cf2f8a652d98dacc662a5688e829e
+2026-04-28|22:40:52.757 [INFO ] Close                               module=CDB   name="Chain DB"
