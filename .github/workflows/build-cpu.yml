@@ -129,7 +129,7 @@ jobs:
           sql \
           config \
           scripts \
-          bin
+          bin \
           docker
 
           ls -lh "${OUT}"
