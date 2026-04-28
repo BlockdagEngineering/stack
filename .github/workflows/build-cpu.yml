@@ -90,12 +90,12 @@ jobs:
           cp -f ./build/bin/miner ../../bin/cpu-miner
 
       - name: Ensure executables
-        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool
+        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool bin/cpu-miner
 
       - name: Generate checksums
         shell: bash
         run: |
-          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool > checksums.txt
+          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool bin/cpu-miner > checksums.txt
 
       - name: Download snapshot (Git LFS) and assemble chunks
         shell: bash
@@ -145,6 +145,14 @@ jobs:
             echo "No snapshot file found - will be created during Docker build"
           fi
 
+      - name: Validate compose (CPU Dockerfile + miner profile)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .env.cpu.example
+          docker compose --env-file .env.cpu.example --profile miner config > /tmp/compose.cpu-miner.yml
+          grep -q '^  miner:' /tmp/compose.cpu-miner.yml || { echo "::error::Resolved compose must include miner service when profile miner is active"; exit 1; }
+
       - name: Create release tarball
         id: package
         shell: bash
@@ -168,6 +176,7 @@ jobs:
           docker-compose.yml \
           dockerfile-cpu-release \
           .env.example \
+          .env.cpu.example \
           README.md \
           SNAPSHOT-README.md \
           sql \

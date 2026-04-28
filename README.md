@@ -16,6 +16,13 @@ systemd services.
 | `netdata`  | `netdata/netdata:stable`                   | Dashboard at http://localhost:19999  |
 | `miner`    | local build (profile: `miner`)             | Optional cpu-miner against the pool  |
 
+## Release tarballs (`pool-v*` vs `cpu-v*`)
+
+GitHub Releases ship `pool-stack-docker-<tag>.tar.gz` from this repo:
+
+* **`pool-v*`** builds use `dockerfile-pool-release` (node + pool + exporter; no CPU miner image). Do **not** enable the Compose `miner` profile — there is no `miner` build target in that Dockerfile.
+* **`cpu-v*`** builds use `dockerfile-cpu-release` (adds the CPU miner binary and image). Use **`cp .env.cpu.example .env`** (or set `COMPOSE_PROFILES=miner`) so `docker compose up` includes the miner service; CI validates `docker compose --profile miner config` for that release.
+
 ## Two build modes (controlled by a single `.env` flag)
 
 Set `DEV` in `.env`:
@@ -110,6 +117,7 @@ make clean
 ```
 pool-stack-docker-stack/
 ├── .env.example
+├── .env.cpu.example          # cpu-v* tarballs: release env + COMPOSE_PROFILES=miner
 ├── docker-compose.yml
 ├── dockerfile-dev            # DEV=true: builds from ../blockdag-corechain etc.
 ├── dockerfile-release        # DEV=false: mirrors pool-stack build.yml
