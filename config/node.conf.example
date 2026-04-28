@@ -46,7 +46,7 @@ profile=0.0.0.0:6060
 miningaddr=
 
 #modules
---modules=Blockdag,miner 
+modules=Blockdag,miner 
 
 evm.http.api=eth,net,web3,txpool,debug
 http.readtimeout=45s
