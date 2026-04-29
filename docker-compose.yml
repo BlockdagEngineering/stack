@@ -14,7 +14,7 @@
 # optionally use pool-stack-docker/scripts/bdag_netdata_exporter.py if vendored).
 
 # Usage:
-#   cp .env.example .env && $EDITOR .env
+#   cp .env.cpu.example .env   # or .env.pool.example (no miner / pool-only tarball)
 
 # When SNAPSHOT_PATH is unset or empty in .env:
 # Dev (BUILD_CONTEXT=..): default below points at the marker under this repo.
@@ -23,7 +23,7 @@
 
 # When unset or empty in .env, use the marker file (< 1KB) so the node image skips snap import.
 # Override with a path relative to BUILD_CONTEXT (parent dir in dev), e.g.
-# blockdag-corechain/snapshot/foo.bdsnap — see .env.example.
+# blockdag-corechain/snapshot/foo.bdsnap — see .env.cpu.example.
 x-build-args: &build-args
   SNAPSHOT_PATH: ${SNAPSHOT_PATH:-pool-stack-docker/docker/no-snapshot.marker}
 
@@ -169,7 +169,7 @@ services:
 
   # --------------------------------------------------------------------------
   # CPU miner (source: cpu-miner repo). On by default for Git dev via
-  # COMPOSE_PROFILES=miner in .env.example; pool-only release must leave
+  # COMPOSE_PROFILES=miner in .env.cpu.example; pool-only release must leave
   # COMPOSE_PROFILES unset (dockerfile-pool-release has no miner target).
   # --------------------------------------------------------------------------
   miner:
