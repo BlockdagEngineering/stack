@@ -19,6 +19,7 @@ env:
 
 jobs:
   build-and-package:
+    # ubuntu-latest (~24.04) matches dockerfile-* ubuntu:24.04 runtime glibc.
     runs-on: ubuntu-latest
     steps:
       - name: Determine version
