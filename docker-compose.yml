@@ -1,20 +1,25 @@
 # Pool-Stack Docker Compose
 #
-# The DEV flag in .env selects which Dockerfile is used for every build target:
-#   DEV=true   -> dockerfile-dev      (builds from local clones in ../)
-#   DEV=false  -> dockerfile-release  (builds from git, mirrors pool-stack
-#                                       .github/workflows/build.yml)
+# Build layout (use .env to select):
+# - Git checkout (dev):  BUILD_CONTEXT=..  DOCKERFILE=pool-stack-docker/dockerfile-dev
+#   Local clones live next to this repo as ../blockdag-corechain, ../asic-pool, …
+#
+# - GitHub release tarball: unpacked directory is BUILD_CONTEXT=.
+#   DOCKERFILE=dockerfile-cpu-release | dockerfile-pool-release
+#   See .env.cpu.example / .env.pool.example — binaries come from ./bin only.
 #
 # Optional build-time snapshot: SNAPSHOT_PATH is a .bdsnap path relative to
-# BUILD_CONTEXT (see Makefile when unset). No HTTP download.
-#
-# Build context for DEV=true is the parent directory so the COPY commands
-# can reach ../blockdag-corechain, ../asic-pool, ../cpu-miner, ../pool-stack.
-#
+# Build context for dev dockerfile-dev is ../ so COPY can reach sibling repos:
+# ../blockdag-corechain, ../asic-pool, ../cpu-miner, ../pool-stack (exporter —
+# optionally use pool-stack-docker/scripts/bdag_netdata_exporter.py if vendored).
+
 # Usage:
 #   cp .env.example .env && $EDITOR .env
-#   docker compose build
-#   docker compose up -d
+
+# When SNAPSHOT_PATH is unset or empty in .env:
+# Dev (BUILD_CONTEXT=..): default below points at the marker under this repo.
+# Release tarball (BUILD_CONTEXT=.): set SNAPSHOT_PATH=docker/no-snapshot.marker in .env
+# (see .env.cpu.example).
 
 # When unset or empty in .env, use the marker file (< 1KB) so the node image skips snap import.
 # Override with a path relative to BUILD_CONTEXT (parent dir in dev), e.g.
@@ -68,8 +73,8 @@ services:
       # rebuilding with a new SNAPSHOT_PATH: `docker compose down && docker volume rm <project>_node-data`
       - node-data:/var/lib/bdagStack/node
       - nodeworker-data:/var/lib/bdagStack/nodeworker
-      # Use config/node.conf (copy from node.conf.example). node.conf is gitignored for local overrides.
-      - ./config/node.conf:/etc/bdagStack/node.conf:ro
+      # node.conf in project root (copy from node.conf.example). gitignored.
+      - ./node.conf:/etc/bdagStack/node.conf:ro
 
   # --------------------------------------------------------------------------
   # Mining pool. Connects to node RPC and Postgres.
@@ -85,13 +90,22 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       node:     { condition: service_started }
-    env_file:
-      - path: ./config/pool.env
-        required: false
     environment:
-      # Overrides env_file + baked image .env (must point at compose service names)
+      # Compose interpolates ${...} from the project root .env file.
       NODE_RPC_URL: http://node:38131
       PG_URL:       postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bdagpool}?sslmode=disable
+      # Stratum listen (inside container) — from root .env
+      POOL_BIND_ADDR:     ${POOL_BIND_ADDR:-0.0.0.0:3334}
+      NODE_RPC_USER:      ${NODE_RPC_USER:-test}
+      NODE_RPC_PASS:      ${NODE_RPC_PASS:-test}
+      PPLNS_N_WORK:       ${PPLNS_N_WORK:-1000}
+      POOL_FEE_PERCENTAGE: ${POOL_FEE_PERCENTAGE:-1.0}
+      POOL_BLOCK_MATURITY: ${POOL_BLOCK_MATURITY:-10}
+      POOL_PAYOUT_MATURITY: ${POOL_PAYOUT_MATURITY:-4096}
+      WALLET_RPC_URL:     ${WALLET_RPC_URL:-}
+      POOL_PRIVATE_KEY:   ${POOL_PRIVATE_KEY:-}
+      METRICS_ADDR:       ${METRICS_ADDR:-}
+      POOL_INSTANCE_ID:   ${POOL_INSTANCE_ID:-}
     ports:
       - "${POOL_BIND_PORT:-3334}:3334"
       - "${POOL_API_PORT:-8080}:8080"
@@ -139,10 +153,10 @@ services:
       - "${NETDATA_PORT:-19999}:19999"
     volumes:
       - netdata-config:/etc/netdata
-      - ./config/netdata/netdata.conf:/etc/netdata/netdata.conf:ro
-      - ./config/netdata/go.d.conf:/etc/netdata/go.d.conf:ro
-      - ./config/netdata/go.d/prometheus.conf:/etc/netdata/go.d/prometheus.conf:ro
-      - ./config/netdata-bdagstack.html:/usr/share/netdata/web/bdagstack.html:ro
+      - ./netdata/netdata.conf:/etc/netdata/netdata.conf:ro
+      - ./netdata/go.d.conf:/etc/netdata/go.d.conf:ro
+      - ./netdata/go.d/prometheus.conf:/etc/netdata/go.d/prometheus.conf:ro
+      - ./netdata/bdagstack.html:/usr/share/netdata/web/bdagstack.html:ro
       - netdata-lib:/var/lib/netdata
       - netdata-cache:/var/cache/netdata
       - /etc/passwd:/host/etc/passwd:ro
@@ -154,8 +168,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
 
   # --------------------------------------------------------------------------
-  # Optional CPU miner (cpu-miner). Disabled by default; enable with
-  # `docker compose --profile miner up -d`.
+  # CPU miner (source: cpu-miner repo). On by default for Git dev via
+  # COMPOSE_PROFILES=miner in .env.example; pool-only release must leave
+  # COMPOSE_PROFILES unset (dockerfile-pool-release has no miner target).
   # --------------------------------------------------------------------------
   miner:
     build:
@@ -168,11 +183,12 @@ services:
     restart: unless-stopped
     depends_on:
       pool: { condition: service_started }
-    # Defaults come from the miner image ENV; override by copying
-    # config/miner.env.example -> config/miner.env (see config/miner.env.example).
-    env_file:
-      - path: ./config/miner.env
-        required: false
+    environment:
+      # cpu-miner reads POOL_URL / POOL_USER / POOL_PASS / WORKERS (see cpu-miner/cmd/miner/main.go).
+      POOL_URL:   ${MINER_POOL_URL:-stratum+tcp://pool:3334}
+      POOL_USER:  ${MINER_POOL_USER:-0x0000000000000000000000000000000000000000}
+      POOL_PASS:  ${MINER_POOL_PASS:-x}
+      WORKERS:    ${MINER_WORKERS:-1}
 
 volumes:
   postgres-data:
