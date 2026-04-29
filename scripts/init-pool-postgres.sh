@@ -21,7 +21,7 @@ if [[ ! -f "${SCHEMA_FILE}" ]]; then
 fi
 
 if [[ ! -f "${ENV_FILE}" ]]; then
-  echo "Missing ${ENV_FILE}; copy .env.example to .env first." >&2
+  echo "Missing ${ENV_FILE}; copy .env.cpu.example or .env.pool.example to .env first." >&2
   exit 1
 fi
 

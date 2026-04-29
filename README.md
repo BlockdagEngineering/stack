@@ -14,7 +14,7 @@ systemd services.
 | `exporter` | local build                                | Prometheus text on :9198 for Netdata  |
 | `postgres` | `postgres:15`                              | Pool persistence, schema auto-loaded |
 | `netdata`  | `netdata/netdata:stable`                   | Dashboard at http://localhost:19999  |
-| `miner`    | local build (profile `miner`; **default ON** in `.env.example` for dev) | CPU stratum miner against the pool  |
+| `miner`    | local build (profile `miner`; **default ON** in `.env.cpu.example`) | CPU stratum miner against the pool  |
 
 ## Release tarballs (`pool-v*` vs `cpu-v*`)
 
@@ -38,7 +38,7 @@ Docker Compose reads **`.env`** in this directory for variable substitution and 
 | Piece | Purpose |
 | ----- | ------- |
 | **`node.conf`** | **Project root.** Mounted into the **`node`** container as `/etc/bdagStack/node.conf` (peers, `miningaddr`, RPC modules). **Copy from `node.conf.example`** — `node.conf` is gitignored. **`rpcuser` / `rpcpass` here must match `NODE_RPC_USER` / `NODE_RPC_PASS` in `.env`.** |
-| **`.env`** | **`COMPOSE_PROFILES=miner`** in **`.env.example`** so Git dev includes the **`miner`** service. **Pool:** vars as in **`asic-pool/cmd/pool/main.go`**. **`NODE_RPC_URL`** / **`PG_URL`** are set in `docker-compose.yml`. **Miner:** `MINER_POOL_URL`, `MINER_POOL_USER`, `MINER_POOL_PASS`, `MINER_WORKERS`. |
+| **`.env`** | Start from **`.env.cpu.example`** (miner + cpu release) or **`.env.pool.example`** (pool-only, no miner). **Pool:** vars as in **`asic-pool/cmd/pool/main.go`**. **`NODE_RPC_URL`** / **`PG_URL`** are set in `docker-compose.yml`. **Miner:** `MINER_POOL_URL`, `MINER_POOL_USER`, `MINER_POOL_PASS`, `MINER_WORKERS`. |
 | **`netdata/`** | Netdata bind-mounts: `netdata.conf`, `go.d` plugin configs, `bdagstack.html`. |
 
 The **`pool`** image built with **`dockerfile-dev`** still **`COPY`s** **`.env`** at build time into the image for `godotenv` defaults; release Dockerfiles do not embed `.env`.
@@ -60,17 +60,17 @@ To **build without importing** any snapshot while using **Git dev** (`BUILD_CONT
 git clone <this repo> pool-stack-docker
 cd pool-stack-docker
 
-# 1. Configure
-cp .env.example .env
+# 1. Configure — pick one template as .env
+cp .env.cpu.example .env        # full stack + miner (default COMPOSE_PROFILES=miner)
+# or:  cp .env.pool.example .env   # pool-only; no miner image / profile
 cp node.conf.example node.conf
-$EDITOR .env                    # DEV, POSTGRES_PASSWORD, NODE_RPC_*, pool + miner vars, optionally SNAPSHOT_PATH
+$EDITOR .env                    # For git dev: set BUILD_CONTEXT=.. and DOCKERFILE per file header
 $EDITOR node.conf              # rpcuser/rpcpass (must match .env), peers, miningaddr
 
 # 2. (Git dev) Ensure local clones exist next to this repo
-ls ../blockdag-corechain ../asic-pool ../cpu-miner ../pool-stack >/dev/null
+ls ../blockdag-corechain ../asic-pool ../cpu-miner >/dev/null
 
-# `.env.example` sets COMPOSE_PROFILES=miner so the CPU miner is included.
-# For pool-only release tarballs, use `.env.pool.example` (COMPOSE_PROFILES empty).
+# `.env.cpu.example` sets COMPOSE_PROFILES=miner. Use `.env.pool.example` for pool-only (empty profile).
 
 # 3. Build & start
 docker compose build
@@ -87,7 +87,7 @@ Once everything is running:
 * Exporter metrics: <http://localhost:9198/metrics>
 * Node-native metrics: <http://localhost:6060/metrics>
 * Netdata dashboard: <http://localhost:19999/bdagstack.html>
-  (run `bash scripts/setup-netdata.sh` after the first `make up` to install
+  (run `bash scripts/setup-netdata.sh` after the first `docker compose up` to install
    the bdagstack scrape jobs and dashboard page).
 
 ## Common operations
@@ -116,9 +116,8 @@ docker compose down -v
 
 ```
 pool-stack-docker/
-├── .env.example
-├── .env.cpu.example          # cpu-v* tarball: miner profile + dockerfile-cpu-release
-├── .env.pool.example         # pool-v* tarball: dockerfile-pool-release (no miner)
+├── .env.cpu.example          # template: cpu stack + miner (tarball or git dev)
+├── .env.pool.example         # template: pool-only (no miner)
 ├── node.conf.example         # copy → node.conf (gitignored) for the BlockDAG node
 ├── bdag-exporter.env.example # reference when running exporter outside compose
 ├── docker-compose.yml
@@ -146,6 +145,6 @@ pool-stack-docker/
 | `install.sh` provisions packages + units      | `docker compose build && docker compose up -d`                         |
 | Postgres installed via apt                    | `postgres:15` container, schema auto-loaded     |
 | Netdata installed via kickstart               | `netdata/netdata:stable` container              |
-| Configs in `/etc/bdagStack/`                  | Root **`node.conf`** + **`.env`** (pool, miner vars); dev **`.env.example`** enables **`miner`** via `COMPOSE_PROFILES` |
+| Configs in `/etc/bdagStack/`                  | Root **`node.conf`** + **`.env`** (pool, miner vars); **`.env.cpu.example`** sets **`COMPOSE_PROFILES=miner`** when you want the miner service |
 | Logs in journald                              | `docker compose logs <service>`                 |
 | Snapshot import via manual `bdag snapshot ...`| Build-time, optional `SNAPSHOT_PATH` (.bdsnap)  |
