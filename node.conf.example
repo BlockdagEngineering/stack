@@ -1,4 +1,6 @@
 # BlockDAG node configuration for the Docker Compose stack.
+# Copy to node.conf beside docker-compose.yml (gitignored):
+#   cp node.conf.example node.conf
 # Mounted into the node container at /etc/bdagStack/node.conf.
 
 # P2P listen
@@ -60,4 +62,3 @@ rpcmaxconcurrentreqs=500
 maxpeers=350
 http.ratelimit=1800
 http.rateburst=3200
-

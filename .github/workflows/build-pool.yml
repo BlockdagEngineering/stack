@@ -79,7 +79,14 @@ jobs:
         run: |
           sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool > checksums.txt
 
- 
+      - name: Validate compose (pool Dockerfile)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .env.pool.example
+          docker compose --env-file .env.pool.example config | grep -q 'dockerfile: dockerfile-pool-release' || \
+            { echo "::error::Compose must resolve dockerfile-pool-release for pool tarball env"; exit 1; }
+
       - name: Create release tarball
         id: package
         shell: bash
@@ -94,8 +101,8 @@ jobs:
           ROOT="${PACKAGE_NAME}-${VERSION}"
           rm -rf "${ROOT}"
           mkdir "${ROOT}"
-          cp docker-compose.yml dockerfile-pool-release .env.example README.md SNAPSHOT-README.md checksums.txt "${ROOT}/"
-          cp -a sql config scripts bin docker "${ROOT}/"
+          cp docker-compose.yml dockerfile-pool-release .env.example .env.cpu.example .env.pool.example node.conf.example bdag-exporter.env.example README.md SNAPSHOT-README.md checksums.txt "${ROOT}/"
+          cp -a sql netdata scripts bin docker "${ROOT}/"
 
           tar -czf "${OUT}" "${ROOT}"
           rm -rf "${ROOT}"

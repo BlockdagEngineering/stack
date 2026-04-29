@@ -134,7 +134,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack
-COPY pool-stack/scripts/bdag_netdata_exporter.py /usr/local/bin/bdag-netdata-exporter
+COPY pool-stack-docker/scripts/bdag_netdata_exporter.py /usr/local/bin/bdag-netdata-exporter
 RUN chmod +x /usr/local/bin/bdag-netdata-exporter
 
 USER bdagStack
@@ -143,21 +143,26 @@ ENTRYPOINT ["/usr/local/bin/bdag-netdata-exporter", \
     "--listen-address=0.0.0.0", "--listen-port=9198"]
 
 # ----------------------------------------------------------------------------
-# Miner Runtime Stage (cpu-miner)
+# Miner Runtime Stage (cpu-miner; matches dockerfile-cpu-release layout)
 # ----------------------------------------------------------------------------
 FROM debian:bookworm-slim AS miner
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
+    ca-certificates tzdata \
  && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
-COPY --from=miner-build /out/scrypt-miner /usr/local/bin/scrypt-miner
-RUN chmod +x /usr/local/bin/scrypt-miner \
- && useradd -m -u 1000 miner && chown -R miner:miner /app
-USER miner
+COPY --from=miner-build /out/scrypt-miner /usr/local/bin/cpu-miner
+RUN chmod +x /usr/local/bin/cpu-miner
+
+RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack \
+ && mkdir -p /var/lib/bdagStack/miner \
+ && chown -R bdagStack:bdagStack /var/lib/bdagStack/miner
+
+USER bdagStack
+WORKDIR /var/lib/bdagStack/miner
 
 ENV POOL_URL=stratum+tcp://pool:3334 \
-    POOL_USER=test\
-    POOL_PASS=test \
+    POOL_USER=0x0000000000000000000000000000000000000000 \
+    POOL_PASS=x \
     WORKERS=1
-ENTRYPOINT ["/usr/local/bin/scrypt-miner"]
+
+ENTRYPOINT ["/usr/local/bin/cpu-miner"]

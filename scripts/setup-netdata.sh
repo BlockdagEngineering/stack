@@ -6,13 +6,13 @@
 #   1. Writes /etc/netdata/go.d/prometheus.conf with two jobs:
 #        - bdag_chain_pool_local  (scrapes exporter:9198)
 #        - bdag_node_native_local (scrapes node:6060)
-#   2. Installs netdata-bdagstack.html into the netdata web root so users can
+#   2. Installs netdata/bdagstack.html into the netdata web root so users can
 #      open http://localhost:19999/bdagstack.html.
 #   3. Reloads Netdata.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DASH_SRC="${ROOT_DIR}/config/netdata-bdagstack.html"
+DASH_SRC="${ROOT_DIR}/netdata/bdagstack.html"
 SERVICE="${SERVICE:-netdata}"
 
 if ! docker compose ps --services --filter status=running 2>/dev/null | grep -qx "${SERVICE}"; then
