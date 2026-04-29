@@ -10,9 +10,9 @@
 # ----------------------------------------------------------------------------
 # Node Runtime Stage (optional snapshot import baked at build time)
 # ----------------------------------------------------------------------------
-FROM debian:bookworm-slim AS node
+FROM ubuntu:24.04 AS node
 ARG SNAPSHOT_PATH=docker/no-snapshot.marker
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates tzdata \
  && rm -rf /var/lib/apt/lists/*
 
@@ -56,8 +56,8 @@ ENTRYPOINT ["/usr/local/bin/nodeworker", \
 # ----------------------------------------------------------------------------
 # Pool Runtime Stage
 # ----------------------------------------------------------------------------
-FROM debian:bookworm-slim AS pool
-RUN apt-get update && apt-get install -y --no-install-recommends \
+FROM ubuntu:24.04 AS pool
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates tzdata \
  && rm -rf /var/lib/apt/lists/*
 
@@ -76,13 +76,17 @@ ENTRYPOINT ["/usr/local/bin/mining-pool"]
 # ----------------------------------------------------------------------------
 # Miner Runtime Stage
 # ----------------------------------------------------------------------------
-FROM debian:bookworm-slim AS miner
-RUN apt-get update && apt-get install -y --no-install-recommends \
+FROM ubuntu:24.04 AS miner
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates tzdata \
  && rm -rf /var/lib/apt/lists/*
 
 COPY bin/cpu-miner /usr/local/bin/cpu-miner
 RUN chmod +x /usr/local/bin/cpu-miner
+
+RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack \
+ && mkdir -p /var/lib/bdagStack/miner \
+ && chown -R bdagStack:bdagStack /var/lib/bdagStack/miner
 
 USER bdagStack
 WORKDIR /var/lib/bdagStack/miner
@@ -97,9 +101,9 @@ ENTRYPOINT ["/usr/local/bin/cpu-miner"]
 # ----------------------------------------------------------------------------
 # Exporter Runtime Stage
 # ----------------------------------------------------------------------------
-FROM python:3.11-slim-bookworm AS exporter
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
+FROM ubuntu:24.04 AS exporter
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates python3 \
  && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack

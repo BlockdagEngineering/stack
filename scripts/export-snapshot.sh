@@ -11,14 +11,23 @@ set -euo pipefail
 #    or copy from container — prefer host paths to avoid docker cp when /var/lib/docker is full).
 #
 # Usage: ./scripts/export-snapshot.sh [container_name] [output_file]
+#
+# Env: SNAPSHOT_EXPORT_TMPDIR — base dir for large temp copies (default: $TMPDIR or /tmp).
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Large working dirs for docker cp + snap export (needs ~2× chain DB peak during export).
+# Override if /tmp is small or full: export SNAPSHOT_EXPORT_TMPDIR=/path/with/free_space
+SNAPSHOT_TMP_BASE="${SNAPSHOT_EXPORT_TMPDIR:-${TMPDIR:-/tmp}}"
+
 # Default values
 CONTAINER_NAME="${1:-pool-stack-docker-node-1}"
 OUTPUT_FILE="${2:-$SCRIPT_DIR/../snapshots/latest.bdsnap}"
+
+# Second-stage export dir (cleaned on success in create_snapshot; trap removes on failure)
+SNAPSHOT_EXPORT_TEMP=""
 
 # Colors for output
 RED='\033[0;31m'
@@ -81,7 +90,7 @@ stop_node() {
 
 # Copy datadir from container
 copy_datadir() {
-    local temp_dir="/tmp/bdag-export-$(date +%s)"
+    local temp_dir="$SNAPSHOT_TMP_BASE/bdag-export-$(date +%s)"
     
     log "Creating temporary directory: $temp_dir"
     mkdir -p "$temp_dir"
@@ -201,9 +210,11 @@ create_snapshot() {
     log "Using blockdag-node: $bdag_binary"
     
     # Create snapshot using blockdag-node snap export command
-    local temp_export="/tmp/snapshot-export-$(date +%s)"
+    local temp_export="$SNAPSHOT_TMP_BASE/snapshot-export-$(date +%s)"
+    SNAPSHOT_EXPORT_TEMP="$temp_export"
+    export SNAPSHOT_EXPORT_TEMP
     
-    log "Running snapshot export..."
+    log "Running snapshot export (work dir: $temp_export)..."
     
     # First, clean up any existing export files
     rm -rf "$temp_export" 2>/dev/null || true
@@ -244,6 +255,10 @@ create_snapshot() {
     
     local file_size=$(stat -c%s "$OUTPUT_FILE")
     log "Snapshot created successfully: $OUTPUT_FILE (${file_size} bytes)"
+
+    log "Removing export working directory..."
+    rm -rf "$temp_export"
+    SNAPSHOT_EXPORT_TEMP=""
     
     # Show some stats
     log "Snapshot contents:"
@@ -258,10 +273,16 @@ create_snapshot() {
 cleanup() {
     local exit_code=$?
     
-    # Clean up temp directory
-    if [ -n "${TEMP_DIR:-}" ] && [ -d "$TEMP_DIR" ]; then
+    # Clean up temp directories (datadir copy + snap export staging — latter can be huge if export fails)
+    if { [ -n "${TEMP_DIR:-}" ] && [ -d "$TEMP_DIR" ]; } ||
+        { [ -n "${SNAPSHOT_EXPORT_TEMP:-}" ] && [ -d "$SNAPSHOT_EXPORT_TEMP" ]; }; then
         log "Cleaning up temporary files..."
+    fi
+    if [ -n "${TEMP_DIR:-}" ] && [ -d "$TEMP_DIR" ]; then
         rm -rf "$TEMP_DIR"
+    fi
+    if [ -n "${SNAPSHOT_EXPORT_TEMP:-}" ] && [ -d "$SNAPSHOT_EXPORT_TEMP" ]; then
+        rm -rf "$SNAPSHOT_EXPORT_TEMP"
     fi
     
     # If the node was running before we stopped it for export, bring it back (success or failure).
