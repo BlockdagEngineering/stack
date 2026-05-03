@@ -10,8 +10,7 @@
 #
 # Optional build-time snapshot: SNAPSHOT_PATH is a .bdsnap path relative to
 # Build context for dev dockerfile-dev is ../ so COPY can reach sibling repos:
-# ../blockdag-corechain, ../asic-pool, ../cpu-miner, ../pool-stack (exporter —
-# optionally use pool-stack-docker/scripts/bdag_netdata_exporter.py if vendored).
+# ../blockdag-corechain, ../asic-pool, ../cpu-miner, ../pool-stack
 
 # Usage:
 #   cp .env.cpu.example .env   # or .env.pool.example (no miner / pool-only tarball)
@@ -67,10 +66,11 @@ services:
       - "${EVM_WS_PORT:-18546}:18546"
       - "${NODE_METRICS_PORT:-6060}:6060"
     volumes:
-      # Named volume hides `/var/lib/bdagStack/node` from the image. Snapshots imported
-      # at **build** time live in the image layers; if this volume already existed from an
-      # older run (e.g. genesis-only sync), it masks that chain state — delete it after
-      # rebuilding with a new SNAPSHOT_PATH: `docker compose down && docker volume rm <project>_node-data`
+    # Note: The default behaviour is to keep any DB state from a previous run, 
+    # to prevent unintentional loss of synced chain data.
+    # so if you want to start fresh, you need to delete the volume explicity.
+    # `docker compose down && docker volume rm <project>_node-data`\
+
       - node-data:/var/lib/bdagStack/node
       - nodeworker-data:/var/lib/bdagStack/nodeworker
       # node.conf in project root (copy from node.conf.example). gitignored.
@@ -104,69 +104,33 @@ services:
       POOL_PAYOUT_MATURITY: ${POOL_PAYOUT_MATURITY:-4096}
       WALLET_RPC_URL:     ${WALLET_RPC_URL:-}
       POOL_PRIVATE_KEY:   ${POOL_PRIVATE_KEY:-}
-      METRICS_ADDR:       ${METRICS_ADDR:-}
+      METRICS_ADDR:       ${METRICS_ADDR:-0.0.0.0:9198}
       POOL_INSTANCE_ID:   ${POOL_INSTANCE_ID:-}
     ports:
       - "${POOL_BIND_PORT:-3334}:3334"
-      - "${POOL_API_PORT:-8080}:8080"
+      - "${POOL_API_PORT:-9090}:9090"
+
+
 
   # --------------------------------------------------------------------------
-  # Netdata exporter (Python; scrapes node RPC + pool API, exposes Prometheus
-  # text on :9198 for Netdata to scrape).
+  # Dashboard. just uses rpc calls so far
   # --------------------------------------------------------------------------
-  exporter:
+
+  dashboard:
     build:
       context: ${BUILD_CONTEXT:-..}
       dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile-dev}
-      target: exporter
+      target: dashboard
       args:
         <<: *build-args
     restart: unless-stopped
     depends_on:
       node: { condition: service_started }
       pool: { condition: service_started }
-    environment:
-      POOL_API_URL:      http://pool:8080/stats
-      BDAG_RPC_URL:      http://node:38131
-      # EVM JSON-RPC for eth_syncing (defaults to same host:18545 if unset)
-      BDAG_EVM_RPC_URL:  ${BDAG_EVM_RPC_URL:-http://node:18545}
-      BDAG_RPC_USER:     ${NODE_RPC_USER:-test}
-      BDAG_RPC_PASSWORD: ${NODE_RPC_PASS:-test}
-      BDAG_NETWORK:      ${NETWORK:-mainnet}
     ports:
-      - "${EXPORTER_PORT:-9198}:9198"
-
-  # --------------------------------------------------------------------------
-  # Netdata dashboard. Scrapes the exporter at exporter:9198 and the node's
-  # native metrics at node:6060.
-  # --------------------------------------------------------------------------
-  netdata:
-    image: netdata/netdata:stable
-    restart: unless-stopped
-    pid: host
-    # SYS_ADMIN: cgroup-network plugin uses setns(); without it: "Operation not permitted" in logs.
-    cap_add: [SYS_PTRACE, SYS_ADMIN]
-    security_opt: [apparmor:unconfined]
-    depends_on:
-      exporter: { condition: service_started }
-    ports:
-      - "${NETDATA_PORT:-19999}:19999"
+      - "9280:9280"
     volumes:
-      - netdata-config:/etc/netdata
-      - ./netdata/netdata.conf:/etc/netdata/netdata.conf:ro
-      - ./netdata/go.d.conf:/etc/netdata/go.d.conf:ro
-      - ./netdata/go.d/prometheus.conf:/etc/netdata/go.d/prometheus.conf:ro
-      - ./netdata/bdagstack.html:/usr/share/netdata/web/bdagstack.html:ro
-      - netdata-lib:/var/lib/netdata
-      - netdata-cache:/var/cache/netdata
-      - /etc/passwd:/host/etc/passwd:ro
-      - /etc/group:/host/etc/group:ro
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /etc/os-release:/host/etc/os-release:ro
-      # Resolve Docker container names (avoids cgroup-name.sh curl errors on docker.sock)
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-
+      - ./dashboard/logs:/app/logs
   # --------------------------------------------------------------------------
   # CPU miner (source: cpu-miner repo). On by default for Git dev via
   # COMPOSE_PROFILES=miner in .env.cpu.example; pool-only release must leave
@@ -184,17 +148,12 @@ services:
     depends_on:
       pool: { condition: service_started }
     environment:
-      # cpu-miner reads POOL_URL / POOL_USER / POOL_PASS / WORKERS (see cpu-miner/cmd/miner/main.go).
       POOL_URL:   ${MINER_POOL_URL:-stratum+tcp://pool:3334}
-      POOL_USER:  ${MINER_POOL_USER:-0x0000000000000000000000000000000000000000}
+      POOL_USER:  ${MINING_POOL_ADDRESS:-0x0000000000000000000000000000000000000000}
       POOL_PASS:  ${MINER_POOL_PASS:-x}
-      WORKERS:    ${MINER_WORKERS:-1}
 
 volumes:
   postgres-data:
   node-data:
   nodeworker-data:
-  netdata-config:
-  netdata-lib:
-  netdata-cache:
 

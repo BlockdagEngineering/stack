@@ -1,6 +1,6 @@
 # Pool-Stack Docker Compose Dev Build
 #
-# Builds the BlockDAG node + nodeworker, mining-pool, bdag-netdata-exporter,
+# Builds the BlockDAG node + nodeworker, mining-pool,
 # and the cpu-miner from LOCAL CLONES of the source repositories.
 # Expected directory structure (build context = parent directory):
 #
@@ -9,7 +9,6 @@
 #   ├── blockdag-corechain/         (local clone of blockdag node)
 #   ├── asic-pool/                  (local clone of mining pool)
 #   ├── cpu-miner/                  (local clone of cpu miner)
-#   └── pool-stack/                 (local clone for exporter + scripts)
 #
 # Optional snapshot import: SNAPSHOT_PATH copies a .bdsnap from the build context
 # (see compose / Makefile). No URL download. Datadir matches node.conf.
@@ -126,23 +125,6 @@ EXPOSE 3334 8080
 ENTRYPOINT ["/usr/local/bin/mining-pool"]
 
 # ----------------------------------------------------------------------------
-# Exporter Runtime Stage (Python; reads node + pool, exposes Prometheus text)
-# ----------------------------------------------------------------------------
-FROM ubuntu:24.04 AS exporter
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates python3 \
- && rm -rf /var/lib/apt/lists/*
-
-RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack
-COPY pool-stack-docker/scripts/bdag_netdata_exporter.py /usr/local/bin/bdag-netdata-exporter
-RUN chmod +x /usr/local/bin/bdag-netdata-exporter
-
-USER bdagStack
-EXPOSE 9198
-ENTRYPOINT ["/usr/local/bin/bdag-netdata-exporter", \
-    "--listen-address=0.0.0.0", "--listen-port=9198"]
-
-# ----------------------------------------------------------------------------
 # Miner Runtime Stage (cpu-miner; matches dockerfile-cpu-release layout)
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS miner
@@ -166,3 +148,16 @@ ENV POOL_URL=stratum+tcp://pool:3334 \
     WORKERS=1
 
 ENTRYPOINT ["/usr/local/bin/cpu-miner"]
+
+# 
+# Dashboard Runtime Stage
+# ----------------------------------------------------------------------------
+FROM ubuntu:24.04 AS dashboard
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates tzdata \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard
+RUN chmod +x /usr/local/bin/dashboard
+
+USER bdagStack

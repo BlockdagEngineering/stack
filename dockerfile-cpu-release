@@ -3,7 +3,6 @@
 # Build context = unpacked release tarball root (compose BUILD_CONTEXT=.):
 #   bin/blockdag-node, bin/nodeworker, bin/mining-pool, bin/cpu-miner
 #   docker/no-snapshot.marker      (default SNAPSHOT_PATH — tiny file skips snap import)
-#   scripts/bdag_netdata_exporter.py
 #
 # No git clone and no compile: images use the shipped binaries only.
 
@@ -98,19 +97,3 @@ ENV POOL_URL=stratum+tcp://pool:3334 \
 
 ENTRYPOINT ["/usr/local/bin/cpu-miner"]
 
-# ----------------------------------------------------------------------------
-# Exporter Runtime Stage
-# ----------------------------------------------------------------------------
-FROM ubuntu:24.04 AS exporter
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates python3 \
- && rm -rf /var/lib/apt/lists/*
-
-RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack
-COPY scripts/bdag_netdata_exporter.py /usr/local/bin/bdag-netdata-exporter
-RUN chmod +x /usr/local/bin/bdag-netdata-exporter
-
-USER bdagStack
-EXPOSE 9198
-ENTRYPOINT ["/usr/local/bin/bdag-netdata-exporter", \
-    "--listen-address=0.0.0.0", "--listen-port=9198"]

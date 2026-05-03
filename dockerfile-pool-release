@@ -3,7 +3,6 @@
 # Build context = unpacked release tarball root (compose BUILD_CONTEXT=.):
 #   bin/blockdag-node, bin/nodeworker, bin/mining-pool
 #   docker/no-snapshot.marker
-#   scripts/bdag_netdata_exporter.py
 #
 # Compose: do not enable the miner profile — this Dockerfile has no miner stage.
 #
@@ -75,19 +74,3 @@ WORKDIR /var/lib/bdagStack/pool
 EXPOSE 3334 8080
 ENTRYPOINT ["/usr/local/bin/mining-pool"]
 
-# ----------------------------------------------------------------------------
-# Exporter Runtime Stage
-# ----------------------------------------------------------------------------
-FROM ubuntu:24.04 AS exporter
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates python3 \
- && rm -rf /var/lib/apt/lists/*
-
-RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack
-COPY scripts/bdag_netdata_exporter.py /usr/local/bin/bdag-netdata-exporter
-RUN chmod +x /usr/local/bin/bdag-netdata-exporter
-
-USER bdagStack
-EXPOSE 9198
-ENTRYPOINT ["/usr/local/bin/bdag-netdata-exporter", \
-    "--listen-address=0.0.0.0", "--listen-port=9198"]

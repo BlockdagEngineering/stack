@@ -1,0 +1,14 @@
+{
+  "name": "bdag-dashboard",
+  "private": true,
+  "scripts": {
+    "css:build": "tailwindcss -i ./input.css -o ./static/tailwind.css --minify",
+    "css:watch": "tailwindcss -i ./input.css -o ./static/tailwind.css --watch",
+    "format:templates": "prettier --write \"templates/**/*.gohtml\""
+  },
+  "devDependencies": {
+    "prettier": "^3.5.3",
+    "prettier-plugin-go-template": "^0.0.15",
+    "tailwindcss": "^3.4.17"
+  }
+}

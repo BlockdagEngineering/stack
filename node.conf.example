@@ -32,7 +32,6 @@ addpeer=/ip4/13.57.132.47/tcp/8150/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFe
 maxpeers=350
 
 # RPC auth (must match NODE_RPC_USER / NODE_RPC_PASS in .env so the pool +
-# exporter containers can talk to the node).
 rpcuser=test
 rpcpass=test
 
