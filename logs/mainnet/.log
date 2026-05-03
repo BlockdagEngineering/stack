@@ -453,3 +453,62 @@
 2026-04-30|11:22:02.759 [INFO ] Snapshot export complete            module=SNAP  path=/home/ubuntu/repos/pool-stack-docker/scripts/../snapshots/latest.bdsnap chunks=730 keys=72300183 compressed=3274437045
 2026-04-30|11:22:03.016 [INFO ] Snapshot export complete            archive=/home/ubuntu/repos/pool-stack-docker/scripts/../snapshots/latest.bdsnap manifest=/home/ubuntu/repos/pool-stack-docker/scripts/../snapshots/latest.bdsnap.manifest.json tip=0x200647c19a75cc07ed6275f794e99fab28f0bae5352a53c81a73573711e7090e order=5695825 chunks=730 sources="[chain=34205753/1902MB evm=38094430/1220MB]" root=ad6535c94448d7f0b2fa50be748283307e9a0076c6da63bcf9767365aa65f0d1
 2026-04-30|11:22:03.048 [INFO ] Close                               module=CDB   name="Chain DB"
+2026-05-03|15:07:40.947 [INFO ] Using pebble as the backing database module=RAWDB
+2026-05-03|15:07:56.881 [INFO ] Opened ancient database             module=RAWDB database=/tmp/snapshot-export-1777820732/mainnet-data/BdagChain/ancient/chain readonly=false
+2026-05-03|15:08:05.594 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=1745629 total_keys=1745629 chunks=11 bytes=102162420
+2026-05-03|15:08:13.795 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=3799987 total_keys=3799987 chunks=17 bytes=178341684
+2026-05-03|15:08:22.521 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=6196738 total_keys=6196738 chunks=24 bytes=267218558
+2026-05-03|15:08:30.638 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=13954664 total_keys=13954664 chunks=35 bytes=328436671
+2026-05-03|15:08:38.807 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=18534792 total_keys=18534792 chunks=44 bytes=359439752
+2026-05-03|15:08:47.107 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=19063188 total_keys=19063188 chunks=63 bytes=465244159
+2026-05-03|15:08:55.372 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=19706154 total_keys=19706154 chunks=81 bytes=555297137
+2026-05-03|15:09:03.419 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=20498172 total_keys=20498172 chunks=98 bytes=624034111
+2026-05-03|15:09:11.419 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=21276377 total_keys=21276377 chunks=114 bytes=688672318
+2026-05-03|15:09:19.574 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=22029279 total_keys=22029279 chunks=131 bytes=759219813
+2026-05-03|15:09:27.710 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=22829255 total_keys=22829255 chunks=148 bytes=827597801
+2026-05-03|15:09:35.921 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=23611070 total_keys=23611070 chunks=165 bytes=897964926
+2026-05-03|15:09:44.294 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=24384630 total_keys=24384630 chunks=182 bytes=969356382
+2026-05-03|15:09:52.294 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=25076868 total_keys=25076868 chunks=199 bytes=1048551311
+2026-05-03|15:10:00.612 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=25833216 total_keys=25833216 chunks=216 bytes=1121218434
+2026-05-03|15:10:08.769 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=26621172 total_keys=26621172 chunks=233 bytes=1192192610
+2026-05-03|15:10:17.059 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=27414095 total_keys=27414095 chunks=250 bytes=1261678883
+2026-05-03|15:10:25.059 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=28197493 total_keys=28197493 chunks=266 bytes=1327916726
+2026-05-03|15:10:33.266 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=28935968 total_keys=28935968 chunks=283 bytes=1399099761
+2026-05-03|15:10:41.485 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=29719059 total_keys=29719059 chunks=300 bytes=1470048816
+2026-05-03|15:10:49.485 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=30446288 total_keys=30446288 chunks=316 bytes=1539784056
+2026-05-03|15:10:57.587 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=31151614 total_keys=31151614 chunks=333 bytes=1617787845
+2026-05-03|15:11:05.587 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=31876689 total_keys=31876689 chunks=349 bytes=1691591956
+2026-05-03|15:11:13.587 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=32613366 total_keys=32613366 chunks=366 bytes=1764100935
+2026-05-03|15:11:21.587 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=33336510 total_keys=33336510 chunks=382 bytes=1832491473
+2026-05-03|15:11:29.740 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=34127069 total_keys=34127069 chunks=399 bytes=1904372765
+2026-05-03|15:11:37.961 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=34870352 total_keys=34870352 chunks=416 bytes=1979182502
+2026-05-03|15:11:46.289 [INFO ] Snapshot export in progress         module=SNAP  source=chain source_keys=35641470 total_keys=35641470 chunks=433 bytes=2052033094
+2026-05-03|15:11:54.672 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=433754   total_keys=36729894 chunks=450 bytes=2131995222
+2026-05-03|15:12:03.012 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=3976233  total_keys=40272373 chunks=461 bytes=2264835321
+2026-05-03|15:12:11.165 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=6715377  total_keys=43011517 chunks=469 bytes=2366419561
+2026-05-03|15:12:19.659 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=9424694  total_keys=45720834 chunks=478 bytes=2474583262
+2026-05-03|15:12:27.819 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=11333466 total_keys=47629606 chunks=490 bytes=2552738740
+2026-05-03|15:12:36.124 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=12148213 total_keys=48444353 chunks=507 bytes=2643906449
+2026-05-03|15:12:44.186 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=13290887 total_keys=49587027 chunks=521 bytes=2701324864
+2026-05-03|15:12:52.334 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=14762337 total_keys=51058477 chunks=534 bytes=2735193843
+2026-05-03|15:13:00.551 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=16216846 total_keys=52512986 chunks=547 bytes=2770547104
+2026-05-03|15:13:08.718 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=17701227 total_keys=53997367 chunks=560 bytes=2803755256
+2026-05-03|15:13:16.780 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=19155421 total_keys=55451561 chunks=573 bytes=2839187922
+2026-05-03|15:13:25.038 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=20594412 total_keys=56890552 chunks=586 bytes=2875229218
+2026-05-03|15:13:33.268 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=21852352 total_keys=58148492 chunks=600 bytes=2928581383
+2026-05-03|15:13:41.334 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=23223571 total_keys=59519711 chunks=613 bytes=2969341963
+2026-05-03|15:13:49.483 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=24664457 total_keys=60960597 chunks=626 bytes=3006059272
+2026-05-03|15:13:57.519 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=26023132 total_keys=62319272 chunks=638 bytes=3037822399
+2026-05-03|15:14:05.725 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=27462967 total_keys=63759107 chunks=651 bytes=3074330105
+2026-05-03|15:14:13.725 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=28837536 total_keys=65133676 chunks=664 bytes=3111059194
+2026-05-03|15:14:21.832 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=30250922 total_keys=66547062 chunks=677 bytes=3146531598
+2026-05-03|15:14:29.920 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=31624253 total_keys=67920393 chunks=690 bytes=3187804471
+2026-05-03|15:14:37.920 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=32869665 total_keys=69165805 chunks=703 bytes=3239424091
+2026-05-03|15:14:45.920 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=34238505 total_keys=70534645 chunks=716 bytes=3280894537
+2026-05-03|15:14:53.920 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=35605673 total_keys=71901813 chunks=728 bytes=3318169118
+2026-05-03|15:15:01.920 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=36884880 total_keys=73181020 chunks=740 bytes=3353484482
+2026-05-03|15:15:09.965 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=38187623 total_keys=74483763 chunks=753 bytes=3397554536
+2026-05-03|15:15:18.330 [INFO ] Snapshot export in progress         module=SNAP  source=evm   source_keys=39611887 total_keys=75908027 chunks=766 bytes=3435982906
+2026-05-03|15:17:41.182 [INFO ] Snapshot export complete            module=SNAP  path=/home/ubuntu/repos/pool-stack-docker/scripts/../snapshots/latest.bdsnap chunks=773 keys=76616230 compressed=3455335433
+2026-05-03|15:17:41.365 [INFO ] Snapshot export complete            archive=/home/ubuntu/repos/pool-stack-docker/scripts/../snapshots/latest.bdsnap manifest=/home/ubuntu/repos/pool-stack-docker/scripts/../snapshots/latest.bdsnap.manifest.json tip=0xb56c295c4d7b025b9d8e76be3e4c7e29f62d8931859ec13a7afe43fad971b16c order=6047642 chunks=773 sources="[chain=36296140/2013MB evm=40320090/1281MB]" root=4fcc3587f44425c38132e7131e684fff5716588dc029631ec8e6bb663c0f3e98
+2026-05-03|15:17:41.419 [INFO ] Close                               module=CDB   name="Chain DB"
