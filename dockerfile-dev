@@ -54,6 +54,21 @@ COPY cpu-miner/ .
 RUN CGO_ENABLED=1 CGO_CFLAGS='-O2' go build -o /out/scrypt-miner ./cmd/miner
 
 # ----------------------------------------------------------------------------
+# Dashboard Build Stage (dashboard)
+# ----------------------------------------------------------------------------
+FROM base AS dashboard-build
+WORKDIR /src/dashboard
+COPY pool-stack-docker/dashboard .
+# base removed apt lists; refresh index before npm (bookworm npm package installs node toolchain).
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    npm \
+ && rm -rf /var/lib/apt/lists/* \
+ && npm ci \
+ && npm run css:build \
+ && go mod tidy \
+ && go build -o out/dashboard .
+
+# ----------------------------------------------------------------------------
 # Node Runtime Stage (with optional snapshot import)
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS node
@@ -157,7 +172,14 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     ca-certificates tzdata \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard
-RUN chmod +x /usr/local/bin/dashboard
+RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack \
+ && mkdir -p /app/logs \
+ && chown bdagStack:bdagStack /app/logs
 
+WORKDIR /app/logs
+COPY --from=dashboard-build  src/dashboard/out/dashboard /usr/local/bin/dashboard
+EXPOSE 9280
+
+RUN chmod +x /usr/local/bin/dashboard
 USER bdagStack
+ENTRYPOINT [ "/usr/local/bin/dashboard" ]

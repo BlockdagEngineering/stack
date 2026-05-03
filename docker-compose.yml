@@ -127,6 +127,15 @@ services:
     depends_on:
       node: { condition: service_started }
       pool: { condition: service_started }
+    environment:
+      BDAG_RPC_URL: http://node:38131
+      DASHBOARD_EVM_RPC_URL: http://node:18545
+      DASHBOARD_LISTEN: 0.0.0.0:9280
+      DASHBOARD_RPC_POLL_SECONDS: 5
+      DASHBOARD_MAX_POINTS: 120
+      DASHBOARD_MINING_MAX_BARS: 48
+      DASHBOARD_MINING_POLL_INTERVAL: 10m
+      MINING_POOL_ADDRESS: ${MINING_POOL_ADDRESS:-0x0000000000000000000000000000000000000000}
     ports:
       - "9280:9280"
     volumes:
