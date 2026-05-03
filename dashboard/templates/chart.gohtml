@@ -1,0 +1,84 @@
+{{ define "blockHeightChart" }}
+  {{ if not .HasData }}
+    <p class="mt-1 text-sm text-slate-500">
+      Collecting samples… need at least two RPC polls.
+    </p>
+  {{ else }}
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 {{ .Width }} {{ .Height }}"
+        width="100%"
+        height="260"
+        class="block"
+        aria-label="DAG block height over time"
+      >
+        <title>DAG block height over time</title>
+        <!--- Chart frame --->
+        <rect
+          fill="black"
+          stroke="currentColor"
+          class="text-slate-700 opacity-30"
+          x="{{ .PadX }}"
+          y="{{ .PadY }}"
+          width="{{ .InnerW }}"
+          height="{{ .InnerH }}"
+        />
+        <text
+          fill="rgb(66, 176, 102)"
+          class="text-green-500"
+          x="{{ .LabelAxisX }}"
+          y="{{ .LabelAxisYMax }}"
+          font-size="11"
+          text-anchor="end"
+        >
+          {{ printf "%.0f" .AxisYMax }}
+        </text>
+        <text
+          fill="rgb(66, 176, 102)"
+          class="text-green-500"
+          x="{{ .LabelAxisX }}"
+          y="{{ .LabelAxisYMin }}"
+          font-size="11"
+          text-anchor="end"
+        >
+          {{ printf "%.0f" .AxisYMin }}
+        </text>
+        <polyline
+          fill="none"
+          stroke="rgba(97, 209, 135, 0.89)"
+          class="text-green-500 opacity-60 shadow shadow-white"
+          stroke-width="3"
+          points="{{ .PointsAttr }}"
+          stroke-linejoin="miter"
+        />
+        <text
+          fill="rgb(66, 176, 102)"
+          class="text-green-400"
+          x="{{ .PadX }}"
+          y="{{ .LabelY }}"
+          font-size="11"
+        >
+          older 
+        </text>
+        <text
+          fill="rgb(66, 176, 102)"
+          x="{{ .LabelRecentX }}"
+          y="{{ .LabelY }}"
+          font-size="11"
+          text-anchor="end"
+        >
+          recent
+        </text>
+      </svg>
+      <p
+        class="mt-2 w-full px-3 text-center text-xs text-slate-500 leading-relaxed"
+      >
+        Latest height:
+        <span class="text-slate-300 tabular-nums"
+          >{{ printf "%.0f" .Latest }}</span
+        >
+        DAG · {{ .NumSamples }} samples · polled every
+        {{ .PollInterval }}
+      </p>
+  {{ end }}
+{{ end }}

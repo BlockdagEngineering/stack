@@ -1,0 +1,33 @@
+{{ define "miningDashboard" }}
+  {{ if .Mining.SetupErr }}
+    <p class="mt-1 text-sm text-amber-400/90">{{ .Mining.SetupErr }}</p>
+  {{ else if not .Mining.ConfiguredAddr }}
+    <p class="mt-1 text-sm text-slate-500">
+      No mining wallet in env. Set <code class="text-slate-400">MINING_POOL_ADDRESS</code>
+      (stack <code class="text-slate-400">.env</code>),
+      <code class="text-slate-400">NODE_MINING_ADDRESS</code>
+    </p>
+  {{ else if .Mining.RPCErr }}
+    <p class="mt-1 text-sm text-amber-400/90">
+      Balance RPC error:
+      <span class="font-mono text-xs">{{ .Mining.RPCErr }}</span>
+    </p>
+    <p class="mt-1 text-xs text-slate-500">
+      Wallet
+      <span class="text-slate-400 font-mono" title="{{ .Mining.AddressFull }}"
+        >{{ .Mining.AddressShort }}</span
+      >
+      · poll every {{ .Mining.PollInterval }} · {{ .Mining.AddressEnvSource }}
+    </p>
+    {{ template "barChart" .Mining.Chart }}
+  {{ else }}
+    <p class="text-xs text-slate-500 mb-2">
+      Wallet
+      <span class="text-slate-400 font-mono" title="{{ .Mining.AddressFull }}"
+        >{{ .Mining.AddressShort }}</span
+      >
+      · poll every {{ .Mining.PollInterval }} · {{ .Mining.AddressEnvSource }}
+    </p>
+    {{ template "barChart" .Mining.Chart }}
+  {{ end }}
+{{ end }}
