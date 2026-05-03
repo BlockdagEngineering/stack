@@ -47,9 +47,9 @@ jobs:
       - name: Checkout private mining pool repo
         uses: actions/checkout@v4
         with:
-          repository: BlockdagEngineering/asic-pool
+          repository: BlockdagEngineering/pool
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
-          path: src/asic-pool
+          path: src/pool
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -68,7 +68,7 @@ jobs:
       - name: Build mining-pool
         shell: bash
         run: |
-          cd src/asic-pool
+          cd src/pool
           go build -o build/bin/pool ./cmd/pool
           cp -f ./build/bin/pool ../../bin/mining-pool
 
