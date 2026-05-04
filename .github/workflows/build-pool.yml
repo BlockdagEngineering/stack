@@ -86,8 +86,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -f .env.pool.example
-          docker compose --env-file .env.pool.example config | grep -q 'dockerfile: dockerfile' || \
+          test -f .env.example
+          docker compose --env-file .env.example config | grep -q 'dockerfile: dockerfile' || \
             { echo "::error::Compose must resolve dockerfile for pool tarball env"; exit 1; }
 
       - name: Create release tarball
@@ -98,12 +98,12 @@ jobs:
           OUT="${PACKAGE_NAME}-${VERSION}.tar.gz"
 
 
-          test -f .env.cpu.example && test -f .env.pool.example || { echo "::error::Missing .env.cpu.example or .env.pool.example"; exit 1; }
+          test -f .env.example || { echo "::error::Missing .env.example"; exit 1; }
 
           ROOT="${PACKAGE_NAME}-${VERSION}"
           rm -rf "${ROOT}"
           mkdir "${ROOT}"
-          cp docker-compose.yml dockerfile .env.cpu.example .env.pool.example node.conf.example README.md  checksums.txt "${ROOT}/"
+          cp docker-compose.yml dockerfile env.example node.conf.example README.md  checksums.txt "${ROOT}/"
           cp -a bin sql docker scripts "${ROOT}/"
 
           tar -czf "${OUT}" "${ROOT}"
