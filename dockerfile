@@ -77,6 +77,9 @@ COPY --from=node-build /out/blockdag-node  /usr/local/bin/blockdag-node
 COPY --from=node-build /out/nodeworker     /usr/local/bin/nodeworker
 RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker
 
+COPY docker/entrypoint-nodeworker.sh /usr/local/bin/docker-entrypoint-nodeworker.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh
+
 # Snapshot path is relative to build context (Compose sets this in .env for dev vs release).
 COPY ${SNAPSHOT_PATH} /tmp/snapshot-candidate.bdsnap
 
@@ -93,10 +96,12 @@ RUN set -eu; \
     fi; \
     rm -f /tmp/snapshot-candidate.bdsnap
 
-USER bdagStack
 WORKDIR /var/lib/bdagStack/node
 EXPOSE 8150 38131 38132 18545 18546 6060
-ENTRYPOINT ["/usr/local/bin/nodeworker", \
+# Start as root so entrypoint can chown Docker volumes (often created as uid 0);
+# nodeworker and blockdag-node run as bdagStack after that.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint-nodeworker.sh", \
+    "/usr/local/bin/nodeworker", \
     "--node-binary=/usr/local/bin/blockdag-node", \
     "--node-args=--configfile /etc/bdagStack/node.conf", \
     "--rpc-url=ws://127.0.0.1:18546", \
