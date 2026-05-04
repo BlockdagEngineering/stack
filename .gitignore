@@ -2,7 +2,7 @@
 .env
 .env.local
 .env.*.local
-.secrets
+release-downloads/
 # Local node config (copy from node.conf.example)
 node.conf
 

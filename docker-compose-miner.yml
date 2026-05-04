@@ -140,6 +140,27 @@ services:
       - "9280:9280"
     volumes:
       - ./dashboard/logs:/app/logs
+  # --------------------------------------------------------------------------
+  # CPU miner (source: cpu-miner repo). On by default for Git dev via
+  # COMPOSE_PROFILES=miner in .env.cpu.example; pool-only release must leave
+  # COMPOSE_PROFILES unset (dockerfile-pool-release has no miner target).
+  # --------------------------------------------------------------------------
+  miner:
+    build:
+      context: ${BUILD_CONTEXT:-..}
+      dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile-dev}
+      target: miner
+      args:
+        <<: *build-args
+    profiles: [miner]
+    restart: unless-stopped
+    depends_on:
+      pool: { condition: service_started }
+    environment:
+      POOL_URL:   ${MINER_POOL_URL:-stratum+tcp://pool:3334}
+      POOL_USER:  ${MINING_POOL_ADDRESS:-0x0000000000000000000000000000000000000000}
+      POOL_PASS:  ${MINER_POOL_PASS:-x}
+
 volumes:
   postgres-data:
   node-data:
