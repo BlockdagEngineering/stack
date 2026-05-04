@@ -13,25 +13,24 @@ This stack can be run in any environment where docker is installed. It includes 
 
 ## Release tarballs (`pool-v*` vs `cpu-v*`)
 
-GitHub Releases attach `pool-stack-docker-<tag>.tar.gz` with `bin/` (pre-built Linux binaries), `docker-compose.yml`, `dockerfile-*-release`, `.env.cpu.example` / `.env.pool.example`,  `docker/`, etc. **Images `COPY` from `./bin` only** — no git clone inside Docker. **Chain snapshots are not included** (2 GiB cap) — see `SNAPSHOT-README.md`.
+GitHub Releases attach `pool-stack-docker-<tag>.tar.gz` with `bin/` (pre-built Linux binaries), `docker-compose.yml`, `dockerfile`,  `.env.example`,  `docker/`, /bin etc. **Images** `COPY` **from** `./bin` **only** — no git clone inside Docker. 
 
-- `**pool-v*`** — `dockerfile-pool-release` (node + pool . Use `**cp .env.pool.example .env**` and do **not** enable the miner profile. Operator setup (snapshot path, `**node.conf`**, volumes): `**POOL-RELEASE.md**`.
-- `**cpu-v***` — `dockerfile-cpu-release` (adds `bin/cpu-miner`). Use `**cp .env.cpu.example .env**` (includes `COMPOSE_PROFILES=miner`).
+
 
 After unpacking, run from the extracted directory with `BUILD_CONTEXT=.` (already set in those examples).
 
 ## Configuration (what loads where)
 
-Docker Compose reads `**.env**` in this directory for variable substitution and passes pool / miner settings into containers.
+Docker Compose reads `**.env`** in this directory for variable substitution and passes pool / miner settings into containers.
 
 
 | Piece           | Purpose                                                                                                                                                                                                                                                                                                                     |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `**node.conf**` | **Project root.** Mounted into the `**node`** container as `/etc/bdagStack/node.conf` (peers, `miningaddr`, RPC modules). **Copy from `node.conf.example`** — `node.conf` is gitignored. `**rpcuser` / `rpcpass` here must match `NODE_RPC_USER` / `NODE_RPC_PASS` in `.env`.**                                             |
-| `**.env`**      | Start from `**.env.cpu.example**` (miner + cpu release) or `**.env.pool.example**` (pool-only, no miner). **Pool:** vars as in `**asic-pool/cmd/pool/main.go`**. `**NODE_RPC_URL**` / `**PG_URL**` are set in `docker-compose.yml`. **Miner:** `MINER_POOL_URL`, `MINING_POOL_ADDRESS`, `MINER_POOL_PASS`, `MINER_WORKERS`. |
+| `**.env`**      | Start from `**.env.cpu.example`** (miner + cpu release) or `**.env.pool.example**` (pool-only, no miner). **Pool:** vars as in `**asic-pool/cmd/pool/main.go`**. `**NODE_RPC_URL`** / `**PG_URL**` are set in `docker-compose.yml`. **Miner:** `MINER_POOL_URL`, `MINING_POOL_ADDRESS`, `MINER_POOL_PASS`, `MINER_WORKERS`. |
 
 
-The `**pool**` image built with `**dockerfile-dev**` still `**COPY`s** `**.env`** at build time into the image for `godotenv` defaults; release Dockerfiles do not embed `.env`.
+The `**pool`** image built with `**dockerfile-dev**` still `**COPY`s** `**.env`** at build time into the image for `godotenv` defaults; release Dockerfiles do not embed `.env`.
 
 ## Snapshot import (optional)
 
@@ -100,5 +99,4 @@ docker compose down
 # Stop + delete named volumes (DESTRUCTIVE)
 docker compose down -v
 ```
-
 
