@@ -60,6 +60,23 @@ Once everything is running:
 - Dashboard: `http://localhost:9280` ( Run in browser, or use the VSC/Cursor Simple Browser! )
 - Mining pool Stratum endpoint: `stratum+tcp://localhost:3334`
 - RPC endpoint: `http://localhost:38131`
+
+## Dedicated snapshot node (mining stack unchanged)
+
+For hourly or on-demand **snap export**, run a **second** node with its own volumes and host ports so stopping it does not interrupt the pool’s RPC node.
+
+From this directory:
+
+```bash
+cp .env.snapshot.example .env.snapshot
+cp node.snapshot.conf.example node.snapshot.conf
+docker compose -p snapshot-node -f docker-compose.snapshot-node.yml --env-file .env.snapshot build
+docker compose -p snapshot-node -f docker-compose.snapshot-node.yml --env-file .env.snapshot up -d
+```
+
+- Named volumes **`bdag_snapshot_node_data`** / **`bdag_snapshot_nodeworker_data`** stay separate from the full stack’s `node-data`.
+- Default host ports **`9150`** (P2P), **`48131`** (BDAG RPC), **`28545`** / **`28546`** (EVM), **`16060`** (metrics) avoid clashes with the mining compose defaults.
+- Point export automation at container **`snapshot-node-node-1`** (see `docker compose -p snapshot-node ps`).
   
 
 # Common operations
