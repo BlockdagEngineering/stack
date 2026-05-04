@@ -13,7 +13,7 @@ This stack can be run in any environment where docker is installed. It includes 
 
 ## Release tarballs (`pool-v*` vs `cpu-v*`)
 
-GitHub Releases attach `pool-stack-docker-<tag>.tar.gz` with `bin/` (pre-built Linux binaries), `docker-compose.yml`, `dockerfile`,  `.env.example`,  `docker/`, /bin etc. **Images** `COPY` **from** `./bin` **only** — no git clone inside Docker. 
+GitHub Releases attach `pool-stack-docker-<tag>.tar.gz` with `bin/` (pre-built **`blockdag-node`**, **`nodeworker`**, **`mining-pool`**, **`dashboard-api`**), `dashboard/` (Compose builds `dashboard`), `docker-compose.yml`, `dockerfile`, `.env.example`, `docker/`, etc. **Release images** stage binaries from `./bin`; no git clone inside Docker. 
 
 
 
@@ -30,7 +30,7 @@ Docker Compose reads `**.env`** in this directory for variable substitution and 
 | `**.env`**      | Start from `**.env.cpu.example`** (miner + cpu release) or `**.env.pool.example**` (pool-only, no miner). **Pool:** vars as in `**asic-pool/cmd/pool/main.go`**. `**NODE_RPC_URL`** / `**PG_URL**` are set in `docker-compose.yml`. **Miner:** `MINER_POOL_URL`, `MINING_POOL_ADDRESS`, `MINER_POOL_PASS`, `MINER_WORKERS`. |
 
 
-The `**pool`** image built with `**dockerfile-dev**` still `**COPY`s** `**.env`** at build time into the image for `godotenv` defaults; release Dockerfiles do not embed `.env`.
+The **`pool`** image bakes **`.env.example`** into the image at `/var/lib/bdagStack/pool/.env` for `godotenv` (release **`dockerfile`** uses **`COPY .env.example`** relative to tarball root; git dev **`dockerfile-dev`** uses **`COPY pool-stack-docker/.env.example`**). Compose still sets most variables via `environment:`.
 
 ## Snapshot import (optional)
 

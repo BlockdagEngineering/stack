@@ -14,7 +14,7 @@ permissions:
   contents: write
 
 env:
-  GO_VERSION: "1.22.x"
+  GO_VERSION: "1.26.x"
   PACKAGE_NAME: "pool-stack-docker"
 
 jobs:
@@ -72,15 +72,17 @@ jobs:
         run: |
           cd src/pool
           go build -o build/bin/pool ./cmd/pool
+          go build -o build/bin/dashboard-api ./cmd/dashboard-api
           cp -f ./build/bin/pool ../../bin/mining-pool
+          cp -f ./build/bin/dashboard-api ../../bin/dashboard-api
 
       - name: Ensure executables
-        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool
+        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api
 
       - name: Generate checksums
         shell: bash
         run: |
-          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool > checksums.txt
+          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api > checksums.txt
 
       - name: Validate compose (pool Dockerfile)
         shell: bash
@@ -104,7 +106,7 @@ jobs:
           rm -rf "${ROOT}"
           mkdir "${ROOT}"
           cp docker-compose.yml dockerfile .env.example node.conf.example README.md  checksums.txt "${ROOT}/"
-          cp -a bin sql docker scripts "${ROOT}/"
+          cp -a bin sql docker scripts dashboard "${ROOT}/"
 
           tar -czf "${OUT}" "${ROOT}"
           rm -rf "${ROOT}"
