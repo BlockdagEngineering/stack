@@ -43,6 +43,7 @@ jobs:
           repository: BlockdagEngineering/blockdag-corechain
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/blockdag-node
+          ref: feature/block-template-stream2
 
       - name: Checkout private mining pool repo
         uses: actions/checkout@v4
@@ -50,6 +51,7 @@ jobs:
           repository: BlockdagEngineering/pool
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/pool
+          ref: feature/block-template-stream
 
       - name: Setup Go
         uses: actions/setup-go@v5

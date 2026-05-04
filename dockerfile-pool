@@ -1,0 +1,150 @@
+# Pool-Stack Docker Compose Dev Build
+#
+# Builds the BlockDAG node + nodeworker, mining-pool,
+# and the cpu-miner from LOCAL CLONES of the source repositories.
+# Expected directory structure (build context = parent directory):
+#
+#   parent/
+#   ├── pool-stack-docker/         (this repo - must match DOCKERFILE path in compose)
+#   ├── blockdag-corechain/         (local clone of blockdag node)
+#   ├── asic-pool/                  (local clone of mining pool)
+#   ├── cpu-miner/                  (local clone of cpu miner)
+#
+# Optional snapshot import: SNAPSHOT_PATH copies a .bdsnap from the build context
+# (see compose / Makefile). No URL download. Datadir matches node.conf.
+
+# ----------------------------------------------------------------------------
+# Common base
+# ----------------------------------------------------------------------------
+FROM golang:1.26-bookworm AS base
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    make git gcc g++ libc6-dev jq ca-certificates wget \
+ && rm -rf /var/lib/apt/lists/*
+
+# ----------------------------------------------------------------------------
+# Node Build Stage (blockdag-corechain)
+# ----------------------------------------------------------------------------
+FROM base AS node-build
+WORKDIR /src/blockdag-corechain
+COPY blockdag-corechain/ .
+RUN make all && \
+    mkdir -p /out && \
+    cp -f ./build/bin/bdag        /out/blockdag-node && \
+    cp -f ./build/bin/nodeworker  /out/nodeworker
+
+# ----------------------------------------------------------------------------
+# Pool Build Stage (asic-pool)
+# ----------------------------------------------------------------------------
+FROM base AS pool-build
+WORKDIR /src/asic-pool
+COPY asic-pool/ .
+RUN make build && \
+    mkdir -p /out && \
+    cp -f ./bin/pool           /out/mining-pool && \
+    cp -f ./bin/dashboard-api  /out/dashboard-api
+
+# ----------------------------------------------------------------------------
+# Dashboard Build Stage (dashboard)
+# ----------------------------------------------------------------------------
+FROM base AS dashboard-build
+WORKDIR /src/dashboard
+COPY pool-stack-docker/dashboard .
+# base removed apt lists; refresh index before npm (bookworm npm package installs node toolchain).
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    npm \
+ && rm -rf /var/lib/apt/lists/* \
+ && npm ci \
+ && npm run css:build \
+ && go mod tidy \
+ && go build -o out/dashboard .
+
+# ----------------------------------------------------------------------------
+# Node Runtime Stage (with optional snapshot import)
+# ----------------------------------------------------------------------------
+FROM ubuntu:24.04 AS node
+ARG SNAPSHOT_PATH=pool-stack-docker/docker/no-snapshot.marker
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates tzdata \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack
+RUN mkdir -p /etc/bdagStack /var/lib/bdagStack/node/mainnet /var/lib/bdagStack/nodeworker /var/log/bdagStack \
+ && chown -R bdagStack:bdagStack /var/lib/bdagStack /var/log/bdagStack /etc/bdagStack
+
+COPY --from=node-build /out/blockdag-node  /usr/local/bin/blockdag-node
+COPY --from=node-build /out/nodeworker     /usr/local/bin/nodeworker
+RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker
+
+# Snapshot file must be in the build context (BUILD_CONTEXT is parent dir in dev).
+COPY ${SNAPSHOT_PATH} /tmp/snapshot-candidate.bdsnap
+
+RUN set -eu; \
+    if [ "$(stat -c%s /tmp/snapshot-candidate.bdsnap)" -ge 1024 ]; then \
+      echo "Importing local snapshot ($(stat -c%s /tmp/snapshot-candidate.bdsnap) bytes)"; \
+      /usr/local/bin/blockdag-node snap import \
+        --datadir /var/lib/bdagStack/node/mainnet \
+        --path /tmp/snapshot-candidate.bdsnap; \
+      chown -R bdagStack:bdagStack /var/lib/bdagStack/node /var/log/bdagStack; \
+      echo "Snapshot import finished"; \
+    else \
+      echo "No snapshot file (marker or tiny file); node will sync from genesis or P2P"; \
+    fi; \
+    rm -f /tmp/snapshot-candidate.bdsnap
+
+USER bdagStack
+WORKDIR /var/lib/bdagStack/node
+EXPOSE 8150 38131 38132 18545 18546 6060
+ENTRYPOINT ["/usr/local/bin/nodeworker", \
+    "--node-binary=/usr/local/bin/blockdag-node", \
+    "--node-args=--configfile /etc/bdagStack/node.conf", \
+    "--rpc-url=ws://127.0.0.1:18546", \
+    "--dag-rpc-url=http://127.0.0.1:38131", \
+    "--persist-root=/var/lib/bdagStack/nodeworker", \
+    "--health-min-peers=1", \
+    "--rollout-window=30m"]
+
+# ----------------------------------------------------------------------------
+# Pool Runtime Stage
+# ----------------------------------------------------------------------------
+FROM ubuntu:24.04 AS pool
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates tzdata \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack \
+ && mkdir -p /etc/bdagStack /var/lib/bdagStack/pool /var/log/bdagStack \
+ && chown -R bdagStack:bdagStack /var/lib/bdagStack /var/log/bdagStack /etc/bdagStack
+
+COPY --from=pool-build /out/mining-pool    /usr/local/bin/mining-pool
+COPY --from=pool-build /out/dashboard-api  /usr/local/bin/dashboard-api
+RUN chmod +x /usr/local/bin/mining-pool /usr/local/bin/dashboard-api
+
+# Copy .env from build context root (parent of dockerfile-dev dir)
+COPY pool-stack-docker/.env /var/lib/bdagStack/pool/.env
+RUN chown bdagStack:bdagStack /var/lib/bdagStack/pool/.env
+
+USER bdagStack
+WORKDIR /var/lib/bdagStack/pool
+EXPOSE 3334 8080
+ENTRYPOINT ["/usr/local/bin/mining-pool"]
+
+# 
+# Dashboard Runtime Stage
+# ----------------------------------------------------------------------------
+FROM ubuntu:24.04 AS dashboard
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates tzdata \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack \
+ && mkdir -p /app/logs \
+ && chown bdagStack:bdagStack /app/logs
+
+WORKDIR /app/logs
+COPY --from=dashboard-build  src/dashboard/out/dashboard /usr/local/bin/dashboard
+EXPOSE 9280
+
+RUN chmod +x /usr/local/bin/dashboard
+USER bdagStack
+ENTRYPOINT [ "/usr/local/bin/dashboard" ]
