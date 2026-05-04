@@ -120,8 +120,10 @@ COPY --from=pool-build /out/mining-pool    /usr/local/bin/mining-pool
 COPY --from=pool-build /out/dashboard-api  /usr/local/bin/dashboard-api
 RUN chmod +x /usr/local/bin/mining-pool /usr/local/bin/dashboard-api
 
-# Copy .env from build context root (parent of dockerfile-dev dir)
-COPY pool-stack-docker/.env /var/lib/bdagStack/pool/.env
+# godotenv loads this path at runtime; bake .env.example so builds work without a
+# gitignored .env. Compose still passes env via `environment:`; copy .env to
+# pool-stack-docker/.env on the host if you want extra keys in the file.
+COPY pool-stack-docker/.env.example /var/lib/bdagStack/pool/.env
 RUN chown bdagStack:bdagStack /var/lib/bdagStack/pool/.env
 
 USER bdagStack
