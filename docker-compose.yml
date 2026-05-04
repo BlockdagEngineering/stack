@@ -29,8 +29,8 @@ services:
   # --------------------------------------------------------------------------
   node:
     build:
-      context: ${BUILD_CONTEXT:-..}
-      dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile-dev}
+      context: ${BUILD_CONTEXT:-.}
+      dockerfile: ${DOCKERFILE:-dockerfile}
       target: node
       args:
         <<: *build-args
@@ -57,8 +57,8 @@ services:
   # --------------------------------------------------------------------------
   pool:
     build:
-      context: ${BUILD_CONTEXT:-..}
-      dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile-dev}
+      context: ${BUILD_CONTEXT:-.}
+      dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile}
       target: pool
       args:
         <<: *build-args
@@ -105,6 +105,9 @@ services:
       pool: { condition: service_started }
     environment:
       BDAG_RPC_URL: http://node:38131
+      # Must match node.conf rpcuser / rpcpass (same as pool service).
+      NODE_RPC_USER: ${NODE_RPC_USER:-test}
+      NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
       DASHBOARD_EVM_RPC_URL: http://node:18545
       DASHBOARD_LISTEN: 0.0.0.0:9280
       DASHBOARD_RPC_POLL_SECONDS: 5

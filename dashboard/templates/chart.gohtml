@@ -1,5 +1,10 @@
 {{ define "blockHeightChart" }}
-  {{ if not .HasData }}
+  {{ if .HeightRPCErr }}
+    <p class="mt-1 text-sm text-amber-400">
+      BDAG RPC error — check NODE_RPC_USER / NODE_RPC_PASS (must match node.conf) and BDAG-RPC modules (<code class="font-mono">Blockdag</code>):
+      <span class="block mt-2 font-mono text-xs whitespace-pre-wrap break-all">{{ .HeightRPCErr }}</span>
+    </p>
+  {{ else if not .HasData }}
     <p class="mt-1 text-sm text-slate-500">
       Collecting samples… need at least two RPC polls.
     </p>
