@@ -1,14 +1,12 @@
-# Pool-Stack Docker Compose Dev Build
+# Pool release build (GITHUB `pool-v*` tarball, BUILD_CONTEXT=.).
 #
-# Builds the BlockDAG node + nodeworker, mining-pool,
-# and the cpu-miner from LOCAL CLONES of the source repositories.
-# Expected directory structure (build context = parent directory):
+# Expects unpacked layout:
 #
-#   parent/
-#   ├── pool-stack-docker/         (this repo - must match DOCKERFILE path in compose)
-#   ├── blockdag-corechain/         (local clone of blockdag node)
-#   ├── asic-pool/                  (local clone of mining pool)
-#   ├── cpu-miner/                  (local clone of cpu miner)
+#   ./
+#   ├── bin/blockdag-node, bin/nodeworker, bin/mining-pool, bin/dashboard-api
+#   ├── dashboard/          (Compose builds the dashboard Go binary here)
+#   ├── docker/             (e.g. no-snapshot.marker; see SNAPSHOT_PATH)
+#   ├── .env.example, docker-compose.yml, …
 #
 # Optional snapshot import: SNAPSHOT_PATH copies a .bdsnap from the build context
 # (see compose / Makefile). No URL download. Datadir matches node.conf.
@@ -25,30 +23,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Node Build Stage (blockdag-corechain)
 # ----------------------------------------------------------------------------
 FROM base AS node-build
-WORKDIR /src/blockdag-corechain
-COPY blockdag-corechain/ .
-RUN make all && \
-    mkdir -p /out && \
-    cp -f ./build/bin/bdag        /out/blockdag-node && \
-    cp -f ./build/bin/nodeworker  /out/nodeworker
+WORKDIR /src
+COPY bin ./bin
+RUN set -eu; mkdir -p /out; \
+    test -f ./bin/blockdag-node || { echo 'ERROR: ./bin/blockdag-node missing'; exit 1; }; \
+    test -f ./bin/nodeworker     || { echo 'ERROR: ./bin/nodeworker missing'; exit 1; }; \
+    cp -f ./bin/blockdag-node /out/blockdag-node && \
+    cp -f ./bin/nodeworker    /out/nodeworker && \
+    chmod +x /out/blockdag-node /out/nodeworker
 
 # ----------------------------------------------------------------------------
-# Pool Build Stage (asic-pool)
+# Pool Build Stage (asic-pool) — binaries from tarball bin/
 # ----------------------------------------------------------------------------
 FROM base AS pool-build
-WORKDIR /src/asic-pool
-COPY asic-pool/ .
-RUN make build && \
-    mkdir -p /out && \
-    cp -f ./bin/pool           /out/mining-pool && \
-    cp -f ./bin/dashboard-api  /out/dashboard-api
+WORKDIR /src
+COPY bin ./bin
+RUN set -eu; mkdir -p /out; \
+    test -f ./bin/mining-pool    || { echo 'ERROR: ./bin/mining-pool missing'; exit 1; }; \
+    cp -f ./bin/mining-pool    /out/mining-pool && \
+    chmod +x /out/mining-pool 
 
 # ----------------------------------------------------------------------------
 # Dashboard Build Stage (dashboard)
 # ----------------------------------------------------------------------------
 FROM base AS dashboard-build
 WORKDIR /src/dashboard
-COPY pool-stack-docker/dashboard .
+COPY dashboard .
 # base removed apt lists; refresh index before npm (bookworm npm package installs node toolchain).
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     npm \
@@ -62,7 +62,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 # Node Runtime Stage (with optional snapshot import)
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS node
-ARG SNAPSHOT_PATH=pool-stack-docker/docker/no-snapshot.marker
+# Git dev compose passes SNAPSHOT_PATH; release tarball defaults to marker under ./docker/.
+ARG SNAPSHOT_PATH=docker/no-snapshot.marker
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates tzdata \
@@ -76,7 +77,7 @@ COPY --from=node-build /out/blockdag-node  /usr/local/bin/blockdag-node
 COPY --from=node-build /out/nodeworker     /usr/local/bin/nodeworker
 RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker
 
-# Snapshot file must be in the build context (BUILD_CONTEXT is parent dir in dev).
+# Snapshot path is relative to build context (Compose sets this in .env for dev vs release).
 COPY ${SNAPSHOT_PATH} /tmp/snapshot-candidate.bdsnap
 
 RUN set -eu; \
@@ -117,13 +118,11 @@ RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bd
  && chown -R bdagStack:bdagStack /var/lib/bdagStack /var/log/bdagStack /etc/bdagStack
 
 COPY --from=pool-build /out/mining-pool    /usr/local/bin/mining-pool
-COPY --from=pool-build /out/dashboard-api  /usr/local/bin/dashboard-api
-RUN chmod +x /usr/local/bin/mining-pool /usr/local/bin/dashboard-api
+RUN chmod +x /usr/local/bin/mining-pool 
 
-# godotenv loads this path at runtime; bake .env.example so builds work without a
-# gitignored .env. Compose still passes env via `environment:`; copy .env to
-# pool-stack-docker/.env on the host if you want extra keys in the file.
-COPY pool-stack-docker/.env.example /var/lib/bdagStack/pool/.env
+# godotenv loads this path at runtime; tarball uses committed .env.example. Copy a
+# local `.env` on the host only if you want non-default keys in-file.
+COPY .env.example /var/lib/bdagStack/pool/.env
 RUN chown bdagStack:bdagStack /var/lib/bdagStack/pool/.env
 
 USER bdagStack
@@ -144,7 +143,7 @@ RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bd
  && chown bdagStack:bdagStack /app/logs
 
 WORKDIR /app/logs
-COPY --from=dashboard-build  src/dashboard/out/dashboard /usr/local/bin/dashboard
+COPY --from=dashboard-build /src/dashboard/out/dashboard /usr/local/bin/dashboard
 EXPOSE 9280
 
 RUN chmod +x /usr/local/bin/dashboard
