@@ -89,7 +89,8 @@ func main() {
 	}
 
 	view := func() pageView {
-		return buildPageView(hStore.snapshot(), mStore.snapshot(), mCfg,
+		pts, heightErr := hStore.snapshot()
+		return buildPageView(pts, heightErr, mStore.snapshot(), mCfg,
 			pollSecs, miningHx, miningDur)
 	}
 
@@ -426,7 +427,7 @@ func miningCaption(pollDur time.Duration) string {
 			"wallet comes from MINING_POOL_ADDRESS from the stack .env.", pt, pt)
 }
 
-func buildPageView(samples []sample, ms miningSnap, mc miningConfig, heightPollSecs int, miningHx string, miningPollDur time.Duration) pageView {
+func buildPageView(samples []sample, heightRPC string, ms miningSnap, mc miningConfig, heightPollSecs int, miningHx string, miningPollDur time.Duration) pageView {
 	interval := fmt.Sprintf("%ds", heightPollSecs)
 	mv := miningSection{}
 	mv.AddressEnvSource = mc.Source
@@ -452,7 +453,7 @@ func buildPageView(samples []sample, ms miningSnap, mc miningConfig, heightPollS
 	mv.Chart = bc.Hydrate()
 
 	return pageView{
-		chartView:          buildChartView(samples, heightPollSecs),
+		chartView:          buildChartView(samples, heightPollSecs, heightRPC),
 		Mining:             mv,
 		PollInterval:       interval,
 		MiningPollInterval: miningHx,
@@ -532,12 +533,13 @@ func copySlice(ss []sample) []sample {
 	return out
 }
 
-func (s *heightStore) snapshot() []sample {
+// snapshot returns current height samples and the last BDAG RPC error text (if any).
+func (s *heightStore) snapshot() ([]sample, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]sample, len(s.points))
 	copy(out, s.points)
-	return out
+	return out, s.lastErr
 }
 
 func pollHeights(ctx context.Context, store *heightStore, rpcURL, user, pass string, every time.Duration) {
@@ -734,6 +736,7 @@ func rpcEthGetBalance(cl *http.Client, evmURL, address string) (*big.Int, error)
 
 type chartView struct {
 	HasData       bool
+	HeightRPCErr  string // BDAG JSON-RPC error (e.g. wrong rpcuser/rpcpass)
 	Width         int
 	Height        int
 	PadX          int
@@ -753,7 +756,7 @@ type chartView struct {
 	LabelRecentX  int
 }
 
-func buildChartView(samples []sample, pollSecs int) chartView {
+func buildChartView(samples []sample, pollSecs int, heightRPCErr string) chartView {
 	const (
 		W    = 640
 		H    = 260
@@ -771,6 +774,12 @@ func buildChartView(samples []sample, pollSecs int) chartView {
 		PollInterval: fmt.Sprintf("%ds", pollSecs),
 		LabelY:       H - 6,
 		LabelRecentX: W - padX,
+		HeightRPCErr: strings.TrimSpace(heightRPCErr),
+	}
+
+	if v.HeightRPCErr != "" {
+		v.HasData = false
+		return v
 	}
 
 	if len(samples) < 2 {
