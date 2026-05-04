@@ -1,12 +1,9 @@
 # Local environment
 .env
-.env.local
-.env.*.local
 release-downloads/
 # Local node config (copy from node.conf.example)
 node.conf
 
-snapshots/
 # Built Linux binaries shipped in release tarballs (see CI); not committed here
 bin/
 
