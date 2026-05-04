@@ -24,7 +24,7 @@ SNAPSHOT_TMP_BASE="${SNAPSHOT_EXPORT_TMPDIR:-${TMPDIR:-/tmp}}"
 
 # Default values
 CONTAINER_NAME="${1:-pool-stack-docker-node-1}"
-OUTPUT_FILE="${2:-$SCRIPT_DIR/../snapshots/latest.bdsnap}"
+OUTPUT_FILE="${2:-$SCRIPT_DIR/../release-downloads/latest.bdsnap}"
 
 # Second-stage export dir (cleaned on success in create_snapshot; trap removes on failure)
 SNAPSHOT_EXPORT_TEMP=""
