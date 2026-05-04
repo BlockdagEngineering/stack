@@ -43,7 +43,7 @@ jobs:
           repository: BlockdagEngineering/blockdag-corechain
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/blockdag-node
-          ref: feature/block-template-stream2
+          ref: feature/block-template-stream-2
 
       - name: Checkout private mining pool repo
         uses: actions/checkout@v4
