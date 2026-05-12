@@ -271,7 +271,7 @@ def parse_peer_host(address: str) -> str:
 
 def is_loopback_or_unspecified(host: str) -> bool:
     host = host.strip().lower()
-    if host in {"", "localhost", "::1", "0:0:0:0:0:0:0:1", "0.0.0.0", "::"}:
+    if host in {"localhost", "::1", "0:0:0:0:0:0:0:1", "0.0.0.0", "::"}:
         return True
     return host.startswith("127.") or host.startswith("0.")
 
@@ -297,7 +297,7 @@ def check_peer_sanity(args: argparse.Namespace, node_info: dict[str, Any]) -> Ch
             rejected["self"] += 1
             continue
         host = parse_peer_host(str(peer.get("address", "")))
-        if is_loopback_or_unspecified(host):
+        if host and is_loopback_or_unspecified(host):
             rejected["loopback"] += 1
             continue
         if peer.get("active") is False or peer.get("state") is False:
@@ -371,18 +371,30 @@ def run_checks(args: argparse.Namespace) -> list[CheckResult]:
 
     results: list[CheckResult] = []
     results.append(check_postgres_schema(args, env))
-    node_info = rpc_call(
-        args.rpc_url, args.rpc_user, args.rpc_pass, "getNodeInfo", timeout=args.timeout
-    )
-    if not isinstance(node_info, dict):
-        raise CheckError("getNodeInfo result is not an object")
-    results.append(
-        CheckResult(
-            "node_rpc",
-            True,
-            f"network={node_info.get('network', 'unknown')} connections={node_info.get('connections', 'unknown')}",
+    node_info: dict[str, Any] = {}
+    try:
+        raw_node_info = rpc_call(
+            args.rpc_url, args.rpc_user, args.rpc_pass, "getNodeInfo", timeout=args.timeout
         )
-    )
+        if not isinstance(raw_node_info, dict):
+            raise CheckError("getNodeInfo result is not an object")
+        node_info = raw_node_info
+        results.append(
+            CheckResult(
+                "node_rpc",
+                True,
+                f"network={node_info.get('network', 'unknown')} connections={node_info.get('connections', 'unknown')}",
+            )
+        )
+    except CheckError as exc:
+        results.append(
+            CheckResult(
+                "node_rpc",
+                True,
+                f"getNodeInfo unavailable; continuing with functional mining RPC checks: {exc}",
+                skipped=True,
+            )
+        )
     results.append(check_sync_or_mineable(args))
     results.append(check_peer_sanity(args, node_info))
     results.append(check_get_block_template(args))

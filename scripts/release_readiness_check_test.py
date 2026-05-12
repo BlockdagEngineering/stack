@@ -122,11 +122,44 @@ class ReadinessCheckTests(unittest.TestCase):
         self.assertFalse(peer_result.ok)
         self.assertIn("need 2", peer_result.detail)
 
+    def test_empty_peer_address_is_not_treated_as_loopback(self) -> None:
+        self.assertFalse(readiness.is_loopback_or_unspecified(""))
+        self.assertTrue(readiness.is_loopback_or_unspecified("127.0.0.1"))
+
     def test_rpc_timeout_returns_clean_check_error(self) -> None:
         with mock.patch.object(readiness.urllib.request, "urlopen", side_effect=TimeoutError()):
             with self.assertRaises(readiness.CheckError) as ctx:
                 readiness.rpc_call(self.rpc_url, "test", "test", "getNodeInfo", timeout=0.1)
         self.assertIn("getNodeInfo timed out after 0.1s", str(ctx.exception))
+
+    def test_run_checks_continues_when_get_node_info_is_unavailable(self) -> None:
+        args = self.args()
+        args.min_peers = 0
+
+        def fake_rpc_call(url, user, password, method, params=None, timeout=5.0):
+            if method == "getNodeInfo":
+                raise readiness.CheckError("getNodeInfo timed out after 5.0s")
+            if method == "getTemplateHealth":
+                return {"mineable_now": True, "submit_ready": True}
+            if method == "getPeerInfo":
+                return []
+            if method == "getBlockTemplate":
+                return {
+                    "height": 42,
+                    "previousblockhash": "abcd",
+                    "txroot": "tx",
+                    "stateroot": "state",
+                    "coinbase_address": "0x0000000000000000000000000000000000000000",
+                    "pow_diff_reference": {"nbits": "1d00ffff"},
+                }
+            raise AssertionError(method)
+
+        with mock.patch.object(readiness, "rpc_call", side_effect=fake_rpc_call):
+            results = readiness.run_checks(args)
+        node_result = next(result for result in results if result.name == "node_rpc")
+        self.assertTrue(node_result.ok)
+        self.assertTrue(node_result.skipped)
+        self.assertTrue(all(result.ok for result in results), results)
 
 
 if __name__ == "__main__":
