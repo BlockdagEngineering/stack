@@ -50,7 +50,10 @@ cp node.conf.example node.conf # node specific
 docker compose build
 docker compose up -d
 
-# 7 logs:
+# 7. Verify release/install readiness before marking the stack healthy:
+./scripts/release-readiness-check.py
+
+# 8 logs:
 docker compose logs -f node
 docker compose logs -f pool
 ```
@@ -77,6 +80,20 @@ docker compose -p snapshot-node -f docker-compose.snapshot-node.yml --env-file .
 - Named volumes **`bdag_snapshot_node_data`** / **`bdag_snapshot_nodeworker_data`** stay separate from the full stack’s `node-data`.
 - Default host ports **`9150`** (P2P), **`48131`** (BDAG RPC), **`28545`** / **`28546`** (EVM), **`16060`** (metrics) avoid clashes with the mining compose defaults.
 - Point export automation at container **`snapshot-node-node-1`** (see `docker compose -p snapshot-node ps`).
+
+## Release readiness
+
+Container health alone does not prove that a deployment can mine. Before
+marking an install healthy, run:
+
+```bash
+./scripts/release-readiness-check.py
+```
+
+The checker is read-only. It verifies the pool Postgres schema, node
+mineable/synced state, sane external peers after self/loopback filtering, and a
+functional `getBlockTemplate` response. See
+`docs/release-readiness-gates.html` for gate details and CI/installer options.
   
 
 # Common operations
@@ -96,4 +113,3 @@ docker compose down -v
 ```
 
 ```
-

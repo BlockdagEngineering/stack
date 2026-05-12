@@ -12,6 +12,8 @@ bin/
 # Editor / OS
 *.swp
 .DS_Store
+__pycache__/
+*.pyc
 
 # Local volumes if anyone bind-mounts them here
 data/
