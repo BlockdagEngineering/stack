@@ -15,6 +15,7 @@ import base64
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import urllib.error
@@ -98,6 +99,8 @@ def rpc_call(
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
+    except (TimeoutError, socket.timeout) as exc:
+        raise CheckError(f"{method} timed out after {timeout:.1f}s") from exc
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")
         raise CheckError(f"{method} HTTP {exc.code}: {body[:240]}") from exc

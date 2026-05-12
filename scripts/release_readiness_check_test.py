@@ -7,6 +7,7 @@ import json
 import sys
 import threading
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -120,6 +121,12 @@ class ReadinessCheckTests(unittest.TestCase):
         peer_result = next(result for result in results if result.name == "peer_sanity")
         self.assertFalse(peer_result.ok)
         self.assertIn("need 2", peer_result.detail)
+
+    def test_rpc_timeout_returns_clean_check_error(self) -> None:
+        with mock.patch.object(readiness.urllib.request, "urlopen", side_effect=TimeoutError()):
+            with self.assertRaises(readiness.CheckError) as ctx:
+                readiness.rpc_call(self.rpc_url, "test", "test", "getNodeInfo", timeout=0.1)
+        self.assertIn("getNodeInfo timed out after 0.1s", str(ctx.exception))
 
 
 if __name__ == "__main__":
