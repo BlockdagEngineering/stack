@@ -40,6 +40,18 @@ REQUIRED_SCHEMA = {
         "is_paid",
         "created_at",
     },
+    "block_submissions": {
+        "id",
+        "candidate_hash",
+        "node_block_hash",
+        "height",
+        "backend",
+        "template_seq",
+        "accepted",
+        "outcome",
+        "message",
+        "created_at",
+    },
     "payouts": {"id", "tx_hash", "amount", "created_at"},
 }
 REQUIRED_INDEXES = {
@@ -47,6 +59,16 @@ REQUIRED_INDEXES = {
         "table": "credits",
         "columns": ("block_hash", "miner_address"),
         "unique": True,
+    },
+    "block_submissions_created_at_idx": {
+        "table": "block_submissions",
+        "columns": ("created_at",),
+        "unique": False,
+    },
+    "block_submissions_outcome_created_idx": {
+        "table": "block_submissions",
+        "columns": ("outcome", "created_at"),
+        "unique": False,
     },
 }
 
@@ -148,6 +170,11 @@ WITH required(table_name, column_name) AS (
     ('blocks','status'), ('blocks','created_at'),
     ('credits','id'), ('credits','block_hash'), ('credits','miner_address'),
     ('credits','amount'), ('credits','is_paid'), ('credits','created_at'),
+    ('block_submissions','id'), ('block_submissions','candidate_hash'),
+    ('block_submissions','node_block_hash'), ('block_submissions','height'),
+    ('block_submissions','backend'), ('block_submissions','template_seq'),
+    ('block_submissions','accepted'), ('block_submissions','outcome'),
+    ('block_submissions','message'), ('block_submissions','created_at'),
     ('payouts','id'), ('payouts','tx_hash'), ('payouts','amount'), ('payouts','created_at')
 )
 SELECT table_name || '.' || column_name
@@ -172,6 +199,21 @@ WHERE NOT EXISTS (
     AND i.tablename = r.table_name
     AND i.indexname = r.index_name
     AND i.indexdef ILIKE 'CREATE UNIQUE INDEX%'
+    AND i.indexdef LIKE r.column_pattern
+)
+UNION ALL
+SELECT 'index:' || r.index_name
+FROM (
+  VALUES
+    ('block_submissions_created_at_idx', 'block_submissions', '%(created_at)%'),
+    ('block_submissions_outcome_created_idx', 'block_submissions', '%(outcome, created_at)%')
+) AS r(index_name, table_name, column_pattern)
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM pg_indexes i
+  WHERE i.schemaname = 'public'
+    AND i.tablename = r.table_name
+    AND i.indexname = r.index_name
     AND i.indexdef LIKE r.column_pattern
 )
 ORDER BY 1;
