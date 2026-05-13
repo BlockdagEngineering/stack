@@ -222,6 +222,33 @@ class ReadinessCheckTests(unittest.TestCase):
         self.assertIn("sample 2/3 failed", result.detail)
         self.assertIn("template missing", result.detail)
 
+    def test_postgres_schema_requires_credit_unique_index(self) -> None:
+        args = self.args()
+        args.skip_postgres = False
+        args.pg_url = "postgres://bdag_pool:test@127.0.0.1:5432/bdagpool"
+
+        proc = mock.Mock(returncode=0, stdout="index:credits_block_miner_unique\n", stderr="")
+        with mock.patch.object(readiness.subprocess, "run", return_value=proc) as run:
+            result = readiness.check_postgres_schema(args, {})
+
+        self.assertFalse(result.ok)
+        self.assertIn("index:credits_block_miner_unique", result.detail)
+        query = run.call_args.args[0][-1]
+        self.assertIn("pg_indexes", query)
+        self.assertIn("credits_block_miner_unique", query)
+
+    def test_postgres_schema_passes_with_credit_unique_index(self) -> None:
+        args = self.args()
+        args.skip_postgres = False
+        args.pg_url = "postgres://bdag_pool:test@127.0.0.1:5432/bdagpool"
+
+        proc = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch.object(readiness.subprocess, "run", return_value=proc):
+            result = readiness.check_postgres_schema(args, {})
+
+        self.assertTrue(result.ok)
+        self.assertIn("required indexes present", result.detail)
+
 
 if __name__ == "__main__":
     unittest.main()
