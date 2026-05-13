@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Low-IO Nodeworker Startup Plan</title>
+  <style>
+    :root {
+      color-scheme: dark light;
+      --bg: #11161c;
+      --panel: #18232d;
+      --text: #f0f6f8;
+      --muted: #aab8c2;
+      --line: #314250;
+      --accent: #86efac;
+      --warn: #fde68a;
+    }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { max-width: 1080px; margin: 0 auto; padding: 32px 20px 48px; }
+    h1, h2, h3 { margin: 0 0 12px; line-height: 1.15; }
+    h1 { font-size: clamp(28px, 4vw, 42px); }
+    h2 { margin-top: 28px; font-size: 22px; }
+    p, li { color: var(--muted); }
+    code { color: #ddd6fe; }
+    .hero, .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+    }
+    .pill {
+      display: inline-block;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 10px;
+      margin: 5px 6px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .rule { border-left: 4px solid var(--accent); padding-left: 12px; }
+    .warn { border-left-color: var(--warn); }
+  </style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <h1>Low-IO Nodeworker Startup</h1>
+    <p>
+      This release-stack change removes a recurring startup cost: recursively
+      <code>chown</code>ing large chain data volumes on every node container boot.
+      The new behavior fixes ownership once per mounted path and then uses a marker
+      to avoid repeating expensive drive IO.
+    </p>
+    <span class="pill">Repo: pool-stack-docker</span>
+    <span class="pill">Branch: feature/release-low-io-nodeworker-startup</span>
+    <span class="pill">Risk: release packaging</span>
+    <span class="pill">Live action: none</span>
+  </section>
+
+  <h2>Changes</h2>
+  <div class="grid">
+    <article class="card rule">
+      <h3>Ownership Sentinel</h3>
+      <p>
+        For each persisted path, the entrypoint checks a marker and root path owner.
+        If both are valid, it skips recursive ownership repair.
+      </p>
+    </article>
+    <article class="card rule">
+      <h3>Operator Override</h3>
+      <p>
+        <code>BDAG_FIX_VOLUME_OWNERSHIP=auto|always|never</code> controls whether
+        ownership repair is automatic, forced, or skipped.
+      </p>
+    </article>
+    <article class="card rule">
+      <h3>Future Health Flags</h3>
+      <p>
+        <code>NODEWORKER_EXTRA_ARGS</code> lets releases enable new nodeworker
+        flags, including mining-readiness gates, without rebuilding the image.
+      </p>
+    </article>
+  </div>
+
+  <h2>Acceptance Criteria</h2>
+  <ul>
+    <li>Default behavior remains safe for first-time users: ownership is repaired on first boot.</li>
+    <li>Later boots skip recursive <code>chown</code> when markers show paths were already fixed.</li>
+    <li>Operators can force or disable ownership repair through one environment variable.</li>
+    <li>Nodeworker extra arguments are disabled by default and documented in <code>.env.example</code>.</li>
+    <li>Only static validation is run here; no Docker services are restarted.</li>
+  </ul>
+
+  <h2>Validation</h2>
+  <ul>
+    <li><code>sh -n docker/entrypoint-nodeworker.sh</code></li>
+    <li><code>docker compose --env-file .env.example config</code></li>
+    <li><code>python3 -m unittest scripts/release_readiness_check_test.py</code></li>
+    <li><code>git diff --check HEAD</code></li>
+  </ul>
+</main>
+<script type="application/json" id="agent-metadata">
+{
+  "document_type": "sdlc_design",
+  "component": "release",
+  "branch": "feature/release-low-io-nodeworker-startup",
+  "risk": "release-packaging",
+  "live_services_touched": false,
+  "target_files": [
+    "docker/entrypoint-nodeworker.sh",
+    "docker-compose.yml",
+    ".env.example"
+  ],
+  "goal": "Avoid repeated recursive ownership repair on chain data volumes and expose disabled-by-default nodeworker extra flags."
+}
+</script>
+</body>
+</html>
