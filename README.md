@@ -33,12 +33,13 @@ The `**pool`** image bakes `**.env.example`** into the image at `/var/lib/bdagSt
 ## Quick start
 
 ```bash
-# 1. Put the tarball and the snapshot in a folder together
+# 1. Put the tarball in a folder. A chain snapshot is optional.
 
 # 2. Uncompress the tarball:
 tar -xzf pool-stack-docker-v1.3.22.tar.gz
 
-# 3. Move the latest.bdag file into the root of the tarball folder
+# 3. Optional: to import chain data during build, move latest.bdsnap into
+#    the tarball root and set SNAPSHOT_PATH=latest.bdsnap in .env.
 
 # 4. Set up the configs: 
 cp .env.example .env        # set postgres passowrd

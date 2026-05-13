@@ -1,6 +1,6 @@
 
 x-build-args: &build-args
-  SNAPSHOT_PATH: ${SNAPSHOT_PATH:-pool-stack-docker/docker/no-snapshot.marker}
+  SNAPSHOT_PATH: ${SNAPSHOT_PATH:-docker/no-snapshot.marker}
 
 services:
 
@@ -123,4 +123,3 @@ volumes:
   postgres-data:
   node-data:
   nodeworker-data:
-
