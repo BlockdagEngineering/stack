@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS credits (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS credits_block_miner_unique
+ON credits (block_hash, miner_address);
+
 CREATE TABLE IF NOT EXISTS payouts (
     id SERIAL PRIMARY KEY,
     tx_hash TEXT UNIQUE NOT NULL,
