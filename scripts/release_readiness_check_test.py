@@ -128,6 +128,20 @@ class ReadinessCheckTests(unittest.TestCase):
         self.assertFalse(readiness.is_loopback_or_unspecified(""))
         self.assertTrue(readiness.is_loopback_or_unspecified("127.0.0.1"))
 
+    def test_peer_gate_rejects_empty_peer_address(self) -> None:
+        args = self.args()
+        args.min_peers = 1
+
+        def fake_rpc_call(url, user, password, method, params=None, timeout=5.0):
+            if method == "getPeerInfo":
+                return [{"id": "empty-address", "address": "", "active": True, "state": True}]
+            raise AssertionError(method)
+
+        with mock.patch.object(readiness, "rpc_call", side_effect=fake_rpc_call):
+            result = readiness.check_peer_sanity(args, {"ID": "self-node"})
+        self.assertFalse(result.ok)
+        self.assertIn("invalid=1", result.detail)
+
     def test_rpc_timeout_returns_clean_check_error(self) -> None:
         with mock.patch.object(readiness.urllib.request, "urlopen", side_effect=TimeoutError()):
             with self.assertRaises(readiness.CheckError) as ctx:

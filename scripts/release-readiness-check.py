@@ -290,7 +290,7 @@ def check_peer_sanity(args: argparse.Namespace, node_info: dict[str, Any]) -> Ch
         raise CheckError("getPeerInfo result is not a list")
     self_id = str(node_info.get("ID") or node_info.get("id") or "")
     sane = []
-    rejected = {"self": 0, "loopback": 0, "inactive": 0}
+    rejected = {"self": 0, "invalid": 0, "loopback": 0, "inactive": 0}
     for peer in peers:
         if not isinstance(peer, dict):
             continue
@@ -298,6 +298,9 @@ def check_peer_sanity(args: argparse.Namespace, node_info: dict[str, Any]) -> Ch
             rejected["self"] += 1
             continue
         host = parse_peer_host(str(peer.get("address", "")))
+        if not host:
+            rejected["invalid"] += 1
+            continue
         if host and is_loopback_or_unspecified(host):
             rejected["loopback"] += 1
             continue
@@ -311,8 +314,8 @@ def check_peer_sanity(args: argparse.Namespace, node_info: dict[str, Any]) -> Ch
             False,
             (
                 f"{len(sane)} sane peers, need {args.min_peers}; "
-                f"filtered self={rejected['self']} loopback={rejected['loopback']} "
-                f"inactive={rejected['inactive']}"
+                f"filtered self={rejected['self']} invalid={rejected['invalid']} "
+                f"loopback={rejected['loopback']} inactive={rejected['inactive']}"
             ),
         )
     return CheckResult(

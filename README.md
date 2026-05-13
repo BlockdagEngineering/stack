@@ -91,8 +91,8 @@ marking an install healthy, run:
 ```
 
 The checker is read-only. It verifies the pool Postgres schema, node
-mineable/synced state, sane external peers after self/loopback filtering, and a
-functional `getBlockTemplate` response. It also repeats the mining RPC,
+mineable/synced state, sane external peers after self/invalid-address/loopback
+filtering, and a functional `getBlockTemplate` response. It also repeats the mining RPC,
 peer, and template gates across a short default stability window so startup or
 backend flapping is not marked healthy from a single lucky sample. See
 `docs/release-readiness-gates.html` for gate details and CI/installer options.
