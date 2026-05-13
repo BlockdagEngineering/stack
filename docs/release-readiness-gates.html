@@ -33,7 +33,8 @@
       "postgres schema tables and columns",
       "node mineable or synced state",
       "peer sanity with self and loopback peers filtered",
-      "functional getBlockTemplate response"
+      "functional getBlockTemplate response",
+      "short mining RPC stability window"
     ],
     "production_safety": "does not restart services or alter chain, pool, or database state"
   }
@@ -60,6 +61,7 @@
       <tr><td>Mineable/synced</td><td><code>getTemplateHealth</code> reports mineable/submit-ready, or the older <code>isCurrent</code> fallback returns true.</td><td>The node is reachable but not a safe mining backend yet.</td></tr>
       <tr><td>Peer sanity</td><td>At least one active sane peer remains after filtering the node itself, loopback, unspecified, and inactive peers.</td><td>The node may be isolated or accidentally connected only to itself/local addresses.</td></tr>
       <tr><td>Template function</td><td><code>getBlockTemplate</code> returns required mining fields including height, parent, roots, coinbase address, and <code>nbits</code>.</td><td>The pool cannot create valid Stratum jobs even if containers look healthy.</td></tr>
+      <tr><td>Mining RPC stability</td><td>The mineable/synced, peer sanity, and template checks keep passing across the configured short sample window.</td><td>The node or RPC path may be flapping during startup, peer discovery, IBD recovery, or HAProxy/backend transitions.</td></tr>
     </tbody>
   </table>
 
@@ -69,6 +71,8 @@
     <tbody>
       <tr><td><code>--rpc-url http://host:38131</code></td><td>Check a node endpoint outside the local Compose default.</td></tr>
       <tr><td><code>--min-peers 3</code></td><td>Require more healthy external peers for production acceptance.</td></tr>
+      <tr><td><code>--stability-samples 5</code></td><td>Require more consecutive mining RPC samples before readiness passes. The default is <code>3</code>.</td></tr>
+      <tr><td><code>--stability-interval 2</code></td><td>Set seconds between stability samples. The default is <code>1</code>.</td></tr>
       <tr><td><code>--mining-address 0x...</code></td><td>Pass the intended payout/mining address to <code>getBlockTemplate</code>.</td></tr>
       <tr><td><code>--pg-url postgres://...</code></td><td>Use a direct <code>psql</code> connection instead of <code>docker compose exec postgres</code>.</td></tr>
       <tr><td><code>--skip-postgres</code></td><td>Run only node/template gates, useful for offline RPC troubleshooting.</td></tr>

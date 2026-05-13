@@ -18,6 +18,7 @@ import re
 import socket
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -360,6 +361,54 @@ def check_get_block_template(args: argparse.Namespace) -> CheckResult:
     )
 
 
+def check_mining_rpc_stability(
+    args: argparse.Namespace, node_info: dict[str, Any]
+) -> CheckResult:
+    if args.stability_samples < 1:
+        raise CheckError("--stability-samples must be >= 1")
+    if args.stability_interval < 0:
+        raise CheckError("--stability-interval must be >= 0")
+    if args.stability_samples == 1:
+        return CheckResult(
+            "mining_rpc_stability",
+            True,
+            "single sample requested",
+            skipped=True,
+        )
+
+    for sample in range(2, args.stability_samples + 1):
+        if args.stability_interval:
+            time.sleep(args.stability_interval)
+        try:
+            sample_results = [
+                check_sync_or_mineable(args),
+                check_peer_sanity(args, node_info),
+                check_get_block_template(args),
+            ]
+        except CheckError as exc:
+            return CheckResult(
+                "mining_rpc_stability",
+                False,
+                f"sample {sample}/{args.stability_samples} failed: {exc}",
+            )
+        failed = [result for result in sample_results if not result.ok]
+        if failed:
+            detail = "; ".join(f"{result.name}: {result.detail}" for result in failed)
+            return CheckResult(
+                "mining_rpc_stability",
+                False,
+                f"sample {sample}/{args.stability_samples} failed: {detail}",
+            )
+    return CheckResult(
+        "mining_rpc_stability",
+        True,
+        (
+            f"{args.stability_samples} mining RPC samples stable "
+            f"at {args.stability_interval:.1f}s interval"
+        ),
+    )
+
+
 def run_checks(args: argparse.Namespace) -> list[CheckResult]:
     env = os.environ.copy()
     env.update(load_env_file(Path(args.env_file)))
@@ -398,6 +447,7 @@ def run_checks(args: argparse.Namespace) -> list[CheckResult]:
     results.append(check_sync_or_mineable(args))
     results.append(check_peer_sanity(args, node_info))
     results.append(check_get_block_template(args))
+    results.append(check_mining_rpc_stability(args, node_info))
     return results
 
 
@@ -411,6 +461,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rpc-pass", default=None)
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--min-peers", type=int, default=1)
+    parser.add_argument("--stability-samples", type=int, default=3)
+    parser.add_argument("--stability-interval", type=float, default=1.0)
     parser.add_argument("--pow-type", type=int, default=10)
     parser.add_argument("--mining-address", default=None)
     parser.add_argument("--skip-postgres", action="store_true")

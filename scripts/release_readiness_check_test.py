@@ -99,6 +99,8 @@ class ReadinessCheckTests(unittest.TestCase):
             rpc_pass="test",
             timeout=2.0,
             min_peers=1,
+            stability_samples=1,
+            stability_interval=0.0,
             pow_type=10,
             mining_address="",
             skip_postgres=True,
@@ -160,6 +162,51 @@ class ReadinessCheckTests(unittest.TestCase):
         self.assertTrue(node_result.ok)
         self.assertTrue(node_result.skipped)
         self.assertTrue(all(result.ok for result in results), results)
+
+    def test_mining_rpc_stability_passes_followup_sample(self) -> None:
+        args = self.args()
+        args.stability_samples = 2
+        result = readiness.check_mining_rpc_stability(args, {"ID": "self-node"})
+        self.assertTrue(result.ok)
+        self.assertIn("2 mining RPC samples stable", result.detail)
+
+    def test_mining_rpc_stability_detects_flapping_template(self) -> None:
+        args = self.args()
+        args.stability_samples = 3
+        template_calls = 0
+
+        def fake_rpc_call(url, user, password, method, params=None, timeout=5.0):
+            nonlocal template_calls
+            if method == "getTemplateHealth":
+                return {"mineable_now": True, "submit_ready": True}
+            if method == "getPeerInfo":
+                return [
+                    {
+                        "id": "good",
+                        "address": "/ip4/52.8.80.249/tcp/8150/p2p/good",
+                        "active": True,
+                        "state": True,
+                    }
+                ]
+            if method == "getBlockTemplate":
+                template_calls += 1
+                if template_calls == 1:
+                    return {"height": 42}
+                return {
+                    "height": 43,
+                    "previousblockhash": "abcd",
+                    "txroot": "tx",
+                    "stateroot": "state",
+                    "coinbase_address": "0x0000000000000000000000000000000000000000",
+                    "pow_diff_reference": {"nbits": "1d00ffff"},
+                }
+            raise AssertionError(method)
+
+        with mock.patch.object(readiness, "rpc_call", side_effect=fake_rpc_call):
+            result = readiness.check_mining_rpc_stability(args, {})
+        self.assertFalse(result.ok)
+        self.assertIn("sample 2/3 failed", result.detail)
+        self.assertIn("template missing", result.detail)
 
 
 if __name__ == "__main__":
