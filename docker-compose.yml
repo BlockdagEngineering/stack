@@ -41,6 +41,9 @@ services:
       - "${EVM_HTTP_PORT:-18545}:18545"
       - "${EVM_WS_PORT:-18546}:18546"
       - "${NODE_METRICS_PORT:-6060}:6060"
+    environment:
+      BDAG_FIX_VOLUME_OWNERSHIP: ${BDAG_FIX_VOLUME_OWNERSHIP:-auto}
+      NODEWORKER_EXTRA_ARGS: ${NODEWORKER_EXTRA_ARGS:-}
     volumes:
     # Note: The default behaviour is to keep any DB state from a previous run, 
     # to prevent unintentional loss of synced chain data.
@@ -123,4 +126,3 @@ volumes:
   postgres-data:
   node-data:
   nodeworker-data:
-
