@@ -42,6 +42,13 @@ REQUIRED_SCHEMA = {
     },
     "payouts": {"id", "tx_hash", "amount", "created_at"},
 }
+REQUIRED_INDEXES = {
+    "credits_block_miner_unique": {
+        "table": "credits",
+        "columns": ("block_hash", "miner_address"),
+        "unique": True,
+    },
+}
 
 
 class CheckError(RuntimeError):
@@ -152,6 +159,21 @@ WHERE NOT EXISTS (
     AND c.table_name = r.table_name
     AND c.column_name = r.column_name
 )
+UNION ALL
+SELECT 'index:' || r.index_name
+FROM (
+  VALUES
+    ('credits_block_miner_unique', 'credits', '%(block_hash, miner_address)%')
+) AS r(index_name, table_name, column_pattern)
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM pg_indexes i
+  WHERE i.schemaname = 'public'
+    AND i.tablename = r.table_name
+    AND i.indexname = r.index_name
+    AND i.indexdef ILIKE 'CREATE UNIQUE INDEX%'
+    AND i.indexdef LIKE r.column_pattern
+)
 ORDER BY 1;
 """.strip()
 
@@ -200,10 +222,11 @@ ORDER BY 1;
         return CheckResult("postgres_schema", False, "missing " + ", ".join(missing))
     table_count = len(REQUIRED_SCHEMA)
     column_count = sum(len(cols) for cols in REQUIRED_SCHEMA.values())
+    index_count = len(REQUIRED_INDEXES)
     return CheckResult(
         "postgres_schema",
         True,
-        f"{table_count} required tables and {column_count} required columns present",
+        f"{table_count} required tables, {column_count} required columns, and {index_count} required indexes present",
     )
 
 
