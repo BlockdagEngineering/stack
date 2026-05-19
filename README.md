@@ -114,6 +114,21 @@ the source commit, dirty status, schema hash, redacted feature flags, optional
 Docker image IDs, and snapshot checksums. Do not publish a package whose
 manifest shows unexpected dirty source, missing schema hash, or a missing
 snapshot when the release advertises fast-sync data.
+
+## P2P reachability and local peer discovery
+
+Release packages should install the persistent P2P firewall helper in `ops/`
+so BlockDAG P2P ports are accepted on all configured host interfaces, including
+LAN, ZeroTier, WireGuard, Tailscale, and other VPN interfaces. The helper is
+intentionally interface-agnostic; Docker published ports still decide which node
+ports are reachable.
+
+For dual-node pool packages, `ops/update-local-peers.py` keeps node1 and node2
+in each other's startup peer lists using Docker DNS plus every routable
+non-Docker host IPv4 address. Optional `LAN_PEER_ADDRESSES`,
+`VPN_PEER_ADDRESSES`, `ZEROTIER_PEER_ADDRESSES`, and `EXTRA_PEER_ADDRESSES`
+allow operators to pin known LAN/VPN peers. See
+`docs/p2p-interface-discovery-standard.html`.
   
 
 # Common operations
