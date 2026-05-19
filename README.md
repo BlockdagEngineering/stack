@@ -96,6 +96,24 @@ filtering, and a functional `getBlockTemplate` response. It also repeats the min
 peer, and template gates across a short default stability window so startup or
 backend flapping is not marked healthy from a single lucky sample. See
 `docs/release-readiness-gates.html` for gate details and CI/installer options.
+
+## Release provenance
+
+Before publishing a release or handing it to another operator, write a
+provenance manifest:
+
+```bash
+./scripts/release-provenance-manifest.py \
+  --image bdag-release/node:local \
+  --image bdag-release/asic-pool:local \
+  --snapshot snapshots/latest.bdsnap
+```
+
+The script writes `release-provenance.json` and `release-provenance.html` with
+the source commit, dirty status, schema hash, redacted feature flags, optional
+Docker image IDs, and snapshot checksums. Do not publish a package whose
+manifest shows unexpected dirty source, missing schema hash, or a missing
+snapshot when the release advertises fast-sync data.
   
 
 # Common operations
