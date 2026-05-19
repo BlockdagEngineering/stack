@@ -16,6 +16,8 @@ The restart-safe policy is:
 - Disable automatic clean restore by default.
 - Allow clean restore only when explicitly enabled by the operator and current
   snapshots are known safe.
+- Prefer the newest available chain data during recovery only after its
+  manifest proves it is restore-safe.
 - Do not seed a follower unless the leader is proven near the highest observed
   network block height.
 
@@ -50,6 +52,20 @@ Follower seeding is allowed only when all of these are true:
 
 This prevents an isolated or poorly peered node from being treated as fully
 synced merely because `eth_syncing` returns false.
+
+## Required Latest-Data Behavior
+
+Recovery must scan the newest available chain manifests before assuming the
+current importer is the best path. A newer candidate can replace live catch-up
+only when its manifest is restore-safe and materially ahead of the current
+importer.
+
+Unsafe warm copies must be recorded and rejected, not repeatedly retried against
+live nodes. The release bundle should include `ops/latest_chain_candidate.py`
+for this read-only decision record. The checker writes
+`ops/runtime/latest-chain-candidate-state.json` and should make the decision
+explicit: newest safe candidate available, current importer is best, or newest
+candidate rejected with reasons.
 
 ## Validation
 

@@ -29,6 +29,7 @@ reject_grep() {
 
 need_file "ops/watchdog.py"
 need_file "ops/sync_coordinator.py"
+need_file "ops/latest_chain_candidate.py"
 need_file "ops/install-dashboard.sh"
 need_file "ops/README.md"
 
@@ -50,6 +51,10 @@ need_grep 'network_highest = max\(current_network_highest, remembered_highest\)'
 need_grep 'observed_highest_block' "ops/sync_coordinator.py"
 need_grep 'refusing follower seed because leader is not proven near tip' "ops/sync_coordinator.py"
 reject_grep 'network_highest = max\(current_network_highest, remembered_highest, highest_height\)' "ops/sync_coordinator.py"
+
+need_grep 'prefer the newest chain data only after the manifest is restore-safe' "ops/latest_chain_candidate.py"
+need_grep 'reject unsafe warm copies' "ops/latest_chain_candidate.py"
+need_grep 'latest-chain-candidate-state.json' "ops/latest_chain_candidate.py"
 
 need_grep 'automatic clean restore is disabled' "ops/README.md"
 need_grep 'preserves current node data' "ops/README.md"
