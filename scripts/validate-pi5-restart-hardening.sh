@@ -30,6 +30,7 @@ reject_grep() {
 need_file "ops/watchdog.py"
 need_file "ops/sync_coordinator.py"
 need_file "ops/latest_chain_candidate.py"
+need_file "ops/update-local-peers.py"
 need_file "ops/install-dashboard.sh"
 need_file "ops/README.md"
 
@@ -55,6 +56,10 @@ reject_grep 'network_highest = max\(current_network_highest, remembered_highest,
 need_grep 'prefer the newest chain data only after the manifest is restore-safe' "ops/latest_chain_candidate.py"
 need_grep 'reject unsafe warm copies' "ops/latest_chain_candidate.py"
 need_grep 'latest-chain-candidate-state.json' "ops/latest_chain_candidate.py"
+
+need_grep 'def sort_public_peers_by_latency' "ops/update-local-peers.py"
+need_grep 'def public_peer_assignment' "ops/update-local-peers.py"
+need_grep 'paused_follower=' "ops/update-local-peers.py"
 
 need_grep 'automatic clean restore is disabled' "ops/README.md"
 need_grep 'preserves current node data' "ops/README.md"

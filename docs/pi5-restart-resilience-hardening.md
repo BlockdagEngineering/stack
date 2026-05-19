@@ -18,6 +18,8 @@ The restart-safe policy is:
   snapshots are known safe.
 - Prefer the newest available chain data during recovery only after its
   manifest proves it is restore-safe.
+- During one-node catch-up, give the active leader all known public peers sorted
+  by reachability/latency and do not make it dial the paused follower.
 - Do not seed a follower unless the leader is proven near the highest observed
   network block height.
 
@@ -66,6 +68,21 @@ for this read-only decision record. The checker writes
 `ops/runtime/latest-chain-candidate-state.json` and should make the decision
 explicit: newest safe candidate available, current importer is best, or newest
 candidate rejected with reasons.
+
+## Required Peer Selection Behavior
+
+Large catch-up should avoid wasting startup dials on unreachable or paused
+peers. The local peer updater should:
+
+- Sort known public peer multiaddrs by TCP reachability and latency.
+- When one managed node is paused for leader catch-up, assign all known public
+  peers to the active leader.
+- Omit the paused follower from the leader's startup peer list.
+- Keep the local peer deferred-apply marker instead of recreating the active
+  leader solely to apply peer-list changes.
+
+This is an optimization, not a reason to restart a healthy importing leader.
+If the leader already has a healthy peer count and is importing, let it run.
 
 ## Validation
 
