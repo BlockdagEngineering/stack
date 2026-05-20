@@ -54,5 +54,19 @@ EOF
   systemctl --user enable --now bdag-local-peers.timer
 }
 
+install_mining_host_tuning() {
+  if [[ ! -x "$ROOT/ops/apply-mining-host-tuning.sh" || ! -f "$ROOT/ops/systemd/bdag-mining-host-tuning.service" || ! -f "$ROOT/ops/systemd/bdag-mining-host-tuning.timer" ]]; then
+    warn "Mining host tuning files are missing under $ROOT/ops"
+    return 0
+  fi
+  need_sudo install -m 0755 "$ROOT/ops/apply-mining-host-tuning.sh" /usr/local/sbin/bdag-apply-mining-host-tuning
+  need_sudo install -m 0644 "$ROOT/ops/systemd/bdag-mining-host-tuning.service" /etc/systemd/system/bdag-mining-host-tuning.service
+  need_sudo install -m 0644 "$ROOT/ops/systemd/bdag-mining-host-tuning.timer" /etc/systemd/system/bdag-mining-host-tuning.timer
+  need_sudo systemctl daemon-reload
+  need_sudo systemctl enable --now bdag-mining-host-tuning.service
+  need_sudo systemctl enable --now bdag-mining-host-tuning.timer
+}
+
 install_firewall
 install_local_peer_timer
+install_mining_host_tuning
