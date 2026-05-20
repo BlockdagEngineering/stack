@@ -28,6 +28,7 @@ services:
   # BlockDAG node + nodeworker supervisor. Optional SNAPSHOT_PATH at build time.
   # --------------------------------------------------------------------------
   node:
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
       context: ${BUILD_CONTEXT:-.}
       dockerfile: ${DOCKERFILE:-dockerfile}
@@ -56,6 +57,7 @@ services:
   # Mining pool. Connects to node RPC and Postgres.
   # --------------------------------------------------------------------------
   pool:
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
       context: ${BUILD_CONTEXT:-.}
       dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile}
@@ -93,6 +95,7 @@ services:
   # --------------------------------------------------------------------------
 
   dashboard:
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
       context: ${BUILD_CONTEXT:-..}
       dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile}
@@ -123,4 +126,3 @@ volumes:
   postgres-data:
   node-data:
   nodeworker-data:
-

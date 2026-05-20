@@ -2,6 +2,7 @@
 .env
 .env.snapshot
 release-downloads/
+/latest.bdsnap
 # Local node config (copy from node.conf.example)
 node.conf
 node.snapshot.conf

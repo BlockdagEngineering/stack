@@ -11,11 +11,23 @@ This stack can be run in any environment where docker is installed. It includes 
 | `dashboard` | Essential monitoring                    |         |
 
 
-## Release tarball
+## Release package
 
-GitHub Releases attach `pool-stack-docker-<tag>.tar.gz` with `bin/` (pre-built `**blockdag-node**`, `**nodeworker**`, `**mining-pool**`), `dashboard/` (Compose builds `dashboard`), `docker-compose.yml`, `dockerfile`, `.env.example`, `docker/`, etc. **Release images** stage binaries from `./bin`; no git clone inside Docker. 
+GitHub Releases attach `pool-stack-docker-<tag>.zip` with `bin/` (pre-built `**blockdag-node**`, `**nodeworker**`, `**mining-pool**`), `dashboard/` (Compose builds `dashboard`), `docker-compose.yml`, `dockerfile`, `.env.example`, `docker/`, and cross-platform installers. **Release images** stage binaries from `./bin`; no git clone inside Docker.
 
-After unpacking, run from the extracted directory with `BUILD_CONTEXT=.` (already set in those examples).
+After unpacking, run the installer from the extracted directory:
+
+```bash
+# Linux / macOS
+bash install.sh
+```
+
+```powershell
+# Windows
+.\install.ps1
+```
+
+The installer detects the host OS and CPU architecture, writes `.env` and `node.conf`, downloads `latest.bdsnap` when needed, and runs `docker compose build && docker compose up -d`. The release currently runs the service images as `linux/amd64`; ARM hosts need Docker Desktop or Docker Engine with amd64 emulation enabled.
 
 ## Configuration (what loads where)
 
@@ -33,24 +45,12 @@ The `**pool`** image bakes `**.env.example`** into the image at `/var/lib/bdagSt
 ## Quick start
 
 ```bash
-# 1. Put the tarball and the snapshot in a folder together
+# 1. Unzip pool-stack-docker-<tag>.zip
 
-# 2. Uncompress the tarball:
-tar -xzf pool-stack-docker-v1.3.22.tar.gz
+# 2. Run the installer
+bash install.sh
 
-# 3. Move the latest.bdag file into the root of the tarball folder
-
-# 4. Set up the configs: 
-cp .env.example .env        # set postgres passowrd
-cp node.conf.example node.conf # node specific 
-
-# 5. Set the miningaddr in node.conf: this will be the earning address
-
-# 6. Build & start
-docker compose build
-docker compose up -d
-
-# 7 logs:
+# 3. Logs
 docker compose logs -f node
 docker compose logs -f pool
 ```
@@ -96,4 +96,3 @@ docker compose down -v
 ```
 
 ```
-
