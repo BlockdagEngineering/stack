@@ -30,6 +30,22 @@ Docker Compose reads `**.env`** in this directory for variable substitution and 
 
 The `**pool`** image bakes `**.env.example`** into the image at `/var/lib/bdagStack/pool/.env` for `godotenv` (release `**dockerfile`** uses `**COPY .env.example**` relative to tarball root; git dev `**dockerfile-dev**` uses `**COPY pool-stack-docker/.env.example**`). Compose still sets most variables via `environment:`.
 
+## Mining resource priority
+
+The compose file sets work-conserving Docker CPU and IO weights so mining-path
+services win contention without reserving or wasting idle CPU:
+
+| Service | CPU shares | Block IO weight | OOM score | Reason |
+| --- | ---: | ---: | ---: | --- |
+| `node` | `4096` | `1000` | `-900` | Block templates, validation, and P2P propagation are consensus-critical. |
+| `pool` | `3072` | `900` | `-800` | ASIC submits must reach the selected node with the lowest possible tail latency. |
+| `postgres` | `3072` | `900` | `-800` | Accounting writes matter, but source code keeps them off the solved-block submit path. |
+| `dashboard` | `256` | `100` | `300` | Operator visibility must not compete with paid block production. |
+
+Do not replace these weights with hard CPU quotas or realtime priority unless a
+profile proves normal cgroup weighting is insufficient. The goal is maximum paid
+blocks per miner-hour, not maximum dashboard refresh rate or synthetic CPU use.
+
 ## Quick start
 
 ```bash
@@ -96,6 +112,39 @@ filtering, and a functional `getBlockTemplate` response. It also repeats the min
 peer, and template gates across a short default stability window so startup or
 backend flapping is not marked healthy from a single lucky sample. See
 `docs/release-readiness-gates.html` for gate details and CI/installer options.
+
+## Release provenance
+
+Before publishing a release or handing it to another operator, write a
+provenance manifest:
+
+```bash
+./scripts/release-provenance-manifest.py \
+  --image bdag-release/node:local \
+  --image bdag-release/asic-pool:local \
+  --snapshot snapshots/latest.bdsnap
+```
+
+The script writes `release-provenance.json` and `release-provenance.html` with
+the source commit, dirty status, schema hash, redacted feature flags, optional
+Docker image IDs, and snapshot checksums. Do not publish a package whose
+manifest shows unexpected dirty source, missing schema hash, or a missing
+snapshot when the release advertises fast-sync data.
+
+## P2P reachability and local peer discovery
+
+Release packages should install the persistent P2P firewall helper in `ops/`
+so BlockDAG P2P ports are accepted on all configured host interfaces, including
+LAN, ZeroTier, WireGuard, Tailscale, and other VPN interfaces. The helper is
+intentionally interface-agnostic; Docker published ports still decide which node
+ports are reachable.
+
+For dual-node pool packages, `ops/update-local-peers.py` keeps node1 and node2
+in each other's startup peer lists using Docker DNS plus every routable
+non-Docker host IPv4 address. Optional `LAN_PEER_ADDRESSES`,
+`VPN_PEER_ADDRESSES`, `ZEROTIER_PEER_ADDRESSES`, and `EXTRA_PEER_ADDRESSES`
+allow operators to pin known LAN/VPN peers. See
+`docs/p2p-interface-discovery-standard.html`.
   
 
 # Common operations

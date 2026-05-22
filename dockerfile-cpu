@@ -30,7 +30,8 @@ COPY blockdag-corechain/ .
 RUN make all && \
     mkdir -p /out && \
     cp -f ./build/bin/bdag        /out/blockdag-node && \
-    cp -f ./build/bin/nodeworker  /out/nodeworker
+    cp -f ./build/bin/nodeworker  /out/nodeworker && \
+    cp -f ./build/bin/fastsnap    /out/fastsnap
 
 # ----------------------------------------------------------------------------
 # Pool Build Stage (asic-pool)
@@ -84,7 +85,8 @@ RUN mkdir -p /etc/bdagStack /var/lib/bdagStack/node/mainnet /var/lib/bdagStack/n
 
 COPY --from=node-build /out/blockdag-node  /usr/local/bin/blockdag-node
 COPY --from=node-build /out/nodeworker     /usr/local/bin/nodeworker
-RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker
+COPY --from=node-build /out/fastsnap       /usr/local/bin/fastsnap
+RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker /usr/local/bin/fastsnap
 
 COPY pool-stack-docker/docker/entrypoint-nodeworker.sh /usr/local/bin/docker-entrypoint-nodeworker.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh
@@ -98,10 +100,11 @@ RUN set -eu; \
       /usr/local/bin/blockdag-node snap import \
         --datadir /var/lib/bdagStack/node/mainnet \
         --path /tmp/snapshot-candidate.bdsnap; \
+      cp -f /tmp/snapshot-candidate.bdsnap /var/lib/bdagStack/node/mainnet/snapshot.bdsnap; \
       chown -R bdagStack:bdagStack /var/lib/bdagStack/node /var/log/bdagStack; \
-      echo "Snapshot import finished"; \
+      echo "Snapshot import finished and P2P snapshot archive published"; \
     else \
-      echo "No snapshot file (marker or tiny file); node will sync from genesis or P2P"; \
+      echo "No snapshot file (marker or tiny file); node will sync from genesis or P2P and cannot serve a P2P snapshot until snapshot.bdsnap exists in its datadir"; \
     fi; \
     rm -f /tmp/snapshot-candidate.bdsnap
 
