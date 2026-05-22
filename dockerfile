@@ -28,9 +28,11 @@ COPY bin ./bin
 RUN set -eu; mkdir -p /out; \
     test -f ./bin/blockdag-node || { echo 'ERROR: ./bin/blockdag-node missing'; exit 1; }; \
     test -f ./bin/nodeworker     || { echo 'ERROR: ./bin/nodeworker missing'; exit 1; }; \
+    test -f ./bin/fastsnap       || { echo 'ERROR: ./bin/fastsnap missing'; exit 1; }; \
     cp -f ./bin/blockdag-node /out/blockdag-node && \
     cp -f ./bin/nodeworker    /out/nodeworker && \
-    chmod +x /out/blockdag-node /out/nodeworker
+    cp -f ./bin/fastsnap      /out/fastsnap && \
+    chmod +x /out/blockdag-node /out/nodeworker /out/fastsnap
 
 # ----------------------------------------------------------------------------
 # Pool Build Stage (asic-pool) — binaries from tarball bin/
@@ -75,7 +77,8 @@ RUN mkdir -p /etc/bdagStack /var/lib/bdagStack/node/mainnet /var/lib/bdagStack/n
 
 COPY --from=node-build /out/blockdag-node  /usr/local/bin/blockdag-node
 COPY --from=node-build /out/nodeworker     /usr/local/bin/nodeworker
-RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker
+COPY --from=node-build /out/fastsnap       /usr/local/bin/fastsnap
+RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker /usr/local/bin/fastsnap
 
 COPY docker/entrypoint-nodeworker.sh /usr/local/bin/docker-entrypoint-nodeworker.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh

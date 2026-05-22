@@ -51,6 +51,10 @@ services:
       - nodeworker-data:/var/lib/bdagStack/nodeworker
       # node.conf in project root (copy from node.conf.example). gitignored.
       - ./node.conf:/etc/bdagStack/node.conf:ro
+    environment:
+      BDAG_FASTSNAP_PEERS: ${BDAG_FASTSNAP_PEERS:-}
+      BDAG_FASTSNAP_MIN_TIP: ${BDAG_FASTSNAP_MIN_TIP:-0}
+      BDAG_FASTSNAP_TIMEOUT: ${BDAG_FASTSNAP_TIMEOUT:-90s}
 
   # --------------------------------------------------------------------------
   # Mining pool. Connects to node RPC and Postgres.
