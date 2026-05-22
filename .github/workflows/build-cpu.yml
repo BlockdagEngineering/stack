@@ -74,6 +74,7 @@ jobs:
           make all
           cp -f ./build/bin/bdag ../../bin/blockdag-node
           cp -f ./build/bin/nodeworker ../../bin/nodeworker
+          cp -f ./build/bin/fastsnap ../../bin/fastsnap
 
       - name: Build mining-pool
         shell: bash
@@ -90,12 +91,12 @@ jobs:
           cp -f ./build/bin/miner ../../bin/cpu-miner
 
       - name: Ensure executables
-        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool bin/cpu-miner
+        run: chmod +x bin/blockdag-node bin/nodeworker bin/fastsnap bin/mining-pool bin/cpu-miner
 
       - name: Generate checksums
         shell: bash
         run: |
-          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool bin/cpu-miner > checksums.txt
+          sha256sum bin/blockdag-node bin/nodeworker bin/fastsnap bin/mining-pool bin/cpu-miner > checksums.txt
 
       - name: Validate compose (CPU Dockerfile + miner profile)
         shell: bash
