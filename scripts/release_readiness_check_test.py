@@ -177,6 +177,57 @@ class ReadinessCheckTests(unittest.TestCase):
         self.assertTrue(node_result.skipped)
         self.assertTrue(all(result.ok for result in results), results)
 
+    def test_template_health_gate_rejects_submit_not_ready(self) -> None:
+        args = self.args()
+        with mock.patch.object(
+            readiness,
+            "rpc_call",
+            return_value={
+                "mineable_now": True,
+                "submit_ready": False,
+                "p2p_mining_fresh": True,
+                "get_block_template_ready": True,
+            },
+        ):
+            result = readiness.check_sync_or_mineable(args)
+        self.assertFalse(result.ok)
+        self.assertIn("submit_ready=false", result.detail)
+
+    def test_template_health_gate_rejects_stale_p2p(self) -> None:
+        args = self.args()
+        with mock.patch.object(
+            readiness,
+            "rpc_call",
+            return_value={
+                "mineable_now": True,
+                "submit_ready": True,
+                "p2p_mining_fresh": False,
+                "p2p_mining_fresh_reason_code": "all_consensus_peers_stale",
+                "get_block_template_ready": True,
+            },
+        ):
+            result = readiness.check_sync_or_mineable(args)
+        self.assertFalse(result.ok)
+        self.assertIn("p2p_mining_fresh=false:all_consensus_peers_stale", result.detail)
+
+    def test_template_health_gate_rejects_blocking_template_error(self) -> None:
+        args = self.args()
+        with mock.patch.object(
+            readiness,
+            "rpc_call",
+            return_value={
+                "mineable_now": True,
+                "submit_ready": True,
+                "p2p_mining_fresh": True,
+                "get_block_template_ready": True,
+                "last_template_build_error_blocking": True,
+                "last_template_build_error_code": "evm_pending_nonce_drift",
+            },
+        ):
+            result = readiness.check_sync_or_mineable(args)
+        self.assertFalse(result.ok)
+        self.assertIn("blocking template build error: evm_pending_nonce_drift", result.detail)
+
     def test_mining_rpc_stability_passes_followup_sample(self) -> None:
         args = self.args()
         args.stability_samples = 2

@@ -218,6 +218,24 @@ def check_sync_or_mineable(args: argparse.Namespace) -> CheckResult:
         )
         if not isinstance(health, dict):
             raise CheckError("getTemplateHealth result is not an object")
+        blocking_reasons: list[str] = []
+        if health.get("last_template_build_error_blocking") is True:
+            code = health.get("last_template_build_error_code") or "template_build_error"
+            blocking_reasons.append(f"blocking template build error: {code}")
+        if health.get("submit_ready") is False:
+            blocking_reasons.append("submit_ready=false")
+        if health.get("get_block_template_ready") is False:
+            reason = health.get("get_block_template_reason_code") or "unknown"
+            blocking_reasons.append(f"get_block_template_ready=false:{reason}")
+        if health.get("p2p_mining_fresh") is False:
+            reason = health.get("p2p_mining_fresh_reason_code") or "unknown"
+            blocking_reasons.append(f"p2p_mining_fresh=false:{reason}")
+        if blocking_reasons:
+            return CheckResult(
+                "node_mineable_or_synced",
+                False,
+                "; ".join(blocking_reasons),
+            )
         mineable = bool(health.get("mineable_now") or health.get("submit_ready"))
         sync_allowed = bool(health.get("sync_allowed"))
         chain_current = bool(health.get("chain_current") or health.get("p2p_current"))
