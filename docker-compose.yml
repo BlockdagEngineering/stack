@@ -2,6 +2,24 @@
 x-build-args: &build-args
   SNAPSHOT_PATH: ${SNAPSHOT_PATH:-pool-stack-docker/docker/no-snapshot.marker}
 
+x-node-critical: &node-critical
+  cpu_shares: 4096
+  blkio_config:
+    weight: 1000
+  oom_score_adj: -900
+
+x-pool-critical: &pool-critical
+  cpu_shares: 3072
+  blkio_config:
+    weight: 900
+  oom_score_adj: -800
+
+x-dashboard-low: &dashboard-low
+  cpu_shares: 256
+  blkio_config:
+    weight: 100
+  oom_score_adj: 300
+
 services:
 
   # --------------------------------------------------------------------------
@@ -9,6 +27,7 @@ services:
   # boot via /docker-entrypoint-initdb.d.
   # --------------------------------------------------------------------------
   postgres:
+    <<: *pool-critical
     image: postgres:15-bookworm
     restart: unless-stopped
     environment:
@@ -28,6 +47,7 @@ services:
   # BlockDAG node + nodeworker supervisor. Optional SNAPSHOT_PATH at build time.
   # --------------------------------------------------------------------------
   node:
+    <<: *node-critical
     build:
       context: ${BUILD_CONTEXT:-.}
       dockerfile: ${DOCKERFILE:-dockerfile}
@@ -60,6 +80,7 @@ services:
   # Mining pool. Connects to node RPC and Postgres.
   # --------------------------------------------------------------------------
   pool:
+    <<: *pool-critical
     build:
       context: ${BUILD_CONTEXT:-.}
       dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile}
@@ -100,6 +121,7 @@ services:
   # --------------------------------------------------------------------------
 
   dashboard:
+    <<: *dashboard-low
     build:
       context: ${BUILD_CONTEXT:-..}
       dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile}
