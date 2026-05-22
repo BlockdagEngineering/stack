@@ -97,6 +97,22 @@ docker compose -p snapshot-node -f docker-compose.snapshot-node.yml --env-file .
 - Default host ports **`9150`** (P2P), **`48131`** (BDAG RPC), **`28545`** / **`28546`** (EVM), **`16060`** (metrics) avoid clashes with the mining compose defaults.
 - Point export automation at container **`snapshot-node-node-1`** (see `docker compose -p snapshot-node ps`).
 
+## Dual-node FastSnap seeding
+
+Dual-node mining hosts can serve a public P2P FastSnap archive without mining
+against a stopped node by using the pool router maintenance handoff:
+
+```bash
+./ops/build-fastsnap-seed.sh
+```
+
+The script requires a pool binary with
+`/admin/rpc-backend-maintenance`, `POOL_RUNTIME_ADMIN_ENABLED=true`, and
+`POOL_RPC_ROUTER_ENABLED=true`. It drains the export backend, proves the pool is
+still selected on the other backend, stops only the drained node, exports and
+verifies `snapshot.bdsnap`, then installs the archive and manifest into both node
+datadirs. See `docs/fastsnap-maintenance-handoff.html`.
+
 ## Release readiness
 
 Container health alone does not prove that a deployment can mine. Before
