@@ -43,7 +43,7 @@ jobs:
           repository: BlockdagEngineering/blockdag-corechain
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/blockdag-node
-          ref: main
+          ref: bb3bbee241ffb14fe06b82915bd35d9be035082f
 
       - name: Checkout private mining pool repo
         uses: actions/checkout@v4
@@ -51,7 +51,7 @@ jobs:
           repository: BlockdagEngineering/pool
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/pool
-          ref: main
+          ref: 8808427d3100666455298a5204a2e3a2450ffb66
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -128,4 +128,3 @@ jobs:
           files: ${{ steps.package.outputs.artifact }}
           draft: false
           prerelease: false
-
