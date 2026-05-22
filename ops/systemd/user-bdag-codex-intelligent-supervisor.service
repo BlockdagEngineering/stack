@@ -1,0 +1,13 @@
+[Unit]
+Description=Codex intelligent BlockDAG mining supervisor
+Documentation=file:///home/jeremy/blockdag-asic-pool/ops/codex-intelligent-supervisor.py
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/jeremy/blockdag-asic-pool
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/home/jeremy/blockdag-asic-pool/.env
+ExecStart=/usr/bin/python3 /home/jeremy/blockdag-asic-pool/ops/codex-intelligent-supervisor.py
+Nice=10
+IOSchedulingClass=idle
+

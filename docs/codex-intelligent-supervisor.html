@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Intelligent Mining Supervisor</title>
+  <script type="application/json" id="agent-metadata">
+  {
+    "document_type": "operator_runbook",
+    "feature": "codex-intelligent-mining-supervisor",
+    "repo": "pool-stack-docker",
+    "branch": "feature/stack-codex-intelligent-supervisor",
+    "purpose": "Run a real Codex reasoning pass every 15 minutes without replacing deterministic watchdogs",
+    "safety": "No mining restart is automatic in the wrapper; Codex must diagnose before acting and obey local production runbooks."
+  }
+  </script>
+  <style>
+    body{font:15px/1.55 system-ui,sans-serif;max-width:1050px;margin:32px auto;padding:0 20px;background:#0d1117;color:#eef3f8}
+    h1,h2{line-height:1.15} a{color:#82b7ff} code{background:#090d13;border:1px solid #303b4d;border-radius:6px;padding:1px 5px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}.card{border:1px solid #303b4d;border-radius:8px;padding:14px;background:#141b25}
+    .ok{border-left:4px solid #58d68d}.warn{border-left:4px solid #f5c542}.crit{border-left:4px solid #ff6b6b}
+    table{width:100%;border-collapse:collapse}td,th{border:1px solid #303b4d;padding:8px;vertical-align:top}th{background:#1d2633}
+  </style>
+</head>
+<body>
+  <h1>Codex Intelligent Mining Supervisor</h1>
+  <p>This feature adds a user-level systemd timer that periodically invokes <code>codex exec</code> with a compact mining health packet. It exists because scripted watchdogs can repair known faults, but they cannot reason about new faults, patch source, update the backlog, and create durable evidence.</p>
+
+  <div class="grid">
+    <section class="card ok"><h2>What It Does</h2><p>Every 15 minutes after the previous run finishes, it snapshots dashboard health, pool metrics, systemd guard state, and recent incidents, then asks Codex to diagnose and act according to the mining runbooks.</p></section>
+    <section class="card warn"><h2>What It Avoids</h2><p>The wrapper itself does not restart pools, nodes, Docker, or ASICs. It delegates decisions to Codex with explicit production-safety instructions and the current health context.</p></section>
+    <section class="card crit"><h2>Why It Matters</h2><p>Mining failures cost money by the minute. This preserves deterministic guards for fast known repairs while adding intelligent analysis for novel degradation, code fixes, and backlog creation.</p></section>
+  </div>
+
+  <h2>Installed Units</h2>
+  <table>
+    <thead><tr><th>Unit</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>bdag-codex-intelligent-supervisor.timer</code></td><td>Schedules the intelligent supervisor every 15 minutes after the previous run becomes inactive.</td></tr>
+      <tr><td><code>bdag-codex-intelligent-supervisor.service</code></td><td>Runs <code>ops/codex-intelligent-supervisor.py</code> as a one-shot service.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Runtime Evidence</h2>
+  <ul>
+    <li><code>/home/jeremy/blockdag-asic-pool/ops/runtime/codex-intelligent-supervisor/latest-status.json</code></li>
+    <li><code>/home/jeremy/blockdag-asic-pool/ops/runtime/codex-intelligent-supervisor/latest-output.txt</code></li>
+    <li><code>/home/jeremy/blockdag-asic-pool/ops/runtime/codex-intelligent-supervisor/runs.jsonl</code></li>
+  </ul>
+
+  <h2>Operator Commands</h2>
+  <pre><code>systemctl --user enable --now bdag-codex-intelligent-supervisor.timer
+systemctl --user status bdag-codex-intelligent-supervisor.timer bdag-codex-intelligent-supervisor.service --no-pager
+tail -n 20 /home/jeremy/blockdag-asic-pool/ops/runtime/codex-intelligent-supervisor/runs.jsonl</code></pre>
+
+  <h2>Design Notes</h2>
+  <p><code>OnUnitInactiveSec=15min</code> is used instead of a fixed wall-clock interval so a slow Codex analysis cannot overlap itself. A file lock is also held during each run. This keeps token burn intentional and prevents multiple supervisor agents from racing each other.</p>
+</body>
+</html>
