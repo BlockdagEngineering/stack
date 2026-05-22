@@ -50,7 +50,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: BlockdagEngineering/pool
-          ref: 9cf7ee4fbe4404f676a2a2d0a070c2a3523f538b
+          ref: 0d22a385c7b738f8e4fa93d63dee7373428d3bae
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/pool
 
