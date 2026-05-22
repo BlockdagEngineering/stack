@@ -30,6 +30,8 @@ addpeer=/ip4/13.57.132.47/tcp/8150/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFe
 
 # Peer limit
 maxpeers=350
+cache=2048
+cache.database=70
 
 # RPC auth (must match NODE_RPC_USER / NODE_RPC_PASS in .env so the pool +
 rpcuser=test
@@ -56,7 +58,7 @@ evm.http.api=eth,net,web3,txpool,debug
 http.readtimeout=45s
 http.writetimeout=45s
 http.idletimeout=45s
-evmenv="--rpc.allow-unprotected-txs --metrics --metrics.addr 0.0.0.0 --metrics.port 6060"
+evmenv="--rpc.allow-unprotected-txs --metrics --metrics.addr 0.0.0.0 --metrics.port 6060 --cache 2048"
 rpcmaxconcurrentreqs=500
 maxpeers=350
 http.ratelimit=1800

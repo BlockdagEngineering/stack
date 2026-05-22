@@ -30,6 +30,22 @@ Docker Compose reads `**.env`** in this directory for variable substitution and 
 
 The `**pool`** image bakes `**.env.example`** into the image at `/var/lib/bdagStack/pool/.env` for `godotenv` (release `**dockerfile`** uses `**COPY .env.example**` relative to tarball root; git dev `**dockerfile-dev**` uses `**COPY pool-stack-docker/.env.example**`). Compose still sets most variables via `environment:`.
 
+## Mining resource priority
+
+The compose file sets work-conserving Docker CPU and IO weights so mining-path
+services win contention without reserving or wasting idle CPU:
+
+| Service | CPU shares | Block IO weight | OOM score | Reason |
+| --- | ---: | ---: | ---: | --- |
+| `node` | `4096` | `1000` | `-900` | Block templates, validation, and P2P propagation are consensus-critical. |
+| `pool` | `3072` | `900` | `-800` | ASIC submits must reach the selected node with the lowest possible tail latency. |
+| `postgres` | `3072` | `900` | `-800` | Accounting writes matter, but source code keeps them off the solved-block submit path. |
+| `dashboard` | `256` | `100` | `300` | Operator visibility must not compete with paid block production. |
+
+Do not replace these weights with hard CPU quotas or realtime priority unless a
+profile proves normal cgroup weighting is insufficient. The goal is maximum paid
+blocks per miner-hour, not maximum dashboard refresh rate or synthetic CPU use.
+
 ## Quick start
 
 ```bash

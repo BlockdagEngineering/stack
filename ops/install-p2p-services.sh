@@ -54,5 +54,23 @@ EOF
   systemctl --user enable --now bdag-local-peers.timer
 }
 
+install_mining_host_tuning() {
+  if [[ ! -x "$ROOT/ops/apply-mining-host-tuning.sh" || ! -f "$ROOT/ops/systemd/bdag-mining-host-tuning.service" || ! -f "$ROOT/ops/systemd/bdag-mining-host-tuning.timer" ]]; then
+    warn "Mining host tuning files are missing under $ROOT/ops"
+    return 0
+  fi
+  need_sudo install -m 0755 "$ROOT/ops/apply-mining-host-tuning.sh" /usr/local/sbin/bdag-apply-mining-host-tuning
+  need_sudo install -m 0644 "$ROOT/ops/systemd/bdag-mining-host-tuning.service" /etc/systemd/system/bdag-mining-host-tuning.service
+  need_sudo install -m 0644 "$ROOT/ops/systemd/bdag-mining-host-tuning.timer" /etc/systemd/system/bdag-mining-host-tuning.timer
+  # The installed script runs from /usr/local/sbin under systemd, so persist
+  # the release root explicitly. This lets active/passive tuning read the pool
+  # metrics/env and prioritize the currently selected mining-template lane.
+  printf 'BDAG_PROJECT_ROOT=%s\n' "$ROOT" | need_sudo tee /etc/default/bdag-mining-host-tuning >/dev/null
+  need_sudo systemctl daemon-reload
+  need_sudo systemctl enable --now bdag-mining-host-tuning.service
+  need_sudo systemctl enable --now bdag-mining-host-tuning.timer
+}
+
 install_firewall
 install_local_peer_timer
+install_mining_host_tuning
