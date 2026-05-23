@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import json
+import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -48,6 +50,7 @@ VPN_INTERFACE_PREFIXES = (
     "nebula",
     "ham",
 )
+PUBLIC_PEER_LATENCY_TIMEOUT_SECONDS = float(os.environ.get("BDAG_PUBLIC_PEER_LATENCY_TIMEOUT_SECONDS", "1.0"))
 
 
 def run(command: list[str], timeout: int = 20) -> str:
@@ -333,15 +336,46 @@ def unique_list(items: list[str]) -> list[str]:
     return result
 
 
-def split_public_peers(public_peers: list[str]) -> tuple[list[str], list[str]]:
+def public_peer_latency_score(peer: str) -> tuple[int, float, str]:
+    parts = peer_parts(peer)
+    if not parts:
+        return (2, 9999.0, peer)
+    host, port, _ = parts
+    started = time.monotonic()
+    try:
+        with socket.create_connection((host, port), timeout=PUBLIC_PEER_LATENCY_TIMEOUT_SECONDS):
+            elapsed = max(0.0, time.monotonic() - started)
+            return (0, elapsed, peer)
+    except OSError:
+        return (1, 9999.0, peer)
+
+
+def sort_public_peers_by_latency(public_peers: list[str]) -> list[str]:
+    """Prefer responsive public peers while keeping deterministic fallback order."""
+
+    peers = unique_list(public_peers)
+    return sorted(peers, key=public_peer_latency_score)
+
+
+def public_peer_assignment(public_peers: list[str], paused_follower: str = "") -> tuple[list[str], list[str]]:
+    sorted_peers = sort_public_peers_by_latency(public_peers)
     node1_peers: list[str] = []
     node2_peers: list[str] = []
-    for index, peer in enumerate(public_peers):
+    paused_follower = str(paused_follower or "")
+    if paused_follower == "bdag-miner-node-1":
+        return [], sorted_peers
+    if paused_follower == "bdag-miner-node-2":
+        return sorted_peers, []
+    for index, peer in enumerate(sorted_peers):
         if index % 2 == 0:
             node1_peers.append(peer)
         else:
             node2_peers.append(peer)
     return node1_peers, node2_peers
+
+
+def split_public_peers(public_peers: list[str]) -> tuple[list[str], list[str]]:
+    return public_peer_assignment(public_peers, paused_follower="")
 
 
 def build_local_addrs(
@@ -384,7 +418,8 @@ def main() -> int:
 
     lines, values = read_env(ENV_FILE)
     public_peers = csv_items(values.get("PEER_ADDRESSES", ""))
-    node1_public_peers, node2_public_peers = split_public_peers(public_peers)
+    paused_follower = os.environ.get("BDAG_PAUSED_FOLLOWER", "")
+    node1_public_peers, node2_public_peers = public_peer_assignment(public_peers, paused_follower=paused_follower)
     address_groups, networks = host_ipv4_groups(args.host_ip)
     local_hosts = {
         *NODE_SPECS.keys(),
@@ -425,7 +460,10 @@ def main() -> int:
     print(f"other_p2p_ips={','.join(address_groups.get('other', [])) or '-'}")
     print(f"p2p_interface_ips={','.join(p2p_host_ips(address_groups)) or '-'}")
     print(f"docker_gateway_ips={','.join(address_groups.get('docker', [])) or '-'}")
-    print(f"public_peers={len(public_peers)} node1_public_peers={len(node1_public_peers)} node2_public_peers={len(node2_public_peers)}")
+    print(
+        f"public_peers={len(public_peers)} node1_public_peers={len(node1_public_peers)} "
+        f"node2_public_peers={len(node2_public_peers)} paused_follower={paused_follower or '-'}"
+    )
     print(f"extra_network_peers={len(extra_peers)} discovered_lan={len(discovered_lan)} discovered_vpn={len(discovered_vpn)} discovered_zerotier={len(discovered_zerotier)}")
     for node, addrs in local_addrs.items():
         print(f"{node}={','.join(addrs)}")
