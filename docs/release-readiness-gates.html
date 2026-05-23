@@ -30,7 +30,7 @@
     "tool": "scripts/release-readiness-check.py",
     "scope": "read-only install/release health gates",
     "checks": [
-      "postgres schema tables and columns",
+      "postgres schema tables, columns, and required indexes",
       "node mineable or synced state",
       "peer sanity with self and loopback peers filtered",
       "functional getBlockTemplate response",
@@ -56,7 +56,7 @@
   <table>
     <thead><tr><th>Gate</th><th>Pass Condition</th><th>Failure Meaning</th></tr></thead>
     <tbody>
-      <tr><td>Postgres schema</td><td>Required pool tables and columns exist: <code>miners</code>, <code>blocks</code>, <code>credits</code>, <code>payouts</code>.</td><td>The pool may start but fail accounting, maturity, payout, or block persistence paths.</td></tr>
+      <tr><td>Postgres schema</td><td>Required pool tables, columns, and indexes exist, including <code>credits_block_miner_unique</code> on <code>credits(block_hash, miner_address)</code> and the <code>block_submissions</code> history table/indexes.</td><td>The pool may start but fail accounting, maturity, payout, block persistence, or submit-outcome history paths. Missing credit idempotency can break duplicate-safe submit accounting; missing submission history breaks A/B evidence.</td></tr>
       <tr><td>Node RPC</td><td><code>getNodeInfo</code> responds with a structured object.</td><td>RPC auth, endpoint, module configuration, or node process is not ready.</td></tr>
       <tr><td>Mineable/synced</td><td><code>getTemplateHealth</code> reports mineable/submit-ready, or the older <code>isCurrent</code> fallback returns true.</td><td>The node is reachable but not a safe mining backend yet.</td></tr>
       <tr><td>Peer sanity</td><td>At least one active sane peer remains after filtering the node itself, empty or unparseable addresses, loopback, unspecified, and inactive peers.</td><td>The node may be isolated or accidentally connected only to itself/local addresses, or peer discovery may be advertising unusable peers.</td></tr>

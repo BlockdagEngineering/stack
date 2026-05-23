@@ -51,7 +51,7 @@ jobs:
           repository: BlockdagEngineering/pool
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/pool
-          ref: 8808427d3100666455298a5204a2e3a2450ffb66
+          ref: 0d22a385c7b738f8e4fa93d63dee7373428d3bae
 
       - name: Setup Go
         uses: actions/setup-go@v5
