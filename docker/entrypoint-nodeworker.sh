@@ -156,7 +156,26 @@ maybe_fastsnap_bootstrap() {
   for peer in $peers; do
     [ -n "$peer" ] || continue
     log "trying P2P snapshot bootstrap from $peer"
-    if "$fastsnap_bin" --peer "$peer" --out "$tmp_archive" --network "$network" --min-tip "$min_tip" --timeout "$timeout"; then
+    local fastsnap_args=(
+      --peer "$peer"
+      --out "$tmp_archive"
+      --network "$network"
+      --min-tip "$min_tip"
+      --timeout "$timeout"
+    )
+    if [ "${BDAG_FASTSNAP_ARTIFACT_V2:-1}" = "0" ]; then
+      fastsnap_args+=(--artifact-v2=false)
+    fi
+    if [ "${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}" = "1" ]; then
+      fastsnap_args+=(--allow-unsigned)
+    fi
+    if [ -n "${BDAG_FASTSNAP_PARALLELISM:-}" ]; then
+      fastsnap_args+=(--parallelism "$BDAG_FASTSNAP_PARALLELISM")
+    fi
+    if [ -n "${BDAG_FASTSNAP_LEDGER:-}" ]; then
+      fastsnap_args+=(--ledger "$BDAG_FASTSNAP_LEDGER")
+    fi
+    if "$fastsnap_bin" "${fastsnap_args[@]}"; then
       mv "$tmp_archive" "$archive"
       if [ -f "$tmp_archive.manifest.json" ]; then
         mv "$tmp_archive.manifest.json" "$archive.manifest.json"
