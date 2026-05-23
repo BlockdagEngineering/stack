@@ -16,6 +16,13 @@ LOCK_FILE="${BDAG_FASTSNAP_LOCK:-$PROJECT_ROOT/ops/runtime/fastsnap-seed.lock}"
 MAINTENANCE_LOCK_FILE="${BDAG_FASTSNAP_MAINTENANCE_LOCK:-$PROJECT_ROOT/ops/runtime/hourly-chain-snapshot.lock}"
 MAINTENANCE_TTL="${BDAG_FASTSNAP_MAINTENANCE_TTL:-45m}"
 EXPORT_BACKEND="${BDAG_FASTSNAP_EXPORT_BACKEND:-}"
+VERIFY_EXISTING="${BDAG_FASTSNAP_VERIFY_EXISTING:-0}"
+VERIFY_AFTER_EXPORT="${BDAG_FASTSNAP_VERIFY_AFTER_EXPORT:-1}"
+RESTORE_TIMEOUT_SECONDS="${BDAG_FASTSNAP_RESTORE_TIMEOUT_SECONDS:-180}"
+REQUIRE_BOTH_BACKENDS_FOR_VERIFY="${BDAG_FASTSNAP_REQUIRE_BOTH_BACKENDS_FOR_VERIFY:-1}"
+DOCKER_CPU_SHARES="${BDAG_FASTSNAP_DOCKER_CPU_SHARES:-128}"
+DOCKER_BLKIO_WEIGHT="${BDAG_FASTSNAP_DOCKER_BLKIO_WEIGHT:-10}"
+DOCKER_CPUS="${BDAG_FASTSNAP_DOCKER_CPUS:-}"
 
 mkdir -p "$SEED_DIR" "$(dirname "$LOG_FILE")" "$(dirname "$LOCK_FILE")" "$(dirname "$MAINTENANCE_LOCK_FILE")"
 
@@ -28,6 +35,7 @@ flock -n 9 || {
 STOPPED_UNITS=()
 MAINTENANCE_BACKEND=""
 EXPORT_SERVICE=""
+CLEANUP_DONE=0
 
 log() {
   echo "[$(date -Is)] $*" | tee -a "$LOG_FILE"
@@ -63,6 +71,15 @@ run_low_priority() {
   "${command[@]}"
 }
 
+docker_run_low_priority() {
+  local command=(docker run --rm --cpu-shares "$DOCKER_CPU_SHARES" --blkio-weight "$DOCKER_BLKIO_WEIGHT")
+  if [[ -n "$DOCKER_CPUS" ]]; then
+    command+=(--cpus "$DOCKER_CPUS")
+  fi
+  command+=("$@")
+  run_low_priority "${command[@]}"
+}
+
 systemd_user_stop_if_active() {
   local unit="$1"
   if systemctl --user is-active --quiet "$unit" 2>/dev/null; then
@@ -79,6 +96,7 @@ restore_stopped_units() {
     systemctl --user start "$unit" || true
     log "restored $unit after FastSnap maintenance"
   done
+  STOPPED_UNITS=()
 }
 
 service_for_backend() {
@@ -127,6 +145,30 @@ maintenance_metric() {
           }
         }
       }'
+}
+
+backend_healthy_metric() {
+  local backend="$1"
+  curl -fsS "$POOL_ADMIN_URL/metrics" 2>/dev/null |
+    awk -v target="$backend" -F'[{},]' '
+      /^pool_rpc_backend_healthy/ {
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^backend=/) {
+            value=$i
+            gsub(/backend=|"/, "", value)
+            if (value == target) {
+              print $NF + 0
+              exit
+            }
+          }
+        }
+      }'
+}
+
+pool_metric_value() {
+  local metric="$1"
+  curl -fsS "$POOL_ADMIN_URL/metrics" 2>/dev/null |
+    awk -v metric="$metric" '$1 == metric || index($1, metric "{") == 1 { print $NF + 0; exit }'
 }
 
 choose_export_backend() {
@@ -190,6 +232,51 @@ wait_container_stopped() {
   return 1
 }
 
+wait_container_running() {
+  local service="$1"
+  local deadline=$((SECONDS + 60))
+  while ((SECONDS < deadline)); do
+    if docker inspect -f '{{.State.Running}}' "$service" 2>/dev/null | grep -qx true; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_pool_jobs_ready() {
+  local timeout="${1:-$RESTORE_TIMEOUT_SECONDS}"
+  local deadline=$((SECONDS + timeout))
+  local ok="" ready="" authorized=""
+  while ((SECONDS < deadline)); do
+    ok="$(pool_metric_value pool_job_health_ok || true)"
+    ready="$(pool_metric_value pool_job_health_ready_miners || true)"
+    authorized="$(pool_metric_value pool_job_health_authorized_miners || true)"
+    if [[ "${ok:-0}" == "1" && "${authorized:-0}" -gt 0 && "${ready:-0}" -eq "${authorized:-0}" ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+  log "pool jobs did not become ready after FastSnap restore ok=${ok:-unknown} ready=${ready:-unknown} authorized=${authorized:-unknown}"
+  return 1
+}
+
+wait_both_backends_healthy() {
+  local timeout="${1:-$RESTORE_TIMEOUT_SECONDS}"
+  local deadline=$((SECONDS + timeout))
+  local node1="" node2=""
+  while ((SECONDS < deadline)); do
+    node1="$(backend_healthy_metric node1 || true)"
+    node2="$(backend_healthy_metric node2 || true)"
+    if [[ "${node1:-0}" == "1" && "${node2:-0}" == "1" ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+  log "both backends did not become healthy after FastSnap restore node1=${node1:-unknown} node2=${node2:-unknown}"
+  return 1
+}
+
 wait_db_lock_free() {
   local lock_path="$1"
   local deadline=$((SECONDS + 45))
@@ -201,6 +288,23 @@ wait_db_lock_free() {
     return 0
   done
   return 1
+}
+
+restore_export_backend_before_verify() {
+  if [[ -n "$EXPORT_SERVICE" ]]; then
+    log "starting exported backend service=$EXPORT_SERVICE before verification"
+    compose start "$EXPORT_SERVICE" 2>&1 | tee -a "$LOG_FILE"
+    wait_container_running "$EXPORT_SERVICE"
+  fi
+  if [[ -n "$MAINTENANCE_BACKEND" ]]; then
+    log "clearing pool maintenance backend=$MAINTENANCE_BACKEND before verification"
+    admin_maintenance "$MAINTENANCE_BACKEND" false fastsnap-restore | tee -a "$LOG_FILE" >/dev/null
+    MAINTENANCE_BACKEND=""
+  fi
+  wait_pool_jobs_ready "$RESTORE_TIMEOUT_SECONDS"
+  if [[ "$REQUIRE_BOTH_BACKENDS_FOR_VERIFY" == "1" ]]; then
+    wait_both_backends_healthy "$RESTORE_TIMEOUT_SECONDS"
+  fi
 }
 
 install_snapshot_links() {
@@ -218,8 +322,37 @@ install_snapshot_links() {
   done
 }
 
+verify_existing_snapshot() {
+  if [[ ! -s "$SNAP_TMP" || ! -s "$MANIFEST_TMP" ]]; then
+    log "missing existing temporary FastSnap archive or manifest in $SEED_DIR"
+    return 1
+  fi
+
+  wait_pool_jobs_ready "$RESTORE_TIMEOUT_SECONDS"
+  if [[ "$REQUIRE_BOTH_BACKENDS_FOR_VERIFY" == "1" ]]; then
+    wait_both_backends_healthy "$RESTORE_TIMEOUT_SECONDS"
+  fi
+
+  log "verifying existing exported FastSnap archive"
+  NODE_IMAGE="$(resolve_node_image)"
+  docker_run_low_priority \
+    --entrypoint /usr/local/bin/bdag \
+    -v "$SEED_DIR":/out:ro \
+    "$NODE_IMAGE" \
+    snap verify --path /out/snapshot.bdsnap.tmp 2>&1 | tee -a "$LOG_FILE"
+
+  mv -f "$SNAP_TMP" "$SNAP_FINAL"
+  mv -f "$MANIFEST_TMP" "$MANIFEST_FINAL"
+  install_snapshot_links "$SNAP_FINAL" "$MANIFEST_FINAL"
+  log "FastSnap seed ready: $SNAP_FINAL"
+}
+
 cleanup() {
   local rc=$?
+  if [[ "$CLEANUP_DONE" == "1" ]]; then
+    exit "$rc"
+  fi
+  CLEANUP_DONE=1
   if [[ -n "$EXPORT_SERVICE" ]]; then
     compose start "$EXPORT_SERVICE" >/dev/null 2>&1 || true
   fi
@@ -238,6 +371,11 @@ MANIFEST_TMP="$SNAP_TMP.manifest.json"
 
 exec 8>"$MAINTENANCE_LOCK_FILE"
 flock 8
+
+if [[ "$VERIFY_EXISTING" == "1" ]]; then
+  verify_existing_snapshot
+  exit 0
+fi
 
 systemd_user_stop_if_active bdag-stack-sentinel.timer
 systemd_user_stop_if_active bdag-stack-sentinel.service
@@ -283,7 +421,7 @@ wait_db_lock_free "$EXPORT_NODE_DIR/mainnet/BdagChain/LOCK"
 
 log "exporting FastSnap archive from $EXPORT_BACKEND datadir=$EXPORT_NODE_DIR"
 NODE_IMAGE="$(resolve_node_image)"
-run_low_priority docker run --rm \
+docker_run_low_priority \
   --entrypoint /usr/local/bin/bdag \
   -v "$EXPORT_NODE_DIR":/snapshot-source \
   -v "$SEED_DIR":/out \
@@ -295,8 +433,18 @@ if [[ ! -s "$SNAP_TMP" || ! -s "$MANIFEST_TMP" ]]; then
   exit 1
 fi
 
+# Verification is a heavy sequential read. Restore pool redundancy before it so
+# a slow verify cannot leave mining dependent on one already-stressed backend.
+restore_export_backend_before_verify
+
+if [[ "$VERIFY_AFTER_EXPORT" != "1" ]]; then
+  log "FastSnap archive exported but not verified/promoted; leaving temporary files in $SEED_DIR"
+  log "set BDAG_FASTSNAP_VERIFY_AFTER_EXPORT=1 and rerun verification before serving this seed publicly"
+  exit 0
+fi
+
 log "verifying exported FastSnap archive"
-run_low_priority docker run --rm \
+docker_run_low_priority \
   --entrypoint /usr/local/bin/bdag \
   -v "$SEED_DIR":/out:ro \
   "$NODE_IMAGE" \
