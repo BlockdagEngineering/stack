@@ -808,7 +808,7 @@ HTML = r"""<!doctype html>
     .range-button.active,
     .global-range-button.active {
       background: var(--button);
-      color: white;
+      color: var(--button-text);
     }
     canvas { display: block; width: 100%; height: 100%; }
     .chart-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; }
