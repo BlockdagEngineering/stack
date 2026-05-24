@@ -74,6 +74,9 @@ candidate rejected with reasons.
 Large catch-up should avoid wasting startup dials on unreachable or paused
 peers. The local peer updater should:
 
+- Prefer complete FastSync multiaddr candidates in this order: LAN, private or
+  VPN, then public internet. This default applies to pre-start FastSnap and
+  normal node startup `--addpeer` arguments.
 - Sort known public peer multiaddrs by TCP reachability and latency.
 - When one managed node is paused for leader catch-up, assign all known public
   peers to the active leader.

@@ -30,6 +30,28 @@ Docker Compose reads `**.env`** in this directory for variable substitution and 
 
 The `**pool`** image bakes `**.env.example`** into the image at `/var/lib/bdagStack/pool/.env` for `godotenv` (release `**dockerfile`** uses `**COPY .env.example**` relative to tarball root; git dev `**dockerfile-dev**` uses `**COPY pool-stack-docker/.env.example**`). Compose still sets most variables via `environment:`.
 
+## FastSync Peer Discovery Order
+
+New nodes prefer nearby FastSync sources before falling back to public seeds.
+Configure complete multiaddrs with peer IDs in `.env`:
+
+```text
+BDAG_FASTSYNC_LAN_PEERS=/ip4/192.168.1.10/tcp/8151/p2p/...
+BDAG_FASTSYNC_VPN_PEERS=/ip4/10.0.0.10/tcp/8151/p2p/...
+BDAG_FASTSYNC_PUBLIC_PEERS=
+```
+
+The node entrypoint folds those values together with `BDAG_FASTSNAP_PEERS`,
+`BOOTSTRAP_PEER_ADDRESSES`, and `node.conf` `addpeer` lines in this order:
+LAN, private/VPN, public internet. The ordered list is used for pre-start
+FastSnap on empty datadirs and is also appended as startup `--addpeer`
+arguments so protocol 46 FastSync peers are available before public fallback
+dials dominate startup.
+
+`BDAG_FASTSYNC_LAN_PREFIXES` defaults to `192.168.`. If your premises LAN uses
+another private range, either put those complete multiaddrs in
+`BDAG_FASTSYNC_LAN_PEERS` or extend the prefix list in `.env`.
+
 ## Quick start
 
 ```bash
@@ -96,4 +118,3 @@ docker compose down -v
 ```
 
 ```
-

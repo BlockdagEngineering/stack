@@ -23,3 +23,20 @@ Until the FastSync nil-preprocessed-block fix is deployed in the node image,
 prefer `BDAG_FASTSYNC_PREPROCESS_WORKERS=1` on Pi catch-up hosts. The parallel
 preprocessor has previously panicked in `processFastBlockRange`; uptime and
 steady catch-up beat the small parallel precheck speedup.
+
+## FastSync Candidate Ordering
+
+New nodes must prefer nearby FastSync candidates before public internet seeds.
+The default ordering is:
+
+1. LAN candidates from `BDAG_FASTSYNC_LAN_PEERS` or addresses matching
+   `BDAG_FASTSYNC_LAN_PREFIXES`.
+2. Private/VPN candidates from `BDAG_FASTSYNC_VPN_PEERS` or private-address
+   multiaddrs.
+3. Public internet candidates from `BDAG_FASTSYNC_PUBLIC_PEERS` plus any
+   public entries discovered in generic `BDAG_FASTSYNC_PEERS`,
+   `BDAG_FASTSNAP_PEERS`, `BOOTSTRAP_PEER_ADDRESSES`, and `node.conf`
+   `addpeer` lines.
+
+Peer candidates must be complete multiaddrs with peer IDs. Do not replace this
+ordering with public-first bootstrapping in future RCs.
