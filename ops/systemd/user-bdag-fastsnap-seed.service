@@ -4,10 +4,10 @@ After=default.target
 
 [Service]
 Type=oneshot
-EnvironmentFile=-%h/.config/bdag-fastsnap-seed.env
 Environment=BDAG_FASTSNAP_REQUIRE_BOTH_BACKENDS_FOR_VERIFY=0
 Environment=BDAG_FASTSNAP_REQUIRE_EXPORT_BACKEND_FRESH=1
 Environment=BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG=1000
+EnvironmentFile=-%h/.config/bdag-fastsnap-seed.env
 Nice=19
 IOSchedulingClass=idle
 CPUWeight=10

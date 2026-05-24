@@ -177,6 +177,8 @@ Installed unit files:
 ```text
 ~/.config/systemd/user/bdag-boot-repair.service
 ~/.config/systemd/user/bdag-dashboard.service
+~/.config/systemd/user/bdag-fastsnap-seed.service
+~/.config/systemd/user/bdag-fastsnap-seed.timer
 ~/.config/systemd/user/bdag-p2p-guard.service
 ~/.config/systemd/user/bdag-watchdog.service
 ```
@@ -186,6 +188,20 @@ Install or update them:
 ```bash
 ./ops/install-dashboard.sh
 ```
+
+The release P2P installer also installs the default public FastSnap seed timer:
+
+```bash
+./ops/install-p2p-services.sh
+systemctl --user status bdag-fastsnap-seed.timer
+```
+
+`bdag-fastsnap-seed.timer` runs every two hours at low CPU and I/O priority. It
+uses the pool router maintenance-drain API to stop only the non-selected backend,
+exports and verifies `snapshot.bdsnap`, and hardlinks one archive into both node
+datadirs so this host can serve FastSnap to other blockchain peers without
+duplicating node databases. Disable installation on constrained hosts with
+`BDAG_FASTSNAP_SEED_TIMER_ENABLED=0`.
 
 Enable lingering so user services can start at boot without an active login:
 
