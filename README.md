@@ -73,6 +73,48 @@ Docker Compose reads `**.env`** in this directory for variable substitution and 
 
 The `**pool`** image bakes `**.env.example`** into the image at `/var/lib/bdagStack/pool/.env` for `godotenv` (release `**dockerfile`** uses `**COPY .env.example**` relative to tarball root; git dev `**dockerfile-dev**` uses `**COPY pool-stack-docker/.env.example**`). Compose still sets most variables via `environment:`.
 
+## FastSync Peer Discovery Order
+
+New nodes prefer nearby FastSync sources before falling back to public seeds.
+Configure complete multiaddrs with peer IDs in `.env`:
+
+```text
+BDAG_FASTSYNC_LAN_PEERS=/ip4/192.168.1.10/tcp/8151/p2p/...
+BDAG_FASTSYNC_VPN_PEERS=/ip4/10.0.0.10/tcp/8151/p2p/...
+BDAG_FASTSYNC_PUBLIC_PEERS=
+```
+
+The node entrypoint folds those values together with `BDAG_FASTSNAP_PEERS`,
+`BOOTSTRAP_PEER_ADDRESSES`, and `node.conf` `addpeer` lines in this order:
+LAN, private/VPN, public internet. The ordered list is used for pre-start
+FastSnap on empty datadirs and is also appended as startup `--addpeer`
+arguments so protocol 46 FastSync peers are available before public fallback
+dials dominate startup.
+
+`BDAG_FASTSYNC_LAN_PREFIXES` defaults to `192.168.`. If your premises LAN uses
+another private range, either put those complete multiaddrs in
+`BDAG_FASTSYNC_LAN_PEERS` or extend the prefix list in `.env`.
+
+## Pi5 Release Candidate Stability Defaults
+
+The Pi5 ARM64 release builder (`ops/build-pi5-arm64-release.sh`) now generates a
+self-monitoring stack package. It defaults to `BDAG_NODE_MODE=single`, which
+runs `bdag-miner-node-2` only to reduce USB power pressure. Choose `double` in
+the installer, or set `BDAG_NODE_MODE=double` with `COMPOSE_PROFILES=dual-node`,
+to add `bdag-miner-node-1`.
+
+No-miner deployments are sync-only by default: `BDAG_ENABLE_NODE_MINING=0`,
+`BDAG_NODE_MODULES=Blockdag`, and an empty `BDAG_NODE_MINING_ARGS`. Enable node
+mining/template flags only when real miners are attached. The dashboard,
+watchdog, stack sentinel, P2P guard, peer refresh, chain restore guard, and
+snapshot timers are installed by `ops/install-dashboard.sh` unless explicitly
+disabled.
+
+Dashboard block height is sourced from chain RPC `getBlockCount`; template
+height, logs, fan-in metrics, and main-order values are shown only as
+diagnostics. Keep `scripts/validate-pi5-restart-hardening.sh` in the release
+gate before cutting an RC.
+
 ## Quick start
 
 ```bash

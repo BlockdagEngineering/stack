@@ -1,0 +1,243 @@
+name: bdag-observability
+
+x-observability-logging: &observability-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
+networks:
+  observability:
+    name: bdag-observability-net
+  pool_net:
+    external: true
+    name: blockdag-asic-pool_pool-net
+
+volumes:
+  bdag_obs_grafana_data:
+  bdag_obs_prometheus_data:
+  bdag_obs_loki_data:
+  bdag_obs_alertmanager_data:
+
+services:
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: bdag-grafana
+    restart: unless-stopped
+    logging: *observability-logging
+    ports:
+      - "${OBS_BIND_ADDR:-127.0.0.1}:${GRAFANA_PORT:-3001}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-replace-with-local-password}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_SERVER_DOMAIN: localhost
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/operator-cockpit.json
+    volumes:
+      - bdag_obs_grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - observability
+    depends_on:
+      - prometheus
+      - loki
+    mem_limit: 384m
+    cpus: "0.35"
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: bdag-prometheus
+    restart: unless-stopped
+    logging: *observability-logging
+    ports:
+      - "${OBS_BIND_ADDR:-127.0.0.1}:${PROMETHEUS_PORT:-9091}:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --storage.tsdb.retention.size=15GB
+    volumes:
+      - bdag_obs_prometheus_data:/prometheus
+      - ./prometheus:/etc/prometheus:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - observability
+      - pool_net
+    depends_on:
+      - bdag-exporter
+      - blackbox-exporter
+      - node-exporter
+      - cadvisor
+    mem_limit: 768m
+    cpus: "0.60"
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: bdag-alertmanager
+    restart: unless-stopped
+    logging: *observability-logging
+    ports:
+      - "${OBS_BIND_ADDR:-127.0.0.1}:${ALERTMANAGER_PORT:-9094}:9093"
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - bdag_obs_alertmanager_data:/alertmanager
+      - ./alertmanager:/etc/alertmanager:ro
+    networks:
+      - observability
+    mem_limit: 96m
+    cpus: "0.10"
+
+  loki:
+    image: grafana/loki:latest
+    container_name: bdag-loki
+    restart: unless-stopped
+    logging: *observability-logging
+    ports:
+      - "${OBS_BIND_ADDR:-127.0.0.1}:${LOKI_PORT:-3101}:3100"
+    command:
+      - -config.file=/etc/loki/loki.yml
+    volumes:
+      - bdag_obs_loki_data:/loki
+      - ./loki:/etc/loki:ro
+    networks:
+      - observability
+    mem_limit: 384m
+    cpus: "0.35"
+
+  alloy:
+    image: grafana/alloy:latest
+    container_name: bdag-alloy
+    restart: unless-stopped
+    logging: *observability-logging
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+    volumes:
+      - ./alloy:/etc/alloy:ro
+      - ../runtime/logs:/var/log/bdag-runtime:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - observability
+    depends_on:
+      - loki
+    mem_limit: 192m
+    cpus: "0.05"
+
+  bdag-exporter:
+    image: python:3.12-alpine
+    container_name: bdag-exporter
+    restart: unless-stopped
+    logging: *observability-logging
+    environment:
+      BDAG_DASHBOARD_BASE_URL: ${BDAG_DASHBOARD_BASE_URL:-http://host.docker.internal:8088}
+      BDAG_EXPORTER_BIND: 0.0.0.0
+      BDAG_EXPORTER_PORT: 9108
+      BDAG_EXPORTER_TIMEOUT: 8
+      BDAG_STATUS_CACHE_SECONDS: 30
+      BDAG_EARNINGS_CACHE_SECONDS: 300
+      BDAG_GLOBAL_CACHE_SECONDS: 300
+    command:
+      - python
+      - /app/bdag_exporter.py
+    volumes:
+      - ./exporters/bdag_exporter:/app:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - observability
+    mem_limit: 96m
+    cpus: "0.10"
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:latest
+    container_name: bdag-blackbox-exporter
+    restart: unless-stopped
+    logging: *observability-logging
+    command:
+      - --config.file=/etc/blackbox_exporter/config.yml
+    volumes:
+      - ./exporters/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - observability
+    mem_limit: 64m
+    cpus: "0.05"
+
+  json-exporter:
+    image: quay.io/prometheuscommunity/json-exporter:latest
+    container_name: bdag-json-exporter
+    profiles:
+      - optional-json
+    restart: unless-stopped
+    logging: *observability-logging
+    command:
+      - --config.file=/config/json_exporter.yml
+    volumes:
+      - ./exporters/json_exporter.yml:/config/json_exporter.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - observability
+    mem_limit: 64m
+    cpus: "0.05"
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: bdag-node-exporter
+    restart: unless-stopped
+    logging: *observability-logging
+    command:
+      - --path.rootfs=/host
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/docker/.+|var/lib/docker/.+)($$|/)
+    volumes:
+      - /:/host:ro,rslave
+    networks:
+      - observability
+    pid: host
+    mem_limit: 64m
+    cpus: "0.10"
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: bdag-cadvisor
+    restart: unless-stopped
+    logging: *observability-logging
+    privileged: false
+    command:
+      - --docker_only=true
+      - --enable_metrics=cpu,memory
+      - --housekeeping_interval=30s
+      - --global_housekeeping_interval=1m
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - observability
+    mem_limit: 192m
+    cpus: "0.05"
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: bdag-postgres-exporter
+    restart: unless-stopped
+    logging: *observability-logging
+    environment:
+      DATA_SOURCE_NAME: ${BDAG_POSTGRES_DSN:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - observability
+    mem_limit: 96m
+    cpus: "0.10"

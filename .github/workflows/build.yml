@@ -66,6 +66,7 @@ jobs:
           make all
           cp -f ./build/bin/bdag ../../bin/blockdag-node
           cp -f ./build/bin/nodeworker ../../bin/nodeworker
+          cp -f ./build/bin/fastsnap ../../bin/fastsnap
 
       - name: Build mining-pool
         shell: bash
@@ -77,12 +78,12 @@ jobs:
           cp -f ./build/bin/dashboard-api ../../bin/dashboard-api
 
       - name: Ensure executables
-        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api
+        run: chmod +x bin/blockdag-node bin/nodeworker bin/fastsnap bin/mining-pool bin/dashboard-api
 
       - name: Generate checksums
         shell: bash
         run: |
-          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api > checksums.txt
+          sha256sum bin/blockdag-node bin/nodeworker bin/fastsnap bin/mining-pool bin/dashboard-api > checksums.txt
 
       - name: Validate compose (pool Dockerfile)
         shell: bash
@@ -91,6 +92,7 @@ jobs:
           test -f .env.example
           docker compose --env-file .env.example config | grep -q 'dockerfile: dockerfile' || \
             { echo "::error::Compose must resolve dockerfile for pool tarball env"; exit 1; }
+          scripts/validate-pi5-restart-hardening.sh .
 
       - name: Create universal release zip
         id: package
@@ -108,11 +110,12 @@ jobs:
 
           rm -rf "${ROOT}" "${OUT}" "${LATEST_OUT}" "${LATEST_SHA256}"
           mkdir "${ROOT}"
-          cp docker-compose.yml dockerfile .dockerignore .env.example node.conf.example README.md checksums.txt "${ROOT}/"
+          cp docker-compose.yml dockerfile .dockerignore .env.example node.conf.example README.md checksums.txt haproxy.cfg "${ROOT}/"
           echo "${VERSION}" > "${ROOT}/version.txt"
           cp scripts/release/install.sh scripts/release/install.ps1 scripts/release/install.cmd "${ROOT}/"
           cp -a scripts/release/installers "${ROOT}/installers"
-          cp -a bin sql docker scripts dashboard "${ROOT}/"
+          cp -a bin sql docker scripts dashboard asic-pool tools "${ROOT}/"
+          rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
           chmod +x "${ROOT}/install.sh" "${ROOT}/installers/"*.sh
 
           if ! command -v zip >/dev/null 2>&1; then

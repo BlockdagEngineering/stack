@@ -1,0 +1,1048 @@
+{
+  "uid": "bdag-template-fan-in",
+  "title": "BDAG Template Fan-In",
+  "tags": [
+    "blockdag",
+    "mining",
+    "provisioned"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "time_options": [
+      "1h",
+      "6h",
+      "12h",
+      "24h",
+      "3d",
+      "7d",
+      "30d"
+    ]
+  },
+  "editable": false,
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "links": [
+    {
+      "title": "Operator Cockpit",
+      "url": "/d/bdag-operator-cockpit/bdag-operator-cockpit",
+      "targetBlank": false,
+      "type": "link"
+    },
+    {
+      "title": "Accepted Work Share",
+      "url": "/d/bdag-work-share/bdag-accepted-work-share",
+      "targetBlank": false,
+      "type": "link"
+    },
+    {
+      "title": "Miner Freshness",
+      "url": "/d/bdag-miner-freshness/bdag-miner-freshness",
+      "targetBlank": false,
+      "type": "link"
+    },
+    {
+      "title": "Observed Peer IPs",
+      "url": "/d/bdag-observed-peers/bdag-observed-peer-ips",
+      "targetBlank": false,
+      "type": "link"
+    },
+    {
+      "title": "Template Fan-In",
+      "url": "/d/bdag-template-fan-in/bdag-template-fan-in",
+      "targetBlank": false,
+      "type": "link"
+    },
+    {
+      "title": "Old Repair Dashboard",
+      "url": "http://127.0.0.1:8088",
+      "targetBlank": true,
+      "type": "link"
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Fan-In Enabled",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "max(pool_template_fanin_enabled)",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "gray"
+              },
+              {
+                "value": 0.5,
+                "color": "green"
+              }
+            ]
+          },
+          "noValue": "-"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "wideLayout": true
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Fan-In Backends",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "max(pool_template_fanin_backends)",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "-"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "wideLayout": true
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Healthy Backend Ratio",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "sum(pool_rpc_backend_healthy) / clamp_min(count(pool_rpc_backend_healthy), 1)",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {},
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "red"
+              },
+              {
+                "value": 0.5,
+                "color": "orange"
+              },
+              {
+                "value": 1,
+                "color": "green"
+              }
+            ]
+          },
+          "noValue": "-"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "wideLayout": true
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "WS Stream Ratio",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "sum(pool_rpc_backend_ws_connected) / clamp_min(count(pool_rpc_backend_ws_connected), 1)",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {},
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "red"
+              },
+              {
+                "value": 0.5,
+                "color": "orange"
+              },
+              {
+                "value": 1,
+                "color": "green"
+              }
+            ]
+          },
+          "noValue": "-"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "wideLayout": true
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Template Age p95",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "quantile(0.95, pool_rpc_backend_template_age_seconds)",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {},
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              },
+              {
+                "value": 2,
+                "color": "orange"
+              },
+              {
+                "value": 5,
+                "color": "red"
+              }
+            ]
+          },
+          "noValue": "-"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "wideLayout": true
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Local Rejects / min",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 0,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(pool_block_submit_outcomes_total{outcome=\"rejected-local\",reason=~\"stale-parent|old-template-sequence|duplicate-block\"}[5m])) * 60",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {},
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              },
+              {
+                "value": 5,
+                "color": "orange"
+              },
+              {
+                "value": 20,
+                "color": "red"
+              }
+            ]
+          },
+          "noValue": "-"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "wideLayout": true
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Backend Template Age",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 12,
+        "h": 8
+      },
+      "maxDataPoints": 1200,
+      "targets": [
+        {
+          "expr": "pool_rpc_backend_template_age_seconds",
+          "legendFormat": "{{backend}}",
+          "refId": "A",
+          "interval": "$__interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Backend WS And Health",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 3,
+        "w": 12,
+        "h": 8
+      },
+      "maxDataPoints": 1200,
+      "targets": [
+        {
+          "expr": "pool_rpc_backend_ws_connected",
+          "legendFormat": "ws {{backend}}",
+          "refId": "A",
+          "interval": "$__interval"
+        },
+        {
+          "expr": "pool_rpc_backend_healthy",
+          "legendFormat": "healthy {{backend}}",
+          "refId": "B",
+          "interval": "$__interval"
+        },
+        {
+          "expr": "pool_rpc_backend_selected",
+          "legendFormat": "selected {{backend}}",
+          "refId": "C",
+          "interval": "$__interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Template Sequence Changes",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 11,
+        "w": 12,
+        "h": 8
+      },
+      "maxDataPoints": 1200,
+      "targets": [
+        {
+          "expr": "changes(pool_rpc_backend_template_sequence[$__rate_interval])",
+          "legendFormat": "{{backend}} seq changes",
+          "refId": "A",
+          "interval": "$__interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Fan-In Accepted / Rejected",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 11,
+        "w": 12,
+        "h": 8
+      },
+      "maxDataPoints": 1200,
+      "targets": [
+        {
+          "expr": "sum by (backend,result,reason) (rate(pool_template_fanin_updates_total[$__rate_interval]))",
+          "legendFormat": "{{backend}} {{result}} {{reason}}",
+          "refId": "A",
+          "interval": "$__interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Submit Outcomes",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 19,
+        "w": 12,
+        "h": 8
+      },
+      "maxDataPoints": 1200,
+      "targets": [
+        {
+          "expr": "sum by (outcome,reason) (rate(pool_block_submit_outcomes_total[$__rate_interval]))",
+          "legendFormat": "{{outcome}} {{reason}}",
+          "refId": "A",
+          "interval": "$__interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Backend Submit Latency p95",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 19,
+        "w": 12,
+        "h": 8
+      },
+      "maxDataPoints": 1200,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (backend,le) (rate(pool_rpc_backend_submit_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{backend}}",
+          "refId": "A",
+          "interval": "$__interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "decimals": 3
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "table",
+      "title": "Backend State",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 27,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "pool_rpc_backend_score",
+          "legendFormat": "{{backend}} score",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "pool_rpc_backend_template_age_seconds",
+          "legendFormat": "{{backend}} age",
+          "refId": "B",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "pool_rpc_backend_template_sequence",
+          "legendFormat": "{{backend}} seq",
+          "refId": "C",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "pool_template_fanin_backend_participant",
+          "legendFormat": "{{backend}} participant",
+          "refId": "D",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "pool_template_fanin_backend_role",
+          "legendFormat": "{{backend}} {{role}} role",
+          "refId": "E",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "pool_template_fanin_observed_height",
+          "legendFormat": "{{backend}} observed height",
+          "refId": "F",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "pool_template_fanin_best_height",
+          "legendFormat": "{{backend}} accepted height",
+          "refId": "G",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "pool_template_fanin_winner",
+          "legendFormat": "{{backend}} winner",
+          "refId": "H",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        },
+        "showHeader": true
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "service": true,
+              "ip": true,
+              "mac": true
+            },
+            "renameByName": {
+              "Value": "Value",
+              "miner": "Miner",
+              "node": "Node",
+              "pool": "Pool"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Observed vs Accepted Template Height",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 35,
+        "w": 12,
+        "h": 8
+      },
+      "maxDataPoints": 1200,
+      "targets": [
+        {
+          "expr": "pool_template_fanin_observed_height",
+          "legendFormat": "{{backend}} observed",
+          "refId": "A",
+          "interval": "$__interval"
+        },
+        {
+          "expr": "pool_template_fanin_best_height",
+          "legendFormat": "{{backend}} accepted",
+          "refId": "B",
+          "interval": "$__interval"
+        },
+        {
+          "expr": "pool_template_fanin_winner",
+          "legendFormat": "{{backend}} winner",
+          "refId": "C",
+          "interval": "$__interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Stale Race vs Expired Job Recovery",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 35,
+        "w": 12,
+        "h": 8
+      },
+      "maxDataPoints": 1200,
+      "targets": [
+        {
+          "expr": "sum by (action,reason) (rate(pool_stale_job_race_recoveries_total[$__rate_interval]))",
+          "legendFormat": "stale {{action}} {{reason}}",
+          "refId": "A",
+          "interval": "$__interval"
+        },
+        {
+          "expr": "sum by (action) (rate(pool_expired_job_recoveries_total[$__rate_interval]))",
+          "legendFormat": "expired {{action}}",
+          "refId": "B",
+          "interval": "$__interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 14,
+      "type": "logs",
+      "title": "Fan-In And Router Logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "bdag-loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 43,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "expr": "{job=\"docker\",container=\"asic-pool\"} |~ \"(FANIN|ROUTER|SUBMIT-STALL|WS)\"",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      }
+    }
+  ]
+}
