@@ -3131,22 +3131,36 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     )
     no_miner_sync_only = bool(no_miner_node_only and sync_progress.get("status") == "syncing")
     if no_miner_node_only:
-        probe_warning_prefixes = (
-            "rpc-failover is refusing live mining template probes",
-            "pool is waiting for node sync to finish",
-        )
+        def _is_no_miner_sync_noise(item: Any) -> bool:
+            text = str(item)
+            return (
+                "live mining template probes" in text
+                or text.startswith("pool is waiting for node sync to finish")
+            )
+
         warnings = [
             item for item in warnings
-            if not any(str(item).startswith(prefix) for prefix in probe_warning_prefixes)
+            if not _is_no_miner_sync_noise(item)
         ]
         sync_warnings = [
             item for item in sync_warnings
-            if not any(str(item).startswith(prefix) for prefix in probe_warning_prefixes)
+            if not _is_no_miner_sync_noise(item)
         ]
+        pool["initial_download_needs_repair"] = False
         pool_health["rpc_template_failing"] = False
         pool_health["node_template_probe_failing"] = False
         pool_health["initial_download_needs_repair"] = False
         pool_health["needs_fast_repair"] = False
+        sync_health["needs_fast_sync_repair"] = False
+        if isinstance(template_probe_health, dict):
+            template_probe_health["suppressed_for_no_miners"] = True
+            template_probe_health["failing_nodes"] = []
+            template_probe_health["all_nodes_failing"] = False
+            rpc_probe = template_probe_health.get("rpc_failover")
+            if isinstance(rpc_probe, dict):
+                rpc_probe["failing"] = False
+        for node in NODES:
+            node_details.setdefault(node, {})["template_probe_failing"] = False
         if no_miner_sync_only:
             add_sync_warning("no miners present; node is syncing and mining work remains idle")
         else:
