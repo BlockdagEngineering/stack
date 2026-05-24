@@ -109,6 +109,7 @@ MINER_SCAN_MAX_TARGETS = int(os.environ.get("BDAG_MINER_SCAN_MAX_TARGETS", "1024
 MINER_LOGIN_KEY_HEX = "21" * 16
 MINER_ZERO_IV_HEX = "00" * 16
 MINER_REGISTRY_FILE = RUNTIME_DIR / "miners.json"
+MINER_RETIREMENTS_FILE = RUNTIME_DIR / "miner-retirements.json"
 MINER_ADMIN_PASSWORD_FILE = RUNTIME_DIR / "miner-admin-password.txt"
 EARNINGS_SNAPSHOT_FILE = RUNTIME_DIR / "earnings-snapshots.jsonl"
 EARNINGS_ONCHAIN_CACHE_FILE = RUNTIME_DIR / "earnings-onchain-cache.json"
@@ -649,6 +650,8 @@ def miner_display_identity(item: dict[str, Any]) -> str:
 
 def assign_miner_display_names(miners: list[dict[str, Any]]) -> None:
     used = {str(item.get("display_name") or "") for item in miners if item.get("display_name")}
+    _retired_macs, _retired_ips, _retired_workers, retired_names = read_retired_miner_identities()
+    used.update(retired_names)
     named_by_identity = {
         miner_display_identity(item): str(item.get("display_name"))
         for item in miners
@@ -771,6 +774,111 @@ def default_miner_pool_settings() -> dict[str, str]:
     }
 
 
+def read_retired_miner_rows() -> list[dict[str, Any]]:
+    payload = read_json_file(MINER_RETIREMENTS_FILE, {"retired_miners": []})
+    rows = payload.get("retired_miners") if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def retired_miner_row_identities(row: dict[str, Any]) -> tuple[set[str], set[str], set[str], str]:
+    name = str(row.get("display_name") or "").strip()
+    macs = {mac for mac in [normalize_mac(row.get("mac"))] if mac}
+    ips = {str(ip) for ip in merge_unique_strings(row.get("ips"), row.get("ip")) if is_ipv4(str(ip))}
+    workers = {
+        worker_text
+        for worker in merge_unique_strings(row.get("worker_user"), row.get("worker_users"), row.get("workers"))
+        for worker_text in [str(worker or "").strip().lower()]
+        if re.fullmatch(r"0x[a-f0-9]{40}", worker_text)
+    }
+    return macs, ips, workers, name
+
+
+def read_retired_miner_identities() -> tuple[set[str], set[str], set[str], set[str]]:
+    retired_macs: set[str] = set()
+    retired_ips: set[str] = set()
+    retired_workers: set[str] = set()
+    retired_names: set[str] = set()
+    for row in read_retired_miner_rows():
+        macs, ips, workers, name = retired_miner_row_identities(row)
+        if name:
+            retired_names.add(name)
+        retired_macs.update(macs)
+        retired_ips.update(ips)
+        retired_workers.update(workers)
+    return retired_macs, retired_ips, retired_workers, retired_names
+
+
+def retired_miner_candidate_workers(item: dict[str, Any]) -> set[str]:
+    return {
+        worker
+        for worker in (
+            str(value or "").strip().lower()
+            for value in merge_unique_strings(
+                item.get("expected_worker_user"),
+                item.get("worker_user"),
+                item.get("last_workers"),
+                item.get("workers"),
+            )
+        )
+        if re.fullmatch(r"0x[a-f0-9]{40}", worker)
+    }
+
+
+def miner_has_active_pool_evidence(item: dict[str, Any]) -> bool:
+    count_keys = ("submits", "shares", "blocks_found", "last_submits_window", "last_shares_window", "last_blocks_window")
+    if any(safe_int(item.get(key), 0) > 0 for key in count_keys):
+        return True
+    return bool(item.get("last_submit_at") or item.get("last_share_at") or item.get("last_block_at"))
+
+
+def retired_miner_identity_decision(item: dict[str, Any], ip: str = "", mac: str = "") -> dict[str, Any]:
+    candidate_mac = normalize_mac(mac) or normalize_mac(item.get("mac"))
+    candidate_ip = str(ip or item.get("ip") or "")
+    candidate_workers = retired_miner_candidate_workers(item)
+    rows = read_retired_miner_rows()
+
+    for row in rows:
+        row_macs, _row_ips, row_workers, name = retired_miner_row_identities(row)
+        if candidate_mac and candidate_mac in row_macs:
+            return {"retired": True, "matched_by": "mac", "retired_name": name, "conflict": False}
+        if candidate_workers and row_workers and candidate_workers & row_workers:
+            return {"retired": True, "matched_by": "worker", "retired_name": name, "conflict": False}
+
+    for row in rows:
+        row_macs, row_ips, row_workers, name = retired_miner_row_identities(row)
+        if not candidate_ip or candidate_ip not in row_ips:
+            continue
+        stable_row_identity = bool(row_macs or row_workers)
+        different_mac = bool(candidate_mac and row_macs and candidate_mac not in row_macs)
+        different_worker = bool(candidate_workers and row_workers and not (candidate_workers & row_workers))
+        if stable_row_identity and miner_has_active_pool_evidence(item) and (different_mac or different_worker):
+            return {
+                "retired": False,
+                "matched_by": "ip-conflict",
+                "retired_name": name,
+                "conflict": True,
+                "candidate_mac": candidate_mac,
+                "retired_macs": sorted(row_macs),
+                "candidate_workers": sorted(candidate_workers),
+                "retired_workers": sorted(row_workers),
+            }
+        return {"retired": True, "matched_by": "ip", "retired_name": name, "conflict": False}
+
+    return {"retired": False, "matched_by": "", "retired_name": "", "conflict": False}
+
+
+def is_retired_miner_identity(item: dict[str, Any], ip: str = "", mac: str = "") -> bool:
+    """Skip miners intentionally moved away from this local pool.
+
+    MAC and worker matches are authoritative. IP matches are a fallback only
+    when live pool evidence does not prove a different active identity, so DHCP
+    reuse or an intentional re-add cannot hide a real miner silently.
+    """
+    return bool(retired_miner_identity_decision(item, ip, mac).get("retired"))
+
+
 def read_miner_registry() -> dict[str, Any]:
     registry = read_json_file(MINER_REGISTRY_FILE, {"updated_at": None, "miners": []})
     if not isinstance(registry, dict):
@@ -790,6 +898,8 @@ def save_miner_registry(miners: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         item = dict(miner)
         mac = miner_mac_from_payload(item, ip, neighbors)
+        if is_retired_miner_identity(item, ip, mac):
+            continue
         if mac:
             item["mac"] = mac
             item["device_id"] = f"mac:{mac}"
@@ -2336,6 +2446,14 @@ def collect_miner_health() -> dict[str, Any]:
             # Docker bridge clients can appear in pool logs during local health/API calls.
             # They are not physical ASICs and should not affect miner counts or repairs.
             continue
+        retirement_decision = retired_miner_identity_decision({**registered, **activity_item}, ip, mac)
+        if retirement_decision.get("conflict"):
+            label = registered.get("display_name") or ip
+            retired_name = retirement_decision.get("retired_name") or "retired miner"
+            warnings.append(
+                f"{label} {ip} is active in pool logs but matches retired-miner IP for {retired_name}; "
+                "keeping it active because MAC/worker evidence differs"
+            )
         last_pool_seen_epoch = int(registered.get("last_pool_seen_epoch", 0) or 0)
         last_submit_epoch = int(registered.get("last_submit_epoch", 0) or 0)
         last_share_epoch = int(registered.get("last_share_epoch", 0) or 0)
@@ -4957,11 +5075,17 @@ def fiat_value(amount_bdag: Decimal, price: dict[str, Any], currency: str) -> st
 
 def collect_miner_hashrate_debug(registry_miners: list[dict[str, Any]], activity_miners: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Collect fast ASIC-reported hashrates for miners currently relevant to the pool."""
-    activity_ips = {str(item.get("ip") or "") for item in activity_miners if item.get("ip")}
+    activity_ips = {
+        str(item.get("ip") or "")
+        for item in activity_miners
+        if item.get("ip") and not is_retired_miner_identity(item, str(item.get("ip") or ""))
+    }
     candidates: dict[str, dict[str, Any]] = {}
     for registered in registry_miners:
         ip = str(registered.get("ip") or "")
         if not is_lan_ipv4(ip):
+            continue
+        if is_retired_miner_identity(registered, ip):
             continue
         if not (
             ip in activity_ips
@@ -5003,14 +5127,22 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
     activity = collect_pool_activity(lines=POOL_ACTIVITY_LOG_LINES)
     registry = upsert_pool_activity_miners(activity)
     registry_by_ip = {str(item.get("ip")): item for item in registry.get("miners", []) if item.get("ip")}
-    hashrate_by_ip = collect_miner_hashrate_debug(registry.get("miners", []), activity.get("miners", []))
+    active_activity_miners = [
+        item
+        for item in activity.get("miners", [])
+        if not is_retired_miner_identity(
+            {**item, **registry_by_ip.get(str(item.get("ip") or ""), {})},
+            str(item.get("ip") or ""),
+        )
+    ]
+    hashrate_by_ip = collect_miner_hashrate_debug(registry.get("miners", []), active_activity_miners)
     credit_by_address = {
         str(item.get("miner_address")): item
         for item in credit_totals.get("by_address", [])
         if item.get("miner_address")
     }
     worker_to_ips: dict[str, set[str]] = {}
-    for item in activity["miners"]:
+    for item in active_activity_miners:
         activity_ip = str(item.get("ip") or "")
         activity_mac = normalize_mac((registry_by_ip.get(activity_ip, {}) or {}).get("mac"))
         if is_docker_bridge_pool_log_client(activity_ip, activity_mac):
@@ -5018,11 +5150,11 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
         ip = str(item.get("ip") or "")
         for worker in item.get("workers", []):
             worker_to_ips.setdefault(str(worker), set()).add(ip)
-    total_work = sum(int(item.get("share_work", 0) or 0) for item in activity["miners"])
+    total_work = sum(int(item.get("share_work", 0) or 0) for item in active_activity_miners)
     total_bdag = wei_to_bdag(credit_totals.get("totals", {}).get("total_wei"))
     recent_bdag = wei_to_bdag(credit_totals.get("recent_1h", {}).get("total_wei"))
     estimates: list[dict[str, Any]] = []
-    for item in activity["miners"]:
+    for item in active_activity_miners:
         activity_ip = str(item.get("ip") or "")
         registered = registry_by_ip.get(activity_ip, {})
         if is_docker_bridge_pool_log_client(activity_ip, normalize_mac(registered.get("mac"))):
