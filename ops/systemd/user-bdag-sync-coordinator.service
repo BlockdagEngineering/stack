@@ -7,7 +7,12 @@ Type=oneshot
 WorkingDirectory=/home/jeremy/blockdag-asic-pool
 Environment=BDAG_PROJECT_ROOT=/home/jeremy/blockdag-asic-pool
 Environment=BDAG_RUNTIME_DIR=/home/jeremy/blockdag-asic-pool/ops/runtime
-Environment=BDAG_SYNC_COORDINATOR_LEADER_NEAR_TIP_BLOCKS=5
+Environment=BDAG_SYNC_COORDINATOR_FAR_BEHIND_BLOCKS=1000
+Environment=BDAG_SYNC_COORDINATOR_FOLLOWER_LAG_BLOCKS=1000
+Environment=BDAG_SYNC_COORDINATOR_LEADER_NEAR_TIP_BLOCKS=1000
+Environment=BDAG_SYNC_COORDINATOR_SEED_NEAR_TIP_BLOCKS=5
+Environment=BDAG_SYNC_COORDINATOR_LEADER_CPU_SHARES=8192
+Environment=BDAG_SYNC_COORDINATOR_LEADER_BLKIO_WEIGHT=1000
 Environment=BDAG_SYNC_COORDINATOR_FINAL_RSYNC_TIMEOUT_SECONDS=600
 EnvironmentFile=-/home/jeremy/blockdag-asic-pool/ops/runtime/ops.env
 Nice=10

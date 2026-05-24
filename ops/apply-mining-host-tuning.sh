@@ -23,6 +23,7 @@ rpc_nice="${BDAG_MINING_RPC_NICE:--4}"
 observability_nice="${BDAG_OBSERVABILITY_NICE:-15}"
 desktop_nice="${BDAG_DESKTOP_BACKGROUND_NICE:-19}"
 pool_metrics_url="${BDAG_POOL_METRICS_URL:-http://127.0.0.1:9092/metrics}"
+sync_state_file="${BDAG_SYNC_COORDINATOR_STATE_FILE:-$ROOT/ops/runtime/sync-coordinator-state.json}"
 
 log() {
   printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"
@@ -151,9 +152,41 @@ node_container_for_backend() {
   esac
 }
 
+sync_coordinator_leader_node() {
+  [ -f "$sync_state_file" ] || return 0
+  python3 - "$sync_state_file" <<'PY' 2>/dev/null || true
+import json
+import sys
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        state = json.load(handle)
+except Exception:
+    raise SystemExit(0)
+
+if state.get("mode") != "leader_catchup" or not state.get("paused_follower"):
+    raise SystemExit(0)
+
+leader = str(state.get("leader") or "")
+mapping = {
+    "node1": "bdag-miner-node-1",
+    "node2": "bdag-miner-node-2",
+    "bdag-miner-node-1": "bdag-miner-node-1",
+    "bdag-miner-node-2": "bdag-miner-node-2",
+    "node": "node",
+}
+if leader in mapping:
+    print(mapping[leader])
+PY
+}
+
 tune_processes() {
   active_backend="$(selected_backend)"
   active_node="$(node_container_for_backend "$active_backend")"
+  catchup_node="$(sync_coordinator_leader_node || true)"
+  if [ -n "$catchup_node" ]; then
+    active_node="$catchup_node"
+  fi
 
   for container in "$active_node"; do
     pids="$(docker_container_pids "$container")"
@@ -200,8 +233,16 @@ tune_docker_weights() {
   docker info >/dev/null 2>&1 || return 0
   active_backend="$(selected_backend)"
   active_node="$(node_container_for_backend "$active_backend")"
+  catchup_node="$(sync_coordinator_leader_node || true)"
+  if [ -n "$catchup_node" ]; then
+    active_node="$catchup_node"
+  fi
 
-  docker_update_one "$active_node" 6144 1000
+  if [ -n "$catchup_node" ]; then
+    docker_update_one "$active_node" 8192 1000
+  else
+    docker_update_one "$active_node" 6144 1000
+  fi
   for container in bdag-miner-node-1 bdag-miner-node-2; do
     [ "$container" = "$active_node" ] && continue
     docker_update_one "$container" 3072 800
@@ -221,7 +262,11 @@ tune_docker_weights() {
     docker_update_one "$container" 128 100
   done
 
-  log "resource_policy=active-passive active_backend=$active_backend active_node=$active_node"
+  if [ -n "$catchup_node" ]; then
+    log "resource_policy=leader-catchup active_backend=$active_backend active_node=$active_node"
+  else
+    log "resource_policy=active-passive active_backend=$active_backend active_node=$active_node"
+  fi
 }
 
 devices="$(

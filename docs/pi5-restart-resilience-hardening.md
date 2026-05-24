@@ -20,6 +20,10 @@ The restart-safe policy is:
   manifest proves it is restore-safe.
 - During one-node catch-up, give the active leader all known public peers sorted
   by reachability/latency and do not make it dial the paused follower.
+- When any managed node is more than 1000 blocks behind the observed network
+  tip, pause the laggiest running node and let exactly one selected leader sync
+  alone. The selected leader must receive the highest Docker CPU shares and
+  block IO weight while this policy is active.
 - Do not seed a follower unless the leader is proven near the highest observed
   network block height.
 
@@ -47,13 +51,19 @@ lower or missing `highestBlock`.
 Follower seeding is allowed only when all of these are true:
 
 - There is a known `network_highest` value.
-- The leader height is within `BDAG_SYNC_COORDINATOR_LEADER_NEAR_TIP_BLOCKS`
+- The leader height is within `BDAG_SYNC_COORDINATOR_SEED_NEAR_TIP_BLOCKS`
   of that highest observed block.
 - The follower is the planned paused follower.
 - The final copy can stop the leader briefly for a consistent rsync.
 
 This prevents an isolated or poorly peered node from being treated as fully
 synced merely because `eth_syncing` returns false.
+
+Plain follower resume is less aggressive than seeding: it is allowed when the
+selected leader is within `BDAG_SYNC_COORDINATOR_LEADER_NEAR_TIP_BLOCKS` and
+the follower is no more than `BDAG_SYNC_COORDINATOR_FAR_BEHIND_BLOCKS` behind.
+This prevents a pause/resume loop where a follower still over 1000 blocks
+behind is restarted only to be immediately paused again.
 
 ## Required Latest-Data Behavior
 

@@ -38,13 +38,16 @@ STATE_FILE = RUNTIME_DIR / "sync-coordinator-state.json"
 LOCK_FILE = RUNTIME_DIR / "sync-coordinator.lock"
 LOG_FILE = LOG_DIR / "sync-coordinator.log"
 
-FAR_BEHIND_BLOCKS = int(os.environ.get("BDAG_SYNC_COORDINATOR_FAR_BEHIND_BLOCKS", "10000"))
-FOLLOWER_LAG_BLOCKS = int(os.environ.get("BDAG_SYNC_COORDINATOR_FOLLOWER_LAG_BLOCKS", "1500"))
-LEADER_NEAR_TIP_BLOCKS = int(os.environ.get("BDAG_SYNC_COORDINATOR_LEADER_NEAR_TIP_BLOCKS", "5"))
+FAR_BEHIND_BLOCKS = int(os.environ.get("BDAG_SYNC_COORDINATOR_FAR_BEHIND_BLOCKS", "1000"))
+FOLLOWER_LAG_BLOCKS = int(os.environ.get("BDAG_SYNC_COORDINATOR_FOLLOWER_LAG_BLOCKS", "1000"))
+LEADER_NEAR_TIP_BLOCKS = int(os.environ.get("BDAG_SYNC_COORDINATOR_LEADER_NEAR_TIP_BLOCKS", "1000"))
+SEED_NEAR_TIP_BLOCKS = int(os.environ.get("BDAG_SYNC_COORDINATOR_SEED_NEAR_TIP_BLOCKS", "5"))
 LEADER_IMPORT_STALE_SECONDS = int(os.environ.get("BDAG_SYNC_COORDINATOR_IMPORT_STALE_SECONDS", "180"))
 FINAL_RSYNC_TIMEOUT_SECONDS = int(os.environ.get("BDAG_SYNC_COORDINATOR_FINAL_RSYNC_TIMEOUT_SECONDS", "900"))
 WARM_RSYNC_BWLIMIT_KB = os.environ.get("BDAG_SYNC_COORDINATOR_RSYNC_BWLIMIT_KB", "0")
 MIN_TRUSTED_HEIGHT = int(os.environ.get("BDAG_SYNC_COORDINATOR_MIN_TRUSTED_HEIGHT", "0"))
+LEADER_CATCHUP_CPU_SHARES = int(os.environ.get("BDAG_SYNC_COORDINATOR_LEADER_CPU_SHARES", "8192"))
+LEADER_CATCHUP_BLKIO_WEIGHT = int(os.environ.get("BDAG_SYNC_COORDINATOR_LEADER_BLKIO_WEIGHT", "1000"))
 
 
 def log(message: str) -> None:
@@ -225,7 +228,12 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
     follower_lag = max(0, heights.get(leader or "", 0) - heights.get(follower, 0)) if leader and follower else 0
     follower_materially_lagging = bool(follower and leader and follower_lag >= FOLLOWER_LAG_BLOCKS)
     paused_follower = str(previous_state.get("paused_follower") or "")
-    paused_still_down = bool(paused_follower and not running.get(paused_follower, False))
+    paused_still_down = bool(stopped_by_coordinator(previous_state, paused_follower) and not running.get(paused_follower, False))
+    paused_follower_remaining = remaining.get(paused_follower, 0)
+    previous_decision = previous_state.get("last_decision") if isinstance(previous_state.get("last_decision"), dict) else {}
+    previous_nodes = previous_decision.get("nodes") if isinstance(previous_decision.get("nodes"), dict) else {}
+    if paused_follower and paused_follower_remaining <= 0 and isinstance(previous_nodes.get(paused_follower), dict):
+        paused_follower_remaining = safe_int(previous_nodes.get(paused_follower, {}).get("remaining_blocks"))
 
     action = "monitor"
     reason = "dual-node sync is acceptable"
@@ -239,7 +247,8 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
         target = paused_follower
         reason = (
             f"{leader} is near tip with {leader_remaining} remaining block(s); "
-            f"{paused_follower} can be seeded from the leader or resumed"
+            f"{paused_follower} can be seeded from the leader or resumed once its remembered lag is within policy "
+            f"(target remaining {paused_follower_remaining} block(s))"
         )
     elif paused_still_down:
         action = "keep_follower_paused"
@@ -247,6 +256,13 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
         reason = (
             f"{leader} is still catching up with {leader_remaining} remaining block(s); "
             f"keeping {paused_follower} paused saves bandwidth and disk IO"
+        )
+    elif previous_state.get("mode") == "leader_catchup" and paused_follower and running.get(paused_follower) and not far_behind:
+        action = "clear_pause_state"
+        target = paused_follower
+        reason = (
+            f"{paused_follower} is running and catch-up is within policy "
+            f"(max remaining {max_remaining} block(s), threshold {FAR_BEHIND_BLOCKS})"
         )
     elif far_behind and follower and running.get(follower) and importing.get(leader):
         action = "pause_follower"
@@ -279,10 +295,12 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
         "leader_remaining_blocks": leader_remaining,
         "leader_near_tip": leader_near_tip,
         "far_behind": far_behind,
+        "target_remaining_blocks": paused_follower_remaining if target == paused_follower else remaining.get(target, 0),
         "thresholds": {
             "far_behind_blocks": FAR_BEHIND_BLOCKS,
             "follower_lag_blocks": FOLLOWER_LAG_BLOCKS,
             "leader_near_tip_blocks": LEADER_NEAR_TIP_BLOCKS,
+            "seed_near_tip_blocks": SEED_NEAR_TIP_BLOCKS,
             "import_stale_seconds": LEADER_IMPORT_STALE_SECONDS,
         },
         "nodes": {
@@ -374,6 +392,44 @@ def start_node(node: str, log_path: Path) -> bool:
     return run_logged(compose_command("start", node), log_path, timeout=180).ok
 
 
+def apply_leader_catchup_resources(
+    decision: dict[str, Any],
+    state: dict[str, Any],
+    log_path: Path,
+    *,
+    record_incident: bool,
+) -> bool:
+    leader = str(decision.get("leader") or state.get("leader") or "")
+    if leader not in NODES:
+        return False
+    command = [
+        "docker",
+        "update",
+        "--cpu-shares",
+        str(LEADER_CATCHUP_CPU_SHARES),
+        "--blkio-weight",
+        str(LEADER_CATCHUP_BLKIO_WEIGHT),
+        leader,
+    ]
+    ok = run_logged(command, log_path, timeout=60).ok
+    state["leader_catchup_resources"] = {
+        "leader": leader,
+        "cpu_shares": LEADER_CATCHUP_CPU_SHARES,
+        "blkio_weight": LEADER_CATCHUP_BLKIO_WEIGHT,
+        "applied_at": now_iso(),
+        "ok": ok,
+    }
+    if ok and record_incident:
+        append_incident(
+            "sync_coordinator_boost_leader_resources",
+            "warning",
+            "sync-coordinator",
+            f"boosted {leader} resources for one-node catch-up",
+            {"decision": decision, "cpu_shares": LEADER_CATCHUP_CPU_SHARES, "blkio_weight": LEADER_CATCHUP_BLKIO_WEIGHT},
+        )
+    return ok
+
+
 def pause_follower(decision: dict[str, Any], state: dict[str, Any], log_path: Path) -> bool:
     target = str(decision.get("target") or "")
     leader = str(decision.get("leader") or "")
@@ -390,6 +446,7 @@ def pause_follower(decision: dict[str, Any], state: dict[str, Any], log_path: Pa
                 "paused_reason": decision.get("reason"),
             }
         )
+        apply_leader_catchup_resources(decision, state, log_path, record_incident=True)
         append_incident(
             "sync_coordinator_pause_follower",
             "warning",
@@ -406,13 +463,13 @@ def seed_follower_from_leader(decision: dict[str, Any], state: dict[str, Any], l
     if leader not in NODES or follower not in NODES or leader == follower:
         log_path.write_text(f"[{now_iso()}] invalid seed request leader={leader} follower={follower}\n", encoding="utf-8")
         return False
-    if safe_int(decision.get("network_highest")) <= 0 or safe_int(decision.get("leader_remaining_blocks"), 999999999) > LEADER_NEAR_TIP_BLOCKS:
+    if safe_int(decision.get("network_highest")) <= 0 or safe_int(decision.get("leader_remaining_blocks"), 999999999) > SEED_NEAR_TIP_BLOCKS:
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(
                 f"[{now_iso()}] refusing follower seed because leader is not proven near tip; "
                 f"network_highest={decision.get('network_highest')} "
                 f"leader_remaining={decision.get('leader_remaining_blocks')} "
-                f"threshold={LEADER_NEAR_TIP_BLOCKS}\n"
+                f"threshold={SEED_NEAR_TIP_BLOCKS}\n"
             )
         return False
     if not allow_leader_stop:
@@ -536,14 +593,47 @@ def apply_decision(
         else:
             applied = "pause_follower_suppressed"
     elif action == "seed_or_resume_follower":
-        if allow_seed:
+        seed_allowed_now = safe_int(decision.get("leader_remaining_blocks"), 999999999) <= SEED_NEAR_TIP_BLOCKS
+        resume_allowed_now = safe_int(decision.get("target_remaining_blocks"), 999999999) <= FAR_BEHIND_BLOCKS
+        if allow_seed and seed_allowed_now:
             ok = seed_follower_from_leader(decision, state, log_path, allow_leader_stop)
             applied = "seed_follower" if ok else "seed_follower_failed"
-        elif allow_resume:
+        elif allow_resume and resume_allowed_now:
             ok = resume_follower(decision, state, log_path)
             applied = "resume_follower" if ok else "resume_follower_failed"
+        elif allow_pause:
+            ok = apply_leader_catchup_resources(decision, state, log_path, record_incident=False)
+            applied = "keep_follower_paused" if ok else "keep_follower_paused_resource_boost_failed"
         else:
             applied = "seed_or_resume_suppressed"
+    elif action == "keep_follower_paused":
+        if allow_pause:
+            target = str(decision.get("target") or state.get("paused_follower") or "")
+            leader = str(decision.get("leader") or state.get("leader") or "")
+            if target in NODES and leader in NODES:
+                state.update(
+                    {
+                        "mode": "leader_catchup",
+                        "paused_follower": target,
+                        "leader": leader,
+                        "paused_reason": decision.get("reason"),
+                    }
+                )
+            ok = apply_leader_catchup_resources(decision, state, log_path, record_incident=False)
+            applied = "keep_follower_paused" if ok else "keep_follower_paused_resource_boost_failed"
+        else:
+            applied = "keep_follower_paused_suppressed"
+    elif action == "clear_pause_state":
+        state.update(
+            {
+                "mode": "normal",
+                "paused_follower": "",
+                "leader": "",
+                "cleared_at": now_iso(),
+                "cleared_reason": decision.get("reason"),
+            }
+        )
+        applied = "clear_pause_state"
     else:
         applied = "monitor"
 
