@@ -1,5 +1,20 @@
 # Pool Stack Agent Notes
 
+## Release Candidate Dashboard Source
+
+The only dashboard repository for this release candidate is
+`BlockdagEngineering/pool-dashboard`. Its `main` branch was replaced with the
+live Python operations dashboard captured from
+`/home/jeremy/blockdag-asic-pool/ops` at commit
+`6585347bfa78a1e6ed2a6178eaa38c7ccac9d022`.
+
+Do not reintroduce the retired standalone read-only dashboard, command-center
+prototype, or Grafana/Prometheus/Loki observability dashboard as RC dashboard
+sources. The stack repository still owns full-node, pool, Docker, installer,
+and chain-sync packaging. The dashboard repository owns the dashboard/control
+plane source, and any dashboard code imported into this RC must preserve the
+hardening gates in `scripts/validate-pi5-restart-hardening.sh`.
+
 ## No-Miner Sync-Only Invariant
 
 When a deployment has no managed or connected miners, node services must run as

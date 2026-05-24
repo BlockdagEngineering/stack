@@ -39,7 +39,6 @@ need_file "ops/incident_reporter.py"
 need_file "ops/pool_ops.py"
 need_file "ops/tests/test_miner_retirement_identity.py"
 need_file "ops/dashboard.py"
-need_file "ops/observability/prometheus/alerts.yml"
 need_file "ops/build-pi5-arm64-release.sh"
 need_file "ops/release-install.sh"
 need_file "ops/README.md"
@@ -52,6 +51,10 @@ need_file "ops/systemd/user-bdag-fastsnap-seed.timer"
 need_file "ops/build-fastsnap-seed.sh"
 need_file "haproxy.cfg"
 need_file "asic-pool/schema.sql"
+
+if [[ -e "$root/ops/observability" ]]; then
+  fail "retired ops/observability dashboard stack is present in RC dashboard path"
+fi
 
 need_grep 'BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE.*False' "ops/watchdog.py"
 need_grep 'BDAG_BOOT_REPAIR_DIRTY_POLICY.*start' "ops/watchdog.py"
@@ -145,20 +148,9 @@ need_grep 'pool-db,bdag-miner-node-2,rpc-failover,asic-pool' "ops/install-dashbo
 need_grep 'server node2 bdag-miner-node-2:38131' "haproxy.cfg"
 need_grep 'server node1 bdag-miner-node-1:38131.*backup.*init-addr libc,none' "haproxy.cfg"
 
-need_grep 'BDAGDashboardAPIUnavailable' "ops/observability/prometheus/alerts.yml"
-need_grep 'BDAGStatusContractStale' "ops/observability/prometheus/alerts.yml"
-need_grep 'BDAGMiningDisabledWithMiners' "ops/observability/prometheus/alerts.yml"
-need_grep 'BDAGP2PGuardUnavailable' "ops/observability/prometheus/alerts.yml"
-need_grep 'BDAGDiskSpaceLow' "ops/observability/prometheus/alerts.yml"
-need_grep 'BDAGPoolValidShareStall' "ops/observability/prometheus/alerts.yml"
-need_grep 'BDAGNodeSyncDrift' "ops/observability/prometheus/alerts.yml"
-need_grep 'BDAGMinerDown' "ops/observability/prometheus/alerts.yml"
-need_grep 'BDAGContainerRestarted' "ops/observability/prometheus/alerts.yml"
 need_grep 'BDAG_INCIDENT_REPORT_REPO' "ops/incident_reporter.py"
 need_grep 'BDAG_INCIDENT_REPORT_ENABLED' "ops/incident_reporter.py"
 need_grep 'def redact' "ops/incident_reporter.py"
-need_grep 'bdag_status_can_mine' "ops/observability/exporters/bdag_exporter/bdag_exporter.py"
-need_grep 'bdag_status_contract_version' "ops/observability/exporters/bdag_exporter/bdag_exporter.py"
 
 python3 - "$root/ops/dashboard.py" <<'PY'
 from pathlib import Path
