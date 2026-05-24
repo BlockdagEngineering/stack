@@ -3225,7 +3225,15 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self.send_json(cached_payload("global", GLOBAL_CACHE_SECONDS, collect_global_blockchain))
             except Exception as exc:  # noqa: BLE001
-                self.send_json({"error": str(exc)}, status=500)
+                self.send_json(
+                    {
+                        "status": "failed",
+                        "source": "dashboard-global",
+                        "error": str(exc),
+                        "clusters": [],
+                        "history": [],
+                    }
+                )
             return
         if path == "/api/earnings":
             self.send_json(cached_payload("earnings", EARNINGS_CACHE_SECONDS, lambda: collect_earnings(include_history=True)))
