@@ -99,14 +99,16 @@ jobs:
           VERSION="${{ steps.version.outputs.value }}"
           ROOT="${PACKAGE_NAME}-${VERSION}"
           OUT="${ROOT}.zip"
+          LATEST_OUT="${PACKAGE_NAME}.zip"
+          LATEST_SHA256="${LATEST_OUT}.sha256"
 
 
           test -f .env.example || { echo "::error::Missing .env.example"; exit 1; }
           test -f scripts/release/install.sh || { echo "::error::Missing release installer scripts"; exit 1; }
 
-          rm -rf "${ROOT}" "${OUT}"
+          rm -rf "${ROOT}" "${OUT}" "${LATEST_OUT}" "${LATEST_SHA256}"
           mkdir "${ROOT}"
-          cp docker-compose.yml dockerfile .env.example node.conf.example README.md checksums.txt "${ROOT}/"
+          cp docker-compose.yml dockerfile .dockerignore .env.example node.conf.example README.md checksums.txt "${ROOT}/"
           echo "${VERSION}" > "${ROOT}/version.txt"
           cp scripts/release/install.sh scripts/release/install.ps1 scripts/release/install.cmd "${ROOT}/"
           cp -a scripts/release/installers "${ROOT}/installers"
@@ -118,6 +120,8 @@ jobs:
             sudo apt-get install -y zip
           fi
           zip -qr "${OUT}" "${ROOT}"
+          cp "${OUT}" "${LATEST_OUT}"
+          sha256sum "${LATEST_OUT}" > "${LATEST_SHA256}"
           rm -rf "${ROOT}"
 
           touch version.txt
@@ -131,12 +135,19 @@ jobs:
             exit 1
           fi
           echo "artifact=${OUT}" >> "$GITHUB_OUTPUT"
+          echo "latest_artifact=${LATEST_OUT}" >> "$GITHUB_OUTPUT"
+          echo "latest_sha256=${LATEST_SHA256}" >> "$GITHUB_OUTPUT"
+          echo "version_file=version.txt" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.value }}
-          files: ${{ steps.package.outputs.artifact }}
+          files: |
+            ${{ steps.package.outputs.artifact }}
+            ${{ steps.package.outputs.latest_artifact }}
+            ${{ steps.package.outputs.latest_sha256 }}
+            ${{ steps.package.outputs.version_file }}
           draft: false
           prerelease: false

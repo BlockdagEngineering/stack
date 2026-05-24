@@ -1,7 +1,9 @@
 # Local environment
 .env
 .env.snapshot
-release-downloads/
+release-downloads/*
+!release-downloads/
+!release-downloads/index.html
 /latest.bdsnap
 # Local node config (copy from node.conf.example)
 node.conf
