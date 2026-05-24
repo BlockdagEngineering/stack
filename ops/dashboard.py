@@ -1141,7 +1141,7 @@ HTML = r"""<!doctype html>
           <div id="minerHealthSummary" class="subtle" style="margin-top: 8px;"></div>
           <div class="table-scroll">
           <table class="wide-table">
-            <thead><tr><th class="nowrap">Miner</th><th class="nowrap">Type</th><th>Status</th><th>Configured</th><th>Connected</th><th class="nowrap">Workers</th><th class="right">Shares</th><th class="right">Work %</th><th class="right">Work</th><th class="right">Found Blocks</th><th>Last Share</th><th>Issue</th></tr></thead>
+            <thead><tr><th class="nowrap">Miner</th><th class="nowrap">Type</th><th>Status</th><th>Configured</th><th>Connected</th><th class="nowrap">Workers</th><th class="right">Shares</th><th class="right">Work %</th><th class="right">Expected %</th><th class="nowrap">Lane</th><th class="right">Work</th><th class="right">Found Blocks</th><th>Last Share</th><th>Issue</th></tr></thead>
             <tbody id="managedMinersTable"></tbody>
           </table>
           </div>
@@ -1502,6 +1502,43 @@ HTML = r"""<!doctype html>
       }
       return parts.join(" ");
     }
+    function sourceHealthStatusText(data) {
+      const poolHealth = data.pool_health || {};
+      const metrics = data.pool_metrics || {};
+      const jobHealth = poolHealth.source_job_health || metrics.source_job_health || {};
+      const selected = poolHealth.selected_backend_source_health || metrics.selected_backend_source_health || {};
+      const contract = poolHealth.selected_backend_readiness_contract || {};
+      const parts = [];
+      if (hasValue(jobHealth.ok)) parts.push(`job_health=${metricEnabled(jobHealth.ok) ? "ok" : "degraded"}`);
+      const sourceFlags = [];
+      if (hasValue(selected.node_mineable)) sourceFlags.push(`mineable=${metricEnabled(selected.node_mineable) ? "yes" : "no"}`);
+      if (hasValue(selected.node_submit_ready)) sourceFlags.push(`submit=${metricEnabled(selected.node_submit_ready) ? "ready" : "not-ready"}`);
+      if (hasValue(selected.node_p2p_mining_fresh)) sourceFlags.push(`p2p=${metricEnabled(selected.node_p2p_mining_fresh) ? "fresh" : "stale"}`);
+      if (hasValue(selected.node_template_age_seconds)) sourceFlags.push(`node_template_age=${fmt(selected.node_template_age_seconds)}s`);
+      if (sourceFlags.length) parts.push(`source_health=${sourceFlags.join("/")}`);
+      if (poolHealth.source_selected_backend_hard_degraded) parts.push("source_fault=hard");
+      else if (poolHealth.source_health_transient_degraded) parts.push("source_fault=advisory");
+      if (contract.contradiction) parts.push("readiness=contradiction");
+      return parts.join(" ");
+    }
+    function lossLedgerStatusText(data) {
+      const poolHealth = data.pool_health || {};
+      const metrics = data.pool_metrics || {};
+      const ledger = poolHealth.loss_ledger || metrics.loss_ledger || {};
+      const block = ledger.block_outcomes || {};
+      const share = ledger.share_outcomes || {};
+      const topLoss = (ledger.top_loss_reasons || [])[0] || {};
+      const parts = [];
+      if (ledger.severity) parts.push(`efficiency=${ledger.severity}`);
+      if (hasValue(block.accepted_ratio_percent)) parts.push(`block_accept=${fmt(block.accepted_ratio_percent)}%`);
+      if (hasValue(block.loss_ratio_percent)) parts.push(`block_loss=${fmt(block.loss_ratio_percent)}%`);
+      if (hasValue(share.accepted_ratio_percent)) parts.push(`share_accept=${fmt(share.accepted_ratio_percent)}%`);
+      if (topLoss.reason) {
+        const ratio = hasValue(topLoss.ratio_percent) ? ` ${fmt(topLoss.ratio_percent)}%` : "";
+        parts.push(`top_loss=${topLoss.plane || "pool"}:${topLoss.reason}${ratio}`);
+      }
+      return parts.join(" ");
+    }
     function statusClass(overall) { return overall === "ok" ? "ok" : overall === "syncing" ? "syncing" : "down"; }
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
@@ -1586,6 +1623,8 @@ HTML = r"""<!doctype html>
           : "submit_recovery=idle");
       const selectedBackend = poolHealth.selected_backend || data.pool_metrics?.selected_backend || "unknown";
       const templateBackendStatus = templateBackendStatusText(data);
+      const sourceHealthStatus = sourceHealthStatusText(data);
+      const lossLedgerStatus = lossLedgerStatusText(data);
       text(
         "poolSummary",
         `endpoint=${data.pool_endpoint || "unknown"} local_ips=${(data.local_ips || []).join(", ") || "none"} `
@@ -1594,7 +1633,9 @@ HTML = r"""<!doctype html>
         + `stale_jobs=${fmt(poolHealth.stale_job_candidate_count)} submit_errors=${fmt(poolHealth.block_submit_error_count)} `
         + `duplicate_blocks=${fmt(poolHealth.duplicate_block_count)} `
         + `last_valid_share_age=${fmt(poolHealth.last_valid_share_age_seconds)}s share_stall=${poolHealth.share_stall ? "yes" : "no"} `
-        + `selected_backend=${selectedBackend}${templateBackendStatus ? ` ${templateBackendStatus}` : ""} ${submitRecovery}`
+        + `selected_backend=${selectedBackend}${templateBackendStatus ? ` ${templateBackendStatus}` : ""}`
+        + `${sourceHealthStatus ? ` ${sourceHealthStatus}` : ""}`
+        + `${lossLedgerStatus ? ` ${lossLedgerStatus}` : ""} ${submitRecovery}`
       );
       text("poolLog", (data.pool.tail || []).join("\n"));
       text("actionLog", data.latest_action ? JSON.stringify(data.latest_action, null, 2) : "No action has run yet.");
@@ -1852,11 +1893,12 @@ HTML = r"""<!doctype html>
       const tbody = document.getElementById("managedMinersTable");
       if (!tbody) return;
       tbody.innerHTML = "";
-      text("minerHealthSummary", `tracked=${fmt(health.tracked_count || 0)} connected=${fmt(health.connected_count || 0)} managed=${fmt(health.managed_count || 0)} ok=${fmt(health.ok_count || 0)} stratum=${fmt(health.stratum_count || 0)}`);
+      const lane = health.lane_balance || {};
+      text("minerHealthSummary", `tracked=${fmt(health.tracked_count || 0)} connected=${fmt(health.connected_count || 0)} managed=${fmt(health.managed_count || 0)} ok=${fmt(health.ok_count || 0)} stratum=${fmt(health.stratum_count || 0)} lanes=${fmt(lane.expected_lane_count || 0)} expected=${escapeHtml(lane.expected_work_percent || "0.00")}% imbalanced=${fmt(lane.imbalanced_count || 0)}`);
       const rows = health.miners || [];
       if (!rows.length) {
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td colspan="12" class="subtle">No tracked miners have been seen yet.</td>`;
+        tr.innerHTML = `<td colspan="14" class="subtle">No tracked miners have been seen yet.</td>`;
         tbody.appendChild(tr);
         return;
       }
@@ -1880,6 +1922,8 @@ HTML = r"""<!doctype html>
           <td class="nowrap">${escapeShortEth(workers)}</td>
           <td class="right">${fmt(miner.shares || 0)}</td>
           <td class="right">${escapeHtml(miner.work_percent || "0.00")}</td>
+          <td class="right">${escapeHtml(miner.expected_work_percent || "0.00")}</td>
+          <td class="nowrap">${escapeHtml(miner.lane_status || "")}</td>
           <td class="right">${fmt(miner.share_work || 0)}</td>
           <td class="right">${fmt(miner.blocks_found || 0)}</td>
           <td>${escapeHtml(miner.last_share_at || "")}</td>
