@@ -137,6 +137,7 @@ GLOBAL_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_GLOBAL_CACHE_TTL_SECONDS", "
 GLOBAL_BLOCK_WINDOW = int(os.environ.get("BDAG_GLOBAL_BLOCK_WINDOW", "2048"))
 GLOBAL_RPC_WORKERS = int(os.environ.get("BDAG_GLOBAL_RPC_WORKERS", "24"))
 GLOBAL_HISTORY_LIMIT = int(os.environ.get("BDAG_GLOBAL_HISTORY_LIMIT", "9000"))
+NODE_EVM_RPC_PORT = int(os.environ.get("BDAG_NODE_EVM_RPC_PORT", "18545"))
 EARNINGS_HISTORY_RETENTION_SECONDS = int(os.environ.get("BDAG_EARNINGS_HISTORY_RETENTION_SECONDS", str(35 * 86400)))
 EARNINGS_DASHBOARD_HISTORY_SECONDS = int(os.environ.get("BDAG_EARNINGS_DASHBOARD_HISTORY_SECONDS", str(31 * 86400)))
 EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_EARNINGS_SNAPSHOT_INTERVAL_SECONDS", "120"))
@@ -3747,22 +3748,36 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     )
     no_miner_sync_only = bool(no_miner_node_only and sync_progress.get("status") == "syncing")
     if no_miner_node_only:
-        probe_warning_prefixes = (
-            "rpc-failover is refusing live mining template probes",
-            "pool is waiting for node sync to finish",
-        )
+        def _is_no_miner_sync_noise(item: Any) -> bool:
+            text = str(item)
+            return (
+                "live mining template probes" in text
+                or text.startswith("pool is waiting for node sync to finish")
+            )
+
         warnings = [
             item for item in warnings
-            if not any(str(item).startswith(prefix) for prefix in probe_warning_prefixes)
+            if not _is_no_miner_sync_noise(item)
         ]
         sync_warnings = [
             item for item in sync_warnings
-            if not any(str(item).startswith(prefix) for prefix in probe_warning_prefixes)
+            if not _is_no_miner_sync_noise(item)
         ]
+        pool["initial_download_needs_repair"] = False
         pool_health["rpc_template_failing"] = False
         pool_health["node_template_probe_failing"] = False
         pool_health["initial_download_needs_repair"] = False
         pool_health["needs_fast_repair"] = False
+        sync_health["needs_fast_sync_repair"] = False
+        if isinstance(template_probe_health, dict):
+            template_probe_health["suppressed_for_no_miners"] = True
+            template_probe_health["failing_nodes"] = []
+            template_probe_health["all_nodes_failing"] = False
+            rpc_probe = template_probe_health.get("rpc_failover")
+            if isinstance(rpc_probe, dict):
+                rpc_probe["failing"] = False
+        for node in NODES:
+            node_details.setdefault(node, {})["template_probe_failing"] = False
         if no_miner_sync_only:
             add_sync_warning("no miners present; node is syncing and mining work remains idle")
         else:
@@ -4052,6 +4067,52 @@ def node_rpc_urls() -> list[tuple[str, str]]:
             return valid_configured
 
     return mining_rpc_urls(include_haproxy=False)
+
+
+def docker_container_ip(name: str) -> str:
+    ip = run(
+        ["docker", "inspect", name, "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"],
+        timeout=8,
+    ).stdout.strip()
+    return ip if valid_ipv4(ip) else ""
+
+
+def _host_url_for_dashboard(url: str) -> str:
+    """Translate compose-only service hostnames to container IPs for host-side collectors."""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return url
+    hostname = parsed.hostname or ""
+    if hostname not in SERVICES and hostname not in NODES and hostname not in POOL_CONTAINERS:
+        return url
+    ip = docker_container_ip(hostname)
+    if not ip:
+        return url
+    port = parsed.port or NODE_EVM_RPC_PORT
+    netloc = f"{ip}:{port}"
+    return urllib.parse.urlunsplit((parsed.scheme, netloc, parsed.path or "", parsed.query, parsed.fragment))
+
+
+def global_evm_rpc_urls() -> list[tuple[str, str]]:
+    configured = (
+        named_urls_from_env("BDAG_GLOBAL_RPC_URLS", [])
+        or named_urls_from_env("BDAG_EVM_RPC_URLS", [])
+        or named_urls_from_env("WALLET_RPC_URLS", [])
+    )
+    urls: list[tuple[str, str]] = []
+    for source, url in configured:
+        normalized = _host_url_for_dashboard(url.strip())
+        if valid_url(normalized):
+            urls.append((source.strip() or "configured-evm", normalized))
+    if urls:
+        return urls
+
+    for name in NODES:
+        ip = docker_container_ip(name)
+        if ip:
+            urls.append((name, f"http://{ip}:{NODE_EVM_RPC_PORT}"))
+    return urls
 
 
 def unknown_sync_progress(source: str = "node", error: str = "") -> dict[str, Any]:
@@ -4800,10 +4861,46 @@ def collect_global_blockchain() -> dict[str, Any]:
     if cached.get("status") == "ok" and seconds_since_epoch() - cached_at <= GLOBAL_CACHE_TTL_SECONDS:
         return annotate_global_pool_labels({**cached, "cache_hit": True, "history": read_global_history(limit=GLOBAL_HISTORY_LIMIT)})
 
-    rpc_sources = node_rpc_urls() or [("local-chain", "http://127.0.0.1:18545")]
-    rpc_name, rpc_url = rpc_sources[0]
-    latest_hex = json_rpc_call(rpc_url, "eth_blockNumber", [], timeout=8.0)
-    latest_block = int(str(latest_hex), 16)
+    def stale_or_failed(error: str, errors: list[str] | None = None) -> dict[str, Any]:
+        history = read_global_history(limit=GLOBAL_HISTORY_LIMIT)
+        if isinstance(cached, dict) and cached.get("status") == "ok":
+            return annotate_global_pool_labels(
+                {
+                    **cached,
+                    "status": "stale",
+                    "stale": True,
+                    "cache_hit": True,
+                    "error": error,
+                    "fetch_errors": errors or cached.get("fetch_errors", []),
+                    "history": history,
+                }
+            )
+        return {
+            "status": "failed",
+            "source": "on-chain",
+            "error": error,
+            "fetch_errors": errors or [],
+            "clusters": [],
+            "history": history,
+        }
+
+    rpc_sources = global_evm_rpc_urls() or [("local-chain", f"http://127.0.0.1:{NODE_EVM_RPC_PORT}")]
+    latest_errors: list[str] = []
+    rpc_name = ""
+    rpc_url = ""
+    latest_block: int | None = None
+    for source_name, source_url in rpc_sources:
+        try:
+            latest_hex = json_rpc_call(source_url, "eth_blockNumber", [], timeout=8.0)
+            latest_block = int(str(latest_hex), 16)
+            rpc_name = source_name
+            rpc_url = source_url
+            break
+        except Exception as exc:  # noqa: BLE001
+            latest_errors.append(f"{source_name}: {exc}")
+    if latest_block is None:
+        return stale_or_failed("unable to fetch latest global block height from EVM RPC", latest_errors)
+
     requested_count = min(max(GLOBAL_BLOCK_WINDOW, 1), latest_block + 1)
     start_block = max(0, latest_block - requested_count + 1)
     block_numbers = list(range(start_block, latest_block + 1))
@@ -4832,13 +4929,7 @@ def collect_global_blockchain() -> dict[str, Any]:
 
     headers.sort(key=lambda item: int(str(item.get("number") or "0"), 16))
     if not headers:
-        return {
-            "status": "failed",
-            "source": "on-chain",
-            "error": "unable to fetch block headers",
-            "requested_blocks": requested_count,
-            "fetch_errors": fetch_errors,
-        }
+        return stale_or_failed("unable to fetch block headers", fetch_errors)
 
     reward_summary = {}
     try:
