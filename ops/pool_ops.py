@@ -785,10 +785,20 @@ def read_retired_miner_rows() -> list[dict[str, Any]]:
 def retired_miner_row_identities(row: dict[str, Any]) -> tuple[set[str], set[str], set[str], str]:
     name = str(row.get("display_name") or "").strip()
     macs = {mac for mac in [normalize_mac(row.get("mac"))] if mac}
-    ips = {str(ip) for ip in merge_unique_strings(row.get("ips"), row.get("ip")) if is_ipv4(str(ip))}
+    ips = {
+        str(ip)
+        for ip in merge_unique_strings(row.get("observed_ips"), row.get("ips_observed"), row.get("ips"), row.get("ip"))
+        if is_ipv4(str(ip))
+    }
     workers = {
         worker_text
-        for worker in merge_unique_strings(row.get("worker_user"), row.get("worker_users"), row.get("workers"))
+        for worker in merge_unique_strings(
+            row.get("observed_worker_user"),
+            row.get("observed_worker_users"),
+            row.get("worker_user"),
+            row.get("worker_users"),
+            row.get("workers"),
+        )
         for worker_text in [str(worker or "").strip().lower()]
         if re.fullmatch(r"0x[a-f0-9]{40}", worker_text)
     }
@@ -796,6 +806,7 @@ def retired_miner_row_identities(row: dict[str, Any]) -> tuple[set[str], set[str
 
 
 def read_retired_miner_identities() -> tuple[set[str], set[str], set[str], set[str]]:
+    """Return retired metadata. Only retired_macs is an identity key."""
     retired_macs: set[str] = set()
     retired_ips: set[str] = set()
     retired_workers: set[str] = set()
@@ -810,61 +821,27 @@ def read_retired_miner_identities() -> tuple[set[str], set[str], set[str], set[s
     return retired_macs, retired_ips, retired_workers, retired_names
 
 
-def retired_miner_candidate_workers(item: dict[str, Any]) -> set[str]:
-    return {
-        worker
-        for worker in (
-            str(value or "").strip().lower()
-            for value in merge_unique_strings(
-                item.get("expected_worker_user"),
-                item.get("worker_user"),
-                item.get("last_workers"),
-                item.get("workers"),
-            )
-        )
-        if re.fullmatch(r"0x[a-f0-9]{40}", worker)
-    }
-
-
-def miner_has_active_pool_evidence(item: dict[str, Any]) -> bool:
-    count_keys = ("submits", "shares", "blocks_found", "last_submits_window", "last_shares_window", "last_blocks_window")
-    if any(safe_int(item.get(key), 0) > 0 for key in count_keys):
-        return True
-    return bool(item.get("last_submit_at") or item.get("last_share_at") or item.get("last_block_at"))
-
-
 def retired_miner_identity_decision(item: dict[str, Any], ip: str = "", mac: str = "") -> dict[str, Any]:
     candidate_mac = normalize_mac(mac) or normalize_mac(item.get("mac"))
     candidate_ip = str(ip or item.get("ip") or "")
-    candidate_workers = retired_miner_candidate_workers(item)
     rows = read_retired_miner_rows()
 
     for row in rows:
-        row_macs, _row_ips, row_workers, name = retired_miner_row_identities(row)
+        row_macs, _row_ips, _row_workers, name = retired_miner_row_identities(row)
         if candidate_mac and candidate_mac in row_macs:
             return {"retired": True, "matched_by": "mac", "retired_name": name, "conflict": False}
-        if candidate_workers and row_workers and candidate_workers & row_workers:
-            return {"retired": True, "matched_by": "worker", "retired_name": name, "conflict": False}
 
     for row in rows:
-        row_macs, row_ips, row_workers, name = retired_miner_row_identities(row)
-        if not candidate_ip or candidate_ip not in row_ips:
-            continue
-        stable_row_identity = bool(row_macs or row_workers)
-        different_mac = bool(candidate_mac and row_macs and candidate_mac not in row_macs)
-        different_worker = bool(candidate_workers and row_workers and not (candidate_workers & row_workers))
-        if stable_row_identity and miner_has_active_pool_evidence(item) and (different_mac or different_worker):
+        row_macs, row_ips, _row_workers, name = retired_miner_row_identities(row)
+        if candidate_ip and candidate_ip in row_ips:
             return {
                 "retired": False,
-                "matched_by": "ip-conflict",
+                "matched_by": "ip-observation",
                 "retired_name": name,
                 "conflict": True,
                 "candidate_mac": candidate_mac,
                 "retired_macs": sorted(row_macs),
-                "candidate_workers": sorted(candidate_workers),
-                "retired_workers": sorted(row_workers),
             }
-        return {"retired": True, "matched_by": "ip", "retired_name": name, "conflict": False}
 
     return {"retired": False, "matched_by": "", "retired_name": "", "conflict": False}
 
@@ -872,9 +849,9 @@ def retired_miner_identity_decision(item: dict[str, Any], ip: str = "", mac: str
 def is_retired_miner_identity(item: dict[str, Any], ip: str = "", mac: str = "") -> bool:
     """Skip miners intentionally moved away from this local pool.
 
-    MAC and worker matches are authoritative. IP matches are a fallback only
-    when live pool evidence does not prove a different active identity, so DHCP
-    reuse or an intentional re-add cannot hide a real miner silently.
+    MAC is the only permanent ASIC identity. IPs, worker labels, ports, and
+    names are observations only; they can help fetch or display an ASIC but must
+    not retire, reintroduce, or suppress a miner by themselves.
     """
     return bool(retired_miner_identity_decision(item, ip, mac).get("retired"))
 
@@ -2396,6 +2373,18 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
     return save_miner_registry(list(existing.values())) if changed else registry
 
 
+def miner_health_count_summary(health: list[dict[str, Any]]) -> dict[str, int]:
+    managed_count = sum(1 for item in health if item["managed"])
+    return {
+        "managed_count": managed_count,
+        "managed_ok_count": sum(1 for item in health if item["managed"] and item["status"] == "ok"),
+        "ok_count": sum(1 for item in health if item["status"] == "ok"),
+        "tracked_count": len(health),
+        "connected_count": sum(1 for item in health if item.get("connected")),
+        "stratum_count": sum(1 for item in health if item.get("device_type") == "stratum"),
+    }
+
+
 def collect_miner_health() -> dict[str, Any]:
     defaults = default_miner_pool_settings()
     activity = collect_pool_activity(lines=POOL_ACTIVITY_LOG_LINES)
@@ -2451,8 +2440,8 @@ def collect_miner_health() -> dict[str, Any]:
             label = registered.get("display_name") or ip
             retired_name = retirement_decision.get("retired_name") or "retired miner"
             warnings.append(
-                f"{label} {ip} is active in pool logs but matches retired-miner IP for {retired_name}; "
-                "keeping it active because MAC/worker evidence differs"
+                f"{label} {ip} is active in pool logs but shares an observed retired-miner IP for {retired_name}; "
+                "keeping it active because only MAC address can retire an ASIC"
             )
         last_pool_seen_epoch = int(registered.get("last_pool_seen_epoch", 0) or 0)
         last_submit_epoch = int(registered.get("last_submit_epoch", 0) or 0)
@@ -2617,18 +2606,11 @@ def collect_miner_health() -> dict[str, Any]:
         if total_work > 0 and share_work_int > 0:
             item["work_percent"] = percent_to_str((Decimal(share_work_int) / Decimal(total_work)) * Decimal("100"))
 
-    managed_count = sum(1 for item in health if item["managed"])
-    ok_count = sum(1 for item in health if item["managed"] and item["status"] == "ok")
-    connected_count = sum(1 for item in health if item.get("connected"))
-    stratum_count = sum(1 for item in health if item.get("device_type") == "stratum")
+    counts = miner_health_count_summary(health)
     return {
         "generated_at": now_iso(),
         "registry_updated_at": registry.get("updated_at"),
-        "managed_count": managed_count,
-        "ok_count": ok_count,
-        "tracked_count": len(health),
-        "connected_count": connected_count,
-        "stratum_count": stratum_count,
+        **counts,
         "failures": failures,
         "warnings": warnings,
         "miners": health,
