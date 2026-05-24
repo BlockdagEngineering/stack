@@ -2751,12 +2751,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_client_disconnect(self, exc: BaseException) -> None:
         client = self.client_address[0] if self.client_address else "unknown"
-        with (RUNTIME_DIR / "dashboard-access.log").open("a", encoding="utf-8") as log:
-            log.write(f"[{now_iso()}] {client} client disconnected during response: {exc.__class__.__name__}\n")
+        try:
+            with (RUNTIME_DIR / "dashboard-access.log").open("a", encoding="utf-8") as log:
+                log.write(f"[{now_iso()}] {client} client disconnected during response: {exc.__class__.__name__}\n")
+        except OSError:
+            pass
 
     def log_message(self, fmt: str, *args) -> None:  # noqa: A003 - stdlib signature.
-        with (RUNTIME_DIR / "dashboard-access.log").open("a", encoding="utf-8") as log:
-            log.write(f"[{now_iso()}] {self.address_string()} {fmt % args}\n")
+        try:
+            with (RUNTIME_DIR / "dashboard-access.log").open("a", encoding="utf-8") as log:
+                log.write(f"[{now_iso()}] {self.address_string()} {fmt % args}\n")
+        except OSError:
+            pass
 
     def send_body(self, body: bytes, content_type: str, status: int = 200) -> None:
         try:
