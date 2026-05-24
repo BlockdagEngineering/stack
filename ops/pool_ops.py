@@ -49,6 +49,8 @@ DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = path_from_env("BDAG_PROJECT_ROOT", DEFAULT_PROJECT_ROOT, DEFAULT_PROJECT_ROOT)
 RUNTIME_DIR = path_from_env("BDAG_RUNTIME_DIR", PROJECT_ROOT / "ops" / "runtime", PROJECT_ROOT)
 LOG_DIR = RUNTIME_DIR / "logs"
+SYNC_PROGRESS_HEALTH_STATE_FILE = RUNTIME_DIR / "sync-progress-health-state.json"
+SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS = int(os.environ.get("BDAG_SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS", "2700"))
 POOL_ENV_FILE = path_from_env("BDAG_POOL_ENV_FILE", PROJECT_ROOT / "asic-pool" / ".env", PROJECT_ROOT)
 DATA_DIR = path_from_env("BDAG_DATA_DIR", PROJECT_ROOT / "data", PROJECT_ROOT)
 
@@ -59,17 +61,17 @@ POOL_DB_USER = os.environ.get("BDAG_POOL_DB_USER", "test")
 POOL_DB_NAME = os.environ.get("BDAG_POOL_DB_NAME", "pool")
 NODES = split_env_list("BDAG_NODE_SERVICES", "bdag-miner-node-1,bdag-miner-node-2")
 OBSERVER_NODES = unique_names(split_env_list("BDAG_OBSERVER_NODE_SERVICES", ""))
-NODE_METRIC_PORTS = {
-    "bdag-miner-node-1": int(os.environ.get("BDAG_NODE1_METRICS_PORT", "6061")),
-    "bdag-miner-node-2": int(os.environ.get("BDAG_NODE2_METRICS_PORT", "6062")),
-}
-NODE_NATIVE_METRICS_TIMEOUT = float(os.environ.get("BDAG_NODE_NATIVE_METRICS_TIMEOUT", "2.0"))
 STACK_SERVICES = split_env_list(
     "BDAG_STACK_SERVICES",
     "pool-db,bdag-miner-node-1,bdag-miner-node-2,rpc-failover,asic-pool",
 )
 SERVICES = unique_names([*STACK_SERVICES, POOL_DB_CONTAINER, *NODES, *POOL_CONTAINERS])
 NODE_DATA_DIRS = split_env_list("BDAG_NODE_DATA_DIRS", "node1,node2")
+NODE_METRIC_PORTS = {
+    "bdag-miner-node-1": int(os.environ.get("BDAG_NODE1_METRICS_PORT", "6061")),
+    "bdag-miner-node-2": int(os.environ.get("BDAG_NODE2_METRICS_PORT", "6062")),
+}
+NATIVE_SYNC_LEAD_THRESHOLD = int(os.environ.get("BDAG_NATIVE_SYNC_LEAD_THRESHOLD_BLOCKS", "5"))
 
 
 def node_role(name: str) -> str:
@@ -84,10 +86,16 @@ def node_affects_production_health(name: str) -> bool:
     return name in NODES
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+SENSITIVE_ARG_RE = re.compile(r"((?:--rpcpass|--password|--pass)(?:=|\s+))([^\s\"'\]]+)", re.IGNORECASE)
+SENSITIVE_ENV_RE = re.compile(
+    r"((?:NODE_RPC_PASS|POOL_PRIVATE_KEY|POSTGRES_PASSWORD|MINER_ADMIN_PASSWORD|PASSWORD|PASS)=)([^\s,;\"'\]]+)",
+    re.IGNORECASE,
+)
 BLOCK_RE = re.compile(r"Imported new chain segment\s+.*?number\s*=?\s*([0-9,]+)")
 MAIN_ORDER_RE = re.compile(r"bestMainOrder=([0-9,]+)")
 PEER_AHEAD_RE = re.compile(r"peer main order exceeds.*?by\s+([0-9,]+)\s+blocks")
 SYNC_DELTA_RE = re.compile(r"syncPeerDelta=([0-9,]+)")
+PROMETHEUS_METRIC_RE = re.compile(r"^([A-Za-z_:][A-Za-z0-9_:]*)(?:\s+|\{[^}]*\}\s+)([-+0-9.eE]+)$")
 IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 NODE_LOG_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\|(\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?")
 
@@ -101,7 +109,6 @@ MINER_SCAN_MAX_TARGETS = int(os.environ.get("BDAG_MINER_SCAN_MAX_TARGETS", "1024
 MINER_LOGIN_KEY_HEX = "21" * 16
 MINER_ZERO_IV_HEX = "00" * 16
 MINER_REGISTRY_FILE = RUNTIME_DIR / "miners.json"
-MINER_RETIREMENTS_FILE = RUNTIME_DIR / "miner-retirements.json"
 MINER_ADMIN_PASSWORD_FILE = RUNTIME_DIR / "miner-admin-password.txt"
 EARNINGS_SNAPSHOT_FILE = RUNTIME_DIR / "earnings-snapshots.jsonl"
 EARNINGS_ONCHAIN_CACHE_FILE = RUNTIME_DIR / "earnings-onchain-cache.json"
@@ -109,6 +116,7 @@ PRICE_CACHE_FILE = RUNTIME_DIR / "price-cache.json"
 GLOBAL_CACHE_FILE = RUNTIME_DIR / "global-cache.json"
 GLOBAL_HISTORY_FILE = RUNTIME_DIR / "global-history.jsonl"
 GLOBAL_POOL_LABEL_FILE = RUNTIME_DIR / "global-pool-labels.json"
+SYNC_COORDINATOR_STATE_FILE = RUNTIME_DIR / "sync-coordinator-state.json"
 PEER_GEO_CACHE_FILE = RUNTIME_DIR / "peer-geo-cache.json"
 NODE_TEMPLATE_PROBE_CACHE_FILE = RUNTIME_DIR / "node-template-probe-cache.json"
 WEI_PER_BDAG = Decimal("1000000000000000000")
@@ -169,7 +177,6 @@ POOL_ACCEPTED_JOB_EXPIRED_STORM_RATIO = int(
     os.environ.get("BDAG_POOL_ACCEPTED_JOB_EXPIRED_STORM_RATIO", "2")
 )
 POOL_METRICS_PORT = int(os.environ.get("BDAG_POOL_METRICS_PORT", "9090"))
-POOL_JOB_STATE_URL = os.environ.get("BDAG_POOL_JOB_STATE_URL", "http://127.0.0.1:9092/health/job-state")
 POOL_METRICS_TIMEOUT = float(os.environ.get("BDAG_POOL_METRICS_TIMEOUT", "2.0"))
 POOL_SUBMIT_RECOVERY_RECENT_SECONDS = int(os.environ.get("BDAG_POOL_SUBMIT_RECOVERY_RECENT_SECONDS", "180"))
 POOL_SUBMIT_RECOVERY_ACCEPTED_RESUME_SECONDS = int(
@@ -177,7 +184,6 @@ POOL_SUBMIT_RECOVERY_ACCEPTED_RESUME_SECONDS = int(
 )
 NODE_IMPORT_STALE_SECONDS = int(os.environ.get("BDAG_NODE_IMPORT_STALE_SECONDS", "180"))
 NODE_LAG_WARN_BLOCKS = int(os.environ.get("BDAG_NODE_LAG_WARN_BLOCKS", "5"))
-NODE_LAG_MAJOR_BLOCKS = int(os.environ.get("BDAG_NODE_LAG_MAJOR_BLOCKS", "1000"))
 NODE_P2P_ERROR_WARN_COUNT = int(os.environ.get("BDAG_NODE_P2P_ERROR_WARN_COUNT", "10"))
 NODE_ORPHAN_ERROR_STORM_COUNT = int(os.environ.get("BDAG_NODE_ORPHAN_ERROR_STORM_COUNT", "20"))
 NODE_MINING_RPC_PORT = int(os.environ.get("BDAG_NODE_MINING_RPC_PORT", "38131"))
@@ -217,19 +223,7 @@ HOMERIC_MINER_NAMES = [
     "Agamemnon",
     "Calypso",
 ]
-PINNED_MINER_WORKER_LABELS = {
-    # Operator-assigned ASIC wallet names. These labels are tied to the worker
-    # address rather than the current DHCP IP so a factory-reset or moved ASIC
-    # does not inherit the wrong Homeric name.
-    "0xead2d76d7b50e1c9c619bd35dd6b184abe5b6c07": "Odysseus",
-}
-DEFAULT_GLOBAL_POOL_LABELS = {
-    "0x05518e03e148c56e426ff9e1cbdb962b4fc5250a": "Ajax ASIC",
-    "0x12d8377d571cebf2da043fbcad94f4bd85157a78": "Steve Offer",
-    "0xcd6dd02c7d07326ecec0b718eed505c2b8009a7a": "Eddie",
-    "0xc65d43d4e246ba786d6441d571265cc83103d5d6": "Pieter",
-    "0x6387c32ccdd60bfba00ec70a67715dcd52e8083f": "Dawie",
-}
+DEFAULT_GLOBAL_POOL_LABELS = {}
 
 
 @dataclass
@@ -264,12 +258,15 @@ def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
-def strip_ansi(value: str | bytes | None) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        value = value.decode("utf-8", errors="replace")
+def strip_ansi(value: str) -> str:
     return ANSI_RE.sub("", value)
+
+
+def redact_sensitive_text(value: str) -> str:
+    text = strip_ansi(value)
+    text = SENSITIVE_ARG_RE.sub(r"\1<redacted>", text)
+    text = SENSITIVE_ENV_RE.sub(r"\1<redacted>", text)
+    return text
 
 
 def run(command: list[str], timeout: int = 20) -> CommandResult:
@@ -294,8 +291,8 @@ def run(command: list[str], timeout: int = 20) -> CommandResult:
         return CommandResult(
             command=command,
             returncode=124,
-            stdout=strip_ansi(exc.stdout),
-            stderr=strip_ansi(exc.stderr) + f"\nTimed out after {timeout}s",
+            stdout=strip_ansi(exc.stdout or ""),
+            stderr=strip_ansi((exc.stderr or "") + f"\nTimed out after {timeout}s"),
             elapsed=round(time.time() - start, 3),
         )
     except FileNotFoundError as exc:
@@ -357,18 +354,6 @@ def configured_command(name: str, default: list[str]) -> list[str]:
     return shlex.split(raw) if raw else []
 
 
-def compose_command(*args: str) -> list[str]:
-    return [
-        "docker",
-        "compose",
-        "--env-file",
-        str(POOL_ENV_FILE),
-        "-f",
-        str(PROJECT_ROOT / "docker-compose.yml"),
-        *args,
-    ]
-
-
 def decimal_to_str(value: Decimal, places: int = 2) -> str:
     quant = Decimal(1).scaleb(-places)
     return format(value.quantize(quant), "f")
@@ -393,6 +378,15 @@ def safe_decimal(value: Any) -> Decimal | None:
 def safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def safe_float(value: Any, default: float | None = None) -> float | None:
+    try:
+        if value is None:
+            return default
+        return float(value)
     except (TypeError, ValueError):
         return default
 
@@ -422,6 +416,36 @@ def write_json_file(path: Path, payload: Any, mode: int | None = None) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     if mode is not None:
         path.chmod(mode)
+
+
+def read_sync_coordinator_state() -> dict[str, Any]:
+    state = read_json_file(SYNC_COORDINATOR_STATE_FILE, {})
+    return state if isinstance(state, dict) else {}
+
+
+def planned_sync_paused_follower(state: dict[str, Any] | None = None) -> str:
+    sync_state = read_sync_coordinator_state() if state is None else state
+    paused = str(sync_state.get("paused_follower") or "")
+    leader = str(sync_state.get("leader") or "")
+    # A leader-catchup pause is only valid while both the leader and follower
+    # are managed production nodes. Runtime profiles can be narrowed during
+    # recovery, and stale coordinator state must not mark the only active node
+    # as intentionally paused.
+    if len(NODES) >= 2 and sync_state.get("mode") == "leader_catchup" and paused in NODES and leader in NODES:
+        return paused
+    return ""
+
+
+def docker_compose_command(*args: str) -> list[str]:
+    return [
+        "docker",
+        "compose",
+        "--env-file",
+        str(POOL_ENV_FILE),
+        "-f",
+        str(PROJECT_ROOT / "docker-compose.yml"),
+        *args,
+    ]
 
 
 def read_jsonl_file(path: Path, limit: int | None = None) -> list[dict[str, Any]]:
@@ -623,34 +647,8 @@ def miner_display_identity(item: dict[str, Any]) -> str:
     return ""
 
 
-def miner_display_name_from_workers(*worker_sources: Any) -> str:
-    for worker in merge_unique_strings(*worker_sources):
-        label = PINNED_MINER_WORKER_LABELS.get(str(worker or "").strip().lower())
-        if label:
-            return label
-    return ""
-
-
-def prefer_expected_worker(expected_worker: Any, workers: Any) -> list[str]:
-    expected = str(expected_worker or "").strip()
-    merged = merge_unique_strings(workers)
-    if not expected:
-        return merged
-    expected_lower = expected.lower()
-    if any(str(worker or "").strip().lower() == expected_lower for worker in merged):
-        return [expected]
-    return merged
-
-
 def assign_miner_display_names(miners: list[dict[str, Any]]) -> None:
-    _retired_macs, _retired_ips, _retired_workers, retired_names = read_retired_miner_identities()
     used = {str(item.get("display_name") or "") for item in miners if item.get("display_name")}
-    used.update(retired_names)
-    for item in miners:
-        pinned_name = miner_display_name_from_workers(item.get("last_workers"), item.get("expected_worker_user"))
-        if pinned_name and not item.get("display_name"):
-            item["display_name"] = pinned_name
-            used.add(pinned_name)
     named_by_identity = {
         miner_display_identity(item): str(item.get("display_name"))
         for item in miners
@@ -773,61 +771,6 @@ def default_miner_pool_settings() -> dict[str, str]:
     }
 
 
-def read_retired_miner_identities() -> tuple[set[str], set[str], set[str], set[str]]:
-    payload = read_json_file(MINER_RETIREMENTS_FILE, {"retired_miners": []})
-    rows = payload.get("retired_miners") if isinstance(payload, dict) else []
-    if not isinstance(rows, list):
-        rows = []
-    retired_macs: set[str] = set()
-    retired_ips: set[str] = set()
-    retired_workers: set[str] = set()
-    retired_names: set[str] = set()
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        name = str(row.get("display_name") or "").strip()
-        if name:
-            retired_names.add(name)
-        mac = normalize_mac(row.get("mac"))
-        if mac:
-            retired_macs.add(mac)
-        for ip in merge_unique_strings(row.get("ips"), row.get("ip")):
-            if is_ipv4(str(ip)):
-                retired_ips.add(str(ip))
-        for worker in merge_unique_strings(row.get("worker_user"), row.get("worker_users"), row.get("workers")):
-            worker_text = str(worker or "").strip().lower()
-            if re.fullmatch(r"0x[a-f0-9]{40}", worker_text):
-                retired_workers.add(worker_text)
-    return retired_macs, retired_ips, retired_workers, retired_names
-
-
-def is_retired_miner_identity(item: dict[str, Any], ip: str = "", mac: str = "") -> bool:
-    """Skip miners intentionally moved away from this local pool.
-
-    Retired miners are filtered by stable MAC first, with IP as a fallback for
-    recent pool-log records that may not carry MAC data yet. This prevents the
-    watchdog/dashboard from re-managing an ASIC after the operator has moved it
-    to another pool.
-    """
-    retired_macs, retired_ips, retired_workers, _retired_names = read_retired_miner_identities()
-    candidate_mac = normalize_mac(mac) or normalize_mac(item.get("mac"))
-    candidate_ip = str(ip or item.get("ip") or "")
-    candidate_workers = [
-        str(worker or "").strip().lower()
-        for worker in merge_unique_strings(
-            item.get("expected_worker_user"),
-            item.get("worker_user"),
-            item.get("last_workers"),
-            item.get("workers"),
-        )
-    ]
-    if candidate_mac and candidate_mac in retired_macs:
-        return True
-    if candidate_ip and candidate_ip in retired_ips:
-        return True
-    return any(worker in retired_workers for worker in candidate_workers)
-
-
 def read_miner_registry() -> dict[str, Any]:
     registry = read_json_file(MINER_REGISTRY_FILE, {"updated_at": None, "miners": []})
     if not isinstance(registry, dict):
@@ -847,8 +790,6 @@ def save_miner_registry(miners: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         item = dict(miner)
         mac = miner_mac_from_payload(item, ip, neighbors)
-        if is_retired_miner_identity(item, ip, mac):
-            continue
         if mac:
             item["mac"] = mac
             item["device_id"] = f"mac:{mac}"
@@ -1098,17 +1039,13 @@ def discover_miner(ip: str, timeout: float = MINER_SCAN_TIMEOUT) -> dict[str, An
     started = time.time()
     try:
         pools = get_miner_pools(ip, timeout=timeout)
-        pool_error = ""
-    except MinerAPIError as exc:
-        pools = []
-        pool_error = str(exc)
+    except MinerAPIError:
+        return None
 
     status = get_miner_status(ip, timeout=timeout)
-    if not pools and not any(status.get(key) for key in ("model", "hardware", "firmware", "mcbversion")):
-        return None
     active_pool = next((pool for pool in pools if pool.get("active")), pools[0] if pools else {})
     mac = miner_mac_from_payload(status, ip)
-    result = {
+    return {
         "ip": ip,
         "mac": mac,
         "device_id": f"mac:{mac}" if mac else "",
@@ -1122,9 +1059,6 @@ def discover_miner(ip: str, timeout: float = MINER_SCAN_TIMEOUT) -> dict[str, An
         "pools": pools,
         "response_ms": round((time.time() - started) * 1000),
     }
-    if pool_error:
-        result["pool_probe_error"] = pool_error
-    return result
 
 
 def scan_miners(target_spec: str | None = None) -> dict[str, Any]:
@@ -1406,9 +1340,22 @@ def docker_top(name: str) -> str:
     return run(["docker", "top", name], timeout=8).stdout
 
 
+def bdag_child_running_from_top(top: str) -> bool:
+    for line in top.splitlines()[1:]:
+        parts = line.split(None, 7)
+        if len(parts) >= 8:
+            command = parts[7]
+        else:
+            command = line
+        executable = command.split(None, 1)[0] if command.split(None, 1) else ""
+        if executable == "bdag" or executable.endswith("/bdag"):
+            return True
+    return False
+
+
 def docker_logs(name: str, lines: int = 160) -> str:
     result = run(["docker", "logs", "-n", str(lines), name], timeout=12)
-    return (result.stdout + "\n" + result.stderr).strip()
+    return redact_sensitive_text(result.stdout + "\n" + result.stderr).strip()
 
 
 def docker_logs_many(names: list[str], lines: int = 160) -> str:
@@ -1762,35 +1709,6 @@ PROMETHEUS_SAMPLE_RE = re.compile(
 PROMETHEUS_LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:\\.|[^"\\])*)"')
 
 
-def fetch_node_native_metrics(node: str) -> tuple[dict[str, int], str]:
-    port = NODE_METRIC_PORTS.get(node)
-    if not port:
-        return {}, "native metrics port not configured"
-    url = f"http://127.0.0.1:{port}/debug/metrics/prometheus"
-    request = urllib.request.Request(url, headers={"accept": "text/plain", "user-agent": HTTP_USER_AGENT})
-    try:
-        with urllib.request.urlopen(request, timeout=NODE_NATIVE_METRICS_TIMEOUT) as response:
-            text = response.read(1_000_000).decode("utf-8", errors="replace")
-    except (OSError, urllib.error.URLError, TimeoutError) as exc:
-        return {}, str(exc)
-    wanted = {"Blockdag_mainheight", "Blockdag_mainorder", "chain_head_block", "p2p_peers_"}
-    metrics: dict[str, int] = {}
-    for line in text.splitlines():
-        if not line or line.startswith("#"):
-            continue
-        match = PROMETHEUS_SAMPLE_RE.match(line.strip())
-        if not match:
-            continue
-        name, _, raw_value = match.groups()
-        if name not in wanted:
-            continue
-        try:
-            metrics[name] = int(float(raw_value))
-        except ValueError:
-            continue
-    return metrics, ""
-
-
 def mining_rpc_urls(include_haproxy: bool = True) -> list[tuple[str, str]]:
     urls: list[tuple[str, str]] = []
     for name in NODES:
@@ -1999,166 +1917,6 @@ def _metric_counter_key(labels: dict[str, str], *names: str) -> str:
     return ":".join(str(labels.get(name, "")) for name in names)
 
 
-def _prometheus_json_number(value: float) -> float | int:
-    return int(value) if value.is_integer() else value
-
-
-def pool_template_backend_state_from_metrics(text: str, source: str) -> dict[str, Any]:
-    state: dict[str, Any] = {"source": source, "fan_in": {}, "backends": {}, "job_health": {}}
-    fan_in = state["fan_in"]
-    backends = state["backends"]
-    job_health = state["job_health"]
-    for line in text.splitlines():
-        if not line or line.startswith("#"):
-            continue
-        match = PROMETHEUS_SAMPLE_RE.match(line.strip())
-        if not match:
-            continue
-        metric_name, label_text, raw_value = match.groups()
-        try:
-            value = float(raw_value)
-        except ValueError:
-            continue
-        labels = _parse_prometheus_labels(label_text or "")
-        if metric_name.startswith("pool_job_health_"):
-            key = metric_name.removeprefix("pool_job_health_")
-            if key == "accepted_jobs":
-                accepted = job_health.setdefault("accepted_jobs", {})
-                if isinstance(accepted, dict):
-                    accepted[str(labels.get("state") or "unknown")] = _prometheus_json_number(value)
-            elif key == "ok":
-                job_health["ok"] = value > 0
-            else:
-                job_health[key] = _prometheus_json_number(value)
-        elif metric_name == "pool_template_fanin_enabled":
-            fan_in["enabled"] = value > 0
-            fan_in["enabled_value"] = value
-        elif metric_name == "pool_template_fanin_backends":
-            fan_in["backends"] = _prometheus_json_number(value)
-        elif metric_name == "pool_template_fanin_mode":
-            mode = labels.get("mode")
-            if mode:
-                modes = fan_in.setdefault("modes", {})
-                if isinstance(modes, dict):
-                    modes[mode] = value
-                if value > 0:
-                    fan_in["mode"] = mode
-        elif metric_name == "pool_template_fanin_config_info" and value > 0:
-            for key in (
-                "config_id",
-                "effective_mode",
-                "configured_mode",
-                "configured_backends",
-                "participant_backends",
-                "max_backends",
-                "reject_lag_blocks",
-                "accept_same_height",
-                "alt_takeover_min_age_ms",
-                "alt_takeover_lead_blocks",
-                "failover_template_max_age_ms",
-            ):
-                if key in labels:
-                    fan_in[key] = labels[key]
-        elif metric_name in {
-            "pool_rpc_backend_selected",
-            "pool_rpc_backend_healthy",
-            "pool_rpc_backend_score",
-            "pool_rpc_backend_template_age_seconds",
-            "pool_rpc_backend_ws_connected",
-            "pool_template_fanin_backend_participant",
-            "pool_template_fanin_backend_role",
-            "pool_template_fanin_winner",
-            "pool_template_fanin_best_height",
-            "pool_template_fanin_observed_height",
-        }:
-            backend = labels.get("backend")
-            if not backend:
-                continue
-            row = backends.setdefault(backend, {})
-            if metric_name == "pool_rpc_backend_selected":
-                row["selected"] = value > 0
-                if value > 0:
-                    state["selected_backend"] = backend
-            elif metric_name == "pool_rpc_backend_healthy":
-                row["healthy"] = value > 0
-            elif metric_name == "pool_rpc_backend_score":
-                row["score"] = value
-            elif metric_name == "pool_rpc_backend_template_age_seconds":
-                row["template_age_seconds"] = round(value, 3)
-            elif metric_name == "pool_rpc_backend_ws_connected":
-                row["ws_connected"] = value > 0
-            elif metric_name == "pool_template_fanin_backend_participant":
-                row["fan_in_participant"] = value > 0
-            elif metric_name == "pool_template_fanin_backend_role":
-                role = labels.get("role")
-                if role and value > 0:
-                    row["fan_in_role"] = role
-            elif metric_name == "pool_template_fanin_winner":
-                row["fan_in_winner"] = value > 0
-            elif metric_name == "pool_template_fanin_best_height":
-                row["fan_in_best_height"] = _prometheus_json_number(value)
-            elif metric_name == "pool_template_fanin_observed_height":
-                row["fan_in_observed_height"] = _prometheus_json_number(value)
-        elif metric_name.startswith("pool_rpc_backend_node_health_"):
-            backend = labels.get("backend")
-            if not backend:
-                continue
-            row = backends.setdefault(backend, {})
-            key = metric_name.removeprefix("pool_rpc_backend_node_health_")
-            if key in {
-                "mineable",
-                "submit_ready",
-                "p2p_mining_fresh",
-                "p2p_sync_peer_fresh",
-                "p2p_sync_peer_present",
-                "pending_template_build",
-                "last_template_build_error_blocking",
-            }:
-                row[f"node_{key}"] = value > 0
-            elif key in {"last_template_invalidation_sequence", "pending_template_invalidation"}:
-                cause = str(labels.get("cause") or "unknown")
-                bucket = row.setdefault(f"node_{key}", {})
-                if isinstance(bucket, dict):
-                    bucket[cause] = _prometheus_json_number(value)
-            else:
-                row[f"node_{key}"] = _prometheus_json_number(value)
-        elif metric_name.startswith("pool_template_conversion_stall_"):
-            conversion = state.setdefault("template_conversion_stall", {})
-            if isinstance(conversion, dict):
-                key = metric_name.removeprefix("pool_template_conversion_stall_")
-                if key == "window_candidates":
-                    candidates = conversion.setdefault("window_candidates", {})
-                    if isinstance(candidates, dict):
-                        candidates[str(labels.get("kind") or "unknown")] = _prometheus_json_number(value)
-                else:
-                    conversion[key] = _prometheus_json_number(value)
-    if backends:
-        state["backend_count"] = len(backends)
-        state["healthy_backend_count"] = sum(
-            1 for row in backends.values() if isinstance(row, dict) and row.get("healthy") is True
-        )
-    return state
-
-
-def configured_pool_rpc_backend_count() -> int:
-    raw = read_env_value("POOL_RPC_BACKENDS") or ""
-    if not raw.strip():
-        return 0
-    return len([item for item in re.split(r"[,;]", raw) if item.strip()])
-
-
-def pool_router_backend_states(pool_metrics: dict[str, Any]) -> list[dict[str, Any]]:
-    state = pool_metrics.get("template_backend_state") if isinstance(pool_metrics, dict) else None
-    if not isinstance(state, dict):
-        return []
-    pools = state.get("pools")
-    if isinstance(pools, list):
-        return [item for item in pools if isinstance(item, dict)]
-    if isinstance(state.get("backends"), dict):
-        return [state]
-    return []
-
-
 def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "generated_at": now_iso(),
@@ -2170,11 +1928,6 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
         "block_submit_outcomes": {},
         "submit_stall_recoveries": {},
         "submit_stall_recoveries_total": 0.0,
-        "template_backend_state": {},
-        "source_job_health": {},
-        "source_backend_health": {},
-        "selected_backend_source_health": {},
-        "template_conversion_stall": {},
     }
     if POOL_METRICS_PORT <= 0:
         payload["error"] = "pool metrics port disabled"
@@ -2186,7 +1939,6 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
     submit_recoveries: Counter[str] = Counter()
     selected_backend = ""
     active_connections: float | None = None
-    template_backend_states: list[dict[str, Any]] = []
 
     for name in POOL_CONTAINERS:
         info = containers.get(name) if isinstance(containers, dict) else None
@@ -2212,9 +1964,6 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
 
         row["status"] = "ok"
         any_ok = True
-        template_state = pool_template_backend_state_from_metrics(text, endpoint)
-        if template_state.get("backends"):
-            template_backend_states.append(template_state)
         for line in text.splitlines():
             if not line or line.startswith("#"):
                 continue
@@ -2244,89 +1993,14 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
     payload["block_submit_outcomes"] = dict(block_submit_outcomes)
     payload["submit_stall_recoveries"] = dict(submit_recoveries)
     payload["submit_stall_recoveries_total"] = float(sum(submit_recoveries.values()))
-    if template_backend_states:
-        primary_state = template_backend_states[0]
-        payload["template_backend_state"] = (
-            primary_state
-            if len(template_backend_states) == 1
-            else {"pools": template_backend_states}
-        )
-        job_health = primary_state.get("job_health")
-        backend_health = primary_state.get("backends")
-        conversion = primary_state.get("template_conversion_stall")
-        payload["source_job_health"] = job_health if isinstance(job_health, dict) else {}
-        payload["source_backend_health"] = backend_health if isinstance(backend_health, dict) else {}
-        payload["template_conversion_stall"] = conversion if isinstance(conversion, dict) else {}
-        selected = selected_backend or str(primary_state.get("selected_backend") or "")
-        selected_health = payload["source_backend_health"].get(selected) if selected else None
-        payload["selected_backend_source_health"] = selected_health if isinstance(selected_health, dict) else {}
     return payload
 
 
-def client_job_suffix(job_id: str) -> str:
-    if "_" not in job_id:
-        return ""
-    return job_id.rsplit("_", 1)[1]
-
-
-def fetch_pool_job_state_clients() -> list[dict[str, str]]:
-    """Return live pool job client mappings for dashboard attribution.
-
-    ASICs may intentionally share one payout worker address. In that setup,
-    worker-name attribution collapses all shares onto whichever client most
-    recently authorized. The pool's job-state endpoint is the source of truth
-    for the current per-connection job suffix, so use it to map submitted jobs
-    back to the correct ASIC IP without changing payout behavior.
-    """
-    if not POOL_JOB_STATE_URL:
-        return []
-    try:
-        request = urllib.request.Request(
-            POOL_JOB_STATE_URL,
-            headers={"accept": "application/json", "user-agent": HTTP_USER_AGENT},
-        )
-        with urllib.request.urlopen(request, timeout=POOL_METRICS_TIMEOUT) as response:
-            payload = json.loads(response.read(1_000_000).decode("utf-8", "replace"))
-    except Exception:  # noqa: BLE001 - log parsing must still work if live health is unavailable.
-        return []
-    clients = payload.get("clients") if isinstance(payload, dict) else None
-    if not isinstance(clients, list):
-        return []
-    rows: list[dict[str, str]] = []
-    for client in clients:
-        if not isinstance(client, dict):
-            continue
-        address = str(client.get("address") or "")
-        current_job_id = str(client.get("current_job_id") or "")
-        if ":" not in address or not current_job_id:
-            continue
-        ip, port = address.rsplit(":", 1)
-        if not is_ipv4(ip):
-            continue
-        suffix = client_job_suffix(current_job_id)
-        rows.append({"ip": ip, "port": port, "job_id": current_job_id, "job_suffix": suffix})
-    return rows
-
-
-def parse_pool_activity(log: str, job_state_clients: list[dict[str, str]] | None = None) -> dict[str, Any]:
+def parse_pool_activity(log: str) -> dict[str, Any]:
     job_to_client: dict[str, dict[str, str]] = {}
-    job_suffix_to_client: dict[str, dict[str, str]] = {}
     worker_to_client: dict[str, dict[str, str]] = {}
     worker_client_priority: dict[str, int] = {}
     miners: dict[str, dict[str, Any]] = {}
-
-    for client in job_state_clients or []:
-        ip = str(client.get("ip") or "")
-        port = str(client.get("port") or "")
-        job_id = str(client.get("job_id") or "")
-        suffix = str(client.get("job_suffix") or client_job_suffix(job_id))
-        if not is_ipv4(ip):
-            continue
-        row = {"ip": ip, "port": port}
-        if job_id:
-            job_to_client[job_id] = row
-        if suffix:
-            job_suffix_to_client[suffix] = row
 
     def note_worker_client(worker: str, ip: str, port: str = "", priority: int = 1) -> None:
         current_priority = worker_client_priority.get(worker, -1)
@@ -2415,9 +2089,6 @@ def parse_pool_activity(log: str, job_state_clients: list[dict[str, str]] | None
         if notify:
             ip, port, job_id = notify.groups()
             job_to_client[job_id] = {"ip": ip, "port": port}
-            suffix = client_job_suffix(job_id)
-            if suffix:
-                job_suffix_to_client[suffix] = {"ip": ip, "port": port}
             item = miner_for_ip(ip)
             note_port(item, port)
             item["jobs"] += 1
@@ -2428,9 +2099,6 @@ def parse_pool_activity(log: str, job_state_clients: list[dict[str, str]] | None
         if legacy_notify:
             ip, job_id = legacy_notify.groups()
             job_to_client[job_id] = {"ip": ip, "port": ""}
-            suffix = client_job_suffix(job_id)
-            if suffix:
-                job_suffix_to_client[suffix] = {"ip": ip, "port": ""}
             item = miner_for_ip(ip)
             item["jobs"] += 1
             note_seen(item, line, "last_job_at")
@@ -2439,7 +2107,7 @@ def parse_pool_activity(log: str, job_state_clients: list[dict[str, str]] | None
         submit = SUBMIT_RE.search(line)
         if submit:
             worker, job_id = submit.groups()
-            client = job_to_client.get(job_id) or job_suffix_to_client.get(client_job_suffix(job_id)) or worker_to_client.get(worker)
+            client = job_to_client.get(job_id) or worker_to_client.get(worker)
             if not client:
                 continue
             job_to_client.setdefault(job_id, client)
@@ -2454,7 +2122,7 @@ def parse_pool_activity(log: str, job_state_clients: list[dict[str, str]] | None
         if share:
             job_id = share.group(4)
             worker = share.group(3)
-            client = job_to_client.get(job_id) or job_suffix_to_client.get(client_job_suffix(job_id)) or worker_to_client.get(worker)
+            client = job_to_client.get(job_id) or worker_to_client.get(worker)
             if not client:
                 continue
             job_to_client.setdefault(job_id, client)
@@ -2473,8 +2141,7 @@ def parse_pool_activity(log: str, job_state_clients: list[dict[str, str]] | None
 
         block = BLOCK_FOUND_RE.search(line)
         if block:
-            job_id = block.group(1)
-            client = job_to_client.get(job_id) or job_suffix_to_client.get(client_job_suffix(job_id))
+            client = job_to_client.get(block.group(1))
             if not client:
                 continue
             item = miner_for_ip(client["ip"])
@@ -2524,7 +2191,7 @@ def valid_share_line_suppressed_work(line: str) -> int:
 
 def collect_pool_activity(lines: int = 2500) -> dict[str, Any]:
     log = docker_logs_many(POOL_CONTAINERS, lines=lines)
-    return parse_pool_activity(log, fetch_pool_job_state_clients())
+    return parse_pool_activity(log)
 
 
 def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
@@ -2550,11 +2217,7 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
             continue
         item = existing_by_mac.get(mac) if mac else None
         item = dict(item or existing.get(ip, {"ip": ip}))
-        expected_user = item.get("expected_worker_user") or (miner.get("workers") or [None])[0] or defaults["worker_user"]
-        workers = prefer_expected_worker(expected_user, merge_unique_strings(item.get("last_workers"), miner.get("workers")))
-        pinned_name = miner_display_name_from_workers(workers, item.get("expected_worker_user"))
-        if pinned_name:
-            item["display_name"] = pinned_name
+        workers = merge_unique_strings(item.get("last_workers"), miner.get("workers"))
         ports = merge_unique_strings(item.get("last_ports"), miner.get("ports"))
         last_seen_log_at = str(miner.get("last_seen_at") or "")
         previous_seen_log_at = str(item.get("last_pool_seen_log_at") or "")
@@ -2581,7 +2244,7 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
                 "sources": merge_unique_strings(item.get("sources"), "pool-log"),
                 "auto_discovered": bool(item.get("auto_discovered", item.get("discovered_by") == "pool-log")),
                 "expected_pool_url": item.get("expected_pool_url") or defaults["pool_url"],
-                "expected_worker_user": expected_user,
+                "expected_worker_user": item.get("expected_worker_user") or (workers[0] if workers else defaults["worker_user"]),
                 "last_pool_seen_at": last_seen_log_at or item.get("last_pool_seen_at") or now_iso(),
                 "last_pool_seen_log_at": last_seen_log_at or item.get("last_pool_seen_log_at"),
                 "last_job_at": miner.get("last_job_at") or item.get("last_job_at"),
@@ -2676,9 +2339,14 @@ def collect_miner_health() -> dict[str, Any]:
         last_pool_seen_epoch = int(registered.get("last_pool_seen_epoch", 0) or 0)
         last_submit_epoch = int(registered.get("last_submit_epoch", 0) or 0)
         last_share_epoch = int(registered.get("last_share_epoch", 0) or 0)
-        workers = prefer_expected_worker(expected_user, merge_unique_strings(activity_item.get("workers"), registered.get("last_workers")))
+        workers = merge_unique_strings(activity_item.get("workers"), registered.get("last_workers"))
         ports = merge_unique_strings(activity_item.get("ports"), registered.get("last_ports"))
         connected = bool(activity_item) or bool(last_pool_seen_epoch and now_epoch - last_pool_seen_epoch <= POOL_CONNECTED_STALE_SECONDS)
+        if not api_expected and is_pool_log_only_miner(registered):
+            expected_worker_seen = str(expected_user).lower() in {str(worker).lower() for worker in workers}
+            if connected and expected_url == defaults["pool_url"] and expected_worker_seen:
+                configured = True
+                pool_active = True
         current_submits = int(activity_item.get("submits", 0) or 0)
         current_shares = int(activity_item.get("shares", 0) or 0)
         current_blocks_found = int(activity_item.get("blocks_found", 0) or 0)
@@ -3025,7 +2693,26 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             },
         }
         return {
+            "status_version": 2,
             "generated_at": now_iso(),
+            "generated_epoch_seconds": seconds_since_epoch(),
+            "fresh": True,
+            "age_seconds": 0,
+            "stale_after_seconds": 30,
+            "stale_sources": ["docker"],
+            "mode": "unknown",
+            "can_mine": False,
+            "can_accept_shares": False,
+            "can_submit_blocks": False,
+            "truth_sources": {
+                "chain_block_count": "getBlockCount",
+                "chain_main_height": "getMainChainHeight diagnostic",
+                "template_height": "diagnostic_only",
+                "node_log_height": "diagnostic_only",
+            },
+            "blocking_failures": [f"docker access unavailable: {docker_error}"],
+            "degraded_reasons": [],
+            "repair_actions_recent": latest_action,
             "project_root": str(PROJECT_ROOT),
             "runtime_dir": str(RUNTIME_DIR),
             "pool_env_file": str(POOL_ENV_FILE),
@@ -3095,6 +2782,9 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     warnings: list[str] = []
     sync_warnings: list[str] = []
     maintenance_warnings: list[str] = []
+    sync_coordinator = read_sync_coordinator_state()
+    planned_paused_follower = planned_sync_paused_follower(sync_coordinator)
+    planned_pause_leader = str(sync_coordinator.get("leader") or "")
 
     def add_sync_warning(message: str) -> None:
         warnings.append(message)
@@ -3119,28 +2809,22 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             }
         containers[service] = info
         if service in SERVICES and not info.get("running"):
-            stack_failures.append(f"{service} is not running")
+            if service == planned_paused_follower:
+                add_maintenance_warning(
+                    f"{service} is intentionally paused while {planned_pause_leader or 'the leader'} catches up"
+                )
+            else:
+                stack_failures.append(f"{service} is not running")
 
     for node in display_nodes:
         top = docker_top(node) if containers[node].get("running") else ""
-        child_running = "/usr/local/bin/bdag" in top
+        child_running = bdag_child_running_from_top(top)
         managed_node = node in NODES
         if managed_node and containers[node].get("running") and not child_running:
             stack_failures.append(f"{node} wrapper is up but bdag child is not running")
 
         log = docker_logs(node, lines=220) if include_logs and containers[node].get("running") else ""
         parsed = parse_node_log(log)
-        native_metrics, native_metrics_error = (
-            fetch_node_native_metrics(node)
-            if containers[node].get("running")
-            else ({}, "container not running")
-        )
-        if parsed["latest_block"] is None and native_metrics.get("chain_head_block") is not None:
-            parsed["latest_block"] = native_metrics["chain_head_block"]
-        if parsed["best_main_order"] is None and native_metrics.get("Blockdag_mainorder") is not None:
-            parsed["best_main_order"] = native_metrics["Blockdag_mainorder"]
-        if parsed["latest_block"] is not None and not parsed["importing"]:
-            parsed["importing"] = True
         if managed_node and parsed["critical"]:
             stack_failures.append(f"{node} has critical log entries")
         if managed_node and parsed["peer_ahead_blocks"]:
@@ -3196,9 +2880,9 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "mining_template_failing": parsed["mining_template_failing"],
             "critical": parsed["critical"],
             "critical_lines": parsed["critical_lines"],
-            "native_metrics": native_metrics,
-            "native_metrics_error": native_metrics_error,
             "tail": parsed["tail"],
+            "planned_sync_pause": node == planned_paused_follower,
+            "sync_pause_leader": planned_pause_leader if node == planned_paused_follower else "",
         }
 
     template_probe_health = (
@@ -3273,27 +2957,16 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         add_sync_warning(f"node block heights differ by {block_lag} blocks (limit {NODE_LAG_WARN_BLOCKS})")
     if main_order_lag is not None and main_order_lag > NODE_LAG_WARN_BLOCKS:
         add_sync_warning(f"node main-order values differ by {main_order_lag} blocks (limit {NODE_LAG_WARN_BLOCKS})")
-    major_node_lag = bool(
-        (block_lag is not None and block_lag >= NODE_LAG_MAJOR_BLOCKS)
-        or (main_order_lag is not None and main_order_lag >= NODE_LAG_MAJOR_BLOCKS)
-    )
-    if major_node_lag:
-        add_sync_warning(
-            "MAJOR node lag: "
-            f"block_lag={block_lag if block_lag is not None else 'unknown'}, "
-            f"main_order_lag={main_order_lag if main_order_lag is not None else 'unknown'}, "
-            f"threshold={NODE_LAG_MAJOR_BLOCKS}"
-        )
     sync_health = {
         "block_lag": block_lag,
         "main_order_lag": main_order_lag,
         "lag_warn_blocks": NODE_LAG_WARN_BLOCKS,
-        "lag_major_blocks": NODE_LAG_MAJOR_BLOCKS,
-        "major_node_lag": major_node_lag,
         "import_stale_seconds": NODE_IMPORT_STALE_SECONDS,
         "p2p_error_warn_count": NODE_P2P_ERROR_WARN_COUNT,
         "nodes_with_recent_imports": sum(1 for item in managed_node_details.values() if item.get("importing")),
         "needs_fast_sync_repair": False,
+        "planned_paused_follower": planned_paused_follower,
+        "planned_pause_leader": planned_pause_leader,
     }
 
     running_pool_containers = [name for name in POOL_CONTAINERS if containers.get(name, {}).get("running")]
@@ -3309,53 +2982,11 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "block_submit_outcomes": {},
         "submit_stall_recoveries": {},
         "submit_stall_recoveries_total": 0.0,
-        "source_job_health": {},
-        "source_backend_health": {},
-        "selected_backend_source_health": {},
-        "template_conversion_stall": {},
     }
     pool["metrics"] = pool_metrics
     pool["selected_backend"] = pool_metrics.get("selected_backend") or ""
     pool["metrics_active_connections"] = pool_metrics.get("active_connections")
     pool["metrics_submit_stall_recoveries_total"] = pool_metrics.get("submit_stall_recoveries_total")
-    source_job_health = (
-        pool_metrics.get("source_job_health")
-        if isinstance(pool_metrics.get("source_job_health"), dict)
-        else {}
-    )
-    source_backend_health = (
-        pool_metrics.get("source_backend_health")
-        if isinstance(pool_metrics.get("source_backend_health"), dict)
-        else {}
-    )
-    selected_source_health = (
-        pool_metrics.get("selected_backend_source_health")
-        if isinstance(pool_metrics.get("selected_backend_source_health"), dict)
-        else {}
-    )
-    pool["source_job_health"] = source_job_health
-    pool["source_backend_health"] = source_backend_health
-    pool["selected_backend_source_health"] = selected_source_health
-    pool["template_conversion_stall"] = (
-        pool_metrics.get("template_conversion_stall")
-        if isinstance(pool_metrics.get("template_conversion_stall"), dict)
-        else {}
-    )
-    configured_router_backends = configured_pool_rpc_backend_count()
-    router_backend_states = pool_router_backend_states(pool_metrics)
-    router_backend_counts = [
-        int(state.get("backend_count") or 0)
-        for state in router_backend_states
-        if int(state.get("backend_count") or 0) > 0
-    ]
-    router_healthy_backend_counts = [
-        int(state.get("healthy_backend_count") or 0)
-        for state in router_backend_states
-        if int(state.get("backend_count") or 0) > 0
-    ]
-    pool["configured_router_backends"] = configured_router_backends
-    pool["router_backend_count"] = min(router_backend_counts) if router_backend_counts else 0
-    pool["router_healthy_backend_count"] = min(router_healthy_backend_counts) if router_healthy_backend_counts else 0
     if pool["rpc_refused"] and not any("bdag child" in item for item in stack_failures):
         add_sync_warning("pool recently saw RPC connection refused")
 
@@ -3370,52 +3001,10 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             ("last_block_submit_age_seconds", 60),
         )
     )
-    nodes_are_current = (
-        (block_lag is None or block_lag <= NODE_LAG_WARN_BLOCKS)
-        and int(sync_health.get("nodes_with_recent_imports") or 0) > 0
-    )
     pool_initial_download_transient = bool(
         pool.get("initial_download")
         and pool_has_recent_mining
-        and nodes_are_current
         and not pool.get("share_stall")
-        and not pool.get("job_stall")
-    )
-    source_job_health_ok_raw = source_job_health.get("ok") if isinstance(source_job_health, dict) else None
-    source_job_health_ok = None if source_job_health_ok_raw is None else bool(source_job_health_ok_raw)
-    selected_source_checks = []
-    if isinstance(selected_source_health, dict):
-        for key in ("node_mineable", "node_submit_ready", "node_p2p_mining_fresh"):
-            if key in selected_source_health:
-                selected_source_checks.append(bool(selected_source_health.get(key)))
-        if selected_source_health.get("node_last_template_build_error_blocking") is True:
-            selected_source_checks.append(False)
-    selected_source_degraded = bool(selected_source_checks and not all(selected_source_checks))
-    source_job_hard_degraded = bool(source_job_health_ok is False and not pool_has_recent_mining)
-    source_selected_backend_hard_degraded = bool(selected_source_degraded and not pool_has_recent_mining)
-    source_health_transient_degraded = bool(
-        (source_job_health_ok is False or selected_source_degraded)
-        and pool_has_recent_mining
-    )
-    pool["source_job_health_ok"] = source_job_health_ok
-    pool["source_job_hard_degraded"] = source_job_hard_degraded
-    pool["source_selected_backend_degraded"] = selected_source_degraded
-    pool["source_selected_backend_hard_degraded"] = source_selected_backend_hard_degraded
-    pool["source_health_transient_degraded"] = source_health_transient_degraded
-    pool["source_selected_backend_submit_ready"] = (
-        selected_source_health.get("node_submit_ready")
-        if isinstance(selected_source_health, dict)
-        else None
-    )
-    pool["source_selected_backend_mineable"] = (
-        selected_source_health.get("node_mineable")
-        if isinstance(selected_source_health, dict)
-        else None
-    )
-    pool["source_selected_backend_p2p_fresh"] = (
-        selected_source_health.get("node_p2p_mining_fresh")
-        if isinstance(selected_source_health, dict)
-        else None
     )
     pool_initial_download_needs_repair = bool(pool.get("initial_download") and not pool_initial_download_transient)
     pool["initial_download_transient"] = pool_initial_download_transient
@@ -3428,16 +3017,6 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         add_maintenance_warning(
             "pool saw a transient initial-download template response while active mining stayed fresh"
         )
-    if connected_miners > 0 and source_job_hard_degraded:
-        add_sync_warning("pool source job health reports not-ok and accepted work is stale")
-    elif connected_miners > 0 and source_job_health_ok is False:
-        add_maintenance_warning("pool source job health is advisory-degraded while accepted work remains fresh")
-    if connected_miners > 0 and source_selected_backend_hard_degraded:
-        backend = pool.get("selected_backend") or "selected backend"
-        add_sync_warning(f"pool source health says {backend} is not mineable/submit-ready and accepted work is stale")
-    elif connected_miners > 0 and source_health_transient_degraded:
-        backend = pool.get("selected_backend") or "selected backend"
-        add_maintenance_warning(f"pool source health says {backend} is degraded, but accepted work remains fresh")
     if connected_miners > 0 and pool.get("share_stall"):
         age = pool.get("last_valid_share_age_seconds")
         age_text = f"{age}s" if age is not None else "unknown"
@@ -3445,7 +3024,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             f"pool has not accepted a valid share for {age_text} "
             f"while {connected_miners} miner(s) are connected"
         )
-    if connected_miners > 0 and pool.get("job_stall"):
+    effective_job_stall = bool(connected_miners > 0 and pool.get("job_stall") and not pool_has_recent_mining)
+    if effective_job_stall:
         age = pool.get("last_job_notify_age_seconds")
         age_text = f"{age}s" if age is not None else "unknown"
         add_sync_warning(
@@ -3501,30 +3081,6 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             f"{pool.get('duplicate_block_count')} duplicates, "
             f"{pool.get('block_submit_error_count')} submit errors)"
         )
-    router_enabled = str(read_env_value("POOL_RPC_ROUTER_ENABLED") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    expected_router_backends = max(len(NODES), configured_router_backends)
-    if router_enabled and expected_router_backends > 1:
-        if configured_router_backends < len(NODES):
-            stack_failures.append(
-                "pool router is configured with fewer RPC backends than managed nodes "
-                f"({configured_router_backends}/{len(NODES)}); update POOL_RPC_BACKENDS"
-            )
-        if router_backend_counts:
-            short_counts = [count for count in router_backend_counts if count < expected_router_backends]
-            if short_counts:
-                stack_failures.append(
-                    "pool router runtime loaded fewer RPC backends than expected "
-                    f"({min(short_counts)}/{expected_router_backends}); recreate asic-pool after fixing POOL_RPC_BACKENDS"
-                )
-        else:
-            stack_failures.append(
-                "pool router runtime backend metrics are unavailable; cannot verify both managed nodes are loaded"
-            )
 
     failures = stack_failures + miner_health.get("failures", [])
     miner_warnings = miner_health.get("warnings", [])
@@ -3539,7 +3095,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         ),
         "node_template_probe_failing": bool(template_probe_health.get("failing_nodes")),
         "share_stall": bool(pool.get("share_stall") and connected_miners > 0),
-        "job_stall": bool(pool.get("job_stall") and connected_miners > 0),
+        "job_stall": effective_job_stall,
         "needs_fast_repair": bool(
             pool_initial_download_needs_repair
             or pool.get("rpc_refused")
@@ -3550,15 +3106,13 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             or (pool.get("stale_job_candidate_storm") and connected_miners > 0)
             or (pool.get("block_submit_error_storm") and connected_miners > 0)
             or (pool.get("accepted_job_expired_storm") and connected_miners > 0)
-            or (source_job_hard_degraded and connected_miners > 0)
-            or (source_selected_backend_hard_degraded and connected_miners > 0)
             or (
                 pool.get("block_submit_zero_success_storm")
                 and connected_miners > 0
                 and not pool.get("submit_stall_recovery_recent")
             )
             or (pool.get("share_stall") and connected_miners > 0)
-            or (pool.get("job_stall") and connected_miners > 0)
+            or effective_job_stall
         ),
     }
     sync_health["needs_fast_sync_repair"] = bool(sync_warnings and not failures) or pool_health["needs_fast_repair"]
@@ -3575,11 +3129,81 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         pool_endpoint = f"127.0.0.1:{pool_port}"
 
     disk = run(["df", "-h", str(PROJECT_ROOT)], timeout=8).stdout.strip()
+    docker_images_timeout_raw = os.environ.get("BDAG_STATUS_DOCKER_IMAGES_TIMEOUT", "2")
+    try:
+        docker_images_timeout = max(1, int(docker_images_timeout_raw))
+    except ValueError:
+        docker_images_timeout = 2
     docker_images = run(
         ["docker", "images", "--format", "{{.Repository}}:{{.Tag}} {{.Size}}"],
-        timeout=int(os.environ.get("BDAG_STATUS_DOCKER_IMAGES_TIMEOUT", "2")),
+        timeout=docker_images_timeout,
     ).stdout.strip()
     sync_progress = collect_sync_progress()
+    for node, progress in (sync_progress.get("nodes") or {}).items():
+        if not isinstance(progress, dict):
+            continue
+        node_details.setdefault(node, {})
+        node_details[node]["chain_block_count"] = progress.get("chain_block_count")
+        node_details[node]["chain_main_height"] = progress.get("chain_main_height")
+        node_details[node]["chain_rpc_source"] = progress.get("chain_rpc_source")
+        node_details[node]["chain_rpc_url"] = progress.get("chain_rpc_url")
+        node_details[node]["chain_rpc_error"] = progress.get("chain_rpc_error") or progress.get("error") or ""
+    no_miner_node_only = bool(
+        connected_miners == 0
+        and managed_miners == 0
+        and any(containers.get(node, {}).get("running") for node in NODES)
+    )
+    no_miner_sync_only = bool(no_miner_node_only and sync_progress.get("status") == "syncing")
+    if no_miner_node_only:
+        probe_warning_prefixes = (
+            "rpc-failover is refusing live mining template probes",
+            "pool is waiting for node sync to finish",
+        )
+        warnings = [
+            item for item in warnings
+            if not any(str(item).startswith(prefix) for prefix in probe_warning_prefixes)
+        ]
+        sync_warnings = [
+            item for item in sync_warnings
+            if not any(str(item).startswith(prefix) for prefix in probe_warning_prefixes)
+        ]
+        pool_health["rpc_template_failing"] = False
+        pool_health["node_template_probe_failing"] = False
+        pool_health["initial_download_needs_repair"] = False
+        pool_health["needs_fast_repair"] = False
+        if no_miner_sync_only:
+            add_sync_warning("no miners present; node is syncing and mining work remains idle")
+        else:
+            add_maintenance_warning("no miners present; pool services stay up but no mining work is sent")
+    sync_progress_health = observe_sync_progress_health(sync_progress)
+    active_sync_progress_nodes = sync_progress_health.get("active_nodes") or []
+    if active_sync_progress_nodes:
+        sync_health["nodes_with_recent_imports"] = max(
+            int(sync_health.get("nodes_with_recent_imports") or 0),
+            int(sync_progress_health.get("active_node_count") or 0),
+        )
+        hard_pool_needs_repair = bool(
+            pool_health.get("rpc_refused")
+            or pool_health.get("rpc_template_failing")
+            or pool_health.get("node_template_probe_failing")
+            or pool_health.get("share_stall")
+            or pool_health.get("job_stall")
+            or pool_health.get("pool_template_frozen")
+            or pool_health.get("duplicate_block_storm")
+            or pool_health.get("stale_job_candidate_storm")
+            or pool_health.get("block_submit_error_storm")
+            or pool_health.get("accepted_job_expired_storm")
+            or (
+                pool_health.get("block_submit_zero_success_storm")
+                and not pool_health.get("submit_stall_recovery_recent")
+            )
+        )
+        if sync_progress.get("status") == "syncing" and pool_health.get("initial_download"):
+            pool_health["initial_download_needs_repair"] = False
+            pool_health["needs_fast_repair"] = hard_pool_needs_repair
+        if sync_progress.get("status") == "syncing" and not failures and not pool_health["needs_fast_repair"]:
+            sync_health["needs_fast_sync_repair"] = False
+    sync_health["sync_progress_health"] = sync_progress_health
 
     overall = "ok"
     if failures:
@@ -3593,8 +3217,33 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         if len(reason_items) > 3:
             status_reason += f"; +{len(reason_items) - 3} more"
 
+    mode = "mining" if connected_miners > 0 else ("sync_only_no_miners" if no_miner_sync_only else "ready_no_miners")
+    can_accept_shares = bool(connected_miners > 0 and containers.get(POOL_CONTAINER, {}).get("running") and not failures)
+    can_submit_blocks = bool(can_accept_shares and not pool_health.get("needs_fast_repair") and not sync_warnings)
+    can_mine = bool(can_accept_shares and can_submit_blocks)
+    truth_sources = {
+        "chain_block_count": "getBlockCount",
+        "chain_main_height": "getMainChainHeight diagnostic",
+        "template_height": "diagnostic_only",
+        "node_log_height": "diagnostic_only",
+    }
+
     return {
+        "status_version": 2,
         "generated_at": now_iso(),
+        "generated_epoch_seconds": seconds_since_epoch(),
+        "fresh": True,
+        "age_seconds": 0,
+        "stale_after_seconds": 30,
+        "stale_sources": [],
+        "mode": mode,
+        "can_mine": can_mine,
+        "can_accept_shares": can_accept_shares,
+        "can_submit_blocks": can_submit_blocks,
+        "truth_sources": truth_sources,
+        "blocking_failures": failures,
+        "degraded_reasons": sync_warnings + maintenance_warnings,
+        "repair_actions_recent": latest_action,
             "project_root": str(PROJECT_ROOT),
             "runtime_dir": str(RUNTIME_DIR),
             "pool_env_file": str(POOL_ENV_FILE),
@@ -3611,6 +3260,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "nodes": node_details,
         "sync_progress": sync_progress,
         "sync_health": sync_health,
+        "sync_coordinator": sync_coordinator,
         "rpc_template_health": template_probe_health,
         "pool": pool,
         "pool_metrics": pool_metrics,
@@ -3807,12 +3457,7 @@ def node_rpc_urls() -> list[tuple[str, str]]:
         if valid_configured:
             return valid_configured
 
-    urls: list[tuple[str, str]] = []
-    for name in NODES:
-        ip = run(["docker", "inspect", name, "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"], timeout=8).stdout.strip()
-        if valid_ipv4(ip):
-            urls.append((name, f"http://{ip}:18545"))
-    return urls
+    return mining_rpc_urls(include_haproxy=False)
 
 
 def unknown_sync_progress(source: str = "node", error: str = "") -> dict[str, Any]:
@@ -3838,40 +3483,129 @@ def parse_rpc_quantity(value: Any) -> int:
     raise ValueError(f"invalid RPC quantity: {value!r}")
 
 
+def node_chain_rpc_snapshot(source: str, url: str, timeout: float = 4.0) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {
+        "chain_rpc_source": "getBlockCount",
+        "chain_rpc_url": url,
+        "chain_rpc_error": "",
+        "chain_block_count": None,
+        "chain_main_height": None,
+    }
+    try:
+        snapshot["chain_block_count"] = parse_rpc_quantity(
+            mining_rpc_call(url, "getBlockCount", [], timeout=timeout)
+        )
+    except Exception as exc:
+        snapshot["chain_rpc_error"] = f"getBlockCount failed for {source}: {exc}"
+        return snapshot
+
+    try:
+        snapshot["chain_main_height"] = parse_rpc_quantity(
+            mining_rpc_call(url, "getMainChainHeight", [], timeout=timeout)
+        )
+    except Exception as exc:
+        snapshot["chain_main_height_error"] = f"getMainChainHeight failed for {source}: {exc}"
+    return snapshot
+
+
+def parse_prometheus_metric_values(text: str, names: set[str]) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = PROMETHEUS_METRIC_RE.match(line)
+        if not match:
+            continue
+        name, raw = match.groups()
+        if name not in names:
+            continue
+        try:
+            metrics[name] = float(raw)
+        except ValueError:
+            continue
+    return metrics
+
+
+def fetch_node_native_sync_metrics(source: str, timeout: float = 1.5) -> dict[str, float]:
+    port = NODE_METRIC_PORTS.get(source)
+    if not port:
+        return {}
+    url = f"http://127.0.0.1:{port}/debug/metrics/prometheus"
+    names = {
+        "chain_head_block",
+        "Blockdag_mainorder",
+        "p2p_miningFreshness_bestPeerMainOrder",
+        "p2p_miningFreshness_bestPeerLeadBlocks",
+    }
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            text = response.read().decode("utf-8", errors="replace")
+    except (OSError, urllib.error.URLError):
+        return {}
+    return parse_prometheus_metric_values(text, names)
+
+
+def native_sync_progress(source: str) -> dict[str, Any] | None:
+    metrics = fetch_node_native_sync_metrics(source)
+    if not metrics:
+        return None
+    local_main_order = safe_int(metrics.get("Blockdag_mainorder"), 0)
+    best_main_order = safe_int(metrics.get("p2p_miningFreshness_bestPeerMainOrder"), 0)
+    lead = safe_int(metrics.get("p2p_miningFreshness_bestPeerLeadBlocks"), 0)
+    if best_main_order > 0 and local_main_order > 0:
+        if best_main_order <= local_main_order:
+            return None
+        lead = best_main_order - local_main_order
+    if lead <= NATIVE_SYNC_LEAD_THRESHOLD:
+        return None
+
+    current = safe_int(metrics.get("chain_head_block"), 0) or local_main_order
+    highest = current + lead
+    percent = round(max(0.0, min(100.0, (current / max(1, highest)) * 100)), 2)
+    return {
+        "status": "syncing",
+        "percent": percent,
+        "current_block": current,
+        "highest_block": highest,
+        "starting_block": 0,
+        "remaining_blocks": lead,
+        "source": f"{source}:native-p2p-lead",
+        "error": "",
+        "local_main_order": local_main_order,
+        "best_peer_main_order": best_main_order,
+        "native_sync_lead_blocks": lead,
+    }
+
+
 def node_sync_progress(source: str, url: str, timeout: float = 4.0) -> dict[str, Any]:
     try:
         if not valid_url(url):
             raise RuntimeError("invalid node RPC URL")
-        result = json_rpc_call(url, "eth_syncing", [], timeout=timeout)
-        if result is False:
-            return {
-                "status": "synced",
-                "percent": 100.0,
-                "current_block": None,
-                "highest_block": None,
-                "starting_block": None,
-                "remaining_blocks": 0,
-                "source": source,
-                "error": "",
-            }
-        if not isinstance(result, dict):
-            raise RuntimeError(f"unexpected eth_syncing response: {result!r}")
+        chain = node_chain_rpc_snapshot(source, url, timeout=timeout)
+        current = safe_int(chain.get("chain_block_count"), None)
+        if current is None:
+            raise RuntimeError(str(chain.get("chain_rpc_error") or "getBlockCount unavailable"))
 
-        current = parse_rpc_quantity(result.get("currentBlock", 0))
-        highest = parse_rpc_quantity(result.get("highestBlock", current))
-        starting = parse_rpc_quantity(result.get("startingBlock", 0))
-        remaining = max(0, highest - current)
-        percent = ((current - starting) / max(1, highest - starting)) * 100
-        percent = round(max(0.0, min(100.0, percent)), 2)
+        native = native_sync_progress(source)
+        if native:
+            native.update(chain)
+            native["current_block"] = current
+            native["highest_block"] = None
+            native["current_block_source"] = "getBlockCount"
+            return native
+
         return {
-            "status": "syncing" if remaining > 0 else "synced",
-            "percent": percent if remaining > 0 else 100.0,
+            "status": "synced",
+            "percent": 100.0,
             "current_block": current,
-            "highest_block": highest,
-            "starting_block": starting,
-            "remaining_blocks": remaining,
+            "highest_block": current,
+            "starting_block": None,
+            "remaining_blocks": 0,
             "source": source,
             "error": "",
+            "current_block_source": "getBlockCount",
+            **chain,
         }
     except Exception as exc:
         return unknown_sync_progress(source, str(exc))
@@ -3901,8 +3635,8 @@ def collect_sync_progress() -> dict[str, Any]:
         status = "synced"
         percent = 100.0
         remaining_values = [0]
-        current_values = []
-        highest_values = []
+        current_values = [int(item["current_block"]) for item in known if item.get("current_block") is not None]
+        highest_values = [int(item["highest_block"]) for item in known if item.get("highest_block") is not None]
         starting_values = []
         error = ""
     else:
@@ -3919,11 +3653,66 @@ def collect_sync_progress() -> dict[str, Any]:
         "percent": percent,
         "current_block": min(current_values) if current_values else None,
         "highest_block": max(highest_values) if highest_values else None,
+        "chain_block_count": min(
+            int(item["chain_block_count"])
+            for item in known
+            if item.get("chain_block_count") is not None
+        ) if known and any(item.get("chain_block_count") is not None for item in known) else None,
+        "chain_main_height": min(
+            int(item["chain_main_height"])
+            for item in known
+            if item.get("chain_main_height") is not None
+        ) if known and any(item.get("chain_main_height") is not None for item in known) else None,
+        "chain_rpc_source": "getBlockCount",
         "starting_block": min(starting_values) if starting_values else None,
         "remaining_blocks": max(remaining_values) if remaining_values else (0 if status == "synced" else None),
         "source": "nodes",
         "error": error,
         "nodes": per_node,
+    }
+
+
+def observe_sync_progress_health(sync_progress: dict[str, Any]) -> dict[str, Any]:
+    now = time.time()
+    previous = read_json_file(SYNC_PROGRESS_HEALTH_STATE_FILE, {})
+    previous_nodes = previous.get("nodes") if isinstance(previous.get("nodes"), dict) else {}
+    progress_nodes = sync_progress.get("nodes") if isinstance(sync_progress.get("nodes"), dict) else {}
+    new_state: dict[str, Any] = {"updated_at": now_iso(), "epoch": now, "nodes": {}}
+    active_nodes: list[str] = []
+    node_rates: dict[str, float] = {}
+
+    for node, progress in progress_nodes.items():
+        if not isinstance(progress, dict):
+            continue
+        current = safe_int(progress.get("current_block"))
+        highest = safe_int(progress.get("highest_block"))
+        remaining = safe_int(progress.get("remaining_blocks"))
+        if current is None:
+            continue
+
+        previous_progress = previous_nodes.get(node) if isinstance(previous_nodes.get(node), dict) else {}
+        previous_current = safe_int(previous_progress.get("current_block"))
+        previous_epoch = safe_float(previous_progress.get("epoch"))
+        if previous_current is not None and previous_epoch is not None:
+            elapsed = now - previous_epoch
+            if 5 <= elapsed <= SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS and current > previous_current:
+                active_nodes.append(str(node))
+                node_rates[str(node)] = round((current - previous_current) / elapsed, 3)
+
+        new_state["nodes"][str(node)] = {
+            "epoch": now,
+            "current_block": current,
+            "highest_block": highest,
+            "remaining_blocks": remaining,
+            "status": progress.get("status"),
+        }
+
+    write_json_file(SYNC_PROGRESS_HEALTH_STATE_FILE, new_state)
+    return {
+        "active_nodes": active_nodes,
+        "active_node_count": len(active_nodes),
+        "node_rates_blocks_per_second": node_rates,
+        "lookback_seconds": SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS,
     }
 
 
@@ -4418,30 +4207,8 @@ def collect_global_blockchain() -> dict[str, Any]:
         return annotate_global_pool_labels({**cached, "cache_hit": True, "history": read_global_history(limit=GLOBAL_HISTORY_LIMIT)})
 
     rpc_sources = node_rpc_urls() or [("local-chain", "http://127.0.0.1:18545")]
-    latest_errors: list[str] = []
-    latest_hex: Any = None
-    rpc_name = ""
-    for source_name, source_url in rpc_sources:
-        try:
-            latest_hex = json_rpc_call(source_url, "eth_blockNumber", [], timeout=8.0)
-            rpc_name = source_name
-            if source_name:
-                rpc_sources = [(source_name, source_url)] + [
-                    (name, url) for name, url in rpc_sources if name != source_name or url != source_url
-                ]
-            break
-        except Exception as exc:  # noqa: BLE001 - global view should fail over per source.
-            latest_errors.append(f"{source_name}: {exc}")
-    if latest_hex is None:
-        return annotate_global_pool_labels(
-            {
-                "status": "failed",
-                "source": "on-chain",
-                "error": latest_errors[-1] if latest_errors else "unable to fetch latest block",
-                "latest_errors": latest_errors,
-                "history": read_global_history(limit=GLOBAL_HISTORY_LIMIT),
-            }
-        )
+    rpc_name, rpc_url = rpc_sources[0]
+    latest_hex = json_rpc_call(rpc_url, "eth_blockNumber", [], timeout=8.0)
     latest_block = int(str(latest_hex), 16)
     requested_count = min(max(GLOBAL_BLOCK_WINDOW, 1), latest_block + 1)
     start_block = max(0, latest_block - requested_count + 1)
@@ -5190,17 +4957,11 @@ def fiat_value(amount_bdag: Decimal, price: dict[str, Any], currency: str) -> st
 
 def collect_miner_hashrate_debug(registry_miners: list[dict[str, Any]], activity_miners: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Collect fast ASIC-reported hashrates for miners currently relevant to the pool."""
-    activity_ips = {
-        str(item.get("ip") or "")
-        for item in activity_miners
-        if item.get("ip") and not is_retired_miner_identity(item, str(item.get("ip") or ""))
-    }
+    activity_ips = {str(item.get("ip") or "") for item in activity_miners if item.get("ip")}
     candidates: dict[str, dict[str, Any]] = {}
     for registered in registry_miners:
         ip = str(registered.get("ip") or "")
         if not is_lan_ipv4(ip):
-            continue
-        if is_retired_miner_identity(registered, ip):
             continue
         if not (
             ip in activity_ips
@@ -5242,22 +5003,14 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
     activity = collect_pool_activity(lines=POOL_ACTIVITY_LOG_LINES)
     registry = upsert_pool_activity_miners(activity)
     registry_by_ip = {str(item.get("ip")): item for item in registry.get("miners", []) if item.get("ip")}
-    active_activity_miners = [
-        item
-        for item in activity.get("miners", [])
-        if not is_retired_miner_identity(
-            {**item, **registry_by_ip.get(str(item.get("ip") or ""), {})},
-            str(item.get("ip") or ""),
-        )
-    ]
-    hashrate_by_ip = collect_miner_hashrate_debug(registry.get("miners", []), active_activity_miners)
+    hashrate_by_ip = collect_miner_hashrate_debug(registry.get("miners", []), activity.get("miners", []))
     credit_by_address = {
         str(item.get("miner_address")): item
         for item in credit_totals.get("by_address", [])
         if item.get("miner_address")
     }
     worker_to_ips: dict[str, set[str]] = {}
-    for item in active_activity_miners:
+    for item in activity["miners"]:
         activity_ip = str(item.get("ip") or "")
         activity_mac = normalize_mac((registry_by_ip.get(activity_ip, {}) or {}).get("mac"))
         if is_docker_bridge_pool_log_client(activity_ip, activity_mac):
@@ -5265,11 +5018,11 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
         ip = str(item.get("ip") or "")
         for worker in item.get("workers", []):
             worker_to_ips.setdefault(str(worker), set()).add(ip)
-    total_work = sum(int(item.get("share_work", 0) or 0) for item in active_activity_miners)
+    total_work = sum(int(item.get("share_work", 0) or 0) for item in activity["miners"])
     total_bdag = wei_to_bdag(credit_totals.get("totals", {}).get("total_wei"))
     recent_bdag = wei_to_bdag(credit_totals.get("recent_1h", {}).get("total_wei"))
     estimates: list[dict[str, Any]] = []
-    for item in active_activity_miners:
+    for item in activity["miners"]:
         activity_ip = str(item.get("ip") or "")
         registered = registry_by_ip.get(activity_ip, {})
         if is_docker_bridge_pool_log_client(activity_ip, normalize_mac(registered.get("mac"))):
@@ -5788,7 +5541,9 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
     recent_bdag = decimal_value(onchain_1h.get("earned_bdag")) if onchain_1h.get("status") == "ok" else None
     if recent_bdag is None:
         recent_bdag = db_recent_bdag
-    wallet_balance = collect_wallet_balances_for_addresses(wallet_addresses_from_credits(credits)) if "error" not in credits else {
+    payment_wallet_addresses = [primary_mining_address] if is_spendable_eth_address(primary_mining_address) else []
+    payment_wallet_balance = collect_wallet_balances_for_addresses(payment_wallet_addresses)
+    credit_wallet_balance = collect_wallet_balances_for_addresses(wallet_addresses_from_credits(credits)) if "error" not in credits else {
         "status": "failed",
         "source_truth": "on-chain eth_getBalance latest",
         "address_count": 0,
@@ -5798,7 +5553,9 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
         "addresses": [],
         "error": credits.get("error"),
     }
-    wallet["aggregate"] = wallet_balance
+    wallet_balance = payment_wallet_balance
+    wallet["payment"] = payment_wallet_balance
+    wallet["aggregate"] = credit_wallet_balance
     wallet_bdag = None
     if wallet_balance.get("ok_address_count", 0) > 0:
         wallet_bdag = decimal_value(wallet_balance.get("total_bdag"))
@@ -5865,10 +5622,16 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
                 miner["estimated_wallet_usd_avg_hour"] = fiat_value(estimated_wallet_avg_hour, price, "usd")
                 miner["estimated_wallet_zar_avg_hour"] = fiat_value(estimated_wallet_avg_hour, price, "zar")
     credit_balance_check = {
-        "source_truth": wallet_balance.get("source_truth", "on-chain eth_getBalance latest"),
+        "source_truth": wallet_balance.get("source_truth", "on-chain eth_getBalance latest for payment wallet"),
+        "wallet_scope": "payment-wallet",
+        "payment_wallet_address": primary_mining_address,
         "wallet_status": wallet_balance.get("status"),
         "wallet_address_count": wallet_balance.get("address_count"),
         "wallet_ok_address_count": wallet_balance.get("ok_address_count"),
+        "credit_address_wallet_status": credit_wallet_balance.get("status"),
+        "credit_address_wallet_count": credit_wallet_balance.get("address_count"),
+        "credit_address_wallet_ok_count": credit_wallet_balance.get("ok_address_count"),
+        "credit_address_wallet_bdag": credit_wallet_balance.get("total_bdag"),
         "credited_bdag": decimal_to_str(total_bdag),
         "lifetime_credited_bdag": decimal_to_str(total_bdag),
         "wallet_bdag": decimal_to_str(wallet_bdag) if wallet_bdag is not None else None,
@@ -5876,7 +5639,7 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
         "wallet_covers_credits": bool(wallet_bdag is not None and wallet_bdag >= total_bdag),
         "difference_bdag": decimal_to_str(wallet_bdag - total_bdag) if wallet_bdag is not None else None,
         "lifetime_credits_minus_wallet_bdag": decimal_to_str(total_bdag - wallet_bdag) if wallet_bdag is not None else None,
-        "reconciliation_note": "Wallet balance is live on-chain balance. Positive lifetime_credits_minus_wallet_bdag usually means BDAG has been withdrawn or spent; 24h earnings are calculated from reward credits, not wallet balance deltas.",
+        "reconciliation_note": "Wallet balance is the live on-chain balance of the configured payment wallet. Credit-address totals are shown separately for historical worker addresses.",
     }
     generated_at = now_iso()
     generated_dt = parse_earnings_timestamp(generated_at)
@@ -5916,6 +5679,8 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
         "price": price,
         "wallet": wallet,
         "wallet_balance": wallet_balance,
+        "payment_wallet_balance": payment_wallet_balance,
+        "credit_wallet_balance": credit_wallet_balance,
         "onchain_earnings": {
             "primary_address": primary_mining_address,
             "last_1h": onchain_1h,
@@ -6064,8 +5829,11 @@ def restore_clean(log_path: Path) -> bool:
 
 
 def start_stack(log_path: Path) -> bool:
-    command = configured_command("BDAG_START_COMMAND", compose_command("start", *SERVICES))
-    return bool(command) and run_logged(command, log_path, timeout=180).ok
+    command = configured_command("BDAG_START_COMMAND", ["make", "up-two"])
+    if not command:
+        return False
+    ok = run_logged(command, log_path, timeout=180).ok
+    return ok and stop_planned_sync_paused_follower(log_path)
 
 
 def restart_stack(log_path: Path) -> bool:
@@ -6073,7 +5841,16 @@ def restart_stack(log_path: Path) -> bool:
     start_command = configured_command("BDAG_START_COMMAND", ["make", "up-two"])
     down = run_logged(stop_command, log_path, timeout=180) if stop_command else CommandResult(stop_command, 0, "", "", 0)
     up = run_logged(start_command, log_path, timeout=180) if start_command else CommandResult(start_command, 1, "", "", 0)
-    return down.ok and up.ok
+    return down.ok and up.ok and stop_planned_sync_paused_follower(log_path)
+
+
+def stop_planned_sync_paused_follower(log_path: Path) -> bool:
+    paused = planned_sync_paused_follower()
+    if not paused:
+        return True
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(f"[{now_iso()}] preserving sync coordinator pause for {paused}\n")
+    return run_logged(docker_compose_command("stop", paused), log_path, timeout=180).ok
 
 
 def _render_restart_checklist(status: dict[str, Any], handoff_path: Path) -> str:

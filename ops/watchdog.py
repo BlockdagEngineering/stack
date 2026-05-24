@@ -16,8 +16,6 @@ from typing import Any
 
 from incident_journal import append_incident
 from pool_ops import (
-    get_miner_cgminer_devs,
-    get_miner_status,
     LOG_DIR,
     NODES,
     POOL_CONTAINER,
@@ -30,7 +28,6 @@ from pool_ops import (
     default_miner_pool_settings,
     ensure_runtime,
     is_lan_ipv4,
-    miner_request,
     now_iso,
     record_earnings_snapshot,
     read_miner_admin_password,
@@ -56,16 +53,11 @@ AUTONOMOUS_STACK_LAB_LOCK_FILE = RUNTIME_DIR / "autonomous-stack-lab.lock"
 DEFAULT_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_INTERVAL", "60"))
 DEFAULT_FAILURE_THRESHOLD = int(os.environ.get("BDAG_WATCHDOG_FAILURE_THRESHOLD", "3"))
 DEFAULT_CLEAN_RESTORE_COOLDOWN = int(os.environ.get("BDAG_CLEAN_RESTORE_COOLDOWN", "1800"))
-AUTOMATIC_CLEAN_RESTORE_ENABLED = os.environ.get("BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE", "False").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-BOOT_REPAIR_DIRTY_POLICY = os.environ.get("BDAG_BOOT_REPAIR_DIRTY_POLICY", "start")
-BOOT_REPAIR_CRITICAL_POLICY = os.environ.get("BDAG_BOOT_REPAIR_CRITICAL_POLICY", "restart")
 DEFAULT_SYNCING_THRESHOLD = int(os.environ.get("BDAG_WATCHDOG_SYNCING_THRESHOLD", "5"))
 DEFAULT_SYNCING_RESTART_COOLDOWN = int(os.environ.get("BDAG_SYNCING_RESTART_COOLDOWN", "900"))
+DEFAULT_ACTIVE_SYNC_IMPORT_GRACE_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_ACTIVE_SYNC_IMPORT_GRACE_SECONDS", "300")
+)
 DEFAULT_SHARE_STALL_THRESHOLD = int(os.environ.get("BDAG_WATCHDOG_SHARE_STALL_THRESHOLD", "2"))
 DEFAULT_SHARE_STALL_RESTART_COOLDOWN = int(
     os.environ.get("BDAG_WATCHDOG_SHARE_STALL_RESTART_COOLDOWN", os.environ.get("BDAG_SYNCING_RESTART_COOLDOWN", "900"))
@@ -77,17 +69,17 @@ DEFAULT_SUBMIT_PATH_SELF_RECOVERY_GRACE_SECONDS = int(
 )
 DEFAULT_MINER_DOWN_RESTART_SECONDS = int(os.environ.get("BDAG_WATCHDOG_MINER_DOWN_RESTART_SECONDS", "120"))
 DEFAULT_MINER_RESTART_COOLDOWN = int(os.environ.get("BDAG_WATCHDOG_MINER_RESTART_COOLDOWN", "300"))
-DEFAULT_MINER_FAILED_REPAIR_RETRY_SECONDS = int(
-    os.environ.get("BDAG_WATCHDOG_MINER_FAILED_REPAIR_RETRY_SECONDS", "60")
-)
-DEFAULT_MINER_CONTROLLER_ROOT_PROBE_TIMEOUT = float(
-    os.environ.get("BDAG_WATCHDOG_MINER_CONTROLLER_ROOT_PROBE_TIMEOUT", "1.5")
-)
-DEFAULT_MINER_RESTART_FALLBACK_SETTLE_SECONDS = float(
-    os.environ.get("BDAG_WATCHDOG_MINER_RESTART_FALLBACK_SETTLE_SECONDS", "1.0")
-)
 DEFAULT_ASIC_DEGRADED_SECONDS = int(os.environ.get("BDAG_WATCHDOG_ASIC_DEGRADED_SECONDS", "120"))
 DEFAULT_ASIC_DEGRADED_REPAIR_COOLDOWN = int(os.environ.get("BDAG_WATCHDOG_ASIC_DEGRADED_REPAIR_COOLDOWN", "180"))
+DEFAULT_ASIC_HASHRATE_MIN_GHS = float(os.environ.get("BDAG_WATCHDOG_ASIC_HASHRATE_MIN_GHS", "180"))
+DEFAULT_ASIC_HASHRATE_STALE_SECONDS = int(os.environ.get("BDAG_WATCHDOG_ASIC_HASHRATE_STALE_SECONDS", "120"))
+DEFAULT_ASIC_HASHRATE_CONFIRM_SECONDS = int(os.environ.get("BDAG_WATCHDOG_ASIC_HASHRATE_CONFIRM_SECONDS", "90"))
+DEFAULT_ASIC_HASHRATE_REPAIR_COOLDOWN = int(
+    os.environ.get("BDAG_WATCHDOG_ASIC_HASHRATE_REPAIR_COOLDOWN", str(DEFAULT_MINER_RESTART_COOLDOWN))
+)
+DEFAULT_ASIC_HASHRATE_STARTUP_GRACE_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_ASIC_HASHRATE_STARTUP_GRACE_SECONDS", "180")
+)
 DEFAULT_MINER_USEFUL_WORK_STALL_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_MINER_USEFUL_WORK_STALL_SECONDS", "150")
 )
@@ -102,18 +94,6 @@ DEFAULT_MINER_USEFUL_WORK_MIN_HEALTHY_PEERS = int(
 )
 DEFAULT_MINER_USEFUL_WORK_MIN_POOL_VALID_SHARES = int(
     os.environ.get("BDAG_WATCHDOG_MINER_USEFUL_WORK_MIN_POOL_VALID_SHARES", "5")
-)
-DEFAULT_MINER_CGMINER_UNRESPONSIVE_CONFIRM_SECONDS = int(
-    os.environ.get("BDAG_WATCHDOG_MINER_CGMINER_UNRESPONSIVE_CONFIRM_SECONDS", "45")
-)
-DEFAULT_MINER_CGMINER_UNRESPONSIVE_REPAIR_COOLDOWN = int(
-    os.environ.get(
-        "BDAG_WATCHDOG_MINER_CGMINER_UNRESPONSIVE_REPAIR_COOLDOWN",
-        os.environ.get("BDAG_WATCHDOG_MINER_USEFUL_WORK_STALL_REPAIR_COOLDOWN", "600"),
-    )
-)
-DEFAULT_MINER_CGMINER_UNRESPONSIVE_PROBE_TIMEOUT = float(
-    os.environ.get("BDAG_WATCHDOG_MINER_CGMINER_UNRESPONSIVE_PROBE_TIMEOUT", "1.0")
 )
 DEFAULT_POOL_RESTART_GRACE_SECONDS = int(os.environ.get("BDAG_WATCHDOG_POOL_RESTART_GRACE_SECONDS", "90"))
 DEFAULT_EARNINGS_SNAPSHOT_INTERVAL_SECONDS = int(
@@ -130,10 +110,23 @@ DEFAULT_RPC_FAILOVER_URGENT_SWITCH_COOLDOWN = int(
 DEFAULT_OPTIMUM_STATE_EVENT_COOLDOWN = int(os.environ.get("BDAG_WATCHDOG_OPTIMUM_STATE_EVENT_COOLDOWN", "300"))
 RPC_FAILOVER_SERVICE = os.environ.get("BDAG_RPC_FAILOVER_SERVICE", "rpc-failover")
 HAPROXY_CFG = PROJECT_ROOT / "haproxy.cfg"
+HAPROXY_RUNTIME_DNS_OPTIONS = "resolvers docker init-addr libc,none"
 NODE_TO_HAPROXY_SERVER = {
     "bdag-miner-node-1": "node1",
     "bdag-miner-node-2": "node2",
 }
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+AUTOMATIC_CLEAN_RESTORE_ENABLED = env_bool("BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE", False)
+BOOT_REPAIR_DIRTY_POLICY = os.environ.get("BDAG_BOOT_REPAIR_DIRTY_POLICY", "start").strip().lower()
+BOOT_REPAIR_CRITICAL_POLICY = os.environ.get("BDAG_BOOT_REPAIR_CRITICAL_POLICY", "restart").strip().lower()
 
 
 def log(message: str) -> None:
@@ -181,151 +174,6 @@ def miner_label(row: dict[str, Any]) -> str:
     return f"{name} {ip}" if ip and ip not in name else name
 
 
-def miner_repair_priority(row: dict[str, Any]) -> tuple[int, int, int, int]:
-    """Prefer real managed ASICs over stale pool-log-only clients for single-miner repairs."""
-
-    ip = str(row.get("ip") or "")
-    try:
-        ip_tail = int(ip.rsplit(".", 1)[-1])
-    except ValueError:
-        ip_tail = 999
-    name = str(row.get("display_name") or "").strip().lower()
-    device_type = str(row.get("device_type") or "").strip().lower()
-    controller = row.get("controller_status") if isinstance(row.get("controller_status"), dict) else {}
-    asic_like = device_type == "asic" or str(controller.get("model") or "").upper() == "X100"
-    stale_pool_log_client = device_type == "stratum" and not row.get("managed")
-    legacy_label = name.startswith("legacy") or name in {"ajax", "legacy pool client"}
-    return (
-        0 if row.get("managed") else 1,
-        0 if asic_like else 1,
-        1 if stale_pool_log_client or legacy_label else 0,
-        ip_tail,
-    )
-
-
-def sort_miner_repair_targets(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return sorted(targets, key=miner_repair_priority)
-
-
-def miner_down_observed_since(row: dict[str, Any], now: int) -> int:
-    """Estimate when a miner really became idle from dashboard age fields.
-
-    A miner can spend time in a degraded/useful-work-stall state before the
-    dashboard finally classifies it as down.  Repair eligibility should use
-    the oldest reliable "last seen" age, not the first watchdog tick that saw
-    status=down.
-    """
-
-    ages: list[int] = []
-    for key in ("last_pool_seen_age_seconds", "last_share_age_seconds", "last_submit_age_seconds"):
-        try:
-            value = row.get(key)
-            if value is None:
-                continue
-            age = int(float(value))
-            if age >= 0:
-                ages.append(age)
-        except (TypeError, ValueError):
-            continue
-    if not ages:
-        return now
-    return max(0, now - max(ages))
-
-
-def probe_miner_controller_root(ip: str) -> dict[str, Any]:
-    response = miner_request(ip, "/", timeout=DEFAULT_MINER_CONTROLLER_ROOT_PROBE_TIMEOUT)
-    raw = str(response.get("raw") or "")
-    return {
-        "ip": ip,
-        "status": "ok",
-        "http_status": response.get("status"),
-        "body_bytes": len(raw.encode("utf-8")),
-    }
-
-
-def restart_miner_resilient(ip: str, password: str) -> dict[str, Any]:
-    """Restart one ASIC with increasingly tolerant fallbacks.
-
-    The X100 controller can reach a state where authenticated API calls fail,
-    but an unauthenticated restart or a simple root-page wake probe still works.
-    """
-
-    errors: dict[str, Any] = {}
-    try:
-        result = restart_miner(ip, password)
-        result["action"] = "restart"
-        return result
-    except Exception as exc:  # noqa: BLE001 - fall through to less strict repair paths.
-        errors["auth_restart_error"] = str(exc)
-
-    try:
-        result = restart_miner_open(ip)
-        result["action"] = "restart-open-fallback"
-        result.update(errors)
-        return result
-    except Exception as exc:  # noqa: BLE001 - try waking the controller before retrying.
-        errors["open_restart_error"] = str(exc)
-
-    try:
-        errors["controller_root_probe"] = probe_miner_controller_root(ip)
-        if DEFAULT_MINER_RESTART_FALLBACK_SETTLE_SECONDS > 0:
-            time.sleep(DEFAULT_MINER_RESTART_FALLBACK_SETTLE_SECONDS)
-    except Exception as exc:  # noqa: BLE001 - record the signal but keep trying.
-        errors["controller_root_probe_error"] = str(exc)
-
-    try:
-        result = restart_miner_open(ip)
-        result["action"] = "restart-open-after-root-probe"
-        result.update(errors)
-        return result
-    except Exception as exc:  # noqa: BLE001
-        errors["open_restart_after_root_probe_error"] = str(exc)
-
-    try:
-        result = restart_miner(ip, password)
-        result["action"] = "restart-auth-after-root-probe"
-        result.update(errors)
-        return result
-    except Exception as exc:  # noqa: BLE001
-        errors["auth_restart_after_root_probe_error"] = str(exc)
-
-    return {
-        "ip": ip,
-        "status": "failed",
-        "action": "restart",
-        "error": errors.get("auth_restart_error") or "miner restart failed",
-        **errors,
-    }
-
-
-def record_miner_repair_cooldowns(
-    miner_restart_by_ip: dict[str, Any],
-    targets: list[dict[str, Any]],
-    result: dict[str, Any],
-    now: int,
-    success_cooldown_seconds: int,
-) -> None:
-    """Apply full cooldown only after a real or partial miner repair.
-
-    Failed attempts should retry soon; otherwise one bad HTTP/API attempt can
-    leave a miner idle until the normal long cooldown expires.
-    """
-
-    results = result.get("results") if isinstance(result.get("results"), list) else []
-    by_ip = {str(item.get("ip") or ""): item for item in results if isinstance(item, dict)}
-    failed_retry = min(DEFAULT_MINER_FAILED_REPAIR_RETRY_SECONDS, max(1, success_cooldown_seconds))
-    failed_timestamp = max(0, now - success_cooldown_seconds + failed_retry)
-    for target in targets:
-        ip = str(target.get("ip") or "")
-        if not ip:
-            continue
-        status = str((by_ip.get(ip) or {}).get("status") or "")
-        if status in {"ok", "partial"}:
-            miner_restart_by_ip[ip] = now
-        elif status == "failed":
-            miner_restart_by_ip[ip] = failed_timestamp
-
-
 def container_started_age_seconds(status: dict[str, Any], container_name: str, now: int) -> int | None:
     containers = status.get("containers") if isinstance(status.get("containers"), dict) else {}
     container = containers.get(container_name) if isinstance(containers, dict) else None
@@ -362,7 +210,104 @@ def is_primary_pool_miner(row: dict[str, Any], mining_address: str) -> bool:
     return bool(row.get("connected") and is_primary_pool_identity(row, mining_address))
 
 
+def int_or_none(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def float_or_none(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def pool_initial_download_effective(status: dict[str, Any]) -> bool:
+    pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
+    if not pool_health.get("initial_download"):
+        return False
+    sync_health = status.get("sync_health") if isinstance(status.get("sync_health"), dict) else {}
+    if sync_health.get("pool_initial_download_transient"):
+        return False
+    sync_progress = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
+    remaining = int_or_none(sync_progress.get("remaining_blocks"))
+    connected = int_or_none(((status.get("miner_health") or {}).get("connected_count") if isinstance(status.get("miner_health"), dict) else 0)) or 0
+    share_age = int_or_none(pool_health.get("last_valid_share_age_seconds"))
+    job_age = int_or_none(pool_health.get("last_job_notify_age_seconds"))
+    fresh_mining = connected > 0 and (
+        (share_age is not None and share_age <= DEFAULT_ASIC_HASHRATE_STALE_SECONDS)
+        or (job_age is not None and job_age <= DEFAULT_ASIC_HASHRATE_STALE_SECONDS)
+    )
+    if sync_progress.get("status") == "synced" and (remaining is None or remaining == 0) and fresh_mining:
+        return False
+    return True
+
+
+def miner_debug_hashrate_ghs(row: dict[str, Any]) -> float | None:
+    debug = row.get("debug") if isinstance(row.get("debug"), dict) else {}
+    return float_or_none(debug.get("hashrate")) or float_or_none(debug.get("av_hashrate"))
+
+
+def asic_hashrate_issue_primary_miners(
+    status: dict[str, Any],
+    min_hashrate_ghs: float,
+    stale_seconds: int,
+) -> list[dict[str, Any]]:
+    if min_hashrate_ghs <= 0 and stale_seconds <= 0:
+        return []
+    pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
+    if pool_initial_download_effective(status) or int(pool_health.get("job_notify_count") or 0) <= 0:
+        return []
+    mining_address = str(status.get("mining_address") or "")
+    miners = ((status.get("miner_health") or {}).get("miners") or [])
+    affected: list[dict[str, Any]] = []
+    for row in miners:
+        if not isinstance(row, dict) or not is_primary_pool_miner(row, mining_address):
+            continue
+        if row.get("device_type") != "asic" or not is_lan_ipv4(str(row.get("ip", ""))):
+            continue
+        debug = row.get("debug") if isinstance(row.get("debug"), dict) else {}
+        uptime = int_or_none(debug.get("uptime_seconds"))
+        if uptime is not None and uptime < DEFAULT_ASIC_HASHRATE_STARTUP_GRACE_SECONDS:
+            continue
+        hashrate = miner_debug_hashrate_ghs(row)
+        share_age = int_or_none(row.get("last_share_age_seconds"))
+        submit_age = int_or_none(row.get("last_submit_age_seconds"))
+        api_unavailable = (
+            debug.get("available") is False
+            or bool(row.get("debug_error"))
+            or (hashrate is None and row.get("status") == "degraded")
+        )
+        low_hashrate = hashrate is not None and hashrate < min_hashrate_ghs
+        telemetry_blind_and_stale = (
+            api_unavailable
+            and hashrate is None
+            and share_age is not None
+            and share_age >= stale_seconds
+            and (submit_age is None or submit_age <= stale_seconds * 2)
+        )
+        if not low_hashrate and not telemetry_blind_and_stale:
+            continue
+        item = dict(row)
+        item["hashrate_ghs"] = hashrate
+        item["hashrate_min_ghs"] = min_hashrate_ghs
+        item["telemetry_blind"] = api_unavailable and hashrate is None
+        item["last_share_age_seconds"] = share_age
+        item["last_submit_age_seconds"] = submit_age
+        affected.append(item)
+    return affected
+
+
 def degraded_primary_miners(status: dict[str, Any], stale_seconds: int) -> list[dict[str, Any]]:
+    pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
+    if pool_initial_download_effective(status) or int(pool_health.get("job_notify_count") or 0) <= 0:
+        return []
     now = int(time.time())
     mining_address = str(status.get("mining_address") or "")
     miners = ((status.get("miner_health") or {}).get("miners") or [])
@@ -481,113 +426,6 @@ def useful_work_stalled_primary_miners(
         item["pool_valid_share_count"] = int(pool_health.get("valid_share_count") or 0)
         stalled.append(item)
     return stalled
-
-
-def pool_has_broad_mining_pressure(status: dict[str, Any]) -> bool:
-    pool_health = status.get("pool_health", status.get("pool", {}))
-    return any(
-        bool(pool_health.get(key))
-        for key in (
-            "share_stall",
-            "job_stall",
-            "pool_template_frozen",
-            "duplicate_block_storm",
-            "stale_job_candidate_storm",
-            "block_submit_error_storm",
-            "accepted_job_expired_storm",
-            "block_submit_zero_success_storm",
-            "initial_download",
-            "rpc_refused",
-        )
-    )
-
-
-def cgminer_unresponsive_primary_miners(
-    status: dict[str, Any],
-    down_miners: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Detect the X100 failure where the controller is alive but cgminer is stuck."""
-
-    if pool_has_broad_mining_pressure(status):
-        return []
-    if template_failing_nodes(status) or active_rpc_template_failing(status):
-        return []
-
-    pool_health = status.get("pool_health", status.get("pool", {}))
-    miner_health = status.get("miner_health", {})
-    mining_address = str(status.get("mining_address") or "")
-    miners = miner_health.get("miners", []) if isinstance(miner_health.get("miners"), list) else []
-    primary_rows = [
-        row
-        for row in miners
-        if isinstance(row, dict)
-        and is_primary_pool_identity(row, mining_address)
-        and row.get("device_type") in {"asic", "stratum"}
-        and is_lan_ipv4(str(row.get("ip", "")))
-    ]
-    if len(primary_rows) <= DEFAULT_MINER_USEFUL_WORK_MIN_HEALTHY_PEERS:
-        return []
-    if int(pool_health.get("valid_share_count") or 0) < DEFAULT_MINER_USEFUL_WORK_MIN_POOL_VALID_SHARES:
-        return []
-
-    down_ips = {str(item.get("ip") or "") for item in down_miners if item.get("ip")}
-    healthy_peers = 0
-    for row in primary_rows:
-        ip = str(row.get("ip") or "")
-        if ip in down_ips:
-            continue
-        share_age = row.get("last_share_age_seconds")
-        submit_age = row.get("last_submit_age_seconds")
-        if int(row.get("shares") or 0) > 0 or int(row.get("blocks_found") or 0) > 0:
-            healthy_peers += 1
-            continue
-        if share_age is not None and int(share_age) < DEFAULT_MINER_USEFUL_WORK_STALL_SECONDS:
-            healthy_peers += 1
-            continue
-        if submit_age is not None and int(submit_age) < DEFAULT_MINER_USEFUL_WORK_STALL_SECONDS:
-            healthy_peers += 1
-
-    if healthy_peers < DEFAULT_MINER_USEFUL_WORK_MIN_HEALTHY_PEERS:
-        return []
-
-    candidates = [
-        row
-        for row in primary_rows
-        if str(row.get("ip") or "") in down_ips
-        and (row.get("last_pool_seen_age_seconds") is None or int(row.get("last_pool_seen_age_seconds") or 0) >= 60)
-        and (row.get("last_share_age_seconds") is None or int(row.get("last_share_age_seconds") or 0) >= 60)
-    ]
-    if not candidates:
-        return []
-
-    affected: list[dict[str, Any]] = []
-    for row in candidates[:2]:
-        ip = str(row.get("ip") or "")
-        controller_status = get_miner_status(ip, timeout=DEFAULT_MINER_CGMINER_UNRESPONSIVE_PROBE_TIMEOUT)
-        if not controller_status:
-            continue
-        is_x100_controller = bool(
-            str(controller_status.get("model") or "").upper() == "X100"
-            or str(controller_status.get("mcbversion") or "").startswith("MCB_")
-        )
-        if not is_x100_controller:
-            continue
-        try:
-            get_miner_cgminer_devs(ip, timeout=DEFAULT_MINER_CGMINER_UNRESPONSIVE_PROBE_TIMEOUT)
-            continue
-        except Exception as exc:  # noqa: BLE001 - a stuck cgminer endpoint is the signal here.
-            item = dict(row)
-            item["controller_status"] = {
-                "model": controller_status.get("model"),
-                "hardware": controller_status.get("hardware"),
-                "firmware": controller_status.get("firmware"),
-                "mcbversion": controller_status.get("mcbversion"),
-            }
-            item["cgminer_probe_error"] = str(exc)
-            item["healthy_peer_count"] = healthy_peers
-            item["pool_valid_share_count"] = int(pool_health.get("valid_share_count") or 0)
-            affected.append(item)
-    return affected
 
 
 def template_failing_nodes(status: dict[str, Any]) -> list[str]:
@@ -827,25 +665,6 @@ def run_node_restart(node_service: str, reason: str) -> bool:
         log(f"targeted node restart skipped for unknown node={node_service} reason={reason}")
         return False
 
-    if AUTONOMOUS_STACK_LAB_LOCK_FILE.exists():
-        current_primary = current_rpc_primary()
-        if current_primary and node_service != current_primary:
-            log(
-                "targeted standby node restart suppressed during autonomous stack lab "
-                f"node={node_service} current_primary={current_primary} reason={reason}"
-            )
-            record_efficiency_event(
-                "repair_suppressed",
-                "warning",
-                "standby node restart suppressed during autonomous stack lab",
-                {
-                    "node": node_service,
-                    "current_primary": current_primary,
-                    "reason": reason,
-                },
-            )
-            return False
-
     lock_handle = acquire_lock(blocking=False)
     if lock_handle is None:
         log(f"targeted node restart skipped because another repair is running; node={node_service} reason={reason}")
@@ -928,7 +747,7 @@ def render_rpc_primary_config(primary_node: str) -> str:
             rendered.append(line)
             continue
         indent, haproxy_name, node_service = match.groups()
-        options = "check inter 5s fall 3 rise 2"
+        options = f"check inter 5s fall 3 rise 2 {HAPROXY_RUNTIME_DNS_OPTIONS}"
         if node_service != primary_node:
             options += " backup"
         rendered.append(f"{indent}server {haproxy_name} {node_service}:38131 {options}")
@@ -1389,9 +1208,6 @@ def run_pool_restart(reason: str) -> bool:
 
 def run_miner_restarts(targets: list[dict[str, Any]], reason: str) -> dict[str, Any]:
     password = read_miner_admin_password()
-    if not password:
-        log(f"miner restart skipped because no saved miner admin password is available; reason={reason}")
-        return {"status": "skipped", "reason": "no saved miner admin password", "target_count": len(targets), "results": []}
 
     lock_handle = acquire_lock(blocking=False)
     if lock_handle is None:
@@ -1425,7 +1241,7 @@ def run_miner_restarts(targets: list[dict[str, Any]], reason: str) -> dict[str, 
                 result = {"ip": ip, "status": "skipped", "error": "not a LAN IPv4 address"}
             else:
                 try:
-                    if target.get("configured") is False:
+                    if target.get("configured") is False and password:
                         result = configure_miner(
                             ip=ip,
                             admin_password=password,
@@ -1456,18 +1272,35 @@ def run_miner_restarts(targets: list[dict[str, Any]], reason: str) -> dict[str, 
                             result["action"] = "configure-restart"
                             if restart_result.get("status") == "failed":
                                 result["status"] = "partial"
+                    elif target.get("configured") is False:
+                        result = {
+                            **restart_miner_open(ip),
+                            "action": "restart-open-no-password",
+                            "note": "configuration could not be repaired without a saved admin password",
+                        }
                     else:
-                        result = restart_miner_resilient(ip, password)
+                        if password:
+                            result = {**restart_miner(ip, password), "action": "restart"}
+                        else:
+                            result = {**restart_miner_open(ip), "action": "restart-open-no-password"}
                 except Exception as exc:  # noqa: BLE001 - keep restarting other down miners.
                     if target.get("configured") is False:
-                        result = restart_miner_resilient(ip, password)
-                        result["configure_error"] = str(exc)
-                        result["action"] = f"{result.get('action', 'restart')}-after-configure-failure"
+                        try:
+                            result = {
+                                **restart_miner_open(ip),
+                                "action": "restart-open-fallback",
+                                "configure_error": str(exc),
+                            }
+                        except Exception as fallback_exc:  # noqa: BLE001 - keep restarting other down miners.
+                            result = {
+                                "ip": ip,
+                                "status": "failed",
+                                "action": "configure",
+                                "error": str(exc),
+                                "fallback_error": str(fallback_exc),
+                            }
                     else:
-                        result = {
-                            **restart_miner_resilient(ip, password),
-                            "initial_restart_error": str(exc),
-                        }
+                        result = {"ip": ip, "status": "failed", "action": "restart", "error": str(exc)}
             results.append(result)
             handle.write(json.dumps(result, default=str) + "\n")
 
@@ -1516,7 +1349,7 @@ def choose_lagging_node(status: dict[str, Any]) -> str | None:
         node_info = nodes.get(node, {}) or {}
         progress = progress_nodes.get(node, {}) or {}
         lag = int(progress.get("remaining_blocks") or node_info.get("peer_ahead_blocks") or 0)
-        latest = int(node_info.get("best_main_order") or node_info.get("latest_block") or 0)
+        latest = int(node_info.get("latest_block") or 0)
         if max_latest and latest:
             lag = max(lag, max_latest - latest)
         if progress.get("status") == "unknown" or progress.get("error"):
@@ -1532,10 +1365,116 @@ def choose_lagging_node(status: dict[str, Any]) -> str | None:
     return candidates[0][1]
 
 
+def active_sync_import_nodes(
+    status: dict[str, Any],
+    state: dict[str, Any] | None = None,
+    now: int | None = None,
+    grace_seconds: int = DEFAULT_ACTIVE_SYNC_IMPORT_GRACE_SECONDS,
+) -> list[str]:
+    nodes = status.get("nodes", {}) if isinstance(status.get("nodes"), dict) else {}
+    progress_nodes = (status.get("sync_progress", {}) or {}).get("nodes", {}) or {}
+    height_changed_at = (
+        state.get("last_sync_height_changed_at_by_node")
+        if state is not None and isinstance(state.get("last_sync_height_changed_at_by_node"), dict)
+        else {}
+    )
+    current_time = int(time.time()) if now is None else now
+    active: list[str] = []
+    for node in NODES:
+        info = nodes.get(node, {}) if isinstance(nodes.get(node), dict) else {}
+        if not info.get("child_running"):
+            continue
+        progress = progress_nodes.get(node, {}) if isinstance(progress_nodes.get(node), dict) else {}
+        latest = max(int(info.get("latest_block") or 0), int(progress.get("current_block") or 0))
+        if info.get("importing") and latest > 0:
+            active.append(node)
+            continue
+        changed_at = int(height_changed_at.get(node) or 0)
+        if latest > 0 and changed_at and current_time - changed_at <= grace_seconds:
+            active.append(node)
+            continue
+        raw_age = info.get("last_import_age_seconds")
+        if raw_age is None or latest <= 0:
+            continue
+        try:
+            age = int(float(raw_age))
+        except (TypeError, ValueError):
+            continue
+        if age <= grace_seconds:
+            active.append(node)
+    return active
+
+
+def observe_sync_progress(status: dict[str, Any], state: dict[str, Any], now: int) -> None:
+    nodes = status.get("nodes", {}) if isinstance(status.get("nodes"), dict) else {}
+    progress_nodes = (status.get("sync_progress", {}) or {}).get("nodes", {}) or {}
+    previous = state.get("last_sync_height_by_node") if isinstance(state.get("last_sync_height_by_node"), dict) else {}
+    changed_at = (
+        state.get("last_sync_height_changed_at_by_node")
+        if isinstance(state.get("last_sync_height_changed_at_by_node"), dict)
+        else {}
+    )
+    observed: dict[str, int] = {}
+    updated_changed_at = dict(changed_at)
+    for node in NODES:
+        info = nodes.get(node, {}) if isinstance(nodes.get(node), dict) else {}
+        progress = progress_nodes.get(node, {}) if isinstance(progress_nodes.get(node), dict) else {}
+        height = max(int(info.get("latest_block") or 0), int(progress.get("current_block") or 0))
+        observed[node] = height
+        if height > int(previous.get(node) or 0):
+            updated_changed_at[node] = now
+    state["last_sync_height_by_node"] = observed
+    state["last_sync_height_changed_at_by_node"] = updated_changed_at
+
+
+def suppress_sync_restart_for_active_import(
+    status: dict[str, Any],
+    state: dict[str, Any],
+    reason: str,
+    target_node: str | None = None,
+) -> bool:
+    active_nodes = active_sync_import_nodes(status, state=state)
+    if not active_nodes:
+        return False
+    if target_node and target_node not in active_nodes:
+        return False
+
+    pool_health = status.get("pool_health", status.get("pool", {}))
+    sync_health = status.get("sync_health", {}) if isinstance(status.get("sync_health"), dict) else {}
+    expected_sync_wait = bool(
+        pool_health.get("initial_download")
+        or sync_health.get("needs_fast_sync_repair")
+        or "waiting for node sync" in reason.lower()
+        or "initial download" in reason.lower()
+    )
+    if not expected_sync_wait:
+        return False
+
+    state["last_sync_repair_at"] = int(time.time())
+    state["last_sync_repair_suppressed_at"] = now_iso()
+    state["last_sync_repair_suppressed_reason"] = "active block import"
+    details = {
+        "active_nodes": active_nodes,
+        "target_node": target_node,
+        "reason": reason,
+        "grace_seconds": DEFAULT_ACTIVE_SYNC_IMPORT_GRACE_SECONDS,
+    }
+    log(
+        "sync restart suppressed while block import is active "
+        f"target={target_node or 'stack'} active_nodes={','.join(active_nodes)} reason={reason}"
+    )
+    record_efficiency_event(
+        "repair_suppressed",
+        "warning",
+        "sync restart suppressed while block import is active",
+        details,
+    )
+    return True
+
+
 def should_clean_restore(state: dict[str, Any], status: dict[str, Any], threshold: int, cooldown: int) -> bool:
     if not AUTOMATIC_CLEAN_RESTORE_ENABLED:
         return False
-
     if state.get("consecutive_failures", 0) < threshold:
         return False
 
@@ -1561,24 +1500,36 @@ def should_restart_for_share_stall(state: dict[str, Any], threshold: int, cooldo
     return now - int(state.get("last_share_repair_at", 0) or 0) >= cooldown
 
 
-def boot_repair_mode(policy: str, fallback: str) -> str:
-    mode = str(policy or "").strip().lower()
-    if mode in {"start", "restart", "clean"}:
-        return mode
-    log(f"boot-repair policy {policy!r} is invalid; using {fallback}")
-    return fallback
+def boot_repair_mode(policy: str, failures: list[Any] | None = None) -> str:
+    if policy == "clean" and AUTOMATIC_CLEAN_RESTORE_ENABLED:
+        return "clean"
+    if policy == "clean":
+        log("boot-repair clean restore policy ignored because BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE is not enabled")
+        return "restart"
+    if policy in {"start", "restart", "check"}:
+        return policy
+    text = "; ".join(str(item) for item in failures or [])
+    return "restart" if "bdag child is not running" in text else "start"
 
 
-def run_boot_repair_mode(policy: str, reason: str, fallback: str) -> tuple[str, bool]:
-    mode = boot_repair_mode(policy, fallback)
-    if mode == "clean":
-        if not AUTOMATIC_CLEAN_RESTORE_ENABLED:
-            log(
-                "boot-repair clean restore requested but BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE "
-                f"is disabled; using {fallback} repair"
-            )
-            mode = fallback
-    return mode, run_repair(mode, reason)
+def run_boot_repair_mode(
+    mode: str,
+    reason: str,
+    threshold: int,
+    clean_restore_cooldown: int,
+    syncing_threshold: int,
+    syncing_restart_cooldown: int,
+) -> tuple[bool, dict[str, Any] | None]:
+    if mode == "check":
+        result = check_once(
+            threshold,
+            clean_restore_cooldown,
+            syncing_threshold,
+            syncing_restart_cooldown,
+            repair=True,
+        )
+        return True, result
+    return run_repair(mode, reason), None
 
 
 def boot_repair(
@@ -1591,20 +1542,28 @@ def boot_repair(
     state = read_state()
     if marker is not None:
         reason = str(marker.get("reason") or "dirty shutdown marker detected")
-        log(f"boot-repair found dirty shutdown marker; policy={BOOT_REPAIR_DIRTY_POLICY}; reason={reason}")
+        log(f"boot-repair found dirty shutdown marker: {reason}")
         try:
             collect_status(include_logs=True)
-        except Exception as exc:  # noqa: BLE001 - boot repair should still attempt the restore.
+        except Exception as exc:  # noqa: BLE001 - boot repair should still attempt the conservative repair.
             log(f"boot-repair preflight status check failed: {exc}")
 
-        repair_mode, ok = run_boot_repair_mode(
-            BOOT_REPAIR_DIRTY_POLICY,
+        mode = boot_repair_mode(BOOT_REPAIR_DIRTY_POLICY)
+        ok, result = run_boot_repair_mode(
+            mode,
             f"boot repair after dirty shutdown marker: {reason}",
-            "start",
+            threshold,
+            clean_restore_cooldown,
+            syncing_threshold,
+            syncing_restart_cooldown,
         )
-        state = read_state()
+        state = (result or {}).get("watchdog_state") if isinstance(result, dict) else read_state()
+        if not isinstance(state, dict):
+            state = read_state()
         state["boot_repair_at"] = now_iso()
-        state["boot_repair_status"] = "clean_restored" if ok and repair_mode == "clean" else f"{repair_mode}_repaired" if ok else "failed"
+        state["boot_repair_status"] = f"dirty_{mode}_{'repaired' if ok else 'failed'}"
+        state["boot_repair_dirty_policy"] = BOOT_REPAIR_DIRTY_POLICY
+        state["automatic_clean_restore_enabled"] = AUTOMATIC_CLEAN_RESTORE_ENABLED
         state["last_status"] = "boot_repaired" if ok else "boot_repair_failed"
         state["consecutive_failures"] = 0 if ok else int(state.get("consecutive_failures", 0) or 0)
         state["consecutive_syncing"] = 0 if ok else int(state.get("consecutive_syncing", 0) or 0)
@@ -1613,11 +1572,15 @@ def boot_repair(
         if ok:
             clear_dirty_shutdown_marker()
         write_state(state)
-        return {
+        payload = {
             "boot_repair": state["boot_repair_status"],
+            "repair_mode": mode,
             "dirty_shutdown_marker": marker,
             "watchdog_state": state,
         }
+        if result is not None:
+            payload["repair_result"] = result
+        return payload
 
     try:
         boot_status = collect_status(include_logs=True)
@@ -1627,25 +1590,37 @@ def boot_repair(
     boot_stack_failures = boot_status.get("stack_failures", boot_status.get("failures", []))
     if any("critical log entries" in item or "bdag child is not running" in item for item in boot_stack_failures):
         reason = "; ".join(boot_stack_failures) or "critical boot-time stack failure"
-        log(f"boot-repair using critical policy={BOOT_REPAIR_CRITICAL_POLICY}: {reason}")
-        repair_mode, ok = run_boot_repair_mode(
-            BOOT_REPAIR_CRITICAL_POLICY,
+        mode = boot_repair_mode(BOOT_REPAIR_CRITICAL_POLICY, boot_stack_failures)
+        log(f"boot-repair handling critical boot-time stack failure with {mode}: {reason}")
+        ok, result = run_boot_repair_mode(
+            mode,
             f"boot repair after critical stack failure: {reason}",
-            "restart",
+            threshold,
+            clean_restore_cooldown,
+            syncing_threshold,
+            syncing_restart_cooldown,
         )
-        state = read_state()
+        state = (result or {}).get("watchdog_state") if isinstance(result, dict) else read_state()
+        if not isinstance(state, dict):
+            state = read_state()
         state["boot_repair_at"] = now_iso()
-        state["boot_repair_status"] = "clean_restored" if ok and repair_mode == "clean" else f"{repair_mode}_repaired" if ok else "failed"
+        state["boot_repair_status"] = f"critical_{mode}_{'repaired' if ok else 'failed'}"
+        state["boot_repair_critical_policy"] = BOOT_REPAIR_CRITICAL_POLICY
+        state["automatic_clean_restore_enabled"] = AUTOMATIC_CLEAN_RESTORE_ENABLED
         state["last_status"] = "boot_repaired" if ok else "boot_repair_failed"
         state["updated_at"] = now_iso()
         if ok:
             clear_dirty_shutdown_marker()
         write_state(state)
-        return {
+        payload = {
             "boot_repair": state["boot_repair_status"],
+            "repair_mode": mode,
             "boot_status": boot_status,
             "watchdog_state": state,
         }
+        if result is not None:
+            payload["repair_result"] = result
+        return payload
 
     try:
         result = check_once(
@@ -1714,6 +1689,7 @@ def check_once(
         state.get("last_miner_restart_at_by_ip") if isinstance(state.get("last_miner_restart_at_by_ip"), dict) else {}
     )
     now = int(time.time())
+    observe_sync_progress(status, state, now)
     pool_started_age_seconds = container_started_age_seconds(status, POOL_CONTAINER, now)
     pool_in_startup_grace = bool(
         pool_started_age_seconds is not None
@@ -1722,11 +1698,8 @@ def check_once(
     for ip in list(miner_down_since):
         if ip not in down_ips:
             miner_down_since.pop(ip, None)
-    down_by_ip = {str(item.get("ip")): item for item in down_miners if item.get("ip")}
     for ip in sorted(down_ips):
-        observed_since = miner_down_observed_since(down_by_ip.get(ip, {}), now)
-        previous_since = int(miner_down_since.get(ip, now) or now)
-        miner_down_since[ip] = min(previous_since, observed_since)
+        miner_down_since.setdefault(ip, now)
     state["miner_down_since"] = miner_down_since
     state["last_miner_restart_at_by_ip"] = miner_restart_by_ip
     share_stall = bool(pool_health.get("share_stall")) and int(miner_health.get("connected_count", 0) or 0) > 0
@@ -1743,17 +1716,13 @@ def check_once(
     submit_path_recovery_recent = bool(pool_health.get("submit_stall_recovery_recent"))
     submit_path_self_healed_recently = bool(pool_health.get("submit_stall_self_healed_recently"))
     submit_path_recovery_age = pool_health.get("submit_stall_last_recovery_age_seconds")
-    source_job_hard_degraded = (
-        bool(pool_health.get("source_job_hard_degraded"))
-        and int(miner_health.get("connected_count", 0) or 0) > 0
-    )
-    source_backend_hard_degraded = (
-        bool(pool_health.get("source_selected_backend_hard_degraded"))
-        and int(miner_health.get("connected_count", 0) or 0) > 0
-    )
     low_diff_asics = low_difficulty_primary_miners(status)
     useful_work_stalled_asics = useful_work_stalled_primary_miners(status)
-    cgminer_unresponsive_asics = cgminer_unresponsive_primary_miners(status, down_miners)
+    hashrate_issue_asics = asic_hashrate_issue_primary_miners(
+        status,
+        DEFAULT_ASIC_HASHRATE_MIN_GHS,
+        DEFAULT_ASIC_HASHRATE_STALE_SECONDS,
+    )
     degraded_asics = degraded_primary_miners(status, DEFAULT_ASIC_DEGRADED_SECONDS)
     primary_miner_count = sum(
         1
@@ -1789,18 +1758,18 @@ def check_once(
     for ip in sorted(useful_work_stall_ips):
         useful_work_stall_since.setdefault(ip, now)
     state["miner_useful_work_stall_since"] = useful_work_stall_since
-    cgminer_unresponsive_since = (
-        state.get("miner_cgminer_unresponsive_since")
-        if isinstance(state.get("miner_cgminer_unresponsive_since"), dict)
+    asic_hashrate_issue_since = (
+        state.get("asic_hashrate_issue_since")
+        if isinstance(state.get("asic_hashrate_issue_since"), dict)
         else {}
     )
-    cgminer_unresponsive_ips = {str(item.get("ip")) for item in cgminer_unresponsive_asics if item.get("ip")}
-    for ip in list(cgminer_unresponsive_since):
-        if ip not in cgminer_unresponsive_ips:
-            cgminer_unresponsive_since.pop(ip, None)
-    for ip in sorted(cgminer_unresponsive_ips):
-        cgminer_unresponsive_since.setdefault(ip, now)
-    state["miner_cgminer_unresponsive_since"] = cgminer_unresponsive_since
+    asic_hashrate_issue_ips = {str(item.get("ip")) for item in hashrate_issue_asics if item.get("ip")}
+    for ip in list(asic_hashrate_issue_since):
+        if ip not in asic_hashrate_issue_ips:
+            asic_hashrate_issue_since.pop(ip, None)
+    for ip in sorted(asic_hashrate_issue_ips):
+        asic_hashrate_issue_since.setdefault(ip, now)
+    state["asic_hashrate_issue_since"] = asic_hashrate_issue_since
     if not docker_access_error:
         router_switched, router_suppressed = apply_watchdog_rpc_router_decision(
             status,
@@ -2056,89 +2025,6 @@ def check_once(
                 if ok:
                     state["consecutive_syncing"] = 0
                     state["consecutive_node_orphan_storm"] = 0
-    elif cgminer_unresponsive_asics:
-        affected = [
-            {
-                "ip": item.get("ip"),
-                "name": item.get("display_name"),
-                "status": item.get("status"),
-                "connected": item.get("connected"),
-                "last_pool_seen_age_seconds": item.get("last_pool_seen_age_seconds"),
-                "last_share_age_seconds": item.get("last_share_age_seconds"),
-                "last_submit_age_seconds": item.get("last_submit_age_seconds"),
-                "controller_status": item.get("controller_status"),
-                "cgminer_probe_error": item.get("cgminer_probe_error"),
-                "healthy_peer_count": item.get("healthy_peer_count"),
-                "pool_valid_share_count": item.get("pool_valid_share_count"),
-            }
-            for item in cgminer_unresponsive_asics
-        ]
-        eligible_miners = []
-        waiting = []
-        for item in cgminer_unresponsive_asics:
-            ip = str(item.get("ip"))
-            unresponsive_for = now - int(cgminer_unresponsive_since.get(ip, now) or now)
-            cooldown_remaining = DEFAULT_MINER_CGMINER_UNRESPONSIVE_REPAIR_COOLDOWN - (
-                now - int(miner_restart_by_ip.get(ip, 0) or 0)
-            )
-            if unresponsive_for >= DEFAULT_MINER_CGMINER_UNRESPONSIVE_CONFIRM_SECONDS and cooldown_remaining <= 0:
-                eligible_miners.append(item)
-            else:
-                waiting.append(
-                    f"{ip} unresponsive_for={unresponsive_for}s "
-                    f"confirm={DEFAULT_MINER_CGMINER_UNRESPONSIVE_CONFIRM_SECONDS}s "
-                    f"cooldown_remaining={max(cooldown_remaining, 0)}s"
-                )
-        reason = (
-            f"{len(cgminer_unresponsive_asics)} primary X100 miner(s) have a reachable controller "
-            "but an unresponsive cgminer device API while pool shares are stale"
-        )
-        state["consecutive_failures"] = 0
-        state["consecutive_syncing"] = 0
-        state["consecutive_node_orphan_storm"] = 0
-        state["consecutive_share_stalls"] = 0
-        state["consecutive_miner_cgminer_unresponsive"] = int(
-            state.get("consecutive_miner_cgminer_unresponsive", 0) or 0
-        ) + 1
-        state["last_status"] = "miner_cgminer_unresponsive"
-        state["last_failures"] = []
-        state["last_share_warnings"] = [reason]
-        state["last_cgminer_unresponsive_asics"] = affected
-        log(
-            "miner_cgminer_unresponsive "
-            f"affected={affected} eligible={[item.get('ip') for item in eligible_miners]} "
-            f"waiting={'; '.join(waiting) or 'none'}"
-        )
-        record_efficiency_event(
-            "miner_cgminer_unresponsive",
-            "warning",
-            reason,
-            {
-                "affected_miners": affected,
-                "eligible": [item.get("ip") for item in eligible_miners],
-                "waiting": waiting,
-                "primary_miner_count": primary_miner_count,
-                "pool_valid_share_count": pool_health.get("valid_share_count"),
-                "pool_submit_count": pool_health.get("submit_count"),
-            },
-        )
-        if repair and eligible_miners:
-            repair_targets = sort_miner_repair_targets(eligible_miners)[:1]
-            result = run_miner_restarts(repair_targets, "miner cgminer unresponsive: " + reason)
-            state["last_miner_repair_at"] = now
-            state["last_miner_repair"] = result
-            record_miner_repair_cooldowns(
-                miner_restart_by_ip,
-                repair_targets,
-                result,
-                now,
-                DEFAULT_MINER_CGMINER_UNRESPONSIVE_REPAIR_COOLDOWN,
-            )
-            for item in repair_targets:
-                if str(miner_restart_by_ip.get(str(item.get("ip"))) or "") == str(now):
-                    cgminer_unresponsive_since.pop(str(item.get("ip")), None)
-            state["last_miner_restart_at_by_ip"] = miner_restart_by_ip
-            state["miner_cgminer_unresponsive_since"] = cgminer_unresponsive_since
     elif useful_work_stalled_asics:
         affected = [
             {
@@ -2208,28 +2094,87 @@ def check_once(
             },
         )
         if repair and eligible_miners:
-            repair_targets = sort_miner_repair_targets(eligible_miners)[:1]
+            repair_targets = eligible_miners[:1]
             result = run_miner_restarts(repair_targets, "miner useful-work stall: " + reason)
             state["last_miner_repair_at"] = now
             state["last_miner_repair"] = result
-            record_miner_repair_cooldowns(
-                miner_restart_by_ip,
-                repair_targets,
-                result,
-                now,
-                DEFAULT_MINER_USEFUL_WORK_STALL_REPAIR_COOLDOWN,
-            )
             for item in repair_targets:
-                if str(miner_restart_by_ip.get(str(item.get("ip"))) or "") == str(now):
-                    useful_work_stall_since.pop(str(item.get("ip")), None)
+                miner_restart_by_ip[str(item.get("ip"))] = now
+                useful_work_stall_since.pop(str(item.get("ip")), None)
             state["last_miner_restart_at_by_ip"] = miner_restart_by_ip
             state["miner_useful_work_stall_since"] = useful_work_stall_since
+    elif hashrate_issue_asics:
+        affected = [
+            {
+                "ip": item.get("ip"),
+                "name": item.get("display_name"),
+                "status": item.get("status"),
+                "configured": item.get("configured"),
+                "pool_active": item.get("pool_active"),
+                "hashrate_ghs": item.get("hashrate_ghs"),
+                "hashrate_min_ghs": item.get("hashrate_min_ghs"),
+                "telemetry_blind": item.get("telemetry_blind"),
+                "last_share_age_seconds": item.get("last_share_age_seconds"),
+                "last_submit_age_seconds": item.get("last_submit_age_seconds"),
+                "debug_error": item.get("debug_error"),
+            }
+            for item in hashrate_issue_asics
+        ]
+        eligible_miners = []
+        waiting = []
+        for item in hashrate_issue_asics:
+            ip = str(item.get("ip"))
+            issue_for = now - int(asic_hashrate_issue_since.get(ip, now) or now)
+            cooldown_remaining = DEFAULT_ASIC_HASHRATE_REPAIR_COOLDOWN - (
+                now - int(miner_restart_by_ip.get(ip, 0) or 0)
+            )
+            if issue_for >= DEFAULT_ASIC_HASHRATE_CONFIRM_SECONDS and cooldown_remaining <= 0:
+                eligible_miners.append(item)
+            else:
+                waiting.append(
+                    f"{ip} issue_for={issue_for}s "
+                    f"confirm={DEFAULT_ASIC_HASHRATE_CONFIRM_SECONDS}s "
+                    f"cooldown_remaining={max(cooldown_remaining, 0)}s"
+                )
+        reason = (
+            f"{len(hashrate_issue_asics)} primary ASIC miner(s) have sustained low or unprovable hashrate "
+            f"(threshold={DEFAULT_ASIC_HASHRATE_MIN_GHS:g} GH/s, stale={DEFAULT_ASIC_HASHRATE_STALE_SECONDS}s)"
+        )
+        state["consecutive_failures"] = 0
+        state["consecutive_syncing"] = 0
+        state["consecutive_node_orphan_storm"] = 0
+        state["consecutive_share_stalls"] = 0
+        state["last_status"] = "asic_hashrate_issue"
+        state["last_failures"] = []
+        state["last_share_warnings"] = [reason]
+        state["last_asic_hashrate_issue"] = affected
+        log(
+            "asic_hashrate_issue "
+            f"affected={affected} eligible={[item.get('ip') for item in eligible_miners]} "
+            f"waiting={'; '.join(waiting) or 'none'}"
+        )
+        record_efficiency_event(
+            "asic_hashrate_issue",
+            "warning",
+            reason,
+            {"affected_miners": affected, "eligible": [item.get("ip") for item in eligible_miners], "waiting": waiting},
+        )
+        if repair and eligible_miners:
+            repair_targets = eligible_miners[:1]
+            result = run_miner_restarts(repair_targets, "ASIC hashrate watchdog: " + reason)
+            state["last_miner_repair_at"] = now
+            state["last_miner_repair"] = result
+            for item in repair_targets:
+                ip = str(item.get("ip"))
+                miner_restart_by_ip[ip] = now
+                asic_hashrate_issue_since.pop(ip, None)
+            state["last_miner_restart_at_by_ip"] = miner_restart_by_ip
+            state["asic_hashrate_issue_since"] = asic_hashrate_issue_since
     elif miner_failures:
         state["consecutive_failures"] = 0
         state["consecutive_syncing"] = 0
         state["consecutive_share_stalls"] = 0
         state["consecutive_miner_useful_work_stalls"] = 0
-        state["consecutive_miner_cgminer_unresponsive"] = 0
         state["last_status"] = "miner_down"
         state["last_failures"] = miner_failures
         eligible_miners = []
@@ -2260,17 +2205,12 @@ def check_once(
             },
         )
         if repair and eligible_miners:
-            repair_targets = sort_miner_repair_targets(eligible_miners)[:1]
+            repair_targets = eligible_miners[:1]
             result = run_miner_restarts(repair_targets, "; ".join(miner_failures))
             state["last_miner_repair_at"] = now
             state["last_miner_repair"] = result
-            record_miner_repair_cooldowns(
-                miner_restart_by_ip,
-                repair_targets,
-                result,
-                now,
-                miner_restart_cooldown,
-            )
+            for item in repair_targets:
+                miner_restart_by_ip[str(item.get("ip"))] = now
             state["last_miner_restart_at_by_ip"] = miner_restart_by_ip
     elif low_diff_asics:
         affected = [
@@ -2297,7 +2237,6 @@ def check_once(
         state["consecutive_syncing"] = 0
         state["consecutive_node_orphan_storm"] = 0
         state["consecutive_share_stalls"] = 0
-        state["consecutive_miner_cgminer_unresponsive"] = 0
         state["last_status"] = "asic_low_difficulty"
         state["last_failures"] = []
         state["last_share_warnings"] = [reason]
@@ -2314,17 +2253,12 @@ def check_once(
             {"affected_miners": affected, "eligible": [item.get("ip") for item in eligible_miners], "waiting": waiting},
         )
         if repair and eligible_miners:
-            repair_targets = sort_miner_repair_targets(eligible_miners)[:1]
+            repair_targets = eligible_miners[:1]
             result = run_miner_restarts(repair_targets, reason)
             state["last_miner_repair_at"] = now
             state["last_miner_repair"] = result
-            record_miner_repair_cooldowns(
-                miner_restart_by_ip,
-                repair_targets,
-                result,
-                now,
-                miner_restart_cooldown,
-            )
+            for item in repair_targets:
+                miner_restart_by_ip[str(item.get("ip"))] = now
             state["last_miner_restart_at_by_ip"] = miner_restart_by_ip
     elif submit_path_self_healed_recently:
         recovery = (
@@ -2344,7 +2278,6 @@ def check_once(
         state["consecutive_node_orphan_storm"] = 0
         state["consecutive_share_stalls"] = 0
         state["consecutive_submit_path_stalls"] = 0
-        state["consecutive_miner_cgminer_unresponsive"] = 0
         state["last_status"] = "pool_submit_path_self_healed"
         state["last_failures"] = []
         state["last_share_warnings"] = [reason]
@@ -2371,81 +2304,6 @@ def check_once(
                     "selected_backend": pool_health.get("selected_backend"),
                 },
             )
-    elif source_job_hard_degraded or source_backend_hard_degraded:
-        source_job_health = (
-            pool_health.get("source_job_health")
-            if isinstance(pool_health.get("source_job_health"), dict)
-            else {}
-        )
-        selected_source = (
-            pool_health.get("selected_backend_source_health")
-            if isinstance(pool_health.get("selected_backend_source_health"), dict)
-            else {}
-        )
-        selected_backend = pool_health.get("selected_backend") or "selected backend"
-        reason_bits = []
-        if source_job_hard_degraded:
-            reason_bits.append("job-state health is not ok")
-        if source_backend_hard_degraded:
-            reason_bits.append(f"{selected_backend} is not mineable/submit-ready/fresh")
-        reason = (
-            "pool source health is hard-degraded while accepted work is stale "
-            f"({'; '.join(reason_bits)})"
-        )
-        if pool_in_startup_grace:
-            reason += (
-                f"; pool started {pool_started_age_seconds}s ago "
-                f"(grace {DEFAULT_POOL_RESTART_GRACE_SECONDS}s)"
-            )
-        state["consecutive_failures"] = 0
-        state["consecutive_syncing"] = 0
-        state["consecutive_node_orphan_storm"] = 0
-        state["consecutive_share_stalls"] = 0
-        state["consecutive_submit_path_stalls"] = int(state.get("consecutive_submit_path_stalls", 0) or 0) + 1
-        state["last_status"] = "pool_source_health_hard_degraded"
-        state["last_failures"] = []
-        state["last_share_warnings"] = [reason]
-        log(f"pool_source_health_hard_degraded consecutive={state['consecutive_submit_path_stalls']} reason={reason}")
-        record_efficiency_event(
-            "pool_source_health_hard_degraded",
-            "critical",
-            reason,
-            {
-                "selected_backend": selected_backend,
-                "source_job_health": source_job_health,
-                "selected_backend_source_health": selected_source,
-                "last_valid_share_age_seconds": pool_health.get("last_valid_share_age_seconds"),
-                "last_block_submit_age_seconds": pool_health.get("last_block_submit_age_seconds"),
-            },
-        )
-        if repair:
-            cooldown_remaining = DEFAULT_SUBMIT_PATH_REPAIR_COOLDOWN - (
-                now - int(state.get("last_submit_path_repair_at", 0) or 0)
-            )
-            if snapshot_active:
-                log("source-health pool restart suppressed during hourly snapshot")
-            elif autonomous_lab_active:
-                log("source-health pool restart suppressed during autonomous stack lab")
-            elif pool_in_startup_grace:
-                log(
-                    "source-health pool restart suppressed during startup grace "
-                    f"age={pool_started_age_seconds}s threshold={DEFAULT_POOL_RESTART_GRACE_SECONDS}s"
-                )
-            elif state["consecutive_submit_path_stalls"] < DEFAULT_SUBMIT_PATH_STALL_THRESHOLD:
-                log(
-                    "source-health pool restart waiting for confirmation "
-                    f"consecutive={state['consecutive_submit_path_stalls']} "
-                    f"threshold={DEFAULT_SUBMIT_PATH_STALL_THRESHOLD}"
-                )
-            elif cooldown_remaining > 0:
-                log(f"source-health pool restart suppressed by cooldown_remaining={cooldown_remaining}s")
-            else:
-                ok = run_pool_restart("pool source health hard-degraded: " + reason)
-                state["last_repair_at"] = int(time.time())
-                state["last_share_repair_at"] = int(time.time())
-                state["last_submit_path_repair_at"] = int(time.time())
-                if ok:
-                    state["consecutive_submit_path_stalls"] = 0
     elif submit_path_zero_success_storm or accepted_job_expired_storm:
         failure_count = int(pool_health.get("block_submit_failure_count") or 0)
         duplicate_count = int(pool_health.get("duplicate_block_count") or 0)
@@ -2700,8 +2558,11 @@ def check_once(
                     now - int(state.get("last_sync_repair_at", 0) or 0)
                 )
                 if not ok and cooldown_remaining <= 0:
-                    ok = run_node_restart(node, "ASIC mining degraded by backend sync/template state: " + reason)
-                    state["last_sync_repair_at"] = int(time.time())
+                    if suppress_sync_restart_for_active_import(status, state, reason, node):
+                        ok = False
+                    else:
+                        ok = run_node_restart(node, "ASIC mining degraded by backend sync/template state: " + reason)
+                        state["last_sync_repair_at"] = int(time.time())
                 elif not ok:
                     log(f"sync repair restart for {node} suppressed by cooldown_remaining={cooldown_remaining}s")
                     record_efficiency_event(
@@ -2862,7 +2723,9 @@ def check_once(
                     )
         if repair and state["consecutive_syncing"] and should_restart_for_syncing(state, syncing_threshold, syncing_restart_cooldown):
             restart_node = template_nodes[0] if template_nodes else choose_lagging_node(status)
-            if restart_node:
+            if suppress_sync_restart_for_active_import(status, state, "; ".join(sync_warnings), restart_node):
+                ok = False
+            elif restart_node:
                 ok = run_node_restart(restart_node, "persistent syncing: " + "; ".join(sync_warnings))
             else:
                 ok = run_repair("restart", "persistent syncing: " + "; ".join(sync_warnings))
@@ -2877,7 +2740,6 @@ def check_once(
         state["consecutive_syncing"] = 0
         state["consecutive_share_stalls"] = 0
         state["consecutive_submit_path_stalls"] = 0
-        state["consecutive_miner_cgminer_unresponsive"] = 0
         state["last_status"] = status["overall"]
         state["last_failures"] = []
         state["last_sync_warnings"] = []
@@ -2904,14 +2766,13 @@ def loop(
         f"interval={interval}s threshold={threshold} clean_restore_cooldown={clean_restore_cooldown}s "
         f"syncing_threshold={syncing_threshold} syncing_restart_cooldown={syncing_restart_cooldown}s "
         f"miner_down_restart_seconds={miner_down_restart_seconds}s miner_restart_cooldown={miner_restart_cooldown}s "
-        f"miner_failed_repair_retry={DEFAULT_MINER_FAILED_REPAIR_RETRY_SECONDS}s "
         f"miner_useful_work_stall_seconds={DEFAULT_MINER_USEFUL_WORK_STALL_SECONDS}s "
         f"miner_useful_work_confirm={DEFAULT_MINER_USEFUL_WORK_STALL_CONFIRM_SECONDS}s "
         f"miner_useful_work_cooldown={DEFAULT_MINER_USEFUL_WORK_STALL_REPAIR_COOLDOWN}s "
-        f"miner_cgminer_unresponsive_confirm={DEFAULT_MINER_CGMINER_UNRESPONSIVE_CONFIRM_SECONDS}s "
-        f"miner_cgminer_unresponsive_cooldown={DEFAULT_MINER_CGMINER_UNRESPONSIVE_REPAIR_COOLDOWN}s "
-        f"miner_controller_root_probe_timeout={DEFAULT_MINER_CONTROLLER_ROOT_PROBE_TIMEOUT}s "
-        f"miner_restart_fallback_settle={DEFAULT_MINER_RESTART_FALLBACK_SETTLE_SECONDS}s "
+        f"asic_hashrate_min={DEFAULT_ASIC_HASHRATE_MIN_GHS:g}GH/s "
+        f"asic_hashrate_stale={DEFAULT_ASIC_HASHRATE_STALE_SECONDS}s "
+        f"asic_hashrate_confirm={DEFAULT_ASIC_HASHRATE_CONFIRM_SECONDS}s "
+        f"asic_hashrate_cooldown={DEFAULT_ASIC_HASHRATE_REPAIR_COOLDOWN}s "
         f"earnings_snapshot_interval={DEFAULT_EARNINGS_SNAPSHOT_INTERVAL_SECONDS}s"
     )
     while True:

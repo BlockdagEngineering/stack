@@ -1,0 +1,112 @@
+{
+  "status_version": 2,
+  "overall": "ok",
+  "fresh": true,
+  "age_seconds": 0,
+  "mode": "mining",
+  "can_mine": true,
+  "can_accept_shares": true,
+  "can_submit_blocks": true,
+  "node_services": [
+    "bdag-miner-node-1",
+    "bdag-miner-node-2"
+  ],
+  "observer_node_services": [],
+  "sync_progress": {
+    "percent": 100,
+    "remaining_blocks": 0,
+    "nodes": {
+      "bdag-miner-node-1": {
+        "percent": 100,
+        "remaining_blocks": 0
+      },
+      "bdag-miner-node-2": {
+        "percent": 100,
+        "remaining_blocks": 0
+      }
+    }
+  },
+  "sync_health": {
+    "block_lag": 0,
+    "main_order_lag": 0,
+    "nodes_with_recent_imports": 2
+  },
+  "nodes": {
+    "bdag-miner-node-1": {
+      "role": "managed",
+      "health_scope": "production",
+      "affects_production_health": true,
+      "child_running": true,
+      "latest_block": 8237710,
+      "last_import_age_seconds": 2,
+      "import_count": 12,
+      "p2p_stream_errors": 0,
+      "mining_template_error_count": 0
+    },
+    "bdag-miner-node-2": {
+      "role": "managed",
+      "health_scope": "production",
+      "affects_production_health": true,
+      "child_running": true,
+      "latest_block": 8237710,
+      "last_import_age_seconds": 3,
+      "import_count": 11,
+      "p2p_stream_errors": 0,
+      "mining_template_error_count": 0
+    }
+  },
+  "pool_health": {
+    "connected_miners": 4,
+    "managed_miners": 4,
+    "valid_share_count": 420,
+    "submit_count": 480,
+    "stale_submit_count": 3,
+    "accepted_job_expired_storm": false,
+    "block_submit_success_count": 64,
+    "block_submit_error_count": 2,
+    "job_notify_count": 18,
+    "head_change_count": 12,
+    "duplicate_block_count": 1,
+    "tip_overdue_count": 1,
+    "gbt_errors": 0,
+    "last_valid_share_age_seconds": 5,
+    "last_job_notify_age_seconds": 4,
+    "last_head_change_age_seconds": 7,
+    "last_block_submit_age_seconds": 11,
+    "share_stall": false,
+    "job_stall": false,
+    "pool_template_frozen": false,
+    "duplicate_block_storm": false,
+    "stale_job_candidate_count": 2,
+    "stale_job_candidate_storm": false,
+    "block_submit_error_storm": false
+  },
+  "miner_health": {
+    "managed_count": 4,
+    "ok_count": 4,
+    "connected_count": 4,
+    "miners": [
+      {
+        "display_name": "Odysseus",
+        "ip": "192.168.1.101",
+        "mac": "00:11:22:33:44:55",
+        "expected_worker_user": "0x05518e03e148c56e426ff9e1cbdb962b4fc5250a",
+        "status": "ok",
+        "connected": true,
+        "pool_active": true,
+        "configured": true,
+        "work_percent": 25,
+        "last_share_age_seconds": 5,
+        "last_submit_age_seconds": 8,
+        "shares": 105,
+        "submits": 120,
+        "blocks_found": 16,
+        "debug": {
+          "hashrate": 0.24,
+          "av_hashrate": 0.24,
+          "hwerr_ratio": 0.001
+        }
+      }
+    ]
+  }
+}

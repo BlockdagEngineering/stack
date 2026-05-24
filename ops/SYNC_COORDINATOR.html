@@ -29,11 +29,11 @@
 <body>
   <main>
     <h1>BlockDAG Sync Coordinator</h1>
-    <p>The coordinator avoids wasting bandwidth and disk IO after a major restore. When both backend nodes are far behind, it can pause the lagging follower, let the best leader catch up, then resume or seed the follower.</p>
+    <p>The coordinator avoids wasting bandwidth and disk IO after a major restore. When backend nodes are far behind, it pauses one follower, lets the best leader catch up alone, then resumes or seeds the follower.</p>
 
     <section class="grid">
       <div class="card blue"><strong>Normal mode</strong><p>Both nodes run independently and see different peers once they are near tip.</p></div>
-      <div class="card amber"><strong>Large catch-up</strong><p>One healthy leader imports while the lagging follower is stopped to reduce duplicate download and write pressure.</p></div>
+      <div class="card amber"><strong>Large catch-up</strong><p>One healthy leader imports while the follower is stopped to reduce duplicate download and write pressure.</p></div>
       <div class="card green"><strong>Recovery</strong><p>When the leader is near tip, the follower can be resumed or safely seeded from the leader with a short final leader stop.</p></div>
     </section>
 
@@ -45,7 +45,7 @@ python3 ops/sync_coordinator.py --once
 python3 ops/sync_coordinator.py --once --repair --pause-follower --resume-follower
 
 # Seed the paused follower from the leader with a consistent final copy
-python3 ops/sync_coordinator.py --once --repair --seed-follower --allow-leader-stop</code></pre>
+python3 ops/sync_coordinator.py --once --repair --pause-follower --seed-follower --resume-follower --allow-leader-stop</code></pre>
 
     <h2>Safety Rules</h2>
     <table>
@@ -65,7 +65,7 @@ python3 ops/sync_coordinator.py --once --repair --seed-follower --allow-leader-s
     "state_file": "ops/runtime/sync-coordinator-state.json",
     "default_far_behind_blocks": 10000,
     "default_follower_lag_blocks": 1500,
-    "default_leader_near_tip_blocks": 1000
+    "default_leader_near_tip_blocks": 5
   }
   </script>
 </body>

@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -eu
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+write_sysfs() {
+  local path="$1"
+  local value="$2"
+
+  [ -w "${path}" ] || return 0
+  printf '%s\n' "${value}" > "${path}" 2>/dev/null || true
+}
+
+clamp_to_hw_max() {
+  local value="$1"
+  local max_path="$2"
+  local max_value
+
+  max_value="$(cat "${max_path}" 2>/dev/null || true)"
+  case "${value}:${max_value}" in
+    *[!0-9]*:*|*:*[!0-9]*|:) printf '%s\n' "${value}" ;;
+    *) [ "${value}" -gt "${max_value}" ] && printf '%s\n' "${max_value}" || printf '%s\n' "${value}" ;;
+  esac
+}
+
+is_usb_block_device() {
+  local block_name="$1"
+  local device_path
+
+  device_path="$(readlink -f "/sys/block/${block_name}/device" 2>/dev/null || true)"
+  case "${device_path}" in
+    *'/usb'*) return 0 ;;
+    *'/usb'/*) return 0 ;;
+  esac
+  return 1
+}
+
+keep_usb_block_device_awake() {
+  local block_name="$1"
+  local device_path
+  local parent
+
+  device_path="$(readlink -f "/sys/block/${block_name}/device" 2>/dev/null || true)"
+  [ -n "${device_path}" ] || return 0
+
+  parent="${device_path}"
+  while [ "${parent}" != "/" ] && [ "${parent}" != "/sys" ]; do
+    case "${parent}" in
+      *usb*|*/host*|*/target*|*/block*)
+        write_sysfs "${parent}/power/control" on
+        write_sysfs "${parent}/power/autosuspend" -1
+        write_sysfs "${parent}/power/autosuspend_delay_ms" -1
+        ;;
+    esac
+    parent="$(dirname "${parent}")"
+  done
+}
+
+if command -v powerprofilesctl >/dev/null 2>&1; then
+  powerprofilesctl set performance >/dev/null 2>&1 || true
+fi
+
+# Let explicit nice values control scheduling. Desktop sessions often enable
+# scheduler autogroups, which can blunt the mining/import priority policy.
+write_sysfs /proc/sys/kernel/sched_autogroup_enabled 0
+
+if [ -d /sys/devices/system/cpu/intel_pstate ]; then
+  [ -w /sys/devices/system/cpu/intel_pstate/no_turbo ] && echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo
+  [ -w /sys/devices/system/cpu/intel_pstate/max_perf_pct ] && echo 100 > /sys/devices/system/cpu/intel_pstate/max_perf_pct
+  [ -w /sys/devices/system/cpu/intel_pstate/min_perf_pct ] && echo "${BDAG_CPU_MIN_PERF_PCT:-40}" > /sys/devices/system/cpu/intel_pstate/min_perf_pct
+fi
+
+for governor in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+  [ -w "${governor}" ] && echo performance > "${governor}"
+done
+
+for preference in /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do
+  [ -w "${preference}" ] && echo performance > "${preference}"
+done
+
+for scheduler in /sys/block/*/queue/scheduler; do
+  case "${scheduler}" in
+    /sys/block/loop*|/sys/block/ram*|/sys/block/zram*) continue ;;
+  esac
+  if [ -w "${scheduler}" ] && grep -qw mq-deadline "${scheduler}"; then
+    write_sysfs "${scheduler}" mq-deadline
+  fi
+done
+
+for queue in /sys/block/*/queue; do
+  case "${queue}" in
+    /sys/block/loop*|/sys/block/ram*|/sys/block/zram*) continue ;;
+  esac
+
+  block_name="${queue#/sys/block/}"
+  block_name="${block_name%/queue}"
+
+  read_ahead_kb="${BDAG_BLOCK_READ_AHEAD_KB:-1024}"
+  nr_requests="${BDAG_BLOCK_NR_REQUESTS:-256}"
+  max_sectors_kb="${BDAG_BLOCK_MAX_SECTORS_KB:-}"
+
+  if is_usb_block_device "${block_name}"; then
+    read_ahead_kb="${BDAG_USB_READ_AHEAD_KB:-2048}"
+    nr_requests="${BDAG_USB_NR_REQUESTS:-256}"
+    max_sectors_kb="${BDAG_USB_MAX_SECTORS_KB:-1024}"
+    max_sectors_kb="$(clamp_to_hw_max "${max_sectors_kb}" "${queue}/max_hw_sectors_kb")"
+    write_sysfs "${queue}/rotational" 0
+    keep_usb_block_device_awake "${block_name}"
+  fi
+
+  write_sysfs "${queue}/read_ahead_kb" "${read_ahead_kb}"
+  write_sysfs "${queue}/nr_requests" "${nr_requests}"
+  write_sysfs "${queue}/add_random" 0
+  write_sysfs "${queue}/rq_affinity" "${BDAG_BLOCK_RQ_AFFINITY:-1}"
+  if [ -n "${max_sectors_kb}" ]; then
+    write_sysfs "${queue}/max_sectors_kb" "${max_sectors_kb}"
+  fi
+done

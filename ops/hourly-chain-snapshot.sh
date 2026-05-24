@@ -21,8 +21,6 @@ SNAPSHOT_RPC_RECOVERY_SECONDS="${BDAG_SNAPSHOT_RPC_RECOVERY_SECONDS:-180}"
 SNAPSHOT_FINAL_STOP_SYNC="${BDAG_SNAPSHOT_FINAL_STOP_SYNC:-0}"
 SNAPSHOT_FINAL_STOP_TIMEOUT_SECONDS="${BDAG_SNAPSHOT_FINAL_STOP_TIMEOUT_SECONDS:-45}"
 SNAPSHOT_WARM_SYNC_TIMEOUT_SECONDS="${BDAG_SNAPSHOT_WARM_SYNC_TIMEOUT_SECONDS:-2700}"
-SNAPSHOT_REQUIRE_SAFE_SOURCE="${BDAG_SNAPSHOT_REQUIRE_SAFE_SOURCE:-1}"
-SNAPSHOT_ALWAYS_PUBLISH="${BDAG_SNAPSHOT_ALWAYS_PUBLISH:-0}"
 
 source "$PROJECT_ROOT/ops/chain-snapshot-common.sh"
 
@@ -71,38 +69,6 @@ except Exception as exc:  # noqa: BLE001 - snapshot publication must not fail be
 nodes = status.get("nodes") if isinstance(status, dict) else {}
 node_info = nodes.get(source_node_service, {}) if isinstance(nodes, dict) else {}
 sync_progress = status.get("sync_progress") if isinstance(status, dict) else {}
-node_heights = {
-    name: info.get("best_main_order") or info.get("latest_block")
-    for name, info in nodes.items()
-    if isinstance(info, dict)
-} if isinstance(nodes, dict) else {}
-numeric_heights = []
-for height in node_heights.values():
-    try:
-        numeric_heights.append(int(height))
-    except (TypeError, ValueError):
-        pass
-source_latest_block = (node_info.get("best_main_order") or node_info.get("latest_block")) if isinstance(node_info, dict) else None
-try:
-    source_latest_numeric = int(source_latest_block)
-except (TypeError, ValueError):
-    source_latest_numeric = None
-source_block_lag_to_best = (
-    max(numeric_heights) - source_latest_numeric
-    if numeric_heights and source_latest_numeric is not None
-    else None
-)
-restore_safety_reasons = []
-if status.get("overall") == "down" if isinstance(status, dict) else True:
-    restore_safety_reasons.append("stack overall is down")
-if sync_progress.get("remaining_blocks") not in (None, 0):
-    restore_safety_reasons.append(f"sync remaining blocks={sync_progress.get('remaining_blocks')}")
-if source_latest_numeric is None:
-    restore_safety_reasons.append("source latest block unavailable")
-elif source_block_lag_to_best is not None and source_block_lag_to_best > 5:
-    restore_safety_reasons.append(f"source node is {source_block_lag_to_best} blocks behind best managed node")
-if isinstance(node_info, dict) and node_info.get("template_probe_failing"):
-    restore_safety_reasons.append("source template probe is failing")
 payload = {
     "document_type": "bdag_chain_restore_manifest",
     "generated_at": generated_at,
@@ -116,14 +82,15 @@ payload = {
     "stack_overall": status.get("overall") if isinstance(status, dict) else None,
     "sync_status": sync_progress.get("status") if isinstance(sync_progress, dict) else None,
     "sync_remaining_blocks": sync_progress.get("remaining_blocks") if isinstance(sync_progress, dict) else None,
-    "source_latest_block": source_latest_block,
+    "source_latest_block": node_info.get("latest_block") if isinstance(node_info, dict) else None,
     "source_importing": node_info.get("importing") if isinstance(node_info, dict) else None,
     "source_last_import_at": node_info.get("last_import_at") if isinstance(node_info, dict) else None,
     "source_template_probe_failing": node_info.get("template_probe_failing") if isinstance(node_info, dict) else None,
-    "source_block_lag_to_best": source_block_lag_to_best,
-    "node_heights": node_heights,
-    "restore_safe": not restore_safety_reasons,
-    "restore_safety_reasons": restore_safety_reasons,
+    "node_heights": {
+        name: info.get("latest_block")
+        for name, info in nodes.items()
+        if isinstance(info, dict)
+    } if isinstance(nodes, dict) else {},
     "restore_guidance": "Prefer the newest manifest with stack_overall=ok, sync_status=synced, and matching node heights. Preserve node identity files when cloning between nodes.",
 }
 print(json.dumps(payload, indent=2, sort_keys=True))
@@ -147,102 +114,22 @@ write_snapshot_stop_marker() {
 EOF
 }
 
-validate_source_restore_safe() {
-  local source_service="$1"
-  local max_lag="$2"
-  PYTHONPATH="$PROJECT_ROOT/ops" python3 - "$PROJECT_ROOT" "$source_service" "$max_lag" <<'PY'
-import sys
-
-project_root = sys.argv[1]
-source_service = sys.argv[2]
-try:
-    max_lag = int(sys.argv[3])
-except ValueError:
-    max_lag = 5
-
-from pool_ops import collect_status  # noqa: E402
-
-status = collect_status(include_logs=False)
-if not isinstance(status, dict):
-    print("status unavailable")
-    raise SystemExit(1)
-if status.get("overall") == "down":
-    print("stack overall is down")
-    raise SystemExit(1)
-failures = status.get("failures") or []
-if failures:
-    print(f"stack failures present: {failures[:3]}")
-    raise SystemExit(1)
-
-nodes = status.get("nodes") if isinstance(status.get("nodes"), dict) else {}
-source = nodes.get(source_service) if isinstance(nodes, dict) else None
-if not isinstance(source, dict):
-    print(f"source node missing from status: {source_service}")
-    raise SystemExit(1)
-try:
-    source_height = int(source.get("latest_block"))
-except (TypeError, ValueError):
-    print(f"source node height unavailable: {source_service}")
-    raise SystemExit(1)
-
-managed = status.get("managed_node_services") or []
-heights = []
-for name in managed:
-    row = nodes.get(name)
-    if not isinstance(row, dict):
-        continue
-    try:
-        heights.append(int(row.get("best_main_order") or row.get("latest_block")))
-    except (TypeError, ValueError):
-        continue
-if heights:
-    source_lag = max(heights) - source_height
-    if source_lag > max_lag:
-        print(f"source node {source_service} is {source_lag} blocks behind best managed node")
-        raise SystemExit(1)
-
-sync = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
-remaining = sync.get("remaining_blocks")
-if isinstance(remaining, int) and remaining > max_lag:
-    print(f"stack sync remaining is {remaining} blocks")
-    raise SystemExit(1)
-
-if source.get("template_probe_failing"):
-    print(f"source node template probe is failing: {source_service}")
-    raise SystemExit(1)
-
-print(f"source node {source_service} safe for restore publish at block {source_height}")
-PY
-}
-
 exec 8>"$STAGE_LOCK_FILE"
 log "waiting for exclusive snapshot staging lock"
 flock 8
 
 read -r sync_status sync_remaining sync_unknown sync_block_lag < <(snapshot_sync_summary "$PROJECT_ROOT" 2>>"$LOG_FILE" || printf 'unknown -1 1 -1\n')
 if [[ "$SNAPSHOT_UNKNOWN_BACKOFF" == "1" && "$sync_unknown" =~ ^[0-9]+$ && "$sync_unknown" -gt 0 ]]; then
-  if [[ "$SNAPSHOT_ALWAYS_PUBLISH" == "1" ]]; then
-    log "continuing degraded hourly snapshot: sync state unknown for $sync_unknown node(s)"
-  else
-    log "skipping hourly snapshot: sync state unknown for $sync_unknown node(s), preserving node resources"
-    exit 0
-  fi
+  log "skipping hourly snapshot: sync state unknown for $sync_unknown node(s), preserving node resources"
+  exit 0
 fi
 if [[ "$sync_remaining" =~ ^[0-9]+$ ]] && (( sync_remaining > SNAPSHOT_BACKOFF_BLOCKS )); then
-  if [[ "$SNAPSHOT_ALWAYS_PUBLISH" == "1" ]]; then
-    log "continuing degraded hourly snapshot: chain catch-up status=$sync_status max_remaining=${sync_remaining} threshold=$SNAPSHOT_BACKOFF_BLOCKS"
-  else
-    log "skipping hourly snapshot: chain catch-up has priority status=$sync_status max_remaining=${sync_remaining} threshold=$SNAPSHOT_BACKOFF_BLOCKS"
-    exit 0
-  fi
+  log "skipping hourly snapshot: chain catch-up has priority status=$sync_status max_remaining=${sync_remaining} threshold=$SNAPSHOT_BACKOFF_BLOCKS"
+  exit 0
 fi
 if [[ "$sync_block_lag" =~ ^[0-9]+$ ]] && (( sync_block_lag > SNAPSHOT_MAX_BLOCK_LAG )); then
-  if [[ "$SNAPSHOT_ALWAYS_PUBLISH" == "1" ]]; then
-    log "continuing degraded hourly snapshot: node block lag=${sync_block_lag} threshold=$SNAPSHOT_MAX_BLOCK_LAG"
-  else
-    log "skipping hourly snapshot: node block lag has priority block_lag=${sync_block_lag} threshold=$SNAPSHOT_MAX_BLOCK_LAG"
-    exit 0
-  fi
+  log "skipping hourly snapshot: node block lag has priority block_lag=${sync_block_lag} threshold=$SNAPSHOT_MAX_BLOCK_LAG"
+  exit 0
 fi
 
 cleanup_stale_temps() {
@@ -428,19 +315,6 @@ if [[ ! -d "$SNAPSHOT_SOURCE" ]]; then
   log "snapshot source missing: $SNAPSHOT_SOURCE"
   exit 1
 fi
-if [[ "$SNAPSHOT_REQUIRE_SAFE_SOURCE" == "1" ]]; then
-  if ! safe_reason="$(validate_source_restore_safe "$node_service" "$SNAPSHOT_MAX_BLOCK_LAG" 2>&1)"; then
-    if [[ "$SNAPSHOT_ALWAYS_PUBLISH" == "1" ]]; then
-      log "continuing degraded hourly snapshot: source restore safety failed: $safe_reason"
-    else
-      log "skipping hourly snapshot: source restore safety failed: $safe_reason"
-      exit 0
-    fi
-  fi
-  if [[ -n "${safe_reason:-}" ]]; then
-    log "$safe_reason"
-  fi
-fi
 printf '%s\n' "$node_key" > "$STATE_FILE"
 
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -468,28 +342,16 @@ fi
 
 read -r sync_status sync_remaining sync_unknown sync_block_lag < <(snapshot_sync_summary "$PROJECT_ROOT" 2>>"$LOG_FILE" || printf 'unknown -1 1 -1\n')
 if [[ "$SNAPSHOT_UNKNOWN_BACKOFF" == "1" && "$sync_unknown" =~ ^[0-9]+$ && "$sync_unknown" -gt 0 ]]; then
-  if [[ "$SNAPSHOT_ALWAYS_PUBLISH" == "1" ]]; then
-    log "continuing degraded publish: sync state became unknown for $sync_unknown node(s)"
-  else
-    log "skipping final stopped sync: sync state became unknown for $sync_unknown node(s)"
-    exit 0
-  fi
+  log "skipping final stopped sync: sync state became unknown for $sync_unknown node(s)"
+  exit 0
 fi
 if [[ "$sync_remaining" =~ ^[0-9]+$ ]] && (( sync_remaining > SNAPSHOT_BACKOFF_BLOCKS )); then
-  if [[ "$SNAPSHOT_ALWAYS_PUBLISH" == "1" ]]; then
-    log "continuing degraded publish: chain catch-up status=$sync_status max_remaining=${sync_remaining} threshold=$SNAPSHOT_BACKOFF_BLOCKS"
-  else
-    log "skipping final stopped sync: chain catch-up has priority status=$sync_status max_remaining=${sync_remaining} threshold=$SNAPSHOT_BACKOFF_BLOCKS"
-    exit 0
-  fi
+  log "skipping final stopped sync: chain catch-up has priority status=$sync_status max_remaining=${sync_remaining} threshold=$SNAPSHOT_BACKOFF_BLOCKS"
+  exit 0
 fi
 if [[ "$sync_block_lag" =~ ^[0-9]+$ ]] && (( sync_block_lag > SNAPSHOT_MAX_BLOCK_LAG )); then
-  if [[ "$SNAPSHOT_ALWAYS_PUBLISH" == "1" ]]; then
-    log "continuing degraded publish: node block lag=${sync_block_lag} threshold=$SNAPSHOT_MAX_BLOCK_LAG"
-  else
-    log "skipping final stopped sync: node block lag has priority block_lag=${sync_block_lag} threshold=$SNAPSHOT_MAX_BLOCK_LAG"
-    exit 0
-  fi
+  log "skipping final stopped sync: node block lag has priority block_lag=${sync_block_lag} threshold=$SNAPSHOT_MAX_BLOCK_LAG"
+  exit 0
 fi
 
 if [[ "$SNAPSHOT_FINAL_STOP_SYNC" == "1" ]]; then
@@ -521,16 +383,6 @@ else
 fi
 
 if [[ "$SNAPSHOT_COMPRESS" == "1" ]]; then
-  if [[ "$SNAPSHOT_REQUIRE_SAFE_SOURCE" == "1" ]]; then
-    if ! safe_reason="$(validate_source_restore_safe "$node_service" "$SNAPSHOT_MAX_BLOCK_LAG" 2>&1)"; then
-      if [[ "$SNAPSHOT_ALWAYS_PUBLISH" == "1" ]]; then
-        log "publishing degraded compressed restore point: source restore safety failed after sync: $safe_reason"
-      else
-        log "not publishing compressed restore point: source restore safety failed after sync: $safe_reason"
-        exit 0
-      fi
-    fi
-  fi
   log "compressing staged snapshot"
   run_low_priority tar -C "$SNAPSHOT_STAGE" -czf "$archive_tmp" .
   mv "$archive_tmp" "$archive_path"
@@ -540,16 +392,6 @@ if [[ "$SNAPSHOT_COMPRESS" == "1" ]]; then
   prune_compressed_snapshots
   log "hourly chain snapshot complete: $archive_path"
 else
-  if [[ "$SNAPSHOT_REQUIRE_SAFE_SOURCE" == "1" ]]; then
-    if ! safe_reason="$(validate_source_restore_safe "$node_service" "$SNAPSHOT_MAX_BLOCK_LAG" 2>&1)"; then
-      if [[ "$SNAPSHOT_ALWAYS_PUBLISH" == "1" ]]; then
-        log "publishing degraded directory restore point: source restore safety failed after sync: $safe_reason"
-      else
-        log "not publishing directory restore point: source restore safety failed after sync: $safe_reason"
-        exit 0
-      fi
-    fi
-  fi
   log "publishing hardlinked restore directory without compression"
   rm -rf "$snapshot_tmp"
   mkdir -p "$snapshot_tmp"

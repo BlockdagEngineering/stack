@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STACK_DIR="${BDAG_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+ENV_FILE="$STACK_DIR/asic-pool/.env"
+STATE_DIR="$STACK_DIR/ops/runtime"
+LOG_DIR="$STATE_DIR/logs"
+STATE_FILE="$STATE_DIR/fastsync-peer-monitor-state.json"
+MARKER_FILE="$STATE_DIR/fastsync-peer-visible"
+REMOTE_ZT_IP="${REMOTE_ZT_IP:-10.207.244.12}"
+NODE_CONTAINER="${BDAG_FASTSYNC_MONITOR_NODE:-bdag-miner-node-2}"
+RPC_URL="${NODE2_RPC_URL:-${BDAG_NODE2_RPC_URL:-}}"
+
+mkdir -p "$LOG_DIR"
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "$(date -Is) env file missing: $ENV_FILE" >>"$LOG_DIR/fastsync-peer-monitor.log"
+  exit 1
+fi
+
+set -a
+. "$ENV_FILE"
+set +a
+
+if [[ -z "$RPC_URL" ]]; then
+  node_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$NODE_CONTAINER" 2>/dev/null || true)"
+  if [[ -n "$node_ip" ]]; then
+    RPC_URL="http://${node_ip}:38131/"
+  else
+    RPC_URL="http://127.0.0.1:38131/"
+  fi
+fi
+RPC_LABEL="${RPC_URL#http://}"
+RPC_LABEL="${RPC_LABEL#https://}"
+RPC_LABEL="${RPC_LABEL%/}"
+
+rpc_error_file="$(mktemp "$STATE_FILE.rpc.XXXXXX")"
+if ! raw_json="$(curl -fsS --max-time 10 \
+  --user "$NODE_RPC_USER:$NODE_RPC_PASS" \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"1.0","id":"fastsync-peer-monitor","method":"getPeerInfo","params":[]}' \
+  "$RPC_URL" 2>"$rpc_error_file")"; then
+  rpc_error="$(tr '\n' ' ' <"$rpc_error_file" | sed 's/[[:space:]]*$//')"
+  rm -f "$rpc_error_file"
+  state_json="$(jq -n --arg now "$(date -Is)" --arg remote "$REMOTE_ZT_IP" --arg rpc "$RPC_LABEL" --arg error "$rpc_error" '{
+    checked_at: $now,
+    remote_zerotier_ip: $remote,
+    local_node_rpc: $rpc,
+    rpc_available: false,
+    fastsync_visible: false,
+    upgraded_peers: [],
+    zerotier_peers: [],
+    highest_peer_mainorder: null,
+    connected_peer_count: 0,
+    error: $error,
+    note: "RPC is not ready for peer inspection yet; this is expected while the node or rpc-failover is starting or refusing templates during sync."
+  }')"
+  tmp="$(mktemp "$STATE_FILE.XXXXXX")"
+  printf '%s\n' "$state_json" >"$tmp"
+  mv "$tmp" "$STATE_FILE"
+  rm -f "$MARKER_FILE"
+  echo "$(date -Is) rpc_unavailable error=${rpc_error:-unknown}" >>"$LOG_DIR/fastsync-peer-monitor.log"
+  exit 0
+fi
+rm -f "$rpc_error_file"
+
+state_json="$(printf '%s' "$raw_json" | jq --arg now "$(date -Is)" --arg remote "$REMOTE_ZT_IP" --arg rpc "$RPC_LABEL" '
+  def peer_order:
+    (.graphstate.mainorder // .graphstate.best_main_order // .graphstate.order // null);
+  def is_upgraded:
+    ((.protocol // .protocolversion // .protocolVersion // 0) >= 46)
+    or ((.services // "") | tostring | test("FastSync|Unknown"));
+  {
+    checked_at: $now,
+    remote_zerotier_ip: $remote,
+    local_node_rpc: $rpc,
+    rpc_available: true,
+    fastsync_visible: (([.result[]? | select(is_upgraded)] | length) > 0),
+    upgraded_peers: [
+      .result[]?
+      | select(is_upgraded)
+      | {
+          id,
+          address,
+          direction,
+          protocol: (.protocol // .protocolversion // .protocolVersion // null),
+          services,
+          mainorder: peer_order,
+          version
+        }
+    ],
+    zerotier_peers: [
+      .result[]?
+      | select((.address | tostring | contains($remote)))
+      | {
+          id,
+          address,
+          direction,
+          protocol: (.protocol // .protocolversion // .protocolVersion // null),
+          services,
+          mainorder: peer_order,
+          version,
+          conntime
+        }
+    ],
+    highest_peer_mainorder: ([.result[]? | peer_order] | map(select(. != null)) | max // null),
+    connected_peer_count: ([.result[]?] | length),
+    note: "FastSync requires this local node to run the protocol v46 corechain binary before it can use fast-sync RPCs."
+  }')"
+
+tmp="$(mktemp "$STATE_FILE.XXXXXX")"
+printf '%s\n' "$state_json" >"$tmp"
+mv "$tmp" "$STATE_FILE"
+
+summary="$(printf '%s' "$state_json" | jq -r '
+  "fastsync_visible=\(.fastsync_visible) upgraded=\(.upgraded_peers|length) zt=\(.zerotier_peers|length) highest=\(.highest_peer_mainorder // "n/a")"
+')"
+echo "$(date -Is) $summary" >>"$LOG_DIR/fastsync-peer-monitor.log"
+
+if printf '%s' "$state_json" | jq -e '.fastsync_visible' >/dev/null; then
+  printf '%s\n' "$state_json" >"$MARKER_FILE"
+else
+  rm -f "$MARKER_FILE"
+fi

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 
-PROJECT_ROOT = Path(os.environ.get("BDAG_PROJECT_ROOT", Path.cwd()))
+PROJECT_ROOT = Path(os.environ.get("BDAG_PROJECT_ROOT", Path(__file__).resolve().parents[1]))
 SNAPSHOT_DIR = Path(os.environ.get("BDAG_SNAPSHOT_DIR", PROJECT_ROOT / "data-restore" / "hourly"))
 LATEST_LINK = PROJECT_ROOT / "data-restore" / "latest-hourly"
 LATEST_MANIFEST_LINK = PROJECT_ROOT / "data-restore" / "latest-hourly.manifest.json"

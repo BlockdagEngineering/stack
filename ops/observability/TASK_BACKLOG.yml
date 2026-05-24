@@ -1,0 +1,293 @@
+project: bdag-parallel-observability-dashboard
+root: /home/jeremy/blockdag-asic-pool/ops/observability
+status: offline_validated
+principles:
+  - build alongside the existing dashboard
+  - do not interrupt mining
+  - prefer configuration over custom code
+  - use standard open-source observability components
+  - keep custom BlockDAG logic in a thin cartridge
+  - validate offline before staged run
+
+global_constraints:
+  write_scope:
+    primary:
+      - ops/observability/**
+    supporting:
+      - AGENTS.md
+      - docs/**
+  do_not_modify_without_explicit_task:
+    - docker-compose.yml
+    - asic-pool/.env
+    - ops/dashboard.py
+    - ops/pool_ops.py
+    - ops/watchdog.py
+    - ops/runtime/**
+    - data/**
+    - data-restore/**
+  do_not_operate_without_staged_run_phase:
+    - docker compose up
+    - docker pull
+    - apt install
+    - systemctl restart docker
+    - docker restart asic-pool
+    - docker restart bdag-miner-node-1
+    - docker restart bdag-miner-node-2
+    - ASIC restart or configuration
+    - firewall changes
+
+phases:
+  - id: phase-0-charter
+    name: Charter And Workflow
+    owner: lead-orchestrator
+    status: done
+    objective: Define SDLC, agents, prompts, backlog, and oversight.
+    tasks:
+      - id: charter-001
+        title: Create agentic SDLC
+        owner: lead-orchestrator
+        status: done
+        writes:
+          - ops/observability/AGENTIC_SDLC.md
+      - id: charter-002
+        title: Create agent prompt pack
+        owner: lead-orchestrator
+        status: done
+        writes:
+          - ops/observability/AGENT_PROMPTS.md
+      - id: charter-003
+        title: Create structured backlog
+        owner: lead-orchestrator
+        status: done
+        writes:
+          - ops/observability/TASK_BACKLOG.yml
+      - id: charter-004
+        title: Create oversight checklist
+        owner: lead-orchestrator
+        status: done
+        writes:
+          - ops/observability/OVERSIGHT_CHECKLIST.md
+    exit_criteria:
+      - SDLC phases are documented
+      - agent prompts exist
+      - backlog exists
+      - oversight checklist exists
+
+  - id: phase-1-discovery
+    name: Discovery
+    owner: discovery-agent
+    status: done
+    objective: Map current dashboard capabilities and safe data sources.
+    prompt_ref: AGENT_PROMPTS.md#discovery-agent
+    writes:
+      - ops/observability/docs/discovery-report.md
+      - ops/observability/docs/current-dashboard-capability-map.md
+      - ops/observability/docs/data-source-inventory.md
+    read_only_inputs:
+      - ops/dashboard.py
+      - ops/pool_ops.py
+      - ops/watchdog.py
+      - docker-compose.yml
+      - safe runtime logs and JSON payloads
+    acceptance:
+      - every existing dashboard tab has a target migration path
+      - every watchdog failure mode is mapped to alert, log, metric, or old-control-only
+      - sensitive files are listed as excluded
+      - no production service changes
+
+  - id: phase-2-architecture
+    name: Architecture
+    owner: architect-agent
+    status: done
+    objective: Design upgrade-safe Grafana/Prometheus/Loki stack.
+    prompt_ref: AGENT_PROMPTS.md#architect-agent
+    writes:
+      - ops/observability/docs/architecture.md
+      - ops/observability/docs/security-model.md
+      - ops/observability/docs/rollback.md
+    acceptance:
+      - separate compose file specified
+      - default bindings are localhost-only
+      - ports avoid current production ports
+      - retention and resource budget are defined
+      - rollback stops only observability services
+
+  - id: phase-3-scaffold
+    name: Scaffold
+    owner: compose-integrator-agent
+    status: done
+    objective: Create inert observability stack files without starting services.
+    prompt_ref: AGENT_PROMPTS.md#compose-integrator-agent
+    writes:
+      - ops/observability/docker-compose.observability.yml
+      - ops/observability/.env.example
+      - ops/observability/prometheus/prometheus.yml
+      - ops/observability/prometheus/alerts.yml
+      - ops/observability/alertmanager/alertmanager.yml
+      - ops/observability/loki/loki.yml
+      - ops/observability/alloy/config.alloy
+      - ops/observability/exporters/json_exporter.yml
+      - ops/observability/README.md
+    acceptance:
+      - compose config renders
+      - no service starts
+      - no root compose edits
+      - no production port conflicts
+
+  - id: phase-4-metrics-cartridge
+    name: Metrics Cartridge
+    owner: metrics-worker-agent
+    status: done
+    objective: Expose BlockDAG-specific metrics with minimal custom code.
+    prompt_ref: AGENT_PROMPTS.md#metrics-cartridge-agent
+    writes:
+      - ops/observability/docs/metrics-catalog.md
+      - ops/observability/exporters/json_exporter.yml
+      - ops/observability/exporters/bdag_exporter/bdag_exporter.py
+      - ops/observability/tests/test_metrics_mapping.py
+      - ops/observability/testdata/status.json
+      - ops/observability/testdata/earnings.json
+      - ops/observability/testdata/global.json
+    acceptance:
+      - json_exporter is used where sufficient
+      - custom exporter is read-only if created
+      - metrics have stable names, units, labels, and source
+      - exporter failure is represented as metrics rather than crashes
+
+  - id: phase-5-logs
+    name: Logs Pipeline
+    owner: logs-worker-agent
+    status: done
+    objective: Configure Loki ingestion without secrets.
+    writes:
+      - ops/observability/loki/loki.yml
+      - ops/observability/alloy/config.alloy
+      - ops/observability/docs/logs.md
+    acceptance:
+      - labels are low-cardinality
+      - secret files and env files are excluded
+      - LogQL examples exist for mining incidents
+      - retention or disk cap is documented
+
+  - id: phase-6-dashboards
+    name: Grafana Dashboards
+    owner: dashboard-worker-agent
+    status: done
+    objective: Provision polished Grafana dashboards from config.
+    prompt_ref: AGENT_PROMPTS.md#grafana-dashboard-agent
+    writes:
+      - ops/observability/grafana/provisioning/datasources/datasources.yml
+      - ops/observability/grafana/provisioning/dashboards/dashboards.yml
+      - ops/observability/grafana/dashboards/overview.json
+      - ops/observability/grafana/dashboards/miners.json
+      - ops/observability/grafana/dashboards/pool.json
+      - ops/observability/grafana/dashboards/nodes.json
+      - ops/observability/grafana/dashboards/earnings.json
+      - ops/observability/grafana/dashboards/system.json
+      - ops/observability/grafana/dashboards/thermals.json
+      - ops/observability/grafana/dashboards/incidents.json
+      - ops/observability/docs/dashboard-map.md
+    acceptance:
+      - dashboard JSON parses
+      - datasources are provisioned
+      - dashboards do not call old APIs directly from browser JS
+      - repair actions are links to old control dashboard only
+
+  - id: phase-7-alerts
+    name: Alerts
+    owner: alerting-agent
+    status: done
+    objective: Convert mining degradation modes into alert rules.
+    prompt_ref: AGENT_PROMPTS.md#alerting-agent
+    writes:
+      - ops/observability/prometheus/alerts.yml
+      - ops/observability/alertmanager/alertmanager.yml
+      - ops/observability/docs/alerts.md
+    acceptance:
+      - miner down alert exists
+      - share stall alert exists
+      - node sync drift alert exists
+      - template error alert exists
+      - CPU high temp alert exists
+      - disk low alert exists
+      - container restart alert exists
+      - dashboard/API failure alert exists
+      - alerts notify only and do not auto-repair
+
+  - id: phase-8-offline-validation
+    name: Offline Validation
+    owner: validation-agent
+    status: done
+    objective: Validate configs without running the stack.
+    prompt_ref: AGENT_PROMPTS.md#validation-agent
+    writes:
+      - ops/observability/scripts/validate.sh
+      - ops/observability/docs/validation-report.md
+    acceptance:
+      - YAML parses
+      - JSON dashboards parse
+      - compose config renders or missing tool is documented
+      - Prometheus rules validate or missing tool is documented
+      - no production services are touched
+
+  - id: phase-9-operations-review
+    name: Operations Review
+    owner: operations-reviewer-agent
+    status: done
+    objective: Review safety, resource, security, and upgradeability before staged run.
+    prompt_ref: AGENT_PROMPTS.md#operations-reviewer-agent
+    writes:
+      - ops/observability/docs/operations-review.md
+      - ops/observability/OVERSIGHT_CHECKLIST.md
+    acceptance:
+      - must-fix issues are identified
+      - resource risks are documented
+      - rollback is verified on paper
+      - old dashboard fallback is preserved
+
+  - id: phase-10-staged-run
+    name: Staged Run
+    owner: staged-run-agent
+    status: done
+    objective: Start new observability stack in parallel and verify no mining impact.
+    prompt_ref: AGENT_PROMPTS.md#staged-run-agent
+    writes:
+      - ops/observability/docs/staged-run-report.md
+    gated_actions:
+      - pull observability images
+      - start observability containers
+      - bind any service beyond localhost
+    acceptance:
+      - old dashboard remains reachable
+      - mining containers remain running
+      - all seven ASICs remain connected
+      - Prometheus targets are healthy
+      - Grafana loads dashboards
+      - Loki receives intended logs
+      - resource overhead is documented
+
+  - id: phase-11-parity-adoption
+    name: Parity And Adoption
+    owner: lead-orchestrator
+    status: pending
+    objective: Prove new dashboard can replace historical views over time.
+    writes:
+      - ops/observability/docs/parity-matrix.md
+      - ops/observability/docs/migration-checklist.md
+    acceptance:
+      - every old dashboard view is classified
+      - migrated views match or exceed old dashboard for 24 hours
+      - old dashboard remains repair console until replacement controls are deliberately designed
+
+oversight:
+  required_reports:
+    - files changed
+    - commands run
+    - validation results
+    - risks
+    - next task
+  completion_gate:
+    - OVERSIGHT_CHECKLIST.md all required items complete
+    - staged-run-report confirms no mining impact
+    - parity-matrix exists
+    - rollback documented
