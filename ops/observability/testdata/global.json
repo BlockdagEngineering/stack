@@ -1,0 +1,50 @@
+{
+  "latest_block": 8237710,
+  "unique_miners": 12,
+  "scan_window_hours": 1,
+  "avg_block_seconds": 0.95,
+  "peer_location": {
+    "peer_ip_count": 8,
+    "geo_ip_count": 7,
+    "best_guess": {
+      "location": "local-test",
+      "level": "city",
+      "confidence": "fixture"
+    },
+    "rankings": {
+      "country": [
+        {
+          "label": "ZA",
+          "count": 4,
+          "share_percent": 50,
+          "representative": {
+            "ip": "192.0.2.10"
+          }
+        }
+      ]
+    },
+    "observations": [
+      {
+        "ip": "192.0.2.10",
+        "seen_by": [
+          "bdag-miner-node-1"
+        ],
+        "country_code": "ZA",
+        "region": "Gauteng",
+        "city": "Johannesburg",
+        "asn": "AS64500",
+        "org": "FixtureNet",
+        "seen_count": 1
+      }
+    ]
+  },
+  "clusters": [
+    {
+      "pool_name": "Local Pool",
+      "address_short": "0x0551...250a",
+      "share_percent": 33.3,
+      "blocks": 100,
+      "estimated_usd_avg_hour": "0.50"
+    }
+  ]
+}

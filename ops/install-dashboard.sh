@@ -17,6 +17,7 @@ Options:
   --no-watchdog       Install only the dashboard service
   --no-sync-coordinator
                       Do not install the large-catch-up node sync coordinator
+  --no-guards         Do not install sentinel, P2P, peer, chain, or snapshot guards
   --no-start          Write units but do not enable/start services
   -h, --help          Show this help
 
@@ -35,6 +36,7 @@ RUNTIME_DIR="${BDAG_RUNTIME_DIR:-}"
 ENV_FILE=""
 INSTALL_WATCHDOG=1
 INSTALL_SYNC_COORDINATOR=1
+INSTALL_GUARDS=1
 START_SERVICES=1
 RUNTIME_SET=0
 
@@ -64,10 +66,15 @@ while [[ $# -gt 0 ]]; do
     --no-watchdog)
       INSTALL_WATCHDOG=0
       INSTALL_SYNC_COORDINATOR=0
+      INSTALL_GUARDS=0
       shift
       ;;
     --no-sync-coordinator)
       INSTALL_SYNC_COORDINATOR=0
+      shift
+      ;;
+    --no-guards)
+      INSTALL_GUARDS=0
       shift
       ;;
     --no-start)
@@ -118,16 +125,16 @@ BDAG_POOL_CONTAINER=asic-pool
 BDAG_POOL_DB_CONTAINER=pool-db
 BDAG_POOL_DB_USER=test
 BDAG_POOL_DB_NAME=pool
-BDAG_NODE_SERVICES=bdag-miner-node-1,bdag-miner-node-2
-BDAG_STACK_SERVICES=pool-db,bdag-miner-node-1,bdag-miner-node-2,rpc-failover,asic-pool
-
-# A backend node lagging the other by 1000 DAG main-order/block entries is a
-# major operational fault. At that point the standby is no longer a reliable
-# failover target and can feed stale templates if routing regresses.
-BDAG_NODE_LAG_MAJOR_BLOCKS=1000
-BDAG_SYNC_COORDINATOR_FAR_BEHIND_BLOCKS=1000
-BDAG_SYNC_COORDINATOR_FOLLOWER_LAG_BLOCKS=1000
-BDAG_SYNC_COORDINATOR_MAJOR_LAG_MAX_SECONDS=600
+BDAG_NODE_MODE=single
+BDAG_NODE_SERVICES=bdag-miner-node-2
+BDAG_STACK_SERVICES=pool-db,bdag-miner-node-2,rpc-failover,asic-pool
+BDAG_ENABLE_NODE_MINING=0
+BDAG_FASTSYNC_PREPROCESS_WORKERS=1
+BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE=0
+BDAG_BOOT_REPAIR_DIRTY_POLICY=start
+BDAG_BOOT_REPAIR_CRITICAL_POLICY=restart
+BDAG_INCIDENT_REPORT_ENABLED=0
+BDAG_INCIDENT_REPORT_REPO=
 
 # Optional overrides:
 # BDAG_MINING_ADDRESS=0x0000000000000000000000000000000000000000
@@ -140,11 +147,47 @@ EOF
   chmod 0600 "$ENV_FILE"
 fi
 
+ensure_env_value() {
+  local key="$1" value="$2"
+  if ! grep -q "^${key}=" "$ENV_FILE"; then
+    printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+  fi
+}
+
+ensure_env_value BDAG_PROJECT_ROOT "$PROJECT_ROOT"
+ensure_env_value BDAG_RUNTIME_DIR "$RUNTIME_DIR"
+ensure_env_value BDAG_POOL_ENV_FILE "$PROJECT_ROOT/asic-pool/.env"
+ensure_env_value BDAG_NODE_MODE single
+ensure_env_value BDAG_NODE_SERVICES bdag-miner-node-2
+ensure_env_value BDAG_STACK_SERVICES "pool-db,bdag-miner-node-2,rpc-failover,asic-pool"
+ensure_env_value BDAG_ENABLE_NODE_MINING 0
+ensure_env_value BDAG_FASTSYNC_PREPROCESS_WORKERS 1
+ensure_env_value BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE 0
+ensure_env_value BDAG_BOOT_REPAIR_DIRTY_POLICY start
+ensure_env_value BDAG_BOOT_REPAIR_CRITICAL_POLICY restart
+ensure_env_value BDAG_INCIDENT_REPORT_ENABLED 0
+ensure_env_value BDAG_INCIDENT_REPORT_REPO ""
+
 DASHBOARD_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-dashboard.service"
 WATCHDOG_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-watchdog.service"
 BOOT_REPAIR_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-boot-repair.service"
 SYNC_COORDINATOR_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-sync-coordinator.service"
 SYNC_COORDINATOR_TIMER="$HOME/.config/systemd/user/${INSTANCE}-sync-coordinator.timer"
+STACK_SENTINEL_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-stack-sentinel.service"
+STACK_SENTINEL_TIMER="$HOME/.config/systemd/user/${INSTANCE}-stack-sentinel.timer"
+NODE_CHILD_GUARD_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-node-child-guard.service"
+NODE_CHILD_GUARD_TIMER="$HOME/.config/systemd/user/${INSTANCE}-node-child-guard.timer"
+P2P_GUARD_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-p2p-guard.service"
+LOCAL_PEERS_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-local-peers.service"
+LOCAL_PEERS_TIMER="$HOME/.config/systemd/user/${INSTANCE}-local-peers.timer"
+CHAIN_RESTORE_GUARD_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-chain-restore-guard.service"
+CHAIN_RESTORE_GUARD_TIMER="$HOME/.config/systemd/user/${INSTANCE}-chain-restore-guard.timer"
+CHAIN_PRESYNC_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-chain-presync.service"
+CHAIN_PRESYNC_TIMER="$HOME/.config/systemd/user/${INSTANCE}-chain-presync.timer"
+HOURLY_SNAPSHOT_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-hourly-snapshot.service"
+HOURLY_SNAPSHOT_TIMER="$HOME/.config/systemd/user/${INSTANCE}-hourly-snapshot.timer"
+INCIDENT_REPORTER_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-incident-reporter.service"
+INCIDENT_REPORTER_TIMER="$HOME/.config/systemd/user/${INSTANCE}-incident-reporter.timer"
 
 cat > "$DASHBOARD_SERVICE" <<EOF
 [Unit]
@@ -181,9 +224,6 @@ Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
 Environment=BDAG_WATCHDOG_INTERVAL=30
 Environment=BDAG_WATCHDOG_FAILURE_THRESHOLD=3
 Environment=BDAG_CLEAN_RESTORE_COOLDOWN=1800
-Environment=BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE=0
-Environment=BDAG_BOOT_REPAIR_DIRTY_POLICY=start
-Environment=BDAG_BOOT_REPAIR_CRITICAL_POLICY=restart
 EnvironmentFile=-$ENV_FILE
 ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do docker info >/dev/null 2>&1 && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
 ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/watchdog.py --loop
@@ -207,17 +247,15 @@ Type=oneshot
 WorkingDirectory=$PROJECT_ROOT
 Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
 Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
-Environment=BDAG_SYNC_COORDINATOR_FAR_BEHIND_BLOCKS=1000
-Environment=BDAG_SYNC_COORDINATOR_FOLLOWER_LAG_BLOCKS=1000
-Environment=BDAG_NODE_LAG_MAJOR_BLOCKS=1000
-Environment=BDAG_SYNC_COORDINATOR_MAJOR_LAG_MAX_SECONDS=600
+Environment=BDAG_SYNC_COORDINATOR_LEADER_NEAR_TIP_BLOCKS=5
+Environment=BDAG_SYNC_COORDINATOR_FINAL_RSYNC_TIMEOUT_SECONDS=600
 EnvironmentFile=-$ENV_FILE
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 CPUWeight=40
 IOWeight=30
-ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/sync_coordinator.py --once --repair --pause-follower --resume-follower --restart-lagging-follower
+ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/sync_coordinator.py --once --repair --pause-follower --seed-follower --resume-follower --allow-leader-stop
 EOF
 
   cat > "$SYNC_COORDINATOR_TIMER" <<EOF
@@ -262,6 +300,263 @@ WantedBy=default.target
 EOF
 fi
 
+if [[ "$INSTALL_GUARDS" -eq 1 ]]; then
+  cat > "$STACK_SENTINEL_SERVICE" <<EOF
+[Unit]
+Description=BlockDAG mining stack last-resort sentinel ($INSTANCE)
+After=default.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=$PROJECT_ROOT
+Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
+Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
+Environment=BDAG_SENTINEL_USER_SERVICES=${INSTANCE}-dashboard.service,${INSTANCE}-watchdog.service,${INSTANCE}-node-child-guard.service,${INSTANCE}-p2p-guard.service
+Environment=BDAG_SENTINEL_USER_TIMERS=${INSTANCE}-stack-sentinel.timer,${INSTANCE}-node-child-guard.timer,${INSTANCE}-sync-coordinator.timer,${INSTANCE}-chain-restore-guard.timer,${INSTANCE}-chain-presync.timer,${INSTANCE}-hourly-snapshot.timer,${INSTANCE}-local-peers.timer,${INSTANCE}-incident-reporter.timer
+EnvironmentFile=-$ENV_FILE
+ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/stack_sentinel.py
+Nice=10
+IOSchedulingClass=idle
+CPUWeight=15
+IOWeight=10
+EOF
+
+  cat > "$STACK_SENTINEL_TIMER" <<EOF
+[Unit]
+Description=Run BlockDAG mining stack sentinel ($INSTANCE)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60s
+AccuracySec=15s
+Persistent=true
+RandomizedDelaySec=5s
+Unit=${INSTANCE}-stack-sentinel.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  cat > "$NODE_CHILD_GUARD_SERVICE" <<EOF
+[Unit]
+Description=BlockDAG node child process guard ($INSTANCE)
+After=${INSTANCE}-dashboard.service default.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=$PROJECT_ROOT
+Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
+Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
+EnvironmentFile=-$ENV_FILE
+ExecStart=/usr/bin/env python3 ops/node_child_guard.py
+EOF
+
+  cat > "$NODE_CHILD_GUARD_TIMER" <<EOF
+[Unit]
+Description=Run BlockDAG node child guard periodically ($INSTANCE)
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=60s
+AccuracySec=15s
+Persistent=true
+Unit=${INSTANCE}-node-child-guard.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  cat > "$P2P_GUARD_SERVICE" <<EOF
+[Unit]
+Description=BlockDAG P2P and mining network health guard ($INSTANCE)
+After=${INSTANCE}-dashboard.service default.target
+
+[Service]
+Type=simple
+WorkingDirectory=$PROJECT_ROOT
+Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
+Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
+Environment=BDAG_P2P_GUARD_INTERVAL=300
+Environment=BDAG_POOL_ACTIVITY_LOG_LINES=1200
+EnvironmentFile=-$ENV_FILE
+ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do docker info >/dev/null 2>&1 && curl -fsS http://127.0.0.1:$PORT/api/status >/dev/null 2>&1 && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
+ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/p2p_guard.py --loop
+Restart=always
+RestartSec=15
+Nice=8
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=30
+IOWeight=30
+
+[Install]
+WantedBy=default.target
+EOF
+
+  cat > "$LOCAL_PEERS_SERVICE" <<EOF
+[Unit]
+Description=BlockDAG local P2P peer discovery ($INSTANCE)
+After=default.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=$PROJECT_ROOT
+Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
+Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
+EnvironmentFile=-$ENV_FILE
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=25
+IOWeight=25
+ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/update-local-peers.py --apply
+EOF
+
+  cat > "$LOCAL_PEERS_TIMER" <<EOF
+[Unit]
+Description=Refresh BlockDAG local P2P peer discovery ($INSTANCE)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=30min
+Persistent=true
+RandomizedDelaySec=5min
+Unit=${INSTANCE}-local-peers.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  cat > "$CHAIN_RESTORE_GUARD_SERVICE" <<EOF
+[Unit]
+Description=BlockDAG chain restore-point freshness guard ($INSTANCE)
+After=default.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=$PROJECT_ROOT
+Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
+Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
+EnvironmentFile=-$ENV_FILE
+ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/chain_restore_guard.py
+Nice=19
+IOSchedulingClass=idle
+CPUWeight=10
+IOWeight=10
+EOF
+
+  cat > "$CHAIN_RESTORE_GUARD_TIMER" <<EOF
+[Unit]
+Description=Run BlockDAG chain restore-point freshness guard ($INSTANCE)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+RandomizedDelaySec=20s
+Unit=${INSTANCE}-chain-restore-guard.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  cat > "$CHAIN_PRESYNC_SERVICE" <<EOF
+[Unit]
+Description=BlockDAG live chain pre-sync ($INSTANCE)
+After=default.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=$PROJECT_ROOT
+Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
+Environment=BDAG_PRESYNC_ONE_NODE=1
+EnvironmentFile=-$ENV_FILE
+Nice=19
+IOSchedulingClass=idle
+CPUWeight=10
+IOWeight=10
+ExecStart=$PROJECT_ROOT/ops/chain-presync.sh
+EOF
+
+  cat > "$CHAIN_PRESYNC_TIMER" <<EOF
+[Unit]
+Description=Run BlockDAG live chain pre-sync every two hours ($INSTANCE)
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=2h
+Persistent=true
+RandomizedDelaySec=5min
+Unit=${INSTANCE}-chain-presync.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  cat > "$HOURLY_SNAPSHOT_SERVICE" <<EOF
+[Unit]
+Description=BlockDAG hourly chain snapshot ($INSTANCE)
+After=${INSTANCE}-watchdog.service ${INSTANCE}-dashboard.service default.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=$PROJECT_ROOT
+Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
+EnvironmentFile=-$ENV_FILE
+Nice=19
+IOSchedulingClass=idle
+CPUWeight=10
+IOWeight=10
+ExecStart=$PROJECT_ROOT/ops/hourly-chain-snapshot.sh
+EOF
+
+  cat > "$HOURLY_SNAPSHOT_TIMER" <<EOF
+[Unit]
+Description=Run BlockDAG chain snapshot periodically ($INSTANCE)
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+Unit=${INSTANCE}-hourly-snapshot.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  cat > "$INCIDENT_REPORTER_SERVICE" <<EOF
+[Unit]
+Description=BlockDAG incident reporter ($INSTANCE)
+After=${INSTANCE}-dashboard.service default.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=$PROJECT_ROOT
+Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
+EnvironmentFile=-$ENV_FILE
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+ExecStart=/usr/bin/env python3 ops/incident_reporter.py
+EOF
+
+  cat > "$INCIDENT_REPORTER_TIMER" <<EOF
+[Unit]
+Description=Run BlockDAG incident reporter periodically ($INSTANCE)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+Unit=${INSTANCE}-incident-reporter.service
+
+[Install]
+WantedBy=timers.target
+EOF
+fi
+
 systemctl --user daemon-reload
 if [[ "$START_SERVICES" -eq 1 ]]; then
   if [[ "$INSTALL_WATCHDOG" -eq 1 ]]; then
@@ -273,6 +568,16 @@ if [[ "$START_SERVICES" -eq 1 ]]; then
   fi
   if [[ "$INSTALL_SYNC_COORDINATOR" -eq 1 ]]; then
     systemctl --user enable --now "${INSTANCE}-sync-coordinator.timer"
+  fi
+  if [[ "$INSTALL_GUARDS" -eq 1 ]]; then
+    systemctl --user enable --now "${INSTANCE}-stack-sentinel.timer"
+    systemctl --user enable --now "${INSTANCE}-node-child-guard.timer"
+    systemctl --user enable --now "${INSTANCE}-p2p-guard.service"
+    systemctl --user enable --now "${INSTANCE}-local-peers.timer"
+    systemctl --user enable --now "${INSTANCE}-chain-restore-guard.timer"
+    systemctl --user enable --now "${INSTANCE}-chain-presync.timer"
+    systemctl --user enable --now "${INSTANCE}-hourly-snapshot.timer"
+    systemctl --user enable --now "${INSTANCE}-incident-reporter.timer"
   fi
 fi
 
@@ -294,4 +599,21 @@ fi
 if [[ "$INSTALL_SYNC_COORDINATOR" -eq 1 ]]; then
   echo "  $SYNC_COORDINATOR_SERVICE"
   echo "  $SYNC_COORDINATOR_TIMER"
+fi
+if [[ "$INSTALL_GUARDS" -eq 1 ]]; then
+  echo "  $STACK_SENTINEL_SERVICE"
+  echo "  $STACK_SENTINEL_TIMER"
+  echo "  $NODE_CHILD_GUARD_SERVICE"
+  echo "  $NODE_CHILD_GUARD_TIMER"
+  echo "  $P2P_GUARD_SERVICE"
+  echo "  $LOCAL_PEERS_SERVICE"
+  echo "  $LOCAL_PEERS_TIMER"
+  echo "  $CHAIN_RESTORE_GUARD_SERVICE"
+  echo "  $CHAIN_RESTORE_GUARD_TIMER"
+  echo "  $CHAIN_PRESYNC_SERVICE"
+  echo "  $CHAIN_PRESYNC_TIMER"
+  echo "  $HOURLY_SNAPSHOT_SERVICE"
+  echo "  $HOURLY_SNAPSHOT_TIMER"
+  echo "  $INCIDENT_REPORTER_SERVICE"
+  echo "  $INCIDENT_REPORTER_TIMER"
 fi

@@ -26,7 +26,6 @@ def audit_miners() -> dict[str, Any]:
     by_mac: dict[str, list[dict[str, Any]]] = {}
     stale: list[dict[str, Any]] = []
     wrong_config: list[dict[str, Any]] = []
-    worker_mismatch: list[dict[str, Any]] = []
     down: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
 
@@ -46,19 +45,7 @@ def audit_miners() -> dict[str, Any]:
         expected_worker = str(miner.get("expected_worker_user") or "").lower()
         seen_workers = [str(worker).lower() for worker in miner.get("workers") or []]
         pool_log_matches_expected_worker = bool(expected_worker and expected_worker in seen_workers)
-        # Worker names can intentionally differ from the pool coinbase address.
-        # The pool payout destination is controlled by asic-pool MINING_ADDRESS;
-        # ASIC worker strings are identity/accounting labels.  Do not trigger
-        # repair for a miner that is actively submitting accepted work to this
-        # pool merely because its worker label is not the shared coinbase.
-        pool_activity_verified = bool(
-            miner.get("connected")
-            and miner.get("status") in {"ok", "connected", "degraded"}
-            and (int(miner.get("shares") or 0) > 0 or int(miner.get("submits") or 0) > 0)
-        )
-        config_verified = bool(miner.get("configured") or pool_log_matches_expected_worker or pool_activity_verified)
-        if pool_activity_verified and expected_worker and seen_workers and expected_worker not in seen_workers:
-            worker_mismatch.append(miner)
+        config_verified = bool(miner.get("configured") or pool_log_matches_expected_worker)
         if not config_verified and miner.get("status") != "inactive":
             wrong_config.append(miner)
         rows.append(
@@ -71,10 +58,6 @@ def audit_miners() -> dict[str, Any]:
                 "configured": config_verified,
                 "config_verified_by_api": bool(miner.get("configured")),
                 "config_verified_by_pool_log": pool_log_matches_expected_worker,
-                "config_verified_by_pool_activity": pool_activity_verified,
-                "worker_label_differs_from_expected": bool(
-                    pool_activity_verified and expected_worker and seen_workers and expected_worker not in seen_workers
-                ),
                 "expected_pool_url": miner.get("expected_pool_url"),
                 "expected_worker_user": miner.get("expected_worker_user"),
                 "worker_short": worker_short(miner.get("expected_worker_user")),
@@ -112,7 +95,6 @@ def audit_miners() -> dict[str, Any]:
         "ok_count": ok_count,
         "connected_count": connected_count,
         "wrong_config_count": len(wrong_config),
-        "worker_mismatch_count": len(worker_mismatch),
         "down_count": len(down),
         "stale_inactive_count": len(stale),
         "duplicate_mac_count": len(duplicates),
@@ -127,18 +109,6 @@ def audit_miners() -> dict[str, Any]:
                 "expected_worker_user": item.get("expected_worker_user"),
             }
             for item in wrong_config
-        ],
-        "worker_mismatch": [
-            {
-                "name": item.get("display_name") or item.get("ip"),
-                "ip": item.get("ip"),
-                "mac": item.get("mac"),
-                "status": item.get("status"),
-                "expected_worker_user": item.get("expected_worker_user"),
-                "workers": item.get("workers") or [],
-                "note": "accepted work proves this miner is mining to the local pool; worker label differs from registry expectation",
-            }
-            for item in worker_mismatch
         ],
         "down": [
             {

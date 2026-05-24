@@ -1,0 +1,36 @@
+{
+  "hourly_averages": {
+    "wallet_recent_bdag_hour": "2.5",
+    "wallet_tracked_avg_bdag_hour": "2.1",
+    "wallet_avg_bdag_hour_since_pool_start": "2.0",
+    "wallet_24h_bdag": "50.4"
+  },
+  "credit_balance_check": {
+    "wallet_bdag": "123.45"
+  },
+  "price": {
+    "usd": "0.01",
+    "zar": "0.18"
+  },
+  "wallet_total_usd": "1.2345",
+  "wallet_total_zar": "22.221",
+  "wallet_24h_usd": "0.504",
+  "wallet_24h_zar": "9.072",
+  "history_stale": false,
+  "history_latest_age_seconds": 30,
+  "history_expected_interval_seconds": 120,
+  "history_stale_threshold_seconds": 360,
+  "miner_estimates": [
+    {
+      "display_name": "Odysseus",
+      "ip": "192.168.1.101",
+      "mac": "00:11:22:33:44:55",
+      "estimated_wallet_usd_recent_hour": "0.25",
+      "estimated_wallet_bdag_recent_hour": "25",
+      "estimated_wallet_zar_recent_hour": "4.5",
+      "estimated_wallet_usd_total": "1.0",
+      "estimated_wallet_bdag_total": "100",
+      "credited_blocks": 64
+    }
+  ]
+}

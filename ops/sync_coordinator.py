@@ -38,17 +38,13 @@ STATE_FILE = RUNTIME_DIR / "sync-coordinator-state.json"
 LOCK_FILE = RUNTIME_DIR / "sync-coordinator.lock"
 LOG_FILE = LOG_DIR / "sync-coordinator.log"
 
-FAR_BEHIND_BLOCKS = int(os.environ.get("BDAG_SYNC_COORDINATOR_FAR_BEHIND_BLOCKS", "1000"))
-FOLLOWER_LAG_BLOCKS = int(os.environ.get("BDAG_SYNC_COORDINATOR_FOLLOWER_LAG_BLOCKS", "1000"))
-LEADER_NEAR_TIP_BLOCKS = int(os.environ.get("BDAG_SYNC_COORDINATOR_LEADER_NEAR_TIP_BLOCKS", "1000"))
-MIN_TRUSTED_HEIGHT = int(os.environ.get("BDAG_SYNC_COORDINATOR_MIN_TRUSTED_HEIGHT", "1000"))
+FAR_BEHIND_BLOCKS = int(os.environ.get("BDAG_SYNC_COORDINATOR_FAR_BEHIND_BLOCKS", "10000"))
+FOLLOWER_LAG_BLOCKS = int(os.environ.get("BDAG_SYNC_COORDINATOR_FOLLOWER_LAG_BLOCKS", "1500"))
+LEADER_NEAR_TIP_BLOCKS = int(os.environ.get("BDAG_SYNC_COORDINATOR_LEADER_NEAR_TIP_BLOCKS", "5"))
 LEADER_IMPORT_STALE_SECONDS = int(os.environ.get("BDAG_SYNC_COORDINATOR_IMPORT_STALE_SECONDS", "180"))
-FINAL_RSYNC_TIMEOUT_SECONDS = int(os.environ.get("BDAG_SYNC_COORDINATOR_FINAL_RSYNC_TIMEOUT_SECONDS", "120"))
+FINAL_RSYNC_TIMEOUT_SECONDS = int(os.environ.get("BDAG_SYNC_COORDINATOR_FINAL_RSYNC_TIMEOUT_SECONDS", "900"))
 WARM_RSYNC_BWLIMIT_KB = os.environ.get("BDAG_SYNC_COORDINATOR_RSYNC_BWLIMIT_KB", "0")
-LAGGING_FOLLOWER_RESTART_COOLDOWN_SECONDS = int(
-    os.environ.get("BDAG_SYNC_COORDINATOR_LAGGING_RESTART_COOLDOWN_SECONDS", "1800")
-)
-MAJOR_LAG_MAX_SECONDS = int(os.environ.get("BDAG_SYNC_COORDINATOR_MAJOR_LAG_MAX_SECONDS", "600"))
+MIN_TRUSTED_HEIGHT = int(os.environ.get("BDAG_SYNC_COORDINATOR_MIN_TRUSTED_HEIGHT", "0"))
 
 
 def log(message: str) -> None:
@@ -123,7 +119,16 @@ def progress_info(status: dict[str, Any], node: str) -> dict[str, Any]:
 
 def node_height(status: dict[str, Any], node: str) -> int:
     info = node_info(status, node)
-    return safe_int(info.get("best_main_order") or info.get("latest_block"))
+    for key in ("latest_block", "current_block", "block_height"):
+        value = safe_int(info.get(key))
+        if value > 0:
+            return value
+    progress = progress_info(status, node)
+    for key in ("current_block", "highest_block"):
+        value = safe_int(progress.get(key))
+        if value > 0:
+            return value
+    return 0
 
 
 def node_remaining(status: dict[str, Any], node: str) -> int:
@@ -138,25 +143,6 @@ def node_remaining(status: dict[str, Any], node: str) -> int:
     highest = safe_int(sync.get("highest_block"))
     height = node_height(status, node)
     return max(0, highest - height) if highest and height else 0
-
-
-def pool_has_fresh_mining_work(status: dict[str, Any]) -> bool:
-    pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
-    miner_health = status.get("miner_health") if isinstance(status.get("miner_health"), dict) else {}
-    connected = safe_int(miner_health.get("connected_count"))
-    if connected <= 0:
-        return False
-
-    last_valid_share_age = safe_int(pool_health.get("last_valid_share_age_seconds"), 10**9)
-    last_block_submit_age = safe_int(pool_health.get("last_block_submit_age_seconds"), 10**9)
-    recent_valid_shares = safe_int(pool_health.get("valid_share_count"))
-    recent_submit_success = safe_int(pool_health.get("block_submit_success_count"))
-    return bool(
-        last_valid_share_age <= 60
-        or last_block_submit_age <= 60
-        or recent_valid_shares > 0
-        or recent_submit_success > 0
-    )
 
 
 def node_importing(status: dict[str, Any], node: str) -> bool:
@@ -196,12 +182,15 @@ def stopped_by_coordinator(state: dict[str, Any], node: str) -> bool:
     return state.get("paused_follower") == node and state.get("mode") == "leader_catchup"
 
 
-def remembered_highest_block(previous_state: dict[str, Any]) -> int:
-    remembered = safe_int(previous_state.get("observed_highest_block"))
-    last_decision = previous_state.get("last_decision") if isinstance(previous_state.get("last_decision"), dict) else {}
-    remembered = max(remembered, safe_int(last_decision.get("observed_highest_block")))
-    remembered = max(remembered, safe_int(last_decision.get("network_highest")))
-    return remembered if remembered >= MIN_TRUSTED_HEIGHT else 0
+def remembered_highest_block(state: dict[str, Any]) -> int:
+    values = [MIN_TRUSTED_HEIGHT, safe_int(state.get("observed_highest_block"))]
+    last_decision = state.get("last_decision")
+    if isinstance(last_decision, dict):
+        values.append(safe_int(last_decision.get("network_highest")))
+        nodes = last_decision.get("nodes")
+        if isinstance(nodes, dict):
+            values.extend(safe_int(item.get("height")) for item in nodes.values() if isinstance(item, dict))
+    return max(values or [0])
 
 
 def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> dict[str, Any]:
@@ -213,62 +202,30 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
     highest_height = max([value for value in heights.values() if value > 0] or [0])
     lowest_height = min([value for value in heights.values() if value > 0] or [0])
     block_lag = highest_height - lowest_height if highest_height and lowest_height else 0
-    max_remaining = max(remaining.values() or [0])
     sync = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
     current_network_highest = safe_int(sync.get("highest_block"))
     remembered_highest = remembered_highest_block(previous_state)
     network_highest = max(current_network_highest, remembered_highest)
-    observed_highest = max(network_highest, highest_height)
+    if network_highest:
+        for node, height in heights.items():
+            if height > 0:
+                remaining[node] = max(remaining.get(node, 0), max(0, network_highest - height))
+    max_remaining = max(remaining.values() or [0])
 
     followers = [node for node in NODES if node != leader]
     follower = ""
     if followers:
-        follower = sorted(followers, key=lambda item: (running.get(item, False), heights.get(item, 0)))[0]
+        running_followers = [node for node in followers if running.get(node, False)]
+        candidate_followers = running_followers or followers
+        follower = sorted(candidate_followers, key=lambda item: (heights.get(item, 0), item))[0]
 
     leader_remaining = remaining.get(leader or "", 0)
-    leader_near_tip = bool(leader and leader_remaining <= LEADER_NEAR_TIP_BLOCKS)
-    leader_gap_to_network = (
-        max(0, network_highest - heights.get(leader, 0))
-        if leader and network_highest >= MIN_TRUSTED_HEIGHT
-        else 0
-    )
-    leader_proven_near_tip = bool(
-        leader
-        and network_highest >= MIN_TRUSTED_HEIGHT
-        and leader_gap_to_network <= LEADER_NEAR_TIP_BLOCKS
-    )
-    active_mining = pool_has_fresh_mining_work(status)
+    leader_near_tip = bool(leader and network_highest > 0 and leader_remaining <= LEADER_NEAR_TIP_BLOCKS)
     far_behind = bool(max_remaining >= FAR_BEHIND_BLOCKS)
-    follower_lag_blocks = heights.get(leader, 0) - heights.get(follower, 0) if follower and leader else 0
-    follower_materially_lagging = bool(follower and leader and follower_lag_blocks >= FOLLOWER_LAG_BLOCKS)
+    follower_lag = max(0, heights.get(leader or "", 0) - heights.get(follower, 0)) if leader and follower else 0
+    follower_materially_lagging = bool(follower and leader and follower_lag >= FOLLOWER_LAG_BLOCKS)
     paused_follower = str(previous_state.get("paused_follower") or "")
     paused_still_down = bool(paused_follower and not running.get(paused_follower, False))
-    previous_decision = previous_state.get("last_decision") if isinstance(previous_state.get("last_decision"), dict) else {}
-    previous_nodes = previous_decision.get("nodes") if isinstance(previous_decision.get("nodes"), dict) else {}
-    previous_follower_height = 0
-    if follower and isinstance(previous_nodes.get(follower), dict):
-        previous_follower_height = safe_int(previous_nodes.get(follower, {}).get("height"))
-    follower_progress = heights.get(follower, 0) - previous_follower_height if follower and previous_follower_height else 0
-    now_epoch = int(time.time())
-    last_lagging_restart_epoch = safe_int(previous_state.get("last_lagging_follower_restart_epoch"))
-    lagging_restart_cooling_down = bool(
-        last_lagging_restart_epoch
-        and now_epoch - last_lagging_restart_epoch < LAGGING_FOLLOWER_RESTART_COOLDOWN_SECONDS
-    )
-    previous_major_lag_node = str(previous_state.get("major_lag_node") or "")
-    previous_major_lag_started_epoch = safe_int(previous_state.get("major_lag_started_epoch"))
-    if follower_materially_lagging:
-        if previous_major_lag_node == follower and previous_major_lag_started_epoch:
-            major_lag_started_epoch = previous_major_lag_started_epoch
-        else:
-            major_lag_started_epoch = now_epoch
-        major_lag_duration_seconds = max(0, now_epoch - major_lag_started_epoch)
-    else:
-        major_lag_started_epoch = 0
-        major_lag_duration_seconds = 0
-    major_lag_over_max_duration = bool(
-        follower_materially_lagging and major_lag_duration_seconds >= MAJOR_LAG_MAX_SECONDS
-    )
 
     action = "monitor"
     reason = "dual-node sync is acceptable"
@@ -277,72 +234,33 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
     if not leader:
         action = "none"
         reason = "no running node has a usable height"
-    elif paused_still_down and leader_proven_near_tip:
+    elif paused_still_down and leader_near_tip:
         action = "seed_or_resume_follower"
         target = paused_follower
         reason = (
-            f"{leader} is proven near tip with gap={leader_gap_to_network} block(s); "
+            f"{leader} is near tip with {leader_remaining} remaining block(s); "
             f"{paused_follower} can be seeded from the leader or resumed"
         )
     elif paused_still_down:
         action = "keep_follower_paused"
         target = paused_follower
         reason = (
-            f"refusing follower seed because leader is not proven near tip; "
-            f"{leader} remaining={leader_remaining} gap_to_network={leader_gap_to_network}; "
+            f"{leader} is still catching up with {leader_remaining} remaining block(s); "
             f"keeping {paused_follower} paused saves bandwidth and disk IO"
         )
-    elif (
-        follower_materially_lagging
-        and follower
-        and running.get(follower)
-        and active_mining
-        and leader_near_tip
-        and (follower_progress <= 0 or major_lag_over_max_duration)
-    ):
-        if lagging_restart_cooling_down:
-            action = "monitor_lagging_follower"
-            target = follower
-            cooldown_remaining = LAGGING_FOLLOWER_RESTART_COOLDOWN_SECONDS - (now_epoch - last_lagging_restart_epoch)
-            reason = (
-                f"{follower} lags {follower_lag_blocks} DAG main-order/block(s) behind {leader}; "
-                f"major lag duration={major_lag_duration_seconds}s max={MAJOR_LAG_MAX_SECONDS}s; "
-                f"restart cooldown has {cooldown_remaining}s remaining"
-            )
-        else:
-            action = "restart_lagging_follower"
-            target = follower
-            progress_reason = (
-                f"major lag persisted for {major_lag_duration_seconds}s"
-                if major_lag_over_max_duration
-                else "it has not advanced since the last check"
-            )
-            reason = (
-                f"{follower} lags {follower_lag_blocks} DAG main-order/block(s) "
-                f"behind {leader} and {progress_reason}; restarting only the lagging "
-                "standby clears stuck sync loops while mining continues on the near-tip leader"
-            )
-    elif follower_materially_lagging and follower and running.get(follower) and active_mining and leader_near_tip:
-        action = "monitor_lagging_follower"
-        target = follower
-        reason = (
-            f"{follower} lags {follower_lag_blocks} DAG main-order/block(s) "
-            f"behind {leader}, but it advanced by {follower_progress} since the last check; "
-            f"major lag duration={major_lag_duration_seconds}s max={MAJOR_LAG_MAX_SECONDS}s"
-        )
-    elif far_behind and active_mining and leader_near_tip:
-        action = "monitor"
-        reason = (
-            "large catch-up detected, but pool has fresh mining work on a near-tip leader; "
-            "not pausing a follower during productive mining"
-        )
-    elif far_behind and follower and running.get(follower) and follower_materially_lagging and importing.get(leader):
+    elif far_behind and follower and running.get(follower) and importing.get(leader):
         action = "pause_follower"
         target = follower
-        reason = (
-            f"both nodes are far behind; {leader} is ahead at {heights.get(leader)} "
-            f"and {follower} lags by {heights.get(leader, 0) - heights.get(follower, 0)} block(s)"
-        )
+        if follower_materially_lagging:
+            reason = (
+                f"large catch-up detected; {leader} is ahead at {heights.get(leader)} "
+                f"and {follower} trails by {follower_lag} block(s), so {leader} will sync alone"
+            )
+        else:
+            reason = (
+                f"large catch-up detected; {leader} will sync alone to conserve bandwidth and disk IO "
+                f"while {follower} is paused (node-to-node lag {follower_lag} block(s))"
+            )
     elif far_behind:
         action = "monitor_leader_catchup"
         reason = f"large catch-up detected, but no safe follower pause target was found; leader={leader}"
@@ -355,30 +273,18 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
         "target": target,
         "network_highest": network_highest,
         "current_network_highest": current_network_highest,
-        "remembered_highest": remembered_highest,
-        "observed_highest_block": observed_highest,
+        "remembered_highest_block": remembered_highest,
         "block_lag": block_lag,
         "max_remaining_blocks": max_remaining,
         "leader_remaining_blocks": leader_remaining,
         "leader_near_tip": leader_near_tip,
-        "leader_gap_to_network": leader_gap_to_network,
-        "leader_proven_near_tip": leader_proven_near_tip,
-        "active_mining": active_mining,
         "far_behind": far_behind,
         "thresholds": {
             "far_behind_blocks": FAR_BEHIND_BLOCKS,
             "follower_lag_blocks": FOLLOWER_LAG_BLOCKS,
             "leader_near_tip_blocks": LEADER_NEAR_TIP_BLOCKS,
-            "min_trusted_height": MIN_TRUSTED_HEIGHT,
             "import_stale_seconds": LEADER_IMPORT_STALE_SECONDS,
-            "lagging_restart_cooldown_seconds": LAGGING_FOLLOWER_RESTART_COOLDOWN_SECONDS,
-            "major_lag_max_seconds": MAJOR_LAG_MAX_SECONDS,
         },
-        "major_lag": follower_materially_lagging,
-        "major_lag_node": follower if follower_materially_lagging else "",
-        "major_lag_blocks": follower_lag_blocks if follower_materially_lagging else 0,
-        "major_lag_started_epoch": major_lag_started_epoch,
-        "major_lag_duration_seconds": major_lag_duration_seconds,
         "nodes": {
             node: {
                 "height": heights.get(node, 0),
@@ -446,6 +352,8 @@ def rsync_node(source: Path, target: Path, log_path: Path, timeout: int) -> bool
         "--no-group",
         "--chmod=Du+rwx,Dgo+rx,Fu+rw,Fgo+r",
         "--exclude=/mainnet/network.key",
+        "--exclude=/mainnet/bdageth/nodekey",
+        "--exclude=/mainnet/keystore/",
         "--exclude=/mainnet/peerstore/",
     ]
     if WARM_RSYNC_BWLIMIT_KB != "0":
@@ -498,13 +406,13 @@ def seed_follower_from_leader(decision: dict[str, Any], state: dict[str, Any], l
     if leader not in NODES or follower not in NODES or leader == follower:
         log_path.write_text(f"[{now_iso()}] invalid seed request leader={leader} follower={follower}\n", encoding="utf-8")
         return False
-    if not bool(decision.get("leader_proven_near_tip")):
+    if safe_int(decision.get("network_highest")) <= 0 or safe_int(decision.get("leader_remaining_blocks"), 999999999) > LEADER_NEAR_TIP_BLOCKS:
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(
                 f"[{now_iso()}] refusing follower seed because leader is not proven near tip; "
-                f"leader={leader} follower={follower} "
-                f"gap_to_network={decision.get('leader_gap_to_network')} "
-                f"network_highest={decision.get('network_highest')}\n"
+                f"network_highest={decision.get('network_highest')} "
+                f"leader_remaining={decision.get('leader_remaining_blocks')} "
+                f"threshold={LEADER_NEAR_TIP_BLOCKS}\n"
             )
         return False
     if not allow_leader_stop:
@@ -596,32 +504,6 @@ def resume_follower(decision: dict[str, Any], state: dict[str, Any], log_path: P
     return ok
 
 
-def restart_lagging_follower(decision: dict[str, Any], state: dict[str, Any], log_path: Path) -> bool:
-    target = str(decision.get("target") or "")
-    leader = str(decision.get("leader") or "")
-    if target not in NODES or target == leader:
-        return False
-    ok = run_logged(compose_command("restart", target), log_path, timeout=180).ok
-    if ok:
-        state.update(
-            {
-                "mode": "normal",
-                "last_lagging_follower_restart": target,
-                "last_lagging_follower_restart_at": now_iso(),
-                "last_lagging_follower_restart_epoch": int(time.time()),
-                "last_lagging_follower_restart_reason": decision.get("reason"),
-            }
-        )
-        append_incident(
-            "sync_coordinator_restart_lagging_follower",
-            "critical",
-            "sync-coordinator",
-            f"restarted lagging standby {target}",
-            {"decision": decision},
-        )
-    return ok
-
-
 def apply_decision(
     decision: dict[str, Any],
     state: dict[str, Any],
@@ -630,7 +512,6 @@ def apply_decision(
     allow_resume: bool,
     allow_seed: bool,
     allow_leader_stop: bool,
-    allow_restart_lagging_follower: bool,
 ) -> dict[str, Any]:
     action = str(decision.get("action") or "")
     action_name = f"sync-coordinator-{action}"
@@ -663,12 +544,6 @@ def apply_decision(
             applied = "resume_follower" if ok else "resume_follower_failed"
         else:
             applied = "seed_or_resume_suppressed"
-    elif action == "restart_lagging_follower":
-        if allow_restart_lagging_follower:
-            ok = restart_lagging_follower(decision, state, log_path)
-            applied = "restart_lagging_follower" if ok else "restart_lagging_follower_failed"
-        else:
-            applied = "restart_lagging_follower_suppressed"
     else:
         applied = "monitor"
 
@@ -692,29 +567,17 @@ def check_once(args: argparse.Namespace) -> dict[str, Any]:
     status = collect_status(include_logs=True)
     decision = build_decision(status, previous_state)
     state = dict(previous_state)
+    observed_highest = max(
+        remembered_highest_block(previous_state),
+        safe_int(decision.get("network_highest")),
+    )
     state.update(
         {
             "updated_at": now_iso(),
             "last_decision": decision,
-            "observed_highest_block": max(
-                remembered_highest_block(previous_state),
-                safe_int(decision.get("observed_highest_block")),
-            ),
+            "observed_highest_block": observed_highest,
         }
     )
-    if decision.get("major_lag"):
-        state["major_lag_node"] = decision.get("major_lag_node")
-        state["major_lag_blocks"] = decision.get("major_lag_blocks")
-        state["major_lag_started_epoch"] = decision.get("major_lag_started_epoch")
-        state["major_lag_duration_seconds"] = decision.get("major_lag_duration_seconds")
-    else:
-        for key in (
-            "major_lag_node",
-            "major_lag_blocks",
-            "major_lag_started_epoch",
-            "major_lag_duration_seconds",
-        ):
-            state.pop(key, None)
 
     if args.repair:
         lock = acquire_lock(blocking=False)
@@ -731,7 +594,6 @@ def check_once(args: argparse.Namespace) -> dict[str, Any]:
                     allow_resume=args.resume_follower,
                     allow_seed=args.seed_follower,
                     allow_leader_stop=args.allow_leader_stop,
-                    allow_restart_lagging_follower=args.restart_lagging_follower,
                 )
             finally:
                 lock.close()
@@ -772,11 +634,6 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--resume-follower", action="store_true", help="allow starting a paused follower when catch-up is near complete")
     parser.add_argument("--seed-follower", action="store_true", help="allow replacing the paused follower data from the leader")
     parser.add_argument("--allow-leader-stop", action="store_true", help="allow a brief leader stop for final consistent follower seeding")
-    parser.add_argument(
-        "--restart-lagging-follower",
-        action="store_true",
-        help="allow restarting a running standby node that is materially lagging and not advancing",
-    )
     parser.add_argument("--interval", type=int, default=int(os.environ.get("BDAG_SYNC_COORDINATOR_INTERVAL", "120")))
     args = parser.parse_args(argv)
 

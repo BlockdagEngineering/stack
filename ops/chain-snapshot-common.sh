@@ -14,9 +14,6 @@ run_low_priority() {
 snapshot_sync_summary() {
   local project_root="$1"
   PYTHONPATH="$project_root/ops" python3 -c '
-import os
-import urllib.request
-
 from pool_ops import collect_sync_progress, json_rpc_call, node_rpc_urls
 
 progress = collect_sync_progress()
@@ -30,51 +27,6 @@ for item in nodes.values():
     if value is not None:
         remaining.append(int(value))
 max_remaining = max(remaining) if remaining else -1
-
-def metric_urls():
-    configured = os.environ.get(
-        "BDAG_NODE_METRICS_URLS",
-        "node1=http://127.0.0.1:6061/debug/metrics/prometheus,node2=http://127.0.0.1:6062/debug/metrics/prometheus",
-    )
-    urls = []
-    for item in configured.split(","):
-        item = item.strip()
-        if not item:
-            continue
-        if "=" in item:
-            _, url = item.split("=", 1)
-        else:
-            url = item
-        urls.append(url.strip())
-    return urls
-
-def scrape_metric(url, names):
-    data = urllib.request.urlopen(url, timeout=3.0).read().decode("utf-8", errors="replace")
-    values = {}
-    for raw in data.splitlines():
-        if not raw or raw.startswith("#") or " " not in raw:
-            continue
-        key, value = raw.split(None, 1)
-        if key in names:
-            try:
-                values[key] = int(float(value.strip()))
-            except ValueError:
-                pass
-    return values
-
-dag_positions = []
-for url in metric_urls():
-    try:
-        metrics = scrape_metric(url, {"Blockdag_mainorder", "chain_head_block"})
-    except Exception:
-        continue
-    # DAG main-order is the best signal for node catch-up on this chain. Falling
-    # back to chain_head_block is still better than only checking EVM blockNumber.
-    if "Blockdag_mainorder" in metrics:
-        dag_positions.append(metrics["Blockdag_mainorder"])
-    elif "chain_head_block" in metrics:
-        dag_positions.append(metrics["chain_head_block"])
-
 blocks = []
 for _, url in node_rpc_urls():
     try:
@@ -82,13 +34,7 @@ for _, url in node_rpc_urls():
         blocks.append(int(str(value), 16))
     except Exception:
         unknown += 1
-
-if len(dag_positions) >= 2:
-    block_lag = max(dag_positions) - min(dag_positions)
-elif len(blocks) >= 2:
-    block_lag = max(blocks) - min(blocks)
-else:
-    block_lag = -1
+block_lag = max(blocks) - min(blocks) if len(blocks) >= 2 else -1
 print(progress.get("status") or "unknown", max_remaining, unknown, block_lag)
 '
 }

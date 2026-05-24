@@ -55,10 +55,12 @@ DASHBOARD_POOL_METRICS_TIMEOUT = float(os.environ.get("BDAG_DASHBOARD_POOL_METRI
 TEMPLATE_BACKEND_STATE_CACHE_SECONDS = float(
     os.environ.get("BDAG_DASHBOARD_TEMPLATE_BACKEND_STATE_CACHE_SECONDS", str(STATUS_CACHE_SECONDS))
 )
+SYNC_ESTIMATE_STATE_FILE = RUNTIME_DIR / "dashboard-sync-estimate-state.json"
 PROMETHEUS_SAMPLE_RE = re.compile(
     r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|[-+]?Inf|NaN)$"
 )
 PROMETHEUS_LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:\\.|[^"\\])*)"')
+PROCESSED_BLOCKS_RE = re.compile(r"Processed\s+([0-9,]+)\s+blocks\s+in\s+the\s+last\s+([0-9.]+)s")
 API_CACHE: dict[str, tuple[float, object]] = {}
 API_CACHE_LOCK = threading.Lock()
 
@@ -82,18 +84,218 @@ def parse_prometheus_labels(label_text: str) -> dict[str, str]:
     return labels
 
 
-def prometheus_json_number(value: float) -> float | int:
-    return int(value) if value.is_integer() else value
+def safe_int(value: object, default: int | None = None) -> int | None:
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def safe_float(value: object, default: float | None = None) -> float | None:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def read_json(path: Path, fallback: object) -> object:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return fallback
+
+
+def write_json(path: Path, payload: object) -> None:
+    ensure_runtime()
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def eta_iso(epoch: float | None) -> str:
+    if epoch is None:
+        return ""
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(epoch))
+
+
+def node_processed_rate_from_tail(node: dict[str, object]) -> tuple[float | None, str]:
+    tail = node.get("tail")
+    if not isinstance(tail, list):
+        return None, ""
+    for line in reversed(tail):
+        match = PROCESSED_BLOCKS_RE.search(str(line or ""))
+        if not match:
+            continue
+        blocks = safe_float(match.group(1).replace(",", ""))
+        seconds = safe_float(match.group(2))
+        if blocks is None or seconds is None or seconds <= 0:
+            continue
+        return blocks / seconds, f"recent node log: {int(blocks)} blocks/{seconds:g}s"
+    return None, ""
+
+
+def sync_progress_for_node(payload: dict[str, object], node_name: str) -> dict[str, object]:
+    sync_progress = payload.get("sync_progress") if isinstance(payload.get("sync_progress"), dict) else {}
+    nodes = sync_progress.get("nodes") if isinstance(sync_progress.get("nodes"), dict) else {}
+    node_progress = nodes.get(node_name) if isinstance(nodes, dict) else None
+    if isinstance(node_progress, dict):
+        return node_progress
+    if sync_progress.get("source") == node_name:
+        return sync_progress
+    return {}
+
+
+def choose_sync_leader(payload: dict[str, object]) -> str:
+    coordinator = payload.get("sync_coordinator") if isinstance(payload.get("sync_coordinator"), dict) else {}
+    leader = str(coordinator.get("leader") or "")
+    if leader:
+        return leader
+    sync_progress = payload.get("sync_progress") if isinstance(payload.get("sync_progress"), dict) else {}
+    nodes = sync_progress.get("nodes") if isinstance(sync_progress.get("nodes"), dict) else {}
+    candidates: list[tuple[int, str]] = []
+    if isinstance(nodes, dict):
+        for name, progress in nodes.items():
+            if not isinstance(progress, dict):
+                continue
+            current = safe_int(progress.get("current_block"), 0) or 0
+            if current > 0:
+                candidates.append((current, str(name)))
+    candidates.sort(reverse=True)
+    return candidates[0][1] if candidates else ""
+
+
+def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, object]:
+    now = time.time()
+    sync_progress = payload.get("sync_progress") if isinstance(payload.get("sync_progress"), dict) else {}
+    sync_health = payload.get("sync_health") if isinstance(payload.get("sync_health"), dict) else {}
+    coordinator = payload.get("sync_coordinator") if isinstance(payload.get("sync_coordinator"), dict) else {}
+    nodes = payload.get("nodes") if isinstance(payload.get("nodes"), dict) else {}
+    managed_nodes = payload.get("managed_node_services") if isinstance(payload.get("managed_node_services"), list) else []
+    single_active_node = len(managed_nodes) == 1
+    leader = choose_sync_leader(payload)
+    paused_follower = str(coordinator.get("paused_follower") or sync_health.get("planned_paused_follower") or "")
+    mode = str(coordinator.get("mode") or ("leader_catchup" if paused_follower else "normal"))
+    threshold = safe_int(((coordinator.get("last_decision") or {}).get("thresholds") or {}).get("leader_near_tip_blocks"), 5) or 5
+
+    state = read_json(SYNC_ESTIMATE_STATE_FILE, {})
+    if not isinstance(state, dict):
+        state = {}
+    previous_nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    new_state = {"updated_at": eta_iso(now), "nodes": {}}
+    estimate_nodes: dict[str, object] = {}
+
+    progress_nodes = sync_progress.get("nodes") if isinstance(sync_progress.get("nodes"), dict) else {}
+    node_names = sorted(set(list(nodes.keys()) + list(progress_nodes.keys() if isinstance(progress_nodes, dict) else [])))
+    for name in node_names:
+        progress = sync_progress_for_node(payload, name)
+        current = safe_int(progress.get("current_block"))
+        highest = safe_int(progress.get("highest_block"))
+        remaining = safe_int(progress.get("remaining_blocks"))
+        percent = safe_float(progress.get("percent"))
+        node_info = nodes.get(name) if isinstance(nodes.get(name), dict) else {}
+        log_rate, log_rate_source = node_processed_rate_from_tail(node_info)
+
+        previous = previous_nodes.get(name) if isinstance(previous_nodes.get(name), dict) else {}
+        previous_current = safe_int(previous.get("current_block"))
+        previous_remaining = safe_int(previous.get("remaining_blocks"))
+        previous_epoch = safe_float(previous.get("epoch"))
+        observed_import_rate = None
+        observed_net_rate = None
+        if current is not None and previous_current is not None and previous_epoch is not None:
+            elapsed = now - previous_epoch
+            if 5 <= elapsed <= 7200 and current > previous_current:
+                observed_import_rate = (current - previous_current) / elapsed
+        if remaining is not None and previous_remaining is not None and previous_epoch is not None:
+            elapsed = now - previous_epoch
+            if 5 <= elapsed <= 7200 and previous_remaining > remaining:
+                observed_net_rate = (previous_remaining - remaining) / elapsed
+
+        rate = observed_net_rate or observed_import_rate or log_rate
+        rate_source = (
+            "net catch-up across dashboard samples"
+            if observed_net_rate
+            else "block import across dashboard samples"
+            if observed_import_rate
+            else log_rate_source
+        )
+        eta_seconds = remaining / rate if remaining is not None and rate and rate > 0 else None
+        seed_remaining = max(0, remaining - threshold) if remaining is not None else None
+        eta_to_seed_seconds = seed_remaining / rate if seed_remaining is not None and rate and rate > 0 else None
+        estimate_nodes[name] = {
+            "current_block": current,
+            "highest_block": highest,
+            "remaining_blocks": remaining,
+            "percent": percent,
+            "rate_blocks_per_second": round(rate, 3) if rate else None,
+            "rate_source": rate_source,
+            "eta_seconds": round(eta_seconds) if eta_seconds is not None else None,
+            "eta_at": eta_iso(now + eta_seconds) if eta_seconds is not None else "",
+            "eta_to_seed_seconds": round(eta_to_seed_seconds) if eta_to_seed_seconds is not None else None,
+            "eta_to_seed_at": eta_iso(now + eta_to_seed_seconds) if eta_to_seed_seconds is not None else "",
+            "planned_pause": bool(name == paused_follower),
+            "leader": bool(name == leader),
+        }
+        if current is not None or remaining is not None:
+            new_state["nodes"][name] = {
+                "epoch": now,
+                "current_block": current,
+                "remaining_blocks": remaining,
+                "highest_block": highest,
+            }
+
+    leader_estimate = estimate_nodes.get(leader) if isinstance(estimate_nodes.get(leader), dict) else {}
+    remaining = safe_int(leader_estimate.get("remaining_blocks")) if leader_estimate else safe_int(sync_progress.get("remaining_blocks"))
+    rate = safe_float(leader_estimate.get("rate_blocks_per_second")) if leader_estimate else None
+    stage = (
+        "Synced"
+        if sync_progress.get("status") == "synced"
+        else "Leader catch-up"
+        if mode == "leader_catchup"
+        else "Single-node catch-up"
+        if single_active_node
+        else "Dual-node sync"
+    )
+    if mode == "leader_catchup" and leader and paused_follower:
+        narrative = (
+            f"{leader} is syncing alone while {paused_follower} is paused to save bandwidth. "
+            f"When the leader is within {threshold} block(s) of tip, the coordinator will copy the leader data to the follower and start both nodes."
+        )
+    elif sync_progress.get("status") == "synced":
+        narrative = "Managed nodes are synced to the current network tip."
+    elif single_active_node and leader:
+        narrative = f"{leader} is the only active production node. The pool will wait for this node to finish sync before mining jobs are sent."
+    else:
+        narrative = "Managed nodes are syncing; the pool will wait for backend sync before mining jobs are sent."
+
+    payload["sync_estimate"] = {
+        "generated_at": eta_iso(now),
+        "stage": stage,
+        "mode": mode,
+        "leader": leader,
+        "paused_follower": paused_follower,
+        "seed_threshold_blocks": threshold,
+        "remaining_blocks": remaining,
+        "rate_blocks_per_second": rate,
+        "rate_source": leader_estimate.get("rate_source") if leader_estimate else "",
+        "eta_seconds": leader_estimate.get("eta_seconds") if leader_estimate else None,
+        "eta_at": leader_estimate.get("eta_at") if leader_estimate else "",
+        "eta_to_seed_seconds": leader_estimate.get("eta_to_seed_seconds") if leader_estimate else None,
+        "eta_to_seed_at": leader_estimate.get("eta_to_seed_at") if leader_estimate else "",
+        "narrative": narrative,
+        "nodes": estimate_nodes,
+    }
+    write_json(SYNC_ESTIMATE_STATE_FILE, new_state)
+    return payload
 
 
 def template_backend_state_from_metrics(text: str, source: str) -> dict[str, object]:
-    state: dict[str, object] = {"source": source, "fan_in": {}, "backends": {}, "job_health": {}}
+    state: dict[str, object] = {"source": source, "fan_in": {}, "backends": {}}
     fan_in = state["fan_in"]
     backends = state["backends"]
-    job_health = state["job_health"]
     assert isinstance(fan_in, dict)
     assert isinstance(backends, dict)
-    assert isinstance(job_health, dict)
 
     for line in text.splitlines():
         line = line.strip()
@@ -108,21 +310,11 @@ def template_backend_state_from_metrics(text: str, source: str) -> dict[str, obj
         except ValueError:
             continue
         labels = parse_prometheus_labels(label_text or "")
-        if metric_name.startswith("pool_job_health_"):
-            key = metric_name.removeprefix("pool_job_health_")
-            if key == "accepted_jobs":
-                accepted = job_health.setdefault("accepted_jobs", {})
-                if isinstance(accepted, dict):
-                    accepted[str(labels.get("state") or "unknown")] = prometheus_json_number(value)
-            elif key == "ok":
-                job_health["ok"] = value > 0
-            else:
-                job_health[key] = prometheus_json_number(value)
-        elif metric_name == "pool_template_fanin_enabled":
+        if metric_name == "pool_template_fanin_enabled":
             fan_in["enabled"] = value > 0
             fan_in["enabled_value"] = value
         elif metric_name == "pool_template_fanin_backends":
-            fan_in["backends"] = prometheus_json_number(value)
+            fan_in["backends"] = int(value) if value.is_integer() else value
         elif metric_name == "pool_template_fanin_mode":
             mode = labels.get("mode")
             if mode:
@@ -187,44 +379,9 @@ def template_backend_state_from_metrics(text: str, source: str) -> dict[str, obj
             elif metric_name == "pool_template_fanin_winner":
                 row["fan_in_winner"] = value > 0
             elif metric_name == "pool_template_fanin_best_height":
-                row["fan_in_best_height"] = prometheus_json_number(value)
+                row["fan_in_best_height"] = int(value) if value.is_integer() else value
             elif metric_name == "pool_template_fanin_observed_height":
-                row["fan_in_observed_height"] = prometheus_json_number(value)
-        elif metric_name.startswith("pool_rpc_backend_node_health_"):
-            backend = labels.get("backend")
-            if not backend:
-                continue
-            row = backends.setdefault(backend, {})
-            if not isinstance(row, dict):
-                continue
-            key = metric_name.removeprefix("pool_rpc_backend_node_health_")
-            if key in {
-                "mineable",
-                "submit_ready",
-                "p2p_mining_fresh",
-                "p2p_sync_peer_fresh",
-                "p2p_sync_peer_present",
-                "pending_template_build",
-                "last_template_build_error_blocking",
-            }:
-                row[f"node_{key}"] = value > 0
-            elif key in {"last_template_invalidation_sequence", "pending_template_invalidation"}:
-                cause = str(labels.get("cause") or "unknown")
-                bucket = row.setdefault(f"node_{key}", {})
-                if isinstance(bucket, dict):
-                    bucket[cause] = prometheus_json_number(value)
-            else:
-                row[f"node_{key}"] = prometheus_json_number(value)
-        elif metric_name.startswith("pool_template_conversion_stall_"):
-            conversion = state.setdefault("template_conversion_stall", {})
-            if isinstance(conversion, dict):
-                key = metric_name.removeprefix("pool_template_conversion_stall_")
-                if key == "window_candidates":
-                    candidates = conversion.setdefault("window_candidates", {})
-                    if isinstance(candidates, dict):
-                        candidates[str(labels.get("kind") or "unknown")] = prometheus_json_number(value)
-                else:
-                    conversion[key] = prometheus_json_number(value)
+                row["fan_in_observed_height"] = int(value) if value.is_integer() else value
 
     if backends:
         state["backend_count"] = len(backends)
@@ -286,7 +443,7 @@ def enrich_status_with_template_backend_state(payload: dict[str, object]) -> dic
 
 
 def dashboard_status_payload() -> dict[str, object]:
-    return enrich_status_with_template_backend_state(collect_status(include_logs=True))
+    return enrich_status_with_template_backend_state(enrich_status_with_sync_estimate(collect_status(include_logs=True)))
 
 
 def token_required() -> bool:
@@ -295,11 +452,6 @@ def token_required() -> bool:
     if REQUIRE_TOKEN.lower() in {"0", "false", "no"}:
         return False
     return HOST not in {"127.0.0.1", "localhost", "::1"}
-
-
-def is_local_client(handler: BaseHTTPRequestHandler) -> bool:
-    host = handler.client_address[0] if handler.client_address else ""
-    return host in {"127.0.0.1", "::1", "localhost"}
 
 
 def get_action_token() -> str:
@@ -399,6 +551,7 @@ HTML = r"""<!doctype html>
       color-scheme: light;
       --bg: #f6f7f8;
       --panel: #ffffff;
+      --panel-alt: #f8fafc;
       --line: #d7dbe0;
       --text: #16202a;
       --muted: #617181;
@@ -407,6 +560,36 @@ HTML = r"""<!doctype html>
       --down: #b3261e;
       --sync: #1d5f99;
       --button: #1c2b36;
+      --button-text: #ffffff;
+      --button-secondary-bg: #ffffff;
+      --input-bg: #ffffff;
+      --chart-bg: #fbfcfd;
+      --pre-bg: #101820;
+      --pre-text: #dfe7ef;
+      --progress-bg: #e5e9ee;
+      --shadow: rgba(0,0,0,0.05);
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #0e141b;
+      --panel: #151d26;
+      --panel-alt: #111923;
+      --line: #2b3948;
+      --text: #e7edf4;
+      --muted: #9aaaba;
+      --ok: #48c684;
+      --warn: #f2ae49;
+      --down: #ff746c;
+      --sync: #6cb7ff;
+      --button: #d9e4ef;
+      --button-text: #101820;
+      --button-secondary-bg: #1b2632;
+      --input-bg: #101820;
+      --chart-bg: #101820;
+      --pre-bg: #070b10;
+      --pre-text: #dce7f2;
+      --progress-bg: #22303d;
+      --shadow: rgba(0,0,0,0.35);
     }
     * { box-sizing: border-box; }
     body {
@@ -429,7 +612,14 @@ HTML = r"""<!doctype html>
       z-index: 2;
     }
     h1 { margin: 0; font-size: 20px; font-weight: 700; }
-    main { padding: 18px 24px 28px; display: grid; gap: 16px; }
+    main {
+      padding: 18px 24px 28px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 16px;
+      width: 100%;
+      min-width: 0;
+    }
     .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
     .tabs {
       display: flex;
@@ -449,9 +639,42 @@ HTML = r"""<!doctype html>
       border-bottom-color: var(--panel);
       color: var(--text);
     }
-    .tab-page { display: grid; gap: 16px; }
+    .tab-page {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 16px;
+      width: 100%;
+      min-width: 0;
+    }
     .hidden { display: none; }
     .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; }
+    .status-overview {
+      display: grid;
+      grid-template-columns: minmax(280px, 0.8fr) minmax(0, 2.2fr);
+      gap: 16px;
+      width: 100%;
+      min-width: 0;
+      justify-self: stretch;
+      align-items: stretch;
+    }
+    .status-overview .panel,
+    .status-overview .node-card-grid {
+      grid-column: auto;
+    }
+    .status-overview .node-card-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-content: start;
+      align-self: stretch;
+      justify-self: stretch;
+      width: 100%;
+    }
+    .status-overview .node-card-group {
+      display: contents;
+    }
+    .status-overview .node-card-group-title {
+      grid-column: 1 / -1;
+    }
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -522,7 +745,7 @@ HTML = r"""<!doctype html>
     button {
       border: 1px solid var(--button);
       background: var(--button);
-      color: white;
+      color: var(--button-text);
       border-radius: 6px;
       padding: 9px 12px;
       font-size: 13px;
@@ -530,11 +753,13 @@ HTML = r"""<!doctype html>
       cursor: pointer;
       min-height: 36px;
     }
-    button.secondary { background: white; color: var(--button); }
+    button.secondary { background: var(--button-secondary-bg); color: var(--button); }
     button.danger { background: var(--down); border-color: var(--down); }
     button:disabled { opacity: 0.55; cursor: wait; }
     input {
       border: 1px solid var(--line);
+      background: var(--input-bg);
+      color: var(--text);
       border-radius: 6px;
       padding: 9px 10px;
       min-height: 36px;
@@ -564,7 +789,7 @@ HTML = r"""<!doctype html>
       margin-top: 10px;
       border: 1px solid var(--line);
       border-radius: 6px;
-      background: #fbfcfd;
+      background: var(--chart-bg);
       overflow: hidden;
     }
     .chart-head {
@@ -617,8 +842,8 @@ HTML = r"""<!doctype html>
     pre {
       margin: 8px 0 0;
       padding: 12px;
-      background: #101820;
-      color: #dfe7ef;
+      background: var(--pre-bg);
+      color: var(--pre-text);
       border-radius: 6px;
       overflow: auto;
       max-height: 360px;
@@ -643,9 +868,9 @@ HTML = r"""<!doctype html>
       height: 12px;
       border-radius: 999px;
       overflow: hidden;
-      background: #e5e9ee;
+      background: var(--progress-bg);
       border: 1px solid var(--line);
-      box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);
+      box-shadow: inset 0 1px 2px var(--shadow);
     }
     .sync-progress-fill {
       height: 100%;
@@ -663,6 +888,39 @@ HTML = r"""<!doctype html>
       color: var(--muted);
       flex-wrap: wrap;
     }
+    .sync-narrative {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+    .sync-detail-list {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      gap: 5px 12px;
+      margin-top: 10px;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .sync-detail-list .label {
+      color: var(--muted);
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .sync-detail-list .value {
+      color: var(--text);
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .sync-paused-note {
+      color: var(--warn);
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
     .sync-progress-node {
       margin-top: 10px;
     }
@@ -670,17 +928,22 @@ HTML = r"""<!doctype html>
       height: 8px;
     }
     .node-card-grid {
-      grid-column: span 6;
+      grid-column: span 12;
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      grid-template-columns: minmax(0, 1fr);
       gap: 12px;
+      width: 100%;
+      min-width: 0;
+      justify-self: stretch;
     }
     .node-card-group {
       grid-column: 1 / -1;
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
       gap: 12px;
+      width: 100%;
       min-width: 0;
+      justify-self: stretch;
     }
     .node-card-group-title {
       grid-column: 1 / -1;
@@ -696,9 +959,10 @@ HTML = r"""<!doctype html>
       border-radius: 8px;
       padding: 14px;
       min-width: 0;
+      width: 100%;
     }
     .node-card.observer {
-      background: #f8fafc;
+      background: var(--panel-alt);
       border-style: dashed;
     }
     .node-card.observer .kpi-label::after {
@@ -717,6 +981,25 @@ HTML = r"""<!doctype html>
     .node-card .kpi-value {
       font-size: 22px;
     }
+    .node-card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      min-width: 0;
+    }
+    .node-card-title {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      line-height: 1.35;
+    }
+    .node-badges {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px;
+      min-width: 0;
+    }
     .node-role {
       display: inline-flex;
       align-items: center;
@@ -728,6 +1011,9 @@ HTML = r"""<!doctype html>
       color: var(--muted);
       text-transform: capitalize;
       white-space: nowrap;
+    }
+    .node-badges .node-role {
+      margin-left: 0;
     }
     .node-log-grid {
       display: grid;
@@ -744,6 +1030,10 @@ HTML = r"""<!doctype html>
     @media (max-width: 900px) {
       header { align-items: flex-start; flex-direction: column; }
       .toolbar { justify-content: flex-start; }
+      .status-overview { grid-template-columns: minmax(0, 1fr); }
+      .status-overview .node-card-grid {
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+      }
       .span-2, .span-3, .span-4, .span-6, .span-8, .node-card-grid { grid-column: span 12; }
       .field-span-2, .field-span-3, .field-span-4, .field-span-6 { grid-column: span 12; }
       main { padding: 14px; }
@@ -752,6 +1042,13 @@ HTML = r"""<!doctype html>
       input[type="checkbox"] { min-width: 0; }
     }
   </style>
+  <script>
+    (() => {
+      const stored = localStorage.getItem("bdag-dashboard-theme");
+      const theme = stored || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
 </head>
 <body>
   <header>
@@ -761,6 +1058,7 @@ HTML = r"""<!doctype html>
     </div>
     <div class="toolbar">
       <input id="token" type="password" placeholder="Action token">
+      <button id="themeToggle" class="secondary" type="button" onclick="toggleTheme()">Dark</button>
       <button class="secondary" onclick="refresh()">Refresh</button>
       <button onclick="action('start')">Start</button>
       <button onclick="action('restart')">Restart</button>
@@ -776,8 +1074,8 @@ HTML = r"""<!doctype html>
   </nav>
   <main>
     <section id="tab-status" class="tab-page">
-    <section class="grid">
-      <div class="panel span-6">
+    <section class="status-overview">
+      <div class="panel">
         <div class="stack-endpoint">
           <span>Pool Endpoint</span>
           <span class="stack-endpoint-value" id="poolEndpoint">...</span>
@@ -793,6 +1091,14 @@ HTML = r"""<!doctype html>
             <span id="syncProgressPercent">...</span>
             <span id="syncProgressGap">...</span>
           </div>
+        </div>
+        <div id="syncNarrative" class="sync-narrative"></div>
+        <div class="sync-detail-list">
+          <span class="label">Mode</span><span class="value" id="syncMode">...</span>
+          <span class="label">Active</span><span class="value" id="syncActiveNode">...</span>
+          <span class="label">Rate</span><span class="value" id="syncRate">...</span>
+          <span class="label">ETA</span><span class="value" id="syncEta">...</span>
+          <span class="label">Next</span><span class="value" id="syncNextStep">...</span>
         </div>
       </div>
       <div id="nodeCards" class="node-card-grid"></div>
@@ -1022,15 +1328,15 @@ HTML = r"""<!doctype html>
           <div class="kpi-value" id="earnAvgIncomeBdagHour">...</div>
         </div>
         <div class="panel span-2">
-          <div class="kpi-label">Wallets ZAR Value</div>
+          <div class="kpi-label">Payment Wallet ZAR</div>
           <div class="kpi-value" id="earnTotalZar">...</div>
         </div>
         <div class="panel span-2">
-          <div class="kpi-label">Wallets USD Value</div>
+          <div class="kpi-label">Payment Wallet USD</div>
           <div class="kpi-value" id="earnTotalUsd">...</div>
         </div>
         <div class="panel span-2">
-          <div class="kpi-label">Wallets BDAG</div>
+          <div class="kpi-label">Payment Wallet BDAG</div>
           <div class="kpi-value" id="earnWalletBdag">...</div>
         </div>
       </section>
@@ -1079,7 +1385,7 @@ HTML = r"""<!doctype html>
           </table>
         </div>
         <div class="panel span-6">
-          <div class="kpi-label">Wallet On-Chain Cross-Check</div>
+          <div class="kpi-label">Payment Wallet Cross-Check</div>
           <table>
             <thead><tr><th>Source</th><th>Status</th><th class="right">BDAG</th><th>Detail</th></tr></thead>
             <tbody id="walletSourcesTable"></tbody>
@@ -1098,36 +1404,32 @@ HTML = r"""<!doctype html>
       </section>
     </section>
   </main>
-    <script>
+  <script>
     let busy = false;
     let miners = [];
     let minerResults = {};
     let minerDefaultsLoaded = false;
-    let actionToken = "";
     let earningsLoaded = false;
     let lastEarningsData = null;
     let globalLoaded = false;
     let lastGlobalData = null;
     const defaultServiceOrder = ["pool-db", "bdag-miner-node-1", "bdag-miner-node-2", "rpc-failover", "asic-pool"];
     function text(id, value) { document.getElementById(id).textContent = value ?? ""; }
-    function currentActionToken() {
-      const input = document.getElementById("token");
-      return (input && input.value ? input.value : actionToken || "").trim();
+    function currentTheme() {
+      return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
     }
-    async function hydrateActionToken() {
-      try {
-        const response = await fetch("/api/action-token", {cache: "no-store"});
-        if (!response.ok) return;
-        const payload = await response.json();
-        actionToken = payload.token || "";
-        const input = document.getElementById("token");
-        if (input && actionToken && !input.value) {
-          input.value = actionToken;
-          input.placeholder = "Action token loaded";
-        }
-      } catch (error) {
-        // Remote dashboards still require manual token entry.
+    function setTheme(theme) {
+      const normalized = theme === "dark" ? "dark" : "light";
+      document.documentElement.dataset.theme = normalized;
+      localStorage.setItem("bdag-dashboard-theme", normalized);
+      const button = document.getElementById("themeToggle");
+      if (button) {
+        button.textContent = normalized === "dark" ? "Light" : "Dark";
+        button.setAttribute("aria-pressed", normalized === "dark" ? "true" : "false");
       }
+    }
+    function toggleTheme() {
+      setTheme(currentTheme() === "dark" ? "light" : "dark");
     }
     function fmt(value) { return value === null || value === undefined ? "n/a" : value.toLocaleString ? value.toLocaleString() : value; }
     function hasValue(value) { return value !== null && value !== undefined && value !== ""; }
@@ -1200,23 +1502,6 @@ HTML = r"""<!doctype html>
       }
       return parts.join(" ");
     }
-    function sourceHealthStatusText(data) {
-      const poolHealth = data.pool_health || {};
-      const metrics = data.pool_metrics || {};
-      const jobHealth = poolHealth.source_job_health || metrics.source_job_health || {};
-      const selected = poolHealth.selected_backend_source_health || metrics.selected_backend_source_health || {};
-      const parts = [];
-      if (hasValue(jobHealth.ok)) parts.push(`job_health=${metricEnabled(jobHealth.ok) ? "ok" : "degraded"}`);
-      const sourceFlags = [];
-      if (hasValue(selected.node_mineable)) sourceFlags.push(`mineable=${metricEnabled(selected.node_mineable) ? "yes" : "no"}`);
-      if (hasValue(selected.node_submit_ready)) sourceFlags.push(`submit=${metricEnabled(selected.node_submit_ready) ? "ready" : "not-ready"}`);
-      if (hasValue(selected.node_p2p_mining_fresh)) sourceFlags.push(`p2p=${metricEnabled(selected.node_p2p_mining_fresh) ? "fresh" : "stale"}`);
-      if (hasValue(selected.node_template_age_seconds)) sourceFlags.push(`node_template_age=${fmt(selected.node_template_age_seconds)}s`);
-      if (sourceFlags.length) parts.push(`source_health=${sourceFlags.join("/")}`);
-      if (poolHealth.source_selected_backend_hard_degraded) parts.push("source_fault=hard");
-      else if (poolHealth.source_health_transient_degraded) parts.push("source_fault=advisory");
-      return parts.join(" ");
-    }
     function statusClass(overall) { return overall === "ok" ? "ok" : overall === "syncing" ? "syncing" : "down"; }
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
@@ -1227,13 +1512,7 @@ HTML = r"""<!doctype html>
     function escapeShortEth(value) {
       return escapeHtml(shortEth(value));
     }
-    const globalPoolNames = {
-      "0x05518e03e148c56e426ff9e1cbdb962b4fc5250a": "Jeremy",
-      "0x12d8377d571cebf2da043fbcad94f4bd85157a78": "Steve Offer",
-      "0xcd6dd02c7d07326ecec0b718eed505c2b8009a7a": "Eddie",
-      "0xc65d43d4e246ba786d6441d571265cc83103d5d6": "Pieter",
-      "0x6387c32ccdd60bfba00ec70a67715dcd52e8083f": "Dawie",
-    };
+    const globalPoolNames = {};
     function globalPoolName(address) {
       return globalPoolNames[String(address || "").toLowerCase()] || "";
     }
@@ -1241,6 +1520,11 @@ HTML = r"""<!doctype html>
       const address = row?.address || row?.address_short || "";
       const name = row?.pool_name || globalPoolName(address);
       return name ? `${name} (${shortEth(address)})` : shortEth(address);
+    }
+    function globalNodesLabel(row) {
+      const name = row?.pool_name || globalPoolName(row?.address);
+      if (name) return name;
+      return (row?.rpc_sources || []).join(", ");
     }
     function showTab(name) {
       for (const page of document.querySelectorAll(".tab-page")) page.classList.add("hidden");
@@ -1269,7 +1553,7 @@ HTML = r"""<!doctype html>
       text("statusReason", data.overall === "ok" ? "" : (data.status_reason || "Reason unavailable."));
       document.getElementById("overall").className = "kpi-value " + statusClass(data.overall);
       const nodeNames = data.node_services || Object.keys(data.nodes || {});
-      renderSyncProgress(data.sync_progress || {});
+      renderSyncProgress(data.sync_progress || {}, data);
       renderNodeCards(nodeNames, data.nodes || {}, data.sync_progress || {}, data);
       text("poolEndpoint", data.pool_endpoint || `127.0.0.1:${data.pool_port || "3334"}`);
       hydrateMinerDefaults(data);
@@ -1302,7 +1586,6 @@ HTML = r"""<!doctype html>
           : "submit_recovery=idle");
       const selectedBackend = poolHealth.selected_backend || data.pool_metrics?.selected_backend || "unknown";
       const templateBackendStatus = templateBackendStatusText(data);
-      const sourceHealthStatus = sourceHealthStatusText(data);
       text(
         "poolSummary",
         `endpoint=${data.pool_endpoint || "unknown"} local_ips=${(data.local_ips || []).join(", ") || "none"} `
@@ -1311,8 +1594,7 @@ HTML = r"""<!doctype html>
         + `stale_jobs=${fmt(poolHealth.stale_job_candidate_count)} submit_errors=${fmt(poolHealth.block_submit_error_count)} `
         + `duplicate_blocks=${fmt(poolHealth.duplicate_block_count)} `
         + `last_valid_share_age=${fmt(poolHealth.last_valid_share_age_seconds)}s share_stall=${poolHealth.share_stall ? "yes" : "no"} `
-        + `selected_backend=${selectedBackend}${templateBackendStatus ? ` ${templateBackendStatus}` : ""}`
-        + `${sourceHealthStatus ? ` ${sourceHealthStatus}` : ""} ${submitRecovery}`
+        + `selected_backend=${selectedBackend}${templateBackendStatus ? ` ${templateBackendStatus}` : ""} ${submitRecovery}`
       );
       text("poolLog", (data.pool.tail || []).join("\n"));
       text("actionLog", data.latest_action ? JSON.stringify(data.latest_action, null, 2) : "No action has run yet.");
@@ -1323,7 +1605,11 @@ HTML = r"""<!doctype html>
       const hasPercent = Number.isFinite(percentValue);
       const bounded = hasPercent ? Math.max(0, Math.min(100, percentValue)) : 0;
       if (progress.status === "synced") return `${bounded.toFixed(2)}% synced`;
-      return hasPercent ? `${bounded.toFixed(2)}% ${progress.status || ""}` : `sync ${progress.status || "unknown"}`;
+      const remaining = Number(progress.remaining_blocks);
+      const displayPercent = progress.status === "syncing" && Number.isFinite(remaining) && remaining > 0 && bounded >= 100
+        ? 99.99
+        : bounded;
+      return hasPercent ? `${displayPercent.toFixed(2)}% ${progress.status || ""}` : `sync ${progress.status || "unknown"}`;
     }
     function syncGapText(progress) {
       if (progress.status === "synced") return "gap 0 blocks";
@@ -1333,15 +1619,86 @@ HTML = r"""<!doctype html>
       }
       return progress.error || "sync progress unavailable";
     }
+    function durationText(seconds) {
+      const value = Number(seconds);
+      if (!Number.isFinite(value) || value < 0) return "estimating";
+      if (value < 60) return "<1m";
+      const minutes = Math.round(value / 60);
+      if (minutes < 60) return `${minutes}m`;
+      const hours = Math.floor(minutes / 60);
+      const mins = minutes % 60;
+      if (hours < 24) return mins ? `${hours}h ${mins}m` : `${hours}h`;
+      const days = Math.floor(hours / 24);
+      const remHours = hours % 24;
+      return remHours ? `${days}d ${remHours}h` : `${days}d`;
+    }
+    function etaText(seconds, at) {
+      const parsed = Number(seconds);
+      if (!Number.isFinite(parsed) || parsed <= 0) return "estimating after the next progress sample";
+      return `about ${durationText(parsed)}${at ? `, around ${formatDisplayTime(at)}` : ""}`;
+    }
+    function syncRateText(estimate) {
+      const rate = Number(estimate?.rate_blocks_per_second);
+      if (!Number.isFinite(rate) || rate <= 0) return "estimating from the next sample";
+      const source = estimate.rate_source ? ` (${estimate.rate_source})` : "";
+      return `${rate.toFixed(rate >= 10 ? 1 : 2)} blocks/s${source}`;
+    }
+    function renderSyncEstimate(data, progress) {
+      const estimate = data.sync_estimate || {};
+      const leader = estimate.leader || data.sync_health?.planned_pause_leader || "";
+      const leaderNode = estimate.nodes?.[leader] || {};
+      const remaining = firstPresent(leaderNode.remaining_blocks, estimate.remaining_blocks, progress.remaining_blocks);
+      const current = firstPresent(leaderNode.current_block, progress.current_block);
+      const highest = firstPresent(leaderNode.highest_block, progress.highest_block);
+      const threshold = firstPresent(estimate.seed_threshold_blocks, data.sync_coordinator?.last_decision?.thresholds?.leader_near_tip_blocks, 5);
+      text("syncNarrative", estimate.narrative || (progress.status === "synced" ? "Managed nodes are synced." : "Managed nodes are syncing."));
+      text("syncMode", estimate.stage || progress.status || "unknown");
+      text(
+        "syncActiveNode",
+        leader
+          ? `${leader} ${fmt(current)} / ${fmt(highest)}; ${fmt(remaining)} block(s) remaining`
+          : `${fmt(current)} / ${fmt(highest)}; ${fmt(remaining)} block(s) remaining`
+      );
+      text("syncRate", syncRateText(estimate));
+      text("syncEta", etaText(estimate.eta_seconds, estimate.eta_at));
+      if (estimate.mode === "leader_catchup" && estimate.paused_follower) {
+        text(
+          "syncNextStep",
+          `copy ${leader || "leader"} data to ${estimate.paused_follower} when remaining is <= ${fmt(threshold)} block(s); seed ETA ${etaText(estimate.eta_to_seed_seconds, estimate.eta_to_seed_at)}`
+        );
+      } else if (progress.status === "synced") {
+        text("syncNextStep", "pool can mine normally once backend template checks are healthy");
+      } else {
+        text("syncNextStep", "wait for nodes to finish syncing; the pool is holding mining jobs until backend sync is complete");
+      }
+    }
     function renderNodeSyncProgress(id, name, progress) {
       const nodeContainer = document.getElementById(id);
       nodeContainer.innerHTML = "";
       if (!name || !progress) return;
       nodeContainer.innerHTML = nodeSyncProgressHtml(name, progress);
     }
-    function nodeSyncProgressHtml(name, progress) {
+    function nodeSyncProgressHtml(name, progress, data = {}, node = {}) {
+      const estimate = data.sync_estimate || {};
+      if (node?.planned_sync_pause) {
+        const leader = node.sync_pause_leader || estimate.leader || "leader";
+        const leaderEstimate = estimate.nodes?.[leader] || {};
+        const seedThreshold = firstPresent(estimate.seed_threshold_blocks, 5);
+        return `
+          <div class="sync-paused-note">Paused by sync coordinator while ${escapeHtml(leader)} catches up.</div>
+          <div class="sync-progress-meta">
+            <span>copy from ${escapeHtml(leader)} after sync</span>
+            <span>seed at <= ${escapeHtml(fmt(seedThreshold))} remaining block(s)</span>
+          </div>
+          <div class="sync-progress-meta">
+            <span>${escapeHtml(etaText(leaderEstimate.eta_to_seed_seconds, leaderEstimate.eta_to_seed_at))}</span>
+          </div>`;
+      }
       const nodePercent = Number(progress.percent);
       const nodeBounded = Number.isFinite(nodePercent) ? Math.max(0, Math.min(100, nodePercent)) : 0;
+      const nodeEstimate = estimate.nodes?.[name] || {};
+      const eta = nodeEstimate.eta_seconds ? ` | ETA ${etaText(nodeEstimate.eta_seconds, nodeEstimate.eta_at)}` : "";
+      const rate = nodeEstimate.rate_blocks_per_second ? ` | ${syncRateText(nodeEstimate)}` : "";
       return `
         <div class="sync-progress-bar" title="${escapeHtml(name)} EVM sync progress">
           <div class="sync-progress-fill" style="width: ${nodeBounded}%"></div>
@@ -1349,9 +1706,12 @@ HTML = r"""<!doctype html>
         <div class="sync-progress-meta">
           <span>${escapeHtml(syncProgressText(progress))}</span>
           <span>${escapeHtml(syncGapText(progress))}</span>
+        </div>
+        <div class="sync-progress-meta">
+          <span>${escapeHtml(`${eta}${rate}`.replace(/^ \\| /, ""))}</span>
         </div>`;
     }
-    function renderSyncProgress(progress) {
+    function renderSyncProgress(progress, data = {}) {
       const fill = document.getElementById("syncProgressFill");
       const percentValue = Number(progress.percent);
       const hasPercent = Number.isFinite(percentValue);
@@ -1359,10 +1719,16 @@ HTML = r"""<!doctype html>
       fill.style.width = `${bounded}%`;
       text("syncProgressPercent", syncProgressText(progress));
       text("syncProgressGap", syncGapText(progress));
+      renderSyncEstimate(data, progress);
     }
     function nodeSummaryText(node) {
       if (!node) return "node data unavailable";
-      return `child=${node.child_running} best_main_order=${fmt(node.best_main_order)} import_age=${fmt(node.last_import_age_seconds)}s peer_ahead=${fmt(node.peer_ahead_blocks)} bad_peers=${fmt(node.invalid_peer_errors)} p2p_resets=${fmt(node.p2p_stream_errors)}`;
+      const chain = hasValue(node.chain_block_count) ? ` chain_blocks=${fmt(node.chain_block_count)} source=${node.chain_rpc_source || "getBlockCount"}` : " chain_blocks=n/a";
+      return `child=${node.child_running}${chain} main_height=${fmt(node.chain_main_height)} best_main_order=${fmt(node.best_main_order)} import_age=${fmt(node.last_import_age_seconds)}s peer_ahead=${fmt(node.peer_ahead_blocks)} bad_peers=${fmt(node.invalid_peer_errors)} p2p_resets=${fmt(node.p2p_stream_errors)}`;
+    }
+    function nodeBlockHeight(name, node, syncNode, data) {
+      if (node?.planned_sync_pause && !hasValue(node?.chain_block_count) && !hasValue(syncNode?.chain_block_count)) return "paused";
+      return firstPresent(syncNode?.chain_block_count, node?.chain_block_count, null);
     }
     function renderNodeCards(nodeNames, nodes, syncProgress, data) {
       const container = document.getElementById("nodeCards");
@@ -1393,26 +1759,26 @@ HTML = r"""<!doctype html>
         const backend = backendInfoForNode(name, backendState) || {};
         const fanRole = backend.fan_in_role || (backend.selected ? "selected" : "");
         const roleHtml = `<span class="node-role">${escapeHtml(roleValue)}</span>`
+          + (node?.planned_sync_pause ? `<span class="node-role">paused</span>` : "")
           + (fanRole ? `<span class="node-role">${escapeHtml(fanRole)}</span>` : "");
         const wsText = hasValue(backend.ws_connected) ? ` ws=${metricEnabled(backend.ws_connected) ? "on" : "off"}` : "";
         const templateAge = hasValue(backend.template_age_seconds) ? ` template_age=${fmt(backend.template_age_seconds)}s` : "";
-        const sourceParts = [];
-        if (hasValue(backend.node_mineable)) sourceParts.push(`mineable=${metricEnabled(backend.node_mineable) ? "yes" : "no"}`);
-        if (hasValue(backend.node_submit_ready)) sourceParts.push(`submit=${metricEnabled(backend.node_submit_ready) ? "ready" : "not-ready"}`);
-        if (hasValue(backend.node_p2p_mining_fresh)) sourceParts.push(`p2p=${metricEnabled(backend.node_p2p_mining_fresh) ? "fresh" : "stale"}`);
-        if (hasValue(backend.node_template_age_seconds)) sourceParts.push(`node_template_age=${fmt(backend.node_template_age_seconds)}s`);
-        const sourceText = sourceParts.length ? ` source=${sourceParts.join(" ")}` : "";
         const syncNode = syncNodes[name] || {};
         const syncHtml = isObserver && !hasValue(syncNode.status)
           ? `<div class="subtle">Advisory observer; not included in production sync health.</div>`
-          : nodeSyncProgressHtml(name, syncNode);
+          : nodeSyncProgressHtml(name, syncNode, data, node);
+        const blockHeight = nodeBlockHeight(name, node, syncNode, data);
+        const blockHeightText = hasValue(blockHeight) ? fmt(blockHeight) : "chain RPC unavailable";
         const div = document.createElement("div");
         div.className = `node-card${isObserver ? " observer" : ""}`;
         div.innerHTML = `
-          <div class="kpi-label">${escapeHtml(name)} Sync${roleHtml}</div>
-          <div class="kpi-value">${escapeHtml(fmt(node.latest_block))}</div>
+          <div class="node-card-head">
+            <div class="kpi-label node-card-title">${escapeHtml(name)} Sync</div>
+            <div class="node-badges">${roleHtml}</div>
+          </div>
+          <div class="kpi-value">${escapeHtml(blockHeightText)}</div>
           <div class="sync-progress sync-progress-node">${syncHtml}</div>
-          <div class="subtle">${escapeHtml(healthScope)} scope | ${escapeHtml(nodeSummaryText(node))}${escapeHtml(templateAge + wsText + sourceText)}</div>`;
+          <div class="subtle">${escapeHtml(healthScope)} scope | ${escapeHtml(nodeSummaryText(node))}${escapeHtml(templateAge + wsText)}</div>`;
           group.appendChild(div);
         }
         container.appendChild(group);
@@ -1463,22 +1829,14 @@ HTML = r"""<!doctype html>
       for (const miner of miners) {
         const result = minerResults[miner.ip];
         const pool = miner.current_pool || {};
-        const desiredPoolUrl = document.getElementById("minerPoolUrl").value.trim();
-        const desiredWorker = document.getElementById("minerWorkerUser").value.trim();
-        const configuredHere = (miner.pools || []).some(candidate =>
-          String(candidate.url || "") === desiredPoolUrl
-          && (!desiredWorker || String(candidate.user || "").toLowerCase() === desiredWorker.toLowerCase())
-        );
-        const activeHere = configuredHere && String(pool.url || "") === desiredPoolUrl;
-        const poolStatus = pool.url ? `${escapeHtml(pool.url || "")}<br><span class="subtle">${escapeShortEth(pool.user || "")}</span>` : `<span class="warn">${escapeHtml(miner.pool_probe_error || "no pool configured")}</span>`;
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td class="checkbox-cell"><input type="checkbox" class="miner-select" value="${escapeHtml(miner.ip)}" checked></td>
           <td>${escapeHtml(minerShortIp(miner) || "")}</td>
           <td>${escapeHtml(miner.model || miner.hardware || "unknown")}</td>
           <td>${escapeHtml(miner.firmware || miner.mcbversion || "")}</td>
-          <td>${poolStatus}</td>
-          <td class="${activeHere ? "ok" : configuredHere ? "warn" : "down"}">${activeHere ? "yes" : configuredHere ? "configured, inactive" : "not this pool"}</td>
+          <td>${escapeHtml(pool.url || "")}<br><span class="subtle">${escapeShortEth(pool.user || "")}</span></td>
+          <td>${miner.active ? "yes" : "no"}</td>
           <td>${result ? escapeHtml(result.status + (result.error ? ": " + result.error : "")) : ""}</td>
         `;
         tbody.appendChild(tr);
@@ -1539,7 +1897,7 @@ HTML = r"""<!doctype html>
         const response = await fetch("/api/miners/scan", {
           method: "POST",
           headers: {"content-type": "application/json"},
-          body: JSON.stringify({target: document.getElementById("minerScanTarget").value, token: currentActionToken()})
+          body: JSON.stringify({target: document.getElementById("minerScanTarget").value, token: document.getElementById("token").value})
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "scan failed");
@@ -1579,7 +1937,7 @@ HTML = r"""<!doctype html>
             pool_url: poolUrl,
             worker_user: workerUser,
             pool_password: poolPassword,
-            token: currentActionToken()
+            token: document.getElementById("token").value
           })
         });
         const payload = await response.json();
@@ -1604,7 +1962,7 @@ HTML = r"""<!doctype html>
         const response = await fetch("/api/miners/save-auth", {
           method: "POST",
           headers: {"content-type": "application/json"},
-          body: JSON.stringify({admin_password: adminPassword, token: currentActionToken()})
+          body: JSON.stringify({admin_password: adminPassword, token: document.getElementById("token").value})
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "save failed");
@@ -2582,7 +2940,9 @@ HTML = r"""<!doctype html>
       lastEarningsData = data;
       const totals = data.credits?.totals || {};
       const hourly = data.hourly_averages || {};
-      const walletBdag = data.wallet_balance?.total_bdag || data.credit_balance_check?.actual_wallet_bdag || hourly.wallet_bdag || "0";
+      const paymentWallet = data.payment_wallet_balance || data.wallet_balance || {};
+      const creditWallet = data.credit_wallet_balance || data.wallet?.aggregate || null;
+      const walletBdag = hasValue(paymentWallet.total_bdag) ? paymentWallet.total_bdag : (data.credit_balance_check?.actual_wallet_bdag || "n/a");
       const avgIncomeHour = hourly.wallet_24h_avg_bdag_hour || hourly.recent_bdag_hour || hourly.tracked_avg_bdag_hour || hourly.wallet_tracked_avg_bdag_hour || hourly.wallet_avg_bdag_hour_since_pool_start || "n/a";
       const walletAvgHour = hourly.wallet_24h_avg_bdag_hour || "n/a";
       const priceOk = data.price?.status === "ok" && data.price?.source === "exchange-average";
@@ -2618,11 +2978,11 @@ HTML = r"""<!doctype html>
 
       const walletBody = document.getElementById("walletSourcesTable");
       walletBody.innerHTML = "";
-      if (data.wallet_balance) {
-        const aggregate = data.wallet_balance;
+      if (paymentWallet) {
+        const aggregate = paymentWallet;
         const cls = aggregate.status === "ok" ? "ok" : aggregate.status === "partial" ? "warn" : "down";
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td>Wallets total</td><td class="${cls}">${escapeHtml(aggregate.status || "")}</td><td class="right">${escapeHtml(aggregate.total_bdag || "")}</td><td>${escapeHtml(`${aggregate.ok_address_count || 0}/${aggregate.address_count || 0} wallet addresses, ${aggregate.source_truth || "on-chain"}`)}</td>`;
+        tr.innerHTML = `<td>Payment wallet</td><td class="${cls}">${escapeHtml(aggregate.status || "")}</td><td class="right">${escapeHtml(aggregate.total_bdag || "")}</td><td>${escapeHtml(`${aggregate.ok_address_count || 0}/${aggregate.address_count || 0} wallet addresses, ${aggregate.source_truth || "on-chain"}`)}</td>`;
         walletBody.appendChild(tr);
         for (const balance of aggregate.addresses || []) {
           const rowCls = balance.status === "ok" ? "ok" : "warn";
@@ -2631,6 +2991,12 @@ HTML = r"""<!doctype html>
           row.innerHTML = `<td title="${escapeHtml(balance.address)}">${escapeHtml(balance.address_short || shortEth(balance.address))}</td><td class="${rowCls}">${escapeHtml(balance.status || "")}</td><td class="right">${escapeHtml(balance.bdag || "")}</td><td>${escapeHtml(detail)}</td>`;
           walletBody.appendChild(row);
         }
+      }
+      if (creditWallet && Number(creditWallet.address_count || 0) > Number(paymentWallet.address_count || 0)) {
+        const cls = creditWallet.status === "ok" ? "ok" : creditWallet.status === "partial" ? "warn" : "down";
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>Credit addresses total</td><td class="${cls}">${escapeHtml(creditWallet.status || "")}</td><td class="right">${escapeHtml(creditWallet.total_bdag || "")}</td><td>${escapeHtml(`${creditWallet.ok_address_count || 0}/${creditWallet.address_count || 0} historical credit addresses`)}</td>`;
+        walletBody.appendChild(tr);
       }
       for (const source of data.wallet?.sources || []) {
         const cls = source.status === "ok" ? "ok" : "warn";
@@ -2661,7 +3027,7 @@ HTML = r"""<!doctype html>
       drawMinerWorkChart(data);
       renderSamplerAlert("earningsSamplerAlert", data);
       renderSamplerAlert("minerWorkSamplerAlert", data);
-      text("priceFeedOutput", JSON.stringify({price: data.price, earnings_24h: data.earnings_24h, onchain_earnings: data.onchain_earnings, wallet_balance: data.wallet_balance, hourly_averages: data.hourly_averages, credit_balance_check: data.credit_balance_check}, null, 2));
+      text("priceFeedOutput", JSON.stringify({price: data.price, earnings_24h: data.earnings_24h, onchain_earnings: data.onchain_earnings, payment_wallet_balance: data.payment_wallet_balance, credit_wallet_balance: data.credit_wallet_balance, wallet_balance: data.wallet_balance, hourly_averages: data.hourly_averages, credit_balance_check: data.credit_balance_check}, null, 2));
       text("earningsHistoryOutput", JSON.stringify({snapshot_log: data.snapshot_log, recent: (data.history || []).slice(-24)}, null, 2));
     }
     function renderGlobal(data) {
@@ -2686,7 +3052,7 @@ HTML = r"""<!doctype html>
       body.innerHTML = "";
       for (const row of data.clusters || []) {
         const tr = document.createElement("tr");
-        const nodes = (row.rpc_sources || []).join(", ");
+        const nodes = globalNodesLabel(row);
         const share = row.share_percent ? `${escapeHtml(row.share_percent)}%` : "n/a";
         const poolName = row.pool_name || globalPoolName(row.address);
         const poolAddress = row.address || row.address_short || "";
@@ -2712,7 +3078,7 @@ HTML = r"""<!doctype html>
         const response = await fetch("/api/action", {
           method: "POST",
           headers: {"content-type": "application/json"},
-          body: JSON.stringify({action: name, token: currentActionToken()})
+          body: JSON.stringify({action: name, token: document.getElementById("token").value})
         });
         const payload = await response.json();
         if (!response.ok) alert(payload.error || "Action failed");
@@ -2724,7 +3090,7 @@ HTML = r"""<!doctype html>
         for (const btn of document.querySelectorAll("button")) btn.disabled = false;
       }
     }
-    hydrateActionToken();
+    setTheme(currentTheme());
     refresh();
     setInterval(refresh, 90000);
     setInterval(() => {
@@ -2804,12 +3170,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/token-required":
             self.send_json({"required": token_required(), "token_file": str(RUNTIME_DIR / "dashboard-token.txt")})
-            return
-        if path == "/api/action-token":
-            if not token_required() or is_local_client(self):
-                self.send_json({"required": token_required(), "token": get_action_token()})
-            else:
-                self.send_json({"required": token_required(), "error": "action token is not exposed to remote clients"}, status=HTTPStatus.FORBIDDEN)
             return
         if path == "/api/miners/defaults":
             self.send_json(default_miner_pool_settings())

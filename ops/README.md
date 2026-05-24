@@ -125,7 +125,7 @@ The watchdog performs a staged repair:
 
 Clean restore stops the stack, moves existing `data/node1` and `data/node2` to timestamped backups, restores the newest snapshot from `data-restore/`, and starts the stack.
 
-Boot-time recovery is handled by `bdag-boot-repair.service`, which waits for Docker and checks the dirty-shutdown marker before the watchdog loop starts. The automatic clean restore is disabled by default, so a normal power loss preserves current node data and starts or restarts services first. Enable destructive clean restore only after verifying current chain data and snapshots are safe.
+Boot-time recovery is handled by `bdag-boot-repair.service`, which waits for Docker, checks the dirty-shutdown marker, and preserves existing chain data by default. A dirty marker now triggers a conservative start/restart path; automatic clean restore is disabled unless `BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE=1` is set explicitly.
 
 ## P2P Guard
 
@@ -177,58 +177,57 @@ Installed unit files:
 ```text
 ~/.config/systemd/user/bdag-boot-repair.service
 ~/.config/systemd/user/bdag-dashboard.service
-~/.config/systemd/user/bdag-fastsnap-seed.service
-~/.config/systemd/user/bdag-fastsnap-seed.timer
+~/.config/systemd/user/bdag-stack-sentinel.service
+~/.config/systemd/user/bdag-stack-sentinel.timer
 ~/.config/systemd/user/bdag-p2p-guard.service
 ~/.config/systemd/user/bdag-watchdog.service
+~/.config/systemd/user/bdag-sync-coordinator.timer
+~/.config/systemd/user/bdag-chain-restore-guard.timer
+~/.config/systemd/user/bdag-chain-presync.timer
+~/.config/systemd/user/bdag-hourly-snapshot.timer
+~/.config/systemd/user/bdag-local-peers.timer
 ```
 
-Install or update them:
+Service templates are in:
+
+```text
+ops/systemd/user-bdag-boot-repair.service
+ops/systemd/user-bdag-dashboard.service
+ops/systemd/user-bdag-watchdog.service
+```
+
+Install or update them with the generated, path-correct units:
 
 ```bash
 ./ops/install-dashboard.sh
 ```
 
-The release P2P installer also installs the default public FastSnap seed timer:
-
-```bash
-./ops/install-p2p-services.sh
-systemctl --user status bdag-fastsnap-seed.timer
-```
-
-`bdag-fastsnap-seed.timer` runs every two hours at low CPU and I/O priority. It
-uses the pool router maintenance-drain API to stop only the non-selected backend,
-exports and verifies `snapshot.bdsnap`, and hardlinks one archive into both node
-datadirs so this host can serve FastSnap to other blockchain peers without
-duplicating node databases. Disable installation on constrained hosts with
-`BDAG_FASTSNAP_SEED_TIMER_ENABLED=0`.
-
 Enable lingering so user services can start at boot without an active login:
 
 ```bash
-loginctl enable-linger "$USER"
+loginctl enable-linger jeremy
 ```
 
 Check status:
 
 ```bash
-systemctl --user status bdag-boot-repair.service bdag-dashboard.service bdag-watchdog.service
+systemctl --user status bdag-boot-repair.service bdag-dashboard.service bdag-watchdog.service bdag-stack-sentinel.timer
 ```
 
 View logs:
 
 ```bash
-journalctl --user -u bdag-boot-repair.service -u bdag-dashboard.service -u bdag-watchdog.service -f
+journalctl --user -u bdag-boot-repair.service -u bdag-dashboard.service -u bdag-watchdog.service -u bdag-stack-sentinel.service -f
 ```
 
-The watchdog writes `ops/runtime/dirty-shutdown.marker` while it is running and clears it on a clean stop. If the host loses power, the marker remains and the boot-repair unit records that state, then starts or restarts the stack without replacing current chain data unless automatic clean restore has been explicitly enabled.
+The watchdog writes `ops/runtime/dirty-shutdown.marker` while it is running and clears it on a clean stop. If the host loses power, the marker remains; the boot-repair unit preserves current node data, starts the stack, and keeps any sync-coordinator paused follower stopped so one node can continue catching up. Do not enable automatic clean restore unless the current snapshots are known safe and replacing live chain data is explicitly intended.
 
 ## Remote Access
 
 The dashboard binds to `127.0.0.1` by default. For remote viewing, use SSH forwarding:
 
 ```bash
-ssh -L 8088:127.0.0.1:8088 user@POOL_HOST
+ssh -L 8088:127.0.0.1:8088 jeremy@POOL_HOST
 ```
 
 Then open `http://127.0.0.1:8088` on your local computer.
