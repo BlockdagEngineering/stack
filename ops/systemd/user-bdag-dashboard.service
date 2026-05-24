@@ -1,0 +1,23 @@
+[Unit]
+Description=BlockDAG pool operations dashboard
+After=bdag-boot-repair.service default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/jeremy/blockdag-asic-pool
+Environment=BDAG_DASHBOARD_BIND=127.0.0.1
+Environment=BDAG_DASHBOARD_PORT=8088
+Environment=BDAG_POOL_ACTIVITY_LOG_LINES=1200
+EnvironmentFile=-/home/jeremy/blockdag-asic-pool/ops/runtime/ops.env
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=50
+IOWeight=50
+ExecStartPre=/bin/sh -c 'i=0; while [ "$i" -lt 60 ]; do docker info >/dev/null 2>&1 && exit 0; i=$((i+1)); sleep 5; done; exit 1'
+ExecStart=/usr/bin/python3 /home/jeremy/blockdag-asic-pool/ops/dashboard.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

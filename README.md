@@ -52,6 +52,26 @@ dials dominate startup.
 another private range, either put those complete multiaddrs in
 `BDAG_FASTSYNC_LAN_PEERS` or extend the prefix list in `.env`.
 
+## Pi5 Release Candidate Stability Defaults
+
+The Pi5 ARM64 release builder (`ops/build-pi5-arm64-release.sh`) now generates a
+self-monitoring stack package. It defaults to `BDAG_NODE_MODE=single`, which
+runs `bdag-miner-node-2` only to reduce USB power pressure. Choose `double` in
+the installer, or set `BDAG_NODE_MODE=double` with `COMPOSE_PROFILES=dual-node`,
+to add `bdag-miner-node-1`.
+
+No-miner deployments are sync-only by default: `BDAG_ENABLE_NODE_MINING=0`,
+`BDAG_NODE_MODULES=Blockdag`, and an empty `BDAG_NODE_MINING_ARGS`. Enable node
+mining/template flags only when real miners are attached. The dashboard,
+watchdog, stack sentinel, P2P guard, peer refresh, chain restore guard, and
+snapshot timers are installed by `ops/install-dashboard.sh` unless explicitly
+disabled.
+
+Dashboard block height is sourced from chain RPC `getBlockCount`; template
+height, logs, fan-in metrics, and main-order values are shown only as
+diagnostics. Keep `scripts/validate-pi5-restart-hardening.sh` in the release
+gate before cutting an RC.
+
 ## Quick start
 
 ```bash

@@ -97,3 +97,20 @@ scripts/validate-pi5-restart-hardening.sh /path/to/unpacked/release
 
 The script fails if the bundle still has the brittle dirty-shutdown clean
 restore behavior or if the sync coordinator can seed from a stale leader.
+
+## Release Candidate Self-Healing Defaults
+
+The next Pi5 release candidate must also preserve these defaults:
+
+- `BDAG_NODE_MODE=single` unless the installer/operator chooses double-node mode.
+- `COMPOSE_PROFILES=dual-node` only for double-node mode.
+- `BDAG_ENABLE_NODE_MINING=0`, `BDAG_NODE_MODULES=Blockdag`, and empty
+  `BDAG_NODE_MINING_ARGS` until actual miners are present.
+- `BDAG_FASTSYNC_PREPROCESS_WORKERS=1` on Pi catch-up hosts until the node-side
+  parallel FastSync preprocessor fault is fixed and soaked.
+- `bdag-stack-sentinel.timer` and the guard timers are installed by default.
+- Displayed dashboard block height comes only from chain RPC `getBlockCount`.
+
+These are release gates, not local preferences. Future changes should update
+the validation script in the same commit if they intentionally alter one of
+these invariants.

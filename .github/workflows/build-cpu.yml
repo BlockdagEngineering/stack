@@ -105,6 +105,7 @@ jobs:
           test -f .env.cpu.example
           docker compose --env-file .env.cpu.example --profile miner config > /tmp/compose.cpu-miner.yml
           grep -q '^  miner:' /tmp/compose.cpu-miner.yml || { echo "::error::Resolved compose must include miner service when profile miner is active"; exit 1; }
+          scripts/validate-pi5-restart-hardening.sh .
 
       - name: Create release tarball
         id: package
@@ -119,8 +120,9 @@ jobs:
           ROOT="${PACKAGE_NAME}-${VERSION}"
           rm -rf "${ROOT}"
           mkdir "${ROOT}"
-          cp docker-compose.yml dockerfile-cpu-release .env.cpu.example .env.pool.example node.conf.example  README.md SNAPSHOT-README.md checksums.txt "${ROOT}/"
-          cp -a sql netdata scripts bin docker "${ROOT}/"
+          cp docker-compose.yml dockerfile-cpu-release .env.cpu.example .env.pool.example node.conf.example README.md SNAPSHOT-README.md checksums.txt haproxy.cfg "${ROOT}/"
+          cp -a sql netdata scripts bin docker asic-pool tools "${ROOT}/"
+          rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
 
           tar -czf "${OUT}" "${ROOT}"
           rm -rf "${ROOT}"
@@ -141,4 +143,3 @@ jobs:
           files: ${{ steps.package.outputs.artifact }}
           draft: false
           prerelease: false
-

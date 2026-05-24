@@ -24,6 +24,20 @@ prefer `BDAG_FASTSYNC_PREPROCESS_WORKERS=1` on Pi catch-up hosts. The parallel
 preprocessor has previously panicked in `processFastBlockRange`; uptime and
 steady catch-up beat the small parallel precheck speedup.
 
+## Self-Healing Release Invariants
+
+The Pi5 release candidate must install `bdag-stack-sentinel.timer` and the
+dashboard/watchdog/peer/chain guards by default. A stopped `pool-db`,
+`rpc-failover`, or `asic-pool` container is a stack failure even when there are
+no miners. No-miner mode means no mining work is sent; it does not mean services
+are allowed to stay down.
+
+Dashboard block height must come from the node chain RPC `getBlockCount` only.
+`getMainChainHeight`, template height, log imports, fan-in metrics, and peer
+lead values are diagnostics and must not be displayed as the node block count.
+Keep `scripts/validate-pi5-restart-hardening.sh` enforcing this so future drift
+cannot reintroduce mixed height sources.
+
 ## FastSync Candidate Ordering
 
 New nodes must prefer nearby FastSync candidates before public internet seeds.

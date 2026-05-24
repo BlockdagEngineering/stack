@@ -32,7 +32,15 @@ need_file "ops/sync_coordinator.py"
 need_file "ops/latest_chain_candidate.py"
 need_file "ops/update-local-peers.py"
 need_file "ops/install-dashboard.sh"
+need_file "ops/stack_sentinel.py"
+need_file "ops/node_child_guard.py"
+need_file "ops/pool_ops.py"
+need_file "ops/dashboard.py"
+need_file "ops/build-pi5-arm64-release.sh"
+need_file "ops/release-install.sh"
 need_file "ops/README.md"
+need_file "haproxy.cfg"
+need_file "asic-pool/schema.sql"
 
 need_grep 'BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE.*False' "ops/watchdog.py"
 need_grep 'BDAG_BOOT_REPAIR_DIRTY_POLICY.*start' "ops/watchdog.py"
@@ -63,5 +71,53 @@ need_grep 'paused_follower=' "ops/update-local-peers.py"
 
 need_grep 'automatic clean restore is disabled' "ops/README.md"
 need_grep 'preserves current node data' "ops/README.md"
+
+need_grep 'def node_chain_rpc_snapshot' "ops/pool_ops.py"
+need_grep 'getBlockCount' "ops/pool_ops.py"
+need_grep 'getMainChainHeight' "ops/pool_ops.py"
+need_grep 'chain_block_count' "ops/pool_ops.py"
+need_grep 'current_block_source": "getBlockCount"' "ops/pool_ops.py"
+need_grep 'nodeBlockHeight' "ops/dashboard.py"
+need_grep 'firstPresent\(syncNode\?\.chain_block_count, node\?\.chain_block_count, null\)' "ops/dashboard.py"
+
+need_grep 'BDAG_NODE_MODE=single' "ops/build-pi5-arm64-release.sh"
+need_grep 'COMPOSE_PROFILES dual-node' "ops/release-install.sh"
+need_grep 'profiles:' "ops/build-pi5-arm64-release.sh"
+need_grep 'dual-node' "ops/build-pi5-arm64-release.sh"
+need_grep 'BDAG_NODE_MINING_ARGS' "ops/build-pi5-arm64-release.sh"
+need_grep 'BDAG_ENABLE_NODE_MINING=0' "ops/build-pi5-arm64-release.sh"
+need_grep 'BDAG_FASTSYNC_PREPROCESS_WORKERS=1' "ops/build-pi5-arm64-release.sh"
+need_grep 'BDAG_FASTSYNC_LAN_PEERS' "ops/build-pi5-arm64-release.sh"
+need_grep 'private/VPN second, public last' "ops/build-pi5-arm64-release.sh"
+
+need_grep 'stack-sentinel.timer' "ops/install-dashboard.sh"
+need_grep 'stack_sentinel.py' "ops/install-dashboard.sh"
+need_grep 'chain_restore_guard.py' "ops/install-dashboard.sh"
+need_grep 'update-local-peers.py --apply' "ops/install-dashboard.sh"
+need_grep 'pool-db,bdag-miner-node-2,rpc-failover,asic-pool' "ops/install-dashboard.sh"
+
+need_grep 'server node2 bdag-miner-node-2:38131' "haproxy.cfg"
+need_grep 'server node1 bdag-miner-node-1:38131.*backup.*init-addr libc,none' "haproxy.cfg"
+
+python3 - "$root/ops/dashboard.py" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r"function nodeBlockHeight\(.*?\n    \}", text, re.S)
+if not match:
+    raise SystemExit("dashboard nodeBlockHeight function not found")
+body = match.group(0)
+for forbidden in ("template_probe_last_height", "latest_block", "best_main_order", "fan_in", "highest_block"):
+    if forbidden in body:
+        raise SystemExit(f"dashboard nodeBlockHeight still uses non-chain source: {forbidden}")
+if "chain_block_count" not in body:
+    raise SystemExit("dashboard nodeBlockHeight does not use chain_block_count")
+PY
+
+if [[ -e "$root/ops/runtime" || -n "$(find "$root/ops" -path '*/__pycache__*' -o -name '*.pyc' -print -quit)" ]]; then
+  fail "ops bundle contains runtime state or Python bytecode"
+fi
 
 printf 'restart hardening validation passed for %s\n' "$root"

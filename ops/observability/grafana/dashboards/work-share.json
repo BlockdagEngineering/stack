@@ -1,0 +1,786 @@
+{
+  "uid": "bdag-work-share",
+  "title": "BDAG Accepted Work Share",
+  "tags": [
+    "blockdag",
+    "mining",
+    "provisioned"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "time_options": [
+      "1h",
+      "6h",
+      "12h",
+      "24h",
+      "3d",
+      "7d",
+      "30d"
+    ]
+  },
+  "editable": false,
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "links": [
+    {
+      "title": "Operator Cockpit",
+      "url": "/d/bdag-operator-cockpit/bdag-operator-cockpit",
+      "targetBlank": false,
+      "type": "link"
+    },
+    {
+      "title": "Accepted Work Share",
+      "url": "/d/bdag-work-share/bdag-accepted-work-share",
+      "targetBlank": false,
+      "type": "link"
+    },
+    {
+      "title": "Miner Freshness",
+      "url": "/d/bdag-miner-freshness/bdag-miner-freshness",
+      "targetBlank": false,
+      "type": "link"
+    },
+    {
+      "title": "Observed Peer IPs",
+      "url": "/d/bdag-observed-peers/bdag-observed-peer-ips",
+      "targetBlank": false,
+      "type": "link"
+    },
+    {
+      "title": "Template Fan-In",
+      "url": "/d/bdag-template-fan-in/bdag-template-fan-in",
+      "targetBlank": false,
+      "type": "link"
+    },
+    {
+      "title": "Old Repair Dashboard",
+      "url": "http://127.0.0.1:8088",
+      "targetBlank": true,
+      "type": "link"
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Connected ASICs",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "bdag_miner_connected_count",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "red"
+              },
+              {
+                "value": 6,
+                "color": "orange"
+              },
+              {
+                "value": 7,
+                "color": "green"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Valid Share Age",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "bdag_pool_last_valid_share_age_seconds",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {},
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              },
+              {
+                "value": 60,
+                "color": "orange"
+              },
+              {
+                "value": 180,
+                "color": "red"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Recent Shares",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "bdag_pool_valid_shares_recent",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Recent Submits",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "bdag_pool_submits_recent",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Submit Errors",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "bdag_pool_block_submit_error_recent",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              },
+              {
+                "value": 1,
+                "color": "orange"
+              },
+              {
+                "value": 5,
+                "color": "red"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "USD / Hour",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "bdag_wallet_recent_usd_per_hour",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {},
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 7,
+      "type": "bargauge",
+      "title": "Accepted Work Share Now",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 11
+      },
+      "targets": [
+        {
+          "expr": "sort_desc(bdag_miner_work_percent)",
+          "legendFormat": "{{miner}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "minVizHeight": 18,
+        "minVizWidth": 0,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
+      }
+    },
+    {
+      "id": 8,
+      "type": "bargauge",
+      "title": "Income By Work Contributor",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 11
+      },
+      "targets": [
+        {
+          "expr": "sort_desc(bdag_miner_estimated_usd_per_hour)",
+          "legendFormat": "{{miner}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "minVizHeight": 18,
+        "minVizWidth": 0,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Accepted Work Share Over Time",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 24,
+        "h": 10
+      },
+      "maxDataPoints": 1200,
+      "targets": [
+        {
+          "expr": "bdag_miner_work_percent",
+          "legendFormat": "{{miner}}",
+          "refId": "A",
+          "interval": "$__interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Shares, Submits, And Blocks Found",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 12,
+        "h": 9
+      },
+      "maxDataPoints": 1200,
+      "targets": [
+        {
+          "expr": "bdag_miner_shares_recent",
+          "legendFormat": "{{miner}} shares",
+          "refId": "A",
+          "interval": "$__interval"
+        },
+        {
+          "expr": "bdag_miner_submits_recent",
+          "legendFormat": "{{miner}} submits",
+          "refId": "B",
+          "interval": "$__interval"
+        },
+        {
+          "expr": "bdag_miner_blocks_found_recent",
+          "legendFormat": "{{miner}} blocks",
+          "refId": "C",
+          "interval": "$__interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Pool Submit Quality",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 25,
+        "w": 12,
+        "h": 9
+      },
+      "maxDataPoints": 1200,
+      "targets": [
+        {
+          "expr": "bdag_pool_block_submit_success_recent",
+          "legendFormat": "submit success",
+          "refId": "A",
+          "interval": "$__interval"
+        },
+        {
+          "expr": "bdag_pool_block_submit_error_recent",
+          "legendFormat": "submit errors",
+          "refId": "B",
+          "interval": "$__interval"
+        },
+        {
+          "expr": "bdag_pool_stale_submits_recent",
+          "legendFormat": "stale submits",
+          "refId": "C",
+          "interval": "$__interval"
+        },
+        {
+          "expr": "bdag_pool_tip_overdue_recent",
+          "legendFormat": "tip overdue",
+          "refId": "D",
+          "interval": "$__interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "Work Share Detail",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdag-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 34,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "expr": "sort_desc(bdag_miner_work_percent)",
+          "legendFormat": "work %",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "sort_desc(bdag_miner_estimated_usd_per_hour)",
+          "legendFormat": "USD/h",
+          "refId": "B",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "sort_desc(bdag_miner_shares_recent)",
+          "legendFormat": "shares",
+          "refId": "C",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "sort_desc(bdag_miner_blocks_found_recent)",
+          "legendFormat": "blocks found",
+          "refId": "D",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        },
+        "showHeader": true
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "service": true,
+              "ip": true,
+              "mac": true
+            },
+            "renameByName": {
+              "Value": "Value",
+              "miner": "Miner",
+              "node": "Node",
+              "pool": "Pool"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
