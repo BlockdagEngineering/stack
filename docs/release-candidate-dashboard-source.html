@@ -28,7 +28,7 @@
       "BlockdagEngineering/pool-mining-command-center",
       "BlockdagEngineering/blockdag-pool-observability"
     ],
-    "delete_scope_blocker": "GitHub refused repository deletion without delete_repo scope; retired repositories were made private and archived where deletion was unavailable.",
+    "retired_repo_policy": "Jeremy decided that private and archived status is sufficient for retired dashboard repositories; do not hard-delete them unless he gives a new explicit instruction.",
     "safety_note": "Exact live dashboard source was published to the dashboard repo. The stack RC must not import a dashboard/support bundle in a way that weakens restart hardening, status contract, chain-RPC height source, MAC-only ASIC identity, or one-node catch-up gates."
   }
   </script>
@@ -48,7 +48,7 @@
     <section class="card">
       <h2>Retired Alternatives</h2>
       <p>The standalone read-only dashboard, command-center prototype, and Grafana/Prometheus/Loki observability stack are not release-candidate dashboard sources. The <code>ops/observability</code> tree must stay out of this RC path.</p>
-      <p class="warn">Actual GitHub repository deletion requires a token with <code>delete_repo</code>. Without it, retired repositories must be private and archived until Jeremy deletes them with an appropriately scoped token.</p>
+      <p class="warn">Jeremy decided the retired repositories should remain private and archived. Do not hard-delete them unless he gives a new explicit instruction.</p>
     </section>
   </main>
 </body>
