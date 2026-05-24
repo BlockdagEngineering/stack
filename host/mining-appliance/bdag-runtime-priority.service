@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply BlockDAG runtime CPU and IO priorities
+After=docker.service containerd.service NetworkManager.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bdag-runtime-priority
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0

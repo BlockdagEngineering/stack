@@ -10,3 +10,11 @@ Mining/template flags are opt-in only for deployments with actual managed
 miners. If a node is behind tip and `miner_health.connected_count == 0` or
 `miner_health.managed_count == 0`, preserve sync-only behavior and prioritize
 chain catch-up over template generation.
+
+## Catch-Up Priority Invariant
+
+When dashboard status or `sync_progress.status` is `syncing`, chain import is
+the priority. Nodes should receive the strongest CPU and IO priority until they
+are caught up. Hosts with active miners may keep the pool/router path alive, but
+node catch-up still wins scheduling priority. Hosts with no miners must idle or
+stop pool/router/database work and stay in sync-only mode.
