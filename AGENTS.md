@@ -54,3 +54,24 @@ The default ordering is:
 
 Peer candidates must be complete multiaddrs with peer IDs. Do not replace this
 ordering with public-first bootstrapping in future RCs.
+
+## Imminent Fast Artifact Sync V2 Direction
+
+The next BlockDAG sync priority is Fast Artifact Sync V2 directory artifacts.
+Future release work should assume this direction unless Jeremy explicitly
+changes it:
+
+1. Keep a low-priority hot-stage mirror of a synced node datadir.
+2. Freeze that staged view into an immutable signed manifest root over the
+   directory files.
+3. Serve verified file chunks directly from the frozen staged view.
+4. Pin active artifact roots with leases/refcounts until requesting peers finish.
+5. Import on receivers into a temp datadir, validate roots, atomically swap, and
+   catch the final live tail with FastSync v46.
+
+Do not make new release behavior depend on repeated monolithic `.bdsnap` export
+as the long-term primary sync path. `.bdsnap`, v1 FastSync, and legacy sync are
+compatibility/fallback paths until directory artifacts have canary, rollback,
+dashboard, and soak evidence. New node catch-up should be planned as LAN
+directory artifact first, private/VPN artifact second, trusted public artifact
+third, FastSync v46 final tail, and legacy sync only as emergency fallback.
