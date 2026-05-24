@@ -66,10 +66,14 @@ cp node.conf.example node.conf # node specific
 docker compose build
 docker compose up -d
 
-# 7. Verify release/install readiness before marking the stack healthy:
+# 7. Install P2P reachability, local peer discovery, host tuning, and
+#    default FastSnap seed refresh for serving verified snapshots to peers:
+./ops/install-p2p-services.sh
+
+# 8. Verify release/install readiness before marking the stack healthy:
 ./scripts/release-readiness-check.py
 
-# 8 logs:
+# 9 logs:
 docker compose logs -f node
 docker compose logs -f pool
 ```
@@ -97,10 +101,15 @@ docker compose -p snapshot-node -f docker-compose.snapshot-node.yml --env-file .
 - Default host ports **`9150`** (P2P), **`48131`** (BDAG RPC), **`28545`** / **`28546`** (EVM), **`16060`** (metrics) avoid clashes with the mining compose defaults.
 - Point export automation at container **`snapshot-node-node-1`** (see `docker compose -p snapshot-node ps`).
 
-## Dual-node FastSnap seeding
+## Default dual-node FastSnap seeding
 
 Dual-node mining hosts can serve a public P2P FastSnap archive without mining
-against a stopped node by using the pool router maintenance handoff:
+against a stopped node by using the pool router maintenance handoff. This is a
+default release behaviour: `./ops/install-p2p-services.sh` installs
+`bdag-fastsnap-seed.timer`, which refreshes the public seed every two hours at
+low CPU and I/O priority.
+
+Run an immediate refresh manually with:
 
 ```bash
 ./ops/build-fastsnap-seed.sh
@@ -109,36 +118,27 @@ against a stopped node by using the pool router maintenance handoff:
 The script requires a pool binary with
 `/admin/rpc-backend-maintenance`, `POOL_RUNTIME_ADMIN_ENABLED=true`, and
 `POOL_RPC_ROUTER_ENABLED=true`. It drains the export backend, proves the pool is
-still selected on the other backend, stops only the drained node, exports and
-verifies `snapshot.bdsnap`, then installs the archive and manifest into both node
-datadirs. The installed files are hardlinks to a single archive under
-`data-restore/fastsnap`, so the host does **not** duplicate the node databases
-or keep separate per-node snapshot copies.
+still selected on the other backend, stops only the drained node, exports
+`snapshot.bdsnap`, restores the node before heavy verification, then verifies and
+installs the archive and manifest into both node datadirs. The installed files
+are hardlinks to a single archive under `data-restore/fastsnap`, so the host does
+**not** duplicate the node databases or keep separate per-node snapshot copies.
 
 The export path now refuses to publish a stale public seed by default unless the
 standby/export backend is within `BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG` main-order
 units of the selected backend. The default is `1000`. Keep this gate enabled for
 public seeds.
 
-To run the public seed refresh automatically every two hours, install the user
-timer from `ops/systemd/` and provide host-specific paths in
-`~/.config/bdag-fastsnap-seed.env`:
+To disable the automatic public seed refresh on a constrained host, set
+`BDAG_FASTSNAP_SEED_TIMER_ENABLED=0` before running
+`./ops/install-p2p-services.sh`.
+
+The installer writes host-specific paths to
+`~/.config/bdag-fastsnap-seed.env`. Advanced operators can edit that file:
 
 ```bash
-cat > ~/.config/bdag-fastsnap-seed.env <<'EOF'
-BDAG_PROJECT_ROOT=/path/to/pool-stack
-BDAG_ENV_FILE=/path/to/pool-stack/.env
-BDAG_COMPOSE_FILE=/path/to/pool-stack/docker-compose.yml
-BDAG_POOL_ADMIN_URL=http://127.0.0.1:9090
-BDAG_FASTSNAP_NODE_IMAGE=<node-image-or-image-id>
-BDAG_FASTSNAP_REQUIRE_EXPORT_BACKEND_FRESH=1
-BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG=1000
-EOF
-
-install -m 0644 ops/systemd/user-bdag-fastsnap-seed.service ~/.config/systemd/user/bdag-fastsnap-seed.service
-install -m 0644 ops/systemd/user-bdag-fastsnap-seed.timer ~/.config/systemd/user/bdag-fastsnap-seed.timer
-systemctl --user daemon-reload
-systemctl --user enable --now bdag-fastsnap-seed.timer
+systemctl --user status bdag-fastsnap-seed.timer
+systemctl --user start bdag-fastsnap-seed.service
 ```
 
 See `docs/fastsnap-maintenance-handoff.html`.
