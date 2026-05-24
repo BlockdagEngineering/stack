@@ -3577,7 +3577,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     disk = run(["df", "-h", str(PROJECT_ROOT)], timeout=8).stdout.strip()
     docker_images = run(
         ["docker", "images", "--format", "{{.Repository}}:{{.Tag}} {{.Size}}"],
-        timeout=12,
+        timeout=int(os.environ.get("BDAG_STATUS_DOCKER_IMAGES_TIMEOUT", "2")),
     ).stdout.strip()
     sync_progress = collect_sync_progress()
 
