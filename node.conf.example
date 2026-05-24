@@ -43,14 +43,15 @@ logdir=/var/log/bdagStack
 metrics=true
 profile=0.0.0.0:6060
 
-# Reward address when mining is enabled (--miner); repeat miningaddr= for multiple addresses.
+# Reward address when mining is explicitly enabled for a host with managed miners.
+# Keep this empty on sync-only hosts.
 miningaddr=
 
-# API modules for DAG JSON-RPC (whitelist). Use one assignment per module — a
-# single line "modules=Blockdag,miner" is parsed as ONE module name and breaks
-# RPC (getBlockTemplate/getNodeInfo return -32601).
+# API modules for DAG JSON-RPC (whitelist). Default is sync-only. Add
+# "modules=miner" only when the host has managed/connected miners and is meant
+# to serve mining templates.
 modules=Blockdag
-modules=miner
+# modules=miner
 
 evm.http.api=eth,net,web3,txpool,debug
 http.readtimeout=45s
