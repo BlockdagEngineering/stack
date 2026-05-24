@@ -18,3 +18,8 @@ the priority. Nodes should receive the strongest CPU and IO priority until they
 are caught up. Hosts with active miners may keep the pool/router path alive, but
 node catch-up still wins scheduling priority. Hosts with no miners must idle or
 stop pool/router/database work and stay in sync-only mode.
+
+Until the FastSync nil-preprocessed-block fix is deployed in the node image,
+prefer `BDAG_FASTSYNC_PREPROCESS_WORKERS=1` on Pi catch-up hosts. The parallel
+preprocessor has previously panicked in `processFastBlockRange`; uptime and
+steady catch-up beat the small parallel precheck speedup.

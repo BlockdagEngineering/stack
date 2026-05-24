@@ -35,9 +35,12 @@ install -D -m 0644 "${profile_dir}/90-mining-appliance-sysctl.conf" /etc/sysctl.
 install -D -m 0644 "${profile_dir}/90-mining-appliance-journald.conf" /etc/systemd/journald.conf.d/90-mining-appliance.conf
 install -D -m 0755 "${profile_dir}/mining-appliance-host-tuning" /usr/local/sbin/mining-appliance-host-tuning
 install -D -m 0755 "${profile_dir}/bdag-runtime-priority" /usr/local/sbin/bdag-runtime-priority
+install -D -m 0755 "${profile_dir}/bdag-node-child-guard" /usr/local/sbin/bdag-node-child-guard
 install -D -m 0644 "${profile_dir}/mining-appliance-tuning.service" /etc/systemd/system/mining-appliance-tuning.service
 install -D -m 0644 "${profile_dir}/bdag-runtime-priority.service" /etc/systemd/system/bdag-runtime-priority.service
 install -D -m 0644 "${profile_dir}/bdag-runtime-priority.timer" /etc/systemd/system/bdag-runtime-priority.timer
+install -D -m 0644 "${profile_dir}/bdag-node-child-guard.service" /etc/systemd/system/bdag-node-child-guard.service
+install -D -m 0644 "${profile_dir}/bdag-node-child-guard.timer" /etc/systemd/system/bdag-node-child-guard.timer
 
 python3 - "${profile_dir}/docker-daemon.json" /etc/docker/daemon.json <<'PY'
 import json
@@ -61,7 +64,9 @@ PY
 systemctl daemon-reload
 systemctl enable --now mining-appliance-tuning.service
 systemctl enable --now bdag-runtime-priority.timer
+systemctl enable --now bdag-node-child-guard.timer
 systemctl start bdag-runtime-priority.service || true
+systemctl start bdag-node-child-guard.service || true
 sysctl --system >/dev/null
 systemctl restart systemd-journald
 

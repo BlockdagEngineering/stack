@@ -59,9 +59,12 @@ This installs:
 - `/etc/systemd/journald.conf.d/90-mining-appliance.conf`
 - `/usr/local/sbin/mining-appliance-host-tuning`
 - `/usr/local/sbin/bdag-runtime-priority`
+- `/usr/local/sbin/bdag-node-child-guard`
 - `/etc/systemd/system/mining-appliance-tuning.service`
 - `/etc/systemd/system/bdag-runtime-priority.service`
 - `/etc/systemd/system/bdag-runtime-priority.timer`
+- `/etc/systemd/system/bdag-node-child-guard.service`
+- `/etc/systemd/system/bdag-node-child-guard.timer`
 - `/etc/docker/daemon.json` defaults for `live-restore` and local logs
 
 It also tunes P2P/RPC socket buffers, raises the mining block-device queue,
@@ -70,6 +73,11 @@ priorities every minute. Node, pool, Postgres, RPC routing, Docker/containerd,
 Wi-Fi, and ZeroTier are favored. Dashboard, browser, Codex, and other desktop
 helpers are lowered so live blockchain and pool work wins CPU, memory pressure,
 disk IO, and network scheduling.
+
+The node child guard checks every minute that a nodeworker container still has a
+real `bdag` child process and an open RPC or WebSocket listener. If the wrapper
+is alive but the node child has crashed, the guard restarts only the node
+container; it does not start mining services on no-miner hosts.
 
 ## USB Chain Data
 
