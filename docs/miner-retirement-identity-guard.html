@@ -29,6 +29,7 @@
     "source_repo": "/home/jeremy/blockdag-source/pool-stack-docker",
     "live_repo": "/home/jeremy/blockdag-asic-pool",
     "status": "mitigated_in_live_ops_source_and_added_to_rc_candidate",
+    "identity_policy": "mac_only",
     "owner": "dashboard_watchdog_pool_ops_identity_filter"
   }
   </script>
@@ -40,8 +41,8 @@
 
   <div class="grid">
     <section class="card"><strong class="warn">Failure</strong><p>Retired IP fallback hid an active Stratum client at <code>192.168.1.102</code>.</p></section>
-    <section class="card"><strong>Root Cause</strong><p>The filter trusted retired IP matches before checking stable MAC/worker evidence from the currently active miner.</p></section>
-    <section class="card"><strong class="good">Mitigation</strong><p>MAC and worker matches remain authoritative; IP matches are downgraded when live pool evidence proves a different active identity.</p></section>
+    <section class="card"><strong>Root Cause</strong><p>The filter treated an IP address as persistent ASIC identity. IP addresses and workers are ephemeral observations; only MAC address is a permanent miner identity.</p></section>
+    <section class="card"><strong class="good">Mitigation</strong><p>Only a MAC match can retire an ASIC. IP and worker matches are kept as observations and cannot suppress an active miner by themselves.</p></section>
   </div>
 
   <h2>Evidence</h2>
@@ -49,25 +50,33 @@
     <tr><th>Signal</th><th>Observation</th></tr>
     <tr><td>Pool metrics</td><td><code>pool_active_connections=5</code>, <code>pool_job_health_authorized_miners=5</code>, and <code>pool_job_health_ready_miners=5</code>.</td></tr>
     <tr><td>Runtime filter</td><td><code>miner-retirements.json</code> still contained Athena with old MAC <code>28:e2:97:4c:e4:0a</code> and IP <code>192.168.1.102</code>.</td></tr>
-    <tr><td>Current active identity</td><td>Athena was submitting from <code>192.168.1.102</code> with current neighbor MAC <code>2a:71:c7:f5:1f:1e</code> and current pool worker <code>0x05518E03e148C56e426ff9e1CBdB962B4FC5250A</code>.</td></tr>
+    <tr><td>Current active observations</td><td>Athena was submitting from <code>192.168.1.102</code> with current neighbor MAC <code>2a:71:c7:f5:1f:1e</code> and current pool worker <code>0x05518E03e148C56e426ff9e1CBdB962B4FC5250A</code>.</td></tr>
     <tr><td>Immediate fix</td><td>The stale Athena retirement row was removed from live <code>ops/runtime/miner-retirements.json</code>; audit returned to five tracked, connected, and ok miners.</td></tr>
   </table>
 
   <h2>Release-Candidate Fix</h2>
   <table>
     <tr><th>File</th><th>Change</th></tr>
-    <tr><td><code>ops/pool_ops.py</code></td><td>Added structured retired-miner identity decisions. A same MAC or same worker still retires the miner. An IP-only match with active pool evidence and different MAC/worker is treated as an identity conflict and kept visible with a warning.</td></tr>
-    <tr><td><code>ops/tests/test_miner_retirement_identity.py</code></td><td>Regression tests cover active different identity at a retired IP, authoritative same-MAC retirement, and IP fallback when there is no new active identity evidence.</td></tr>
-    <tr><td><code>scripts/validate-pi5-restart-hardening.sh</code></td><td>Release validation now requires the retirement guard, conflict path, dashboard warning text, and regression test file.</td></tr>
+    <tr><td><code>ops/pool_ops.py</code></td><td>Added structured retired-miner identity decisions. A same MAC retires the miner. IP and worker observations never retire, suppress, reintroduce, rename, or mark a miner as a new device by themselves.</td></tr>
+    <tr><td><code>ops/tests/test_miner_retirement_identity.py</code></td><td>Regression tests cover active different MAC at an observed retired IP, authoritative same-MAC retirement, IP-without-MAC observation behavior, and worker-without-MAC observation behavior.</td></tr>
+    <tr><td><code>scripts/validate-pi5-restart-hardening.sh</code></td><td>Release validation now requires the MAC-only identity invariant and rejects future code paths that match retirement by worker or exact IP.</td></tr>
     <tr><td><code>/home/jeremy/blockdag-source/SOURCE_ACCESS_IMPROVEMENT_BACKLOG.md</code></td><td>Backlog item <code>STACK-P1-MINER-RETIREMENT-IP-CONFLICT-20260524</code> records RCA, owner, acceptance criteria, and evidence.</td></tr>
   </table>
 
   <h2>Acceptance Criteria</h2>
   <table>
     <tr><th>Case</th><th>Expected Behavior</th></tr>
-    <tr><td>Same MAC or same worker as a retired row</td><td>Remain retired and hidden from local miner accounting.</td></tr>
-    <tr><td>Same IP, no new active identity evidence</td><td>Use IP fallback and keep the stale record retired.</td></tr>
-    <tr><td>Same IP, active pool evidence, different MAC or worker</td><td>Keep the miner visible, count it, and emit a warning so the operator can reconcile retirement metadata.</td></tr>
+    <tr><td>Same MAC as a retired row</td><td>Remain retired and hidden from local miner accounting.</td></tr>
+    <tr><td>Same IP without MAC evidence</td><td>Keep the miner visible, count it, and emit a warning because IP is only an observation.</td></tr>
+    <tr><td>Same worker without MAC evidence</td><td>Keep the miner visible. Worker labels are accounting/routing observations, not ASIC identity.</td></tr>
+    <tr><td>Different MAC at an observed retired IP</td><td>Keep the miner visible, count it, and emit a warning so the operator can reconcile retirement metadata.</td></tr>
+  </table>
+
+  <h2>Related Count Guard</h2>
+  <table>
+    <tr><th>Case</th><th>Expected Behavior</th></tr>
+    <tr><td>Tracked unmanaged miners with <code>status=ok</code></td><td>Contribute to <code>miner_health.ok_count</code>.</td></tr>
+    <tr><td>Managed-only health count</td><td>Expose separately as <code>managed_ok_count</code> so the public <code>ok_count</code> label matches visible miner row status.</td></tr>
   </table>
 </main>
 </body>

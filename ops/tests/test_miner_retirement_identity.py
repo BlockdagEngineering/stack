@@ -55,7 +55,7 @@ class MinerRetirementIdentityTests(unittest.TestCase):
 
         self.assertFalse(decision["retired"])
         self.assertTrue(decision["conflict"])
-        self.assertEqual(decision["matched_by"], "ip-conflict")
+        self.assertEqual(decision["matched_by"], "ip-observation")
         self.assertFalse(pool_ops.is_retired_miner_identity(item, item["ip"], item["mac"]))
 
     def test_same_mac_retirement_remains_authoritative(self) -> None:
@@ -73,15 +73,46 @@ class MinerRetirementIdentityTests(unittest.TestCase):
         self.assertFalse(decision["conflict"])
         self.assertEqual(decision["matched_by"], "mac")
 
-    def test_ip_fallback_still_retired_without_new_active_identity(self) -> None:
+    def test_ip_without_mac_is_observation_only(self) -> None:
         self.write_retirement()
         item = {"ip": "192.168.1.102"}
 
         decision = pool_ops.retired_miner_identity_decision(item, item["ip"], "")
 
-        self.assertTrue(decision["retired"])
+        self.assertFalse(decision["retired"])
+        self.assertTrue(decision["conflict"])
+        self.assertEqual(decision["matched_by"], "ip-observation")
+
+    def test_worker_match_without_mac_is_observation_only(self) -> None:
+        self.write_retirement()
+        item = {
+            "ip": "192.168.1.200",
+            "workers": ["0x1719E0ee598c15957448D5E568948101DF78e7A0"],
+            "shares": 2,
+        }
+
+        decision = pool_ops.retired_miner_identity_decision(item, item["ip"], "")
+
+        self.assertFalse(decision["retired"])
         self.assertFalse(decision["conflict"])
-        self.assertEqual(decision["matched_by"], "ip")
+        self.assertEqual(decision["matched_by"], "")
+
+
+class MinerHealthCountTests(unittest.TestCase):
+    def test_ok_count_includes_unmanaged_tracked_miners(self) -> None:
+        health = [
+            {"managed": False, "status": "ok", "connected": True, "device_type": "stratum"},
+            {"managed": False, "status": "ok", "connected": True, "device_type": "stratum"},
+            {"managed": True, "status": "degraded", "connected": True, "device_type": "asic"},
+        ]
+
+        counts = pool_ops.miner_health_count_summary(health)
+
+        self.assertEqual(counts["tracked_count"], 3)
+        self.assertEqual(counts["connected_count"], 3)
+        self.assertEqual(counts["managed_count"], 1)
+        self.assertEqual(counts["managed_ok_count"], 0)
+        self.assertEqual(counts["ok_count"], 2)
 
 
 if __name__ == "__main__":
