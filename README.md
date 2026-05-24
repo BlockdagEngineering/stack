@@ -111,7 +111,37 @@ The script requires a pool binary with
 `POOL_RPC_ROUTER_ENABLED=true`. It drains the export backend, proves the pool is
 still selected on the other backend, stops only the drained node, exports and
 verifies `snapshot.bdsnap`, then installs the archive and manifest into both node
-datadirs. See `docs/fastsnap-maintenance-handoff.html`.
+datadirs. The installed files are hardlinks to a single archive under
+`data-restore/fastsnap`, so the host does **not** duplicate the node databases
+or keep separate per-node snapshot copies.
+
+The export path now refuses to publish a stale public seed by default unless the
+standby/export backend is within `BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG` main-order
+units of the selected backend. The default is `1000`. Keep this gate enabled for
+public seeds.
+
+To run the public seed refresh automatically every two hours, install the user
+timer from `ops/systemd/` and provide host-specific paths in
+`~/.config/bdag-fastsnap-seed.env`:
+
+```bash
+cat > ~/.config/bdag-fastsnap-seed.env <<'EOF'
+BDAG_PROJECT_ROOT=/path/to/pool-stack
+BDAG_ENV_FILE=/path/to/pool-stack/.env
+BDAG_COMPOSE_FILE=/path/to/pool-stack/docker-compose.yml
+BDAG_POOL_ADMIN_URL=http://127.0.0.1:9090
+BDAG_FASTSNAP_NODE_IMAGE=<node-image-or-image-id>
+BDAG_FASTSNAP_REQUIRE_EXPORT_BACKEND_FRESH=1
+BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG=1000
+EOF
+
+install -m 0644 ops/systemd/user-bdag-fastsnap-seed.service ~/.config/systemd/user/bdag-fastsnap-seed.service
+install -m 0644 ops/systemd/user-bdag-fastsnap-seed.timer ~/.config/systemd/user/bdag-fastsnap-seed.timer
+systemctl --user daemon-reload
+systemctl --user enable --now bdag-fastsnap-seed.timer
+```
+
+See `docs/fastsnap-maintenance-handoff.html`.
 
 ## Release readiness
 

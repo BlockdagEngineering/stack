@@ -23,6 +23,10 @@ REQUIRE_BOTH_BACKENDS_FOR_VERIFY="${BDAG_FASTSNAP_REQUIRE_BOTH_BACKENDS_FOR_VERI
 DOCKER_CPU_SHARES="${BDAG_FASTSNAP_DOCKER_CPU_SHARES:-128}"
 DOCKER_BLKIO_WEIGHT="${BDAG_FASTSNAP_DOCKER_BLKIO_WEIGHT:-10}"
 DOCKER_CPUS="${BDAG_FASTSNAP_DOCKER_CPUS:-}"
+MAX_EXPORT_BACKEND_LAG="${BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG:-1000}"
+REQUIRE_EXPORT_BACKEND_FRESH="${BDAG_FASTSNAP_REQUIRE_EXPORT_BACKEND_FRESH:-1}"
+METRICS_TIMEOUT="${BDAG_FASTSNAP_METRICS_TIMEOUT:-3}"
+NODE_METRICS_URLS="${BDAG_FASTSNAP_NODE_METRICS_URLS:-node1=http://127.0.0.1:6061/debug/metrics/prometheus,node2=http://127.0.0.1:6062/debug/metrics/prometheus}"
 
 mkdir -p "$SEED_DIR" "$(dirname "$LOG_FILE")" "$(dirname "$LOCK_FILE")" "$(dirname "$MAINTENANCE_LOCK_FILE")"
 
@@ -171,6 +175,52 @@ pool_metric_value() {
     awk -v metric="$metric" '$1 == metric || index($1, metric "{") == 1 { print $NF + 0; exit }'
 }
 
+backend_metrics_url() {
+  local backend="$1"
+  printf '%s\n' "$NODE_METRICS_URLS" |
+    tr ',' '\n' |
+    awk -F= -v target="$backend" '$1 == target { sub(/^[^=]*=/, ""); print; exit }'
+}
+
+backend_order_metric() {
+  local backend="$1"
+  local url
+  url="$(backend_metrics_url "$backend")"
+  [[ -n "$url" ]] || return 1
+  curl -fsS --max-time "$METRICS_TIMEOUT" "$url" 2>/dev/null |
+    awk '
+      $1 == "Blockdag_mainorder" { print int($2); found=1; exit }
+      $1 == "chain_head_block" { fallback=int($2) }
+      END { if (!found && fallback != "") print fallback }'
+}
+
+assert_export_backend_fresh() {
+  local active_backend="$1"
+  local export_backend="$2"
+  if [[ "$REQUIRE_EXPORT_BACKEND_FRESH" != "1" ]]; then
+    log "skipping export backend freshness gate because BDAG_FASTSNAP_REQUIRE_EXPORT_BACKEND_FRESH=$REQUIRE_EXPORT_BACKEND_FRESH"
+    return 0
+  fi
+
+  local active_order export_order lag
+  active_order="$(backend_order_metric "$active_backend" || true)"
+  export_order="$(backend_order_metric "$export_backend" || true)"
+  if [[ -z "$active_order" || -z "$export_order" ]]; then
+    log "refusing FastSnap export: could not read node order metrics active=$active_backend($active_order) export=$export_backend($export_order)"
+    return 1
+  fi
+
+  lag=$((active_order - export_order))
+  if ((lag < 0)); then
+    lag=0
+  fi
+  log "FastSnap export freshness active=$active_backend order=$active_order export=$export_backend order=$export_order lag=$lag max=$MAX_EXPORT_BACKEND_LAG"
+  if ((lag > MAX_EXPORT_BACKEND_LAG)); then
+    log "refusing FastSnap export: backup node is too far behind for a public seed lag=$lag max=$MAX_EXPORT_BACKEND_LAG"
+    return 1
+  fi
+}
+
 choose_export_backend() {
   local selected="$1"
   if [[ -n "$EXPORT_BACKEND" ]]; then
@@ -290,6 +340,25 @@ wait_db_lock_free() {
   return 1
 }
 
+host_own_snapshot_files() {
+  local files=()
+  local path
+  for path in "$@"; do
+    if [[ -e "$path" ]]; then
+      files+=("$path")
+    fi
+  done
+  if [[ "${#files[@]}" -eq 0 ]]; then
+    return 0
+  fi
+  if chown "$(id -u):$(id -g)" "${files[@]}" 2>/dev/null; then
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    sudo chown "$(id -u):$(id -g)" "${files[@]}" || true
+  fi
+}
+
 restore_export_backend_before_verify() {
   if [[ -n "$EXPORT_SERVICE" ]]; then
     log "starting exported backend service=$EXPORT_SERVICE before verification"
@@ -341,8 +410,10 @@ verify_existing_snapshot() {
     "$NODE_IMAGE" \
     snap verify --path /out/snapshot.bdsnap.tmp 2>&1 | tee -a "$LOG_FILE"
 
+  host_own_snapshot_files "$SNAP_TMP" "$MANIFEST_TMP"
   mv -f "$SNAP_TMP" "$SNAP_FINAL"
   mv -f "$MANIFEST_TMP" "$MANIFEST_FINAL"
+  host_own_snapshot_files "$SNAP_FINAL" "$MANIFEST_FINAL"
   install_snapshot_links "$SNAP_FINAL" "$MANIFEST_FINAL"
   log "FastSnap seed ready: $SNAP_FINAL"
 }
@@ -406,6 +477,8 @@ if [[ ! -d "$EXPORT_NODE_DIR/mainnet/BdagChain" ]]; then
   log "missing export datadir: $EXPORT_NODE_DIR/mainnet/BdagChain"
   exit 1
 fi
+wait_pool_jobs_ready "$RESTORE_TIMEOUT_SECONDS"
+assert_export_backend_fresh "$ACTIVE_BACKEND" "$EXPORT_BACKEND"
 
 log "requesting pool maintenance drain backend=$EXPORT_BACKEND active=$ACTIVE_BACKEND"
 admin_maintenance "$EXPORT_BACKEND" true fastsnap | tee -a "$LOG_FILE" >/dev/null
@@ -432,6 +505,7 @@ if [[ ! -s "$SNAP_TMP" || ! -s "$MANIFEST_TMP" ]]; then
   log "FastSnap export did not create expected archive and manifest"
   exit 1
 fi
+host_own_snapshot_files "$SNAP_TMP" "$MANIFEST_TMP"
 
 # Verification is a heavy sequential read. Restore pool redundancy before it so
 # a slow verify cannot leave mining dependent on one already-stressed backend.
@@ -452,6 +526,7 @@ docker_run_low_priority \
 
 mv -f "$SNAP_TMP" "$SNAP_FINAL"
 mv -f "$MANIFEST_TMP" "$MANIFEST_FINAL"
+host_own_snapshot_files "$SNAP_FINAL" "$MANIFEST_FINAL"
 install_snapshot_links "$SNAP_FINAL" "$MANIFEST_FINAL"
 
 log "FastSnap seed ready: $SNAP_FINAL"
