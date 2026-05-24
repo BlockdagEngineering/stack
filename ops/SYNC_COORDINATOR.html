@@ -29,7 +29,7 @@
 <body>
   <main>
     <h1>BlockDAG Sync Coordinator</h1>
-    <p>The coordinator avoids wasting bandwidth and disk IO after a major restore. When backend nodes are far behind, it pauses one follower, lets the best leader catch up alone, then resumes or seeds the follower.</p>
+    <p>The coordinator avoids wasting bandwidth and disk IO after a major restore. When backend nodes are more than 1000 blocks behind, it pauses the laggiest follower, gives the selected leader the strongest host CPU and IO weights, lets that leader catch up alone, then resumes or seeds the follower only inside the policy window.</p>
 
     <section class="grid">
       <div class="card blue"><strong>Normal mode</strong><p>Both nodes run independently and see different peers once they are near tip.</p></div>
@@ -52,7 +52,9 @@ python3 ops/sync_coordinator.py --once --repair --pause-follower --seed-follower
       <thead><tr><th>Rule</th><th>Reason</th></tr></thead>
       <tbody>
         <tr><td>Never seed from a leader unless it is near tip.</td><td>Copying stale leader data just moves the catch-up delay to the other node.</td></tr>
-        <tr><td>Follower pause is only used during large catch-up.</td><td>Near tip, dual independent nodes are better for uptime and peer diversity.</td></tr>
+        <tr><td>Pause the laggiest node whenever catch-up exceeds 1000 blocks.</td><td>One selected leader catches up faster than two nodes competing for duplicate download and disk writes.</td></tr>
+        <tr><td>Plain resume is only allowed when follower lag is within 1000 blocks.</td><td>A follower still beyond the large-catch-up window should stay paused or be seeded from the caught-up leader.</td></tr>
+        <tr><td>The selected catch-up leader gets the highest Docker CPU shares and block IO weight.</td><td>Catch-up should win host contention while the pool/router path stays alive.</td></tr>
         <tr><td>Safe seeding requires <code>--allow-leader-stop</code>.</td><td>LevelDB chain data should have a stopped final rsync before it becomes the follower's database.</td></tr>
       </tbody>
     </table>
@@ -63,9 +65,12 @@ python3 ops/sync_coordinator.py --once --repair --pause-follower --seed-follower
     "component": "sync_coordinator",
     "script": "ops/sync_coordinator.py",
     "state_file": "ops/runtime/sync-coordinator-state.json",
-    "default_far_behind_blocks": 10000,
-    "default_follower_lag_blocks": 1500,
-    "default_leader_near_tip_blocks": 5
+    "default_far_behind_blocks": 1000,
+    "default_follower_lag_blocks": 1000,
+    "default_leader_near_tip_blocks": 1000,
+    "default_seed_near_tip_blocks": 5,
+    "leader_catchup_cpu_shares": 8192,
+    "leader_catchup_blkio_weight": 1000
   }
   </script>
 </body>

@@ -19,6 +19,14 @@ are caught up. Hosts with active miners may keep the pool/router path alive, but
 node catch-up still wins scheduling priority. Hosts with no miners must idle or
 stop pool/router/database work and stay in sync-only mode.
 
+When any managed node is more than 1000 blocks behind the observed network tip,
+do not let multiple nodes compete for catch-up IO. The sync coordinator must
+pause the laggiest running node and let exactly one selected leader sync alone
+until the leader is within 1000 blocks. During that one-node catch-up window,
+the selected leader must receive the highest Docker CPU shares and block IO
+weight available on the host. Do not weaken this behavior or reintroduce a
+productive-mining exception without a measured release-candidate test.
+
 Until the FastSync nil-preprocessed-block fix is deployed in the node image,
 prefer `BDAG_FASTSYNC_PREPROCESS_WORKERS=1` on Pi catch-up hosts. The parallel
 preprocessor has previously panicked in `processFastBlockRange`; uptime and
