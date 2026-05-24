@@ -94,39 +94,63 @@ jobs:
             { echo "::error::Compose must resolve dockerfile for pool tarball env"; exit 1; }
           scripts/validate-pi5-restart-hardening.sh .
 
-      - name: Create release tarball
+      - name: Create universal release zip
         id: package
         shell: bash
         run: |
           VERSION="${{ steps.version.outputs.value }}"
-          OUT="${PACKAGE_NAME}-${VERSION}.tar.gz"
+          ROOT="${PACKAGE_NAME}-${VERSION}"
+          OUT="${ROOT}.zip"
+          LATEST_OUT="${PACKAGE_NAME}.zip"
+          LATEST_SHA256="${LATEST_OUT}.sha256"
 
 
           test -f .env.example || { echo "::error::Missing .env.example"; exit 1; }
+          test -f scripts/release/install.sh || { echo "::error::Missing release installer scripts"; exit 1; }
 
-          ROOT="${PACKAGE_NAME}-${VERSION}"
-          rm -rf "${ROOT}"
+          rm -rf "${ROOT}" "${OUT}" "${LATEST_OUT}" "${LATEST_SHA256}"
           mkdir "${ROOT}"
-          cp docker-compose.yml dockerfile .env.example node.conf.example README.md checksums.txt haproxy.cfg "${ROOT}/"
+          cp docker-compose.yml dockerfile .dockerignore .env.example node.conf.example README.md checksums.txt haproxy.cfg "${ROOT}/"
+          echo "${VERSION}" > "${ROOT}/version.txt"
+          cp scripts/release/install.sh scripts/release/install.ps1 scripts/release/install.cmd "${ROOT}/"
+          cp -a scripts/release/installers "${ROOT}/installers"
           cp -a bin sql docker scripts dashboard asic-pool tools "${ROOT}/"
           rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
+          chmod +x "${ROOT}/install.sh" "${ROOT}/installers/"*.sh
 
-          tar -czf "${OUT}" "${ROOT}"
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y zip
+          fi
+          zip -qr "${OUT}" "${ROOT}"
+          cp "${OUT}" "${LATEST_OUT}"
+          sha256sum "${LATEST_OUT}" > "${LATEST_SHA256}"
           rm -rf "${ROOT}"
+
+          touch version.txt
+          echo "${VERSION}" > version.txt
 
           ls -lh "${OUT}"
           SZ="$(stat -c%s "${OUT}")"
           MAX=$((2 * 1024 * 1024 * 1024 - 256 * 1024 * 1024))
           if [ "${SZ}" -gt "${MAX}" ]; then
-            echo "::error::Tarball ${SZ} bytes exceeds safe GitHub limit (~2GiB cap minus headroom)"
+            echo "::error::Zip ${SZ} bytes exceeds safe GitHub limit (~2GiB cap minus headroom)"
             exit 1
           fi
           echo "artifact=${OUT}" >> "$GITHUB_OUTPUT"
+          echo "latest_artifact=${LATEST_OUT}" >> "$GITHUB_OUTPUT"
+          echo "latest_sha256=${LATEST_SHA256}" >> "$GITHUB_OUTPUT"
+          echo "version_file=version.txt" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.value }}
-          files: ${{ steps.package.outputs.artifact }}
+          files: |
+            ${{ steps.package.outputs.artifact }}
+            ${{ steps.package.outputs.latest_artifact }}
+            ${{ steps.package.outputs.latest_sha256 }}
+            ${{ steps.package.outputs.version_file }}
           draft: false
           prerelease: false

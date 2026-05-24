@@ -1,6 +1,6 @@
 
 x-build-args: &build-args
-  SNAPSHOT_PATH: ${SNAPSHOT_PATH:-pool-stack-docker/docker/no-snapshot.marker}
+  SNAPSHOT_PATH: ${SNAPSHOT_PATH:-./latest.bdsnap}
 
 services:
 
@@ -28,6 +28,7 @@ services:
   # BlockDAG node + nodeworker supervisor. Optional SNAPSHOT_PATH at build time.
   # --------------------------------------------------------------------------
   node:
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
       context: ${BUILD_CONTEXT:-.}
       dockerfile: ${DOCKERFILE:-dockerfile}
@@ -72,6 +73,7 @@ services:
   # Mining pool. Connects to node RPC and Postgres.
   # --------------------------------------------------------------------------
   pool:
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
       context: ${BUILD_CONTEXT:-.}
       dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile}
@@ -109,6 +111,7 @@ services:
   # --------------------------------------------------------------------------
 
   dashboard:
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
       context: ${BUILD_CONTEXT:-..}
       dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile}
@@ -132,7 +135,7 @@ services:
       DASHBOARD_MINING_POLL_INTERVAL: 10m
       MINING_POOL_ADDRESS: ${MINING_POOL_ADDRESS:-0x0000000000000000000000000000000000000000}
     ports:
-      - "9280:9280"
+      - "${DASHBOARD_HOST_PORT:-9280}:9280"
     volumes:
       - ./dashboard/logs:/app/logs
 volumes:

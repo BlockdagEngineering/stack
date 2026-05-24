@@ -120,7 +120,7 @@ jobs:
           ROOT="${PACKAGE_NAME}-${VERSION}"
           rm -rf "${ROOT}"
           mkdir "${ROOT}"
-          cp docker-compose.yml dockerfile-cpu-release .env.cpu.example .env.pool.example node.conf.example README.md SNAPSHOT-README.md checksums.txt haproxy.cfg "${ROOT}/"
+          cp docker-compose.yml dockerfile-cpu-release .dockerignore .env.cpu.example .env.pool.example node.conf.example README.md SNAPSHOT-README.md checksums.txt haproxy.cfg "${ROOT}/"
           cp -a sql netdata scripts bin docker asic-pool tools "${ROOT}/"
           rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
 
