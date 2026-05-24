@@ -32,6 +32,7 @@
     "branch": "feature/stack-fastsnap-maintenance-handoff",
     "companion_pool_branch": "feature/pool-router-maintenance-drain",
     "intent": "Make public FastSnap seed export safe by requiring an explicit pool router backend drain before any node container is stopped.",
+    "release_default": "ops/install-p2p-services.sh installs bdag-fastsnap-seed.timer by default for dual-node releases unless BDAG_FASTSNAP_SEED_TIMER_ENABLED=0.",
     "critical_contract": "The script must fail closed unless /admin/rpc-backend-maintenance marks the export backend drained and pool_rpc_backend_selected stays on the active backend."
   }
   </script>
@@ -39,12 +40,12 @@
 <body>
 <main>
   <h1>FastSnap Maintenance Handoff</h1>
-  <p>This release feature makes public <code>snapshot.bdsnap</code> seeding safe on a dual-node mining host. The pool must first drain the node that will be stopped, prove that ASIC work is routed to the other node, and only then allow snapshot export.</p>
+  <p>This release feature makes public <code>snapshot.bdsnap</code> seeding safe and default on a dual-node mining host. The pool must first drain the node that will be stopped, prove that ASIC work is routed to the other node, and only then allow snapshot export.</p>
 
   <div class="grid">
     <section class="card"><div class="label">Primary Risk Removed</div><div class="value bad">Pool mines into stopped node</div><p>The old script guessed from metrics. The new path asks the pool router to drain a backend and refuses to proceed if the router cannot switch away.</p></section>
     <section class="card"><div class="label">Safety Contract</div><div class="value ok">Fail Closed</div><p>If no healthy alternate exists, the maintenance API returns conflict and no node is stopped.</p></section>
-    <section class="card"><div class="label">Release Artifact</div><div class="value accent">ops/build-fastsnap-seed.sh</div><p>The script publishes <code>snapshot.bdsnap</code> and its manifest only after export and verify succeed.</p></section>
+    <section class="card"><div class="label">Release Default</div><div class="value accent">2-hour seed timer</div><p><code>ops/install-p2p-services.sh</code> installs <code>bdag-fastsnap-seed.timer</code> unless disabled with <code>BDAG_FASTSNAP_SEED_TIMER_ENABLED=0</code>.</p></section>
   </div>
 
   <h2>Handoff Flow</h2>
@@ -53,7 +54,7 @@
     <div class="step"><strong>2. Drain</strong>Call <code>/admin/rpc-backend-maintenance</code> for the non-active backend.</div>
     <div class="step"><strong>3. Prove</strong>Require selected backend unchanged and <code>pool_rpc_backend_maintenance=1</code> for the export backend.</div>
     <div class="step"><strong>4. Export</strong>Stop only the drained node and run <code>bdag snap export</code> against its datadir.</div>
-    <div class="step"><strong>5. Restore</strong>Verify archive, hardlink it into node datadirs, restart the node, clear maintenance.</div>
+    <div class="step"><strong>5. Restore</strong>Restart the node, clear maintenance, verify archive, and hardlink it into node datadirs.</div>
   </div>
 
   <h2>Required Pool Source</h2>
@@ -75,12 +76,14 @@ POOL_RPC_ROUTER_TEMPLATE_LANE_MODE=active-passive
 BDAG_POOL_ADMIN_URL=http://127.0.0.1:9092
 BDAG_FASTSNAP_NODE1_SERVICE=bdag-miner-node-1
 BDAG_FASTSNAP_NODE2_SERVICE=bdag-miner-node-2
-BDAG_FASTSNAP_NODE1_DATADIR=/home/jeremy/blockdag-asic-pool/data/node1
-BDAG_FASTSNAP_NODE2_DATADIR=/home/jeremy/blockdag-asic-pool/data/node2</code></pre>
+BDAG_FASTSNAP_NODE1_DATADIR=/opt/blockdag-pool/data/node1
+BDAG_FASTSNAP_NODE2_DATADIR=/opt/blockdag-pool/data/node2</code></pre>
 
   <h2>Operator Command</h2>
   <pre><code>cd /path/to/pool-stack
-./ops/build-fastsnap-seed.sh</code></pre>
+./ops/install-p2p-services.sh
+systemctl --user status bdag-fastsnap-seed.timer
+systemctl --user start bdag-fastsnap-seed.service</code></pre>
 
   <h2>Done Means</h2>
   <table>
