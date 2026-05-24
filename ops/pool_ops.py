@@ -2004,6 +2004,201 @@ def _metric_counter_key(labels: dict[str, str], *names: str) -> str:
     return ":".join(str(labels.get(name, "")) for name in names)
 
 
+def _prometheus_json_number(value: float) -> float | int:
+    return int(value) if value.is_integer() else value
+
+
+def _float_metric(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _prometheus_counter_json(counter: Counter[str] | dict[str, Any]) -> dict[str, float | int]:
+    rows = counter.items() if isinstance(counter, dict) else []
+    return {str(key): _prometheus_json_number(_float_metric(value)) for key, value in sorted(rows)}
+
+
+def _ratio_percent(numerator: float, denominator: float) -> float | None:
+    if denominator <= 0:
+        return None
+    return round((numerator / denominator) * 100, 2)
+
+
+def build_pool_efficiency_loss_ledger(
+    block_submit_outcomes: Counter[str] | dict[str, Any],
+    shares_accepted_total: float,
+    shares_rejected_by_reason: Counter[str] | dict[str, Any],
+    block_totals: Counter[str] | dict[str, Any],
+    blocks_rejected_by_node: Counter[str] | dict[str, Any],
+    share_processing: dict[str, Any] | None = None,
+    template_conversion_stall: dict[str, Any] | None = None,
+    block_submit_backend_outcomes: Counter[str] | dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Normalize pool efficiency counters into an operator-facing loss ledger."""
+    block_outcomes = Counter({str(key): _float_metric(value) for key, value in dict(block_submit_outcomes or {}).items()})
+    share_rejections = Counter({str(key): _float_metric(value) for key, value in dict(shares_rejected_by_reason or {}).items()})
+    blocks = Counter({str(key): _float_metric(value) for key, value in dict(block_totals or {}).items()})
+    node_rejects = Counter({str(key): _float_metric(value) for key, value in dict(blocks_rejected_by_node or {}).items()})
+    backend_outcomes = Counter({str(key): _float_metric(value) for key, value in dict(block_submit_backend_outcomes or {}).items()})
+    processing = share_processing if isinstance(share_processing, dict) else {}
+    conversion = template_conversion_stall if isinstance(template_conversion_stall, dict) else {}
+
+    block_total = float(sum(block_outcomes.values()))
+    block_accepted = float(sum(value for key, value in block_outcomes.items() if key.startswith("accepted:")))
+    block_rejected_node = float(sum(value for key, value in block_outcomes.items() if key.startswith("rejected:")))
+    block_rejected_local = float(sum(value for key, value in block_outcomes.items() if key.startswith("rejected-local:")))
+    block_rejected = block_rejected_node + block_rejected_local
+    block_accept_ratio = _ratio_percent(block_accepted, block_total)
+    block_loss_ratio = None if block_accept_ratio is None else round(max(0.0, 100.0 - block_accept_ratio), 2)
+
+    share_accepted = _float_metric(shares_accepted_total)
+    share_rejected = float(sum(share_rejections.values()))
+    share_total = share_accepted + share_rejected
+    share_accept_ratio = _ratio_percent(share_accepted, share_total)
+    duplicate_share_rejects = float(
+        sum(value for key, value in share_rejections.items() if key.startswith("duplicate_block"))
+    )
+    stale_share_rejects = (
+        share_rejections.get("invalidated_job", 0.0)
+        + share_rejections.get("non_current_job", 0.0)
+        + share_rejections.get("stale_block_candidate", 0.0)
+    )
+
+    processing_count = _float_metric(processing.get("count"))
+    processing_sum = _float_metric(processing.get("sum_seconds"))
+    processing_avg = round(processing_sum / processing_count, 6) if processing_count > 0 else None
+
+    top_loss_reasons: list[dict[str, Any]] = []
+    for key, value in block_outcomes.items():
+        if value <= 0 or key.startswith("accepted:"):
+            continue
+        top_loss_reasons.append(
+            {
+                "plane": "block_submit",
+                "reason": key,
+                "count": _prometheus_json_number(value),
+                "ratio_percent": _ratio_percent(value, block_total),
+            }
+        )
+    for reason, value in share_rejections.items():
+        if value <= 0:
+            continue
+        top_loss_reasons.append(
+            {
+                "plane": "share",
+                "reason": reason,
+                "count": _prometheus_json_number(value),
+                "ratio_percent": _ratio_percent(value, share_total),
+            }
+        )
+    top_loss_reasons.sort(key=lambda row: float(row.get("count") or 0), reverse=True)
+
+    warnings: list[str] = []
+    active_miners = safe_int(conversion.get("active_miners"), 0)
+    conversion_failure_ratio = _float_metric(conversion.get("failure_ratio"), -1.0)
+    if active_miners >= 2 and conversion_failure_ratio >= 15.0:
+        warnings.append(
+            f"template conversion loss is {conversion_failure_ratio:.2f}% with {active_miners} active miner lanes"
+        )
+    if block_total >= 20 and block_accept_ratio is not None and block_accept_ratio < 70.0:
+        warnings.append(f"block submit acceptance is {block_accept_ratio:.2f}% over {int(block_total)} outcomes")
+    tip_overdue = block_outcomes.get("rejected:tip-overdue", node_rejects.get("tip-overdue", 0.0))
+    tip_overdue_ratio = _ratio_percent(tip_overdue, block_total)
+    if block_total >= 20 and tip_overdue_ratio is not None and tip_overdue_ratio >= 10.0:
+        warnings.append(f"tip-overdue block loss is {tip_overdue_ratio:.2f}% of submit outcomes")
+    duplicate_local = block_outcomes.get("rejected-local:duplicate-block", 0.0)
+    duplicate_local_ratio = _ratio_percent(duplicate_local, block_total)
+    if block_total >= 20 and duplicate_local_ratio is not None and duplicate_local_ratio >= 5.0:
+        warnings.append(f"duplicate-block local loss is {duplicate_local_ratio:.2f}% of submit outcomes")
+    if share_total >= 50 and share_accept_ratio is not None and share_accept_ratio < 70.0:
+        warnings.append(f"share acceptance is {share_accept_ratio:.2f}% over {int(share_total)} share outcomes")
+    if processing_avg is not None and processing_avg > 0.2:
+        warnings.append(f"average share processing latency is {processing_avg:.3f}s")
+
+    severity = "ok"
+    if warnings:
+        severity = "warning"
+    if (
+        (block_total >= 20 and block_accept_ratio is not None and block_accept_ratio < 50.0)
+        or (active_miners >= 2 and conversion_failure_ratio >= 50.0)
+    ):
+        severity = "critical"
+
+    return {
+        "version": 1,
+        "severity": severity,
+        "active_miners": active_miners,
+        "block_outcomes": {
+            "accepted": _prometheus_json_number(block_accepted),
+            "rejected": _prometheus_json_number(block_rejected),
+            "rejected_by_node": _prometheus_json_number(block_rejected_node),
+            "rejected_local": _prometheus_json_number(block_rejected_local),
+            "total": _prometheus_json_number(block_total),
+            "accepted_ratio_percent": block_accept_ratio,
+            "loss_ratio_percent": block_loss_ratio,
+            "by_outcome_reason": _prometheus_counter_json(block_outcomes),
+        },
+        "share_outcomes": {
+            "accepted": _prometheus_json_number(share_accepted),
+            "rejected": _prometheus_json_number(share_rejected),
+            "total": _prometheus_json_number(share_total),
+            "accepted_ratio_percent": share_accept_ratio,
+            "duplicate_block_rejects": _prometheus_json_number(duplicate_share_rejects),
+            "stale_job_rejects": _prometheus_json_number(float(stale_share_rejects)),
+            "rejected_by_reason": _prometheus_counter_json(share_rejections),
+        },
+        "block_totals": _prometheus_counter_json(blocks),
+        "blocks_rejected_by_node": _prometheus_counter_json(node_rejects),
+        "block_submit_backend_outcomes": _prometheus_counter_json(backend_outcomes),
+        "share_processing": {
+            "count": _prometheus_json_number(processing_count),
+            "sum_seconds": round(processing_sum, 6),
+            "avg_seconds": processing_avg,
+        },
+        "top_loss_reasons": top_loss_reasons[:8],
+        "warnings": warnings,
+    }
+
+
+def selected_backend_readiness_contract(
+    selected_backend: str,
+    selected_source_health: dict[str, Any],
+    source_job_health: dict[str, Any],
+    pool_has_recent_mining: bool,
+) -> dict[str, Any]:
+    source = selected_source_health if isinstance(selected_source_health, dict) else {}
+    job_health = source_job_health if isinstance(source_job_health, dict) else {}
+    checks: dict[str, bool] = {}
+    for key in ("node_mineable", "node_submit_ready", "node_p2p_mining_fresh", "healthy", "ws_connected"):
+        if key in source:
+            checks[key] = bool(source.get(key))
+    if source.get("node_last_template_build_error_blocking") is True:
+        checks["node_last_template_build_error_blocking_clear"] = False
+
+    job_ok_raw = job_health.get("ok")
+    job_ok = None if job_ok_raw is None else bool(job_ok_raw)
+    node_unready = any(
+        checks.get(key) is False
+        for key in ("node_mineable", "node_submit_ready", "node_p2p_mining_fresh")
+    ) or checks.get("node_last_template_build_error_blocking_clear") is False
+    job_unready = job_ok is False
+    contradiction = bool(pool_has_recent_mining and (node_unready or job_unready))
+    hard_unready = bool((node_unready or job_unready) and not pool_has_recent_mining)
+    return {
+        "version": 1,
+        "selected_backend": selected_backend,
+        "pool_has_recent_mining": pool_has_recent_mining,
+        "job_health_ok": job_ok,
+        "checks": checks,
+        "contradiction": contradiction,
+        "hard_unready": hard_unready,
+        "advisory_degraded": bool(contradiction),
+        "truth_basis": "recent accepted pool work overrides stale readiness booleans for operator status; fix the metric/gate if they disagree",
+    }
+
+
 def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "generated_at": now_iso(),
@@ -2013,8 +2208,20 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
         "active_connections": None,
         "selected_backend": "",
         "block_submit_outcomes": {},
+        "block_submit_backend_outcomes": {},
+        "blocks": {},
+        "blocks_rejected_by_node": {},
+        "shares_accepted_total": 0.0,
+        "shares_rejected_by_reason": {},
+        "share_processing": {},
+        "loss_ledger": {},
         "submit_stall_recoveries": {},
         "submit_stall_recoveries_total": 0.0,
+        "template_backend_state": {},
+        "source_job_health": {},
+        "source_backend_health": {},
+        "selected_backend_source_health": {},
+        "template_conversion_stall": {},
     }
     if POOL_METRICS_PORT <= 0:
         payload["error"] = "pool metrics port disabled"
@@ -2023,9 +2230,20 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
     errors: list[str] = []
     any_ok = False
     block_submit_outcomes: Counter[str] = Counter()
+    block_submit_backend_outcomes: Counter[str] = Counter()
+    block_totals: Counter[str] = Counter()
+    blocks_rejected_by_node: Counter[str] = Counter()
+    shares_accepted_total = 0.0
+    shares_rejected_by_reason: Counter[str] = Counter()
+    share_processing_count = 0.0
+    share_processing_sum = 0.0
     submit_recoveries: Counter[str] = Counter()
     selected_backend = ""
     active_connections: float | None = None
+    source_job_health: dict[str, Any] = {}
+    source_backend_health: dict[str, dict[str, Any]] = {}
+    template_conversion_stall: dict[str, Any] = {}
+    template_backend_source = ""
 
     for name in POOL_CONTAINERS:
         info = containers.get(name) if isinstance(containers, dict) else None
@@ -2065,21 +2283,135 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
             labels = _parse_prometheus_labels(label_text or "")
             if metric_name == "pool_active_connections":
                 active_connections = value if active_connections is None else active_connections + value
-            elif metric_name == "pool_rpc_backend_selected" and value > 0:
-                selected_backend = labels.get("backend", selected_backend)
+            elif metric_name.startswith("pool_job_health_"):
+                key = metric_name.removeprefix("pool_job_health_")
+                if key == "accepted_jobs":
+                    accepted = source_job_health.setdefault("accepted_jobs", {})
+                    if isinstance(accepted, dict):
+                        accepted[str(labels.get("state") or "unknown")] = _prometheus_json_number(value)
+                elif key == "ok":
+                    source_job_health["ok"] = value > 0
+                else:
+                    source_job_health[key] = _prometheus_json_number(value)
+            elif metric_name in {
+                "pool_rpc_backend_selected",
+                "pool_rpc_backend_healthy",
+                "pool_rpc_backend_score",
+                "pool_rpc_backend_template_age_seconds",
+                "pool_rpc_backend_ws_connected",
+            }:
+                backend = labels.get("backend")
+                if not backend:
+                    continue
+                row = source_backend_health.setdefault(backend, {})
+                if metric_name == "pool_rpc_backend_selected":
+                    row["selected"] = value > 0
+                    if value > 0:
+                        selected_backend = backend
+                elif metric_name == "pool_rpc_backend_healthy":
+                    row["healthy"] = value > 0
+                elif metric_name == "pool_rpc_backend_score":
+                    row["score"] = value
+                elif metric_name == "pool_rpc_backend_template_age_seconds":
+                    row["template_age_seconds"] = round(value, 3)
+                elif metric_name == "pool_rpc_backend_ws_connected":
+                    row["ws_connected"] = value > 0
+            elif metric_name.startswith("pool_rpc_backend_node_health_"):
+                backend = labels.get("backend")
+                if not backend:
+                    continue
+                row = source_backend_health.setdefault(backend, {})
+                key = metric_name.removeprefix("pool_rpc_backend_node_health_")
+                if key in {
+                    "mineable",
+                    "submit_ready",
+                    "p2p_mining_fresh",
+                    "p2p_sync_peer_fresh",
+                    "p2p_sync_peer_present",
+                    "pending_template_build",
+                    "last_template_build_error_blocking",
+                }:
+                    row[f"node_{key}"] = value > 0
+                elif key in {"last_template_invalidation_sequence", "pending_template_invalidation"}:
+                    cause = str(labels.get("cause") or "unknown")
+                    bucket = row.setdefault(f"node_{key}", {})
+                    if isinstance(bucket, dict):
+                        bucket[cause] = _prometheus_json_number(value)
+                else:
+                    row[f"node_{key}"] = _prometheus_json_number(value)
+            elif metric_name.startswith("pool_template_conversion_stall_"):
+                key = metric_name.removeprefix("pool_template_conversion_stall_")
+                if key == "window_candidates":
+                    candidates = template_conversion_stall.setdefault("window_candidates", {})
+                    if isinstance(candidates, dict):
+                        candidates[str(labels.get("kind") or "unknown")] = _prometheus_json_number(value)
+                else:
+                    template_conversion_stall[key] = _prometheus_json_number(value)
             elif metric_name == "pool_block_submit_outcomes_total":
                 block_submit_outcomes[_metric_counter_key(labels, "outcome", "reason")] += value
+            elif metric_name == "pool_block_submit_backend_outcomes_total":
+                block_submit_backend_outcomes[_metric_counter_key(labels, "backend", "outcome", "reason")] += value
+            elif metric_name == "pool_blocks_rejected_by_node_total":
+                blocks_rejected_by_node[str(labels.get("reason") or "unknown")] += value
+            elif metric_name.startswith("pool_blocks_") and metric_name.endswith("_total"):
+                block_key = metric_name.removeprefix("pool_blocks_").removesuffix("_total")
+                block_totals[block_key] += value
+            elif metric_name == "pool_shares_accepted_total":
+                shares_accepted_total += value
+            elif metric_name == "pool_shares_rejected_total":
+                shares_rejected_by_reason[str(labels.get("reason") or "unknown")] += value
+            elif metric_name == "pool_share_processing_duration_seconds_count":
+                share_processing_count += value
+            elif metric_name == "pool_share_processing_duration_seconds_sum":
+                share_processing_sum += value
             elif metric_name == "pool_submit_stall_recoveries_total":
                 submit_recoveries[_metric_counter_key(labels, "action", "reason")] += value
         payload["containers"][name] = row
+        if source_backend_health and not template_backend_source:
+            template_backend_source = endpoint
 
     payload["status"] = "ok" if any_ok else "unavailable"
     payload["error"] = "; ".join(errors[:3])
     payload["active_connections"] = active_connections
     payload["selected_backend"] = selected_backend
     payload["block_submit_outcomes"] = dict(block_submit_outcomes)
+    payload["block_submit_backend_outcomes"] = dict(block_submit_backend_outcomes)
+    payload["blocks"] = dict(block_totals)
+    payload["blocks_rejected_by_node"] = dict(blocks_rejected_by_node)
+    payload["shares_accepted_total"] = _prometheus_json_number(shares_accepted_total)
+    payload["shares_rejected_by_reason"] = dict(shares_rejected_by_reason)
+    payload["share_processing"] = {
+        "count": _prometheus_json_number(share_processing_count),
+        "sum_seconds": round(share_processing_sum, 6),
+        "avg_seconds": round(share_processing_sum / share_processing_count, 6) if share_processing_count > 0 else None,
+    }
     payload["submit_stall_recoveries"] = dict(submit_recoveries)
     payload["submit_stall_recoveries_total"] = float(sum(submit_recoveries.values()))
+    payload["source_job_health"] = source_job_health
+    payload["source_backend_health"] = source_backend_health
+    payload["template_conversion_stall"] = template_conversion_stall
+    if source_backend_health:
+        payload["template_backend_state"] = {
+            "source": template_backend_source,
+            "backends": source_backend_health,
+            "job_health": source_job_health,
+            "template_conversion_stall": template_conversion_stall,
+            "selected_backend": selected_backend,
+            "backend_count": len(source_backend_health),
+            "healthy_backend_count": sum(1 for row in source_backend_health.values() if row.get("healthy") is True),
+        }
+        selected_health = source_backend_health.get(selected_backend) if selected_backend else None
+        payload["selected_backend_source_health"] = selected_health if isinstance(selected_health, dict) else {}
+    payload["loss_ledger"] = build_pool_efficiency_loss_ledger(
+        block_submit_outcomes=block_submit_outcomes,
+        shares_accepted_total=shares_accepted_total,
+        shares_rejected_by_reason=shares_rejected_by_reason,
+        block_totals=block_totals,
+        blocks_rejected_by_node=blocks_rejected_by_node,
+        share_processing=payload["share_processing"],
+        template_conversion_stall=template_conversion_stall,
+        block_submit_backend_outcomes=block_submit_backend_outcomes,
+    )
     return payload
 
 
@@ -2601,16 +2933,58 @@ def collect_miner_health() -> dict[str, Any]:
     total_work = sum(item["share_work"] for item in health if item.get("relevant_for_work_share") and item.get("share_work", 0) > 0)
     if not total_work:
         total_work = sum(item["share_work"] for item in health if item.get("share_work", 0) > 0)
+    expected_lane_rows = [
+        item
+        for item in health
+        if item.get("relevant_for_work_share")
+        and (item.get("connected") or item.get("managed") or int(item.get("share_work", 0) or 0) > 0)
+    ]
+    expected_lane_count = len(expected_lane_rows)
+    expected_lane_percent = Decimal("100") / Decimal(expected_lane_count) if expected_lane_count > 0 else Decimal("0")
+    imbalanced_lanes: list[str] = []
     for item in health:
         share_work_int = int(item.get("share_work", 0) or 0)
         if total_work > 0 and share_work_int > 0:
             item["work_percent"] = percent_to_str((Decimal(share_work_int) / Decimal(total_work)) * Decimal("100"))
+        item["expected_work_percent"] = percent_to_str(expected_lane_percent) if expected_lane_count > 0 and item.get("relevant_for_work_share") else "0.00"
+        item["work_ratio_to_expected"] = None
+        item["lane_status"] = "not-tracked"
+        if expected_lane_count > 0 and item.get("relevant_for_work_share"):
+            if total_work <= 0:
+                item["lane_status"] = "no-window-work"
+                continue
+            actual_percent = safe_decimal(item.get("work_percent")) or Decimal("0")
+            ratio = actual_percent / expected_lane_percent if expected_lane_percent > 0 else Decimal("0")
+            item["work_ratio_to_expected"] = decimal_to_str(ratio, places=2)
+            if share_work_int <= 0 and item.get("connected"):
+                item["lane_status"] = "no-work"
+            elif ratio < Decimal("0.50"):
+                item["lane_status"] = "low"
+            elif ratio > Decimal("1.70"):
+                item["lane_status"] = "high"
+            else:
+                item["lane_status"] = "balanced"
+            if item["lane_status"] in {"no-work", "low", "high"} and item.get("connected"):
+                label = item.get("display_name") or item.get("mac") or item.get("ip")
+                mac = item.get("mac") or "unknown-mac"
+                imbalanced_lanes.append(
+                    f"{label} mac={mac} lane={item['lane_status']} actual={item['work_percent']}% expected={item['expected_work_percent']}%"
+                )
+    if imbalanced_lanes:
+        suffix = f"; +{len(imbalanced_lanes) - 4} more" if len(imbalanced_lanes) > 4 else ""
+        warnings.append("miner lane balance advisory by MAC identity: " + "; ".join(imbalanced_lanes[:4]) + suffix)
 
     counts = miner_health_count_summary(health)
     return {
         "generated_at": now_iso(),
         "registry_updated_at": registry.get("updated_at"),
         **counts,
+        "lane_balance": {
+            "identity_basis": "mac",
+            "expected_lane_count": expected_lane_count,
+            "expected_work_percent": percent_to_str(expected_lane_percent) if expected_lane_count > 0 else "0.00",
+            "imbalanced_count": len(imbalanced_lanes),
+        },
         "failures": failures,
         "warnings": warnings,
         "miners": health,
@@ -2846,8 +3220,19 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
                 "active_connections": None,
                 "selected_backend": "",
                 "block_submit_outcomes": {},
+                "block_submit_backend_outcomes": {},
+                "blocks": {},
+                "blocks_rejected_by_node": {},
+                "shares_accepted_total": 0.0,
+                "shares_rejected_by_reason": {},
+                "share_processing": {},
+                "loss_ledger": {},
                 "submit_stall_recoveries": {},
                 "submit_stall_recoveries_total": 0.0,
+                "source_job_health": {},
+                "source_backend_health": {},
+                "selected_backend_source_health": {},
+                "template_conversion_stall": {},
             },
             "pool_health": {
                 **empty_pool,
@@ -3080,13 +3465,53 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "active_connections": None,
         "selected_backend": "",
         "block_submit_outcomes": {},
+        "block_submit_backend_outcomes": {},
+        "blocks": {},
+        "blocks_rejected_by_node": {},
+        "shares_accepted_total": 0.0,
+        "shares_rejected_by_reason": {},
+        "share_processing": {},
+        "loss_ledger": {},
         "submit_stall_recoveries": {},
         "submit_stall_recoveries_total": 0.0,
+        "source_job_health": {},
+        "source_backend_health": {},
+        "selected_backend_source_health": {},
+        "template_conversion_stall": {},
     }
     pool["metrics"] = pool_metrics
     pool["selected_backend"] = pool_metrics.get("selected_backend") or ""
     pool["metrics_active_connections"] = pool_metrics.get("active_connections")
     pool["metrics_submit_stall_recoveries_total"] = pool_metrics.get("submit_stall_recoveries_total")
+    source_job_health = (
+        pool_metrics.get("source_job_health")
+        if isinstance(pool_metrics.get("source_job_health"), dict)
+        else {}
+    )
+    source_backend_health = (
+        pool_metrics.get("source_backend_health")
+        if isinstance(pool_metrics.get("source_backend_health"), dict)
+        else {}
+    )
+    selected_source_health = (
+        pool_metrics.get("selected_backend_source_health")
+        if isinstance(pool_metrics.get("selected_backend_source_health"), dict)
+        else {}
+    )
+    pool["source_job_health"] = source_job_health
+    pool["source_backend_health"] = source_backend_health
+    pool["selected_backend_source_health"] = selected_source_health
+    pool["template_conversion_stall"] = (
+        pool_metrics.get("template_conversion_stall")
+        if isinstance(pool_metrics.get("template_conversion_stall"), dict)
+        else {}
+    )
+    pool_loss_ledger = (
+        pool_metrics.get("loss_ledger")
+        if isinstance(pool_metrics.get("loss_ledger"), dict)
+        else {}
+    )
+    pool["loss_ledger"] = pool_loss_ledger
     if pool["rpc_refused"] and not any("bdag child" in item for item in stack_failures):
         add_sync_warning("pool recently saw RPC connection refused")
 
@@ -3106,17 +3531,82 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         and pool_has_recent_mining
         and not pool.get("share_stall")
     )
+    source_job_health_ok_raw = source_job_health.get("ok") if isinstance(source_job_health, dict) else None
+    source_job_health_ok = None if source_job_health_ok_raw is None else bool(source_job_health_ok_raw)
+    selected_source_checks = []
+    if isinstance(selected_source_health, dict):
+        for key in ("node_mineable", "node_submit_ready", "node_p2p_mining_fresh"):
+            if key in selected_source_health:
+                selected_source_checks.append(bool(selected_source_health.get(key)))
+        if selected_source_health.get("node_last_template_build_error_blocking") is True:
+            selected_source_checks.append(False)
+    selected_source_degraded = bool(selected_source_checks and not all(selected_source_checks))
+    source_job_hard_degraded = bool(source_job_health_ok is False and not pool_has_recent_mining)
+    source_selected_backend_hard_degraded = bool(selected_source_degraded and not pool_has_recent_mining)
+    source_health_transient_degraded = bool(
+        (source_job_health_ok is False or selected_source_degraded)
+        and pool_has_recent_mining
+    )
+    pool["source_job_health_ok"] = source_job_health_ok
+    pool["source_job_hard_degraded"] = source_job_hard_degraded
+    pool["source_selected_backend_degraded"] = selected_source_degraded
+    pool["source_selected_backend_hard_degraded"] = source_selected_backend_hard_degraded
+    pool["source_health_transient_degraded"] = source_health_transient_degraded
+    pool["source_selected_backend_submit_ready"] = (
+        selected_source_health.get("node_submit_ready")
+        if isinstance(selected_source_health, dict)
+        else None
+    )
+    pool["source_selected_backend_mineable"] = (
+        selected_source_health.get("node_mineable")
+        if isinstance(selected_source_health, dict)
+        else None
+    )
+    pool["source_selected_backend_p2p_fresh"] = (
+        selected_source_health.get("node_p2p_mining_fresh")
+        if isinstance(selected_source_health, dict)
+        else None
+    )
     pool_initial_download_needs_repair = bool(pool.get("initial_download") and not pool_initial_download_transient)
     pool["initial_download_transient"] = pool_initial_download_transient
     pool["initial_download_needs_repair"] = pool_initial_download_needs_repair
     sync_health["pool_initial_download_transient"] = pool_initial_download_transient
     sync_health["pool_has_recent_mining"] = pool_has_recent_mining
+    readiness_contract = selected_backend_readiness_contract(
+        str(pool.get("selected_backend") or ""),
+        selected_source_health,
+        source_job_health,
+        pool_has_recent_mining,
+    )
+    pool["selected_backend_readiness_contract"] = readiness_contract
     if pool_initial_download_needs_repair:
         add_sync_warning("pool is waiting for node sync to finish")
     elif pool_initial_download_transient:
         add_maintenance_warning(
             "pool saw a transient initial-download template response while active mining stayed fresh"
         )
+    if connected_miners > 0 and pool_loss_ledger.get("warnings"):
+        ledger_warnings = [str(item) for item in pool_loss_ledger.get("warnings", []) if item]
+        if ledger_warnings:
+            add_maintenance_warning("pool efficiency loss ledger: " + "; ".join(ledger_warnings[:3]))
+    if connected_miners > 0 and readiness_contract.get("contradiction"):
+        backend = readiness_contract.get("selected_backend") or "selected backend"
+        checks = readiness_contract.get("checks") if isinstance(readiness_contract.get("checks"), dict) else {}
+        add_maintenance_warning(
+            f"selected backend readiness contradiction: {backend} reports "
+            f"mineable={checks.get('node_mineable')} submit_ready={checks.get('node_submit_ready')} "
+            "while accepted mining work remains recent"
+        )
+    if connected_miners > 0 and source_job_hard_degraded:
+        add_sync_warning("pool source job health reports not-ok and accepted work is stale")
+    elif connected_miners > 0 and source_job_health_ok is False:
+        add_maintenance_warning("pool source job health is advisory-degraded while accepted work remains fresh")
+    if connected_miners > 0 and source_selected_backend_hard_degraded:
+        backend = pool.get("selected_backend") or "selected backend"
+        add_sync_warning(f"pool source health says {backend} is not mineable/submit-ready and accepted work is stale")
+    elif connected_miners > 0 and source_health_transient_degraded:
+        backend = pool.get("selected_backend") or "selected backend"
+        add_maintenance_warning(f"pool source health says {backend} is degraded, but accepted work remains fresh")
     if connected_miners > 0 and pool.get("share_stall"):
         age = pool.get("last_valid_share_age_seconds")
         age_text = f"{age}s" if age is not None else "unknown"
@@ -3206,6 +3696,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             or (pool.get("stale_job_candidate_storm") and connected_miners > 0)
             or (pool.get("block_submit_error_storm") and connected_miners > 0)
             or (pool.get("accepted_job_expired_storm") and connected_miners > 0)
+            or (source_job_hard_degraded and connected_miners > 0)
+            or (source_selected_backend_hard_degraded and connected_miners > 0)
             or (
                 pool.get("block_submit_zero_success_storm")
                 and connected_miners > 0
@@ -3293,6 +3785,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             or pool_health.get("stale_job_candidate_storm")
             or pool_health.get("block_submit_error_storm")
             or pool_health.get("accepted_job_expired_storm")
+            or pool_health.get("source_job_hard_degraded")
+            or pool_health.get("source_selected_backend_hard_degraded")
             or (
                 pool_health.get("block_submit_zero_success_storm")
                 and not pool_health.get("submit_stall_recovery_recent")
