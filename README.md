@@ -105,7 +105,11 @@ The node entrypoint folds those values together with `BDAG_FASTSNAP_PEERS`,
 LAN, private/VPN, public internet. The ordered list is used for pre-start
 FastSnap V2 on empty datadirs and is also appended as startup `--addpeer`
 arguments so protocol 46 FastSync peers are available before public fallback
-dials dominate startup. V2 is the default on upgraded full nodes; a separate
+dials dominate startup. Empty datadirs call one multi-peer `fastsnap` run, so
+V2 can choose the best advertised artifact and fetch chunks from every matching
+provider instead of trying one peer at a time. With `BDAG_FASTSNAP_DISCOVERY=1`
+the bootstrap peers are also used to query the libp2p DHT for
+`blockdag/fastartifact/v2/<network>` providers. A separate
 `BDAG_FASTSNAP_PEERS` value is only needed when the operator wants to pin a
 specific artifact source.
 
@@ -173,9 +177,12 @@ docker compose -p snapshot-node -f docker-compose.snapshot-node.yml --env-file .
 
 Dual-node mining hosts can serve a public P2P FastSnap archive without mining
 against a stopped node by using the pool router maintenance handoff. This is a
-default release behaviour: `bdag-fastsnap-seed.timer` refreshes the public seed
-every two hours at low CPU and I/O priority when
-`BDAG_FASTSNAP_SEED_TIMER_ENABLED=1`.
+default release behaviour: `bdag-fastartifact-sidecar.timer` checks the hot
+published seed every 30 minutes at low CPU and I/O priority when
+`BDAG_FASTSNAP_SEED_TIMER_ENABLED=1`. It leaves the current artifact in place
+while exporting a new temporary archive, skips work when the published manifest
+is fresh enough, and delegates the actual drain/export/verify/promote sequence
+to `ops/build-fastsnap-seed.sh`.
 
 Run an immediate refresh manually with:
 
@@ -194,7 +201,14 @@ keep separate per-node snapshot copies.
 
 The export path refuses to publish a stale public seed by default unless the
 standby/export backend is within `BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG`
-main-order units of the selected backend. The default is `1000`.
+main-order units of the selected backend. The default is `1000`. The hot
+sidecar refreshes the published V2 seed when it is more than
+`BDAG_FASTARTIFACT_SIDECAR_MAX_SEED_LAG` main-order units behind the live
+nodes; the default is `10000`. For signed V2 artifact manifests, set
+`BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID` and
+`BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX` on serving nodes, then distribute the
+public key through `BDAG_FASTSNAP_TRUSTED_SIGNERS` on receivers. Unsigned V2
+manifests remain disabled by default for public peers.
 
 See `docs/fastsnap-maintenance-handoff.html`.
 

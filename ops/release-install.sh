@@ -198,7 +198,12 @@ configure_env() {
   set_env_value .env BDAG_POOL_HOST "$lan_ip"
   set_env_value .env BDAG_POOL_URL "stratum+tcp://$lan_ip:3334"
   set_env_value .env BDAG_MINER_SCAN_TARGET "$scan_target"
+  set_env_value .env POOL_RUNTIME_ADMIN_ENABLED true
   set_env_value .env BDAG_FASTSYNC_PREPROCESS_WORKERS 1
+  set_env_value .env BDAG_FASTSNAP_DISCOVERY 1
+  set_env_value .env BDAG_FASTSNAP_DISCOVERY_LIMIT 32
+  set_env_value .env BDAG_FASTSNAP_DISCOVERY_TIMEOUT 20s
+  set_env_value .env BDAG_FASTSYNC_ARTIFACT_MANIFEST_TTL 24h
   configure_node_mode_env "$node_mode"
   configure_node_mining_env "$node_mining_enabled" "$mining_address"
 

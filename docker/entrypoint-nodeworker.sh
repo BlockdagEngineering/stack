@@ -284,7 +284,7 @@ maybe_fastsnap_bootstrap() {
   local node_args
   node_args="$(node_args_from_argv "$@" || true)"
   local network="${BDAG_FASTSNAP_NETWORK:-mainnet}"
-  local config_file data_parent data_dir archive min_tip timeout peers peer tmp_archive
+  local config_file data_parent data_dir archive min_tip timeout peers peer tmp_archive ledger
   config_file="$(node_arg_value configfile "$node_args" || true)"
   data_parent="${BDAG_FASTSNAP_DATADIR:-$(node_arg_value datadir "$node_args" || true)}"
   if [ -z "$data_parent" ] && [ -n "$config_file" ]; then
@@ -320,42 +320,63 @@ maybe_fastsnap_bootstrap() {
   rm -f "$tmp_archive" "$tmp_archive.manifest.json"
 
   local old_ifs="$IFS"
+  local fastsnap_args signer peer_count
+  fastsnap_args=(
+    --out "$tmp_archive"
+    --network "$network"
+    --min-tip "$min_tip"
+    --timeout "$timeout"
+  )
+  peer_count=0
   IFS=', '
   for peer in $peers; do
     [ -n "$peer" ] || continue
-    log "trying P2P snapshot bootstrap from $peer"
-    local fastsnap_args=(
-      --peer "$peer"
-      --out "$tmp_archive"
-      --network "$network"
-      --min-tip "$min_tip"
-      --timeout "$timeout"
-    )
-    if [ "${BDAG_FASTSNAP_ARTIFACT_V2:-1}" = "0" ]; then
-      fastsnap_args+=(--artifact-v2=false)
-    fi
-    if [ "${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}" = "1" ]; then
-      fastsnap_args+=(--allow-unsigned)
-    fi
-    if [ -n "${BDAG_FASTSNAP_PARALLELISM:-}" ]; then
-      fastsnap_args+=(--parallelism "$BDAG_FASTSNAP_PARALLELISM")
-    fi
-    if [ -n "${BDAG_FASTSNAP_LEDGER:-}" ]; then
-      fastsnap_args+=(--ledger "$BDAG_FASTSNAP_LEDGER")
-    fi
-    if "$fastsnap_bin" "${fastsnap_args[@]}"; then
-      mv "$tmp_archive" "$archive"
-      if [ -f "$tmp_archive.manifest.json" ]; then
-        mv "$tmp_archive.manifest.json" "$archive.manifest.json"
-      fi
-      log "importing downloaded P2P snapshot before node startup"
-      "$node_binary" snap import --datadir "$data_dir" --path "$archive"
-      IFS="$old_ifs"
-      return 0
-    fi
-    rm -f "$tmp_archive" "$tmp_archive.manifest.json"
+    fastsnap_args+=(--peer "$peer")
+    peer_count=$((peer_count + 1))
   done
   IFS="$old_ifs"
+  if [ "$peer_count" -eq 0 ]; then
+    log "no valid P2P snapshot peers configured; normal FastSync/legacy sync will start"
+    return 0
+  fi
+  log "trying P2P snapshot bootstrap from $peer_count ordered peer candidate(s)"
+
+  if [ "${BDAG_FASTSNAP_ARTIFACT_V2:-1}" = "0" ]; then
+    fastsnap_args+=(--artifact-v2=false)
+  fi
+  if [ "${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}" = "1" ]; then
+    fastsnap_args+=(--allow-unsigned)
+  fi
+  if [ "${BDAG_FASTSNAP_DISCOVERY:-1}" = "1" ]; then
+    fastsnap_args+=(--discover)
+    if [ -n "${BDAG_FASTSNAP_DISCOVERY_LIMIT:-}" ]; then
+      fastsnap_args+=(--discover-limit "$BDAG_FASTSNAP_DISCOVERY_LIMIT")
+    fi
+    if [ -n "${BDAG_FASTSNAP_DISCOVERY_TIMEOUT:-}" ]; then
+      fastsnap_args+=(--discover-timeout "$BDAG_FASTSNAP_DISCOVERY_TIMEOUT")
+    fi
+  fi
+  if [ -n "${BDAG_FASTSNAP_PARALLELISM:-}" ]; then
+    fastsnap_args+=(--parallelism "$BDAG_FASTSNAP_PARALLELISM")
+  fi
+  ledger="${BDAG_FASTSNAP_LEDGER:-$archive.artifact-ledger.json}"
+  fastsnap_args+=(--ledger "$ledger")
+  IFS=', '
+  for signer in ${BDAG_FASTSNAP_TRUSTED_SIGNERS:-}; do
+    [ -n "$signer" ] && fastsnap_args+=(--trusted-signer "$signer")
+  done
+  IFS="$old_ifs"
+
+  if "$fastsnap_bin" "${fastsnap_args[@]}"; then
+    mv "$tmp_archive" "$archive"
+    if [ -f "$tmp_archive.manifest.json" ]; then
+      mv "$tmp_archive.manifest.json" "$archive.manifest.json"
+    fi
+    log "importing downloaded P2P snapshot before node startup"
+    "$node_binary" snap import --datadir "$data_dir" --path "$archive"
+    return 0
+  fi
+  rm -f "$tmp_archive" "$tmp_archive.manifest.json"
 
   if [ "${BDAG_FASTSNAP_REQUIRED:-0}" = "1" ]; then
     log "required P2P snapshot bootstrap failed"

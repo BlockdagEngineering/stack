@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh BlockDAG Fast Artifact Sync V2 hot seed
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=30m
+Persistent=true
+RandomizedDelaySec=120
+Unit=bdag-fastartifact-sidecar.service
+
+[Install]
+WantedBy=timers.target

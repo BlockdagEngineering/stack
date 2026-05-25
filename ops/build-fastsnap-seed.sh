@@ -380,12 +380,29 @@ install_snapshot_links() {
   local final_archive="$1"
   local final_manifest="$2"
   local node_dir
+  local target_archive target_manifest
   for node_dir in \
     "${BDAG_FASTSNAP_NODE1_DATADIR:-$PROJECT_ROOT/data/node1}/mainnet" \
     "${BDAG_FASTSNAP_NODE2_DATADIR:-$PROJECT_ROOT/data/node2}/mainnet"; do
     if [[ -d "$node_dir" ]]; then
-      ln -f "$final_archive" "$node_dir/snapshot.bdsnap"
-      ln -f "$final_manifest" "$node_dir/snapshot.bdsnap.manifest.json"
+      target_archive="$node_dir/snapshot.bdsnap"
+      target_manifest="$node_dir/snapshot.bdsnap.manifest.json"
+      if ! ln -f "$final_archive" "$target_archive" 2>/dev/null; then
+        if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+          sudo ln -f "$final_archive" "$target_archive"
+        else
+          log "failed to install FastSnap archive link into $node_dir; sudo is unavailable"
+          return 1
+        fi
+      fi
+      if ! ln -f "$final_manifest" "$target_manifest" 2>/dev/null; then
+        if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+          sudo ln -f "$final_manifest" "$target_manifest"
+        else
+          log "failed to install FastSnap manifest link into $node_dir; sudo is unavailable"
+          return 1
+        fi
+      fi
       log "installed hardlinked FastSnap seed into $node_dir"
     fi
   done

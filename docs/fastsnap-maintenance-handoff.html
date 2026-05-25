@@ -32,7 +32,7 @@
     "branch": "feature/stack-fastsnap-maintenance-handoff",
     "companion_pool_branch": "feature/pool-router-maintenance-drain",
     "intent": "Make public FastSnap seed export safe by requiring an explicit pool router backend drain before any node container is stopped.",
-    "release_default": "ops/install-p2p-services.sh installs bdag-fastsnap-seed.timer by default for dual-node releases unless BDAG_FASTSNAP_SEED_TIMER_ENABLED=0.",
+    "release_default": "ops/install-p2p-services.sh installs bdag-fastartifact-sidecar.timer by default for dual-node releases unless BDAG_FASTSNAP_SEED_TIMER_ENABLED=0.",
     "critical_contract": "The script must fail closed unless /admin/rpc-backend-maintenance marks the export backend drained and pool_rpc_backend_selected stays on the active backend."
   }
   </script>
@@ -45,7 +45,7 @@
   <div class="grid">
     <section class="card"><div class="label">Primary Risk Removed</div><div class="value bad">Pool mines into stopped node</div><p>The old script guessed from metrics. The new path asks the pool router to drain a backend and refuses to proceed if the router cannot switch away.</p></section>
     <section class="card"><div class="label">Safety Contract</div><div class="value ok">Fail Closed</div><p>If no healthy alternate exists, the maintenance API returns conflict and no node is stopped.</p></section>
-    <section class="card"><div class="label">Release Default</div><div class="value accent">2-hour seed timer</div><p><code>ops/install-p2p-services.sh</code> installs <code>bdag-fastsnap-seed.timer</code> unless disabled with <code>BDAG_FASTSNAP_SEED_TIMER_ENABLED=0</code>.</p></section>
+    <section class="card"><div class="label">Release Default</div><div class="value accent">Hot artifact sidecar</div><p><code>ops/install-p2p-services.sh</code> installs <code>bdag-fastartifact-sidecar.timer</code> unless disabled with <code>BDAG_FASTSNAP_SEED_TIMER_ENABLED=0</code>.</p></section>
   </div>
 
   <h2>Handoff Flow</h2>
@@ -82,8 +82,8 @@ BDAG_FASTSNAP_NODE2_DATADIR=/opt/blockdag-pool/data/node2</code></pre>
   <h2>Operator Command</h2>
   <pre><code>cd /path/to/pool-stack
 ./ops/install-p2p-services.sh
-systemctl --user status bdag-fastsnap-seed.timer
-systemctl --user start bdag-fastsnap-seed.service</code></pre>
+systemctl --user status bdag-fastartifact-sidecar.timer
+systemctl --user start bdag-fastartifact-sidecar.service</code></pre>
 
   <h2>Done Means</h2>
   <table>

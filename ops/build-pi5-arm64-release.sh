@@ -95,6 +95,10 @@ services:
       POOL_FEE_PERCENTAGE: ${POOL_FEE_PERCENTAGE:-0.0}
       PG_URL: ${PG_URL:-postgres://test:test@pool-db:5432/pool}
       POOL_PRIVATE_KEY: ${POOL_PRIVATE_KEY:-}
+      POOL_RUNTIME_ADMIN_ENABLED: ${POOL_RUNTIME_ADMIN_ENABLED:-true}
+      POOL_RPC_ROUTER_ENABLED: ${POOL_RPC_ROUTER_ENABLED:-true}
+      POOL_RPC_BACKENDS: ${POOL_RPC_BACKENDS:-node1=http://bdag-miner-node-1:38131,node2=http://bdag-miner-node-2:38131}
+      POOL_RPC_ROUTER_TEMPLATE_LANE_MODE: ${POOL_RPC_ROUTER_TEMPLATE_LANE_MODE:-active-passive}
     ports:
       - "${POOL_PORT:-3334}:3334"
       - "127.0.0.1:${POOL_METRICS_PORT:-9092}:9090"
@@ -158,8 +162,15 @@ services:
       BDAG_FASTSNAP_TIMEOUT: ${BDAG_FASTSNAP_TIMEOUT:-90s}
       BDAG_FASTSNAP_ARTIFACT_V2: ${BDAG_FASTSNAP_ARTIFACT_V2:-1}
       BDAG_FASTSNAP_ALLOW_UNSIGNED: ${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}
+      BDAG_FASTSNAP_TRUSTED_SIGNERS: ${BDAG_FASTSNAP_TRUSTED_SIGNERS:-}
+      BDAG_FASTSNAP_DISCOVERY: ${BDAG_FASTSNAP_DISCOVERY:-1}
+      BDAG_FASTSNAP_DISCOVERY_LIMIT: ${BDAG_FASTSNAP_DISCOVERY_LIMIT:-32}
+      BDAG_FASTSNAP_DISCOVERY_TIMEOUT: ${BDAG_FASTSNAP_DISCOVERY_TIMEOUT:-20s}
       BDAG_FASTSNAP_PARALLELISM: ${BDAG_FASTSNAP_PARALLELISM:-4}
       BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
+      BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID: ${BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID:-}
+      BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX: ${BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX:-}
+      BDAG_FASTSYNC_ARTIFACT_MANIFEST_TTL: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST_TTL:-24h}
       BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-1}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
       BDAG_FASTSYNC_LAN_PREFIXES: ${BDAG_FASTSYNC_LAN_PREFIXES:-192.168.}
@@ -235,8 +246,15 @@ services:
       BDAG_FASTSNAP_TIMEOUT: ${BDAG_FASTSNAP_TIMEOUT:-90s}
       BDAG_FASTSNAP_ARTIFACT_V2: ${BDAG_FASTSNAP_ARTIFACT_V2:-1}
       BDAG_FASTSNAP_ALLOW_UNSIGNED: ${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}
+      BDAG_FASTSNAP_TRUSTED_SIGNERS: ${BDAG_FASTSNAP_TRUSTED_SIGNERS:-}
+      BDAG_FASTSNAP_DISCOVERY: ${BDAG_FASTSNAP_DISCOVERY:-1}
+      BDAG_FASTSNAP_DISCOVERY_LIMIT: ${BDAG_FASTSNAP_DISCOVERY_LIMIT:-32}
+      BDAG_FASTSNAP_DISCOVERY_TIMEOUT: ${BDAG_FASTSNAP_DISCOVERY_TIMEOUT:-20s}
       BDAG_FASTSNAP_PARALLELISM: ${BDAG_FASTSNAP_PARALLELISM:-4}
       BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
+      BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID: ${BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID:-}
+      BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX: ${BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX:-}
+      BDAG_FASTSYNC_ARTIFACT_MANIFEST_TTL: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST_TTL:-24h}
       BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-1}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
       BDAG_FASTSYNC_LAN_PREFIXES: ${BDAG_FASTSYNC_LAN_PREFIXES:-192.168.}
@@ -408,7 +426,9 @@ POSTGRES_DB=pool
 PG_URL=postgres://test:change-me-at-install@pool-db:5432/pool
 
 POOL_RPC_ROUTER_ENABLED=true
+POOL_RUNTIME_ADMIN_ENABLED=true
 POOL_RPC_BACKENDS=node2=http://bdag-miner-node-2:38131
+POOL_RPC_ROUTER_TEMPLATE_LANE_MODE=active-passive
 POOL_TEMPLATE_FANIN_ENABLED=false
 POOL_TEMPLATE_FANIN_MAX_BACKENDS=2
 POOL_TEMPLATE_FANIN_REJECT_LAG_BLOCKS=0
@@ -432,8 +452,18 @@ BDAG_FASTSNAP_MIN_TIP=0
 BDAG_FASTSNAP_TIMEOUT=90s
 BDAG_FASTSNAP_ARTIFACT_V2=1
 BDAG_FASTSNAP_ALLOW_UNSIGNED=0
+BDAG_FASTSNAP_TRUSTED_SIGNERS=
+BDAG_FASTSNAP_DISCOVERY=1
+BDAG_FASTSNAP_DISCOVERY_LIMIT=32
+BDAG_FASTSNAP_DISCOVERY_TIMEOUT=20s
 BDAG_FASTSNAP_PARALLELISM=4
 BDAG_FASTSNAP_LEDGER=
+BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID=
+BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX=
+BDAG_FASTSYNC_ARTIFACT_MANIFEST_TTL=24h
+BDAG_FASTSNAP_SEED_TIMER_ENABLED=1
+BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG=1000
+BDAG_FASTARTIFACT_SIDECAR_MAX_SEED_LAG=10000
 BDAG_FASTSYNC_PEER_ORDERING=1
 BDAG_FASTSYNC_APPEND_ADDPEERS=1
 BDAG_FASTSYNC_LAN_PREFIXES=192.168.
@@ -694,29 +724,47 @@ maybe_fastsnap_bootstrap() {
   rm -f "$tmp_archive" "$tmp_archive.manifest.json"
 
   old_ifs="$IFS"
+  args="--out $tmp_archive --network $network --min-tip $min_tip --timeout $timeout"
+  peer_count=0
   IFS=', '
   for peer in $peers; do
     [ -n "$peer" ] || continue
-    log "trying P2P snapshot bootstrap from $peer"
-    args="--peer $peer --out $tmp_archive --network $network --min-tip $min_tip --timeout $timeout"
-    [ "${BDAG_FASTSNAP_ARTIFACT_V2:-1}" = "0" ] && args="$args --artifact-v2=false"
-    [ "${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}" = "1" ] && args="$args --allow-unsigned"
-    [ -n "${BDAG_FASTSNAP_PARALLELISM:-}" ] && args="$args --parallelism ${BDAG_FASTSNAP_PARALLELISM}"
-    [ -n "${BDAG_FASTSNAP_LEDGER:-}" ] && args="$args --ledger ${BDAG_FASTSNAP_LEDGER}"
-    # shellcheck disable=SC2086
-    if "$FASTSNAP" $args; then
-      mv "$tmp_archive" "$archive"
-      if [ -f "$tmp_archive.manifest.json" ]; then
-        mv "$tmp_archive.manifest.json" "$archive.manifest.json"
-      fi
-      log "importing downloaded P2P snapshot before node startup"
-      "$BIN" snap import --datadir "$data_dir" --path "$archive"
-      IFS="$old_ifs"
-      return 0
-    fi
-    rm -f "$tmp_archive" "$tmp_archive.manifest.json"
+    args="$args --peer $peer"
+    peer_count=$((peer_count + 1))
   done
   IFS="$old_ifs"
+  if [ "$peer_count" -eq 0 ]; then
+    log "no valid P2P snapshot peers configured; normal FastSync/legacy sync will start"
+    return 0
+  fi
+  log "trying P2P snapshot bootstrap from $peer_count ordered peer candidate(s)"
+
+  [ "${BDAG_FASTSNAP_ARTIFACT_V2:-1}" = "0" ] && args="$args --artifact-v2=false"
+  [ "${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}" = "1" ] && args="$args --allow-unsigned"
+  if [ "${BDAG_FASTSNAP_DISCOVERY:-1}" = "1" ]; then
+    args="$args --discover"
+    [ -n "${BDAG_FASTSNAP_DISCOVERY_LIMIT:-}" ] && args="$args --discover-limit ${BDAG_FASTSNAP_DISCOVERY_LIMIT}"
+    [ -n "${BDAG_FASTSNAP_DISCOVERY_TIMEOUT:-}" ] && args="$args --discover-timeout ${BDAG_FASTSNAP_DISCOVERY_TIMEOUT}"
+  fi
+  [ -n "${BDAG_FASTSNAP_PARALLELISM:-}" ] && args="$args --parallelism ${BDAG_FASTSNAP_PARALLELISM}"
+  ledger="${BDAG_FASTSNAP_LEDGER:-$archive.artifact-ledger.json}"
+  args="$args --ledger $ledger"
+  IFS=', '
+  for signer in ${BDAG_FASTSNAP_TRUSTED_SIGNERS:-}; do
+    [ -n "$signer" ] && args="$args --trusted-signer $signer"
+  done
+  IFS="$old_ifs"
+  # shellcheck disable=SC2086
+  if "$FASTSNAP" $args; then
+    mv "$tmp_archive" "$archive"
+    if [ -f "$tmp_archive.manifest.json" ]; then
+      mv "$tmp_archive.manifest.json" "$archive.manifest.json"
+    fi
+    log "importing downloaded P2P snapshot before node startup"
+    "$BIN" snap import --datadir "$data_dir" --path "$archive"
+    return 0
+  fi
+  rm -f "$tmp_archive" "$tmp_archive.manifest.json"
 
   if [ "${BDAG_FASTSNAP_REQUIRED:-0}" = "1" ]; then
     log "required P2P snapshot bootstrap failed"
@@ -1126,7 +1174,14 @@ main() {
 
   say "Copying base installer from $base"
   rsync -a --delete \
+    --exclude='.git' \
     --exclude='.git/' \
+    --exclude='/github' \
+    --exclude='/github.pub' \
+    --exclude='*.key' \
+    --exclude='*.pem' \
+    --exclude='id_ed25519*' \
+    --exclude='id_rsa*' \
     --exclude='data/' \
     --exclude='data-restore/' \
     --exclude='ops/runtime/' \
@@ -1159,21 +1214,21 @@ main() {
   say "Building ARM64 pool binaries"
   (
     cd "$BUILD_ROOT/pool-src"
-    env CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o "$bin_dir/pool" ./cmd/pool
-    env CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o "$bin_dir/dashboard-api" ./cmd/dashboard-api
+    env CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 CGO_ENABLED=1 go build -buildvcs=false -trimpath -ldflags="-s -w" -o "$bin_dir/pool" ./cmd/pool
+    env CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 CGO_ENABLED=1 go build -buildvcs=false -trimpath -ldflags="-s -w" -o "$bin_dir/dashboard-api" ./cmd/dashboard-api
   )
 
   say "Building ARM64 node binaries"
   (
     cd "$BUILD_ROOT/node-src"
     env CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
-      go build -trimpath -ldflags="-X github.com/BlockdagNetworkLabs/bdag/version.Build=release-${NODE_COMMIT:0:7}" \
+      go build -buildvcs=false -trimpath -ldflags="-X github.com/BlockdagNetworkLabs/bdag/version.Build=release-${NODE_COMMIT:0:7}" \
       -o "$bin_dir/bdag" "github.com/BlockdagNetworkLabs/bdag/cmd/bdag"
     env CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
-      go build -trimpath -ldflags="-X github.com/BlockdagNetworkLabs/bdag/version.Build=release-${NODE_COMMIT:0:7}" \
+      go build -buildvcs=false -trimpath -ldflags="-X github.com/BlockdagNetworkLabs/bdag/version.Build=release-${NODE_COMMIT:0:7}" \
       -o "$bin_dir/nodeworker" "github.com/BlockdagNetworkLabs/bdag/cmd/nodeworker"
     env CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
-      go build -trimpath -ldflags="-X github.com/BlockdagNetworkLabs/bdag/version.Build=release-${NODE_COMMIT:0:7}" \
+      go build -buildvcs=false -trimpath -ldflags="-X github.com/BlockdagNetworkLabs/bdag/version.Build=release-${NODE_COMMIT:0:7}" \
       -o "$bin_dir/fastsnap" "github.com/BlockdagNetworkLabs/bdag/cmd/fastsnap"
   )
 
