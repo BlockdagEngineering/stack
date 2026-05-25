@@ -73,6 +73,8 @@ services:
       # node.conf in project root (copy from node.conf.example). gitignored.
       - ./node.conf:/etc/bdagStack/node.conf:ro
     environment:
+      BDAG_FASTSNAP_ENABLED: ${BDAG_FASTSNAP_ENABLED:-1}
+      BDAG_FASTSNAP_REQUIRED: ${BDAG_FASTSNAP_REQUIRED:-0}
       BDAG_FASTSNAP_PEERS: ${BDAG_FASTSNAP_PEERS:-}
       BDAG_FASTSNAP_MIN_TIP: ${BDAG_FASTSNAP_MIN_TIP:-0}
       BDAG_FASTSNAP_TIMEOUT: ${BDAG_FASTSNAP_TIMEOUT:-90s}

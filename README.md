@@ -103,9 +103,11 @@ BDAG_FASTSYNC_PUBLIC_PEERS=
 The node entrypoint folds those values together with `BDAG_FASTSNAP_PEERS`,
 `BOOTSTRAP_PEER_ADDRESSES`, and `node.conf` `addpeer` lines in this order:
 LAN, private/VPN, public internet. The ordered list is used for pre-start
-FastSnap on empty datadirs and is also appended as startup `--addpeer`
+FastSnap V2 on empty datadirs and is also appended as startup `--addpeer`
 arguments so protocol 46 FastSync peers are available before public fallback
-dials dominate startup.
+dials dominate startup. V2 is the default on upgraded full nodes; a separate
+`BDAG_FASTSNAP_PEERS` value is only needed when the operator wants to pin a
+specific artifact source.
 
 `BDAG_FASTSYNC_LAN_PREFIXES` defaults to `192.168.`. If your premises LAN uses
 another private range, either put those complete multiaddrs in
