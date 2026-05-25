@@ -194,6 +194,8 @@ NODE_MINING_RPC_PASS = os.environ.get("BDAG_NODE_MINING_RPC_PASS", "test")
 NODE_TEMPLATE_PROBE_CACHE_SECONDS = int(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_CACHE_SECONDS", "60"))
 NODE_TEMPLATE_PROBE_SAMPLES = max(1, int(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_SAMPLES", "1")))
 NODE_TEMPLATE_PROBE_TIMEOUT = float(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_TIMEOUT", "1.5"))
+NODE_CHAIN_RPC_TIMEOUT = float(os.environ.get("BDAG_NODE_CHAIN_RPC_TIMEOUT", "8.0"))
+NODE_CHAIN_RPC_RETRIES = max(1, int(os.environ.get("BDAG_NODE_CHAIN_RPC_RETRIES", "2")))
 HTTP_USER_AGENT = os.environ.get("BDAG_HTTP_USER_AGENT", "curl/8.5.0")
 
 
@@ -4138,7 +4140,7 @@ def parse_rpc_quantity(value: Any) -> int:
     raise ValueError(f"invalid RPC quantity: {value!r}")
 
 
-def node_chain_rpc_snapshot(source: str, url: str, timeout: float = 4.0) -> dict[str, Any]:
+def node_chain_rpc_snapshot(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TIMEOUT) -> dict[str, Any]:
     snapshot: dict[str, Any] = {
         "chain_rpc_source": "getBlockCount",
         "chain_rpc_url": url,
@@ -4146,12 +4148,20 @@ def node_chain_rpc_snapshot(source: str, url: str, timeout: float = 4.0) -> dict
         "chain_block_count": None,
         "chain_main_height": None,
     }
-    try:
-        snapshot["chain_block_count"] = parse_rpc_quantity(
-            mining_rpc_call(url, "getBlockCount", [], timeout=timeout)
-        )
-    except Exception as exc:
-        snapshot["chain_rpc_error"] = f"getBlockCount failed for {source}: {exc}"
+    errors: list[str] = []
+    for attempt in range(NODE_CHAIN_RPC_RETRIES):
+        try:
+            snapshot["chain_block_count"] = parse_rpc_quantity(
+                mining_rpc_call(url, "getBlockCount", [], timeout=timeout)
+            )
+            break
+        except Exception as exc:
+            errors.append(str(exc))
+            if attempt + 1 < NODE_CHAIN_RPC_RETRIES:
+                time.sleep(0.2)
+    if snapshot["chain_block_count"] is None:
+        detail = errors[-1] if errors else "unknown error"
+        snapshot["chain_rpc_error"] = f"getBlockCount failed for {source} after {NODE_CHAIN_RPC_RETRIES} attempt(s): {detail}"
         return snapshot
 
     try:
@@ -4233,7 +4243,7 @@ def native_sync_progress(source: str) -> dict[str, Any] | None:
     }
 
 
-def node_sync_progress(source: str, url: str, timeout: float = 4.0) -> dict[str, Any]:
+def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TIMEOUT) -> dict[str, Any]:
     try:
         if not valid_url(url):
             raise RuntimeError("invalid node RPC URL")
