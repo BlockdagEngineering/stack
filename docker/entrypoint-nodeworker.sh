@@ -107,45 +107,6 @@ config_addpeer_values() {
   ' "$config_file"
 }
 
-peer_host() {
-  local peer="$1"
-  case "$peer" in
-    /ip4/*)
-      peer="${peer#/ip4/}"
-      printf '%s\n' "${peer%%/*}"
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-host_matches_prefixes() {
-  local host="$1"
-  local prefixes="$2"
-  local old_ifs="$IFS"
-  local prefix
-  IFS=', '
-  for prefix in $prefixes; do
-    [ -n "$prefix" ] || continue
-    case "$host" in
-      "$prefix"*) IFS="$old_ifs"; return 0 ;;
-    esac
-  done
-  IFS="$old_ifs"
-  return 1
-}
-
-host_is_private_or_vpn() {
-  local host="$1"
-  case "$host" in
-    10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*)
-      return 0
-      ;;
-  esac
-  return 1
-}
-
 ORDERED_FASTSYNC_SEEN=
 append_unique_peer() {
   local bucket_name="$1"
@@ -175,36 +136,11 @@ append_peer_list() {
   IFS="$old_ifs"
 }
 
-classify_peer_list() {
-  local raw="$1"
-  local old_ifs="$IFS"
-  local peer host
-  IFS=', '
-  for peer in $raw; do
-    [ -n "$peer" ] || continue
-    host="$(peer_host "$peer" || true)"
-    if [ -n "$host" ] && host_matches_prefixes "$host" "${BDAG_FASTSYNC_LAN_PREFIXES:-192.168.}"; then
-      append_unique_peer fastsync_lan_peers "$peer"
-    elif [ -n "$host" ] && host_is_private_or_vpn "$host"; then
-      append_unique_peer fastsync_vpn_peers "$peer"
-    else
-      append_unique_peer fastsync_public_peers "$peer"
-    fi
-  done
-  IFS="$old_ifs"
-}
-
-join_peer_arrays() {
+join_peer_array() {
   local old_ifs="$IFS"
   local joined
   IFS=,
-  joined="${fastsync_lan_peers[*]:-}"
-  if [ "${#fastsync_vpn_peers[@]}" -gt 0 ]; then
-    joined="${joined:+$joined,}${fastsync_vpn_peers[*]}"
-  fi
-  if [ "${#fastsync_public_peers[@]}" -gt 0 ]; then
-    joined="${joined:+$joined,}${fastsync_public_peers[*]}"
-  fi
+  joined="${fastsync_peers[*]:-}"
   IFS="$old_ifs"
   printf '%s\n' "$joined"
 }
@@ -212,22 +148,17 @@ join_peer_arrays() {
 ordered_fastsync_peers() {
   local node_args="$1"
   local config_file config_peers generic_peers
-  fastsync_lan_peers=()
-  fastsync_vpn_peers=()
-  fastsync_public_peers=()
+  fastsync_peers=()
   ORDERED_FASTSYNC_SEEN=
 
   config_file="$(node_arg_value configfile "$node_args" || true)"
   config_file="${config_file:-/etc/bdagStack/node.conf}"
   config_peers="$(config_addpeer_values "$config_file" | paste -sd, - || true)"
 
-  append_peer_list fastsync_lan_peers "${BDAG_FASTSYNC_LAN_PEERS:-${BDAG_FASTSYNC_LOCAL_PEERS:-}}"
-  append_peer_list fastsync_vpn_peers "${BDAG_FASTSYNC_VPN_PEERS:-${BDAG_FASTSYNC_PRIVATE_PEERS:-}}"
-  append_peer_list fastsync_public_peers "${BDAG_FASTSYNC_PUBLIC_PEERS:-}"
-  generic_peers="${BDAG_FASTSYNC_PEERS:-} ${BDAG_FASTSNAP_PEERS:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $config_peers $(addpeer_values "$node_args" | paste -sd, - || true)"
-  classify_peer_list "$generic_peers"
+  generic_peers="${BDAG_FASTSYNC_PEERS:-} ${BDAG_FASTSNAP_PEERS:-} ${BDAG_FASTSYNC_PUBLIC_PEERS:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $config_peers $(addpeer_values "$node_args" | paste -sd, - || true)"
+  append_peer_list fastsync_peers "$generic_peers"
 
-  join_peer_arrays
+  join_peer_array
 }
 
 addpeer_args_from_csv() {
@@ -253,7 +184,7 @@ apply_ordered_fastsync_peers() {
 
   export BDAG_FASTSNAP_PEERS="$ordered"
   total_count="$(printf '%s' "$ordered" | awk -F, '{print NF}')"
-  log "ordered FastSync candidates enabled: LAN first, private/VPN second, public last; total=${total_count}"
+  log "FastSync candidates enabled: libp2p latency-first selection; total=${total_count}"
 
   if [ "${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}" = "1" ]; then
     addpeer_args="$(addpeer_args_from_csv "$ordered")"
@@ -319,43 +250,44 @@ maybe_fastsnap_bootstrap() {
   tmp_archive="$archive.download.$$"
   rm -f "$tmp_archive" "$tmp_archive.manifest.json"
 
+  local fastsnap_args=(
+    --out "$tmp_archive"
+    --network "$network"
+    --min-tip "$min_tip"
+    --timeout "$timeout"
+  )
   local old_ifs="$IFS"
   IFS=', '
   for peer in $peers; do
     [ -n "$peer" ] || continue
-    log "trying P2P snapshot bootstrap from $peer"
-    local fastsnap_args=(
-      --peer "$peer"
-      --out "$tmp_archive"
-      --network "$network"
-      --min-tip "$min_tip"
-      --timeout "$timeout"
-    )
-    if [ "${BDAG_FASTSNAP_ARTIFACT_V2:-1}" = "0" ]; then
-      fastsnap_args+=(--artifact-v2=false)
-    fi
-    if [ "${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}" = "1" ]; then
-      fastsnap_args+=(--allow-unsigned)
-    fi
-    if [ -n "${BDAG_FASTSNAP_PARALLELISM:-}" ]; then
-      fastsnap_args+=(--parallelism "$BDAG_FASTSNAP_PARALLELISM")
-    fi
-    if [ -n "${BDAG_FASTSNAP_LEDGER:-}" ]; then
-      fastsnap_args+=(--ledger "$BDAG_FASTSNAP_LEDGER")
-    fi
-    if "$fastsnap_bin" "${fastsnap_args[@]}"; then
-      mv "$tmp_archive" "$archive"
-      if [ -f "$tmp_archive.manifest.json" ]; then
-        mv "$tmp_archive.manifest.json" "$archive.manifest.json"
-      fi
-      log "importing downloaded P2P snapshot before node startup"
-      "$node_binary" snap import --datadir "$data_dir" --path "$archive"
-      IFS="$old_ifs"
-      return 0
-    fi
-    rm -f "$tmp_archive" "$tmp_archive.manifest.json"
+    fastsnap_args+=(--peer "$peer")
   done
   IFS="$old_ifs"
+
+  if [ "${BDAG_FASTSNAP_ARTIFACT_V2:-1}" = "0" ]; then
+    fastsnap_args+=(--artifact-v2=false)
+  fi
+  if [ "${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}" = "1" ]; then
+    fastsnap_args+=(--allow-unsigned)
+  fi
+  if [ -n "${BDAG_FASTSNAP_PARALLELISM:-}" ]; then
+    fastsnap_args+=(--parallelism "$BDAG_FASTSNAP_PARALLELISM")
+  fi
+  if [ -n "${BDAG_FASTSNAP_LEDGER:-}" ]; then
+    fastsnap_args+=(--ledger "$BDAG_FASTSNAP_LEDGER")
+  fi
+
+  log "trying P2P snapshot bootstrap with libp2p latency-first peer selection"
+  if "$fastsnap_bin" "${fastsnap_args[@]}"; then
+    mv "$tmp_archive" "$archive"
+    if [ -f "$tmp_archive.manifest.json" ]; then
+      mv "$tmp_archive.manifest.json" "$archive.manifest.json"
+    fi
+    log "importing downloaded P2P snapshot before node startup"
+    "$node_binary" snap import --datadir "$data_dir" --path "$archive"
+    return 0
+  fi
+  rm -f "$tmp_archive" "$tmp_archive.manifest.json"
 
   if [ "${BDAG_FASTSNAP_REQUIRED:-0}" = "1" ]; then
     log "required P2P snapshot bootstrap failed"
