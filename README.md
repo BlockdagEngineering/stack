@@ -31,7 +31,7 @@ The installer detects the host OS and CPU architecture, writes `.env` and `node.
 
 On macOS, the installer uses `aria2c` for faster, resumable snapshot downloads and installs it with Homebrew when missing. If that path fails, it opens a browser download link and Finder at the installer folder, then waits for `latest.bdsnap` to appear there. Browsers may still save to Downloads unless you choose the installer folder. To skip the dependency install, force curl with `BDAG_SNAPSHOT_DOWNLOADER=curl bash install.sh`; to go straight to the browser helper, use `BDAG_SNAPSHOT_DOWNLOADER=browser bash install.sh`. On Windows, the installer uses `aria2c` when available, tries to install it with `winget`, then falls back to BITS and PowerShell download.
 
-Snapshot import happens while the node image is built. If you re-run the installer against an existing Docker `node-data` volume, Docker will keep using the old volume and the newly imported snapshot will be hidden. The installer resets the local node data volume by default so the snapshot is used. To keep existing node data instead, use:
+Snapshot import happens when the node container first starts. The snapshot is mounted read-only from the extracted release folder, so Docker does not copy the multi-GB `.bdsnap` into the image build context. If you re-run the installer against an existing Docker `node-data` volume, the installer resets the local node data volume by default so the snapshot is imported into a clean volume. To keep existing node data instead, use:
 
 ```bash
 BDAG_RESET_NODE_DATA=0 bash install.sh

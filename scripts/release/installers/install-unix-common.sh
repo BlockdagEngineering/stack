@@ -234,7 +234,7 @@ compose_project_name() {
 }
 
 prepare_node_volume_for_snapshot() {
-    [[ "$SNAPSHOT_PATH" == "./latest.bdsnap" ]] || return 0
+    [[ "$SNAPSHOT_HOST_PATH" == "./latest.bdsnap" ]] || return 0
 
     local project node_volume nodeworker_volume answer
     project="$(compose_project_name || true)"
@@ -249,8 +249,8 @@ prepare_node_volume_for_snapshot() {
 
     echo ""
     echo "Existing Docker node volume detected: ${node_volume}"
-    echo "Snapshot import happens when the node image is built. If this existing volume is kept,"
-    echo "Docker will continue using its current chain data instead of the newly imported snapshot."
+    echo "Snapshot import happens when the node container starts. If this existing volume is kept,"
+    echo "Docker will continue using its current chain data instead of importing the snapshot."
 
     if [[ "$BDAG_RESET_NODE_DATA" != "0" ]]; then
         answer="yes"
@@ -266,6 +266,8 @@ prepare_node_volume_for_snapshot() {
             ;;
         *)
             echo "BDAG_RESET_NODE_DATA=0; keeping existing node data. The downloaded snapshot will not replace this volume."
+            set_env_value .env SNAPSHOT_HOST_PATH "./docker/no-snapshot.marker"
+            set_env_value .env BDAG_SNAPSHOT_IMPORT_ENABLED "0"
             ;;
     esac
 }
@@ -280,6 +282,23 @@ clean_build_context_metadata() {
     find . -name '__MACOSX' -type d -prune -exec rm -rf {} + 2>/dev/null || true
     find . -name '$RECYCLE.BIN' -type d -prune -exec rm -rf {} + 2>/dev/null || true
     find . -name 'System Volume Information' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+}
+
+ensure_dockerignore_pattern() {
+    local pattern="$1"
+    touch .dockerignore
+    if ! grep -Fxq "$pattern" .dockerignore; then
+        printf '\n%s\n' "$pattern" >> .dockerignore
+    fi
+}
+
+ensure_dockerignore_excludes_snapshots() {
+    # Snapshots are mounted at runtime; sending them to Docker build context can
+    # exhaust Docker Desktop's Linux VM disk and fail with input/output errors.
+    ensure_dockerignore_pattern "*.bdsnap"
+    ensure_dockerignore_pattern "latest.bdsnap.part"
+    ensure_dockerignore_pattern "latest.bdsnap.part.*"
+    ensure_dockerignore_pattern "*.aria2"
 }
 
 set_env_value() {
@@ -307,7 +326,8 @@ if [[ ! -f .env.example || ! -f node.conf.example || ! -f docker-compose.yml ]];
     exit 1
 fi
 
-SNAPSHOT_PATH="docker/no-snapshot.marker"
+SNAPSHOT_HOST_PATH="./docker/no-snapshot.marker"
+SNAPSHOT_IMPORT_ENABLED="0"
 SNAPSHOT_FILE=""
 if [[ -f latest.bdsnap ]] && is_valid_snapshot latest.bdsnap; then
     SNAPSHOT_FILE="latest.bdsnap"
@@ -327,12 +347,15 @@ fi
 
 if [[ -n "$SNAPSHOT_FILE" ]]; then
     echo "Found snapshot: $SNAPSHOT_FILE ($(file_size_bytes "$SNAPSHOT_FILE") bytes)"
-    SNAPSHOT_PATH="./latest.bdsnap"
+    SNAPSHOT_HOST_PATH="./latest.bdsnap"
+    SNAPSHOT_IMPORT_ENABLED="1"
 else
     if download_snapshot; then
-        SNAPSHOT_PATH="./latest.bdsnap"
+        SNAPSHOT_HOST_PATH="./latest.bdsnap"
+        SNAPSHOT_IMPORT_ENABLED="1"
     elif [[ "$BDAG_BROWSER_SNAPSHOT_FALLBACK" == "1" ]] && browser_snapshot_download; then
-        SNAPSHOT_PATH="./latest.bdsnap"
+        SNAPSHOT_HOST_PATH="./latest.bdsnap"
+        SNAPSHOT_IMPORT_ENABLED="1"
     else
         rm -f latest.bdsnap
         echo "Warning: snapshot download failed. The node will sync from genesis/P2P."
@@ -359,7 +382,9 @@ cp .env.example .env
 set_env_value .env POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
 set_env_value .env MINING_POOL_ADDRESS "$MINING_ADDR"
 set_env_value .env DOCKER_PLATFORM "$DOCKER_PLATFORM"
-set_env_value .env SNAPSHOT_PATH "$SNAPSHOT_PATH"
+set_env_value .env SNAPSHOT_HOST_PATH "$SNAPSHOT_HOST_PATH"
+set_env_value .env BDAG_SNAPSHOT_IMPORT_ENABLED "$SNAPSHOT_IMPORT_ENABLED"
+set_env_value .env BDAG_SNAPSHOT_MIN_BYTES "$SNAPSHOT_MIN_BYTES"
 if [[ -n "$POOL_PRIVATE_KEY" ]]; then
     set_env_value .env POOL_PRIVATE_KEY "$POOL_PRIVATE_KEY"
 fi
@@ -393,6 +418,7 @@ fi
 mkdir -p dashboard/logs
 
 clean_build_context_metadata
+ensure_dockerignore_excludes_snapshots
 prepare_node_volume_for_snapshot
 
 export DOCKER_DEFAULT_PLATFORM="$DOCKER_PLATFORM"

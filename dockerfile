@@ -5,11 +5,11 @@
 #   ./
 #   ├── bin/blockdag-node, bin/nodeworker, bin/mining-pool, bin/dashboard-api
 #   ├── dashboard/          (Compose builds the dashboard Go binary here)
-#   ├── docker/             (e.g. no-snapshot.marker; see SNAPSHOT_PATH)
+#   ├── docker/             (e.g. no-snapshot.marker)
 #   ├── .env.example, docker-compose.yml, …
 #
-# Optional snapshot import: SNAPSHOT_PATH copies a .bdsnap from the build context
-# (see compose / Makefile). No URL download. Datadir matches node.conf.
+# Snapshot import is runtime-only via a read-only bind mount handled by
+# docker/entrypoint-nodeworker.sh. Do not copy .bdsnap files into the image.
 
 # ----------------------------------------------------------------------------
 # Common base
@@ -59,11 +59,9 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
  && go build -o out/dashboard .
 
 # ----------------------------------------------------------------------------
-# Node Runtime Stage (with optional snapshot import)
+# Node Runtime Stage
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS node
-# Git dev compose passes SNAPSHOT_PATH; release tarball defaults to marker under ./docker/.
-ARG SNAPSHOT_PATH=docker/no-snapshot.marker
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates tzdata \
@@ -79,22 +77,6 @@ RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker
 
 COPY docker/entrypoint-nodeworker.sh /usr/local/bin/docker-entrypoint-nodeworker.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh
-
-# Snapshot path is relative to build context (Compose sets this in .env for dev vs release).
-COPY ${SNAPSHOT_PATH} /tmp/snapshot-candidate.bdsnap
-
-RUN set -eu; \
-    if [ "$(stat -c%s /tmp/snapshot-candidate.bdsnap)" -ge 1024 ]; then \
-      echo "Importing local snapshot ($(stat -c%s /tmp/snapshot-candidate.bdsnap) bytes)"; \
-      /usr/local/bin/blockdag-node snap import \
-        --datadir /var/lib/bdagStack/node/mainnet \
-        --path /tmp/snapshot-candidate.bdsnap; \
-      chown -R bdagStack:bdagStack /var/lib/bdagStack/node /var/log/bdagStack; \
-      echo "Snapshot import finished"; \
-    else \
-      echo "No snapshot file (marker or tiny file); node will sync from genesis or P2P"; \
-    fi; \
-    rm -f /tmp/snapshot-candidate.bdsnap
 
 WORKDIR /var/lib/bdagStack/node
 EXPOSE 8150 38131 38132 18545 18546 6060

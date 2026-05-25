@@ -1,7 +1,3 @@
-
-x-build-args: &build-args
-  SNAPSHOT_PATH: ${SNAPSHOT_PATH:-./latest.bdsnap}
-
 services:
 
   # --------------------------------------------------------------------------
@@ -25,7 +21,8 @@ services:
       retries: 20
 
   # --------------------------------------------------------------------------
-  # BlockDAG node + nodeworker supervisor. Optional SNAPSHOT_PATH at build time.
+  # BlockDAG node + nodeworker supervisor. Optional snapshot import happens at
+  # container start from a read-only bind mount, not during image build.
   # --------------------------------------------------------------------------
   node:
     platform: ${DOCKER_PLATFORM:-linux/amd64}
@@ -33,9 +30,11 @@ services:
       context: ${BUILD_CONTEXT:-.}
       dockerfile: ${DOCKERFILE:-dockerfile}
       target: node
-      args:
-        <<: *build-args
     restart: unless-stopped
+    environment:
+      BDAG_SNAPSHOT_IMPORT_ENABLED: ${BDAG_SNAPSHOT_IMPORT_ENABLED:-1}
+      BDAG_SNAPSHOT_IMPORT_PATH: /snapshot/latest.bdsnap
+      BDAG_SNAPSHOT_MIN_BYTES: ${BDAG_SNAPSHOT_MIN_BYTES:-1048576}
     ports:
       - "${P2P_PORT:-8150}:8150"
       - "${BDAG_RPC_PORT:-38131}:38131"
@@ -50,6 +49,7 @@ services:
 
       - node-data:/var/lib/bdagStack/node
       - nodeworker-data:/var/lib/bdagStack/nodeworker
+      - ${SNAPSHOT_HOST_PATH:-./docker/no-snapshot.marker}:/snapshot/latest.bdsnap:ro
       # node.conf in project root (copy from node.conf.example). gitignored.
       - ./node.conf:/etc/bdagStack/node.conf:ro
 
@@ -62,8 +62,6 @@ services:
       context: ${BUILD_CONTEXT:-.}
       dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile}
       target: pool
-      args:
-        <<: *build-args
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
@@ -100,8 +98,6 @@ services:
       context: ${BUILD_CONTEXT:-..}
       dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile}
       target: dashboard
-      args:
-        <<: *build-args
     restart: unless-stopped
     depends_on:
       node: { condition: service_started }

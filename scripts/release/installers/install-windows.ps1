@@ -174,7 +174,7 @@ function Get-ComposeProjectName {
 }
 
 function Prepare-NodeVolumeForSnapshot {
-    if ($snapshotPath -ne './latest.bdsnap') { return }
+    if ($snapshotHostPath -ne './latest.bdsnap') { return }
 
     $project = Get-ComposeProjectName
     if (-not $project) { return }
@@ -187,8 +187,8 @@ function Prepare-NodeVolumeForSnapshot {
 
     Write-Host ""
     Write-Host "Existing Docker node volume detected: $nodeVolume" -ForegroundColor Yellow
-    Write-Host "Snapshot import happens when the node image is built. If this existing volume is kept,"
-    Write-Host "Docker will continue using its current chain data instead of the newly imported snapshot."
+    Write-Host "Snapshot import happens when the node container starts. If this existing volume is kept,"
+    Write-Host "Docker will continue using its current chain data instead of importing the snapshot."
 
     if ($resetNodeData) {
         Write-Host "Stopping existing stack and removing node data volumes..."
@@ -196,6 +196,10 @@ function Prepare-NodeVolumeForSnapshot {
         & docker volume rm $nodeVolume $nodeworkerVolume *> $null
     } else {
         Write-Host "BDAG_RESET_NODE_DATA=0; keeping existing node data. The downloaded snapshot will not replace this volume." -ForegroundColor Yellow
+        $script:snapshotHostPath = './docker/no-snapshot.marker'
+        $script:snapshotImportEnabled = '0'
+        Set-EnvValue .env SNAPSHOT_HOST_PATH $script:snapshotHostPath
+        Set-EnvValue .env BDAG_SNAPSHOT_IMPORT_ENABLED $script:snapshotImportEnabled
     }
 }
 
@@ -209,6 +213,26 @@ function Clean-BuildContextMetadata {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+function Ensure-DockerignorePattern([string]$Pattern) {
+    if (-not (Test-Path .dockerignore)) {
+        New-Item -ItemType File -Path .dockerignore | Out-Null
+    }
+
+    $lines = Get-Content .dockerignore -ErrorAction SilentlyContinue
+    if ($lines -notcontains $Pattern) {
+        Add-Content -Path .dockerignore -Value $Pattern
+    }
+}
+
+function Ensure-DockerignoreExcludesSnapshots {
+    # Snapshots are mounted at runtime; sending them to Docker build context can
+    # exhaust Docker Desktop's Linux VM disk and fail with input/output errors.
+    Ensure-DockerignorePattern '*.bdsnap'
+    Ensure-DockerignorePattern 'latest.bdsnap.part'
+    Ensure-DockerignorePattern 'latest.bdsnap.part.*'
+    Ensure-DockerignorePattern '*.aria2'
+}
+
 Require-Command docker "Install Docker Desktop, then re-run this installer."
 & docker compose version *> $null
 if ($LASTEXITCODE -ne 0) {
@@ -219,10 +243,12 @@ if (-not (Test-Path .env.example) -or -not (Test-Path node.conf.example) -or -no
     throw "Run this installer from the extracted pool-stack-docker release folder."
 }
 
-$snapshotPath = 'docker/no-snapshot.marker'
+$snapshotHostPath = './docker/no-snapshot.marker'
+$snapshotImportEnabled = '0'
 if (Test-ValidSnapshot latest.bdsnap) {
     Write-Host "Found snapshot: latest.bdsnap ($((Get-Item latest.bdsnap).Length) bytes)"
-    $snapshotPath = './latest.bdsnap'
+    $snapshotHostPath = './latest.bdsnap'
+    $snapshotImportEnabled = '1'
 } else {
     if (Test-Path latest.bdsnap) {
         Write-Host "Ignoring invalid snapshot file: latest.bdsnap ($((Get-Item latest.bdsnap).Length) bytes)" -ForegroundColor Yellow
@@ -234,16 +260,18 @@ if (Test-ValidSnapshot latest.bdsnap) {
         if (Test-ValidSnapshot $snap.FullName) {
             Write-Host "Found snapshot: $($snap.Name) ($($snap.Length) bytes)"
             Move-Item -Path $snap.FullName -Destination (Join-Path (Get-Location) 'latest.bdsnap') -Force
-            $snapshotPath = './latest.bdsnap'
+            $snapshotHostPath = './latest.bdsnap'
+            $snapshotImportEnabled = '1'
         } else {
             Write-Host "Ignoring invalid snapshot file: $($snap.Name) ($($snap.Length) bytes)" -ForegroundColor Yellow
             Remove-Item -Path $snap.FullName -ErrorAction SilentlyContinue
         }
     }
 
-    if ($snapshotPath -ne './latest.bdsnap') {
+    if ($snapshotHostPath -ne './latest.bdsnap') {
         if (Download-Snapshot) {
-            $snapshotPath = './latest.bdsnap'
+            $snapshotHostPath = './latest.bdsnap'
+            $snapshotImportEnabled = '1'
         } else {
             Remove-Item -Path 'latest.bdsnap' -ErrorAction SilentlyContinue
             Write-Host "Warning: snapshot download failed. The node will sync from genesis/P2P." -ForegroundColor Yellow
@@ -252,7 +280,7 @@ if (Test-ValidSnapshot latest.bdsnap) {
     }
 }
 
-if ($snapshotPath -ne './latest.bdsnap' -and $requireSnapshot) {
+if ($snapshotHostPath -ne './latest.bdsnap' -and $requireSnapshot) {
     throw "Snapshot download/import is required, but no valid snapshot is available."
 }
 
@@ -285,7 +313,9 @@ Copy-Item .env.example .env -Force
 Set-EnvValue .env POSTGRES_PASSWORD $pgPassword
 Set-EnvValue .env MINING_POOL_ADDRESS $miningAddr
 Set-EnvValue .env DOCKER_PLATFORM $dockerPlatform
-Set-EnvValue .env SNAPSHOT_PATH $snapshotPath
+Set-EnvValue .env SNAPSHOT_HOST_PATH $snapshotHostPath
+Set-EnvValue .env BDAG_SNAPSHOT_IMPORT_ENABLED $snapshotImportEnabled
+Set-EnvValue .env BDAG_SNAPSHOT_MIN_BYTES $snapshotMinBytes
 if ($poolPrivateKey) {
     Set-EnvValue .env POOL_PRIVATE_KEY $poolPrivateKey
 }
@@ -328,6 +358,7 @@ $nodeText = $nodeText -replace "`r`n", "`n"
 
 New-Item -ItemType Directory -Force -Path 'dashboard\logs' | Out-Null
 Clean-BuildContextMetadata
+Ensure-DockerignoreExcludesSnapshots
 Prepare-NodeVolumeForSnapshot
 $env:DOCKER_DEFAULT_PLATFORM = $dockerPlatform
 
