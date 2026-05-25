@@ -1,0 +1,18 @@
+[Unit]
+Description=BlockDAG pool operations dashboard
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jeremy
+WorkingDirectory=/home/jeremy/blockdag-asic-pool
+Environment=BDAG_DASHBOARD_BIND=127.0.0.1
+Environment=BDAG_DASHBOARD_PORT=8088
+ExecStartPre=/bin/sh -c 'i=0; while [ "$i" -lt 60 ]; do docker info >/dev/null 2>&1 && exit 0; i=$((i+1)); sleep 5; done; exit 1'
+ExecStart=/usr/bin/python3 /home/jeremy/blockdag-asic-pool/ops/dashboard.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,282 @@
+#!/usr/bin/env bash
+set -u
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+verbose=0
+if [ "${1:-}" = "--verbose" ]; then
+  verbose=1
+fi
+
+say() {
+  if [ "${verbose}" -eq 1 ]; then
+    printf '%s\n' "$*"
+  fi
+}
+
+is_pid() {
+  [ "${1:-}" -gt 1 ] 2>/dev/null && [ -d "/proc/$1" ]
+}
+
+apply_sched() {
+  local nice_level="$1"
+  local io_class="$2"
+  local io_prio="$3"
+  local label="$4"
+  shift 4
+
+  local count=0
+  local pid
+  for pid in "$@"; do
+    is_pid "${pid}" || continue
+    renice -n "${nice_level}" -p "${pid}" >/dev/null 2>&1 || true
+    if [ "${io_class}" = "3" ]; then
+      ionice -c 3 -p "${pid}" >/dev/null 2>&1 || true
+    else
+      ionice -c "${io_class}" -n "${io_prio}" -p "${pid}" >/dev/null 2>&1 || true
+    fi
+    count=$((count + 1))
+  done
+  say "${label}: ${count} pids nice=${nice_level} ionice=${io_class}:${io_prio}"
+}
+
+apply_oom_adj() {
+  local oom_adj="$1"
+  local label="$2"
+  shift 2
+
+  local count=0
+  local pid
+  for pid in "$@"; do
+    is_pid "${pid}" || continue
+    if [ -w "/proc/${pid}/oom_score_adj" ]; then
+      printf '%s\n' "${oom_adj}" > "/proc/${pid}/oom_score_adj" 2>/dev/null || true
+      count=$((count + 1))
+    fi
+  done
+  say "${label}: ${count} pids oom_score_adj=${oom_adj}"
+}
+
+collect_descendants() {
+  local root="$1"
+  is_pid "${root}" || return 0
+
+  local queue="${root}"
+  local pid child
+  while [ -n "${queue}" ]; do
+    pid="${queue%% *}"
+    if [ "${queue}" = "${pid}" ]; then
+      queue=""
+    else
+      queue="${queue#* }"
+    fi
+    is_pid "${pid}" || continue
+    printf '%s\n' "${pid}"
+    for child in $(pgrep -P "${pid}" 2>/dev/null || true); do
+      queue="${queue:+${queue} }${child}"
+    done
+  done
+}
+
+container_tree() {
+  command -v docker >/dev/null 2>&1 || return 0
+  local container="$1"
+  local root_pid
+  root_pid="$(docker inspect -f '{{.State.Pid}}' "${container}" 2>/dev/null || true)"
+  is_pid "${root_pid}" || return 0
+  collect_descendants "${root_pid}" | sort -n -u
+}
+
+update_container_weights() {
+  command -v docker >/dev/null 2>&1 || return 0
+  local container="$1"
+  local cpu_shares="$2"
+  local blkio_weight="$3"
+  local current
+
+  current="$(docker inspect -f '{{.HostConfig.CpuShares}} {{.HostConfig.BlkioWeight}}' "${container}" 2>/dev/null || true)"
+  [ -n "${current}" ] || return 0
+  if [ "${current}" != "${cpu_shares} ${blkio_weight}" ]; then
+    docker update --cpu-shares "${cpu_shares}" --blkio-weight "${blkio_weight}" "${container}" >/dev/null 2>&1 || true
+  fi
+}
+
+boost_container() {
+  local container="$1"
+  local nice_level="$2"
+  local io_prio="$3"
+  local cpu_shares="$4"
+  local blkio_weight="$5"
+  local oom_adj="$6"
+  local pids
+
+  update_container_weights "${container}" "${cpu_shares}" "${blkio_weight}"
+  pids="$(container_tree "${container}")"
+  if [ -n "${pids}" ]; then
+    apply_sched "${nice_level}" 2 "${io_prio}" "container:${container}" ${pids}
+    apply_oom_adj "${oom_adj}" "container:${container}" ${pids}
+  fi
+}
+
+idle_container() {
+  local container="$1"
+  local nice_level="$2"
+  local cpu_shares="$3"
+  local blkio_weight="$4"
+  local oom_adj="$5"
+  local pids
+
+  update_container_weights "${container}" "${cpu_shares}" "${blkio_weight}"
+  pids="$(container_tree "${container}")"
+  if [ -n "${pids}" ]; then
+    apply_sched "${nice_level}" 3 0 "container:${container}" ${pids}
+    apply_oom_adj "${oom_adj}" "container:${container}" ${pids}
+  fi
+}
+
+system_pids_by_name() {
+  local name
+  for name in "$@"; do
+    pgrep -x "${name}" 2>/dev/null || true
+  done | sort -n -u
+}
+
+user_pids_by_name() {
+  local user_name="$1"
+  shift
+  local name
+  for name in "$@"; do
+    pgrep -u "${user_name}" -x "${name}" 2>/dev/null || true
+  done | sort -n -u
+}
+
+user_pids_by_pattern() {
+  local user_name="$1"
+  local pattern="$2"
+  pgrep -u "${user_name}" -f "${pattern}" 2>/dev/null | sort -n -u || true
+}
+
+dashboard_status_json=""
+
+load_dashboard_status() {
+  command -v curl >/dev/null 2>&1 || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+
+  if [ -z "${dashboard_status_json}" ]; then
+    dashboard_status_json="$(curl -fsS --max-time 2 http://127.0.0.1:8088/api/status 2>/dev/null)" || return 1
+  fi
+}
+
+dashboard_jq() {
+  local expr="$1"
+  load_dashboard_status || return 1
+  printf '%s' "${dashboard_status_json}" | jq -e "${expr}" >/dev/null 2>&1
+}
+
+sync_priority_mode() {
+  [ "${BDAG_IMPORT_PRIORITY_MODE:-0}" = "1" ] && return 0
+  [ -f /mnt/bdag-usb/blockdag-stack/ops-runtime/import-priority-mode ] && return 0
+
+  dashboard_jq '
+    ((.overall == "syncing") or (.sync_progress.status == "syncing"))
+  '
+}
+
+no_miner_mode() {
+  [ "${BDAG_NO_MINER_SYNC_ONLY:-0}" = "1" ] && return 0
+  dashboard_jq '
+    ((.miner_health.tracked_count // 0) == 0)
+    and ((.miner_health.connected_count // 0) == 0)
+    and ((.miner_health.managed_count // 0) == 0)
+  '
+}
+
+if sync_priority_mode; then
+  say "sync-priority-mode: active"
+  for container in bdag-miner-node-1 bdag-miner-node-2 node; do
+    boost_container "${container}" -15 0 8192 1000 -950
+  done
+
+  if no_miner_mode; then
+    say "sync-priority-mode: no miners present; idling mining services"
+    for container in asic-pool pool; do
+      idle_container "${container}" 15 128 100 300
+    done
+
+    for container in pool-db postgres; do
+      idle_container "${container}" 10 256 100 200
+    done
+
+    for container in rpc-failover; do
+      idle_container "${container}" 10 256 100 200
+    done
+  else
+    for container in asic-pool pool; do
+      boost_container "${container}" -5 1 2048 700 -700
+    done
+
+    for container in pool-db postgres; do
+      boost_container "${container}" -5 1 2048 700 -700
+    done
+
+    for container in rpc-failover; do
+      boost_container "${container}" -5 1 2048 700 -700
+    done
+  fi
+else
+  for container in bdag-miner-node-1 bdag-miner-node-2 node; do
+    boost_container "${container}" -10 0 4096 1000 -900
+  done
+
+  for container in asic-pool pool; do
+    boost_container "${container}" -10 0 3072 900 -800
+  done
+
+  for container in pool-db postgres; do
+    boost_container "${container}" -8 0 3072 900 -800
+  done
+
+  for container in rpc-failover; do
+    boost_container "${container}" -5 1 2048 800 -700
+  done
+fi
+
+critical_system_pids="$(
+  {
+    system_pids_by_name dockerd containerd docker-proxy NetworkManager wpa_supplicant zerotier-one sshd
+    pgrep -f 'containerd-shim' 2>/dev/null || true
+  } | sort -n -u
+)"
+if [ -n "${critical_system_pids}" ]; then
+  apply_sched -5 2 1 "critical-system" ${critical_system_pids}
+  apply_oom_adj -500 "critical-system" ${critical_system_pids}
+fi
+
+guard_pids="$(user_pids_by_pattern jeremy '(/| )(watchdog|p2p_guard|sync_coordinator|mining_guard_30min|stack_sentinel|chain_restore_guard)\.py( |$)')"
+if [ -n "${guard_pids}" ]; then
+  apply_sched 8 2 7 "bdag-guards" ${guard_pids}
+  apply_oom_adj 100 "bdag-guards" ${guard_pids}
+fi
+
+dashboard_pids="$(user_pids_by_pattern jeremy '(/| )dashboard\.py( |$)')"
+if [ -n "${dashboard_pids}" ]; then
+  apply_sched 12 3 0 "dashboard" ${dashboard_pids}
+  apply_oom_adj 200 "dashboard" ${dashboard_pids}
+fi
+
+ui_pids="$(
+  {
+    user_pids_by_name jeremy chromium chromium-browser chrome lxterminal pcmanfm gvfsd update-notifier
+    user_pids_by_pattern jeremy '(chrome_crashpad_handler|gvfs-udisks2-volume-monitor)'
+  } | sort -n -u
+)"
+if [ -n "${ui_pids}" ]; then
+  apply_sched 12 3 0 "desktop-ui" ${ui_pids}
+  apply_oom_adj 300 "desktop-ui" ${ui_pids}
+fi
+
+codex_pids="$(user_pids_by_pattern jeremy '(^|/)(codex|node).*(codex|openai)|/\.nvm/.*/node ')"
+if [ -n "${codex_pids}" ]; then
+  apply_sched 10 3 0 "codex" ${codex_pids}
+  apply_oom_adj 300 "codex" ${codex_pids}
+fi

@@ -5,12 +5,10 @@ This stack can be run in any environment where docker is installed. It includes 
 
 | Service     | Image / build                           | Purpose |
 | ----------- | --------------------------------------- | ------- |
-| `node`          | BlockDAG node, supervised by nodeworker | Pool RPC and public P2P |
-| `snapshot-node` | BlockDAG node, supervised by nodeworker | Hot staged snapshot source |
-| `hotsnap`       | Docker CLI sidecar                      | Refreshes `snapshot.bdsnap` from `snapshot-node` |
-| `pool`          | Mining pool (Stratum :3334)             | Share tracking and payouts |
-| `postgres`      | Pool persistence, schema auto-loaded    | Pool database |
-| `dashboard`     | Essential monitoring                    | Web dashboard |
+| `node`      | BlockDAG node, supervised by nodeworker |         |
+| `pool`      | Mining pool (Stratum :3334)             |         |
+| `postgres`  | Pool persistence, schema auto-loaded    |         |
+| `dashboard` | Essential monitoring                    |         |
 
 
 ## Release package
@@ -75,6 +73,66 @@ Docker Compose reads `**.env`** in this directory for variable substitution and 
 
 The `**pool`** image bakes `**.env.example`** into the image at `/var/lib/bdagStack/pool/.env` for `godotenv` (release `**dockerfile`** uses `**COPY .env.example**` relative to tarball root; git dev `**dockerfile-dev**` uses `**COPY pool-stack-docker/.env.example**`). Compose still sets most variables via `environment:`.
 
+## Mining resource priority
+
+The compose file sets work-conserving Docker CPU and IO weights so mining-path
+services win contention without reserving or wasting idle CPU:
+
+| Service | CPU shares | Block IO weight | OOM score | Reason |
+| --- | ---: | ---: | ---: | --- |
+| `node` | `4096` | `1000` | `-900` | Block templates, validation, and P2P propagation are consensus-critical. |
+| `pool` | `3072` | `900` | `-800` | ASIC submits must reach the selected node with the lowest possible tail latency. |
+| `postgres` | `3072` | `900` | `-800` | Accounting writes matter, but source code keeps them off the solved-block submit path. |
+| `dashboard` | `256` | `100` | `300` | Operator visibility must not compete with paid block production. |
+
+Do not replace these weights with hard CPU quotas or realtime priority unless a
+profile proves normal cgroup weighting is insufficient. The goal is maximum paid
+blocks per miner-hour, not maximum dashboard refresh rate or synthetic CPU use.
+
+## FastSync Peer Discovery Order
+
+New nodes prefer nearby FastSync sources before falling back to public seeds.
+Configure complete multiaddrs with peer IDs in `.env`:
+
+```text
+BDAG_FASTSYNC_LAN_PEERS=/ip4/192.168.1.10/tcp/8151/p2p/...
+BDAG_FASTSYNC_VPN_PEERS=/ip4/10.0.0.10/tcp/8151/p2p/...
+BDAG_FASTSYNC_PUBLIC_PEERS=
+```
+
+The node entrypoint folds those values together with `BDAG_FASTSNAP_PEERS`,
+`BOOTSTRAP_PEER_ADDRESSES`, and `node.conf` `addpeer` lines in this order:
+LAN, private/VPN, public internet. The ordered list is used for pre-start
+FastSnap V2 on empty datadirs and is also appended as startup `--addpeer`
+arguments so protocol 46 FastSync peers are available before public fallback
+dials dominate startup. V2 is the default on upgraded full nodes; a separate
+`BDAG_FASTSNAP_PEERS` value is only needed when the operator wants to pin a
+specific artifact source.
+
+`BDAG_FASTSYNC_LAN_PREFIXES` defaults to `192.168.`. If your premises LAN uses
+another private range, either put those complete multiaddrs in
+`BDAG_FASTSYNC_LAN_PEERS` or extend the prefix list in `.env`.
+
+## Pi5 Release Candidate Stability Defaults
+
+The Pi5 ARM64 release builder (`ops/build-pi5-arm64-release.sh`) now generates a
+self-monitoring stack package. It defaults to `BDAG_NODE_MODE=single`, which
+runs `bdag-miner-node-2` only to reduce USB power pressure. Choose `double` in
+the installer, or set `BDAG_NODE_MODE=double` with `COMPOSE_PROFILES=dual-node`,
+to add `bdag-miner-node-1`.
+
+No-miner deployments are sync-only by default: `BDAG_ENABLE_NODE_MINING=0`,
+`BDAG_NODE_MODULES=Blockdag`, and an empty `BDAG_NODE_MINING_ARGS`. Enable node
+mining/template flags only when real miners are attached. The dashboard,
+watchdog, stack sentinel, P2P guard, peer refresh, chain restore guard, and
+snapshot timers are installed by `ops/install-dashboard.sh` unless explicitly
+disabled.
+
+Dashboard block height is sourced from chain RPC `getBlockCount`; template
+height, logs, fan-in metrics, and main-order values are shown only as
+diagnostics. Keep `scripts/validate-pi5-restart-hardening.sh` in the release
+gate before cutting an RC.
+
 ## Quick start
 
 ```bash
@@ -94,28 +152,7 @@ Once everything is running:
 - Mining pool Stratum endpoint: `stratum+tcp://localhost:3334`
 - RPC endpoint: `http://localhost:38131`
 
-## Hot staged snapshots
-
-Fast Artifact Sync V2 is enabled by default in the node containers. New empty
-nodes try V2 bootstrap first, using `BDAG_FASTSNAP_PEERS` when set or the
-`addpeer=` entries from `node.conf`; if no usable V2 source is available, they
-continue with normal P2P unless `BDAG_FASTSNAP_REQUIRED=1` is set.
-
-The main compose stack also starts a separate `snapshot-node` and a `hotsnap`
-refresher. The refresher uses the Docker socket to stop only `snapshot-node`,
-export a consistent `/var/lib/bdagStack/node/mainnet/snapshot.bdsnap`, restart
-`snapshot-node`, and repeat on `BDAG_HOTSNAP_INTERVAL` (default `1h`, after an
-initial `20m` wait for fresh V2 imports). This
-keeps a staged artifact close enough to tip for fresh installs to switch to
-normal catch-up under the release target of about 10,000 blocks.
-
-To disable the automatic refresher without disabling the pool node:
-
-```bash
-BDAG_HOTSNAP_ENABLED=0 docker compose up -d
-```
-
-## Dedicated snapshot node (standalone)
+## Dedicated snapshot node (mining stack unchanged)
 
 For hourly or on-demand **snap export**, run a **second** node with its own volumes and host ports so stopping it does not interrupt the pool’s RPC node.
 
@@ -130,7 +167,51 @@ docker compose -p snapshot-node -f docker-compose.snapshot-node.yml --env-file .
 
 - Named volumes **`bdag_snapshot_node_data`** / **`bdag_snapshot_nodeworker_data`** stay separate from the full stack’s `node-data`.
 - Default host ports **`9150`** (P2P), **`48131`** (BDAG RPC), **`28545`** / **`28546`** (EVM), **`16060`** (metrics) avoid clashes with the mining compose defaults.
-- Point export automation at container **`snapshot-node-node-1`** (see `docker compose -p snapshot-node ps`) or run `scripts/hotsnap-refresh.sh` with `BDAG_HOTSNAP_TARGET_CONTAINER=snapshot-node-node-1`.
+- Point export automation at container **`snapshot-node-node-1`** (see `docker compose -p snapshot-node ps`).
+
+## Default dual-node FastSnap seeding
+
+Dual-node mining hosts can serve a public P2P FastSnap archive without mining
+against a stopped node by using the pool router maintenance handoff. This is a
+default release behaviour: `bdag-fastsnap-seed.timer` refreshes the public seed
+every two hours at low CPU and I/O priority when
+`BDAG_FASTSNAP_SEED_TIMER_ENABLED=1`.
+
+Run an immediate refresh manually with:
+
+```bash
+./ops/build-fastsnap-seed.sh
+```
+
+The script requires a pool binary with `/admin/rpc-backend-maintenance`,
+`POOL_RUNTIME_ADMIN_ENABLED=true`, and `POOL_RPC_ROUTER_ENABLED=true`. It drains
+the export backend, proves the pool is still selected on the other backend,
+stops only the drained node, exports `snapshot.bdsnap`, restores the node before
+heavy verification, then verifies and installs the archive and manifest into
+both node datadirs. The installed files are hardlinks to a single archive under
+`data-restore/fastsnap`, so the host does not duplicate the node databases or
+keep separate per-node snapshot copies.
+
+The export path refuses to publish a stale public seed by default unless the
+standby/export backend is within `BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG`
+main-order units of the selected backend. The default is `1000`.
+
+See `docs/fastsnap-maintenance-handoff.html`.
+
+## Release readiness
+
+Container health alone does not prove that a deployment can mine. Before
+marking an install healthy, run:
+
+```bash
+./scripts/release-readiness-check.py
+./scripts/validate-pi5-restart-hardening.sh .
+```
+
+These checks are read-only. They verify the pool schema, source-health gates,
+no-miner service semantics, FastSync/FastSnap safety defaults, dashboard
+source-of-truth rules, and packaged self-healing files. See
+`docs/release-readiness-gates.html`.
   
 
 # Common operations
