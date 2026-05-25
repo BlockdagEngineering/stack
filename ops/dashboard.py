@@ -1625,10 +1625,14 @@ HTML = r"""<!doctype html>
       const templateBackendStatus = templateBackendStatusText(data);
       const sourceHealthStatus = sourceHealthStatusText(data);
       const lossLedgerStatus = lossLedgerStatusText(data);
+      const hostPressureStatus = hostPressureText(data.host_pressure || {});
+      const rpcRefusedStatus = data.pool?.rpc_refused_recent
+        ? "recent"
+        : (data.pool?.rpc_refused ? `stale age=${fmt(data.pool.last_rpc_refused_age_seconds)}s` : "false");
       text(
         "poolSummary",
         `endpoint=${data.pool_endpoint || "unknown"} local_ips=${(data.local_ips || []).join(", ") || "none"} `
-        + `initial_download=${data.pool.initial_download} gbt_errors=${data.pool.gbt_errors} rpc_refused=${data.pool.rpc_refused} `
+        + `initial_download=${data.pool.initial_download} gbt_errors=${data.pool.gbt_errors} rpc_refused=${rpcRefusedStatus} `
         + `valid_shares=${fmt(poolHealth.valid_share_count)} stale_submits=${fmt(poolHealth.stale_submit_count)} `
         + `stale_jobs=${fmt(poolHealth.stale_job_candidate_count)} submit_errors=${fmt(poolHealth.block_submit_error_count)} `
         + `duplicate_blocks=${fmt(poolHealth.duplicate_block_count)} `
@@ -1636,6 +1640,7 @@ HTML = r"""<!doctype html>
         + `selected_backend=${selectedBackend}${templateBackendStatus ? ` ${templateBackendStatus}` : ""}`
         + `${sourceHealthStatus ? ` ${sourceHealthStatus}` : ""}`
         + `${lossLedgerStatus ? ` ${lossLedgerStatus}` : ""} ${submitRecovery}`
+        + `${hostPressureStatus ? ` ${hostPressureStatus}` : ""}`
       );
       text("poolLog", (data.pool.tail || []).join("\n"));
       text("actionLog", data.latest_action ? JSON.stringify(data.latest_action, null, 2) : "No action has run yet.");
@@ -1683,6 +1688,16 @@ HTML = r"""<!doctype html>
       if (!Number.isFinite(rate) || rate <= 0) return "estimating from the next sample";
       const source = estimate.rate_source ? ` (${estimate.rate_source})` : "";
       return `${rate.toFixed(rate >= 10 ? 1 : 2)} blocks/s${source}`;
+    }
+    function hostPressureText(host) {
+      const parts = [];
+      if (hasValue(host.loadavg_1m)) parts.push(`load1=${Number(host.loadavg_1m).toFixed(2)}`);
+      if (hasValue(host.io_some_avg10)) parts.push(`io_some10=${Number(host.io_some_avg10).toFixed(2)}%`);
+      if (hasValue(host.io_full_avg10)) parts.push(`io_full10=${Number(host.io_full_avg10).toFixed(2)}%`);
+      if (hasValue(host.iowait_percent)) parts.push(`iowait=${Number(host.iowait_percent).toFixed(2)}%`);
+      if (hasValue(host.cpu_busy_percent)) parts.push(`cpu_busy=${Number(host.cpu_busy_percent).toFixed(2)}%`);
+      if (hasValue(host.cpu_some_avg10)) parts.push(`cpu_some10=${Number(host.cpu_some_avg10).toFixed(2)}%`);
+      return parts.length ? `host_pressure ${parts.join(" ")}` : "";
     }
     function renderSyncEstimate(data, progress) {
       const estimate = data.sync_estimate || {};
@@ -1765,7 +1780,9 @@ HTML = r"""<!doctype html>
     function nodeSummaryText(node) {
       if (!node) return "node data unavailable";
       const chain = hasValue(node.chain_block_count) ? ` chain_blocks=${fmt(node.chain_block_count)} source=${node.chain_rpc_source || "getBlockCount"}` : " chain_blocks=n/a";
-      return `child=${node.child_running}${chain} main_height=${fmt(node.chain_main_height)} best_main_order=${fmt(node.best_main_order)} import_age=${fmt(node.last_import_age_seconds)}s peer_ahead=${fmt(node.peer_ahead_blocks)} bad_peers=${fmt(node.invalid_peer_errors)} p2p_resets=${fmt(node.p2p_stream_errors)}`;
+      const rpcLatency = hasValue(node.chain_rpc_latency_ms) ? ` rpc_ms=${fmt(node.chain_rpc_latency_ms)}` : (node.chain_rpc_error ? " rpc=unavailable" : "");
+      const rpcAttempts = Number(node.chain_rpc_attempts) > 1 ? ` rpc_attempts=${fmt(node.chain_rpc_attempts)}/${fmt(node.chain_rpc_retry_limit)}` : "";
+      return `child=${node.child_running}${chain}${rpcLatency}${rpcAttempts} main_height=${fmt(node.chain_main_height)} best_main_order=${fmt(node.best_main_order)} import_age=${fmt(node.last_import_age_seconds)}s peer_ahead=${fmt(node.peer_ahead_blocks)} bad_peers=${fmt(node.invalid_peer_errors)} p2p_resets=${fmt(node.p2p_stream_errors)}`;
     }
     function nodeBlockHeight(name, node, syncNode, data) {
       if (node?.planned_sync_pause && !hasValue(node?.chain_block_count) && !hasValue(syncNode?.chain_block_count)) return "paused";

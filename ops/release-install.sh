@@ -143,6 +143,21 @@ configure_node_mining_env() {
   fi
 }
 
+guard_runtime_compose() {
+  if [[ ! -f docker-compose.yml ]]; then
+    echo "Missing docker-compose.yml in release root." >&2
+    exit 1
+  fi
+  if ! grep -q '^# BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1$' docker-compose.yml; then
+    echo "This installer requires the generated Pi5 runtime compose. Refusing to start an unmarked compose file." >&2
+    exit 1
+  fi
+  if grep -Eq '^[[:space:]]*(build|dockerfile):' docker-compose.yml; then
+    echo "Runtime compose contains build/dockerfile entries. Refusing to overwrite the deployed image set." >&2
+    exit 1
+  fi
+}
+
 install_packages() {
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     return 0
@@ -355,8 +370,13 @@ publish_p2p_snapshot_archive() {
 
 start_stack() {
   say "Starting BlockDAG pool stack"
-  compose_cmd pull pool-db rpc-failover || true
-  compose_cmd up -d
+  guard_runtime_compose
+  if [[ "${BDAG_RELEASE_PULL_BASE_IMAGES:-0}" == "1" ]]; then
+    compose_cmd pull pool-db rpc-failover || true
+  else
+    warn "Skipping implicit image pulls. Set BDAG_RELEASE_PULL_BASE_IMAGES=1 for an explicit base-image refresh."
+  fi
+  compose_cmd up -d --no-build --pull never
   compose_cmd ps
 }
 

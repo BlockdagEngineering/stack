@@ -404,7 +404,7 @@ docker compose build
 
 echo ""
 echo "=== Starting services ==="
-docker compose up -d
+docker compose up -d --no-build --pull never
 
 cat <<'EOF'
 
