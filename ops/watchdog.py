@@ -23,7 +23,7 @@ from pool_ops import (
     PROJECT_ROOT,
     RUNTIME_DIR,
     action_log_path,
-    collect_status,
+    collect_status_cached,
     configure_miner,
     default_miner_pool_settings,
     ensure_runtime,
@@ -1544,7 +1544,7 @@ def boot_repair(
         reason = str(marker.get("reason") or "dirty shutdown marker detected")
         log(f"boot-repair found dirty shutdown marker: {reason}")
         try:
-            collect_status(include_logs=True)
+            collect_status_cached(include_logs=True)
         except Exception as exc:  # noqa: BLE001 - boot repair should still attempt the conservative repair.
             log(f"boot-repair preflight status check failed: {exc}")
 
@@ -1583,7 +1583,7 @@ def boot_repair(
         return payload
 
     try:
-        boot_status = collect_status(include_logs=True)
+        boot_status = collect_status_cached(include_logs=True)
     except Exception as exc:  # noqa: BLE001 - boot repair should degrade gracefully on a bad status probe.
         log(f"boot-repair status check failed: {exc}")
         boot_status = {"stack_failures": [str(exc)], "failures": [str(exc)]}
@@ -1662,7 +1662,7 @@ def check_once(
     repair: bool = True,
 ) -> dict[str, Any]:
     state = read_state()
-    status = collect_status(include_logs=True)
+    status = collect_status_cached(include_logs=True)
     router_decision = None
     try:
         router_decision = write_rpc_router_state(status)

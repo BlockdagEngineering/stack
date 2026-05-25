@@ -26,6 +26,11 @@ miners. If a node is behind tip and `miner_health.connected_count == 0` or
 `miner_health.managed_count == 0`, preserve sync-only behavior and prioritize
 chain catch-up over template generation.
 
+`ops/pool_ops.py` must skip live `getBlockTemplate` probe RPCs entirely when
+both managed and connected miner counts are zero. Suppressing warnings after
+probing is not enough; no-miner mode should not spend node CPU, pool RPC, or USB
+I/O on mining-template readiness work.
+
 ## Catch-Up Priority Invariant
 
 When dashboard status or `sync_progress.status` is `syncing`, chain import is
@@ -60,6 +65,27 @@ Dashboard block height must come from the node chain RPC `getBlockCount` only.
 lead values are diagnostics and must not be displayed as the node block count.
 Keep `scripts/validate-pi5-restart-hardening.sh` enforcing this so future drift
 cannot reintroduce mixed height sources.
+
+## Low-I/O Monitoring And Repair Invariants
+
+Recurring guards and dashboards must prefer the shared `collect_status_cached`
+path unless they explicitly need an uncached one-shot diagnostic. This prevents
+dashboard refreshes, watchdog ticks, sync coordination, P2P guard, and startup
+checks from stampeding Docker logs and node RPC at the same time.
+
+The node entrypoint must not recursively `chown` the full chain datadir on every
+start. Keep ownership repair conditional through `BDAG_ENTRYPOINT_CHOWN_MODE`
+and only run the second repair pass after FastSnap import has actually mutated
+the datadir.
+
+The stack sentinel must be single-flight and must never build or pull images as
+part of automatic repair. Recreate repairs must use Compose with
+`--no-build --pull never` so a constrained Pi cannot start compiling, fetching,
+or changing provenance during a liveness repair.
+
+JSONL histories used by the dashboard should append each sample and compact only
+at a bounded threshold. Do not reintroduce full-history rewrite loops for every
+sample on the Pi USB data path.
 
 ## FastSync Candidate Ordering
 

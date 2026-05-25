@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from incident_journal import append_incident
-from pool_ops import LOG_DIR, RUNTIME_DIR, collect_status, ensure_runtime, now_iso
+from pool_ops import LOG_DIR, RUNTIME_DIR, collect_status_cached, ensure_runtime, now_iso
 
 
 def load_runtime_env_defaults() -> None:
@@ -107,7 +107,7 @@ def fallback_status() -> tuple[dict[str, Any] | None, str]:
     if status is not None:
         return status, ""
     try:
-        return collect_status(include_logs=True), f"dashboard API unavailable; used direct status: {error}"
+        return collect_status_cached(include_logs=True), f"dashboard API unavailable; used direct status: {error}"
     except Exception as exc:  # noqa: BLE001 - this guard must report failures, not crash silently.
         return None, f"{error}; direct status failed: {exc}"
 

@@ -49,6 +49,7 @@ DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = path_from_env("BDAG_PROJECT_ROOT", DEFAULT_PROJECT_ROOT, DEFAULT_PROJECT_ROOT)
 RUNTIME_DIR = path_from_env("BDAG_RUNTIME_DIR", PROJECT_ROOT / "ops" / "runtime", PROJECT_ROOT)
 LOG_DIR = RUNTIME_DIR / "logs"
+SHARED_STATUS_CACHE_FILE = RUNTIME_DIR / "shared-status-cache.json"
 SYNC_PROGRESS_HEALTH_STATE_FILE = RUNTIME_DIR / "sync-progress-health-state.json"
 SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS = int(os.environ.get("BDAG_SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS", "2700"))
 POOL_ENV_FILE = path_from_env("BDAG_POOL_ENV_FILE", PROJECT_ROOT / "asic-pool" / ".env", PROJECT_ROOT)
@@ -116,6 +117,7 @@ EARNINGS_ONCHAIN_CACHE_FILE = RUNTIME_DIR / "earnings-onchain-cache.json"
 PRICE_CACHE_FILE = RUNTIME_DIR / "price-cache.json"
 GLOBAL_CACHE_FILE = RUNTIME_DIR / "global-cache.json"
 GLOBAL_HISTORY_FILE = RUNTIME_DIR / "global-history.jsonl"
+GLOBAL_HISTORY_STATE_FILE = RUNTIME_DIR / "global-history-state.json"
 GLOBAL_POOL_LABEL_FILE = RUNTIME_DIR / "global-pool-labels.json"
 SYNC_COORDINATOR_STATE_FILE = RUNTIME_DIR / "sync-coordinator-state.json"
 HOST_PRESSURE_STATE_FILE = RUNTIME_DIR / "host-pressure-state.json"
@@ -138,6 +140,7 @@ GLOBAL_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_GLOBAL_CACHE_TTL_SECONDS", "
 GLOBAL_BLOCK_WINDOW = int(os.environ.get("BDAG_GLOBAL_BLOCK_WINDOW", "2048"))
 GLOBAL_RPC_WORKERS = int(os.environ.get("BDAG_GLOBAL_RPC_WORKERS", "24"))
 GLOBAL_HISTORY_LIMIT = int(os.environ.get("BDAG_GLOBAL_HISTORY_LIMIT", "9000"))
+GLOBAL_HISTORY_COMPACT_MULTIPLIER = max(1, int(os.environ.get("BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER", "2")))
 NODE_EVM_RPC_PORT = int(os.environ.get("BDAG_NODE_EVM_RPC_PORT", "18545"))
 EARNINGS_HISTORY_RETENTION_SECONDS = int(os.environ.get("BDAG_EARNINGS_HISTORY_RETENTION_SECONDS", str(35 * 86400)))
 EARNINGS_DASHBOARD_HISTORY_SECONDS = int(os.environ.get("BDAG_EARNINGS_DASHBOARD_HISTORY_SECONDS", str(31 * 86400)))
@@ -205,6 +208,16 @@ HOST_PRESSURE_HISTORY_SAMPLES = max(
     int(os.environ.get("BDAG_HOST_PRESSURE_HISTORY_SAMPLES", "6")),
 )
 HTTP_USER_AGENT = os.environ.get("BDAG_HTTP_USER_AGENT", "curl/8.5.0")
+SHARED_STATUS_CACHE_ENABLED = os.environ.get("BDAG_SHARED_STATUS_CACHE_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+try:
+    SHARED_STATUS_CACHE_SECONDS = max(0.0, float(os.environ.get("BDAG_SHARED_STATUS_CACHE_SECONDS", "3.0")))
+except ValueError:
+    SHARED_STATUS_CACHE_SECONDS = 3.0
 
 
 def is_transient_template_tx_error_text(text: str) -> bool:
@@ -635,6 +648,30 @@ def write_jsonl_file(path: Path, rows: list[dict[str, Any]], mode: int | None = 
     path.write_text("\n".join(json.dumps(row, separators=(",", ":")) for row in rows if isinstance(row, dict)) + ("\n" if rows else ""), encoding="utf-8")
     if mode is not None:
         path.chmod(mode)
+
+
+def append_jsonl_file(path: Path, row: dict[str, Any], mode: int | None = None) -> None:
+    ensure_runtime()
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+    if mode is not None:
+        path.chmod(mode)
+
+
+def count_text_lines(path: Path) -> int:
+    if not path.exists():
+        return 0
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return sum(1 for _line in handle)
+    except OSError:
+        return 0
+
+
+def compact_jsonl_file(path: Path, limit: int, mode: int | None = None) -> int:
+    rows = read_jsonl_file(path, limit=limit)
+    write_jsonl_file(path, rows[-limit:], mode=mode)
+    return len(rows[-limit:])
 
 
 def merge_unique_strings(*values: Any) -> list[str]:
@@ -3546,12 +3583,80 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "sync_pause_leader": planned_pause_leader if node == planned_paused_follower else "",
         }
 
+    running_pool_containers = [name for name in POOL_CONTAINERS if containers.get(name, {}).get("running")]
+    pool_log = docker_logs_many(running_pool_containers, lines=180) if include_logs and running_pool_containers else ""
+    pool = parse_pool_log(pool_log)
+    pool_metrics = collect_pool_prometheus_metrics(containers) if include_logs else {
+        "generated_at": now_iso(),
+        "status": "skipped",
+        "error": "logs excluded from status collection",
+        "containers": {},
+        "active_connections": None,
+        "selected_backend": "",
+        "block_submit_outcomes": {},
+        "block_submit_backend_outcomes": {},
+        "blocks": {},
+        "blocks_rejected_by_node": {},
+        "shares_accepted_total": 0.0,
+        "shares_rejected_by_reason": {},
+        "share_processing": {},
+        "loss_ledger": {},
+        "submit_stall_recoveries": {},
+        "submit_stall_recoveries_total": 0.0,
+        "source_job_health": {},
+        "source_backend_health": {},
+        "selected_backend_source_health": {},
+        "template_conversion_stall": {},
+    }
+    pool["metrics"] = pool_metrics
+    pool["selected_backend"] = pool_metrics.get("selected_backend") or ""
+    pool["metrics_active_connections"] = pool_metrics.get("active_connections")
+    pool["metrics_submit_stall_recoveries_total"] = pool_metrics.get("submit_stall_recoveries_total")
+    source_job_health = (
+        pool_metrics.get("source_job_health")
+        if isinstance(pool_metrics.get("source_job_health"), dict)
+        else {}
+    )
+    source_backend_health = (
+        pool_metrics.get("source_backend_health")
+        if isinstance(pool_metrics.get("source_backend_health"), dict)
+        else {}
+    )
+    selected_source_health = (
+        pool_metrics.get("selected_backend_source_health")
+        if isinstance(pool_metrics.get("selected_backend_source_health"), dict)
+        else {}
+    )
+    pool["source_job_health"] = source_job_health
+    pool["source_backend_health"] = source_backend_health
+    pool["selected_backend_source_health"] = selected_source_health
+    pool["template_conversion_stall"] = (
+        pool_metrics.get("template_conversion_stall")
+        if isinstance(pool_metrics.get("template_conversion_stall"), dict)
+        else {}
+    )
+    pool_loss_ledger = (
+        pool_metrics.get("loss_ledger")
+        if isinstance(pool_metrics.get("loss_ledger"), dict)
+        else {}
+    )
+    pool["loss_ledger"] = pool_loss_ledger
+    if pool.get("rpc_refused_recent") and not any("bdag child" in item for item in stack_failures):
+        add_sync_warning("pool recently saw RPC connection refused")
+
+    miner_health = collect_miner_health() if include_logs else {"failures": [], "warnings": [], "miners": []}
+    connected_miners = int(miner_health.get("connected_count", 0) or 0)
+    managed_miners = int(miner_health.get("managed_count", 0) or 0)
+    miner_demand_present = connected_miners > 0 or managed_miners > 0
+    template_probe_running_nodes = any(containers.get(node, {}).get("running") for node in NODES)
     template_probe_health = (
         collect_template_probe_health()
-        if include_logs and any(containers.get(node, {}).get("running") for node in NODES)
+        if include_logs and miner_demand_present and template_probe_running_nodes
         else {
             "generated_at": now_iso(),
             "cached": False,
+            "suppressed_for_no_miners": bool(include_logs and not miner_demand_present),
+            "suppressed_reason": "no managed or connected miners" if include_logs and not miner_demand_present else "",
             "nodes": {},
             "rpc_failover": None,
             "failing_nodes": [],
@@ -3629,71 +3734,6 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "planned_paused_follower": planned_paused_follower,
         "planned_pause_leader": planned_pause_leader,
     }
-
-    running_pool_containers = [name for name in POOL_CONTAINERS if containers.get(name, {}).get("running")]
-    pool_log = docker_logs_many(running_pool_containers, lines=180) if include_logs and running_pool_containers else ""
-    pool = parse_pool_log(pool_log)
-    pool_metrics = collect_pool_prometheus_metrics(containers) if include_logs else {
-        "generated_at": now_iso(),
-        "status": "skipped",
-        "error": "logs excluded from status collection",
-        "containers": {},
-        "active_connections": None,
-        "selected_backend": "",
-        "block_submit_outcomes": {},
-        "block_submit_backend_outcomes": {},
-        "blocks": {},
-        "blocks_rejected_by_node": {},
-        "shares_accepted_total": 0.0,
-        "shares_rejected_by_reason": {},
-        "share_processing": {},
-        "loss_ledger": {},
-        "submit_stall_recoveries": {},
-        "submit_stall_recoveries_total": 0.0,
-        "source_job_health": {},
-        "source_backend_health": {},
-        "selected_backend_source_health": {},
-        "template_conversion_stall": {},
-    }
-    pool["metrics"] = pool_metrics
-    pool["selected_backend"] = pool_metrics.get("selected_backend") or ""
-    pool["metrics_active_connections"] = pool_metrics.get("active_connections")
-    pool["metrics_submit_stall_recoveries_total"] = pool_metrics.get("submit_stall_recoveries_total")
-    source_job_health = (
-        pool_metrics.get("source_job_health")
-        if isinstance(pool_metrics.get("source_job_health"), dict)
-        else {}
-    )
-    source_backend_health = (
-        pool_metrics.get("source_backend_health")
-        if isinstance(pool_metrics.get("source_backend_health"), dict)
-        else {}
-    )
-    selected_source_health = (
-        pool_metrics.get("selected_backend_source_health")
-        if isinstance(pool_metrics.get("selected_backend_source_health"), dict)
-        else {}
-    )
-    pool["source_job_health"] = source_job_health
-    pool["source_backend_health"] = source_backend_health
-    pool["selected_backend_source_health"] = selected_source_health
-    pool["template_conversion_stall"] = (
-        pool_metrics.get("template_conversion_stall")
-        if isinstance(pool_metrics.get("template_conversion_stall"), dict)
-        else {}
-    )
-    pool_loss_ledger = (
-        pool_metrics.get("loss_ledger")
-        if isinstance(pool_metrics.get("loss_ledger"), dict)
-        else {}
-    )
-    pool["loss_ledger"] = pool_loss_ledger
-    if pool.get("rpc_refused_recent") and not any("bdag child" in item for item in stack_failures):
-        add_sync_warning("pool recently saw RPC connection refused")
-
-    miner_health = collect_miner_health() if include_logs else {"failures": [], "warnings": [], "miners": []}
-    connected_miners = int(miner_health.get("connected_count", 0) or 0)
-    managed_miners = int(miner_health.get("managed_count", 0) or 0)
     pool_has_recent_mining = any(
         pool.get(field) is not None and int(pool.get(field) or 0) <= max_age
         for field, max_age in (
@@ -4064,6 +4104,55 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "docker_images": docker_images,
         "latest_action": read_latest_action(),
     }
+
+
+def collect_status_cached(include_logs: bool = True, max_age_seconds: float | None = None) -> dict[str, Any]:
+    max_age = SHARED_STATUS_CACHE_SECONDS if max_age_seconds is None else max(0.0, float(max_age_seconds))
+    if not SHARED_STATUS_CACHE_ENABLED or max_age <= 0:
+        payload = collect_status(include_logs=include_logs)
+        payload["shared_status_cache"] = {"enabled": False, "hit": False, "max_age_seconds": max_age}
+        return payload
+
+    now = time.time()
+    cache = read_json_file(SHARED_STATUS_CACHE_FILE, {})
+    if not isinstance(cache, dict):
+        cache = {}
+    key = "with_logs" if include_logs else "no_logs"
+    row = cache.get(key) if isinstance(cache.get(key), dict) else {}
+    cached_at = safe_float(row.get("epoch"), 0.0) if isinstance(row, dict) else 0.0
+    payload = row.get("payload") if isinstance(row, dict) else None
+    if isinstance(payload, dict) and cached_at is not None and now - cached_at <= max_age:
+        cache_age = round(max(0.0, now - cached_at), 3)
+        result = dict(payload)
+        result["age_seconds"] = round((safe_float(result.get("age_seconds"), 0.0) or 0.0) + cache_age, 3)
+        stale_after = safe_float(result.get("stale_after_seconds"))
+        if stale_after is not None:
+            result["fresh"] = bool(result["age_seconds"] <= stale_after)
+        result["shared_status_cache"] = {
+            "enabled": True,
+            "hit": True,
+            "key": key,
+            "age_seconds": cache_age,
+            "max_age_seconds": max_age,
+        }
+        return result
+
+    result = collect_status(include_logs=include_logs)
+    result["shared_status_cache"] = {
+        "enabled": True,
+        "hit": False,
+        "key": key,
+        "age_seconds": 0.0,
+        "max_age_seconds": max_age,
+    }
+    cache[key] = {
+        "epoch": now,
+        "generated_at": now_iso(),
+        "include_logs": include_logs,
+        "payload": result,
+    }
+    write_json_file(SHARED_STATUS_CACHE_FILE, cache, mode=0o600)
+    return result
 
 
 def pool_db_json(sql: str) -> Any:
@@ -5027,9 +5116,26 @@ def read_global_history(limit: int | None = None) -> list[dict[str, Any]]:
 
 def record_global_snapshot(snapshot: dict[str, Any]) -> None:
     ensure_runtime()
-    history = read_global_history(limit=max(0, GLOBAL_HISTORY_LIMIT - 1))
-    history.append(snapshot)
-    write_jsonl_file(GLOBAL_HISTORY_FILE, history[-GLOBAL_HISTORY_LIMIT:], mode=0o600)
+    append_jsonl_file(GLOBAL_HISTORY_FILE, snapshot, mode=0o600)
+    state = read_json_file(GLOBAL_HISTORY_STATE_FILE, {})
+    previous_count = safe_int(state.get("row_count") if isinstance(state, dict) else None, 0)
+    row_count = previous_count + 1 if previous_count > 0 else count_text_lines(GLOBAL_HISTORY_FILE)
+    compact_threshold = max(GLOBAL_HISTORY_LIMIT + 1, GLOBAL_HISTORY_LIMIT * GLOBAL_HISTORY_COMPACT_MULTIPLIER)
+    compacted = False
+    if row_count > compact_threshold:
+        row_count = compact_jsonl_file(GLOBAL_HISTORY_FILE, GLOBAL_HISTORY_LIMIT, mode=0o600)
+        compacted = True
+    write_json_file(
+        GLOBAL_HISTORY_STATE_FILE,
+        {
+            "updated_at": now_iso(),
+            "row_count": row_count,
+            "limit": GLOBAL_HISTORY_LIMIT,
+            "compact_threshold": compact_threshold,
+            "compacted": compacted,
+        },
+        mode=0o600,
+    )
 
 
 def _pool_earning_rates_from_cluster(cluster: dict[str, Any], scan_window_hours: Decimal | None) -> tuple[str | None, str | None, str | None]:
