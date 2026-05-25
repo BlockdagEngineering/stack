@@ -93,6 +93,14 @@ scans must defer while the node is catching up or host IO/CPU pressure is above
 the configured release thresholds. Chain import and live mining are the primary
 jobs; background freshness work is allowed to lag until the host is healthy.
 
+Runtime limits must be platform-adaptive. Do not hard-code Pi-only worker
+counts as universal behavior: the stack must support Linux AMD64 and ARM64
+first, and installer-supported macOS/Windows Docker hosts where the same Linux
+pressure signals may not exist. Use `host_runtime_profile()`,
+`adaptive_worker_count()`, and explicit env caps so Pi5/USB hosts stay
+conservative while larger AMD64 or ARM64 hosts can expand safely when pressure
+is low.
+
 ## FastSync Candidate Ordering
 
 New nodes must prefer nearby FastSync candidates before public internet seeds.

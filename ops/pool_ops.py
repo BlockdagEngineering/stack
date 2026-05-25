@@ -8,6 +8,7 @@ from collections import Counter, deque
 import json
 import os
 import ipaddress
+import platform
 import re
 import shlex
 import shutil
@@ -37,12 +38,141 @@ def split_env_list(name: str, default: str) -> list[str]:
     return [item.strip() for item in re.split(r"[,;]", raw) if item.strip()]
 
 
+def env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def env_int(name: str, default: int, minimum: int | None = None) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    return value
+
+
+def env_float(name: str, default: float, minimum: float | None = None) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    return value
+
+
 def unique_names(names: list[str]) -> list[str]:
     result: list[str] = []
     for name in names:
         if name and name not in result:
             result.append(name)
     return result
+
+
+def normalize_os_name(raw: str | None = None) -> str:
+    value = (raw or platform.system() or "unknown").strip().lower()
+    if value in {"darwin", "mac", "macos"}:
+        return "darwin"
+    if value.startswith("win"):
+        return "windows"
+    if value.startswith("linux"):
+        return "linux"
+    return value or "unknown"
+
+
+def normalize_arch_name(raw: str | None = None) -> str:
+    value = (raw or platform.machine() or "unknown").strip().lower()
+    if value in {"x86_64", "amd64"}:
+        return "amd64"
+    if value in {"aarch64", "arm64"}:
+        return "arm64"
+    if value.startswith("armv7") or value.startswith("armv6"):
+        return "arm"
+    return value or "unknown"
+
+
+def detect_total_memory_bytes(os_name: str | None = None) -> int | None:
+    system = normalize_os_name(os_name)
+    if system == "linux":
+        try:
+            for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+                if line.startswith("MemTotal:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return int(parts[1]) * 1024
+        except (OSError, ValueError):
+            return None
+    if system == "darwin":
+        try:
+            raw = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True, timeout=1).strip()
+            return int(raw)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+    return None
+
+
+def detect_hardware_model(os_name: str | None = None) -> str:
+    system = normalize_os_name(os_name)
+    if system == "linux":
+        for path in (Path("/proc/device-tree/model"), Path("/sys/firmware/devicetree/base/model")):
+            try:
+                return path.read_text(encoding="utf-8").replace("\x00", "").strip()
+            except OSError:
+                continue
+    if system == "darwin":
+        try:
+            return subprocess.check_output(["sysctl", "-n", "hw.model"], text=True, timeout=1).strip()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+    return ""
+
+
+_HOST_RUNTIME_PROFILE_CACHE: dict[str, Any] | None = None
+
+
+def host_runtime_profile(force_refresh: bool = False) -> dict[str, Any]:
+    global _HOST_RUNTIME_PROFILE_CACHE
+    if _HOST_RUNTIME_PROFILE_CACHE is not None and not force_refresh:
+        return dict(_HOST_RUNTIME_PROFILE_CACHE)
+
+    os_name = normalize_os_name()
+    arch = normalize_arch_name()
+    cpu_count = max(1, os.cpu_count() or 1)
+    memory_bytes = detect_total_memory_bytes(os_name)
+    memory_gib = round(memory_bytes / (1024 ** 3), 2) if memory_bytes else None
+    hardware_model = detect_hardware_model(os_name)
+    model_lower = hardware_model.lower()
+    override = HOST_PROFILE_OVERRIDE
+    profile_source = "auto"
+    if override not in {"", "auto"}:
+        profile = override
+        profile_source = "env"
+    elif os_name == "linux" and "raspberry pi 5" in model_lower:
+        profile = "pi5"
+    elif cpu_count <= 4 or (memory_bytes is not None and memory_bytes <= 6 * 1024 ** 3):
+        profile = "constrained"
+    elif cpu_count <= 8 or (memory_bytes is not None and memory_bytes <= 16 * 1024 ** 3):
+        profile = "standard"
+    else:
+        profile = "large"
+
+    payload = {
+        "os": os_name,
+        "arch": arch,
+        "profile": profile,
+        "profile_source": profile_source,
+        "cpu_count": cpu_count,
+        "memory_bytes": memory_bytes,
+        "memory_gib": memory_gib,
+        "hardware_model": hardware_model,
+        "psi_available": os_name == "linux" and Path("/proc/pressure/io").exists(),
+    }
+    _HOST_RUNTIME_PROFILE_CACHE = dict(payload)
+    return payload
 
 
 DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -101,12 +231,12 @@ IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 NODE_LOG_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\|(\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?")
 
 MINER_BACKUP_DIR = RUNTIME_DIR / "miner-backups"
-MINER_HTTP_TIMEOUT = float(os.environ.get("BDAG_MINER_HTTP_TIMEOUT", "2.5"))
-MINER_HASHRATE_PROBE_TIMEOUT = float(os.environ.get("BDAG_MINER_HASHRATE_PROBE_TIMEOUT", "1.0"))
-MINER_HASHRATE_PROBE_WORKERS = int(os.environ.get("BDAG_MINER_HASHRATE_PROBE_WORKERS", "8"))
-MINER_SCAN_TIMEOUT = float(os.environ.get("BDAG_MINER_SCAN_TIMEOUT", "0.8"))
-MINER_SCAN_WORKERS = int(os.environ.get("BDAG_MINER_SCAN_WORKERS", "64"))
-MINER_SCAN_MAX_TARGETS = int(os.environ.get("BDAG_MINER_SCAN_MAX_TARGETS", "1024"))
+MINER_HTTP_TIMEOUT = env_float("BDAG_MINER_HTTP_TIMEOUT", 2.5, minimum=0.1)
+MINER_HASHRATE_PROBE_TIMEOUT = env_float("BDAG_MINER_HASHRATE_PROBE_TIMEOUT", 1.0, minimum=0.1)
+MINER_HASHRATE_PROBE_WORKERS = env_int("BDAG_MINER_HASHRATE_PROBE_WORKERS", 8, minimum=1)
+MINER_SCAN_TIMEOUT = env_float("BDAG_MINER_SCAN_TIMEOUT", 0.8, minimum=0.1)
+MINER_SCAN_WORKERS = env_int("BDAG_MINER_SCAN_WORKERS", 64, minimum=1)
+MINER_SCAN_MAX_TARGETS = env_int("BDAG_MINER_SCAN_MAX_TARGETS", 1024, minimum=1)
 MINER_LOGIN_KEY_HEX = "21" * 16
 MINER_ZERO_IV_HEX = "00" * 16
 MINER_REGISTRY_FILE = RUNTIME_DIR / "miners.json"
@@ -138,7 +268,7 @@ PRICE_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_PRICE_CACHE_TTL_SECONDS", "30
 PRICE_MIN_OK_SOURCES = int(os.environ.get("BDAG_PRICE_MIN_OK_SOURCES", "2"))
 GLOBAL_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_GLOBAL_CACHE_TTL_SECONDS", "300"))
 GLOBAL_BLOCK_WINDOW = int(os.environ.get("BDAG_GLOBAL_BLOCK_WINDOW", "2048"))
-GLOBAL_RPC_WORKERS = int(os.environ.get("BDAG_GLOBAL_RPC_WORKERS", "24"))
+GLOBAL_RPC_WORKERS = env_int("BDAG_GLOBAL_RPC_WORKERS", 24, minimum=1)
 GLOBAL_HISTORY_LIMIT = int(os.environ.get("BDAG_GLOBAL_HISTORY_LIMIT", "9000"))
 GLOBAL_HISTORY_COMPACT_MULTIPLIER = max(1, int(os.environ.get("BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER", "2")))
 NODE_EVM_RPC_PORT = int(os.environ.get("BDAG_NODE_EVM_RPC_PORT", "18545"))
@@ -201,51 +331,47 @@ NODE_TEMPLATE_PROBE_SAMPLES = max(1, int(os.environ.get("BDAG_NODE_TEMPLATE_PROB
 NODE_TEMPLATE_PROBE_TIMEOUT = float(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_TIMEOUT", "1.5"))
 NODE_CHAIN_RPC_TIMEOUT = float(os.environ.get("BDAG_NODE_CHAIN_RPC_TIMEOUT", "8.0"))
 NODE_CHAIN_RPC_RETRIES = max(1, int(os.environ.get("BDAG_NODE_CHAIN_RPC_RETRIES", "2")))
-HOST_PRESSURE_IOWAIT_WARN_PERCENT = float(os.environ.get("BDAG_HOST_PRESSURE_IOWAIT_WARN_PERCENT", "25"))
-HOST_PRESSURE_IOWAIT_WARN_SAMPLES = max(2, int(os.environ.get("BDAG_HOST_PRESSURE_IOWAIT_WARN_SAMPLES", "3")))
+HOST_PRESSURE_IOWAIT_WARN_PERCENT = env_float("BDAG_HOST_PRESSURE_IOWAIT_WARN_PERCENT", 25.0, minimum=0.0)
+HOST_PRESSURE_IOWAIT_WARN_SAMPLES = env_int("BDAG_HOST_PRESSURE_IOWAIT_WARN_SAMPLES", 3, minimum=2)
 HOST_PRESSURE_HISTORY_SAMPLES = max(
     HOST_PRESSURE_IOWAIT_WARN_SAMPLES,
-    int(os.environ.get("BDAG_HOST_PRESSURE_HISTORY_SAMPLES", "6")),
+    env_int("BDAG_HOST_PRESSURE_HISTORY_SAMPLES", 6, minimum=HOST_PRESSURE_IOWAIT_WARN_SAMPLES),
 )
 HTTP_USER_AGENT = os.environ.get("BDAG_HTTP_USER_AGENT", "curl/8.5.0")
-SHARED_STATUS_CACHE_ENABLED = os.environ.get("BDAG_SHARED_STATUS_CACHE_ENABLED", "1").strip().lower() not in {
-    "0",
-    "false",
-    "no",
-    "off",
-}
-try:
-    SHARED_STATUS_CACHE_SECONDS = max(0.0, float(os.environ.get("BDAG_SHARED_STATUS_CACHE_SECONDS", "3.0")))
-except ValueError:
-    SHARED_STATUS_CACHE_SECONDS = 3.0
-BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = os.environ.get(
-    "BDAG_BACKGROUND_MAINTENANCE_BACKOFF_ENABLED",
-    "1",
-).strip().lower() not in {"0", "false", "no", "off"}
-try:
-    BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS = int(
-        os.environ.get("BDAG_BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS", "0")
-    )
-except ValueError:
-    BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS = 0
-try:
-    BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT = float(
-        os.environ.get("BDAG_BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT", str(HOST_PRESSURE_IOWAIT_WARN_PERCENT))
-    )
-except ValueError:
-    BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT = HOST_PRESSURE_IOWAIT_WARN_PERCENT
-try:
-    BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN = float(
-        os.environ.get("BDAG_BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN", "20.0")
-    )
-except ValueError:
-    BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN = 20.0
-try:
-    BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN = float(
-        os.environ.get("BDAG_BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN", "80.0")
-    )
-except ValueError:
-    BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN = 80.0
+SHARED_STATUS_CACHE_ENABLED = env_bool("BDAG_SHARED_STATUS_CACHE_ENABLED", True)
+SHARED_STATUS_CACHE_SECONDS = env_float("BDAG_SHARED_STATUS_CACHE_SECONDS", 3.0, minimum=0.0)
+HOST_PROFILE_OVERRIDE = os.environ.get("BDAG_HOST_PROFILE", "auto").strip().lower() or "auto"
+ADAPTIVE_CONCURRENCY_ENABLED = env_bool("BDAG_ADAPTIVE_CONCURRENCY_ENABLED", True)
+ADAPTIVE_IOWAIT_WARN_PERCENT = env_float(
+    "BDAG_ADAPTIVE_IOWAIT_WARN_PERCENT",
+    HOST_PRESSURE_IOWAIT_WARN_PERCENT,
+    minimum=0.0,
+)
+ADAPTIVE_IO_SOME_AVG10_WARN = env_float("BDAG_ADAPTIVE_IO_SOME_AVG10_WARN", 20.0, minimum=0.0)
+ADAPTIVE_CPU_SOME_AVG10_WARN = env_float("BDAG_ADAPTIVE_CPU_SOME_AVG10_WARN", 80.0, minimum=0.0)
+ADAPTIVE_CHAIN_RPC_WARN_MS = env_float("BDAG_ADAPTIVE_CHAIN_RPC_WARN_MS", 1000.0, minimum=0.0)
+BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = env_bool("BDAG_BACKGROUND_MAINTENANCE_BACKOFF_ENABLED", True)
+BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS = env_int("BDAG_BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS", 0, minimum=0)
+BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT = env_float(
+    "BDAG_BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT",
+    HOST_PRESSURE_IOWAIT_WARN_PERCENT,
+    minimum=0.0,
+)
+BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN = env_float(
+    "BDAG_BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN",
+    20.0,
+    minimum=0.0,
+)
+BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN = env_float(
+    "BDAG_BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN",
+    80.0,
+    minimum=0.0,
+)
+BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS = env_float(
+    "BDAG_BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS",
+    ADAPTIVE_CHAIN_RPC_WARN_MS,
+    minimum=0.0,
+)
 
 
 def is_transient_template_tx_error_text(text: str) -> bool:
@@ -603,6 +729,123 @@ def collect_host_pressure() -> dict[str, Any]:
         )
         write_json_file(HOST_PRESSURE_STATE_FILE, {"generated_at": now_iso(), "cpu": cpu, "samples": samples})
     return pressure
+
+
+ADAPTIVE_WORKER_PROFILE_LIMITS: dict[str, dict[str, int]] = {
+    "pi5": {
+        "global_rpc": 6,
+        "miner_scan": 16,
+        "miner_hashrate": 2,
+        "peer_geo": 2,
+        "wallet_balance": 4,
+        "price_fetch": 2,
+    },
+    "constrained": {
+        "global_rpc": 8,
+        "miner_scan": 24,
+        "miner_hashrate": 4,
+        "peer_geo": 4,
+        "wallet_balance": 4,
+        "price_fetch": 2,
+    },
+    "standard": {
+        "global_rpc": 16,
+        "miner_scan": 48,
+        "miner_hashrate": 6,
+        "peer_geo": 6,
+        "wallet_balance": 8,
+        "price_fetch": 3,
+    },
+    "large": {
+        "global_rpc": 32,
+        "miner_scan": 96,
+        "miner_hashrate": 12,
+        "peer_geo": 8,
+        "wallet_balance": 12,
+        "price_fetch": 3,
+    },
+}
+ADAPTIVE_WORKER_MINIMUMS: dict[str, int] = {
+    "global_rpc": 1,
+    "miner_scan": 1,
+    "miner_hashrate": 1,
+    "peer_geo": 1,
+    "wallet_balance": 1,
+    "price_fetch": 1,
+}
+
+
+def adaptive_pressure_level(pressure: dict[str, Any] | None) -> str:
+    if not isinstance(pressure, dict):
+        return "unknown"
+    iowait = safe_float(pressure.get("iowait_percent"))
+    io_some = safe_float(pressure.get("io_some_avg10"))
+    cpu_some = safe_float(pressure.get("cpu_some_avg10"))
+    chain_rpc_latency = safe_float(pressure.get("chain_rpc_latency_ms"))
+    if (
+        bool(pressure.get("iowait_warning_active"))
+        or (iowait is not None and iowait >= ADAPTIVE_IOWAIT_WARN_PERCENT)
+        or (io_some is not None and io_some >= ADAPTIVE_IO_SOME_AVG10_WARN)
+        or (cpu_some is not None and cpu_some >= ADAPTIVE_CPU_SOME_AVG10_WARN)
+        or (chain_rpc_latency is not None and chain_rpc_latency >= ADAPTIVE_CHAIN_RPC_WARN_MS)
+    ):
+        return "high"
+    if (
+        (iowait is not None and iowait >= ADAPTIVE_IOWAIT_WARN_PERCENT / 2)
+        or (io_some is not None and io_some >= ADAPTIVE_IO_SOME_AVG10_WARN / 2)
+        or (cpu_some is not None and cpu_some >= ADAPTIVE_CPU_SOME_AVG10_WARN / 2)
+        or (chain_rpc_latency is not None and chain_rpc_latency >= ADAPTIVE_CHAIN_RPC_WARN_MS / 2)
+    ):
+        return "moderate"
+    return "low"
+
+
+def adaptive_worker_count(
+    kind: str,
+    configured_limit: int,
+    item_count: int,
+    pressure: dict[str, Any] | None = None,
+) -> int:
+    requested = max(1, min(max(1, configured_limit), max(1, item_count)))
+    if not ADAPTIVE_CONCURRENCY_ENABLED:
+        return requested
+
+    profile = host_runtime_profile()
+    profile_limits = ADAPTIVE_WORKER_PROFILE_LIMITS.get(
+        str(profile.get("profile") or ""),
+        ADAPTIVE_WORKER_PROFILE_LIMITS["standard"],
+    )
+    cpu_scaled_ceiling = max(1, int(profile.get("cpu_count") or 1) * 2)
+    ceiling = max(1, min(profile_limits.get(kind, cpu_scaled_ceiling), cpu_scaled_ceiling, configured_limit))
+    count = max(ADAPTIVE_WORKER_MINIMUMS.get(kind, 1), min(requested, ceiling))
+    level = adaptive_pressure_level(pressure)
+    if level == "high":
+        count = min(count, max(ADAPTIVE_WORKER_MINIMUMS.get(kind, 1), count // 4 or 1))
+    elif level == "moderate":
+        count = min(count, max(ADAPTIVE_WORKER_MINIMUMS.get(kind, 1), count // 2 or 1))
+    return max(1, min(count, requested))
+
+
+def adaptive_worker_budgets(pressure: dict[str, Any] | None = None) -> dict[str, Any]:
+    configured = {
+        "global_rpc": GLOBAL_RPC_WORKERS,
+        "miner_scan": MINER_SCAN_WORKERS,
+        "miner_hashrate": MINER_HASHRATE_PROBE_WORKERS,
+        "peer_geo": 8,
+        "wallet_balance": 8,
+        "price_fetch": 3,
+    }
+    workers = {
+        kind: adaptive_worker_count(kind, value, value, pressure)
+        for kind, value in configured.items()
+    }
+    return {
+        "enabled": ADAPTIVE_CONCURRENCY_ENABLED,
+        "pressure_level": adaptive_pressure_level(pressure),
+        "configured_caps": configured,
+        "workers": workers,
+        "host_profile": host_runtime_profile(),
+    }
 
 
 def read_json_file(path: Path, fallback: Any) -> Any:
@@ -1379,8 +1622,10 @@ def scan_miners(target_spec: str | None = None) -> dict[str, Any]:
     started = now_iso()
     targets = parse_scan_targets(target_spec)
     miners: list[dict[str, Any]] = []
+    pressure = collect_host_pressure()
+    worker_count = adaptive_worker_count("miner_scan", MINER_SCAN_WORKERS, len(targets), pressure)
 
-    with ThreadPoolExecutor(max_workers=min(MINER_SCAN_WORKERS, max(1, len(targets)))) as executor:
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = {executor.submit(discover_miner, target): target for target in targets}
         for future in as_completed(futures):
             miner = future.result()
@@ -1393,6 +1638,8 @@ def scan_miners(target_spec: str | None = None) -> dict[str, Any]:
         "finished_at": now_iso(),
         "target_spec": target_spec or default_miner_scan_target(),
         "target_count": len(targets),
+        "worker_count": worker_count,
+        "adaptive_concurrency": adaptive_worker_budgets(pressure),
         "miner_count": len(miners),
         "miners": miners,
     }
@@ -3293,6 +3540,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         pool_endpoint = f"127.0.0.1:{pool_port}"
     disk = run(["df", "-h", str(PROJECT_ROOT)], timeout=8).stdout.strip()
     host_pressure = collect_host_pressure()
+    host_profile = host_runtime_profile()
+    adaptive_concurrency = adaptive_worker_budgets(host_pressure)
     latest_action = read_latest_action()
     if docker_error:
         containers = {
@@ -3489,6 +3738,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "local_ips": local_ips,
             "pool_endpoint": pool_endpoint,
             "host_pressure": host_pressure,
+            "host_profile": host_profile,
+            "adaptive_concurrency": adaptive_concurrency,
             "disk": disk,
             "docker_images": "",
             "docker_access_error": docker_error,
@@ -3977,6 +4228,9 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         timeout=docker_images_timeout,
     ).stdout.strip()
     sync_progress = collect_sync_progress()
+    adaptive_concurrency = adaptive_worker_budgets(
+        {**host_pressure, "chain_rpc_latency_ms": _sync_chain_rpc_latency_ms(sync_progress)}
+    )
     for node, progress in (sync_progress.get("nodes") or {}).items():
         if not isinstance(progress, dict):
             continue
@@ -4128,6 +4382,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "local_ips": local_ips,
         "pool_endpoint": pool_endpoint,
         "host_pressure": host_pressure,
+        "host_profile": host_profile,
+        "adaptive_concurrency": adaptive_concurrency,
         "disk": disk,
         "docker_images": docker_images,
         "latest_action": read_latest_action(),
@@ -4195,6 +4451,16 @@ def _sync_remaining_blocks(sync_progress: dict[str, Any]) -> int:
     return max([value for value in node_remaining if value >= 0] or [-1])
 
 
+def _sync_chain_rpc_latency_ms(sync_progress: dict[str, Any]) -> float | None:
+    values = [
+        safe_float(item.get("chain_rpc_latency_ms"))
+        for item in (sync_progress.get("nodes") or {}).values()
+        if isinstance(item, dict)
+    ]
+    values = [value for value in values if value is not None]
+    return max(values) if values else None
+
+
 def background_maintenance_decision(task: str, status: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return whether optional background work should run on this tick."""
     if not BACKGROUND_MAINTENANCE_BACKOFF_ENABLED:
@@ -4203,6 +4469,7 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
             "task": task,
             "reasons": [],
             "backoff_enabled": False,
+            "host_profile": host_runtime_profile(),
         }
 
     payload = status if isinstance(status, dict) else collect_status_cached(include_logs=False)
@@ -4211,6 +4478,7 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
     reasons: list[str] = []
     sync_status = str(sync_progress.get("status") or "unknown")
     remaining_blocks = _sync_remaining_blocks(sync_progress)
+    chain_rpc_latency_ms = _sync_chain_rpc_latency_ms(sync_progress)
     if sync_status == "syncing" and (
         remaining_blocks < 0 or remaining_blocks > BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS
     ):
@@ -4240,6 +4508,10 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
         reasons.append(
             f"host cpu pressure avg10 {cpu_some:.2f} >= {BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN:.2f}"
         )
+    if chain_rpc_latency_ms is not None and chain_rpc_latency_ms >= BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS:
+        reasons.append(
+            f"chain RPC latency {chain_rpc_latency_ms:.1f}ms >= {BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS:.1f}ms"
+        )
 
     return {
         "allowed": not reasons,
@@ -4255,6 +4527,10 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
         "io_some_avg10_warn": BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN,
         "cpu_some_avg10": cpu_some,
         "cpu_some_avg10_warn": BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN,
+        "chain_rpc_latency_ms": chain_rpc_latency_ms,
+        "chain_rpc_latency_warn_ms": BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS,
+        "host_profile": host_runtime_profile(),
+        "adaptive_concurrency": adaptive_worker_budgets({**host_pressure, "chain_rpc_latency_ms": chain_rpc_latency_ms}),
         "shared_status_cache": payload.get("shared_status_cache"),
     }
 
@@ -5038,7 +5314,8 @@ def collect_peer_location_guess() -> dict[str, Any]:
         if ip not in entries or now - int(entries.get(ip, {}).get("updated_at_epoch", 0) or 0) > PEER_GEO_CACHE_TTL_SECONDS
     ]
     if pending:
-        with ThreadPoolExecutor(max_workers=min(8, len(pending))) as executor:
+        worker_count = adaptive_worker_count("peer_geo", 8, len(pending))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = {executor.submit(fetch_peer_geo, ip): ip for ip in pending}
             for future in as_completed(futures):
                 result = future.result()
@@ -5331,7 +5608,14 @@ def collect_global_blockchain() -> dict[str, Any]:
 
     headers: list[dict[str, Any]] = []
     fetch_errors: list[str] = []
-    with ThreadPoolExecutor(max_workers=max(1, min(GLOBAL_RPC_WORKERS, len(block_numbers)))) as pool:
+    global_pressure = {
+        "iowait_percent": maintenance_decision.get("iowait_percent"),
+        "io_some_avg10": maintenance_decision.get("io_some_avg10"),
+        "cpu_some_avg10": maintenance_decision.get("cpu_some_avg10"),
+        "chain_rpc_latency_ms": maintenance_decision.get("chain_rpc_latency_ms"),
+    }
+    global_worker_count = adaptive_worker_count("global_rpc", GLOBAL_RPC_WORKERS, len(block_numbers), global_pressure)
+    with ThreadPoolExecutor(max_workers=global_worker_count) as pool:
         future_map = {pool.submit(load_block, number): number for number in block_numbers}
         for future in as_completed(future_map):
             number = future_map[future]
@@ -5448,6 +5732,8 @@ def collect_global_blockchain() -> dict[str, Any]:
         "latest_block": latest_block,
         "requested_blocks": requested_count,
         "fetched_blocks": total_blocks,
+        "global_rpc_worker_count": global_worker_count,
+        "adaptive_concurrency": adaptive_worker_budgets(global_pressure),
         "scan_start_block": start_block,
         "scan_end_block": latest_block,
         "scan_window_seconds": window_seconds,
@@ -5646,7 +5932,8 @@ def collect_wallet_balances_for_addresses(addresses: list[str]) -> dict[str, Any
         }
 
     balances: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=min(8, len(unique_addresses))) as executor:
+    worker_count = adaptive_worker_count("wallet_balance", 8, len(unique_addresses))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = {executor.submit(balance_for_address, address): address for address in unique_addresses}
         for future in as_completed(futures):
             balances.append(future.result())
@@ -5668,6 +5955,7 @@ def collect_wallet_balances_for_addresses(addresses: list[str]) -> dict[str, Any
         "ok_address_count": ok_count,
         "total_wei": str(total_wei),
         "total_bdag": decimal_to_str(wei_to_bdag(total_wei)),
+        "worker_count": worker_count,
         "addresses": balances,
     }
 
@@ -5987,7 +6275,8 @@ def fetch_cmc_price() -> dict[str, Any]:
         ("pionex", fetch_pionex_trade_price),
     ]
     sources: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=len(source_specs)) as pool:
+    worker_count = adaptive_worker_count("price_fetch", len(source_specs), len(source_specs))
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
         futures = {pool.submit(fetcher): name for name, fetcher in source_specs}
         for future in as_completed(futures):
             name = futures[future]
@@ -6033,6 +6322,7 @@ def fetch_cmc_price() -> dict[str, Any]:
         "usd": decimal_to_str(usd_price, places=6),
         "zar": decimal_to_str(zar_price, places=6),
         "usd_zar_rate": decimal_to_str(usd_zar_rate, places=6),
+        "worker_count": worker_count,
         "sources": sources,
     }
     if fx_warning:
@@ -6095,7 +6385,8 @@ def collect_miner_hashrate_debug(registry_miners: list[dict[str, Any]], activity
             "source": "asic-cgminer-devs",
         }
 
-    with ThreadPoolExecutor(max_workers=min(MINER_HASHRATE_PROBE_WORKERS, max(1, len(candidates)))) as pool:
+    worker_count = adaptive_worker_count("miner_hashrate", MINER_HASHRATE_PROBE_WORKERS, len(candidates))
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
         futures = {pool.submit(probe, ip): ip for ip in candidates}
         for future in as_completed(futures):
             ip, payload = future.result()
