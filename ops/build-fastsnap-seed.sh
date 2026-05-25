@@ -45,9 +45,27 @@ log() {
   echo "[$(date -Is)] $*" | tee -a "$LOG_FILE"
 }
 
+maintenance_backoff_reason() {
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PROJECT_ROOT/ops" BDAG_PROJECT_ROOT="$PROJECT_ROOT" python3 - "$1" <<'PY'
+import sys
+
+from pool_ops import background_maintenance_decision, collect_status_cached
+
+decision = background_maintenance_decision(sys.argv[1], collect_status_cached(include_logs=False))
+if not decision.get("allowed", True):
+    print("; ".join(str(item) for item in decision.get("reasons", []) if item))
+PY
+}
+
 compose() {
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
 }
+
+pressure_reason="$(maintenance_backoff_reason fastsnap_seed 2>>"$LOG_FILE" || true)"
+if [[ -n "$pressure_reason" ]]; then
+  log "skipping FastSnap seed build: background maintenance backoff active: $pressure_reason"
+  exit 0
+fi
 
 resolve_node_image() {
   if [[ -n "$NODE_IMAGE" ]]; then

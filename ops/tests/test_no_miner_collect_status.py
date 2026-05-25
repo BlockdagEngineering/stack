@@ -220,5 +220,66 @@ class SharedStatusCacheTests(unittest.TestCase):
             self.assertEqual(second["overall"], "ok")
 
 
+class BackgroundMaintenanceDecisionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.originals = {
+            name: getattr(pool_ops, name)
+            for name in (
+                "BACKGROUND_MAINTENANCE_BACKOFF_ENABLED",
+                "BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS",
+                "BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT",
+                "BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN",
+                "BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN",
+            )
+        }
+        self.addCleanup(self.restore_globals)
+
+    def restore_globals(self) -> None:
+        for name, value in self.originals.items():
+            setattr(pool_ops, name, value)
+
+    def test_background_maintenance_defers_during_sync_and_io_pressure(self) -> None:
+        pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
+        pool_ops.BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS = 0
+        pool_ops.BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT = 25.0
+        pool_ops.BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN = 20.0
+        pool_ops.BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN = 80.0
+        status = {
+            "sync_progress": {"status": "syncing", "remaining_blocks": 12},
+            "host_pressure": {"iowait_percent": 30.0, "io_some_avg10": 2.0, "cpu_some_avg10": 3.0},
+        }
+
+        decision = pool_ops.background_maintenance_decision("snapshot", status)
+
+        self.assertFalse(decision["allowed"])
+        self.assertTrue(any("chain catch-up has priority" in reason for reason in decision["reasons"]))
+        self.assertTrue(any("host iowait" in reason for reason in decision["reasons"]))
+
+    def test_background_maintenance_allows_idle_synced_host(self) -> None:
+        pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
+        status = {
+            "sync_progress": {"status": "synced", "remaining_blocks": 0},
+            "host_pressure": {"iowait_percent": 1.0, "io_some_avg10": 0.0, "cpu_some_avg10": 0.0},
+        }
+
+        decision = pool_ops.background_maintenance_decision("snapshot", status)
+
+        self.assertTrue(decision["allowed"])
+        self.assertEqual(decision["reasons"], [])
+
+    def test_background_maintenance_defers_when_sync_remaining_is_unknown(self) -> None:
+        pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
+        pool_ops.BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS = 0
+        status = {
+            "sync_progress": {"status": "syncing"},
+            "host_pressure": {"iowait_percent": 1.0, "io_some_avg10": 0.0, "cpu_some_avg10": 0.0},
+        }
+
+        decision = pool_ops.background_maintenance_decision("snapshot", status)
+
+        self.assertFalse(decision["allowed"])
+        self.assertTrue(any("remaining=unknown" in reason for reason in decision["reasons"]))
+
+
 if __name__ == "__main__":
     unittest.main()

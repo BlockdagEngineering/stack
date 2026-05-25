@@ -218,6 +218,34 @@ try:
     SHARED_STATUS_CACHE_SECONDS = max(0.0, float(os.environ.get("BDAG_SHARED_STATUS_CACHE_SECONDS", "3.0")))
 except ValueError:
     SHARED_STATUS_CACHE_SECONDS = 3.0
+BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = os.environ.get(
+    "BDAG_BACKGROUND_MAINTENANCE_BACKOFF_ENABLED",
+    "1",
+).strip().lower() not in {"0", "false", "no", "off"}
+try:
+    BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS = int(
+        os.environ.get("BDAG_BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS", "0")
+    )
+except ValueError:
+    BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS = 0
+try:
+    BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT = float(
+        os.environ.get("BDAG_BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT", str(HOST_PRESSURE_IOWAIT_WARN_PERCENT))
+    )
+except ValueError:
+    BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT = HOST_PRESSURE_IOWAIT_WARN_PERCENT
+try:
+    BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN = float(
+        os.environ.get("BDAG_BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN", "20.0")
+    )
+except ValueError:
+    BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN = 20.0
+try:
+    BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN = float(
+        os.environ.get("BDAG_BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN", "80.0")
+    )
+except ValueError:
+    BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN = 80.0
 
 
 def is_transient_template_tx_error_text(text: str) -> bool:
@@ -4155,6 +4183,82 @@ def collect_status_cached(include_logs: bool = True, max_age_seconds: float | No
     return result
 
 
+def _sync_remaining_blocks(sync_progress: dict[str, Any]) -> int:
+    remaining = safe_int(sync_progress.get("remaining_blocks"), -1)
+    if remaining >= 0:
+        return remaining
+    node_remaining = [
+        safe_int(item.get("remaining_blocks"), -1)
+        for item in (sync_progress.get("nodes") or {}).values()
+        if isinstance(item, dict)
+    ]
+    return max([value for value in node_remaining if value >= 0] or [-1])
+
+
+def background_maintenance_decision(task: str, status: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return whether optional background work should run on this tick."""
+    if not BACKGROUND_MAINTENANCE_BACKOFF_ENABLED:
+        return {
+            "allowed": True,
+            "task": task,
+            "reasons": [],
+            "backoff_enabled": False,
+        }
+
+    payload = status if isinstance(status, dict) else collect_status_cached(include_logs=False)
+    sync_progress = payload.get("sync_progress") if isinstance(payload.get("sync_progress"), dict) else {}
+    host_pressure = payload.get("host_pressure") if isinstance(payload.get("host_pressure"), dict) else {}
+    reasons: list[str] = []
+    sync_status = str(sync_progress.get("status") or "unknown")
+    remaining_blocks = _sync_remaining_blocks(sync_progress)
+    if sync_status == "syncing" and (
+        remaining_blocks < 0 or remaining_blocks > BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS
+    ):
+        remaining_text = "unknown" if remaining_blocks < 0 else str(remaining_blocks)
+        reasons.append(
+            "chain catch-up has priority "
+            f"status={sync_status} remaining={remaining_text} "
+            f"threshold={BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS}"
+        )
+
+    iowait = safe_float(host_pressure.get("iowait_percent"))
+    if bool(host_pressure.get("iowait_warning_active")):
+        reasons.append("host IO wait warning is active")
+    elif iowait is not None and iowait >= BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT:
+        reasons.append(
+            f"host iowait {iowait:.2f}% >= {BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT:.2f}%"
+        )
+
+    io_some = safe_float(host_pressure.get("io_some_avg10"))
+    if io_some is not None and io_some >= BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN:
+        reasons.append(
+            f"host io pressure avg10 {io_some:.2f} >= {BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN:.2f}"
+        )
+
+    cpu_some = safe_float(host_pressure.get("cpu_some_avg10"))
+    if cpu_some is not None and cpu_some >= BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN:
+        reasons.append(
+            f"host cpu pressure avg10 {cpu_some:.2f} >= {BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN:.2f}"
+        )
+
+    return {
+        "allowed": not reasons,
+        "task": task,
+        "reasons": reasons,
+        "backoff_enabled": True,
+        "sync_status": sync_status,
+        "remaining_blocks": remaining_blocks,
+        "sync_backoff_blocks": BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS,
+        "iowait_percent": iowait,
+        "iowait_warn_percent": BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT,
+        "io_some_avg10": io_some,
+        "io_some_avg10_warn": BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN,
+        "cpu_some_avg10": cpu_some,
+        "cpu_some_avg10_warn": BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN,
+        "shared_status_cache": payload.get("shared_status_cache"),
+    }
+
+
 def pool_db_json(sql: str) -> Any:
     result = run(
         ["docker", "exec", POOL_DB_CONTAINER, "psql", "-U", POOL_DB_USER, "-d", POOL_DB_NAME, "-t", "-A", "-c", sql],
@@ -5184,6 +5288,14 @@ def collect_global_blockchain() -> dict[str, Any]:
             "clusters": [],
             "history": history,
         }
+
+    maintenance_decision = background_maintenance_decision("global_blockchain_scan")
+    if not maintenance_decision.get("allowed", True):
+        reason = "; ".join(str(item) for item in maintenance_decision.get("reasons", []) if item)
+        result = stale_or_failed(f"global blockchain scan deferred: {reason}", [reason] if reason else [])
+        result["maintenance_deferred"] = True
+        result["maintenance_decision"] = maintenance_decision
+        return result
 
     rpc_sources = global_evm_rpc_urls() or [("local-chain", f"http://127.0.0.1:{NODE_EVM_RPC_PORT}")]
     latest_errors: list[str] = []

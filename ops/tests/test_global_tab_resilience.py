@@ -147,5 +147,53 @@ class GlobalHistoryWriteTests(unittest.TestCase):
             self.assertTrue(state["compacted"])
 
 
+class GlobalMaintenanceBackoffTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.old_read_json_file = pool_ops.read_json_file
+        self.old_read_global_history = pool_ops.read_global_history
+        self.old_background_maintenance_decision = pool_ops.background_maintenance_decision
+        self.old_global_evm_rpc_urls = pool_ops.global_evm_rpc_urls
+        self.addCleanup(self.restore_globals)
+
+    def restore_globals(self) -> None:
+        pool_ops.read_json_file = self.old_read_json_file
+        pool_ops.read_global_history = self.old_read_global_history
+        pool_ops.background_maintenance_decision = self.old_background_maintenance_decision
+        pool_ops.global_evm_rpc_urls = self.old_global_evm_rpc_urls
+
+    def test_global_scan_defers_to_stale_cache_when_maintenance_backoff_blocks_work(self) -> None:
+        cached = {
+            "status": "ok",
+            "updated_at_epoch": 100,
+            "latest_block": 123,
+            "clusters": [{"address": "0xabc", "blocks": 1}],
+            "fetch_errors": [],
+        }
+
+        def fake_read_json_file(path: pathlib.Path, fallback: object) -> object:
+            if path == pool_ops.GLOBAL_CACHE_FILE:
+                return cached
+            return fallback
+
+        def should_not_fetch_rpc() -> list[tuple[str, str]]:
+            raise AssertionError("global EVM RPC discovery must not run while maintenance is deferred")
+
+        pool_ops.read_json_file = fake_read_json_file
+        pool_ops.read_global_history = lambda limit=None: [{"latest_block": 122, "clusters": []}]
+        pool_ops.background_maintenance_decision = lambda task: {
+            "allowed": False,
+            "task": task,
+            "reasons": ["chain catch-up has priority status=syncing remaining=42 threshold=0"],
+        }
+        pool_ops.global_evm_rpc_urls = should_not_fetch_rpc
+
+        payload = pool_ops.collect_global_blockchain()
+
+        self.assertEqual(payload["status"], "stale")
+        self.assertTrue(payload["maintenance_deferred"])
+        self.assertIn("global blockchain scan deferred", payload["error"])
+        self.assertEqual(payload["latest_block"], 123)
+
+
 if __name__ == "__main__":
     unittest.main()

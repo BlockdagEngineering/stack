@@ -87,6 +87,12 @@ JSONL histories used by the dashboard should append each sample and compact only
 at a bounded threshold. Do not reintroduce full-history rewrite loops for every
 sample on the Pi USB data path.
 
+Optional background work must respect `background_maintenance_decision()`.
+Hourly snapshot staging, FastSnap seed builds, and global dashboard blockchain
+scans must defer while the node is catching up or host IO/CPU pressure is above
+the configured release thresholds. Chain import and live mining are the primary
+jobs; background freshness work is allowed to lag until the host is healthy.
+
 ## FastSync Candidate Ordering
 
 New nodes must prefer nearby FastSync candidates before public internet seeds.

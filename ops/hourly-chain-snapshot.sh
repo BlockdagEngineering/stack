@@ -36,6 +36,18 @@ log() {
   echo "[$(date -Is)] $*" | tee -a "$LOG_FILE"
 }
 
+maintenance_backoff_reason() {
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PROJECT_ROOT/ops" BDAG_PROJECT_ROOT="$PROJECT_ROOT" python3 - "$1" <<'PY'
+import sys
+
+from pool_ops import background_maintenance_decision, collect_status_cached
+
+decision = background_maintenance_decision(sys.argv[1], collect_status_cached(include_logs=False))
+if not decision.get("allowed", True):
+    print("; ".join(str(item) for item in decision.get("reasons", []) if item))
+PY
+}
+
 write_snapshot_manifest() {
   local published_path="$1"
   local manifest_path="$2"
@@ -117,6 +129,12 @@ EOF
 exec 8>"$STAGE_LOCK_FILE"
 log "waiting for exclusive snapshot staging lock"
 flock 8
+
+pressure_reason="$(maintenance_backoff_reason hourly_snapshot 2>>"$LOG_FILE" || true)"
+if [[ -n "$pressure_reason" ]]; then
+  log "skipping hourly snapshot: background maintenance backoff active: $pressure_reason"
+  exit 0
+fi
 
 read -r sync_status sync_remaining sync_unknown sync_block_lag < <(snapshot_sync_summary "$PROJECT_ROOT" 2>>"$LOG_FILE" || printf 'unknown -1 1 -1\n')
 if [[ "$SNAPSHOT_UNKNOWN_BACKOFF" == "1" && "$sync_unknown" =~ ^[0-9]+$ && "$sync_unknown" -gt 0 ]]; then
@@ -338,6 +356,12 @@ if bounded_warm_sync "$SNAPSHOT_SOURCE" "$SNAPSHOT_STAGE" >> "$LOG_FILE" 2>&1; t
   log "warm copy complete for $node_dir"
 else
   log "warm copy partial for $node_dir; will only publish if final stopped sync succeeds"
+fi
+
+pressure_reason="$(maintenance_backoff_reason hourly_snapshot_final_sync 2>>"$LOG_FILE" || true)"
+if [[ -n "$pressure_reason" ]]; then
+  log "skipping final stopped sync: background maintenance backoff active: $pressure_reason"
+  exit 0
 fi
 
 read -r sync_status sync_remaining sync_unknown sync_block_lag < <(snapshot_sync_summary "$PROJECT_ROOT" 2>>"$LOG_FILE" || printf 'unknown -1 1 -1\n')
