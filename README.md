@@ -160,6 +160,17 @@ The deploy helper copies only a small whitelist, backs up changed files, refuses
 dev compose files, validates source and target, restarts only the configured
 user services, and rolls back copied files if validation or restart fails.
 
+For source and release-candidate performance slices, collect comparable baseline
+evidence with:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -B ops/optimization_measurement.py --duration-seconds 300 --interval-seconds 15 --label baseline
+```
+
+Add `--status-url http://127.0.0.1:8088/api/status` when measuring dashboard
+HTTP latency as part of the same run. The harness writes JSONL samples and an
+HTML summary under `ops/runtime/measurements`.
+
 ## Quick start
 
 ```bash
