@@ -30,7 +30,8 @@ COPY blockdag-corechain/ .
 RUN make all && \
     mkdir -p /out && \
     cp -f ./build/bin/bdag        /out/blockdag-node && \
-    cp -f ./build/bin/nodeworker  /out/nodeworker
+    cp -f ./build/bin/nodeworker  /out/nodeworker && \
+    cp -f ./build/bin/fastsnap    /out/fastsnap
 
 # ----------------------------------------------------------------------------
 # Pool Build Stage (asic-pool)
@@ -84,7 +85,8 @@ RUN mkdir -p /etc/bdagStack /var/lib/bdagStack/node/mainnet /var/lib/bdagStack/n
 
 COPY --from=node-build /out/blockdag-node  /usr/local/bin/blockdag-node
 COPY --from=node-build /out/nodeworker     /usr/local/bin/nodeworker
-RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker
+COPY --from=node-build /out/fastsnap       /usr/local/bin/fastsnap
+RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker /usr/local/bin/fastsnap
 
 COPY pool-stack-docker/docker/entrypoint-nodeworker.sh /usr/local/bin/docker-entrypoint-nodeworker.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh

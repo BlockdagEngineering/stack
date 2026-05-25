@@ -5,10 +5,12 @@ This stack can be run in any environment where docker is installed. It includes 
 
 | Service     | Image / build                           | Purpose |
 | ----------- | --------------------------------------- | ------- |
-| `node`      | BlockDAG node, supervised by nodeworker |         |
-| `pool`      | Mining pool (Stratum :3334)             |         |
-| `postgres`  | Pool persistence, schema auto-loaded    |         |
-| `dashboard` | Essential monitoring                    |         |
+| `node`          | BlockDAG node, supervised by nodeworker | Pool RPC and public P2P |
+| `snapshot-node` | BlockDAG node, supervised by nodeworker | Hot staged snapshot source |
+| `hotsnap`       | Docker CLI sidecar                      | Refreshes `snapshot.bdsnap` from `snapshot-node` |
+| `pool`          | Mining pool (Stratum :3334)             | Share tracking and payouts |
+| `postgres`      | Pool persistence, schema auto-loaded    | Pool database |
+| `dashboard`     | Essential monitoring                    | Web dashboard |
 
 
 ## Release package
@@ -92,7 +94,27 @@ Once everything is running:
 - Mining pool Stratum endpoint: `stratum+tcp://localhost:3334`
 - RPC endpoint: `http://localhost:38131`
 
-## Dedicated snapshot node (mining stack unchanged)
+## Hot staged snapshots
+
+Fast Artifact Sync V2 is enabled by default in the node containers. New empty
+nodes try V2 bootstrap first, using `BDAG_FASTSNAP_PEERS` when set or the
+`addpeer=` entries from `node.conf`; if no usable V2 source is available, they
+continue with normal P2P unless `BDAG_FASTSNAP_REQUIRED=1` is set.
+
+The main compose stack also starts a separate `snapshot-node` and a `hotsnap`
+refresher. The refresher uses the Docker socket to stop only `snapshot-node`,
+export a consistent `/var/lib/bdagStack/node/mainnet/snapshot.bdsnap`, restart
+`snapshot-node`, and repeat on `BDAG_HOTSNAP_INTERVAL` (default `1h`). This
+keeps a staged artifact close enough to tip for fresh installs to switch to
+normal catch-up under the release target of about 10,000 blocks.
+
+To disable the automatic refresher without disabling the pool node:
+
+```bash
+BDAG_HOTSNAP_ENABLED=0 docker compose up -d
+```
+
+## Dedicated snapshot node (standalone)
 
 For hourly or on-demand **snap export**, run a **second** node with its own volumes and host ports so stopping it does not interrupt the pool’s RPC node.
 
@@ -107,7 +129,7 @@ docker compose -p snapshot-node -f docker-compose.snapshot-node.yml --env-file .
 
 - Named volumes **`bdag_snapshot_node_data`** / **`bdag_snapshot_nodeworker_data`** stay separate from the full stack’s `node-data`.
 - Default host ports **`9150`** (P2P), **`48131`** (BDAG RPC), **`28545`** / **`28546`** (EVM), **`16060`** (metrics) avoid clashes with the mining compose defaults.
-- Point export automation at container **`snapshot-node-node-1`** (see `docker compose -p snapshot-node ps`).
+- Point export automation at container **`snapshot-node-node-1`** (see `docker compose -p snapshot-node ps`) or run `scripts/hotsnap-refresh.sh` with `BDAG_HOTSNAP_TARGET_CONTAINER=snapshot-node-node-1`.
   
 
 # Common operations

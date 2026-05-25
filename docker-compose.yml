@@ -42,6 +42,27 @@ services:
       - "${EVM_HTTP_PORT:-18545}:18545"
       - "${EVM_WS_PORT:-18546}:18546"
       - "${NODE_METRICS_PORT:-6060}:6060"
+    environment:
+      NODE_ARGS_APPEND: ${NODE_ARGS_APPEND:---fastartifactsync}
+      BDAG_FASTSYNC_SNAPSHOT_PATH: ${BDAG_FASTSYNC_SNAPSHOT_PATH:-}
+      BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID: ${BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID:-}
+      BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX: ${BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX:-}
+      BDAG_FASTSYNC_ARTIFACT_MANIFEST_TTL: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST_TTL:-24h}
+      BDAG_FASTSNAP_ENABLED: ${BDAG_FASTSNAP_ENABLED:-1}
+      BDAG_FASTSNAP_REQUIRED: ${BDAG_FASTSNAP_REQUIRED:-0}
+      BDAG_FASTSNAP_PEERS_FILE: ${BDAG_FASTSNAP_PEERS_FILE:-/etc/bdagStack/node.conf}
+      BDAG_FASTSNAP_AUTO_MAX_PEERS: ${BDAG_FASTSNAP_AUTO_MAX_PEERS:-3}
+      BDAG_FASTSNAP_LEGACY_FALLBACK: ${BDAG_FASTSNAP_LEGACY_FALLBACK:-0}
+      BDAG_FASTSNAP_NETWORK: ${BDAG_FASTSNAP_NETWORK:-mainnet}
+      BDAG_FASTSNAP_PEERS: ${BDAG_FASTSNAP_PEERS:-}
+      BDAG_FASTSNAP_MIN_TIP: ${BDAG_FASTSNAP_MIN_TIP:-0}
+      BDAG_FASTSNAP_TIMEOUT: ${BDAG_FASTSNAP_TIMEOUT:-300s}
+      BDAG_FASTSNAP_PARALLELISM: ${BDAG_FASTSNAP_PARALLELISM:-8}
+      BDAG_FASTSNAP_RETRIES: ${BDAG_FASTSNAP_RETRIES:-5}
+      BDAG_FASTSNAP_RETRY_DELAY: ${BDAG_FASTSNAP_RETRY_DELAY:-10s}
+      BDAG_FASTSNAP_TRUSTED_SIGNERS: ${BDAG_FASTSNAP_TRUSTED_SIGNERS:-}
+      BDAG_FASTSNAP_ALLOW_UNSIGNED: ${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}
+      BDAG_FASTSNAP_KEEP_ARCHIVE: ${BDAG_FASTSNAP_KEEP_ARCHIVE:-0}
     volumes:
     # Note: The default behaviour is to keep any DB state from a previous run, 
     # to prevent unintentional loss of synced chain data.
@@ -52,6 +73,75 @@ services:
       - nodeworker-data:/var/lib/bdagStack/nodeworker
       # node.conf in project root (copy from node.conf.example). gitignored.
       - ./node.conf:/etc/bdagStack/node.conf:ro
+
+  # --------------------------------------------------------------------------
+  # Dedicated hot-snapshot node. It syncs separately from the pool RPC node so
+  # the hotsnap refresher can stop it for consistent exports without pool RPC
+  # downtime.
+  # --------------------------------------------------------------------------
+  snapshot-node:
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    build:
+      context: ${BUILD_CONTEXT:-.}
+      dockerfile: ${DOCKERFILE:-dockerfile}
+      target: node
+      args:
+        <<: *build-args
+    restart: unless-stopped
+    ports:
+      - "${SNAPSHOT_P2P_PORT:-9150}:8150"
+      - "${SNAPSHOT_BDAG_RPC_PORT:-48131}:38131"
+      - "${SNAPSHOT_EVM_HTTP_PORT:-28545}:18545"
+      - "${SNAPSHOT_EVM_WS_PORT:-28546}:18546"
+      - "${SNAPSHOT_NODE_METRICS_PORT:-16060}:6060"
+    environment:
+      NODE_ARGS_APPEND: ${SNAPSHOT_NODE_ARGS_APPEND:---fastartifactsync}
+      BDAG_FASTSYNC_SNAPSHOT_PATH: ${SNAPSHOT_BDAG_FASTSYNC_SNAPSHOT_PATH:-}
+      BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID: ${BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID:-}
+      BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX: ${BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX:-}
+      BDAG_FASTSYNC_ARTIFACT_MANIFEST_TTL: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST_TTL:-24h}
+      BDAG_FASTSNAP_ENABLED: ${SNAPSHOT_BDAG_FASTSNAP_ENABLED:-1}
+      BDAG_FASTSNAP_REQUIRED: ${SNAPSHOT_BDAG_FASTSNAP_REQUIRED:-0}
+      BDAG_FASTSNAP_PEERS_FILE: ${SNAPSHOT_BDAG_FASTSNAP_PEERS_FILE:-/etc/bdagStack/node.conf}
+      BDAG_FASTSNAP_AUTO_MAX_PEERS: ${SNAPSHOT_BDAG_FASTSNAP_AUTO_MAX_PEERS:-3}
+      BDAG_FASTSNAP_LEGACY_FALLBACK: ${SNAPSHOT_BDAG_FASTSNAP_LEGACY_FALLBACK:-0}
+      BDAG_FASTSNAP_NETWORK: ${BDAG_FASTSNAP_NETWORK:-mainnet}
+      BDAG_FASTSNAP_PEERS: ${SNAPSHOT_BDAG_FASTSNAP_PEERS:-}
+      BDAG_FASTSNAP_MIN_TIP: ${SNAPSHOT_BDAG_FASTSNAP_MIN_TIP:-0}
+      BDAG_FASTSNAP_TIMEOUT: ${SNAPSHOT_BDAG_FASTSNAP_TIMEOUT:-300s}
+      BDAG_FASTSNAP_PARALLELISM: ${SNAPSHOT_BDAG_FASTSNAP_PARALLELISM:-8}
+      BDAG_FASTSNAP_RETRIES: ${SNAPSHOT_BDAG_FASTSNAP_RETRIES:-5}
+      BDAG_FASTSNAP_RETRY_DELAY: ${SNAPSHOT_BDAG_FASTSNAP_RETRY_DELAY:-10s}
+      BDAG_FASTSNAP_TRUSTED_SIGNERS: ${BDAG_FASTSNAP_TRUSTED_SIGNERS:-}
+      BDAG_FASTSNAP_ALLOW_UNSIGNED: ${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}
+      BDAG_FASTSNAP_KEEP_ARCHIVE: ${BDAG_FASTSNAP_KEEP_ARCHIVE:-0}
+    volumes:
+      - snapshot-node-data:/var/lib/bdagStack/node
+      - snapshot-nodeworker-data:/var/lib/bdagStack/nodeworker
+      - ./node.conf:/etc/bdagStack/node.conf:ro
+
+  # --------------------------------------------------------------------------
+  # Hot staged snapshot refresher. Default-on unless BDAG_HOTSNAP_ENABLED=0.
+  # Uses Docker socket access to stop only snapshot-node, export a consistent
+  # snapshot.bdsnap into its datadir, then restart snapshot-node.
+  # --------------------------------------------------------------------------
+  hotsnap:
+    image: docker:27-cli
+    restart: unless-stopped
+    depends_on:
+      snapshot-node: { condition: service_started }
+    environment:
+      BDAG_HOTSNAP_ENABLED: ${BDAG_HOTSNAP_ENABLED:-1}
+      BDAG_HOTSNAP_INTERVAL: ${BDAG_HOTSNAP_INTERVAL:-1h}
+      BDAG_HOTSNAP_INITIAL_DELAY: ${BDAG_HOTSNAP_INITIAL_DELAY:-10m}
+      BDAG_HOTSNAP_STOP_TIMEOUT: ${BDAG_HOTSNAP_STOP_TIMEOUT:-60}
+      BDAG_HOTSNAP_DATADIR: ${BDAG_HOTSNAP_DATADIR:-/var/lib/bdagStack/node/mainnet}
+      BDAG_HOTSNAP_ARCHIVE: ${BDAG_HOTSNAP_ARCHIVE:-/var/lib/bdagStack/node/mainnet/snapshot.bdsnap}
+      BDAG_HOTSNAP_CHUNK_SIZE: ${BDAG_HOTSNAP_CHUNK_SIZE:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./scripts/hotsnap-refresh.sh:/usr/local/bin/hotsnap-refresh.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/hotsnap-refresh.sh", "loop"]
 
   # --------------------------------------------------------------------------
   # Mining pool. Connects to node RPC and Postgres.
@@ -126,3 +216,5 @@ volumes:
   postgres-data:
   node-data:
   nodeworker-data:
+  snapshot-node-data:
+  snapshot-nodeworker-data:
