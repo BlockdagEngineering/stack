@@ -230,6 +230,7 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
                 "BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT",
                 "BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN",
                 "BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN",
+                "BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS",
             )
         }
         self.addCleanup(self.restore_globals)
@@ -279,6 +280,102 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
 
         self.assertFalse(decision["allowed"])
         self.assertTrue(any("remaining=unknown" in reason for reason in decision["reasons"]))
+
+    def test_background_maintenance_defers_when_chain_rpc_latency_is_high(self) -> None:
+        pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
+        pool_ops.BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS = 1000.0
+        status = {
+            "sync_progress": {
+                "status": "synced",
+                "remaining_blocks": 0,
+                "nodes": {"node2": {"chain_rpc_latency_ms": 1500.0}},
+            },
+            "host_pressure": {"iowait_percent": 1.0, "io_some_avg10": 0.0, "cpu_some_avg10": 0.0},
+        }
+
+        decision = pool_ops.background_maintenance_decision("global", status)
+
+        self.assertFalse(decision["allowed"])
+        self.assertTrue(any("chain RPC latency" in reason for reason in decision["reasons"]))
+
+
+class AdaptiveConcurrencyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.originals = {
+            name: getattr(pool_ops, name)
+            for name in (
+                "HOST_PROFILE_OVERRIDE",
+                "ADAPTIVE_CONCURRENCY_ENABLED",
+                "ADAPTIVE_IOWAIT_WARN_PERCENT",
+                "ADAPTIVE_IO_SOME_AVG10_WARN",
+                "ADAPTIVE_CPU_SOME_AVG10_WARN",
+                "ADAPTIVE_CHAIN_RPC_WARN_MS",
+                "_HOST_RUNTIME_PROFILE_CACHE",
+                "detect_total_memory_bytes",
+                "detect_hardware_model",
+            )
+        }
+        self.old_cpu_count = pool_ops.os.cpu_count
+        self.old_platform_system = pool_ops.platform.system
+        self.old_platform_machine = pool_ops.platform.machine
+        self.addCleanup(self.restore_globals)
+
+    def restore_globals(self) -> None:
+        for name, value in self.originals.items():
+            setattr(pool_ops, name, value)
+        pool_ops.os.cpu_count = self.old_cpu_count
+        pool_ops.platform.system = self.old_platform_system
+        pool_ops.platform.machine = self.old_platform_machine
+
+    def test_host_profile_detects_pi5_class_hardware(self) -> None:
+        pool_ops.HOST_PROFILE_OVERRIDE = "auto"
+        pool_ops._HOST_RUNTIME_PROFILE_CACHE = None
+        pool_ops.platform.system = lambda: "Linux"
+        pool_ops.platform.machine = lambda: "aarch64"
+        pool_ops.os.cpu_count = lambda: 4
+        pool_ops.detect_total_memory_bytes = lambda os_name=None: 4 * 1024 ** 3
+        pool_ops.detect_hardware_model = lambda os_name=None: "Raspberry Pi 5 Model B Rev 1.0"
+
+        profile = pool_ops.host_runtime_profile(force_refresh=True)
+
+        self.assertEqual(profile["os"], "linux")
+        self.assertEqual(profile["arch"], "arm64")
+        self.assertEqual(profile["profile"], "pi5")
+
+    def test_adaptive_workers_shrink_under_pressure_on_constrained_hosts(self) -> None:
+        pool_ops.HOST_PROFILE_OVERRIDE = "pi5"
+        pool_ops.ADAPTIVE_CONCURRENCY_ENABLED = True
+        pool_ops.ADAPTIVE_IOWAIT_WARN_PERCENT = 25.0
+        pool_ops._HOST_RUNTIME_PROFILE_CACHE = None
+        pool_ops.os.cpu_count = lambda: 4
+        pressure = {"iowait_percent": 30.0, "io_some_avg10": 0.0, "cpu_some_avg10": 0.0}
+
+        workers = pool_ops.adaptive_worker_count("global_rpc", 24, 2048, pressure)
+
+        self.assertEqual(workers, 1)
+
+    def test_adaptive_workers_expand_on_large_idle_hosts(self) -> None:
+        pool_ops.HOST_PROFILE_OVERRIDE = "large"
+        pool_ops.ADAPTIVE_CONCURRENCY_ENABLED = True
+        pool_ops._HOST_RUNTIME_PROFILE_CACHE = None
+        pool_ops.os.cpu_count = lambda: 16
+        pressure = {"iowait_percent": 1.0, "io_some_avg10": 0.0, "cpu_some_avg10": 0.0}
+
+        workers = pool_ops.adaptive_worker_count("global_rpc", 24, 2048, pressure)
+
+        self.assertEqual(workers, 24)
+
+    def test_adaptive_workers_shrink_when_chain_rpc_latency_is_high(self) -> None:
+        pool_ops.HOST_PROFILE_OVERRIDE = "standard"
+        pool_ops.ADAPTIVE_CONCURRENCY_ENABLED = True
+        pool_ops.ADAPTIVE_CHAIN_RPC_WARN_MS = 1000.0
+        pool_ops._HOST_RUNTIME_PROFILE_CACHE = None
+        pool_ops.os.cpu_count = lambda: 8
+        pressure = {"chain_rpc_latency_ms": 1500.0}
+
+        workers = pool_ops.adaptive_worker_count("global_rpc", 24, 2048, pressure)
+
+        self.assertEqual(workers, 4)
 
 
 if __name__ == "__main__":

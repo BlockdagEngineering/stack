@@ -135,6 +135,12 @@ diagnostics. Chain RPC checks retry slow storage-bound samples via
 payload exposes the active dashboard URL, RPC latency, and Linux IO pressure
 metrics. When PSI is unavailable, the dashboard falls back to `/proc/stat`
 `iowait` deltas and raises a maintenance warning after sustained high IO wait.
+The ops layer also detects a host profile with `BDAG_HOST_PROFILE=auto` and
+uses adaptive worker budgets for expensive dashboard/global/miner scans. The
+same release source is expected to behave conservatively on Pi5 or other
+constrained ARM64 hosts, while AMD64 and larger ARM64 hosts can use more
+parallelism when pressure is low. See
+`docs/platform-adaptive-runtime.md`.
 
 The Pi5 release builder marks generated runtime compose files with
 `BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1` and rejects `build:`/`dockerfile:`
