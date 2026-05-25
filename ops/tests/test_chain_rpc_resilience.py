@@ -116,6 +116,20 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.assertEqual(parsed["idle"], 400)
         self.assertEqual(parsed["iowait"], 50)
 
+    def test_sustained_iowait_warning_uses_recent_samples(self) -> None:
+        samples = [
+            {"iowait_percent": 26.0},
+            {"iowait_percent": 27.5},
+            {"iowait_percent": 25.1},
+        ]
+
+        self.assertTrue(pool_ops.host_pressure_iowait_sustained(samples, 25.0, 3))
+        self.assertFalse(pool_ops.host_pressure_iowait_sustained(samples[-2:], 25.0, 3))
+        self.assertEqual(
+            len(pool_ops.host_pressure_warning_messages({"iowait_warning_active": True, "samples": samples})),
+            1,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
