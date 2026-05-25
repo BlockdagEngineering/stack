@@ -132,8 +132,9 @@ Dashboard block height is sourced from chain RPC `getBlockCount`; template
 height, logs, fan-in metrics, and main-order values are shown only as
 diagnostics. Chain RPC checks retry slow storage-bound samples via
 `BDAG_NODE_CHAIN_RPC_TIMEOUT` and `BDAG_NODE_CHAIN_RPC_RETRIES`, and the status
-payload exposes RPC latency plus Linux pressure-stall IO metrics so catch-up
-bottlenecks are visible instead of misreported as missing chain data.
+payload exposes the active dashboard URL, RPC latency, and Linux IO pressure
+metrics. When PSI is unavailable, the dashboard falls back to `/proc/stat`
+`iowait` deltas and raises a maintenance warning after sustained high IO wait.
 
 The Pi5 release builder marks generated runtime compose files with
 `BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1` and rejects `build:`/`dockerfile:`
@@ -142,6 +143,16 @@ default; set an explicit pull/build flag only when intentionally refreshing
 images. Keep `scripts/validate-pi5-restart-hardening.sh` in the release gate
 before cutting an RC, and use `--mode live-runtime` for an installed stack where
 `ops/runtime` and Python bytecode are expected service artifacts.
+
+For live dashboard/watchdog-only updates, use:
+
+```bash
+ops/deploy-live-runtime-update.sh --target /path/to/installed/runtime --mark-runtime-compose
+```
+
+The deploy helper copies only a small whitelist, backs up changed files, refuses
+dev compose files, validates source and target, restarts only the configured
+user services, and rolls back copied files if validation or restart fails.
 
 ## Quick start
 

@@ -198,6 +198,12 @@ NODE_TEMPLATE_PROBE_SAMPLES = max(1, int(os.environ.get("BDAG_NODE_TEMPLATE_PROB
 NODE_TEMPLATE_PROBE_TIMEOUT = float(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_TIMEOUT", "1.5"))
 NODE_CHAIN_RPC_TIMEOUT = float(os.environ.get("BDAG_NODE_CHAIN_RPC_TIMEOUT", "8.0"))
 NODE_CHAIN_RPC_RETRIES = max(1, int(os.environ.get("BDAG_NODE_CHAIN_RPC_RETRIES", "2")))
+HOST_PRESSURE_IOWAIT_WARN_PERCENT = float(os.environ.get("BDAG_HOST_PRESSURE_IOWAIT_WARN_PERCENT", "25"))
+HOST_PRESSURE_IOWAIT_WARN_SAMPLES = max(2, int(os.environ.get("BDAG_HOST_PRESSURE_IOWAIT_WARN_SAMPLES", "3")))
+HOST_PRESSURE_HISTORY_SAMPLES = max(
+    HOST_PRESSURE_IOWAIT_WARN_SAMPLES,
+    int(os.environ.get("BDAG_HOST_PRESSURE_HISTORY_SAMPLES", "6")),
+)
 HTTP_USER_AGENT = os.environ.get("BDAG_HTTP_USER_AGENT", "curl/8.5.0")
 
 
@@ -458,6 +464,35 @@ def parse_proc_stat_cpu(text: str) -> dict[str, int]:
     return {}
 
 
+def host_pressure_iowait_sustained(samples: list[dict[str, Any]], threshold: float, sample_count: int) -> bool:
+    recent = samples[-sample_count:]
+    if len(recent) < sample_count:
+        return False
+    values = [safe_float(item.get("iowait_percent")) for item in recent]
+    return all(value is not None and value >= threshold for value in values)
+
+
+def host_pressure_warning_messages(pressure: dict[str, Any]) -> list[str]:
+    samples = pressure.get("samples") if isinstance(pressure.get("samples"), list) else []
+    if not pressure.get("iowait_warning_active"):
+        return []
+    values = [
+        safe_float(item.get("iowait_percent"))
+        for item in samples[-HOST_PRESSURE_IOWAIT_WARN_SAMPLES:]
+    ]
+    values = [value for value in values if value is not None]
+    if values:
+        avg = sum(values) / len(values)
+        current = safe_float(pressure.get("iowait_percent"), avg) or avg
+        detail = f"current={current:.2f}% avg={avg:.2f}%"
+    else:
+        detail = f"threshold={HOST_PRESSURE_IOWAIT_WARN_PERCENT:.2f}%"
+    return [
+        "host IO wait is sustained across recent dashboard samples "
+        f"({detail}, threshold={HOST_PRESSURE_IOWAIT_WARN_PERCENT:.2f}%)"
+    ]
+
+
 def collect_host_pressure() -> dict[str, Any]:
     pressure: dict[str, Any] = {
         "loadavg_1m": None,
@@ -467,6 +502,10 @@ def collect_host_pressure() -> dict[str, Any]:
         "io_full_avg10": None,
         "iowait_percent": None,
         "cpu_busy_percent": None,
+        "iowait_warn_percent": HOST_PRESSURE_IOWAIT_WARN_PERCENT,
+        "iowait_warn_samples": HOST_PRESSURE_IOWAIT_WARN_SAMPLES,
+        "samples": [],
+        "iowait_warning_active": False,
         "cpu_some_avg10": None,
         "memory_some_avg10": None,
     }
@@ -500,7 +539,28 @@ def collect_host_pressure() -> dict[str, Any]:
         if total_delta > 0 and previous_cpu:
             pressure["iowait_percent"] = round(max(0.0, iowait_delta * 100.0 / total_delta), 2)
             pressure["cpu_busy_percent"] = round(max(0.0, (total_delta - idle_delta) * 100.0 / total_delta), 2)
-        write_json_file(HOST_PRESSURE_STATE_FILE, {"generated_at": now_iso(), "cpu": cpu})
+        previous_samples = previous.get("samples") if isinstance(previous, dict) and isinstance(previous.get("samples"), list) else []
+        samples = [
+            item for item in previous_samples
+            if isinstance(item, dict) and item.get("iowait_percent") is not None
+        ]
+        if pressure["iowait_percent"] is not None:
+            samples.append(
+                {
+                    "epoch": time.time(),
+                    "generated_at": now_iso(),
+                    "iowait_percent": pressure["iowait_percent"],
+                    "cpu_busy_percent": pressure["cpu_busy_percent"],
+                }
+            )
+        samples = samples[-HOST_PRESSURE_HISTORY_SAMPLES:]
+        pressure["samples"] = samples
+        pressure["iowait_warning_active"] = host_pressure_iowait_sustained(
+            samples,
+            HOST_PRESSURE_IOWAIT_WARN_PERCENT,
+            HOST_PRESSURE_IOWAIT_WARN_SAMPLES,
+        )
+        write_json_file(HOST_PRESSURE_STATE_FILE, {"generated_at": now_iso(), "cpu": cpu, "samples": samples})
     return pressure
 
 
@@ -3391,6 +3451,9 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     def add_maintenance_warning(message: str) -> None:
         warnings.append(message)
         maintenance_warnings.append(message)
+
+    for message in host_pressure_warning_messages(host_pressure):
+        add_maintenance_warning(message)
 
     for service in services_for_status:
         info = inspected.get(service)

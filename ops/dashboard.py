@@ -443,7 +443,14 @@ def enrich_status_with_template_backend_state(payload: dict[str, object]) -> dic
 
 
 def dashboard_status_payload() -> dict[str, object]:
-    return enrich_status_with_template_backend_state(enrich_status_with_sync_estimate(collect_status(include_logs=True)))
+    payload = enrich_status_with_template_backend_state(enrich_status_with_sync_estimate(collect_status(include_logs=True)))
+    payload["dashboard_bind"] = HOST
+    payload["dashboard_port"] = PORT
+    display_host = "127.0.0.1" if HOST in {"0.0.0.0", "::", ""} else HOST
+    if ":" in display_host and not display_host.startswith("["):
+        display_host = f"[{display_host}]"
+    payload["dashboard_url"] = f"http://{display_host}:{PORT}"
+    return payload
 
 
 def token_required() -> bool:
@@ -1585,7 +1592,7 @@ HTML = r"""<!doctype html>
       }
     }
     function render(data) {
-      text("meta", data.generated_at + " | " + data.project_root);
+      text("meta", data.generated_at + " | " + data.project_root + " | dashboard " + (data.dashboard_url || "unknown"));
       text("overall", data.overall);
       text("statusReason", data.overall === "ok" ? "" : (data.status_reason || "Reason unavailable."));
       document.getElementById("overall").className = "kpi-value " + statusClass(data.overall);
@@ -1696,6 +1703,7 @@ HTML = r"""<!doctype html>
       if (hasValue(host.io_full_avg10)) parts.push(`io_full10=${Number(host.io_full_avg10).toFixed(2)}%`);
       if (hasValue(host.iowait_percent)) parts.push(`iowait=${Number(host.iowait_percent).toFixed(2)}%`);
       if (hasValue(host.cpu_busy_percent)) parts.push(`cpu_busy=${Number(host.cpu_busy_percent).toFixed(2)}%`);
+      if (host.iowait_warning_active) parts.push("io_wait=sustained");
       if (hasValue(host.cpu_some_avg10)) parts.push(`cpu_some10=${Number(host.cpu_some_avg10).toFixed(2)}%`);
       return parts.length ? `host_pressure ${parts.join(" ")}` : "";
     }
