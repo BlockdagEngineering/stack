@@ -68,10 +68,12 @@ cannot reintroduce mixed height sources.
 
 ## Low-I/O Monitoring And Repair Invariants
 
-Recurring guards and dashboards must prefer the shared `collect_status_cached`
-path unless they explicitly need an uncached one-shot diagnostic. This prevents
-dashboard refreshes, watchdog ticks, sync coordination, P2P guard, and startup
-checks from stampeding Docker logs and node RPC at the same time.
+Recurring guards and dashboards must prefer the shared status sampler and
+`collect_status_cached` path unless they explicitly need an uncached one-shot
+diagnostic. This prevents dashboard refreshes, watchdog ticks, sync
+coordination, P2P guard, and startup checks from stampeding Docker logs and node
+RPC at the same time. Hard diagnostic paths can force a direct sample with
+`max_age_seconds=0`; routine loops should not.
 
 The node entrypoint must not recursively `chown` the full chain datadir on every
 start. Keep ownership repair conditional through `BDAG_ENTRYPOINT_CHOWN_MODE`

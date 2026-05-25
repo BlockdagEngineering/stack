@@ -180,6 +180,7 @@ PROJECT_ROOT = path_from_env("BDAG_PROJECT_ROOT", DEFAULT_PROJECT_ROOT, DEFAULT_
 RUNTIME_DIR = path_from_env("BDAG_RUNTIME_DIR", PROJECT_ROOT / "ops" / "runtime", PROJECT_ROOT)
 LOG_DIR = RUNTIME_DIR / "logs"
 SHARED_STATUS_CACHE_FILE = RUNTIME_DIR / "shared-status-cache.json"
+STATUS_SAMPLER_FILE = RUNTIME_DIR / "status-sampler.json"
 SYNC_PROGRESS_HEALTH_STATE_FILE = RUNTIME_DIR / "sync-progress-health-state.json"
 SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS = int(os.environ.get("BDAG_SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS", "2700"))
 POOL_ENV_FILE = path_from_env("BDAG_POOL_ENV_FILE", PROJECT_ROOT / "asic-pool" / ".env", PROJECT_ROOT)
@@ -340,6 +341,9 @@ HOST_PRESSURE_HISTORY_SAMPLES = max(
 HTTP_USER_AGENT = os.environ.get("BDAG_HTTP_USER_AGENT", "curl/8.5.0")
 SHARED_STATUS_CACHE_ENABLED = env_bool("BDAG_SHARED_STATUS_CACHE_ENABLED", True)
 SHARED_STATUS_CACHE_SECONDS = env_float("BDAG_SHARED_STATUS_CACHE_SECONDS", 3.0, minimum=0.0)
+STATUS_SAMPLER_ENABLED = env_bool("BDAG_STATUS_SAMPLER_ENABLED", True)
+STATUS_SAMPLER_MAX_AGE_SECONDS = env_float("BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS", 12.0, minimum=0.0)
+STATUS_SAMPLER_BYPASS = env_bool("BDAG_STATUS_SAMPLER_BYPASS", False)
 HOST_PROFILE_OVERRIDE = os.environ.get("BDAG_HOST_PROFILE", "auto").strip().lower() or "auto"
 ADAPTIVE_CONCURRENCY_ENABLED = env_bool("BDAG_ADAPTIVE_CONCURRENCY_ENABLED", True)
 ADAPTIVE_IOWAIT_WARN_PERCENT = env_float(
@@ -859,9 +863,65 @@ def read_json_file(path: Path, fallback: Any) -> Any:
 
 def write_json_file(path: Path, payload: Any, mode: int | None = None) -> None:
     ensure_runtime()
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     if mode is not None:
-        path.chmod(mode)
+        tmp.chmod(mode)
+    os.replace(tmp, path)
+
+
+def write_status_sampler_payload(payload: dict[str, Any], include_logs: bool = True) -> None:
+    write_json_file(
+        STATUS_SAMPLER_FILE,
+        {
+            "schema_version": 1,
+            "updated_at": now_iso(),
+            "epoch": time.time(),
+            "include_logs": include_logs,
+            "payload": payload,
+        },
+        mode=0o600,
+    )
+
+
+def read_status_sampler_payload(include_logs: bool, max_age_seconds: float | None = None) -> dict[str, Any] | None:
+    if not STATUS_SAMPLER_ENABLED or STATUS_SAMPLER_BYPASS or STATUS_SAMPLER_MAX_AGE_SECONDS <= 0:
+        return None
+    if max_age_seconds is not None and max_age_seconds <= 0:
+        return None
+    sampler_max_age = STATUS_SAMPLER_MAX_AGE_SECONDS
+    if max_age_seconds is not None:
+        sampler_max_age = min(sampler_max_age, max(0.0, float(max_age_seconds)))
+    if sampler_max_age <= 0:
+        return None
+
+    snapshot = read_json_file(STATUS_SAMPLER_FILE, {})
+    if not isinstance(snapshot, dict):
+        return None
+    payload = snapshot.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    sampled_at = safe_float(snapshot.get("epoch"), 0.0) or 0.0
+    age = max(0.0, time.time() - sampled_at)
+    if age > sampler_max_age:
+        return None
+
+    result = dict(payload)
+    result["age_seconds"] = round((safe_float(result.get("age_seconds"), 0.0) or 0.0) + age, 3)
+    stale_after = safe_float(result.get("stale_after_seconds"))
+    if stale_after is not None:
+        result["fresh"] = bool(result["age_seconds"] <= stale_after)
+    result["status_sampler"] = {
+        "enabled": True,
+        "hit": True,
+        "file": str(STATUS_SAMPLER_FILE),
+        "include_logs": bool(snapshot.get("include_logs")),
+        "requested_include_logs": include_logs,
+        "age_seconds": round(age, 3),
+        "max_age_seconds": sampler_max_age,
+    }
+    return result
 
 
 def read_sync_coordinator_state() -> dict[str, Any]:
@@ -4397,6 +4457,10 @@ def collect_status_cached(include_logs: bool = True, max_age_seconds: float | No
         payload["shared_status_cache"] = {"enabled": False, "hit": False, "max_age_seconds": max_age}
         return payload
 
+    sampler_payload = read_status_sampler_payload(include_logs=include_logs, max_age_seconds=max_age_seconds)
+    if sampler_payload is not None:
+        return sampler_payload
+
     now = time.time()
     cache = read_json_file(SHARED_STATUS_CACHE_FILE, {})
     if not isinstance(cache, dict):
@@ -4428,6 +4492,12 @@ def collect_status_cached(include_logs: bool = True, max_age_seconds: float | No
         "key": key,
         "age_seconds": 0.0,
         "max_age_seconds": max_age,
+    }
+    result["status_sampler"] = {
+        "enabled": STATUS_SAMPLER_ENABLED,
+        "hit": False,
+        "file": str(STATUS_SAMPLER_FILE),
+        "max_age_seconds": STATUS_SAMPLER_MAX_AGE_SECONDS,
     }
     cache[key] = {
         "epoch": now,

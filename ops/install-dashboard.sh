@@ -189,6 +189,9 @@ ensure_env_value BDAG_ADAPTIVE_IOWAIT_WARN_PERCENT 25
 ensure_env_value BDAG_ADAPTIVE_IO_SOME_AVG10_WARN 20.0
 ensure_env_value BDAG_ADAPTIVE_CPU_SOME_AVG10_WARN 80.0
 ensure_env_value BDAG_ADAPTIVE_CHAIN_RPC_WARN_MS 1000
+ensure_env_value BDAG_STATUS_SAMPLER_ENABLED 1
+ensure_env_value BDAG_STATUS_SAMPLER_INTERVAL_SECONDS 10
+ensure_env_value BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS 12
 ensure_env_value BDAG_GLOBAL_RPC_WORKERS 24
 ensure_env_value BDAG_MINER_SCAN_WORKERS 64
 ensure_env_value BDAG_MINER_HASHRATE_PROBE_WORKERS 8
@@ -207,6 +210,7 @@ ensure_env_value BDAG_INCIDENT_REPORT_ENABLED 0
 ensure_env_value BDAG_INCIDENT_REPORT_REPO ""
 
 DASHBOARD_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-dashboard.service"
+STATUS_SAMPLER_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-status-sampler.service"
 WATCHDOG_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-watchdog.service"
 BOOT_REPAIR_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-boot-repair.service"
 SYNC_COORDINATOR_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-sync-coordinator.service"
@@ -230,7 +234,7 @@ INCIDENT_REPORTER_TIMER="$HOME/.config/systemd/user/${INSTANCE}-incident-reporte
 cat > "$DASHBOARD_SERVICE" <<EOF
 [Unit]
 Description=BlockDAG pool operations dashboard ($INSTANCE)
-After=${INSTANCE}-boot-repair.service default.target
+After=${INSTANCE}-boot-repair.service ${INSTANCE}-status-sampler.service default.target
 
 [Service]
 Type=simple
@@ -248,11 +252,35 @@ RestartSec=5
 WantedBy=default.target
 EOF
 
+cat > "$STATUS_SAMPLER_SERVICE" <<EOF
+[Unit]
+Description=BlockDAG shared status sampler ($INSTANCE)
+After=${INSTANCE}-boot-repair.service default.target
+
+[Service]
+Type=simple
+WorkingDirectory=$PROJECT_ROOT
+Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
+Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
+EnvironmentFile=-$ENV_FILE
+Nice=12
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=30
+IOWeight=25
+ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/status_sampler.py --loop
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+EOF
+
 if [[ "$INSTALL_WATCHDOG" -eq 1 ]]; then
   cat > "$WATCHDOG_SERVICE" <<EOF
 [Unit]
 Description=BlockDAG pool watchdog and auto-repair worker ($INSTANCE)
-After=${INSTANCE}-boot-repair.service default.target
+After=${INSTANCE}-boot-repair.service ${INSTANCE}-status-sampler.service default.target
 
 [Service]
 Type=simple
@@ -605,6 +633,7 @@ if [[ "$START_SERVICES" -eq 1 ]]; then
   if [[ "$INSTALL_WATCHDOG" -eq 1 ]]; then
     systemctl --user enable --now "${INSTANCE}-boot-repair.service"
   fi
+  systemctl --user enable --now "${INSTANCE}-status-sampler.service"
   systemctl --user enable --now "${INSTANCE}-dashboard.service"
   if [[ "$INSTALL_WATCHDOG" -eq 1 ]]; then
     systemctl --user enable --now "${INSTANCE}-watchdog.service"

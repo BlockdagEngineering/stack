@@ -1,6 +1,6 @@
 [Unit]
 Description=BlockDAG pool watchdog and auto-repair worker
-After=bdag-boot-repair.service default.target
+After=bdag-boot-repair.service bdag-status-sampler.service default.target
 
 [Service]
 Type=simple
