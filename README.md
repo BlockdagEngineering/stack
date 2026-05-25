@@ -104,7 +104,8 @@ continue with normal P2P unless `BDAG_FASTSNAP_REQUIRED=1` is set.
 The main compose stack also starts a separate `snapshot-node` and a `hotsnap`
 refresher. The refresher uses the Docker socket to stop only `snapshot-node`,
 export a consistent `/var/lib/bdagStack/node/mainnet/snapshot.bdsnap`, restart
-`snapshot-node`, and repeat on `BDAG_HOTSNAP_INTERVAL` (default `1h`). This
+`snapshot-node`, and repeat on `BDAG_HOTSNAP_INTERVAL` (default `1h`, after an
+initial `20m` wait for fresh V2 imports). This
 keeps a staged artifact close enough to tip for fresh installs to switch to
 normal catch-up under the release target of about 10,000 blocks.
 

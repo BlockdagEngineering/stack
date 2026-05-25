@@ -6,7 +6,7 @@ DATADIR="${BDAG_HOTSNAP_DATADIR:-/var/lib/bdagStack/node/mainnet}"
 ARCHIVE="${BDAG_HOTSNAP_ARCHIVE:-$DATADIR/snapshot.bdsnap}"
 REFRESH_ARCHIVE="$ARCHIVE.refresh"
 INTERVAL="${BDAG_HOTSNAP_INTERVAL:-1h}"
-INITIAL_DELAY="${BDAG_HOTSNAP_INITIAL_DELAY:-10m}"
+INITIAL_DELAY="${BDAG_HOTSNAP_INITIAL_DELAY:-20m}"
 STOP_TIMEOUT="${BDAG_HOTSNAP_STOP_TIMEOUT:-60}"
 
 log() {
@@ -76,10 +76,10 @@ run_in_target_volumes() {
   "$DOCKER_BIN" run --rm --volumes-from "$target" --entrypoint "$entrypoint" "$image" "$@"
 }
 
-target_has_chain() {
+target_ready_for_export() {
   target="$1"
   image="$2"
-  run_in_target_volumes "$target" "$image" /bin/sh -c "test -d '$DATADIR/BdagChain'"
+  run_in_target_volumes "$target" "$image" /bin/sh -c "test -d '$DATADIR/BdagChain' && test ! -f '$DATADIR/fastsync-v2.importing'"
 }
 
 cleanup_refresh_files() {
@@ -120,8 +120,8 @@ run_once() {
     return 1
   }
   image="$(container_image "$target")"
-  if ! target_has_chain "$target" "$image"; then
-    log "hot snapshot refresh skipped; $target has no chain database at $DATADIR yet"
+  if ! target_ready_for_export "$target" "$image"; then
+    log "hot snapshot refresh skipped; $target has no complete chain database at $DATADIR yet"
     return 1
   fi
 
