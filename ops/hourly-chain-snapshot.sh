@@ -59,8 +59,8 @@ source_node_dir = sys.argv[5]
 final_stop_sync = sys.argv[6] == "1"
 
 try:
-    from pool_ops import collect_status, now_iso
-    status = collect_status(include_logs=False)
+    from pool_ops import collect_status_cached, now_iso
+    status = collect_status_cached(include_logs=False)
     generated_at = now_iso()
 except Exception as exc:  # noqa: BLE001 - snapshot publication must not fail because metadata collection failed.
     status = {"metadata_error": str(exc)}

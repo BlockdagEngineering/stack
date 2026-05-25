@@ -7,6 +7,41 @@ log() {
   printf '[%s] node-entrypoint: %s\n' "$(date -Is)" "$*" >&2
 }
 
+FASTSNAP_BOOTSTRAP_MUTATED=0
+
+ensure_owned_runtime_dirs() {
+  mkdir -p /var/lib/bdagStack/node /var/lib/bdagStack/nodeworker /var/log/bdagStack
+  chown bdagStack:bdagStack /var/lib/bdagStack/node /var/lib/bdagStack/nodeworker /var/log/bdagStack || true
+}
+
+fix_ownership_if_needed() {
+  local mode="${BDAG_ENTRYPOINT_CHOWN_MODE:-needed}"
+  local uid gid path mismatched
+  case "$mode" in
+    never|off|0|false)
+      log "recursive ownership repair disabled by BDAG_ENTRYPOINT_CHOWN_MODE=$mode"
+      return 0
+      ;;
+  esac
+
+  uid="$(id -u bdagStack)"
+  gid="$(id -g bdagStack)"
+  for path in /var/lib/bdagStack/node /var/lib/bdagStack/nodeworker /var/log/bdagStack; do
+    [ -e "$path" ] || continue
+    mismatched=""
+    if [ "$(stat -c '%u:%g' "$path" 2>/dev/null || printf '')" != "$uid:$gid" ]; then
+      mismatched="$path"
+    elif [ "$mode" = "always" ]; then
+      mismatched="$path"
+    else
+      mismatched="$(find "$path" \( ! -uid "$uid" -o ! -gid "$gid" \) -print -quit 2>/dev/null || true)"
+    fi
+    [ -n "$mismatched" ] || continue
+    log "repairing ownership below $path due to ${mismatched#$path/}"
+    chown -R bdagStack:bdagStack "$path" || true
+  done
+}
+
 nodeworker_arg_value() {
   local key="$1"
   shift
@@ -301,6 +336,7 @@ maybe_fastsnap_bootstrap() {
   mkdir -p "$data_dir"
   if [ -s "$archive" ]; then
     log "importing existing P2P snapshot archive before node startup: $archive"
+    FASTSNAP_BOOTSTRAP_MUTATED=1
     "$node_binary" snap import --datadir "$data_dir" --path "$archive"
     return 0
   fi
@@ -349,6 +385,7 @@ maybe_fastsnap_bootstrap() {
         mv "$tmp_archive.manifest.json" "$archive.manifest.json"
       fi
       log "importing downloaded P2P snapshot before node startup"
+      FASTSNAP_BOOTSTRAP_MUTATED=1
       "$node_binary" snap import --datadir "$data_dir" --path "$archive"
       IFS="$old_ifs"
       return 0
@@ -388,10 +425,12 @@ if [ "${BDAG_FASTSYNC_PRINT_ORDERED_PEERS:-0}" = "1" ]; then
 fi
 
 if [ "$(id -u)" = 0 ]; then
-  mkdir -p /var/lib/bdagStack/node /var/lib/bdagStack/nodeworker /var/log/bdagStack
-  chown -R bdagStack:bdagStack /var/lib/bdagStack/node /var/lib/bdagStack/nodeworker /var/log/bdagStack || true
+  ensure_owned_runtime_dirs
+  fix_ownership_if_needed
   maybe_fastsnap_bootstrap "$@"
-  chown -R bdagStack:bdagStack /var/lib/bdagStack/node /var/lib/bdagStack/nodeworker /var/log/bdagStack || true
+  if [ "$FASTSNAP_BOOTSTRAP_MUTATED" = "1" ]; then
+    fix_ownership_if_needed
+  fi
   exec runuser -u bdagStack -g bdagStack -- "$@"
 fi
 maybe_fastsnap_bootstrap "$@"

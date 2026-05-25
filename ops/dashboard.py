@@ -24,7 +24,7 @@ from pool_ops import (
     RUNTIME_DIR,
     collect_global_blockchain,
     collect_earnings,
-    collect_status,
+    collect_status_cached,
     configure_miners,
     default_miner_pool_settings,
     ensure_runtime,
@@ -443,7 +443,7 @@ def enrich_status_with_template_backend_state(payload: dict[str, object]) -> dic
 
 
 def dashboard_status_payload() -> dict[str, object]:
-    payload = enrich_status_with_template_backend_state(enrich_status_with_sync_estimate(collect_status(include_logs=True)))
+    payload = enrich_status_with_template_backend_state(enrich_status_with_sync_estimate(collect_status_cached(include_logs=True)))
     payload["dashboard_bind"] = HOST
     payload["dashboard_port"] = PORT
     display_host = "127.0.0.1" if HOST in {"0.0.0.0", "::", ""} else HOST

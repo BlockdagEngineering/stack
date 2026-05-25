@@ -3,6 +3,7 @@
 import os
 import pathlib
 import sys
+import tempfile
 import unittest
 
 OPS_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -103,6 +104,47 @@ class GlobalTabFallbackTests(unittest.TestCase):
         self.assertEqual(payload["clusters"][0]["address"], cached["clusters"][0]["address"])
         self.assertEqual(payload["clusters"][0]["blocks"], cached["clusters"][0]["blocks"])
         self.assertIn("unable to fetch latest global block height", payload["error"])
+
+
+class GlobalHistoryWriteTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.originals = {
+            name: getattr(pool_ops, name)
+            for name in (
+                "GLOBAL_HISTORY_FILE",
+                "GLOBAL_HISTORY_STATE_FILE",
+                "GLOBAL_HISTORY_LIMIT",
+                "GLOBAL_HISTORY_COMPACT_MULTIPLIER",
+                "ensure_runtime",
+            )
+        }
+        self.addCleanup(self.restore_globals)
+
+    def restore_globals(self) -> None:
+        for name, value in self.originals.items():
+            setattr(pool_ops, name, value)
+
+    def test_global_history_appends_and_compacts_only_after_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            pool_ops.GLOBAL_HISTORY_FILE = root / "global-history.jsonl"
+            pool_ops.GLOBAL_HISTORY_STATE_FILE = root / "global-history-state.json"
+            pool_ops.GLOBAL_HISTORY_LIMIT = 3
+            pool_ops.GLOBAL_HISTORY_COMPACT_MULTIPLIER = 2
+            pool_ops.ensure_runtime = lambda: None
+
+            for block in range(6):
+                pool_ops.record_global_snapshot({"latest_block": block})
+
+            self.assertEqual(len(pool_ops.GLOBAL_HISTORY_FILE.read_text(encoding="utf-8").splitlines()), 6)
+            self.assertEqual([row["latest_block"] for row in pool_ops.read_global_history()], [0, 1, 2, 3, 4, 5])
+
+            pool_ops.record_global_snapshot({"latest_block": 6})
+
+            self.assertEqual([row["latest_block"] for row in pool_ops.read_global_history()], [4, 5, 6])
+            state = pool_ops.read_json_file(pool_ops.GLOBAL_HISTORY_STATE_FILE, {})
+            self.assertEqual(state["row_count"], 3)
+            self.assertTrue(state["compacted"])
 
 
 if __name__ == "__main__":

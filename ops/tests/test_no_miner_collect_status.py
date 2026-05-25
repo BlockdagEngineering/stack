@@ -2,6 +2,7 @@
 
 import pathlib
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timezone
 
@@ -100,28 +101,10 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             }
 
         pool_ops.docker_inspect = fake_inspect
-        pool_ops.collect_template_probe_health = lambda: {
-            "generated_at": "2026-05-25T12:00:00+0000",
-            "cached": False,
-            "nodes": {
-                "bdag-miner-node-2": {
-                    "sample_count": 1,
-                    "ok_count": 0,
-                    "error_count": 1,
-                    "last_error": "connection refused",
-                    "failing": True,
-                }
-            },
-            "rpc_failover": {
-                "sample_count": 1,
-                "ok_count": 0,
-                "error_count": 1,
-                "last_error": "connection refused",
-                "failing": True,
-            },
-            "failing_nodes": ["bdag-miner-node-2"],
-            "all_nodes_failing": True,
-        }
+        def fail_if_template_probe_runs():
+            raise AssertionError("no-miner status collection must not run live mining template probes")
+
+        pool_ops.collect_template_probe_health = fail_if_template_probe_runs
         pool_ops.collect_pool_prometheus_metrics = lambda _containers: {
             "generated_at": "2026-05-25T12:00:00+0000",
             "status": "ok",
@@ -182,10 +165,59 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertFalse(status["pool_health"]["needs_fast_repair"])
         self.assertFalse(status["pool_health"]["rpc_refused"])
         self.assertTrue(status["pool_health"]["rpc_refused_raw"])
+        self.assertTrue(status["rpc_template_health"]["suppressed_for_no_miners"])
+        self.assertEqual(status["rpc_template_health"]["suppressed_reason"], "no managed or connected miners")
+        self.assertEqual(status["nodes"]["bdag-miner-node-2"]["template_probe_sample_count"], 0)
+        self.assertFalse(status["nodes"]["bdag-miner-node-2"]["template_probe_failing"])
         self.assertEqual(status["sync_warnings"], [])
         joined_warnings = "\n".join(status["warnings"])
         self.assertNotIn("live mining template probes", joined_warnings)
         self.assertNotIn("pool recently saw RPC connection refused", joined_warnings)
+
+
+class SharedStatusCacheTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.originals = {
+            name: getattr(pool_ops, name)
+            for name in (
+                "SHARED_STATUS_CACHE_FILE",
+                "SHARED_STATUS_CACHE_ENABLED",
+                "SHARED_STATUS_CACHE_SECONDS",
+                "collect_status",
+                "ensure_runtime",
+            )
+        }
+        self.addCleanup(self.restore_globals)
+
+    def restore_globals(self) -> None:
+        for name, value in self.originals.items():
+            setattr(pool_ops, name, value)
+
+    def test_shared_status_cache_reuses_recent_status_sample(self) -> None:
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp:
+            pool_ops.SHARED_STATUS_CACHE_FILE = pathlib.Path(tmp) / "shared-status-cache.json"
+            pool_ops.SHARED_STATUS_CACHE_ENABLED = True
+            pool_ops.SHARED_STATUS_CACHE_SECONDS = 60.0
+            pool_ops.ensure_runtime = lambda: None
+
+            def fake_collect_status(include_logs=True):
+                calls.append(include_logs)
+                return {
+                    "generated_at": "2026-05-25T12:00:00+0000",
+                    "include_logs": include_logs,
+                    "overall": "ok",
+                }
+
+            pool_ops.collect_status = fake_collect_status
+
+            first = pool_ops.collect_status_cached(include_logs=True)
+            second = pool_ops.collect_status_cached(include_logs=True)
+
+            self.assertEqual(calls, [True])
+            self.assertFalse(first["shared_status_cache"]["hit"])
+            self.assertTrue(second["shared_status_cache"]["hit"])
+            self.assertEqual(second["overall"], "ok")
 
 
 if __name__ == "__main__":

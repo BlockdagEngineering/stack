@@ -24,7 +24,7 @@ from pool_ops import (
     PROJECT_ROOT,
     RUNTIME_DIR,
     action_log_path,
-    collect_status,
+    collect_status_cached,
     ensure_runtime,
     now_iso,
     read_json_file,
@@ -654,7 +654,7 @@ def apply_decision(
 def check_once(args: argparse.Namespace) -> dict[str, Any]:
     ensure_runtime()
     previous_state = read_json_file(STATE_FILE, {})
-    status = collect_status(include_logs=True)
+    status = collect_status_cached(include_logs=True)
     decision = build_decision(status, previous_state)
     state = dict(previous_state)
     observed_highest = max(
