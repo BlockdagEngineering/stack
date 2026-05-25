@@ -2,6 +2,24 @@
 x-build-args: &build-args
   SNAPSHOT_PATH: ${SNAPSHOT_PATH:-./latest.bdsnap}
 
+x-node-critical: &node-critical
+  cpu_shares: 4096
+  blkio_config:
+    weight: 1000
+  oom_score_adj: -900
+
+x-pool-critical: &pool-critical
+  cpu_shares: 3072
+  blkio_config:
+    weight: 900
+  oom_score_adj: -800
+
+x-dashboard-low: &dashboard-low
+  cpu_shares: 256
+  blkio_config:
+    weight: 100
+  oom_score_adj: 300
+
 services:
 
   # --------------------------------------------------------------------------
@@ -9,6 +27,7 @@ services:
   # boot via /docker-entrypoint-initdb.d.
   # --------------------------------------------------------------------------
   postgres:
+    <<: *pool-critical
     image: postgres:15-bookworm
     restart: unless-stopped
     environment:
@@ -28,6 +47,7 @@ services:
   # BlockDAG node + nodeworker supervisor. Optional SNAPSHOT_PATH at build time.
   # --------------------------------------------------------------------------
   node:
+    <<: *node-critical
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
       context: ${BUILD_CONTEXT:-.}
@@ -73,6 +93,24 @@ services:
       - nodeworker-data:/var/lib/bdagStack/nodeworker
       # node.conf in project root (copy from node.conf.example). gitignored.
       - ./node.conf:/etc/bdagStack/node.conf:ro
+    environment:
+      BDAG_FASTSNAP_ENABLED: ${BDAG_FASTSNAP_ENABLED:-1}
+      BDAG_FASTSNAP_REQUIRED: ${BDAG_FASTSNAP_REQUIRED:-0}
+      BDAG_FASTSNAP_PEERS: ${BDAG_FASTSNAP_PEERS:-}
+      BDAG_FASTSNAP_MIN_TIP: ${BDAG_FASTSNAP_MIN_TIP:-0}
+      BDAG_FASTSNAP_TIMEOUT: ${BDAG_FASTSNAP_TIMEOUT:-90s}
+      BDAG_FASTSNAP_ARTIFACT_V2: ${BDAG_FASTSNAP_ARTIFACT_V2:-1}
+      BDAG_FASTSNAP_ALLOW_UNSIGNED: ${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}
+      BDAG_FASTSNAP_PARALLELISM: ${BDAG_FASTSNAP_PARALLELISM:-4}
+      BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
+      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-1}
+      BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
+      BDAG_FASTSYNC_LAN_PREFIXES: ${BDAG_FASTSYNC_LAN_PREFIXES:-192.168.}
+      BDAG_FASTSYNC_LAN_PEERS: ${BDAG_FASTSYNC_LAN_PEERS:-}
+      BDAG_FASTSYNC_VPN_PEERS: ${BDAG_FASTSYNC_VPN_PEERS:-}
+      BDAG_FASTSYNC_PUBLIC_PEERS: ${BDAG_FASTSYNC_PUBLIC_PEERS:-}
+      BDAG_FASTSYNC_PEERS: ${BDAG_FASTSYNC_PEERS:-}
+      BDAG_FASTSYNC_PREPROCESS_WORKERS: ${BDAG_FASTSYNC_PREPROCESS_WORKERS:-1}
 
   # --------------------------------------------------------------------------
   # Dedicated hot-snapshot node. It syncs separately from the pool RPC node so
@@ -147,6 +185,7 @@ services:
   # Mining pool. Connects to node RPC and Postgres.
   # --------------------------------------------------------------------------
   pool:
+    <<: *pool-critical
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
       context: ${BUILD_CONTEXT:-.}
@@ -161,6 +200,14 @@ services:
     environment:
       # Compose interpolates ${...} from the project root .env file.
       NODE_RPC_URL: http://node:38131
+      POOL_RPC_BACKENDS: ${POOL_RPC_BACKENDS:-}
+      POOL_RPC_ROUTER_ENABLED: ${POOL_RPC_ROUTER_ENABLED:-false}
+      POOL_RPC_ROUTER_TEMPLATE_LANE_MODE: ${POOL_RPC_ROUTER_TEMPLATE_LANE_MODE:-active-passive}
+      POOL_RPC_ROUTER_MIN_HEALTHY_SECONDS: ${POOL_RPC_ROUTER_MIN_HEALTHY_SECONDS:-10}
+      POOL_RPC_ROUTER_SWITCH_COOLDOWN_SECONDS: ${POOL_RPC_ROUTER_SWITCH_COOLDOWN_SECONDS:-20}
+      POOL_RPC_ROUTER_TEMPLATE_MAX_AGE_SECONDS: ${POOL_RPC_ROUTER_TEMPLATE_MAX_AGE_SECONDS:-5}
+      POOL_RPC_ROUTER_RECOVERY_PROBE_SECONDS: ${POOL_RPC_ROUTER_RECOVERY_PROBE_SECONDS:-15}
+      POOL_RUNTIME_ADMIN_ENABLED: ${POOL_RUNTIME_ADMIN_ENABLED:-false}
       PG_URL:       postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bdagpool}?sslmode=disable
       # Stratum listen (inside container) — from root .env
       POOL_BIND_ADDR:     ${POOL_BIND_ADDR:-0.0.0.0:3334}
@@ -170,9 +217,12 @@ services:
       POOL_FEE_PERCENTAGE: ${POOL_FEE_PERCENTAGE:-1.0}
       POOL_BLOCK_MATURITY: ${POOL_BLOCK_MATURITY:-10}
       POOL_PAYOUT_MATURITY: ${POOL_PAYOUT_MATURITY:-4096}
+      POOL_TEMPLATE_TTL_REFRESH_MS: ${POOL_TEMPLATE_TTL_REFRESH_MS:-10000}
+      POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS: ${POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS:-2500}
+      POOL_ALLOW_MULTIPLE_BLOCK_CANDIDATES_PER_JOB: ${POOL_ALLOW_MULTIPLE_BLOCK_CANDIDATES_PER_JOB:-false}
       WALLET_RPC_URL:     ${WALLET_RPC_URL:-}
       POOL_PRIVATE_KEY:   ${POOL_PRIVATE_KEY:-}
-      METRICS_ADDR:       ${METRICS_ADDR:-0.0.0.0:9198}
+      METRICS_ADDR:       ${METRICS_ADDR:-0.0.0.0:9090}
       POOL_INSTANCE_ID:   ${POOL_INSTANCE_ID:-}
     ports:
       - "${POOL_BIND_PORT:-3334}:3334"
@@ -185,6 +235,7 @@ services:
   # --------------------------------------------------------------------------
 
   dashboard:
+    <<: *dashboard-low
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
       context: ${BUILD_CONTEXT:-..}

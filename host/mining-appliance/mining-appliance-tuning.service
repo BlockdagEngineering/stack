@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply BlockDAG mining appliance CPU, memory, network, and block-device tuning
+After=local-fs.target
+Before=containerd.service docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mining-appliance-host-tuning
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

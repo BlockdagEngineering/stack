@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BlockDAG P2P Interface Discovery Standard</title>
+  <style>
+    :root {
+      color-scheme: dark light;
+      --bg: #101419;
+      --panel: #171d24;
+      --line: #334052;
+      --text: #edf3f7;
+      --muted: #aab6c3;
+      --accent: #6ad0b2;
+      --warn: #efbe5a;
+      --code: #d8f2ff;
+    }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width: 1120px; margin: 0 auto; padding: 28px 20px 48px; }
+    h1 { margin: 0 0 8px; font-size: 2rem; line-height: 1.15; }
+    h2 { margin-top: 28px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+    p { margin: 0 0 12px; }
+    code, pre { background: #0b0f14; border: 1px solid var(--line); border-radius: 6px; color: var(--code); }
+    code { padding: 1px 5px; }
+    pre { padding: 12px; overflow: auto; white-space: pre-wrap; }
+    table { width: 100%; border-collapse: collapse; margin: 14px 0; }
+    th, td { border: 1px solid var(--line); padding: 9px 10px; vertical-align: top; text-align: left; }
+    th { background: #202938; }
+    .lede { color: var(--muted); max-width: 900px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 18px 0; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+    .label { color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-size: 12px; }
+    .good { color: var(--accent); font-weight: 700; }
+    .warn { color: var(--warn); font-weight: 700; }
+  </style>
+  <script type="application/json" id="agent-metadata">
+  {
+    "document_type": "release_operations_standard",
+    "topic": "BlockDAG P2P interface reachability and local peer discovery",
+    "repo": "BlockdagEngineering/pool-stack-docker",
+    "primary_files": [
+      "ops/allow-p2p-iptables.sh",
+      "ops/systemd/bdag-p2p-firewall.service",
+      "ops/update-local-peers.py",
+      "ops/systemd/user-bdag-local-peers.timer"
+    ],
+    "intent": "Make all routable host interfaces eligible for BlockDAG P2P and keep dual-node pool deployments cross-peered."
+  }
+  </script>
+</head>
+<body>
+  <main>
+    <h1>BlockDAG P2P Interface Discovery Standard</h1>
+    <p class="lede">Pool releases should treat LAN and VPN interfaces as first-class P2P paths. The standard is interface-agnostic firewall allowance plus deterministic local peer lists for two-node deployments.</p>
+
+    <section class="grid">
+      <article class="card">
+        <p class="label">Firewall</p>
+        <p class="good">All configured interfaces eligible</p>
+        <p><code>bdag-p2p-firewall.service</code> accepts configured BlockDAG P2P ports in host <code>INPUT</code> and Docker <code>DOCKER-USER</code> without an interface filter.</p>
+      </article>
+      <article class="card">
+        <p class="label">Local nodes</p>
+        <p class="good">Cross-peer by default</p>
+        <p><code>update-local-peers.py</code> writes node-specific addpeer lists so node1 and node2 can dial each other through Docker DNS and host LAN/VPN addresses.</p>
+      </article>
+      <article class="card">
+        <p class="label">Operator peers</p>
+        <p class="good">LAN/VPN pinning supported</p>
+        <p>Known peers can be supplied through <code>LAN_PEER_ADDRESSES</code>, <code>VPN_PEER_ADDRESSES</code>, <code>ZEROTIER_PEER_ADDRESSES</code>, or <code>EXTRA_PEER_ADDRESSES</code>.</p>
+      </article>
+    </section>
+
+    <h2>Firewall Contract</h2>
+    <p>The P2P firewall helper is intentionally broad over interfaces and narrow over ports. This lets a host add or remove VPN interfaces without editing firewall unit files, while still limiting the rule to configured P2P ports.</p>
+    <pre>BDAG_P2P_PORTS=8151,8152
+BDAG_P2P_PROTOCOLS=tcp
+systemctl enable --now bdag-p2p-firewall.service</pre>
+    <p>If a future node build enables UDP-based discovery, set <code>BDAG_P2P_PROTOCOLS=tcp,udp</code> in <code>/etc/default/bdag-p2p-firewall</code> and publish matching Docker UDP ports.</p>
+
+    <h2>Peer List Contract</h2>
+    <table>
+      <thead>
+        <tr><th>Source</th><th>Purpose</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>/dns4/bdag-miner-node-1</code>, <code>/dns4/bdag-miner-node-2</code></td><td>Stable same-compose node-to-node path that does not depend on host interface state.</td></tr>
+        <tr><td>Host LAN IPv4 addresses</td><td>Allow peers on the same physical LAN to connect when reachable.</td></tr>
+        <tr><td>Host VPN IPv4 addresses</td><td>Allow peers across ZeroTier, WireGuard, Tailscale, and similar VPN overlays to connect when reachable.</td></tr>
+        <tr><td>Configured extra peers</td><td>Operator-pinned peers from known LAN/VPN nodes.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Operational Boundary</h2>
+    <p><code>update-local-peers.py --apply</code> recreates node containers only when the active peer env changes. Run it during install or an approved maintenance action. A plain <code>update-local-peers.py</code> run is safe for verification because it updates env only and does not recreate containers.</p>
+  </main>
+</body>
+</html>

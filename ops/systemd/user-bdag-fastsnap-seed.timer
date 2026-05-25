@@ -1,0 +1,11 @@
+[Unit]
+Description=Run BlockDAG public FastSnap seed export every two hours
+
+[Timer]
+OnCalendar=*-*-* 00/2:25:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=bdag-fastsnap-seed.service
+
+[Install]
+WantedBy=timers.target

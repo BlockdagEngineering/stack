@@ -50,7 +50,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: BlockdagEngineering/pool
-          ref: feature/block-template-stream 
+          ref: 0d22a385c7b738f8e4fa93d63dee7373428d3bae
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/pool
 
@@ -105,6 +105,7 @@ jobs:
           test -f .env.cpu.example
           docker compose --env-file .env.cpu.example --profile miner config > /tmp/compose.cpu-miner.yml
           grep -q '^  miner:' /tmp/compose.cpu-miner.yml || { echo "::error::Resolved compose must include miner service when profile miner is active"; exit 1; }
+          scripts/validate-pi5-restart-hardening.sh .
 
       - name: Create release tarball
         id: package
@@ -119,8 +120,9 @@ jobs:
           ROOT="${PACKAGE_NAME}-${VERSION}"
           rm -rf "${ROOT}"
           mkdir "${ROOT}"
-          cp docker-compose.yml docker-compose.snapshot-node.yml dockerfile-cpu-release .dockerignore .env.cpu.example .env.pool.example .env.snapshot.example node.conf.example node.snapshot.conf.example README.md SNAPSHOT-README.md checksums.txt "${ROOT}/"
-          cp -a sql netdata scripts bin docker "${ROOT}/"
+          cp docker-compose.yml dockerfile-cpu-release .dockerignore .env.cpu.example .env.pool.example node.conf.example README.md SNAPSHOT-README.md checksums.txt haproxy.cfg "${ROOT}/"
+          cp -a sql netdata scripts bin docker asic-pool tools "${ROOT}/"
+          rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
 
           tar -czf "${OUT}" "${ROOT}"
           rm -rf "${ROOT}"

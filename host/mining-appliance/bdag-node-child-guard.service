@@ -1,0 +1,14 @@
+[Unit]
+Description=BlockDAG node child liveness guard
+After=docker.service containerd.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/blockdag-pool
+Environment=BDAG_PROJECT_ROOT=/opt/blockdag-pool
+Environment=BDAG_NODE_CHILD_GUARD_NODES=node
+ExecStart=/usr/local/sbin/bdag-node-child-guard
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

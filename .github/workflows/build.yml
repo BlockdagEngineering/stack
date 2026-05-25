@@ -51,7 +51,7 @@ jobs:
           repository: BlockdagEngineering/pool
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/pool
-          ref: main
+          ref: 0d22a385c7b738f8e4fa93d63dee7373428d3bae
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -92,6 +92,7 @@ jobs:
           test -f .env.example
           docker compose --env-file .env.example config | grep -q 'dockerfile: dockerfile' || \
             { echo "::error::Compose must resolve dockerfile for pool tarball env"; exit 1; }
+          scripts/validate-pi5-restart-hardening.sh .
 
       - name: Create universal release zip
         id: package
@@ -109,11 +110,12 @@ jobs:
 
           rm -rf "${ROOT}" "${OUT}" "${LATEST_OUT}" "${LATEST_SHA256}"
           mkdir "${ROOT}"
-          cp docker-compose.yml docker-compose.snapshot-node.yml dockerfile .dockerignore .env.example .env.snapshot.example node.conf.example node.snapshot.conf.example README.md checksums.txt "${ROOT}/"
+          cp docker-compose.yml dockerfile .dockerignore .env.example node.conf.example README.md checksums.txt haproxy.cfg "${ROOT}/"
           echo "${VERSION}" > "${ROOT}/version.txt"
           cp scripts/release/install.sh scripts/release/install.ps1 scripts/release/install.cmd "${ROOT}/"
           cp -a scripts/release/installers "${ROOT}/installers"
-          cp -a bin sql docker scripts dashboard "${ROOT}/"
+          cp -a bin sql docker scripts dashboard asic-pool tools "${ROOT}/"
+          rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
           chmod +x "${ROOT}/install.sh" "${ROOT}/installers/"*.sh
 
           if ! command -v zip >/dev/null 2>&1; then
