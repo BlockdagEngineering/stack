@@ -387,18 +387,26 @@ maybe_fastsnap_bootstrap() {
 
 apply_ordered_fastsync_peers "$@"
 
-if [ -n "${NODE_ARGS_APPEND:-}" ]; then
+NODE_ARGS_APPEND_COMBINED="${NODE_ARGS_APPEND:-}"
+if [ -n "${BDAG_NODE_FASTARTIFACT_ARGS:---fastartifactsync}" ]; then
+  NODE_ARGS_APPEND_COMBINED="${NODE_ARGS_APPEND_COMBINED:+$NODE_ARGS_APPEND_COMBINED }${BDAG_NODE_FASTARTIFACT_ARGS:---fastartifactsync}"
+fi
+if [ -n "${BDAG_NODE_P2P_ADVERTISE_ARGS:-}" ]; then
+  NODE_ARGS_APPEND_COMBINED="${NODE_ARGS_APPEND_COMBINED:+$NODE_ARGS_APPEND_COMBINED }${BDAG_NODE_P2P_ADVERTISE_ARGS}"
+fi
+
+if [ -n "$NODE_ARGS_APPEND_COMBINED" ]; then
   args=("$@")
   appended=0
   for i in "${!args[@]}"; do
     if [[ "${args[$i]}" == --node-args=* ]]; then
-      args[$i]="${args[$i]} ${NODE_ARGS_APPEND}"
+      args[$i]="${args[$i]} ${NODE_ARGS_APPEND_COMBINED}"
       appended=1
       break
     fi
   done
   if [ "${appended}" -eq 0 ]; then
-    args+=("--node-args=${NODE_ARGS_APPEND}")
+    args+=("--node-args=${NODE_ARGS_APPEND_COMBINED}")
   fi
   set -- "${args[@]}"
 fi

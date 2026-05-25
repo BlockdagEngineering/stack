@@ -97,6 +97,8 @@ services:
       BDAG_FASTSYNC_PUBLIC_PEERS: ${BDAG_FASTSYNC_PUBLIC_PEERS:-}
       BDAG_FASTSYNC_PEERS: ${BDAG_FASTSYNC_PEERS:-}
       BDAG_FASTSYNC_PREPROCESS_WORKERS: ${BDAG_FASTSYNC_PREPROCESS_WORKERS:-1}
+      BDAG_NODE_FASTARTIFACT_ARGS: ${BDAG_NODE_FASTARTIFACT_ARGS:---fastartifactsync}
+      BDAG_NODE_P2P_ADVERTISE_ARGS: ${BDAG_NODE_P2P_ADVERTISE_ARGS:-}
 
   # --------------------------------------------------------------------------
   # Mining pool. Connects to node RPC and Postgres.

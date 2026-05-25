@@ -212,6 +212,8 @@ services:
         --http.rateburst=3200
         --evm.ws.port=18546
         --evm.ws.addr=0.0.0.0
+        ${BDAG_NODE_FASTARTIFACT_ARGS:---fastartifactsync}
+        ${BDAG_NODE_P2P_ADVERTISE_ARGS:-}
         ${BDAG_NODE_MINING_ARGS:-}
     networks:
       - pool-net
@@ -296,6 +298,8 @@ services:
         --http.rateburst=3200
         --evm.ws.port=18546
         --evm.ws.addr=0.0.0.0
+        ${BDAG_NODE_FASTARTIFACT_ARGS:---fastartifactsync}
+        ${BDAG_NODE_P2P_ADVERTISE_ARGS:-}
         ${BDAG_NODE_MINING_ARGS:-}
     networks:
       - pool-net
@@ -417,6 +421,8 @@ BDAG_EVM_CACHE_DATABASE_PERCENT=80
 BDAG_EVM_CACHE_SNAPSHOT_PERCENT=1
 BDAG_EVM_TRIE_TIMEOUT_SECONDS=7200
 BDAG_NODE_DEBUG_LEVEL=warn
+BDAG_NODE_FASTARTIFACT_ARGS=--fastartifactsync
+BDAG_NODE_P2P_ADVERTISE_ARGS=
 
 NODE_RPC_USER=test
 NODE_RPC_PASS=change-me-at-install
