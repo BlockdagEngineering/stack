@@ -27,6 +27,21 @@ Adaptive concurrency is enabled by default:
 BDAG_ADAPTIVE_CONCURRENCY_ENABLED=1
 ```
 
+Routine control-plane loops also share one sampled status file by default:
+
+```sh
+BDAG_STATUS_SAMPLER_ENABLED=1
+BDAG_STATUS_SAMPLER_INTERVAL_SECONDS=10
+BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS=12
+```
+
+`ops/status_sampler.py` writes `ops/runtime/status-sampler.json` atomically.
+Dashboard, watchdog, sync coordinator, P2P guard, and startup checks use that
+file through `collect_status_cached()` while it is fresh, instead of each
+process independently collecting Docker logs, node RPC, pool metrics, and miner
+state. Explicit repair diagnostics can still bypass the sampler and short cache
+with `max_age_seconds=0`.
+
 The existing worker settings remain hard caps:
 
 ```sh

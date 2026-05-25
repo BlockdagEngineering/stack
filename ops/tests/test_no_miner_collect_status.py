@@ -183,6 +183,10 @@ class SharedStatusCacheTests(unittest.TestCase):
                 "SHARED_STATUS_CACHE_FILE",
                 "SHARED_STATUS_CACHE_ENABLED",
                 "SHARED_STATUS_CACHE_SECONDS",
+                "STATUS_SAMPLER_FILE",
+                "STATUS_SAMPLER_ENABLED",
+                "STATUS_SAMPLER_MAX_AGE_SECONDS",
+                "STATUS_SAMPLER_BYPASS",
                 "collect_status",
                 "ensure_runtime",
             )
@@ -218,6 +222,64 @@ class SharedStatusCacheTests(unittest.TestCase):
             self.assertFalse(first["shared_status_cache"]["hit"])
             self.assertTrue(second["shared_status_cache"]["hit"])
             self.assertEqual(second["overall"], "ok")
+
+    def test_status_sampler_reuses_recent_cross_process_sample(self) -> None:
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp:
+            pool_ops.SHARED_STATUS_CACHE_FILE = pathlib.Path(tmp) / "shared-status-cache.json"
+            pool_ops.STATUS_SAMPLER_FILE = pathlib.Path(tmp) / "status-sampler.json"
+            pool_ops.SHARED_STATUS_CACHE_ENABLED = True
+            pool_ops.SHARED_STATUS_CACHE_SECONDS = 3.0
+            pool_ops.STATUS_SAMPLER_ENABLED = True
+            pool_ops.STATUS_SAMPLER_MAX_AGE_SECONDS = 60.0
+            pool_ops.STATUS_SAMPLER_BYPASS = False
+            pool_ops.ensure_runtime = lambda: None
+            pool_ops.write_status_sampler_payload(
+                {
+                    "generated_at": "2026-05-25T12:00:00+0000",
+                    "overall": "ok",
+                    "age_seconds": 0,
+                    "stale_after_seconds": 30,
+                },
+                include_logs=True,
+            )
+
+            def fake_collect_status(include_logs=True):
+                calls.append(include_logs)
+                return {"overall": "down"}
+
+            pool_ops.collect_status = fake_collect_status
+
+            status = pool_ops.collect_status_cached(include_logs=True)
+
+            self.assertEqual(calls, [])
+            self.assertEqual(status["overall"], "ok")
+            self.assertTrue(status["status_sampler"]["hit"])
+            self.assertEqual(status["status_sampler"]["requested_include_logs"], True)
+
+    def test_zero_max_age_bypasses_status_sampler(self) -> None:
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp:
+            pool_ops.SHARED_STATUS_CACHE_FILE = pathlib.Path(tmp) / "shared-status-cache.json"
+            pool_ops.STATUS_SAMPLER_FILE = pathlib.Path(tmp) / "status-sampler.json"
+            pool_ops.SHARED_STATUS_CACHE_ENABLED = True
+            pool_ops.STATUS_SAMPLER_ENABLED = True
+            pool_ops.STATUS_SAMPLER_MAX_AGE_SECONDS = 60.0
+            pool_ops.STATUS_SAMPLER_BYPASS = False
+            pool_ops.ensure_runtime = lambda: None
+            pool_ops.write_status_sampler_payload({"overall": "stale"}, include_logs=True)
+
+            def fake_collect_status(include_logs=True):
+                calls.append(include_logs)
+                return {"overall": "ok"}
+
+            pool_ops.collect_status = fake_collect_status
+
+            status = pool_ops.collect_status_cached(include_logs=True, max_age_seconds=0)
+
+            self.assertEqual(calls, [True])
+            self.assertEqual(status["overall"], "ok")
+            self.assertFalse(status["shared_status_cache"]["hit"])
 
 
 class BackgroundMaintenanceDecisionTests(unittest.TestCase):
