@@ -338,7 +338,7 @@ if ($LASTEXITCODE -ne 0) { throw "docker compose build failed." }
 
 Write-Host ""
 Write-Host "=== Starting services ===" -ForegroundColor Cyan
-& docker compose up -d
+& docker compose up -d --no-build --pull never
 if ($LASTEXITCODE -ne 0) { throw "docker compose up failed." }
 
 Write-Host ""

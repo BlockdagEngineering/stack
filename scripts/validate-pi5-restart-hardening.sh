@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+mode="source"
+if [[ "${1:-}" == "--mode" ]]; then
+  mode="${2:-source}"
+  shift 2
+elif [[ "${1:-}" == --mode=* ]]; then
+  mode="${1#--mode=}"
+  shift
+fi
+case "$mode" in
+  source|live-runtime) ;;
+  *) printf 'usage: %s [--mode source|live-runtime] [root]\n' "$0" >&2; exit 2 ;;
+esac
+
 root="${1:-.}"
 
 fail() {
@@ -27,6 +40,56 @@ reject_grep() {
   fi
 }
 
+validate_haproxy_semantics() {
+  python3 - "$root/haproxy.cfg" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+lines = [
+    line.strip()
+    for line in path.read_text(encoding="utf-8").splitlines()
+    if line.strip().startswith("server ")
+]
+
+def server_line(name: str, address: str) -> list[str]:
+    for line in lines:
+        tokens = line.split()
+        if len(tokens) >= 3 and tokens[0] == "server" and tokens[1] == name and tokens[2] == address:
+            return tokens
+    raise SystemExit(f"missing HAProxy server {name} {address}")
+
+node2 = server_line("node2", "bdag-miner-node-2:38131")
+node1 = server_line("node1", "bdag-miner-node-1:38131")
+if "backup" in node2:
+    raise SystemExit("node2 must be the primary HAProxy backend")
+if "backup" not in node1:
+    raise SystemExit("node1 must be configured as the backup backend")
+for name, tokens in (("node2", node2), ("node1", node1)):
+    if "resolvers" not in tokens or "docker" not in tokens:
+        raise SystemExit(f"{name} is missing docker resolver semantics")
+    try:
+        index = tokens.index("init-addr")
+    except ValueError as exc:
+        raise SystemExit(f"{name} is missing init-addr") from exc
+    if index + 1 >= len(tokens) or tokens[index + 1] != "libc,none":
+        raise SystemExit(f"{name} init-addr must include libc,none")
+PY
+}
+
+validate_runtime_compose() {
+  need_file "docker-compose.yml"
+  if [[ "$mode" != "live-runtime" ]]; then
+    return 0
+  fi
+  need_grep '^# BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1$' "docker-compose.yml"
+  reject_grep '^[[:space:]]*(build|dockerfile):' "docker-compose.yml"
+  need_grep 'container_name: pool-db' "docker-compose.yml"
+  need_grep 'container_name: bdag-miner-node-2' "docker-compose.yml"
+  need_grep 'container_name: rpc-failover' "docker-compose.yml"
+  need_grep 'container_name: asic-pool' "docker-compose.yml"
+}
+
 need_file "ops/watchdog.py"
 need_file "ops/sync_coordinator.py"
 need_file "ops/latest_chain_candidate.py"
@@ -42,6 +105,7 @@ need_file "ops/dashboard.py"
 need_file "ops/build-pi5-arm64-release.sh"
 need_file "ops/release-install.sh"
 need_file "ops/README.md"
+need_file "docker-compose.yml"
 need_file "ops/systemd/user-bdag-stack-sentinel.timer"
 need_file "ops/systemd/user-bdag-node-child-guard.timer"
 need_file "ops/systemd/user-bdag-incident-reporter.timer"
@@ -51,6 +115,7 @@ need_file "ops/systemd/user-bdag-fastsnap-seed.timer"
 need_file "ops/build-fastsnap-seed.sh"
 need_file "haproxy.cfg"
 need_file "asic-pool/schema.sql"
+validate_runtime_compose
 
 if [[ -e "$root/ops/observability" ]]; then
   fail "retired ops/observability dashboard stack is present in RC dashboard path"
@@ -99,6 +164,9 @@ need_grep 'preserves current node data' "ops/README.md"
 need_grep 'BDAG_FASTSYNC_PREPROCESS_WORKERS=1' ".env.example"
 need_grep 'BDAG_FASTSNAP_SEED_TIMER_ENABLED=1' ".env.example"
 need_grep 'BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG=1000' ".env.example"
+need_grep 'BDAG_NODE_CHAIN_RPC_TIMEOUT=8.0' ".env.example"
+need_grep 'BDAG_NODE_CHAIN_RPC_RETRIES=2' ".env.example"
+need_grep 'BDAG_POOL_RPC_REFUSED_WARN_SECONDS=120' ".env.example"
 need_grep 'POOL_RPC_ROUTER_TEMPLATE_LANE_MODE=active-passive' ".env.example"
 need_grep 'BDAG_STACK_SERVICES=pool-db,bdag-miner-node-2,rpc-failover,asic-pool' ".env.example"
 need_grep 'OnCalendar=hourly' "ops/systemd/user-bdag-hourly-snapshot.timer"
@@ -127,6 +195,13 @@ reject_grep 'matched_by": "ip"[,}]' "ops/pool_ops.py"
 need_grep 'except OSError:' "ops/dashboard.py"
 
 need_grep 'def node_chain_rpc_snapshot' "ops/pool_ops.py"
+need_grep 'BDAG_NODE_CHAIN_RPC_TIMEOUT' "ops/pool_ops.py"
+need_grep 'BDAG_NODE_CHAIN_RPC_RETRIES' "ops/pool_ops.py"
+need_grep 'BDAG_POOL_RPC_REFUSED_WARN_SECONDS' "ops/pool_ops.py"
+need_grep 'def is_no_miner_sync_noise' "ops/pool_ops.py"
+need_grep 'def collect_host_pressure' "ops/pool_ops.py"
+need_grep 'iowait_percent' "ops/pool_ops.py"
+need_grep 'iowait=' "ops/dashboard.py"
 need_grep 'getBlockCount' "ops/pool_ops.py"
 need_grep 'getMainChainHeight' "ops/pool_ops.py"
 need_grep 'chain_block_count' "ops/pool_ops.py"
@@ -140,9 +215,16 @@ need_grep 'profiles:' "ops/build-pi5-arm64-release.sh"
 need_grep 'dual-node' "ops/build-pi5-arm64-release.sh"
 need_grep 'BDAG_NODE_MINING_ARGS' "ops/build-pi5-arm64-release.sh"
 need_grep 'BDAG_ENABLE_NODE_MINING=0' "ops/build-pi5-arm64-release.sh"
+need_grep 'BDAG_NODE_CHAIN_RPC_TIMEOUT=8.0' "ops/build-pi5-arm64-release.sh"
+need_grep 'BDAG_NODE_CHAIN_RPC_RETRIES=2' "ops/build-pi5-arm64-release.sh"
+need_grep 'BDAG_POOL_RPC_REFUSED_WARN_SECONDS=120' "ops/build-pi5-arm64-release.sh"
 need_grep 'BDAG_FASTSYNC_PREPROCESS_WORKERS=1' "ops/build-pi5-arm64-release.sh"
 need_grep 'BDAG_FASTSYNC_LAN_PEERS' "ops/build-pi5-arm64-release.sh"
 need_grep 'private/VPN second, public last' "ops/build-pi5-arm64-release.sh"
+need_grep 'BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1' "ops/build-pi5-arm64-release.sh"
+need_grep 'guard_release_compose' "ops/build-pi5-arm64-release.sh"
+need_grep 'guard_runtime_compose' "ops/release-install.sh"
+need_grep 'compose_cmd up -d --no-build --pull never' "ops/release-install.sh"
 
 need_grep 'stack-sentinel.timer' "ops/install-dashboard.sh"
 need_grep 'stack_sentinel.py' "ops/install-dashboard.sh"
@@ -150,8 +232,7 @@ need_grep 'chain_restore_guard.py' "ops/install-dashboard.sh"
 need_grep 'update-local-peers.py --apply' "ops/install-dashboard.sh"
 need_grep 'pool-db,bdag-miner-node-2,rpc-failover,asic-pool' "ops/install-dashboard.sh"
 
-need_grep 'server node2 bdag-miner-node-2:38131' "haproxy.cfg"
-need_grep 'server node1 bdag-miner-node-1:38131.*backup.*init-addr libc,none' "haproxy.cfg"
+validate_haproxy_semantics
 
 need_grep 'BDAG_INCIDENT_REPORT_REPO' "ops/incident_reporter.py"
 need_grep 'BDAG_INCIDENT_REPORT_ENABLED' "ops/incident_reporter.py"
@@ -174,8 +255,8 @@ if "chain_block_count" not in body:
     raise SystemExit("dashboard nodeBlockHeight does not use chain_block_count")
 PY
 
-if [[ -e "$root/ops/runtime" || -n "$(find "$root/ops" -path '*/__pycache__*' -o -name '*.pyc' -print -quit)" ]]; then
+if [[ "$mode" == "source" && ( -e "$root/ops/runtime" || -n "$(find "$root/ops" \( -path '*/__pycache__*' -o -name '*.pyc' \) -print -quit)" ) ]]; then
   fail "ops bundle contains runtime state or Python bytecode"
 fi
 
-printf 'restart hardening validation passed for %s\n' "$root"
+printf 'restart hardening validation passed for %s (%s mode)\n' "$root" "$mode"

@@ -27,7 +27,7 @@ bash install.sh
 .\install.ps1
 ```
 
-The installer detects the host OS and CPU architecture, writes `.env` and `node.conf`, generates a strong Postgres password unless `POSTGRES_PASSWORD` is already set, downloads `latest.bdsnap` when needed, and runs `docker compose build && docker compose up -d`. The release currently runs the service images as `linux/amd64`; ARM hosts need Docker Desktop or Docker Engine with amd64 emulation enabled.
+The installer detects the host OS and CPU architecture, writes `.env` and `node.conf`, generates a strong Postgres password unless `POSTGRES_PASSWORD` is already set, downloads `latest.bdsnap` when needed, and runs `docker compose build && docker compose up -d --no-build --pull never`. The release currently runs the service images as `linux/amd64`; ARM hosts need Docker Desktop or Docker Engine with amd64 emulation enabled.
 
 On macOS, the installer uses `aria2c` for faster, resumable snapshot downloads and installs it with Homebrew when missing. If that path fails, it opens a browser download link and Finder at the installer folder, then waits for `latest.bdsnap` to appear there. Browsers may still save to Downloads unless you choose the installer folder. To skip the dependency install, force curl with `BDAG_SNAPSHOT_DOWNLOADER=curl bash install.sh`; to go straight to the browser helper, use `BDAG_SNAPSHOT_DOWNLOADER=browser bash install.sh`. On Windows, the installer uses `aria2c` when available, tries to install it with `winget`, then falls back to BITS and PowerShell download.
 
@@ -130,8 +130,18 @@ disabled.
 
 Dashboard block height is sourced from chain RPC `getBlockCount`; template
 height, logs, fan-in metrics, and main-order values are shown only as
-diagnostics. Keep `scripts/validate-pi5-restart-hardening.sh` in the release
-gate before cutting an RC.
+diagnostics. Chain RPC checks retry slow storage-bound samples via
+`BDAG_NODE_CHAIN_RPC_TIMEOUT` and `BDAG_NODE_CHAIN_RPC_RETRIES`, and the status
+payload exposes RPC latency plus Linux pressure-stall IO metrics so catch-up
+bottlenecks are visible instead of misreported as missing chain data.
+
+The Pi5 release builder marks generated runtime compose files with
+`BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1` and rejects `build:`/`dockerfile:`
+entries in runtime packages. Runtime starts use `--no-build --pull never` by
+default; set an explicit pull/build flag only when intentionally refreshing
+images. Keep `scripts/validate-pi5-restart-hardening.sh` in the release gate
+before cutting an RC, and use `--mode live-runtime` for an installed stack where
+`ops/runtime` and Python bytecode are expected service artifacts.
 
 ## Quick start
 

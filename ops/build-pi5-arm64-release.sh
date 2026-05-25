@@ -56,6 +56,8 @@ extract_peer_value() {
 
 write_release_compose() {
   cat > "$PACKAGE_DIR/docker-compose.yml" <<'EOF'
+# BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1
+# Generated Pi5 runtime compose. Do not replace with the source/dev compose file.
 x-mining-logging: &mining-logging
   driver: local
   options:
@@ -322,6 +324,18 @@ networks:
 EOF
 }
 
+guard_release_compose() {
+  local compose="$PACKAGE_DIR/docker-compose.yml"
+  if ! grep -q '^# BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1$' "$compose"; then
+    echo "Generated runtime compose marker missing from $compose" >&2
+    exit 1
+  fi
+  if grep -Eq '^[[:space:]]*(build|dockerfile):' "$compose"; then
+    echo "Generated runtime compose must not contain build/dockerfile entries: $compose" >&2
+    exit 1
+  fi
+}
+
 sanitize_release_tree() {
   rm -rf "$PACKAGE_DIR/ops/observability/testdata"
   rm -f "$PACKAGE_DIR/ops/observability/.env"
@@ -389,6 +403,9 @@ BDAG_STACK_SERVICES=pool-db,bdag-miner-node-2,rpc-failover,asic-pool
 BDAG_ENABLE_NODE_MINING=0
 BDAG_NODE_MODULES=Blockdag
 BDAG_NODE_MINING_ARGS=
+BDAG_NODE_CHAIN_RPC_TIMEOUT=8.0
+BDAG_NODE_CHAIN_RPC_RETRIES=2
+BDAG_POOL_RPC_REFUSED_WARN_SECONDS=120
 BDAG_NODE_CACHE_MB=4096
 BDAG_NODE_CACHE_DATABASE_PERCENT=50
 BDAG_NODE_CACHE_SNAPSHOT_PERCENT=35
@@ -1139,18 +1156,20 @@ main() {
 
   say "Overlaying current production ops files"
   rsync -a --delete --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' "$PROJECT_ROOT/ops"/ "$PACKAGE_DIR/ops"/
-  rsync -a "$PROJECT_ROOT/docker-compose.yml" "$PROJECT_ROOT/haproxy.cfg" "$PACKAGE_DIR"/
+  rsync -a "$PROJECT_ROOT/haproxy.cfg" "$PACKAGE_DIR"/
   mkdir -p "$PACKAGE_DIR/asic-pool"
   rsync -a "$PROJECT_ROOT/asic-pool/schema.sql" "$PACKAGE_DIR/asic-pool/schema.sql"
   cp "$PROJECT_ROOT/ops/release-install.sh" "$PACKAGE_DIR/install.sh"
   chmod +x "$PACKAGE_DIR/install.sh"
   write_release_compose
+  guard_release_compose
 
   rm -rf "$PACKAGE_DIR/artifacts/binaries" "$PACKAGE_DIR/artifacts/images"
   mkdir -p "$bin_dir" "$image_dir"
   write_env_examples "$node1_peers" "$node2_peers"
   write_image_build_files
   sanitize_release_tree
+  guard_release_compose
 
   say "Creating source worktrees"
   git -C "$POOL_REPO" worktree add --detach "$BUILD_ROOT/pool-src" "$POOL_COMMIT"

@@ -118,6 +118,7 @@ GLOBAL_CACHE_FILE = RUNTIME_DIR / "global-cache.json"
 GLOBAL_HISTORY_FILE = RUNTIME_DIR / "global-history.jsonl"
 GLOBAL_POOL_LABEL_FILE = RUNTIME_DIR / "global-pool-labels.json"
 SYNC_COORDINATOR_STATE_FILE = RUNTIME_DIR / "sync-coordinator-state.json"
+HOST_PRESSURE_STATE_FILE = RUNTIME_DIR / "host-pressure-state.json"
 PEER_GEO_CACHE_FILE = RUNTIME_DIR / "peer-geo-cache.json"
 NODE_TEMPLATE_PROBE_CACHE_FILE = RUNTIME_DIR / "node-template-probe-cache.json"
 WEI_PER_BDAG = Decimal("1000000000000000000")
@@ -184,6 +185,7 @@ POOL_SUBMIT_RECOVERY_RECENT_SECONDS = int(os.environ.get("BDAG_POOL_SUBMIT_RECOV
 POOL_SUBMIT_RECOVERY_ACCEPTED_RESUME_SECONDS = int(
     os.environ.get("BDAG_POOL_SUBMIT_RECOVERY_ACCEPTED_RESUME_SECONDS", "90")
 )
+POOL_RPC_REFUSED_WARN_SECONDS = int(os.environ.get("BDAG_POOL_RPC_REFUSED_WARN_SECONDS", "120"))
 NODE_IMPORT_STALE_SECONDS = int(os.environ.get("BDAG_NODE_IMPORT_STALE_SECONDS", "180"))
 NODE_LAG_WARN_BLOCKS = int(os.environ.get("BDAG_NODE_LAG_WARN_BLOCKS", "5"))
 NODE_P2P_ERROR_WARN_COUNT = int(os.environ.get("BDAG_NODE_P2P_ERROR_WARN_COUNT", "10"))
@@ -206,6 +208,15 @@ def is_transient_template_tx_error_text(text: str) -> bool:
         or "blockdag is downloading blocks" in lowered
         or "client in initial download" in lowered
         or "nonce too low" in lowered
+    )
+
+
+def is_no_miner_sync_noise(item: Any) -> bool:
+    text = str(item)
+    return (
+        "live mining template probes" in text
+        or "pool recently saw RPC connection refused" in text
+        or text.startswith("pool is waiting for node sync to finish")
     )
 
 
@@ -404,6 +415,93 @@ def wei_to_bdag(value: str | int | Decimal | None) -> Decimal:
 
 def seconds_since_epoch() -> int:
     return int(time.time())
+
+
+def parse_proc_pressure(text: str) -> dict[str, float]:
+    pressure: dict[str, float] = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        scope = parts[0]
+        if scope not in {"some", "full"}:
+            continue
+        for item in parts[1:]:
+            if "=" not in item:
+                continue
+            key, raw = item.split("=", 1)
+            if key in {"avg10", "avg60", "avg300", "total"}:
+                value = safe_float(raw)
+                if value is not None:
+                    pressure[f"{scope}_{key}"] = value
+    return pressure
+
+
+def parse_proc_stat_cpu(text: str) -> dict[str, int]:
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts or parts[0] != "cpu":
+            continue
+        values = []
+        for raw in parts[1:]:
+            try:
+                values.append(int(raw))
+            except ValueError:
+                values.append(0)
+        if len(values) < 5:
+            return {}
+        return {
+            "total": sum(values),
+            "idle": values[3],
+            "iowait": values[4],
+        }
+    return {}
+
+
+def collect_host_pressure() -> dict[str, Any]:
+    pressure: dict[str, Any] = {
+        "loadavg_1m": None,
+        "loadavg_5m": None,
+        "loadavg_15m": None,
+        "io_some_avg10": None,
+        "io_full_avg10": None,
+        "iowait_percent": None,
+        "cpu_busy_percent": None,
+        "cpu_some_avg10": None,
+        "memory_some_avg10": None,
+    }
+    try:
+        load_parts = Path("/proc/loadavg").read_text(encoding="utf-8").split()
+        if len(load_parts) >= 3:
+            pressure["loadavg_1m"] = safe_float(load_parts[0])
+            pressure["loadavg_5m"] = safe_float(load_parts[1])
+            pressure["loadavg_15m"] = safe_float(load_parts[2])
+    except OSError:
+        pass
+
+    for name in ("io", "cpu", "memory"):
+        try:
+            parsed = parse_proc_pressure(Path(f"/proc/pressure/{name}").read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        pressure[f"{name}_some_avg10"] = parsed.get("some_avg10")
+        pressure[f"{name}_full_avg10"] = parsed.get("full_avg10")
+
+    try:
+        cpu = parse_proc_stat_cpu(Path("/proc/stat").read_text(encoding="utf-8"))
+    except OSError:
+        cpu = {}
+    previous = read_json_file(HOST_PRESSURE_STATE_FILE, {})
+    if cpu:
+        previous_cpu = previous.get("cpu") if isinstance(previous, dict) else {}
+        total_delta = int(cpu.get("total", 0)) - int((previous_cpu or {}).get("total", 0) or 0)
+        idle_delta = int(cpu.get("idle", 0)) - int((previous_cpu or {}).get("idle", 0) or 0)
+        iowait_delta = int(cpu.get("iowait", 0)) - int((previous_cpu or {}).get("iowait", 0) or 0)
+        if total_delta > 0 and previous_cpu:
+            pressure["iowait_percent"] = round(max(0.0, iowait_delta * 100.0 / total_delta), 2)
+            pressure["cpu_busy_percent"] = round(max(0.0, (total_delta - idle_delta) * 100.0 / total_delta), 2)
+        write_json_file(HOST_PRESSURE_STATE_FILE, {"generated_at": now_iso(), "cpu": cpu})
+    return pressure
 
 
 def read_json_file(path: Path, fallback: Any) -> Any:
@@ -1602,7 +1700,14 @@ def parse_pool_log(log: str) -> dict[str, Any]:
     recent = lines[-600:]
     text = "\n".join(recent)
     initial_download = "Client in initial download" in text
-    rpc_refused = "connect: connection refused" in text
+    rpc_refused_lines = [line for line in recent if "connect: connection refused" in line]
+    rpc_refused = bool(rpc_refused_lines)
+    last_rpc_refused_line = rpc_refused_lines[-1] if rpc_refused_lines else None
+    last_rpc_refused_age_seconds = _pool_log_age_seconds(last_rpc_refused_line)
+    rpc_refused_recent = bool(
+        last_rpc_refused_age_seconds is not None
+        and last_rpc_refused_age_seconds <= POOL_RPC_REFUSED_WARN_SECONDS
+    )
     gbt_errors = sum(1 for line in recent if "GBT ERROR" in line)
     valid_share_lines = [line for line in recent if VALID_SHARE_RE.search(line)]
     valid_share_count = sum(valid_share_line_weight(line) for line in valid_share_lines)
@@ -1719,6 +1824,9 @@ def parse_pool_log(log: str) -> dict[str, Any]:
     return {
         "initial_download": initial_download,
         "rpc_refused": rpc_refused,
+        "rpc_refused_recent": rpc_refused_recent,
+        "last_rpc_refused_age_seconds": last_rpc_refused_age_seconds,
+        "rpc_refused_warn_seconds": POOL_RPC_REFUSED_WARN_SECONDS,
         "gbt_errors": gbt_errors,
         "submit_count": observed_submit_count,
         "valid_share_count": valid_share_count,
@@ -3059,6 +3167,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     else:
         pool_endpoint = f"127.0.0.1:{pool_port}"
     disk = run(["df", "-h", str(PROJECT_ROOT)], timeout=8).stdout.strip()
+    host_pressure = collect_host_pressure()
     latest_action = read_latest_action()
     if docker_error:
         containers = {
@@ -3254,6 +3363,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "pool_port": pool_port,
             "local_ips": local_ips,
             "pool_endpoint": pool_endpoint,
+            "host_pressure": host_pressure,
             "disk": disk,
             "docker_images": "",
             "docker_access_error": docker_error,
@@ -3515,7 +3625,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         else {}
     )
     pool["loss_ledger"] = pool_loss_ledger
-    if pool["rpc_refused"] and not any("bdag child" in item for item in stack_failures):
+    if pool.get("rpc_refused_recent") and not any("bdag child" in item for item in stack_failures):
         add_sync_warning("pool recently saw RPC connection refused")
 
     miner_health = collect_miner_health() if include_logs else {"failures": [], "warnings": [], "miners": []}
@@ -3681,6 +3791,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     maintenance_warnings.extend(miner_warnings)
     pool_health = {
         **pool,
+        "rpc_refused_raw": bool(pool.get("rpc_refused")),
+        "rpc_refused": bool(pool.get("rpc_refused_recent") and connected_miners > 0),
         "connected_miners": connected_miners,
         "managed_miners": managed_miners,
         "rpc_template_failing": bool(
@@ -3691,7 +3803,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "job_stall": effective_job_stall,
         "needs_fast_repair": bool(
             pool_initial_download_needs_repair
-            or pool.get("rpc_refused")
+            or (pool.get("rpc_refused_recent") and connected_miners > 0)
             or (isinstance(rpc_failover_probe, dict) and rpc_failover_probe.get("failing") and connected_miners > 0)
             or (template_probe_health.get("failing_nodes") and connected_miners > 0)
             or (pool.get("pool_template_frozen") and connected_miners > 0)
@@ -3742,6 +3854,10 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         node_details[node]["chain_main_height"] = progress.get("chain_main_height")
         node_details[node]["chain_rpc_source"] = progress.get("chain_rpc_source")
         node_details[node]["chain_rpc_url"] = progress.get("chain_rpc_url")
+        node_details[node]["chain_rpc_latency_ms"] = progress.get("chain_rpc_latency_ms")
+        node_details[node]["chain_rpc_attempts"] = progress.get("chain_rpc_attempts")
+        node_details[node]["chain_rpc_timeout_seconds"] = progress.get("chain_rpc_timeout_seconds")
+        node_details[node]["chain_rpc_retry_limit"] = progress.get("chain_rpc_retry_limit")
         node_details[node]["chain_rpc_error"] = progress.get("chain_rpc_error") or progress.get("error") or ""
     no_miner_node_only = bool(
         connected_miners == 0
@@ -3750,20 +3866,13 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     )
     no_miner_sync_only = bool(no_miner_node_only and sync_progress.get("status") == "syncing")
     if no_miner_node_only:
-        def _is_no_miner_sync_noise(item: Any) -> bool:
-            text = str(item)
-            return (
-                "live mining template probes" in text
-                or text.startswith("pool is waiting for node sync to finish")
-            )
-
         warnings = [
             item for item in warnings
-            if not _is_no_miner_sync_noise(item)
+            if not is_no_miner_sync_noise(item)
         ]
         sync_warnings = [
             item for item in sync_warnings
-            if not _is_no_miner_sync_noise(item)
+            if not is_no_miner_sync_noise(item)
         ]
         pool["initial_download_needs_repair"] = False
         pool_health["rpc_template_failing"] = False
@@ -3855,16 +3964,16 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "blocking_failures": failures,
         "degraded_reasons": sync_warnings + maintenance_warnings,
         "repair_actions_recent": latest_action,
-            "project_root": str(PROJECT_ROOT),
-            "runtime_dir": str(RUNTIME_DIR),
-            "pool_env_file": str(POOL_ENV_FILE),
-            "stack_services": SERVICES,
-            "node_services": display_nodes,
-            "managed_node_services": NODES,
-            "observer_node_services": observer_nodes,
-            "pool_container": POOL_CONTAINER,
-            "pool_containers": POOL_CONTAINERS,
-            "pool_db_container": POOL_DB_CONTAINER,
+        "project_root": str(PROJECT_ROOT),
+        "runtime_dir": str(RUNTIME_DIR),
+        "pool_env_file": str(POOL_ENV_FILE),
+        "stack_services": SERVICES,
+        "node_services": display_nodes,
+        "managed_node_services": NODES,
+        "observer_node_services": observer_nodes,
+        "pool_container": POOL_CONTAINER,
+        "pool_containers": POOL_CONTAINERS,
+        "pool_db_container": POOL_DB_CONTAINER,
         "overall": overall,
         "status_reason": status_reason,
         "containers": containers,
@@ -3887,6 +3996,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "pool_port": pool_port,
         "local_ips": local_ips,
         "pool_endpoint": pool_endpoint,
+        "host_pressure": host_pressure,
         "disk": disk,
         "docker_images": docker_images,
         "latest_action": read_latest_action(),
@@ -4147,15 +4257,24 @@ def node_chain_rpc_snapshot(source: str, url: str, timeout: float = NODE_CHAIN_R
         "chain_rpc_error": "",
         "chain_block_count": None,
         "chain_main_height": None,
+        "chain_rpc_latency_ms": None,
+        "chain_rpc_attempts": 0,
+        "chain_rpc_timeout_seconds": timeout,
+        "chain_rpc_retry_limit": NODE_CHAIN_RPC_RETRIES,
     }
     errors: list[str] = []
     for attempt in range(NODE_CHAIN_RPC_RETRIES):
+        start = time.monotonic()
         try:
             snapshot["chain_block_count"] = parse_rpc_quantity(
                 mining_rpc_call(url, "getBlockCount", [], timeout=timeout)
             )
+            snapshot["chain_rpc_latency_ms"] = round((time.monotonic() - start) * 1000, 1)
+            snapshot["chain_rpc_attempts"] = attempt + 1
             break
         except Exception as exc:
+            snapshot["chain_rpc_latency_ms"] = round((time.monotonic() - start) * 1000, 1)
+            snapshot["chain_rpc_attempts"] = attempt + 1
             errors.append(str(exc))
             if attempt + 1 < NODE_CHAIN_RPC_RETRIES:
                 time.sleep(0.2)
@@ -4250,7 +4369,10 @@ def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TI
         chain = node_chain_rpc_snapshot(source, url, timeout=timeout)
         current = safe_int(chain.get("chain_block_count"), None)
         if current is None:
-            raise RuntimeError(str(chain.get("chain_rpc_error") or "getBlockCount unavailable"))
+            return {
+                **unknown_sync_progress(source, str(chain.get("chain_rpc_error") or "getBlockCount unavailable")),
+                **chain,
+            }
 
         native = native_sync_progress(source)
         if native:
