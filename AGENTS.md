@@ -89,6 +89,11 @@ JSONL histories used by the dashboard should append each sample and compact only
 at a bounded threshold. Do not reintroduce full-history rewrite loops for every
 sample on the Pi USB data path.
 
+Recurring timers must include modest `RandomizedDelaySec` jitter so node-child
+guard, sync coordinator, incident reporter, runtime priority, snapshot, and
+peer-discovery work do not wake together and stampede Docker/RPC on constrained
+hosts.
+
 Optional background work must respect `background_maintenance_decision()`.
 Hourly snapshot staging, FastSnap seed builds, and global dashboard blockchain
 scans must defer while the node is catching up or host IO/CPU pressure is above

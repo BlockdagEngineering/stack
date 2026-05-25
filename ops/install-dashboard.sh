@@ -338,6 +338,7 @@ OnBootSec=3min
 OnUnitActiveSec=2min
 AccuracySec=30s
 Persistent=true
+RandomizedDelaySec=20s
 Unit=${INSTANCE}-sync-coordinator.service
 
 [Install]
@@ -431,6 +432,7 @@ OnBootSec=90s
 OnUnitActiveSec=60s
 AccuracySec=15s
 Persistent=true
+RandomizedDelaySec=10s
 Unit=${INSTANCE}-node-child-guard.service
 
 [Install]
@@ -621,6 +623,7 @@ OnBootSec=5min
 OnUnitActiveSec=15min
 AccuracySec=1min
 Persistent=true
+RandomizedDelaySec=2min
 Unit=${INSTANCE}-incident-reporter.service
 
 [Install]
