@@ -450,7 +450,9 @@ def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
-def strip_ansi(value: str) -> str:
+def strip_ansi(value: str | bytes) -> str:
+    if isinstance(value, bytes):
+        value = value.decode(errors="replace")
     return ANSI_RE.sub("", value)
 
 
