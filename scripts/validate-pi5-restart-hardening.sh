@@ -276,6 +276,8 @@ fi
 need_grep 'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS' "ops/build-pi5-arm64-release.sh"
 need_grep 'POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: .*POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT' "docker-compose.yml"
 need_grep 'POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: .*POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT' "ops/build-pi5-arm64-release.sh"
+need_grep 'METRICS_ADDR: .*0.0.0.0:9090' "ops/build-pi5-arm64-release.sh"
+need_grep 'METRICS_ADDR=0.0.0.0:9090' "ops/build-pi5-arm64-release.sh"
 need_grep 'BDAG_STACK_SERVICES=pool-db,bdag-miner-node-2,rpc-failover,asic-pool' ".env.example"
 need_grep 'OnCalendar=hourly' "ops/systemd/user-bdag-hourly-snapshot.timer"
 need_grep 'RandomizedDelaySec=10s' "ops/systemd/user-bdag-node-child-guard.timer"
