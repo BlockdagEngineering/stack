@@ -115,5 +115,56 @@ class MinerHealthCountTests(unittest.TestCase):
         self.assertEqual(counts["ok_count"], 2)
 
 
+class PoolActivityAttributionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.old_read_miner_registry = pool_ops.read_miner_registry
+        self.addCleanup(self.restore_registry)
+
+    def restore_registry(self) -> None:
+        pool_ops.read_miner_registry = self.old_read_miner_registry
+
+    def test_shared_worker_without_job_mapping_is_not_assigned_to_one_miner(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {"ip": "192.168.1.14", "mac": "28:e2:97:3e:39:63", "expected_worker_user": worker},
+                {"ip": "192.168.1.103", "mac": "28:e2:97:1e:c0:b5", "expected_worker_user": worker},
+            ]
+        }
+        log = "\n".join(
+            [
+                f"2026/05/26 06:20:00 [192.168.1.14:40541] authorize accepted user={worker}",
+                f"2026/05/26 06:20:00 [192.168.1.103:45403] authorize accepted user={worker}",
+                f"2026/05/26 06:20:01 valid share accepted 100.0 -> 500 worker={worker} job=missing-notify",
+            ]
+        )
+
+        miners = {item["ip"]: item for item in pool_ops.parse_pool_activity(log)["miners"]}
+
+        self.assertEqual(miners["192.168.1.14"]["shares"], 0)
+        self.assertEqual(miners["192.168.1.103"]["shares"], 0)
+
+    def test_shared_worker_with_job_mapping_uses_job_client(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {"ip": "192.168.1.14", "mac": "28:e2:97:3e:39:63", "expected_worker_user": worker},
+                {"ip": "192.168.1.103", "mac": "28:e2:97:1e:c0:b5", "expected_worker_user": worker},
+            ]
+        }
+        log = "\n".join(
+            [
+                "2026/05/26 06:20:00 Sending to 192.168.1.14:40541: jobID=job-1",
+                f"2026/05/26 06:20:01 valid share accepted 100.0 -> 500 worker={worker} job=job-1",
+            ]
+        )
+
+        miners = {item["ip"]: item for item in pool_ops.parse_pool_activity(log)["miners"]}
+
+        self.assertEqual(miners["192.168.1.14"]["shares"], 1)
+        self.assertEqual(miners["192.168.1.14"]["share_work"], 500)
+        self.assertNotIn("192.168.1.103", miners)
+
+
 if __name__ == "__main__":
     unittest.main()
