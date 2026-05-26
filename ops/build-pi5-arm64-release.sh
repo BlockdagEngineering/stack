@@ -86,7 +86,8 @@ services:
     environment:
       POOL_PORT: ${POOL_PORT:-3334}
       NODE_RPC_URL: http://rpc-failover:38131
-      NODE_RPC_URLS: http://rpc-failover:38131
+      NODE_RPC_URLS: ${NODE_RPC_URLS:-http://rpc-failover:38131}
+      POOL_SUBMIT_RPC_URLS: ${POOL_SUBMIT_RPC_URLS:-}
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
       WALLET_RPC_URL: ${WALLET_RPC_URL:-http://bdag-miner-node-2:18545}
@@ -489,6 +490,8 @@ BDAG_FASTSYNC_PREPROCESS_WORKERS=1
 BDAG_ENTRYPOINT_CHOWN_MODE=needed
 
 NODE_RPC_URL=http://rpc-failover:38131
+NODE_RPC_URLS=http://rpc-failover:38131
+POOL_SUBMIT_RPC_URLS=
 WALLET_RPC_URL=http://bdag-miner-node-2:18545
 WALLET_RPC_URLS=http://bdag-miner-node-2:18545
 PPLNS_N_WORK=1000

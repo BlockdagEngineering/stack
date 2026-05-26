@@ -111,6 +111,8 @@ services:
     environment:
       # Compose interpolates ${...} from the project root .env file.
       NODE_RPC_URL: http://node:38131
+      NODE_RPC_URLS: ${NODE_RPC_URLS:-http://node:38131}
+      POOL_SUBMIT_RPC_URLS: ${POOL_SUBMIT_RPC_URLS:-}
       POOL_RPC_BACKENDS: ${POOL_RPC_BACKENDS:-}
       POOL_RPC_ROUTER_ENABLED: ${POOL_RPC_ROUTER_ENABLED:-false}
       POOL_RPC_ROUTER_TEMPLATE_LANE_MODE: ${POOL_RPC_ROUTER_TEMPLATE_LANE_MODE:-active-passive}

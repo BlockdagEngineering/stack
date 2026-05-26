@@ -62,6 +62,13 @@ This preserves the Pi5 behavior that protects USB-backed chain import, while
 letting AMD64 or larger ARM64 hosts use more concurrency when the machine is
 idle enough to benefit.
 
+Pool block submit fanout is also adaptive by configuration. Single-node hosts
+keep one endpoint by default. Dual-node or larger hosts can set
+`POOL_SUBMIT_RPC_URLS` or `NODE_RPC_URLS` to an ordered list of direct node RPC
+endpoints. The pool only races valid block-candidate submits, returns after the
+first accepted endpoint, and records slower peer outcomes asynchronously, so
+normal share validation and no-miner sync-only mode stay low-overhead.
+
 Systemd timers are also staggered. Short-interval guards and priority loops use
 small `RandomizedDelaySec` values so they remain responsive but do not all wake
 on the same second after boot or after a shared interval boundary. Longer
