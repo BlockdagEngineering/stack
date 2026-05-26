@@ -397,24 +397,6 @@ def is_no_miner_sync_noise(item: Any) -> bool:
     )
 
 
-HOMERIC_MINER_NAMES = [
-    "Achilles",
-    "Hector",
-    "Odysseus",
-    "Penelope",
-    "Athena",
-    "Telemachus",
-    "Ajax",
-    "Nestor",
-    "Diomedes",
-    "Patroclus",
-    "Priam",
-    "Andromache",
-    "Helen",
-    "Menelaus",
-    "Agamemnon",
-    "Calypso",
-]
 DEFAULT_GLOBAL_POOL_LABELS = {}
 
 
@@ -1171,53 +1153,54 @@ def miner_display_identity(item: dict[str, Any]) -> str:
     if mac:
         return f"mac:{mac}"
     device_id = str(item.get("device_id") or "").strip()
-    if device_id:
+    if device_id.startswith("mac:"):
         return device_id
-    ip = str(item.get("ip") or "").strip()
-    if ip:
-        return f"ip:{ip}"
     return ""
 
 
+def mac_suffix(value: Any, width: int = 3) -> str:
+    mac = normalize_mac(value)
+    if not mac:
+        return ""
+    compact = mac.replace(":", "")
+    return compact[-max(1, width) :]
+
+
+def miner_identity_key(item: dict[str, Any]) -> str:
+    mac = normalize_mac(item.get("mac"))
+    if not mac:
+        device_id = str(item.get("device_id") or "").strip().lower()
+        if device_id.startswith("mac:"):
+            mac = normalize_mac(device_id.removeprefix("mac:"))
+    return f"mac:{mac}" if mac else ""
+
+
+def miner_display_label(item: dict[str, Any]) -> str:
+    mac = normalize_mac(item.get("mac"))
+    if not mac:
+        device_id = str(item.get("device_id") or "").strip().lower()
+        if device_id.startswith("mac:"):
+            mac = normalize_mac(device_id.removeprefix("mac:"))
+    name = str(item.get("display_name") or item.get("name") or "").strip()
+    if name and mac:
+        return f"{name}-{mac_suffix(mac)}"
+    if name:
+        return f"{name}-unknown-mac"
+    if mac:
+        return mac
+    return "unknown-mac"
+
+
 def assign_miner_display_names(miners: list[dict[str, Any]]) -> None:
-    used = {str(item.get("display_name") or "") for item in miners if item.get("display_name")}
-    _retired_macs, _retired_ips, _retired_workers, retired_names = read_retired_miner_identities()
-    used.update(retired_names)
-    named_by_identity = {
-        miner_display_identity(item): str(item.get("display_name"))
-        for item in miners
-        if miner_display_identity(item) and item.get("display_name")
-    }
-    unnamed = [
-        item
-        for item in miners
-        if not item.get("display_name")
-        and (
-            normalize_mac(item.get("mac"))
-            or item.get("device_type") == "asic"
-            or item.get("managed")
-        )
-    ]
-    unnamed.sort(key=lambda item: miner_display_identity(item))
-    for item in unnamed:
-        identity = miner_display_identity(item)
-        if identity in named_by_identity:
-            item["display_name"] = named_by_identity[identity]
-            continue
-        for name in HOMERIC_MINER_NAMES:
-            if name not in used:
-                item["display_name"] = name
-                used.add(name)
-                if identity:
-                    named_by_identity[identity] = name
-                break
-        else:
-            suffix = len(used) + 1
-            name = f"Homeric Miner {suffix}"
-            item["display_name"] = name
-            used.add(name)
-            if identity:
-                named_by_identity[identity] = name
+    """Preserve explicit names only.
+
+    Fresh release installs must not invent site-specific ASIC names. The
+    dashboard defaults to the MAC address and appends a MAC suffix to any
+    explicit human name, so duplicate names cannot hide distinct devices.
+    """
+    for item in miners:
+        if item.get("display_name") is not None:
+            item["display_name"] = str(item.get("display_name") or "").strip()
 
 
 def is_pool_log_only_miner(item: dict[str, Any]) -> bool:
@@ -1415,15 +1398,14 @@ def save_miner_registry(miners: list[dict[str, Any]]) -> dict[str, Any]:
         key = f"mac:{mac}" if mac else f"ip:{ip}"
         by_identity[key] = merge_miner_records(by_identity[key], item) if key in by_identity else item
 
-    by_ip: dict[str, dict[str, Any]] = {}
-    for item in by_identity.values():
-        ip = str(item.get("ip", ""))
-        if not is_ipv4(ip):
-            continue
-        by_ip[ip] = merge_miner_records(by_ip[ip], item) if ip in by_ip else item
-
-    cleaned = prune_inactive_miner_records(list(by_ip.values()))
-    cleaned.sort(key=lambda item: int(ipaddress.ip_address(item["ip"])))
+    cleaned = prune_inactive_miner_records(list(by_identity.values()))
+    cleaned.sort(
+        key=lambda item: (
+            0 if normalize_mac(item.get("mac")) else 1,
+            normalize_mac(item.get("mac")) or "",
+            int(ipaddress.ip_address(item["ip"])),
+        )
+    )
     assign_miner_display_names(cleaned)
     registry = {"updated_at": now_iso(), "miners": cleaned}
     write_json_file(MINER_REGISTRY_FILE, registry)
@@ -2326,11 +2308,21 @@ def parse_pool_log(log: str) -> dict[str, Any]:
 LOG_TS_RE = re.compile(r"^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})")
 PUSHDIF_RE = re.compile(r"PUSHDIF\s+->\s+((?:\d{1,3}\.){3}\d{1,3}):([0-9]+)\s+mining\.set_difficulty\s+([0-9.]+)")
 AUTH_ACCEPT_RE = re.compile(r"\[((?:\d{1,3}\.){3}\d{1,3}):([0-9]+)\]\s+authorize accepted user=([^\s]+)")
+SUBSCRIBE_ACCEPT_RE = re.compile(
+    r"\[((?:\d{1,3}\.){3}\d{1,3}):([0-9]+)\]\s+subscribe accepted extranonce1=([0-9a-fA-F]{8})"
+)
 JOB_NOTIFY_RE = re.compile(r"Sending to ((?:\d{1,3}\.){3}\d{1,3}):\d+:\s+jobID=([^\s]+)")
 JOB_NOTIFY_DETAIL_RE = re.compile(r"Sending to ((?:\d{1,3}\.){3}\d{1,3}):([0-9]+):\s+jobID=([^\s]+)")
-SUBMIT_RE = re.compile(r"submit from worker=([^\s]+)\s+job=([^\s]+)")
+CLIENT_ADDR_RE = re.compile(r"\bclient=((?:\d{1,3}\.){3}\d{1,3}):([0-9]+)")
+JOB_EXTRANONCE_RE = re.compile(r"_([0-9a-fA-F]{8})(?:\s|$)")
+SUBMIT_RE = re.compile(
+    r"submit from\s+(?:client=((?:\d{1,3}\.){3}\d{1,3}):([0-9]+)\s+)?worker=([^\s]+)\s+job=([^\s]+)"
+)
 SUBMIT_SUPPRESSED_RE = re.compile(r"\ssuppressed=([0-9]+)")
-VALID_SHARE_RE = re.compile(r"valid share accepted\s+([0-9.]+)\s+[^0-9]+([0-9]+)\s+worker=([^\s]+)\s+job=([^\s]+)")
+VALID_SHARE_RE = re.compile(
+    r"valid share accepted\s+([0-9.]+)\s+[^0-9]+([0-9]+)\s+"
+    r"(?:client=((?:\d{1,3}\.){3}\d{1,3}):([0-9]+)\s+)?worker=([^\s]+)\s+job=([^\s]+)"
+)
 VALID_SHARE_SUPPRESSED_DIFF_RE = re.compile(r"\ssuppressedDiff=([0-9.]+)")
 VALID_SHARE_SUPPRESSED_WORK_RE = re.compile(r"\ssuppressedWork=([0-9]+)")
 BLOCK_FOUND_RE = re.compile(r"BLOCK FOUND .*job=([^\s]+)")
@@ -2963,6 +2955,7 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
 
 def parse_pool_activity(log: str) -> dict[str, Any]:
     job_to_client: dict[str, dict[str, str]] = {}
+    extranonce_to_client: dict[str, dict[str, str]] = {}
     worker_to_client: dict[str, dict[str, str]] = {}
     worker_client_priority: dict[str, int] = {}
     ambiguous_worker_clients: set[str] = set()
@@ -2982,6 +2975,36 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         if worker in ambiguous_worker_clients:
             return None
         return worker_to_client.get(worker)
+
+    def job_extranonce(job_id: str) -> str:
+        match = JOB_EXTRANONCE_RE.search(str(job_id or ""))
+        return match.group(1).lower() if match else ""
+
+    def client_from_addr(ip: str | None, port: str | None = "") -> dict[str, str] | None:
+        if not ip or not is_ipv4(str(ip)):
+            return None
+        return {"ip": str(ip), "port": str(port or "")}
+
+    def client_from_line(line: str) -> dict[str, str] | None:
+        match = CLIENT_ADDR_RE.search(line)
+        if not match:
+            return None
+        return client_from_addr(match.group(1), match.group(2))
+
+    def note_job_client(job_id: str, client: dict[str, str]) -> None:
+        if not job_id or not client:
+            return
+        job_to_client.setdefault(job_id, client)
+        extranonce = job_extranonce(job_id)
+        if extranonce:
+            extranonce_to_client.setdefault(extranonce, client)
+
+    def client_for_job_or_worker(job_id: str, worker: str = "") -> dict[str, str] | None:
+        return (
+            job_to_client.get(job_id)
+            or extranonce_to_client.get(job_extranonce(job_id))
+            or (client_for_worker(worker) if worker else None)
+        )
 
     for registered in read_miner_registry().get("miners", []):
         ip = str(registered.get("ip") or "")
@@ -3059,10 +3082,20 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
             note_seen(item, line)
             continue
 
+        subscribe = SUBSCRIBE_ACCEPT_RE.search(line)
+        if subscribe:
+            ip, port, extranonce = subscribe.groups()
+            client = {"ip": ip, "port": port}
+            extranonce_to_client.setdefault(extranonce.lower(), client)
+            item = miner_for_ip(ip)
+            note_port(item, port)
+            note_seen(item, line)
+            continue
+
         notify = JOB_NOTIFY_DETAIL_RE.search(line)
         if notify:
             ip, port, job_id = notify.groups()
-            job_to_client[job_id] = {"ip": ip, "port": port}
+            note_job_client(job_id, {"ip": ip, "port": port})
             item = miner_for_ip(ip)
             note_port(item, port)
             item["jobs"] += 1
@@ -3072,7 +3105,7 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         legacy_notify = JOB_NOTIFY_RE.search(line)
         if legacy_notify:
             ip, job_id = legacy_notify.groups()
-            job_to_client[job_id] = {"ip": ip, "port": ""}
+            note_job_client(job_id, {"ip": ip, "port": ""})
             item = miner_for_ip(ip)
             item["jobs"] += 1
             note_seen(item, line, "last_job_at")
@@ -3080,11 +3113,14 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
 
         submit = SUBMIT_RE.search(line)
         if submit:
-            worker, job_id = submit.groups()
-            client = job_to_client.get(job_id) or client_for_worker(worker)
+            client_ip, client_port, worker, job_id = submit.groups()
+            direct_client = client_from_addr(client_ip, client_port)
+            if direct_client:
+                note_job_client(job_id, direct_client)
+            client = direct_client or client_for_job_or_worker(job_id, worker)
             if not client:
                 continue
-            job_to_client.setdefault(job_id, client)
+            note_job_client(job_id, client)
             item = miner_for_ip(client["ip"])
             note_port(item, client.get("port"))
             note_worker(item, worker)
@@ -3094,12 +3130,17 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
 
         share = VALID_SHARE_RE.search(line)
         if share:
-            job_id = share.group(4)
-            worker = share.group(3)
-            client = job_to_client.get(job_id) or client_for_worker(worker)
+            client_ip = share.group(3)
+            client_port = share.group(4)
+            worker = share.group(5)
+            job_id = share.group(6)
+            direct_client = client_from_addr(client_ip, client_port)
+            if direct_client:
+                note_job_client(job_id, direct_client)
+            client = direct_client or client_for_job_or_worker(job_id, worker)
             if not client:
                 continue
-            job_to_client.setdefault(job_id, client)
+            note_job_client(job_id, client)
             item = miner_for_ip(client["ip"])
             note_port(item, client.get("port"))
             item["shares"] += valid_share_line_weight(line)
@@ -3115,7 +3156,11 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
 
         block = BLOCK_FOUND_RE.search(line)
         if block:
-            client = job_to_client.get(block.group(1))
+            job_id = block.group(1)
+            direct_client = client_from_line(line)
+            if direct_client:
+                note_job_client(job_id, direct_client)
+            client = direct_client or client_for_job_or_worker(job_id)
             if not client:
                 continue
             item = miner_for_ip(client["ip"])
@@ -3324,10 +3369,11 @@ def collect_miner_health() -> dict[str, Any]:
             continue
         retirement_decision = retired_miner_identity_decision({**registered, **activity_item}, ip, mac)
         if retirement_decision.get("conflict"):
-            label = registered.get("display_name") or ip
+            label = miner_display_label({**registered, "mac": mac})
             retired_name = retirement_decision.get("retired_name") or "retired miner"
             warnings.append(
-                f"{label} {ip} is active in pool logs but shares an observed retired-miner IP for {retired_name}; "
+                f"{label} mac={mac or 'unknown-mac'} observed_ip={ip} is active in pool logs but shares "
+                f"an observed retired-miner IP for {retired_name}; "
                 "keeping it active because only MAC address can retire an ASIC"
             )
         last_pool_seen_epoch = int(registered.get("last_pool_seen_epoch", 0) or 0)
@@ -3336,7 +3382,7 @@ def collect_miner_health() -> dict[str, Any]:
         workers = merge_unique_strings(activity_item.get("workers"), registered.get("last_workers"))
         ports = merge_unique_strings(activity_item.get("ports"), registered.get("last_ports"))
         connected = bool(activity_item) or bool(last_pool_seen_epoch and now_epoch - last_pool_seen_epoch <= POOL_CONNECTED_STALE_SECONDS)
-        if not api_expected and is_pool_log_only_miner(registered):
+        if not api_expected and (is_pool_log_only_miner(registered) or device_type == "stratum" or discovered_by == "pool-log"):
             expected_worker_seen = str(expected_user).lower() in {str(worker).lower() for worker in workers}
             if connected and expected_url == defaults["pool_url"] and expected_worker_seen:
                 configured = True
@@ -3350,7 +3396,8 @@ def collect_miner_health() -> dict[str, Any]:
         submit_age = now_epoch - last_submit_epoch if last_submit_epoch else None
         share_age = now_epoch - last_share_epoch if last_share_epoch else None
         managed = bool(registered.get("managed"))
-        primary_pool_log = is_known_primary_pool_log_miner({**registered, "last_workers": workers})
+        configured_record = bool(registered.get("configured") or registered.get("managed") or registered.get("last_configured_ok"))
+        primary_pool_log = configured_record and is_known_primary_pool_log_miner({**registered, "last_workers": workers})
         relevant = managed or connected or has_recent_shares or has_recent_blocks or primary_pool_log
         if not relevant and is_pool_log_only_miner(registered):
             continue
@@ -3377,9 +3424,10 @@ def collect_miner_health() -> dict[str, Any]:
         if managed:
             if (api_error or debug_error) and not has_recent_shares and not has_recent_blocks and not connected:
                 status = "down"
-                label = registered.get("display_name") or ip
+                label = miner_display_label({**registered, "mac": mac})
                 failures.append(
-                    f"{label} {ip} ASIC API/health check is unreachable or degraded and no recent pool submissions were seen"
+                    f"{label} mac={mac or 'unknown-mac'} observed_ip={ip} ASIC API/health check is unreachable or degraded "
+                    "and no recent pool submissions were seen"
                     + (f" (last pool seen {pool_seen_age}s ago)" if pool_seen_age is not None else "")
                     + f": {api_error or debug_error}"
                 )
@@ -3387,13 +3435,22 @@ def collect_miner_health() -> dict[str, Any]:
                 status = "ok"
             elif configured:
                 status = "degraded"
-                warnings.append(f"{ip} is configured but no recent accepted shares were seen")
+                warnings.append(
+                    f"{miner_display_label({**registered, 'mac': mac})} mac={mac or 'unknown-mac'} "
+                    f"observed_ip={ip} is configured but no recent accepted shares were seen"
+                )
             elif has_recent_shares or connected:
                 status = "degraded"
-                warnings.append(f"{ip} is submitting to the pool but ASIC API configuration could not be confirmed")
+                warnings.append(
+                    f"{miner_display_label({**registered, 'mac': mac})} mac={mac or 'unknown-mac'} "
+                    f"observed_ip={ip} is submitting to the pool but ASIC API configuration could not be confirmed"
+                )
             else:
                 status = "down"
-                failures.append(f"{ip} is not configured for the expected local pool")
+                failures.append(
+                    f"{miner_display_label({**registered, 'mac': mac})} mac={mac or 'unknown-mac'} "
+                    f"observed_ip={ip} is not configured for the expected local pool"
+                )
         elif configured or has_recent_shares or has_recent_blocks:
             status = "ok"
         elif connected:
@@ -3401,17 +3458,21 @@ def collect_miner_health() -> dict[str, Any]:
         elif primary_pool_log:
             status = "down"
             age = now_epoch - last_pool_seen_epoch if last_pool_seen_epoch else None
-            label = registered.get("display_name") or ip
+            label = miner_display_label({**registered, "mac": mac})
             failures.append(
-                f"{label} {ip} has not been seen by the pool"
+                f"{label} mac={mac or 'unknown-mac'} observed_ip={ip} has not been seen by the pool"
                 + (f" for {age}s" if age is not None else "")
             )
         elif device_type == "asic" and discovered_by != "pool-log" and not configured:
-            warnings.append(f"{ip} is discovered but not managed by the local pool")
+            warnings.append(
+                f"{miner_display_label({**registered, 'mac': mac})} mac={mac or 'unknown-mac'} "
+                f"observed_ip={ip} is discovered but not managed by the local pool"
+            )
         if low_difficulty_flood:
             status = "degraded" if status == "ok" else status
             warning = (
-                f"{ip} is submitting very low-difficulty work "
+                f"{miner_display_label({**registered, 'mac': mac})} mac={mac or 'unknown-mac'} observed_ip={ip} "
+                "is submitting very low-difficulty work "
                 f"(difficulty {last_difficulty}, submits {submits})"
             )
             if managed:
@@ -3427,7 +3488,9 @@ def collect_miner_health() -> dict[str, Any]:
                 "ip": ip,
                 "mac": mac,
                 "device_id": f"mac:{mac}" if mac else str(registered.get("device_id") or ""),
+                "identity_key": miner_identity_key({**registered, "mac": mac}),
                 "display_name": registered.get("display_name") or "",
+                "display_label": miner_display_label({**registered, "mac": mac}),
                 "managed": managed,
                 "device_type": device_type,
                 "discovered_by": discovered_by_value,
@@ -3520,7 +3583,7 @@ def collect_miner_health() -> dict[str, Any]:
             else:
                 item["lane_status"] = "balanced"
             if item["lane_status"] in {"no-work", "low", "high"} and item.get("connected"):
-                label = item.get("display_name") or item.get("mac") or item.get("ip")
+                label = item.get("display_label") or miner_display_label(item)
                 mac = item.get("mac") or "unknown-mac"
                 imbalanced_lanes.append(
                     f"{label} mac={mac} lane={item['lane_status']} actual={item['work_percent']}% expected={item['expected_work_percent']}%"
@@ -6484,6 +6547,7 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
         if not is_retired_miner_identity(
             {**item, **registry_by_ip.get(str(item.get("ip") or ""), {})},
             str(item.get("ip") or ""),
+            normalize_mac((registry_by_ip.get(str(item.get("ip") or ""), {}) or {}).get("mac")),
         )
     ]
     hashrate_by_ip = collect_miner_hashrate_debug(registry.get("miners", []), active_activity_miners)
@@ -6508,7 +6572,8 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
     for item in active_activity_miners:
         activity_ip = str(item.get("ip") or "")
         registered = registry_by_ip.get(activity_ip, {})
-        if is_docker_bridge_pool_log_client(activity_ip, normalize_mac(registered.get("mac"))):
+        registered_mac = normalize_mac(registered.get("mac"))
+        if is_docker_bridge_pool_log_client(activity_ip, registered_mac):
             continue
         work = int(item.get("share_work", 0) or 0)
         hashrate = hashrate_by_ip.get(item["ip"], {})
@@ -6528,9 +6593,11 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
         estimates.append(
             {
                 "ip": item["ip"],
-                "mac": normalize_mac(registered.get("mac")),
-                "device_id": registered.get("device_id") or (f"mac:{normalize_mac(registered.get('mac'))}" if normalize_mac(registered.get("mac")) else ""),
+                "mac": registered_mac,
+                "device_id": registered.get("device_id") or (f"mac:{registered_mac}" if registered_mac else ""),
+                "identity_key": miner_identity_key({**registered, "mac": registered_mac}),
                 "display_name": registered.get("display_name") or "",
+                "display_label": miner_display_label({**registered, "mac": registered_mac}),
                 "device_type": registered.get("device_type") or item.get("device_type") or "stratum",
                 "workers": workers,
                 "credit_workers": credit_workers,
@@ -6610,7 +6677,9 @@ def compact_miner_estimate_for_history(miner: dict[str, Any]) -> dict[str, Any]:
         "ip",
         "mac",
         "device_id",
+        "identity_key",
         "display_name",
+        "display_label",
         "shares",
         "share_work",
         "work_percent",
@@ -6882,7 +6951,8 @@ def collect_hourly_averages(
             timed_wallets.append((parsed_at, wallet_total, str(snapshot.get("generated_at"))))
         for miner in snapshot.get("miner_estimates") or []:
             key = str(
-                miner.get("device_id")
+                miner.get("identity_key")
+                or miner.get("device_id")
                 or (f"mac:{normalize_mac(miner.get('mac'))}" if normalize_mac(miner.get("mac")) else "")
                 or miner.get("ip")
                 or ""
@@ -7064,7 +7134,8 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
     wallet_recent_avg = decimal_value(hourly_averages.get("wallet_recent_bdag_hour")) or wallet_runtime_avg
     for miner in miner_estimates:
         tracked_key = str(
-            miner.get("device_id")
+            miner.get("identity_key")
+            or miner.get("device_id")
             or (f"mac:{normalize_mac(miner.get('mac'))}" if normalize_mac(miner.get("mac")) else "")
             or miner.get("ip")
             or ""

@@ -2056,11 +2056,31 @@ HTML = r"""<!doctype html>
       }
       return Math.abs(hash);
     }
+    function normalizedMac(value) {
+      const text = String(value || "").trim().toLowerCase().replaceAll("-", ":");
+      if (/^[0-9a-f]{12}$/.test(text)) return text.match(/.{1,2}/g).join(":");
+      return /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(text) ? text : "";
+    }
+    function minerMac(row) {
+      const direct = normalizedMac(row.mac);
+      if (direct) return direct;
+      const device = String(row.device_id || row.identity_key || "").trim().toLowerCase();
+      return device.startsWith("mac:") ? normalizedMac(device.slice(4)) : "";
+    }
+    function minerMacSuffix(row) {
+      const mac = minerMac(row).replaceAll(":", "");
+      return mac ? mac.slice(-3) : "";
+    }
     function minerIdentity(row) {
-      return String(row.device_id || (row.mac ? `mac:${row.mac}` : row.ip) || "").trim();
+      const mac = minerMac(row);
+      if (mac) return `mac:${mac}`;
+      return String(row.identity_key || row.device_id || "").trim();
     }
     function minerDisplayName(row) {
-      return String(row.display_name || row.name || minerIdentity(row) || "Miner").trim();
+      const explicit = String(row.display_name || row.name || "").trim();
+      if (explicit) return explicit;
+      const mac = minerMac(row);
+      return mac || "unknown-mac";
     }
     function minerShortIp(row) {
       const ip = String(row.ip || "").trim();
@@ -2069,8 +2089,12 @@ HTML = r"""<!doctype html>
       return /^\d{1,3}$/.test(last) ? `.${last}` : "";
     }
     function minerDisplayLabel(row) {
-      const suffix = minerShortIp(row);
-      return `${minerDisplayName(row)}${suffix ? " " + suffix : ""}`;
+      const provided = String(row.display_label || "").trim();
+      if (provided) return provided;
+      const explicit = String(row.display_name || row.name || "").trim();
+      const suffix = minerMacSuffix(row);
+      if (explicit) return `${explicit}-${suffix || "unknown-mac"}`;
+      return minerMac(row) || "unknown-mac";
     }
     function minerColor(identity) {
       if (!identity) return "#4b5563";
