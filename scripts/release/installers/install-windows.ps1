@@ -18,10 +18,15 @@ $dockerPlatform = 'linux/amd64'
 $snapshotUrl = if ($env:BDAG_SNAPSHOT_URL) { $env:BDAG_SNAPSHOT_URL } else { 'https://bdagstack.bdagdev.xyz/latest.bdsnap' }
 $snapshotMinBytes = if ($env:BDAG_SNAPSHOT_MIN_BYTES) { [int64]$env:BDAG_SNAPSHOT_MIN_BYTES } else { [int64]1048576 }
 $requireSnapshot = $env:BDAG_REQUIRE_SNAPSHOT -ne '0'
-$resetNodeData = $env:BDAG_RESET_NODE_DATA -ne '0'
+$resetNodeData = $env:BDAG_RESET_NODE_DATA -eq '1'
 $requestedSnapshotDownloader = if ($env:BDAG_SNAPSHOT_DOWNLOADER) { $env:BDAG_SNAPSHOT_DOWNLOADER.ToLowerInvariant() } else { 'auto' }
 $aria2Connections = if ($env:BDAG_ARIA2_CONNECTIONS) { [int]$env:BDAG_ARIA2_CONNECTIONS } else { 8 }
 $installAria2 = $env:BDAG_INSTALL_ARIA2 -ne '0'
+$installMinFreeBytes = if ($env:BDAG_INSTALL_MIN_FREE_BYTES) { [int64]$env:BDAG_INSTALL_MIN_FREE_BYTES } else { [int64]10737418240 }
+$installCheckPorts = if ($env:BDAG_INSTALL_CHECK_PORTS) { $env:BDAG_INSTALL_CHECK_PORTS -split '[, ]+' } else { @('3334', '9280', '18545', '18546', '38131') }
+$strictPreflight = $env:BDAG_INSTALL_STRICT_PREFLIGHT -eq '1'
+$strictPorts = $env:BDAG_INSTALL_STRICT_PORTS -eq '1'
+$cleanOrphanContainers = $env:BDAG_CLEAN_ORPHAN_CONTAINERS -eq '1'
 
 Write-Host "=== BlockDAG Pool Stack Installer (windows/$arch) ===" -ForegroundColor Cyan
 Write-Host ""
@@ -36,6 +41,65 @@ function Require-Command([string]$Name, [string]$Hint) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
         throw "$Name is required. $Hint"
     }
+}
+
+function Warn-OrFailPreflight([string]$Message) {
+    if ($strictPreflight) {
+        throw $Message
+    }
+    Write-Host "Warning: $Message" -ForegroundColor Yellow
+}
+
+function Test-PortListening([string]$Port) {
+    try {
+        return [bool](Get-NetTCPConnection -LocalPort ([int]$Port) -State Listen -ErrorAction Stop | Select-Object -First 1)
+    } catch {
+        return $false
+    }
+}
+
+function Invoke-ReleasePreflight {
+    Write-Host "=== Release preflight ===" -ForegroundColor Cyan
+
+    if ($arch -notin @('amd64', 'arm64')) {
+        Warn-OrFailPreflight "unsupported CPU architecture '$arch'."
+    }
+
+    $drive = Get-PSDrive -Name (Get-Location).Drive.Name
+    if ($drive.Free -lt $installMinFreeBytes) {
+        Warn-OrFailPreflight "free disk $($drive.Free) bytes is below BDAG_INSTALL_MIN_FREE_BYTES=$installMinFreeBytes."
+    }
+
+    $busyPorts = @()
+    foreach ($port in $installCheckPorts) {
+        if ($port -and (Test-PortListening $port)) {
+            $busyPorts += $port
+        }
+    }
+    if ($busyPorts.Count -gt 0) {
+        if ($strictPorts) {
+            throw "host ports already listening: $($busyPorts -join ', ')"
+        }
+        Write-Host "Warning: host ports already listening: $($busyPorts -join ', '). Existing stack services may be using them." -ForegroundColor Yellow
+    }
+
+    $timeService = Get-Service W32Time -ErrorAction SilentlyContinue
+    if (-not $timeService -or $timeService.Status -ne 'Running') {
+        Warn-OrFailPreflight "Windows Time service is not running."
+    }
+
+    if (Get-Command jq -ErrorAction SilentlyContinue) {
+        Write-Host "jq found; release scripts do not require it for installer JSON parsing."
+    } else {
+        Write-Host "jq not found; continuing because installer parsing avoids a jq dependency."
+    }
+
+    try {
+        Invoke-WebRequest -Uri $snapshotUrl -Method Head -UseBasicParsing -TimeoutSec 10 | Out-Null
+    } catch {
+        Warn-OrFailPreflight "could not reach snapshot seed URL $snapshotUrl; P2P sync may still work if BDAG_REQUIRE_SNAPSHOT=0."
+    }
+    Write-Host ""
 }
 
 function Set-EnvValue([string]$Path, [string]$Key, [string]$Value) {
@@ -173,6 +237,24 @@ function Get-ComposeProjectName {
     }
 }
 
+function Plan-OrphanContainerCleanup {
+    $project = Get-ComposeProjectName
+    if (-not $project) { return }
+
+    $containers = & docker ps -a --filter "label=com.docker.compose.project=$project" --format "{{.Names}}`t{{.Status}}" 2>$null
+    if (-not $containers) { return }
+
+    Write-Host ""
+    Write-Host "Compose project '$project' has existing containers:" -ForegroundColor Yellow
+    $containers | ForEach-Object { Write-Host "  $_" }
+    if ($cleanOrphanContainers) {
+        Write-Host "BDAG_CLEAN_ORPHAN_CONTAINERS=1; running docker compose down --remove-orphans before start."
+        & docker compose down --remove-orphans
+    } else {
+        Write-Host "Dry-run cleanup only. Set BDAG_CLEAN_ORPHAN_CONTAINERS=1 to remove old/orphan compose containers during install." -ForegroundColor Yellow
+    }
+}
+
 function Prepare-NodeVolumeForSnapshot {
     if ($snapshotPath -ne './latest.bdsnap') { return }
 
@@ -218,6 +300,8 @@ if ($LASTEXITCODE -ne 0) {
 if (-not (Test-Path .env.example) -or -not (Test-Path node.conf.example) -or -not (Test-Path docker-compose.yml)) {
     throw "Run this installer from the extracted pool-stack-docker release folder."
 }
+
+Invoke-ReleasePreflight
 
 $snapshotPath = 'docker/no-snapshot.marker'
 if (Test-ValidSnapshot latest.bdsnap) {
@@ -329,6 +413,7 @@ $nodeText = $nodeText -replace "`r`n", "`n"
 New-Item -ItemType Directory -Force -Path 'dashboard\logs' | Out-Null
 Clean-BuildContextMetadata
 Prepare-NodeVolumeForSnapshot
+Plan-OrphanContainerCleanup
 $env:DOCKER_DEFAULT_PLATFORM = $dockerPlatform
 
 Write-Host ""
