@@ -3382,10 +3382,12 @@ def collect_miner_health() -> dict[str, Any]:
         workers = merge_unique_strings(activity_item.get("workers"), registered.get("last_workers"))
         ports = merge_unique_strings(activity_item.get("ports"), registered.get("last_ports"))
         connected = bool(activity_item) or bool(last_pool_seen_epoch and now_epoch - last_pool_seen_epoch <= POOL_CONNECTED_STALE_SECONDS)
+        managed = bool(registered.get("managed"))
+        configured_record = bool(registered.get("configured") or registered.get("managed") or registered.get("last_configured_ok"))
         if not api_expected and (is_pool_log_only_miner(registered) or device_type == "stratum" or discovered_by == "pool-log"):
             expected_worker_seen = str(expected_user).lower() in {str(worker).lower() for worker in workers}
             if connected and expected_url == defaults["pool_url"] and expected_worker_seen:
-                configured = True
+                configured = configured_record
                 pool_active = True
         current_submits = int(activity_item.get("submits", 0) or 0)
         current_shares = int(activity_item.get("shares", 0) or 0)
@@ -3395,8 +3397,6 @@ def collect_miner_health() -> dict[str, Any]:
         pool_seen_age = now_epoch - last_pool_seen_epoch if last_pool_seen_epoch else None
         submit_age = now_epoch - last_submit_epoch if last_submit_epoch else None
         share_age = now_epoch - last_share_epoch if last_share_epoch else None
-        managed = bool(registered.get("managed"))
-        configured_record = bool(registered.get("configured") or registered.get("managed") or registered.get("last_configured_ok"))
         primary_pool_log = configured_record and is_known_primary_pool_log_miner({**registered, "last_workers": workers})
         relevant = managed or connected or has_recent_shares or has_recent_blocks or primary_pool_log
         if not relevant and is_pool_log_only_miner(registered):
