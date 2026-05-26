@@ -171,6 +171,9 @@ def node_scores(status: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 probe_ratio = probe_errors / max(1, probe_samples)
                 score -= min(80, probe_ratio * 80)
                 reasons.append(f"template-probe-errors-{probe_errors}-{probe_samples}")
+            else:
+                score -= 12
+                reasons.append(f"template-probe-transient-initial-download-{probe_errors}-{probe_samples}")
         if info.get("template_probe_failing"):
             score -= 45
             reasons.append("template-probe-failing")

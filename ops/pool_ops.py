@@ -3424,8 +3424,16 @@ def collect_miner_health() -> dict[str, Any]:
         pool_seen_age = now_epoch - last_pool_seen_epoch if last_pool_seen_epoch else None
         submit_age = now_epoch - last_submit_epoch if last_submit_epoch else None
         share_age = now_epoch - last_share_epoch if last_share_epoch else None
+        expected_worker_seen = str(expected_user).lower() in {str(worker).lower() for worker in workers}
+        current_pool_activity = bool(activity_item) and expected_url == defaults["pool_url"] and (
+            expected_worker_seen or current_submits > 0 or has_recent_shares or has_recent_blocks
+        )
+        work_pool_active = bool(
+            (managed or configured_record or current_pool_activity)
+            and (current_pool_activity or pool_active or has_recent_shares or has_recent_blocks)
+        )
         primary_pool_log = configured_record and is_known_primary_pool_log_miner({**registered, "last_workers": workers})
-        relevant = managed or connected or has_recent_shares or has_recent_blocks or primary_pool_log
+        relevant = managed or configured_record or work_pool_active or has_recent_shares or has_recent_blocks or primary_pool_log
         if not relevant and is_pool_log_only_miner(registered):
             continue
         shares = activity_item.get("shares", registered.get("last_shares_window", 0))
@@ -3526,6 +3534,7 @@ def collect_miner_health() -> dict[str, Any]:
                 "configured": configured,
                 "connected": connected,
                 "pool_active": pool_active,
+                "work_pool_active": work_pool_active,
                 "api_error": api_error,
                 "debug_error": debug_error,
                 "issue": issue,
@@ -3581,8 +3590,7 @@ def collect_miner_health() -> dict[str, Any]:
     expected_lane_rows = [
         item
         for item in health
-        if item.get("relevant_for_work_share")
-        and (item.get("connected") or item.get("managed") or int(item.get("share_work", 0) or 0) > 0)
+        if item.get("relevant_for_work_share") and item.get("work_pool_active")
     ]
     expected_lane_count = len(expected_lane_rows)
     expected_lane_percent = Decimal("100") / Decimal(expected_lane_count) if expected_lane_count > 0 else Decimal("0")

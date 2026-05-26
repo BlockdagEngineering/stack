@@ -89,6 +89,13 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
 
         self.assertEqual([], watchdog.degraded_primary_miners(status, 120))
 
+    def test_work_pool_active_false_overrides_stale_connection_identity(self) -> None:
+        row = miner_row("192.168.1.14", lane_status="no-work", submits=1, last_submit_epoch=self.now - 15)
+        row["work_pool_active"] = False
+        status = status_for([row], expected=1, imbalanced=1)
+
+        self.assertEqual([], watchdog.degraded_primary_miners(status, 120))
+
     def test_low_lane_with_recent_submit_is_degraded(self) -> None:
         miners = [
             miner_row("192.168.1.14", lane_status="low", submits=1, last_submit_epoch=self.now - 15),

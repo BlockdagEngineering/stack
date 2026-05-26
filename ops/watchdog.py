@@ -207,7 +207,20 @@ def is_primary_pool_identity(row: dict[str, Any], mining_address: str) -> bool:
 
 
 def is_primary_pool_miner(row: dict[str, Any], mining_address: str) -> bool:
-    return bool(row.get("connected") and is_primary_pool_identity(row, mining_address))
+    if not is_primary_pool_identity(row, mining_address):
+        return False
+    if row.get("work_pool_active") is not None:
+        return bool(row.get("work_pool_active"))
+    return bool(
+        row.get("connected")
+        and (
+            row.get("managed")
+            or row.get("configured")
+            or int(row.get("submits") or 0) > 0
+            or int(row.get("shares") or 0) > 0
+            or int(row.get("blocks_found") or 0) > 0
+        )
+    )
 
 
 def int_or_none(value: Any) -> int | None:
@@ -1691,7 +1704,7 @@ def check_once(
     down_miners = [
         item
         for item in miner_rows
-        if (item.get("managed") or is_primary_pool_identity(item, mining_address))
+        if (item.get("managed") or item.get("configured"))
         and item.get("device_type") in {"asic", "stratum"}
         and item.get("status") == "down"
         and is_lan_ipv4(str(item.get("ip", "")))
