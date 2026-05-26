@@ -121,6 +121,13 @@ pressure signals may not exist. Use `host_runtime_profile()`,
 conservative while larger AMD64 or ARM64 hosts can expand safely when pressure
 is low.
 
+Release packages must prove executable architecture before building or
+deploying images. Keep `scripts/verify-release-architecture.py` in the RC path
+and run it before image assembly so an AMD64 binary cannot be copied into an
+ARM64 Pi package or container by accident. Prefer header-based verification
+over host-specific `file` output so the same gate works from Linux, macOS, and
+Windows build hosts.
+
 ## FastSync Candidate Ordering
 
 New nodes must prefer nearby FastSync candidates before public internet seeds.

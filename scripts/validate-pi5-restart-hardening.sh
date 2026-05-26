@@ -126,6 +126,8 @@ validate_runtime_compose
 if [[ "$mode" == "source" ]]; then
   need_file ".github/workflows/rc-hardening.yml"
   need_file "scripts/check-doc-consistency.py"
+  need_file "scripts/validate-rc-local.sh"
+  need_file "scripts/verify-release-architecture.py"
   need_file "ops/tests/test_no_miner_collect_status.py"
 fi
 
@@ -342,6 +344,7 @@ need_grep 'private/VPN second, public last' "ops/build-pi5-arm64-release.sh"
 need_grep 'BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1' "ops/build-pi5-arm64-release.sh"
 need_grep 'guard_release_compose' "ops/build-pi5-arm64-release.sh"
 need_grep 'deploy-live-runtime-update.sh --target' "README.md"
+need_grep 'preflight_copy_contract' "ops/deploy-live-runtime-update.sh"
 need_grep 'runtime_compose_guard' "ops/deploy-live-runtime-update.sh"
 need_grep 'rollback_from_backup' "ops/deploy-live-runtime-update.sh"
 need_grep 'post_deploy_health_check' "ops/deploy-live-runtime-update.sh"
@@ -350,6 +353,7 @@ need_grep 'critical_containers_ready' "ops/deploy-live-runtime-update.sh"
 need_grep 'watchdog_state_fresh' "ops/deploy-live-runtime-update.sh"
 need_grep 'guard_runtime_compose' "ops/release-install.sh"
 need_grep 'compose_cmd up -d --no-build --pull never' "ops/release-install.sh"
+need_grep 'verify-release-architecture.py' "ops/build-pi5-arm64-release.sh"
 
 if [[ "$mode" == "source" ]]; then
   need_grep 'validate-pi5-restart-hardening.sh --mode source' ".github/workflows/rc-hardening.yml"

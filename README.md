@@ -174,6 +174,10 @@ default; set an explicit pull/build flag only when intentionally refreshing
 images. Keep `scripts/validate-pi5-restart-hardening.sh` in the release gate
 before cutting an RC, and use `--mode live-runtime` for an installed stack where
 `ops/runtime` and Python bytecode are expected service artifacts.
+The release builder also runs `scripts/verify-release-architecture.py` before
+image assembly so ARM64 packages cannot silently receive AMD64 binaries; the
+checker reads ELF/Mach-O/PE headers directly so it can be used from Linux,
+macOS, and Windows build hosts.
 
 For live dashboard/watchdog-only updates, use:
 
@@ -184,6 +188,8 @@ ops/deploy-live-runtime-update.sh --target /path/to/installed/runtime --mark-run
 The deploy helper copies only a small whitelist, backs up changed files, refuses
 dev compose files, validates source and target, restarts only the configured
 user services, and rolls back copied files if validation or restart fails.
+It also checks that every live-runtime file required by the RC hardening
+validator is present in the copy contract before touching the installed stack.
 
 For source and release-candidate performance slices, collect comparable baseline
 evidence with:
@@ -268,13 +274,15 @@ marking an install healthy, run:
 
 ```bash
 ./scripts/release-readiness-check.py
-./scripts/validate-pi5-restart-hardening.sh .
+./scripts/validate-rc-local.sh
 ```
 
-These checks are read-only. They verify the pool schema, source-health gates,
-no-miner service semantics, FastSync/FastSnap safety defaults, dashboard
-source-of-truth rules, and packaged self-healing files. See
-`docs/release-readiness-gates.html`.
+These checks do not touch live services. The local RC validator uses a temporary
+runtime directory and removes ignored local `ops/runtime` or Python bytecode
+left by prior test runs before checking the source bundle. They verify the pool
+schema, source-health gates, no-miner service semantics, FastSync/FastSnap
+safety defaults, dashboard source-of-truth rules, and packaged self-healing
+files. See `docs/release-readiness-gates.html`.
   
 
 # Common operations
