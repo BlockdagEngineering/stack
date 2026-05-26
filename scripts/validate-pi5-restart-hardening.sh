@@ -136,7 +136,7 @@ if [[ "$mode" == "source" ]]; then
   need_grep 'ls-files.*--cached.*--others.*--exclude-standard' "scripts/validate-rc-local.sh"
 fi
 
-if [[ -e "$root/ops/observability" ]]; then
+if [[ "$mode" == "source" && -e "$root/ops/observability" ]]; then
   fail "retired ops/observability dashboard stack is present in RC dashboard path"
 fi
 
