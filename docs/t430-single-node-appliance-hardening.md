@@ -56,6 +56,14 @@ Field report from the `/home/hpool` mining host on 2026-05-26.
 8. Kept disk-backed swap small and avoided repeated chown scans on node volumes.
 9. Restarted the node container when the wrapper/child-process split was
    detected, then let the node catch up before trusting pool mining readiness.
+10. Treated any running node more than 1000 blocks behind as a fastest-sync
+    condition rather than normal background drift. The release default now
+    enables `--fastartifactsync`, applies leader CPU/IO catch-up weights, and
+    allows a cooldown-bound restart if the importer is stale or missing the V2
+    artifact flag.
+11. Added a `fastsnap` feature check so directory-mode V2 bootstrap is used only
+    when the packaged binary supports the directory install flags; otherwise it
+    falls back to the V2 archive path instead of skipping fast bootstrap.
 
 ## Release Hardening Added
 
@@ -79,6 +87,8 @@ The preflight checks:
 - default route and Wi-Fi latency risk.
 - Docker root placement and free space.
 - live node wrapper versus `blockdag-node` child-process consistency.
+- automatic fastest-sync acceleration once a running node is more than 1000
+  blocks behind.
 - pool schema presence for block submissions and credit idempotency.
 - reward wallet presence before mining is enabled.
 
