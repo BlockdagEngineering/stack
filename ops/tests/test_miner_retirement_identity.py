@@ -326,6 +326,47 @@ class MinerHealthConfiguredScopeTests(unittest.TestCase):
         self.assertEqual(health["miners"][0]["configured"], True)
         self.assertEqual(health["miners"][0]["status"], "ok")
 
+    def test_unmanaged_pool_log_stratum_miner_is_not_marked_configured(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.collect_pool_activity = lambda lines=0: {
+            "miners": [
+                {
+                    "ip": "192.168.1.106",
+                    "workers": [worker],
+                    "shares": 1,
+                    "share_work": 500,
+                    "blocks_found": 1,
+                    "last_seen_at": "2026/05/26 21:40:42",
+                }
+            ]
+        }
+        pool_ops.upsert_pool_activity_miners = lambda activity: {
+            "updated_at": "2026-05-26T00:00:00+0200",
+            "miners": [
+                {
+                    "ip": "192.168.1.106",
+                    "mac": "40:ae:30:34:35:a1",
+                    "device_id": "mac:40:ae:30:34:35:a1",
+                    "device_type": "stratum",
+                    "discovered_by": "pool-log",
+                    "expected_pool_url": pool_ops.default_miner_pool_settings()["pool_url"],
+                    "expected_worker_user": worker,
+                    "last_workers": [worker],
+                    "last_pool_seen_epoch": 100,
+                    "managed": False,
+                    "last_configured_ok": False,
+                }
+            ],
+        }
+        pool_ops.seconds_since_epoch = lambda: 110
+
+        health = pool_ops.collect_miner_health()
+
+        self.assertEqual(health["failures"], [])
+        self.assertEqual(health["miners"][0]["managed"], False)
+        self.assertEqual(health["miners"][0]["configured"], False)
+        self.assertEqual(health["miners"][0]["pool_active"], True)
+
 
 if __name__ == "__main__":
     unittest.main()
