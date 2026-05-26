@@ -65,6 +65,8 @@ if "backup" in node2:
     raise SystemExit("node2 must be the primary HAProxy backend")
 if "backup" not in node1:
     raise SystemExit("node1 must be configured as the backup backend")
+if node1[-1] != "backup":
+    raise SystemExit("node1 backup token must be last to match stack-sentinel canonical form")
 for name, tokens in (("node2", node2), ("node1", node1)):
     if "resolvers" not in tokens or "docker" not in tokens:
         raise SystemExit(f"{name} is missing docker resolver semantics")
