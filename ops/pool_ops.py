@@ -2965,14 +2965,23 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
     job_to_client: dict[str, dict[str, str]] = {}
     worker_to_client: dict[str, dict[str, str]] = {}
     worker_client_priority: dict[str, int] = {}
+    ambiguous_worker_clients: set[str] = set()
     miners: dict[str, dict[str, Any]] = {}
 
     def note_worker_client(worker: str, ip: str, port: str = "", priority: int = 1) -> None:
+        current = worker_to_client.get(worker)
+        if current and current.get("ip") != ip:
+            ambiguous_worker_clients.add(worker)
         current_priority = worker_client_priority.get(worker, -1)
         if priority < current_priority:
             return
         worker_to_client[worker] = {"ip": ip, "port": port}
         worker_client_priority[worker] = priority
+
+    def client_for_worker(worker: str) -> dict[str, str] | None:
+        if worker in ambiguous_worker_clients:
+            return None
+        return worker_to_client.get(worker)
 
     for registered in read_miner_registry().get("miners", []):
         ip = str(registered.get("ip") or "")
@@ -3072,7 +3081,7 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         submit = SUBMIT_RE.search(line)
         if submit:
             worker, job_id = submit.groups()
-            client = job_to_client.get(job_id) or worker_to_client.get(worker)
+            client = job_to_client.get(job_id) or client_for_worker(worker)
             if not client:
                 continue
             job_to_client.setdefault(job_id, client)
@@ -3087,7 +3096,7 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         if share:
             job_id = share.group(4)
             worker = share.group(3)
-            client = job_to_client.get(job_id) or worker_to_client.get(worker)
+            client = job_to_client.get(job_id) or client_for_worker(worker)
             if not client:
                 continue
             job_to_client.setdefault(job_id, client)
