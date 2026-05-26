@@ -179,6 +179,17 @@ default; set an explicit pull/build flag only when intentionally refreshing
 images. Keep `scripts/validate-pi5-restart-hardening.sh` in the release gate
 before cutting an RC, and use `--mode live-runtime` for an installed stack where
 `ops/runtime` and Python bytecode are expected service artifacts.
+
+Constrained mining appliances also run a read-only install preflight before
+chain seeding or stack start. `scripts/mining-appliance-preflight.py` checks the
+host profile, root and chain-data free space, filesystem and mount options,
+single-node duplicate data, swap sizing, Docker root placement, network route,
+schema presence, and resource-sensitive `.env` defaults. The installer reports
+warnings and continues by default. Set `BDAG_APPLIANCE_PREFLIGHT_STRICT=1` to
+make hard failures stop the install, or `BDAG_APPLIANCE_PREFLIGHT=0` to skip it
+explicitly. The field report behind these checks is in
+`docs/t430-single-node-appliance-hardening.md`.
+
 The release builder also runs `scripts/verify-release-architecture.py` before
 image assembly so ARM64 packages cannot silently receive AMD64 binaries; the
 checker reads ELF/Mach-O/PE headers directly so it can be used from Linux,

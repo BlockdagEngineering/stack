@@ -46,6 +46,7 @@ FILES=(
   "ops/sync_coordinator.py"
   "ops/tests/test_chain_rpc_resilience.py"
   "ops/tests/test_deployment_portability.py"
+  "ops/tests/test_mining_appliance_preflight.py"
   "ops/tests/test_miner_retirement_identity.py"
   "ops/tests/test_no_miner_collect_status.py"
   "ops/tests/test_optimization_measurement.py"
@@ -61,10 +62,12 @@ FILES=(
   "ops/systemd/user-bdag-status-sampler.service"
   "ops/systemd/user-bdag-sync-coordinator.timer"
   "scripts/validate-rc-local.sh"
+  "scripts/mining-appliance-preflight.py"
   "scripts/validate-pi5-restart-hardening.sh"
   "scripts/verify-release-architecture.py"
   ".env.example"
   "README.md"
+  "docs/t430-single-node-appliance-hardening.md"
   "release-downloads/index.html"
 )
 
