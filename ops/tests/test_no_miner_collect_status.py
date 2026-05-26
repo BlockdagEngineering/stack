@@ -175,6 +175,17 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertNotIn("pool recently saw RPC connection refused", joined_warnings)
 
 
+class EffectiveMinerDemandTests(unittest.TestCase):
+    def test_pool_metrics_count_as_connected_miner_demand(self) -> None:
+        count = pool_ops.effective_connected_miner_count(
+            {"connected_count": 0},
+            {"active_connections": 1.0},
+            {"authorized_miners": 1, "ready_miners": 1},
+        )
+
+        self.assertEqual(count, 1)
+
+
 class SharedStatusCacheTests(unittest.TestCase):
     def setUp(self) -> None:
         self.originals = {
