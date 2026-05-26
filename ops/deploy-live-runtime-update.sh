@@ -18,6 +18,7 @@ MARK_RUNTIME_COMPOSE=0
 ROLLBACK_DIR=""
 COMPOSE_BACKUP_BEFORE_MARK=""
 FILES=(
+  "AGENTS.md"
   "asic-pool/schema.sql"
   "docker/entrypoint-nodeworker.sh"
   "docs/fastsnap-maintenance-resource-guard.html"
