@@ -873,6 +873,12 @@ test -x "$BIN_DIR/pool" || { echo "Missing $BIN_DIR/pool" >&2; exit 1; }
 test -x "$BIN_DIR/dashboard-api" || { echo "Missing $BIN_DIR/dashboard-api" >&2; exit 1; }
 test -x "$BIN_DIR/bdag" || { echo "Missing $BIN_DIR/bdag" >&2; exit 1; }
 test -x "$BIN_DIR/nodeworker" || { echo "Missing $BIN_DIR/nodeworker" >&2; exit 1; }
+test -x "$BIN_DIR/fastsnap" || { echo "Missing $BIN_DIR/fastsnap" >&2; exit 1; }
+
+if [[ -f "$ROOT/scripts/verify-release-architecture.py" ]]; then
+  python3 "$ROOT/scripts/verify-release-architecture.py" --target "linux-$ARCH" \
+    "$BIN_DIR/pool" "$BIN_DIR/dashboard-api" "$BIN_DIR/bdag" "$BIN_DIR/nodeworker" "$BIN_DIR/fastsnap"
+fi
 
 cp "$BIN_DIR/pool" "$BUILD_DIR/pool/pool"
 cp "$BIN_DIR/dashboard-api" "$BUILD_DIR/pool/dashboard-api"
@@ -1248,6 +1254,7 @@ main() {
 
   say "Overlaying current production ops files"
   rsync -a --delete --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' "$PROJECT_ROOT/ops"/ "$PACKAGE_DIR/ops"/
+  rsync -a "$PROJECT_ROOT/scripts"/ "$PACKAGE_DIR/scripts"/
   rsync -a "$PROJECT_ROOT/haproxy.cfg" "$PACKAGE_DIR"/
   mkdir -p "$PACKAGE_DIR/asic-pool"
   rsync -a "$PROJECT_ROOT/asic-pool/schema.sql" "$PACKAGE_DIR/asic-pool/schema.sql"
@@ -1289,6 +1296,8 @@ main() {
   )
 
   chmod +x "$bin_dir"/pool "$bin_dir"/dashboard-api "$bin_dir"/bdag "$bin_dir"/nodeworker "$bin_dir"/fastsnap
+  python3 "$PROJECT_ROOT/scripts/verify-release-architecture.py" --target linux-arm64 \
+    "$bin_dir"/pool "$bin_dir"/dashboard-api "$bin_dir"/bdag "$bin_dir"/nodeworker "$bin_dir"/fastsnap
   file "$bin_dir"/pool "$bin_dir"/dashboard-api "$bin_dir"/bdag "$bin_dir"/nodeworker "$bin_dir"/fastsnap | tee "$bin_dir/FILE_TYPES.txt"
   (cd "$bin_dir" && sha256sum pool dashboard-api bdag nodeworker fastsnap > SHA256SUMS)
 

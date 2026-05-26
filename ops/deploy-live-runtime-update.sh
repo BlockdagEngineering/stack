@@ -55,7 +55,9 @@ FILES=(
   "ops/systemd/user-bdag-stack-sentinel.timer"
   "ops/systemd/user-bdag-status-sampler.service"
   "ops/systemd/user-bdag-sync-coordinator.timer"
+  "scripts/validate-rc-local.sh"
   "scripts/validate-pi5-restart-hardening.sh"
+  "scripts/verify-release-architecture.py"
   ".env.example"
   "README.md"
   "release-downloads/index.html"
@@ -156,6 +158,44 @@ normalize_file() {
   printf '%s\n' "$rel"
 }
 
+preflight_copy_contract() {
+  local raw_rel rel src
+  for raw_rel in "${FILES[@]}"; do
+    rel="$(normalize_file "$raw_rel")"
+    src="$SOURCE_ROOT/$rel"
+    [[ -f "$src" ]] || die "source file missing: $rel"
+    if [[ "$rel" == ".env" || "$rel" == "asic-pool/.env" || "$rel" == data/* || "$rel" == ops/runtime* || "$rel" == chain-data/* ]]; then
+      die "refusing unsafe live-runtime file path: $rel"
+    fi
+  done
+
+  python3 - "$SOURCE_ROOT/scripts/validate-pi5-restart-hardening.sh" "${FILES[@]}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+validator = Path(sys.argv[1])
+files = set(sys.argv[2:])
+ignored = {
+    ".github/workflows/rc-hardening.yml",
+    "docker-compose.yml",
+    "scripts/check-doc-consistency.py",
+}
+required = set()
+for match in re.finditer(r'need_file "([^"]+)"', validator.read_text(encoding="utf-8")):
+    rel = match.group(1)
+    if rel in ignored or rel.startswith(".github/"):
+        continue
+    required.add(rel)
+missing = sorted(required - files)
+if missing:
+    print("copy whitelist is missing live-runtime contract files:", file=sys.stderr)
+    for rel in missing:
+        print(f"  {rel}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
 runtime_compose_guard() {
   local compose="$TARGET_ROOT/docker-compose.yml"
   [[ -f "$compose" ]] || die "missing target docker-compose.yml"
@@ -185,15 +225,7 @@ runtime_compose_guard() {
 
 run_source_validation() {
   say "Validating source checkout"
-  local validation_runtime
-  validation_runtime="$(mktemp -d)"
-  (cd "$SOURCE_ROOT" && PYTHONDONTWRITEBYTECODE=1 python3 -m compileall -q ops scripts)
-  (cd "$SOURCE_ROOT" && BDAG_RUNTIME_DIR="$validation_runtime/runtime" PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s ops/tests -p 'test_*.py')
-  (cd "$SOURCE_ROOT" && python3 scripts/check-doc-consistency.py)
-  rm -rf "$validation_runtime"
-  find "$SOURCE_ROOT/ops" "$SOURCE_ROOT/scripts" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
-  find "$SOURCE_ROOT/ops" "$SOURCE_ROOT/scripts" -name '*.pyc' -delete 2>/dev/null || true
-  (cd "$SOURCE_ROOT" && bash scripts/validate-pi5-restart-hardening.sh --mode source .)
+  (cd "$SOURCE_ROOT" && bash scripts/validate-rc-local.sh)
 }
 
 run_target_validation() {
@@ -350,6 +382,7 @@ if [[ -n "$ROLLBACK_DIR" ]]; then
 fi
 
 runtime_compose_guard
+preflight_copy_contract
 run_source_validation
 
 stamp="$(date +%Y%m%d-%H%M%S)"
