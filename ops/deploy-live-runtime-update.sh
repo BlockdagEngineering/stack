@@ -44,6 +44,7 @@ FILES=(
   "ops/stack_sentinel.py"
   "ops/sync_coordinator.py"
   "ops/tests/test_chain_rpc_resilience.py"
+  "ops/tests/test_deployment_portability.py"
   "ops/tests/test_miner_retirement_identity.py"
   "ops/tests/test_no_miner_collect_status.py"
   "ops/tests/test_optimization_measurement.py"
