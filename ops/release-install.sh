@@ -234,6 +234,24 @@ configure_env() {
   cp .env asic-pool/.env
 }
 
+run_appliance_preflight() {
+  if [[ "${BDAG_APPLIANCE_PREFLIGHT:-1}" != "1" ]]; then
+    warn "Skipping mining appliance preflight because BDAG_APPLIANCE_PREFLIGHT=0."
+    return 0
+  fi
+  if [[ ! -f scripts/mining-appliance-preflight.py ]]; then
+    warn "Mining appliance preflight script is missing from this package."
+    return 0
+  fi
+
+  say "Running mining appliance preflight"
+  if [[ "${BDAG_APPLIANCE_PREFLIGHT_STRICT:-0}" == "1" ]]; then
+    python3 scripts/mining-appliance-preflight.py --root "$ROOT" --env-file "$ROOT/.env"
+  else
+    python3 scripts/mining-appliance-preflight.py --root "$ROOT" --env-file "$ROOT/.env" --warn-only
+  fi
+}
+
 load_or_build_images() {
   local arch="$1"
   say "Loading BlockDAG images for linux/$arch"
@@ -409,6 +427,7 @@ main() {
   install_packages
   init_docker_access
   configure_env
+  run_appliance_preflight
   load_or_build_images "$arch"
   seed_chain_data
   publish_p2p_snapshot_archive "$arch"
