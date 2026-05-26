@@ -145,5 +145,6 @@ Keep `BDAG_FASTSNAP_DIRECTORY_MODE=1` as the release default so new nodes use
 verified file chunks and atomic directory install when peers offer it, while
 retaining `.bdsnap` archive fallback for older seeds. Serving a hot-stage
 directory artifact is opt-in through `BDAG_FASTSYNC_ARTIFACT_DIRECTORY` and
-`BDAG_FASTSYNC_ARTIFACT_MANIFEST`; do not make future changes that force archive
-assembly back into the default fast path.
+`BDAG_FASTSYNC_ARTIFACT_MANIFEST`; nodes bootstrapped from a directory artifact
+auto-serve that verified checkpoint from `artifact.manifest.json`. Do not make
+future changes that force archive assembly back into the default fast path.

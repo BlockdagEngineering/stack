@@ -127,7 +127,10 @@ without paying archive assembly overhead when a V2 directory source exists.
 specific filesystem; otherwise the entrypoint creates a temporary staging path
 beside the node datadir. Serving a maintained directory hot stage is opt-in:
 set `BDAG_FASTSYNC_ARTIFACT_DIRECTORY` to the verified file root and
-`BDAG_FASTSYNC_ARTIFACT_MANIFEST` to the manifest sidecar.
+`BDAG_FASTSYNC_ARTIFACT_MANIFEST` to the manifest sidecar. When a node was
+bootstrapped from a directory artifact, the entrypoint automatically exposes
+that verified checkpoint from the node datadir by using
+`artifact.manifest.json`.
 
 ## Pi5 Release Candidate Stability Defaults
 
