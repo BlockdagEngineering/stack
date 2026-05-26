@@ -14,8 +14,6 @@ permissions:
 jobs:
   source-hardening:
     runs-on: ubuntu-latest
-    env:
-      BDAG_RUNTIME_DIR: ${{ runner.temp }}/bdag-runtime
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,7 +22,7 @@ jobs:
         run: PYTHONDONTWRITEBYTECODE=1 python3 -m compileall -q ops scripts
 
       - name: Unit tests
-        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s ops/tests -p 'test_*.py'
+        run: BDAG_RUNTIME_DIR="$RUNNER_TEMP/bdag-runtime" PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s ops/tests -p 'test_*.py'
 
       - name: Shell syntax
         run: |
@@ -41,6 +39,7 @@ jobs:
       - name: Remove generated Python bytecode
         run: |
           rm -rf ops/runtime
+          rm -rf "$RUNNER_TEMP/bdag-runtime"
           find ops scripts -type d -name __pycache__ -prune -exec rm -rf {} +
           find ops scripts -name '*.pyc' -delete
 
