@@ -137,3 +137,13 @@ The default ordering is:
 
 Peer candidates must be complete multiaddrs with peer IDs. Do not replace this
 ordering with public-first bootstrapping in future RCs.
+
+## Fast Artifact Sync V2 Directory Mode
+
+Directory artifacts are the preferred Fast Artifact Sync V2 bootstrap primitive.
+Keep `BDAG_FASTSNAP_DIRECTORY_MODE=1` as the release default so new nodes use
+verified file chunks and atomic directory install when peers offer it, while
+retaining `.bdsnap` archive fallback for older seeds. Serving a hot-stage
+directory artifact is opt-in through `BDAG_FASTSYNC_ARTIFACT_DIRECTORY` and
+`BDAG_FASTSYNC_ARTIFACT_MANIFEST`; do not make future changes that force archive
+assembly back into the default fast path.

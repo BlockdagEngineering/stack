@@ -160,9 +160,15 @@ services:
       BDAG_FASTSNAP_MIN_TIP: ${BDAG_FASTSNAP_MIN_TIP:-0}
       BDAG_FASTSNAP_TIMEOUT: ${BDAG_FASTSNAP_TIMEOUT:-90s}
       BDAG_FASTSNAP_ARTIFACT_V2: ${BDAG_FASTSNAP_ARTIFACT_V2:-1}
+      BDAG_FASTSNAP_DIRECTORY_MODE: ${BDAG_FASTSNAP_DIRECTORY_MODE:-1}
+      BDAG_FASTSNAP_DIRECTORY_STAGING: ${BDAG_FASTSNAP_DIRECTORY_STAGING:-}
+      BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING: ${BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING:-1}
+      BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING: ${BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING:-1}
       BDAG_FASTSNAP_ALLOW_UNSIGNED: ${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}
       BDAG_FASTSNAP_PARALLELISM: ${BDAG_FASTSNAP_PARALLELISM:-4}
       BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
+      BDAG_FASTSYNC_ARTIFACT_DIRECTORY: ${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}
+      BDAG_FASTSYNC_ARTIFACT_MANIFEST: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}
       BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-1}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
       BDAG_FASTSYNC_LAN_PREFIXES: ${BDAG_FASTSYNC_LAN_PREFIXES:-192.168.}
@@ -238,9 +244,15 @@ services:
       BDAG_FASTSNAP_MIN_TIP: ${BDAG_FASTSNAP_MIN_TIP:-0}
       BDAG_FASTSNAP_TIMEOUT: ${BDAG_FASTSNAP_TIMEOUT:-90s}
       BDAG_FASTSNAP_ARTIFACT_V2: ${BDAG_FASTSNAP_ARTIFACT_V2:-1}
+      BDAG_FASTSNAP_DIRECTORY_MODE: ${BDAG_FASTSNAP_DIRECTORY_MODE:-1}
+      BDAG_FASTSNAP_DIRECTORY_STAGING: ${BDAG_FASTSNAP_DIRECTORY_STAGING:-}
+      BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING: ${BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING:-1}
+      BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING: ${BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING:-1}
       BDAG_FASTSNAP_ALLOW_UNSIGNED: ${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}
       BDAG_FASTSNAP_PARALLELISM: ${BDAG_FASTSNAP_PARALLELISM:-4}
       BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
+      BDAG_FASTSYNC_ARTIFACT_DIRECTORY: ${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}
+      BDAG_FASTSYNC_ARTIFACT_MANIFEST: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}
       BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-1}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
       BDAG_FASTSYNC_LAN_PREFIXES: ${BDAG_FASTSYNC_LAN_PREFIXES:-192.168.}
@@ -476,9 +488,15 @@ BDAG_FASTSNAP_PEERS=
 BDAG_FASTSNAP_MIN_TIP=0
 BDAG_FASTSNAP_TIMEOUT=90s
 BDAG_FASTSNAP_ARTIFACT_V2=1
+BDAG_FASTSNAP_DIRECTORY_MODE=1
+BDAG_FASTSNAP_DIRECTORY_STAGING=
+BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING=1
+BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING=1
 BDAG_FASTSNAP_ALLOW_UNSIGNED=0
 BDAG_FASTSNAP_PARALLELISM=4
 BDAG_FASTSNAP_LEDGER=
+BDAG_FASTSYNC_ARTIFACT_DIRECTORY=
+BDAG_FASTSYNC_ARTIFACT_MANIFEST=
 BDAG_FASTSYNC_PEER_ORDERING=1
 BDAG_FASTSYNC_APPEND_ADDPEERS=1
 BDAG_FASTSYNC_LAN_PREFIXES=192.168.
@@ -739,7 +757,10 @@ maybe_fastsnap_bootstrap() {
   min_tip="${BDAG_FASTSNAP_MIN_TIP:-0}"
   timeout="${BDAG_FASTSNAP_TIMEOUT:-90s}"
   tmp_archive="$archive.download.$$"
+  directory_mode="${BDAG_FASTSNAP_DIRECTORY_MODE:-1}"
+  tmp_dir="${BDAG_FASTSNAP_DIRECTORY_STAGING:-$data_parent/.fastsnap-directory-$network.$$}"
   rm -f "$tmp_archive" "$tmp_archive.manifest.json"
+  rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
 
   old_ifs="$IFS"
   IFS=', '
@@ -747,22 +768,45 @@ maybe_fastsnap_bootstrap() {
     [ -n "$peer" ] || continue
     log "trying P2P snapshot bootstrap from $peer"
     args="--peer $peer --out $tmp_archive --network $network --min-tip $min_tip --timeout $timeout"
+    if [ "$directory_mode" = "1" ]; then
+      args="$args --dir-out $tmp_dir --install-dir $data_dir"
+      [ "${BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING:-1}" = "1" ] && args="$args --replace-existing"
+      [ "${BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING:-1}" = "1" ] && args="$args --move-staging"
+    fi
     [ "${BDAG_FASTSNAP_ARTIFACT_V2:-1}" = "0" ] && args="$args --artifact-v2=false"
     [ "${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}" = "1" ] && args="$args --allow-unsigned"
     [ -n "${BDAG_FASTSNAP_PARALLELISM:-}" ] && args="$args --parallelism ${BDAG_FASTSNAP_PARALLELISM}"
     [ -n "${BDAG_FASTSNAP_LEDGER:-}" ] && args="$args --ledger ${BDAG_FASTSNAP_LEDGER}"
     # shellcheck disable=SC2086
     if "$FASTSNAP" $args; then
+      if [ -d "$data_dir/BdagChain" ]; then
+        if [ -f "$tmp_dir.manifest.json" ]; then
+          mv "$tmp_dir.manifest.json" "$data_dir/artifact.manifest.json"
+        fi
+        rm -f "$tmp_archive" "$tmp_archive.manifest.json"
+        rm -rf "$tmp_dir"
+        log "downloaded and installed P2P directory artifact before node startup"
+        IFS="$old_ifs"
+        return 0
+      fi
+      if [ ! -s "$tmp_archive" ]; then
+        log "fastsnap completed but did not install chain data or produce an archive"
+        rm -f "$tmp_archive" "$tmp_archive.manifest.json"
+        rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
+        continue
+      fi
       mv "$tmp_archive" "$archive"
       if [ -f "$tmp_archive.manifest.json" ]; then
         mv "$tmp_archive.manifest.json" "$archive.manifest.json"
       fi
       log "importing downloaded P2P snapshot before node startup"
       "$BIN" snap import --datadir "$data_dir" --path "$archive"
+      rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
       IFS="$old_ifs"
       return 0
     fi
     rm -f "$tmp_archive" "$tmp_archive.manifest.json"
+    rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
   done
   IFS="$old_ifs"
 

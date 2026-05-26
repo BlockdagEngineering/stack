@@ -319,7 +319,7 @@ maybe_fastsnap_bootstrap() {
   local node_args
   node_args="$(node_args_from_argv "$@" || true)"
   local network="${BDAG_FASTSNAP_NETWORK:-mainnet}"
-  local config_file data_parent data_dir archive min_tip timeout peers peer tmp_archive
+  local config_file data_parent data_dir archive min_tip timeout peers peer tmp_archive tmp_dir directory_mode
   config_file="$(node_arg_value configfile "$node_args" || true)"
   data_parent="${BDAG_FASTSNAP_DATADIR:-$(node_arg_value datadir "$node_args" || true)}"
   if [ -z "$data_parent" ] && [ -n "$config_file" ]; then
@@ -353,7 +353,10 @@ maybe_fastsnap_bootstrap() {
   min_tip="${BDAG_FASTSNAP_MIN_TIP:-0}"
   timeout="${BDAG_FASTSNAP_TIMEOUT:-90s}"
   tmp_archive="$archive.download.$$"
+  directory_mode="${BDAG_FASTSNAP_DIRECTORY_MODE:-1}"
+  tmp_dir="${BDAG_FASTSNAP_DIRECTORY_STAGING:-$data_parent/.fastsnap-directory-$network.$$}"
   rm -f "$tmp_archive" "$tmp_archive.manifest.json"
+  rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
 
   local old_ifs="$IFS"
   IFS=', '
@@ -367,6 +370,15 @@ maybe_fastsnap_bootstrap() {
       --min-tip "$min_tip"
       --timeout "$timeout"
     )
+    if [ "$directory_mode" = "1" ]; then
+      fastsnap_args+=(--dir-out "$tmp_dir" --install-dir "$data_dir")
+      if [ "${BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING:-1}" = "1" ]; then
+        fastsnap_args+=(--replace-existing)
+      fi
+      if [ "${BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING:-1}" = "1" ]; then
+        fastsnap_args+=(--move-staging)
+      fi
+    fi
     if [ "${BDAG_FASTSNAP_ARTIFACT_V2:-1}" = "0" ]; then
       fastsnap_args+=(--artifact-v2=false)
     fi
@@ -380,6 +392,23 @@ maybe_fastsnap_bootstrap() {
       fastsnap_args+=(--ledger "$BDAG_FASTSNAP_LEDGER")
     fi
     if "$fastsnap_bin" "${fastsnap_args[@]}"; then
+      if [ -d "$data_dir/BdagChain" ]; then
+        if [ -f "$tmp_dir.manifest.json" ]; then
+          mv "$tmp_dir.manifest.json" "$data_dir/artifact.manifest.json"
+        fi
+        rm -f "$tmp_archive" "$tmp_archive.manifest.json"
+        rm -rf "$tmp_dir"
+        log "downloaded and installed P2P directory artifact before node startup"
+        FASTSNAP_BOOTSTRAP_MUTATED=1
+        IFS="$old_ifs"
+        return 0
+      fi
+      if [ ! -s "$tmp_archive" ]; then
+        log "fastsnap completed but did not install chain data or produce an archive"
+        rm -f "$tmp_archive" "$tmp_archive.manifest.json"
+        rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
+        continue
+      fi
       mv "$tmp_archive" "$archive"
       if [ -f "$tmp_archive.manifest.json" ]; then
         mv "$tmp_archive.manifest.json" "$archive.manifest.json"
@@ -387,10 +416,12 @@ maybe_fastsnap_bootstrap() {
       log "importing downloaded P2P snapshot before node startup"
       FASTSNAP_BOOTSTRAP_MUTATED=1
       "$node_binary" snap import --datadir "$data_dir" --path "$archive"
+      rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
       IFS="$old_ifs"
       return 0
     fi
     rm -f "$tmp_archive" "$tmp_archive.manifest.json"
+    rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
   done
   IFS="$old_ifs"
 
