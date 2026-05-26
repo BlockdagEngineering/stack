@@ -4394,7 +4394,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         ["docker", "images", "--format", "{{.Repository}}:{{.Tag}} {{.Size}}"],
         timeout=docker_images_timeout,
     ).stdout.strip()
-    sync_progress = collect_sync_progress()
+    sync_progress = sync_progress_for_display_nodes(collect_sync_progress(), display_nodes)
     adaptive_concurrency = adaptive_worker_budgets(
         {**host_pressure, "chain_rpc_latency_ms": _sync_chain_rpc_latency_ms(sync_progress)}
     )
@@ -5166,6 +5166,28 @@ def collect_sync_progress() -> dict[str, Any]:
         "error": error,
         "nodes": per_node,
     }
+
+
+def sync_progress_for_display_nodes(sync_progress: dict[str, Any], display_nodes: list[str]) -> dict[str, Any]:
+    progress_nodes = sync_progress.get("nodes") if isinstance(sync_progress.get("nodes"), dict) else {}
+    managed_display_nodes = [node for node in display_nodes if node in NODES]
+    if len(managed_display_nodes) != 1 or len(progress_nodes) != 1:
+        return sync_progress
+
+    display_node = managed_display_nodes[0]
+    source, progress = next(iter(progress_nodes.items()))
+    if source == display_node or not isinstance(progress, dict):
+        return sync_progress
+
+    aligned_progress = dict(progress)
+    aligned_progress["configured_source"] = source
+    aligned_progress["source"] = display_node
+    aligned = dict(sync_progress)
+    aligned["nodes"] = {display_node: aligned_progress}
+    if aligned.get("source") == source:
+        aligned["configured_source"] = source
+        aligned["source"] = display_node
+    return aligned
 
 
 def observe_sync_progress_health(sync_progress: dict[str, Any]) -> dict[str, Any]:

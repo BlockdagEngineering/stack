@@ -186,6 +186,48 @@ class EffectiveMinerDemandTests(unittest.TestCase):
         self.assertEqual(count, 1)
 
 
+class SyncProgressDisplayNodeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.old_nodes = pool_ops.NODES
+        self.addCleanup(self.restore_nodes)
+
+    def restore_nodes(self) -> None:
+        pool_ops.NODES = self.old_nodes
+
+    def test_single_rpc_alias_is_displayed_as_managed_node(self) -> None:
+        pool_ops.NODES = ["pool-stack-docker-node-1"]
+        progress = {
+            "status": "synced",
+            "percent": 100.0,
+            "current_block": 8_809_791,
+            "highest_block": 8_809_791,
+            "remaining_blocks": 0,
+            "source": "nodes",
+            "nodes": {
+                "local-bdag": {
+                    "status": "synced",
+                    "percent": 100.0,
+                    "current_block": 8_809_791,
+                    "highest_block": 8_809_791,
+                    "remaining_blocks": 0,
+                    "source": "local-bdag",
+                    "chain_block_count": 8_809_791,
+                    "chain_rpc_source": "getBlockCount",
+                    "chain_rpc_error": "",
+                }
+            },
+        }
+
+        aligned = pool_ops.sync_progress_for_display_nodes(progress, ["pool-stack-docker-node-1"])
+
+        self.assertIn("pool-stack-docker-node-1", aligned["nodes"])
+        self.assertNotIn("local-bdag", aligned["nodes"])
+        node = aligned["nodes"]["pool-stack-docker-node-1"]
+        self.assertEqual(node["source"], "pool-stack-docker-node-1")
+        self.assertEqual(node["configured_source"], "local-bdag")
+        self.assertEqual(node["chain_block_count"], 8_809_791)
+
+
 class SharedStatusCacheTests(unittest.TestCase):
     def setUp(self) -> None:
         self.originals = {
