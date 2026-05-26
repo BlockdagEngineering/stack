@@ -338,7 +338,7 @@ HOST_PRESSURE_HISTORY_SAMPLES = max(
     HOST_PRESSURE_IOWAIT_WARN_SAMPLES,
     env_int("BDAG_HOST_PRESSURE_HISTORY_SAMPLES", 6, minimum=HOST_PRESSURE_IOWAIT_WARN_SAMPLES),
 )
-HTTP_USER_AGENT = os.environ.get("BDAG_HTTP_USER_AGENT", "curl/8.5.0")
+HTTP_USER_AGENT = os.environ.get("BDAG_HTTP_USER_AGENT", "blockdag-pool-dashboard/1.0")
 SHARED_STATUS_CACHE_ENABLED = env_bool("BDAG_SHARED_STATUS_CACHE_ENABLED", True)
 SHARED_STATUS_CACHE_SECONDS = env_float("BDAG_SHARED_STATUS_CACHE_SECONDS", 3.0, minimum=0.0)
 STATUS_SAMPLER_ENABLED = env_bool("BDAG_STATUS_SAMPLER_ENABLED", True)
@@ -1970,7 +1970,8 @@ def bdag_child_running_from_top(top: str) -> bool:
         else:
             command = line
         executable = command.split(None, 1)[0] if command.split(None, 1) else ""
-        if executable == "bdag" or executable.endswith("/bdag"):
+        executable_name = Path(executable).name
+        if executable_name in {"bdag", "blockdag-node"}:
             return True
     return False
 
@@ -6242,12 +6243,10 @@ def collect_onchain_wallet_window_earnings(address: str | None, hours: int = 24)
 
 
 def fetch_text_url(url: str, headers: dict[str, str], timeout: float = 12.0) -> str:
-    command = ["curl", "-fsSL", "--max-time", str(timeout)]
-    for key, value in headers.items():
-        command.extend(["-H", f"{key}: {value}"])
-    command.append(url)
-    result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout + 5)
-    return result.stdout
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        return response.read().decode(charset, errors="replace")
 
 
 def fetch_json_url(url: str, headers: dict[str, str] | None = None, timeout: float = 12.0) -> Any:

@@ -179,6 +179,23 @@ image assembly so ARM64 packages cannot silently receive AMD64 binaries; the
 checker reads ELF/Mach-O/PE headers directly so it can be used from Linux,
 macOS, and Windows build hosts.
 
+When testing directly from a source checkout, keep the two dashboard surfaces
+separate. The Compose dashboard is the lightweight container UI on
+`DASHBOARD_HOST_PORT`/`9280`. The Python operations dashboard is the control
+plane normally exposed on `BDAG_DASHBOARD_PORT`/`8088`, and it must be started
+with environment that matches the actual container names for the stack it is
+watching. On Linux, that process also needs Docker API access; use a system
+service account with Docker socket access or an explicit `DOCKER_HOST`. On
+macOS and Windows Docker Desktop hosts, prefer the packaged installer or run the
+ops dashboard from a session where the Docker CLI already works instead of
+installing Linux systemd units.
+
+The dashboard runtime collectors use Python's standard HTTP client for local
+pool metrics and public enrichment calls. Do not make live status depend on
+host utilities such as `curl`; release packages should behave the same on Pi5
+ARM64, Linux AMD64, macOS Docker Desktop, and Windows Docker Desktop once Docker
+and Python are available.
+
 For live dashboard/watchdog-only updates, use:
 
 ```bash
@@ -277,12 +294,13 @@ marking an install healthy, run:
 ./scripts/validate-rc-local.sh
 ```
 
-These checks do not touch live services. The local RC validator uses a temporary
-runtime directory and removes ignored local `ops/runtime` or Python bytecode
-left by prior test runs before checking the source bundle. They verify the pool
-schema, source-health gates, no-miner service semantics, FastSync/FastSnap
-safety defaults, dashboard source-of-truth rules, and packaged self-healing
-files. See `docs/release-readiness-gates.html`.
+These checks do not touch live services. The local RC validator copies the
+tracked and unignored source tree to a temporary directory, runs tests with a
+temporary runtime directory, and leaves any live `ops/runtime` state in the
+checkout alone. It verifies the pool schema, source-health gates, no-miner
+service semantics, FastSync/FastSnap safety defaults, dashboard source-of-truth
+rules, and packaged self-healing files. See
+`docs/release-readiness-gates.html`.
   
 
 # Common operations

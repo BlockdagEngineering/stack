@@ -49,8 +49,9 @@
   <span class="chip">no service restart</span>
 
   <h2>Command</h2>
-  <pre><code>python3 scripts/release-readiness-check.py</code></pre>
-  <p>The script reads <code>.env</code> by default, queries the Compose <code>postgres</code> service for schema state, and calls the configured node RPC endpoint. It exits non-zero if any required gate fails.</p>
+  <pre><code>python3 scripts/release-readiness-check.py
+./scripts/validate-rc-local.sh</code></pre>
+  <p>The readiness script reads <code>.env</code> by default, queries the Compose <code>postgres</code> service for schema state, and calls the configured node RPC endpoint. The local RC validator copies tracked and unignored source files to a temporary directory and runs source gates there, so live <code>ops/runtime</code> state in an active checkout is not deleted. Both commands exit non-zero if any required gate fails.</p>
 
   <h2>Gates</h2>
   <table>
@@ -62,6 +63,7 @@
       <tr><td>Peer sanity</td><td>At least one active sane peer remains after filtering the node itself, empty or unparseable addresses, loopback, unspecified, and inactive peers.</td><td>The node may be isolated or accidentally connected only to itself/local addresses, or peer discovery may be advertising unusable peers.</td></tr>
       <tr><td>Template function</td><td><code>getBlockTemplate</code> returns required mining fields including height, parent, roots, coinbase address, and <code>nbits</code>.</td><td>The pool cannot create valid Stratum jobs even if containers look healthy.</td></tr>
       <tr><td>Mining RPC stability</td><td>The mineable/synced, peer sanity, and template checks keep passing across the configured short sample window.</td><td>The node or RPC path may be flapping during startup, peer discovery, IBD recovery, or HAProxy/backend transitions.</td></tr>
+      <tr><td>Deployment portability</td><td>The local RC validator passes from a clean temporary source copy and the dashboard collectors use Python HTTP rather than host-only tools.</td><td>The release may work on the maintainer machine but fail on Pi5, Linux AMD64, macOS Docker Desktop, or Windows Docker Desktop because local runtime state or missing host utilities leaked into validation.</td></tr>
     </tbody>
   </table>
 
