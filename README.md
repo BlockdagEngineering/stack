@@ -113,6 +113,22 @@ specific artifact source.
 another private range, either put those complete multiaddrs in
 `BDAG_FASTSYNC_LAN_PEERS` or extend the prefix list in `.env`.
 
+## Fast Artifact Sync V2 Directory Mode
+
+Fast Artifact Sync V2 directory artifacts are now the preferred empty-datadir
+bootstrap path when a peer offers them. The node entrypoint passes both
+`--dir-out` and `--out` to `fastsnap`: directory-capable peers install verified
+manifest files directly into the node datadir, while archive-only peers still
+fall back to the `.bdsnap` path. This keeps new nodes compatible with old seeds
+without paying archive assembly overhead when a V2 directory source exists.
+
+`BDAG_FASTSNAP_DIRECTORY_MODE=1` is the default. Set
+`BDAG_FASTSNAP_DIRECTORY_STAGING` only when the staging directory must live on a
+specific filesystem; otherwise the entrypoint creates a temporary staging path
+beside the node datadir. Serving a maintained directory hot stage is opt-in:
+set `BDAG_FASTSYNC_ARTIFACT_DIRECTORY` to the verified file root and
+`BDAG_FASTSYNC_ARTIFACT_MANIFEST` to the manifest sidecar.
+
 ## Pi5 Release Candidate Stability Defaults
 
 The Pi5 ARM64 release builder (`ops/build-pi5-arm64-release.sh`) now generates a
