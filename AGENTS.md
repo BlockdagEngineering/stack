@@ -92,6 +92,12 @@ part of automatic repair. Recreate repairs must use Compose with
 `--no-build --pull never` so a constrained Pi cannot start compiling, fetching,
 or changing provenance during a liveness repair.
 
+Live runtime update tooling must validate post-restart health before declaring
+success. Keep `ops/deploy-live-runtime-update.sh` waiting for dashboard API
+recovery, fresh watchdog state when the watchdog is restarted, and running
+critical containers. If that post-deploy health gate fails, copied files must be
+rolled back from the backup manifest.
+
 JSONL histories used by the dashboard should append each sample and compact only
 at a bounded threshold. Do not reintroduce full-history rewrite loops for every
 sample on the Pi USB data path.

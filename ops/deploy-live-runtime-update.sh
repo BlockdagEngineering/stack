@@ -6,6 +6,13 @@ SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TARGET_ROOT="${BDAG_LIVE_RUNTIME_ROOT:-}"
 BACKUP_ROOT="${BDAG_DEPLOY_BACKUP_ROOT:-/home/jeremy/blockdag-deploy-backups}"
 RESTART_SERVICES="${BDAG_DEPLOY_RESTART_SERVICES:-bdag-dashboard.service bdag-watchdog.service}"
+POST_DEPLOY_HEALTH_CHECK="${BDAG_DEPLOY_HEALTH_CHECK:-1}"
+POST_DEPLOY_HEALTH_TIMEOUT="${BDAG_DEPLOY_HEALTH_TIMEOUT_SECONDS:-120}"
+POST_DEPLOY_HEALTH_INTERVAL="${BDAG_DEPLOY_HEALTH_INTERVAL_SECONDS:-3}"
+POST_DEPLOY_DASHBOARD_URL="${BDAG_DEPLOY_DASHBOARD_URL:-http://127.0.0.1:8088/api/status}"
+POST_DEPLOY_ALLOWED_OVERALL="${BDAG_DEPLOY_ALLOWED_OVERALL:-ok syncing}"
+POST_DEPLOY_DEFAULT_CONTAINERS="${BDAG_DEPLOY_CRITICAL_CONTAINERS:-}"
+POST_DEPLOY_WATCHDOG_STATE="${BDAG_DEPLOY_WATCHDOG_STATE:-ops/runtime/watchdog-state.json}"
 DRY_RUN=0
 MARK_RUNTIME_COMPOSE=0
 ROLLBACK_DIR=""
@@ -40,6 +47,8 @@ Options:
   --file PATH               Add one source-relative path to the copy whitelist.
   --restart-services LIST   Space-separated user services to restart.
                             Default: bdag-dashboard.service bdag-watchdog.service
+  --health-check            Wait for dashboard/watchdog/container health after restart (default).
+  --no-health-check         Skip post-restart health wait.
   --mark-runtime-compose    Add the generated-runtime compose marker if missing.
   --backup-root DIR         Backup parent. Default: /home/jeremy/blockdag-deploy-backups
   --dry-run                 Print planned changes without copying or restarting.
@@ -72,6 +81,14 @@ while [[ $# -gt 0 ]]; do
     --restart-services)
       RESTART_SERVICES="${2:-}"
       shift 2
+      ;;
+    --health-check)
+      POST_DEPLOY_HEALTH_CHECK=1
+      shift
+      ;;
+    --no-health-check)
+      POST_DEPLOY_HEALTH_CHECK=0
+      shift
       ;;
     --mark-runtime-compose)
       MARK_RUNTIME_COMPOSE=1
@@ -140,9 +157,12 @@ runtime_compose_guard() {
 
 run_source_validation() {
   say "Validating source checkout"
+  local validation_runtime
+  validation_runtime="$(mktemp -d)"
   (cd "$SOURCE_ROOT" && PYTHONDONTWRITEBYTECODE=1 python3 -m compileall -q ops scripts)
-  (cd "$SOURCE_ROOT" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s ops/tests -p 'test_*.py')
+  (cd "$SOURCE_ROOT" && BDAG_RUNTIME_DIR="$validation_runtime/runtime" PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s ops/tests -p 'test_*.py')
   (cd "$SOURCE_ROOT" && python3 scripts/check-doc-consistency.py)
+  rm -rf "$validation_runtime"
   find "$SOURCE_ROOT/ops" "$SOURCE_ROOT/scripts" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
   find "$SOURCE_ROOT/ops" "$SOURCE_ROOT/scripts" -name '*.pyc' -delete 2>/dev/null || true
   (cd "$SOURCE_ROOT" && bash scripts/validate-pi5-restart-hardening.sh --mode source .)
@@ -151,6 +171,126 @@ run_source_validation() {
 run_target_validation() {
   say "Validating live runtime target"
   bash "$TARGET_ROOT/scripts/validate-pi5-restart-hardening.sh" --mode live-runtime "$TARGET_ROOT"
+}
+
+target_env_value() {
+  local name="$1"
+  local env_file="$TARGET_ROOT/.env"
+  [[ -f "$env_file" ]] || return 1
+  python3 - "$env_file" "$name" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+name = sys.argv[2]
+for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    if key.strip() == name:
+        print(value.strip().strip('"').strip("'"))
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+post_deploy_critical_containers() {
+  if [[ -n "$POST_DEPLOY_DEFAULT_CONTAINERS" ]]; then
+    printf '%s\n' "$POST_DEPLOY_DEFAULT_CONTAINERS" | tr ',' ' '
+    return
+  fi
+  local services
+  services="$(target_env_value BDAG_STACK_SERVICES 2>/dev/null || true)"
+  if [[ -n "$services" ]]; then
+    printf '%s\n' "$services" | tr ',' ' '
+    return
+  fi
+  printf '%s\n' "pool-db rpc-failover asic-pool"
+}
+
+dashboard_api_ready() {
+  python3 - "$POST_DEPLOY_DASHBOARD_URL" "$POST_DEPLOY_ALLOWED_OVERALL" <<'PY'
+import json
+import sys
+import urllib.request
+
+url = sys.argv[1]
+allowed = {item.strip() for item in sys.argv[2].replace(",", " ").split() if item.strip()}
+try:
+    with urllib.request.urlopen(url, timeout=2) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+except Exception as exc:
+    print(f"dashboard API unavailable: {exc}")
+    raise SystemExit(1)
+overall = str(payload.get("overall") or "")
+if allowed and overall not in allowed:
+    print(f"dashboard overall={overall!r} not in {sorted(allowed)}")
+    raise SystemExit(1)
+print(f"dashboard overall={overall}")
+PY
+}
+
+critical_containers_ready() {
+  local failed=0
+  local container
+  for container in $(post_deploy_critical_containers); do
+    [[ -n "$container" ]] || continue
+    if [[ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || true)" != "true" ]]; then
+      printf 'container not running: %s\n' "$container"
+      failed=1
+    fi
+  done
+  [[ "$failed" -eq 0 ]]
+}
+
+watchdog_freshness_required() {
+  [[ " $RESTART_SERVICES " == *" bdag-watchdog.service "* ]]
+}
+
+watchdog_state_fresh() {
+  if ! watchdog_freshness_required; then
+    printf 'watchdog freshness skipped: bdag-watchdog.service not restarted\n'
+    return 0
+  fi
+  local state_path="$TARGET_ROOT/$POST_DEPLOY_WATCHDOG_STATE"
+  python3 - "$state_path" "$1" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+start_epoch = int(sys.argv[2])
+if not path.exists():
+    print(f"watchdog state missing: {path}")
+    raise SystemExit(1)
+mtime = int(path.stat().st_mtime)
+if mtime < start_epoch:
+    print(f"watchdog state stale: mtime={mtime} start={start_epoch}")
+    raise SystemExit(1)
+print(f"watchdog state fresh: mtime={mtime}")
+PY
+}
+
+post_deploy_health_check() {
+  [[ "$POST_DEPLOY_HEALTH_CHECK" == "1" ]] || {
+    warn "Post-deploy health check skipped by BDAG_DEPLOY_HEALTH_CHECK=0"
+    return 0
+  }
+  local start_epoch="$1"
+  local deadline=$((start_epoch + POST_DEPLOY_HEALTH_TIMEOUT))
+  local now
+  say "Waiting for post-deploy health: dashboard API, watchdog freshness, and critical containers"
+  while true; do
+    if dashboard_api_ready && critical_containers_ready && watchdog_state_fresh "$start_epoch"; then
+      say "Post-deploy health check passed"
+      return 0
+    fi
+    now="$(date +%s)"
+    if (( now >= deadline )); then
+      return 1
+    fi
+    sleep "$POST_DEPLOY_HEALTH_INTERVAL"
+  done
 }
 
 rollback_from_backup() {
@@ -236,13 +376,27 @@ fi
 
 if [[ -n "$RESTART_SERVICES" ]]; then
   say "Restarting user services: $RESTART_SERVICES"
+  restart_started_at="$(date +%s)"
   if ! systemctl --user restart $RESTART_SERVICES; then
     warn "Service restart failed; rolling back copied files"
     ROLLBACK_DIR="$backup_dir"
     rollback_from_backup
     exit 1
   fi
-  systemctl --user is-active $RESTART_SERVICES
+  if ! systemctl --user is-active $RESTART_SERVICES; then
+    warn "Service active check failed; rolling back copied files"
+    ROLLBACK_DIR="$backup_dir"
+    rollback_from_backup
+    systemctl --user restart $RESTART_SERVICES || warn "Service restart after rollback failed; inspect $backup_dir"
+    exit 1
+  fi
+  if ! post_deploy_health_check "$restart_started_at"; then
+    warn "Post-deploy health check failed; rolling back copied files"
+    ROLLBACK_DIR="$backup_dir"
+    rollback_from_backup
+    systemctl --user restart $RESTART_SERVICES || warn "Service restart after rollback failed; inspect $backup_dir"
+    exit 1
+  fi
 fi
 
 say "Live runtime update complete"
