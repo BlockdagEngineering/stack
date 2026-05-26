@@ -2976,9 +2976,23 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
 
     def note_worker_client(worker: str, ip: str, port: str = "", priority: int = 1) -> None:
         current = worker_to_client.get(worker)
-        if current and current.get("ip") != ip:
-            ambiguous_worker_clients.add(worker)
         current_priority = worker_client_priority.get(worker, -1)
+        if current and current.get("ip") != ip:
+            current_is_bridge = is_docker_bridge_pool_log_client(str(current.get("ip") or ""))
+            incoming_is_bridge = is_docker_bridge_pool_log_client(ip)
+            if incoming_is_bridge and not current_is_bridge and priority <= current_priority:
+                return
+            if current_is_bridge and not incoming_is_bridge:
+                ambiguous_worker_clients.discard(worker)
+                worker_to_client[worker] = {"ip": ip, "port": port}
+                worker_client_priority[worker] = max(priority, current_priority)
+                return
+            if priority < current_priority:
+                return
+            if priority == current_priority:
+                ambiguous_worker_clients.add(worker)
+            else:
+                ambiguous_worker_clients.discard(worker)
         if priority < current_priority:
             return
         worker_to_client[worker] = {"ip": ip, "port": port}

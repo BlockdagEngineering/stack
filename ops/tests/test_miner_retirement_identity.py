@@ -247,6 +247,32 @@ class PoolActivityAttributionTests(unittest.TestCase):
         self.assertEqual(miners["192.168.1.14"]["shares"], 1)
         self.assertEqual(miners["192.168.1.14"]["share_work"], 500)
 
+    def test_docker_bridge_alias_does_not_hide_registered_asic_work(self) -> None:
+        worker = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {
+                    "ip": "192.168.50.177",
+                    "mac": "28:e2:97:1e:c0:b5",
+                    "expected_worker_user": worker,
+                }
+            ]
+        }
+        log = "\n".join(
+            [
+                f"2026/05/26 22:34:00 [172.22.0.1:55572] authorize accepted user={worker}",
+                "2026/05/26 22:34:01 PUSHDIF -> 172.22.0.1:55572 mining.set_difficulty 0.14229287",
+                f"2026/05/26 22:34:02 ✅ valid share accepted 100.0 → 500 worker={worker} job=job-1_01000000",
+                f"2026/05/26 22:34:03 🎯 BLOCK FOUND height(le)=7105000 job=job-1_01000000 hash=abc target=def",
+            ]
+        )
+
+        miners = {item["ip"]: item for item in pool_ops.parse_pool_activity(log)["miners"]}
+
+        self.assertEqual(miners["192.168.50.177"]["shares"], 1)
+        self.assertEqual(miners["192.168.50.177"]["share_work"], 500)
+        self.assertEqual(miners["192.168.50.177"]["blocks_found"], 1)
+
 
 class MinerHealthConfiguredScopeTests(unittest.TestCase):
     def setUp(self) -> None:
