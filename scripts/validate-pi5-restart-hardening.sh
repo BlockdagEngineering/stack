@@ -232,8 +232,8 @@ if [[ "$mode" == "live-runtime" ]]; then
   need_grep 'NODE_RPC_URLS: .*http://(node|rpc-failover):38131' "docker-compose.yml"
 else
   need_grep 'NODE_RPC_URLS: .*http://node:38131' "docker-compose.yml"
+  need_grep 'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS' "docker-compose.yml"
 fi
-need_grep 'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS' "docker-compose.yml"
 need_grep 'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS' "ops/build-pi5-arm64-release.sh"
 need_grep 'BDAG_STACK_SERVICES=pool-db,bdag-miner-node-2,rpc-failover,asic-pool' ".env.example"
 need_grep 'OnCalendar=hourly' "ops/systemd/user-bdag-hourly-snapshot.timer"
