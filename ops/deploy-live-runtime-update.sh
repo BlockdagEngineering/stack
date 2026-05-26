@@ -42,6 +42,7 @@ FILES=(
   "ops/optimization_measurement.py"
   "ops/p2p_guard.py"
   "ops/release-install.sh"
+  "ops/compose_migrations.py"
   "ops/stack_sentinel.py"
   "ops/sync_coordinator.py"
   "ops/tests/test_chain_rpc_resilience.py"
@@ -50,6 +51,7 @@ FILES=(
   "ops/tests/test_miner_retirement_identity.py"
   "ops/tests/test_no_miner_collect_status.py"
   "ops/tests/test_optimization_measurement.py"
+  "ops/tests/test_compose_migrations.py"
   "ops/tests/test_sync_coordinator_fast_catchup.py"
   "ops/tests/test_watchdog_miner_source_counts.py"
   "ops/update-local-peers.py"
@@ -186,9 +188,15 @@ from pathlib import Path
 validator = Path(sys.argv[1])
 files = set(sys.argv[2:])
 ignored = {
+    ".env.cpu.example",
+    ".github/workflows/build-cpu.yml",
+    ".github/workflows/build.yml",
     ".github/workflows/rc-hardening.yml",
     "docker-compose.yml",
+    "ops/monitor-fastsync-peers.sh",
     "scripts/check-doc-consistency.py",
+    "scripts/release/installers/install-unix-common.sh",
+    "scripts/release/installers/install-windows.ps1",
 }
 required = set()
 for match in re.finditer(r'need_file "([^"]+)"', validator.read_text(encoding="utf-8")):
@@ -262,6 +270,37 @@ for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
         raise SystemExit(0)
 raise SystemExit(1)
 PY
+}
+
+manifest_has_rel() {
+  local rel="$1"
+  [[ -f "$backup_dir/manifest.tsv" ]] || return 1
+  awk -F '\t' -v rel="$rel" '$1 == rel { found = 1 } END { exit(found ? 0 : 1) }' "$backup_dir/manifest.tsv"
+}
+
+backup_target_file_once() {
+  local rel="$1"
+  if manifest_has_rel "$rel"; then
+    return 0
+  fi
+  if [[ -e "$TARGET_ROOT/$rel" ]]; then
+    mkdir -p "$backup_dir/files/$(dirname "$rel")"
+    cp -a "$TARGET_ROOT/$rel" "$backup_dir/files/$rel"
+    printf '%s\texisting\n' "$rel" >> "$backup_dir/manifest.tsv"
+  else
+    printf '%s\tabsent\n' "$rel" >> "$backup_dir/manifest.tsv"
+  fi
+}
+
+migrate_runtime_compose() {
+  local compose="$TARGET_ROOT/docker-compose.yml"
+  [[ -f "$compose" ]] || die "missing target docker-compose.yml"
+  if grep -q 'POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:' "$compose"; then
+    return 0
+  fi
+  say "Migrating live runtime compose: POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT"
+  backup_target_file_once "docker-compose.yml"
+  python3 "$SOURCE_ROOT/ops/compose_migrations.py" --ensure-duplicate-safe-submit "$compose"
 }
 
 post_deploy_critical_containers() {
@@ -439,6 +478,10 @@ if [[ "$DRY_RUN" -eq 0 && -n "$COMPOSE_BACKUP_BEFORE_MARK" ]]; then
   printf '%s\texisting\n' "docker-compose.yml" >> "$backup_dir/manifest.tsv"
 fi
 
+if [[ "$DRY_RUN" -eq 0 ]]; then
+  migrate_runtime_compose
+fi
+
 for raw_rel in "${FILES[@]}"; do
   rel="$(normalize_file "$raw_rel")"
   src="$SOURCE_ROOT/$rel"
@@ -451,13 +494,7 @@ for raw_rel in "${FILES[@]}"; do
     printf 'would copy %s -> %s\n' "$src" "$dst"
     continue
   fi
-  if [[ -e "$dst" ]]; then
-    mkdir -p "$backup_dir/files/$(dirname "$rel")"
-    cp -a "$dst" "$backup_dir/files/$rel"
-    printf '%s\texisting\n' "$rel" >> "$backup_dir/manifest.tsv"
-  else
-    printf '%s\tabsent\n' "$rel" >> "$backup_dir/manifest.tsv"
-  fi
+  backup_target_file_once "$rel"
   mkdir -p "$(dirname "$dst")"
   cp -a "$src" "$dst"
 done

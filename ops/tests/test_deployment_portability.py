@@ -84,9 +84,15 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIsNotNone(files_match)
         deploy_files = set(re.findall(r'"([^"]+)"', files_match.group(1)))
         ignored = {
+            ".env.cpu.example",
+            ".github/workflows/build-cpu.yml",
+            ".github/workflows/build.yml",
             ".github/workflows/rc-hardening.yml",
+            "ops/monitor-fastsync-peers.sh",
             "docker-compose.yml",
             "scripts/check-doc-consistency.py",
+            "scripts/release/installers/install-unix-common.sh",
+            "scripts/release/installers/install-windows.ps1",
         }
         required = {
             rel
@@ -108,6 +114,23 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             r'else\n'
             r'.*NODE_RPC_URLS: \.\*http://node:38131.*\n'
             r'.*POOL_SUBMIT_RPC_URLS: \.\*POOL_SUBMIT_RPC_URLS.*\n'
+            r'fi',
+        )
+
+    def test_live_runtime_validator_keeps_release_packaging_source_only(self) -> None:
+        validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
+
+        self.assertRegex(
+            validator,
+            r'if \[\[ "\$mode" == "source" \]\]; then\n'
+            r'(?:  need_grep .*\n)+'
+            r'  need_grep .if ! command -v jq. "ops/monitor-fastsync-peers.sh"\n'
+            r'fi',
+        )
+        self.assertRegex(
+            validator,
+            r'if \[\[ "\$mode" == "source" \]\]; then\n'
+            r'  need_grep .BDAG_FASTSYNC_PEER_ORDERING=latency. ".env.cpu.example"\n'
             r'fi',
         )
 
