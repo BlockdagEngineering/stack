@@ -246,6 +246,7 @@ join_peer_arrays() {
 
 ordered_fastsync_peers() {
   local node_args="$1"
+  local ordering="${BDAG_FASTSYNC_PEER_ORDERING:-latency}"
   local config_file config_peers generic_peers
   fastsync_lan_peers=()
   fastsync_vpn_peers=()
@@ -256,11 +257,22 @@ ordered_fastsync_peers() {
   config_file="${config_file:-/etc/bdagStack/node.conf}"
   config_peers="$(config_addpeer_values "$config_file" | paste -sd, - || true)"
 
-  append_peer_list fastsync_lan_peers "${BDAG_FASTSYNC_LAN_PEERS:-${BDAG_FASTSYNC_LOCAL_PEERS:-}}"
-  append_peer_list fastsync_vpn_peers "${BDAG_FASTSYNC_VPN_PEERS:-${BDAG_FASTSYNC_PRIVATE_PEERS:-}}"
-  append_peer_list fastsync_public_peers "${BDAG_FASTSYNC_PUBLIC_PEERS:-}"
-  generic_peers="${BDAG_FASTSYNC_PEERS:-} ${BDAG_FASTSNAP_PEERS:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $config_peers $(addpeer_values "$node_args" | paste -sd, - || true)"
-  classify_peer_list "$generic_peers"
+  if [ "$ordering" = "legacy-buckets" ] || [ "$ordering" = "buckets" ]; then
+    append_peer_list fastsync_lan_peers "${BDAG_FASTSYNC_LAN_PEERS:-${BDAG_FASTSYNC_LOCAL_PEERS:-}}"
+    append_peer_list fastsync_vpn_peers "${BDAG_FASTSYNC_VPN_PEERS:-${BDAG_FASTSYNC_PRIVATE_PEERS:-}}"
+    append_peer_list fastsync_public_peers "${BDAG_FASTSYNC_PUBLIC_PEERS:-}"
+    generic_peers="${BDAG_FASTSYNC_PEERS:-} ${BDAG_FASTSNAP_PEERS:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $config_peers $(addpeer_values "$node_args" | paste -sd, - || true)"
+    classify_peer_list "$generic_peers"
+  else
+    append_peer_list fastsync_public_peers "${BDAG_FASTSYNC_PEERS:-}"
+    append_peer_list fastsync_public_peers "${BDAG_FASTSNAP_PEERS:-}"
+    append_peer_list fastsync_public_peers "${BOOTSTRAP_PEER_ADDRESSES:-}"
+    append_peer_list fastsync_public_peers "$config_peers"
+    append_peer_list fastsync_public_peers "$(addpeer_values "$node_args" | paste -sd, - || true)"
+    append_peer_list fastsync_public_peers "${BDAG_FASTSYNC_LAN_PEERS:-${BDAG_FASTSYNC_LOCAL_PEERS:-}}"
+    append_peer_list fastsync_public_peers "${BDAG_FASTSYNC_VPN_PEERS:-${BDAG_FASTSYNC_PRIVATE_PEERS:-}}"
+    append_peer_list fastsync_public_peers "${BDAG_FASTSYNC_PUBLIC_PEERS:-}"
+  fi
 
   join_peer_arrays
 }
@@ -277,18 +289,23 @@ addpeer_args_from_csv() {
 }
 
 apply_ordered_fastsync_peers() {
-  if [ "${BDAG_FASTSYNC_PEER_ORDERING:-1}" != "1" ]; then
-    return 0
-  fi
+  case "${BDAG_FASTSYNC_PEER_ORDERING:-latency}" in
+    0|off|false|none) return 0 ;;
+  esac
 
-  local node_args ordered addpeer_args total_count
+  local node_args ordered addpeer_args total_count ordering
+  ordering="${BDAG_FASTSYNC_PEER_ORDERING:-latency}"
   node_args="$(node_args_from_argv "$@" || true)"
   ordered="$(ordered_fastsync_peers "$node_args")"
   [ -n "$ordered" ] || return 0
 
   export BDAG_FASTSNAP_PEERS="$ordered"
   total_count="$(printf '%s' "$ordered" | awk -F, '{print NF}')"
-  log "ordered FastSync candidates enabled: LAN first, private/VPN second, public last; total=${total_count}"
+  if [ "$ordering" = "legacy-buckets" ] || [ "$ordering" = "buckets" ]; then
+    log "legacy bucket FastSync candidates enabled; total=${total_count}"
+  else
+    log "latency-first FastSync candidates enabled; total=${total_count}"
+  fi
 
   if [ "${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}" = "1" ]; then
     addpeer_args="$(addpeer_args_from_csv "$ordered")"
@@ -490,6 +507,8 @@ configure_directory_artifact_serving() {
     export BDAG_FASTSYNC_ARTIFACT_DIRECTORY="$data_dir"
     export BDAG_FASTSYNC_ARTIFACT_MANIFEST="$manifest"
     log "enabled Fast Artifact Sync V2 directory serving from $data_dir"
+  else
+    log "Fast Artifact Sync V2 directory manifest unavailable at $manifest; using archive/legacy serving fallback"
   fi
 }
 

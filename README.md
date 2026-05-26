@@ -94,25 +94,23 @@ Do not replace these weights with hard CPU quotas or realtime priority unless a
 profile proves normal cgroup weighting is insufficient. The goal is maximum paid
 blocks per miner-hour, not maximum dashboard refresh rate or synthetic CPU use.
 
-## FastSync Peer Discovery Order
+## FastSync Peer Selection
 
-New nodes prefer nearby FastSync sources before falling back to public seeds.
-Configure complete multiaddrs with peer IDs in `.env`:
+New nodes use protocol 46 Fast Artifact Sync V2 by default and prefer the
+lowest-latency responding peers. Configure complete multiaddrs with peer IDs in
+`.env`:
 
 ```text
-BDAG_FASTSYNC_LAN_PEERS=/ip4/192.168.1.10/tcp/8151/p2p/...
-BDAG_FASTSYNC_VPN_PEERS=/ip4/10.0.0.10/tcp/8151/p2p/...
-BDAG_FASTSYNC_PUBLIC_PEERS=
+BDAG_FASTSYNC_PEERS=/ip4/203.0.113.10/tcp/8151/p2p/...
+BDAG_FASTSNAP_PEERS=/ip4/203.0.113.11/tcp/8151/p2p/...
 ```
 
 The node entrypoint folds those values together with `BDAG_FASTSNAP_PEERS`,
-`BOOTSTRAP_PEER_ADDRESSES`, and `node.conf` `addpeer` lines in this order:
-LAN, private/VPN, public internet. The ordered list is used for pre-start
-FastSnap V2 on empty datadirs and is also appended as startup `--addpeer`
-arguments so protocol 46 FastSync peers are available before public fallback
-dials dominate startup. V2 is the default on upgraded full nodes; a separate
-`BDAG_FASTSNAP_PEERS` value is only needed when the operator wants to pin a
-specific artifact source.
+`BOOTSTRAP_PEER_ADDRESSES`, and `node.conf` `addpeer` lines without LAN/private
+bucket sorting. The core binary and `fastsnap` then sort usable V2 artifact
+sources by observed latency. Sub-10ms peers naturally win when they are on the
+same LAN, but public internet peers still work through the same libp2p transport
+without special routing or ZeroTier assumptions.
 
 Nodes also start with `--fastartifactsync` by default
 (`BDAG_FASTARTIFACTSYNC_ENABLED=1`) so they advertise and consume Fast Artifact
@@ -123,9 +121,11 @@ and IO weights, keeps duplicate sync work paused in dual-node mode, and restarts
 an unaccelerated or stale leader after the cooldown window so startup peer order
 and V2 artifact serving are active.
 
-`BDAG_FASTSYNC_LAN_PREFIXES` defaults to `192.168.`. If your premises LAN uses
-another private range, either put those complete multiaddrs in
-`BDAG_FASTSYNC_LAN_PEERS` or extend the prefix list in `.env`.
+`BDAG_FASTSYNC_LAN_PEERS`, `BDAG_FASTSYNC_VPN_PEERS`, and
+`BDAG_FASTSYNC_PUBLIC_PEERS` remain accepted as compatibility aliases, but the
+release default is `BDAG_FASTSYNC_PEER_ORDERING=latency`. Set
+`BDAG_FASTSYNC_PEER_ORDERING=legacy-buckets` only to reproduce the older bucket
+ordering during a rollback.
 
 ## Fast Artifact Sync V2 Directory Mode
 
@@ -336,6 +336,11 @@ configured or observed miner source count; five miners are not an install-time
 default. FastSnap maintenance must keep the CPU cap guard in
 `docs/fastsnap-maintenance-resource-guard.html` and must not run archive
 finalization or verification without an explicit bounded CPU policy.
+
+Issue #26 final-release mitigations are captured in
+`docs/final-release-issue-26-checklist.md`; keep that checklist current when
+changing pinned source repos, installer reset behavior, V2 sync defaults, or
+release packaging.
   
 
 # Common operations

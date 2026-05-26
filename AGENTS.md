@@ -94,11 +94,16 @@ Keep `scripts/validate-pi5-restart-hardening.sh` enforcing this so future drift
 cannot reintroduce mixed height sources.
 
 Pool block-candidate submit fanout must remain a candidate-only hot-path
-optimization. `NODE_RPC_URL` is the primary endpoint; `POOL_SUBMIT_RPC_URLS`
-or fallback `NODE_RPC_URLS` may add direct peer endpoints. Normal shares must
-not fan out. Valid block candidates should return to the miner after the first
-accepted endpoint while slower endpoint outcomes are recorded asynchronously.
-Keep the default release value to one endpoint on single-node hosts.
+optimization. Current pool releases use the RPC router with
+`POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT=true`; `POOL_SUBMIT_RPC_URLS` remains
+configured for compatibility with older binaries. Normal shares must not fan
+out. Valid block candidates should return to the miner after the first accepted
+endpoint while slower endpoint outcomes are recorded asynchronously. Keep the
+default release value to one endpoint on single-node hosts.
+
+Keep Issue #26 final release mitigations in
+`docs/final-release-issue-26-checklist.md` current when changing source repo
+pins, installer reset behavior, V2 sync defaults, or release packaging.
 
 ## Low-I/O Monitoring And Repair Invariants
 

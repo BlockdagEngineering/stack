@@ -88,6 +88,7 @@ services:
       NODE_RPC_URL: http://rpc-failover:38131
       NODE_RPC_URLS: ${NODE_RPC_URLS:-http://rpc-failover:38131}
       POOL_SUBMIT_RPC_URLS: ${POOL_SUBMIT_RPC_URLS:-}
+      POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: ${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
       WALLET_RPC_URL: ${WALLET_RPC_URL:-http://bdag-miner-node-2:18545}
@@ -169,7 +170,7 @@ services:
       BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
       BDAG_FASTSYNC_ARTIFACT_DIRECTORY: ${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}
       BDAG_FASTSYNC_ARTIFACT_MANIFEST: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}
-      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-1}
+      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-latency}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
       BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
       BDAG_FASTSYNC_LAN_PREFIXES: ${BDAG_FASTSYNC_LAN_PREFIXES:-192.168.}
@@ -254,7 +255,7 @@ services:
       BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
       BDAG_FASTSYNC_ARTIFACT_DIRECTORY: ${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}
       BDAG_FASTSYNC_ARTIFACT_MANIFEST: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}
-      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-1}
+      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-latency}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
       BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
       BDAG_FASTSYNC_LAN_PREFIXES: ${BDAG_FASTSYNC_LAN_PREFIXES:-192.168.}
@@ -468,6 +469,7 @@ PG_URL=postgres://test:change-me-at-install@pool-db:5432/pool
 
 POOL_RPC_ROUTER_ENABLED=true
 POOL_RPC_BACKENDS=node2=http://bdag-miner-node-2:38131
+POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT=true
 POOL_TEMPLATE_FANIN_ENABLED=false
 POOL_TEMPLATE_FANIN_MAX_BACKENDS=2
 POOL_TEMPLATE_FANIN_REJECT_LAG_BLOCKS=0
@@ -499,7 +501,7 @@ BDAG_FASTSNAP_PARALLELISM=4
 BDAG_FASTSNAP_LEDGER=
 BDAG_FASTSYNC_ARTIFACT_DIRECTORY=
 BDAG_FASTSYNC_ARTIFACT_MANIFEST=
-BDAG_FASTSYNC_PEER_ORDERING=1
+BDAG_FASTSYNC_PEER_ORDERING=latency
 BDAG_FASTSYNC_APPEND_ADDPEERS=1
 BDAG_FASTARTIFACTSYNC_ENABLED=1
 BDAG_FASTSYNC_LAN_PREFIXES=192.168.
@@ -661,6 +663,16 @@ classify_peer_csv() {
   IFS="$old_ifs"
 }
 
+append_latency_peer_csv() {
+  raw="$1"
+  old_ifs="$IFS"
+  IFS=', '
+  for peer in $raw; do
+    csv_append_unique fastsync_public_peers "$peer"
+  done
+  IFS="$old_ifs"
+}
+
 addpeer_values() {
   for word in ${NODE_ARGS:-}; do
     case "$word" in
@@ -670,15 +682,28 @@ addpeer_values() {
 }
 
 apply_ordered_fastsync_peers() {
-  [ "${BDAG_FASTSYNC_PEER_ORDERING:-1}" = "1" ] || return 0
+  case "${BDAG_FASTSYNC_PEER_ORDERING:-latency}" in
+    0|off|false|none) return 0 ;;
+  esac
   fastsync_lan_peers=""
   fastsync_vpn_peers=""
   fastsync_public_peers=""
 
-  classify_peer_csv "${BDAG_FASTSYNC_LAN_PEERS:-${BDAG_FASTSYNC_LOCAL_PEERS:-}}"
-  classify_peer_csv "${BDAG_FASTSYNC_VPN_PEERS:-${BDAG_FASTSYNC_PRIVATE_PEERS:-}}"
-  classify_peer_csv "${BDAG_FASTSYNC_PUBLIC_PEERS:-}"
-  classify_peer_csv "${BDAG_FASTSYNC_PEERS:-} ${BDAG_FASTSNAP_PEERS:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $(addpeer_values | paste -sd, - || true)"
+  ordering="${BDAG_FASTSYNC_PEER_ORDERING:-latency}"
+  if [ "$ordering" = "legacy-buckets" ] || [ "$ordering" = "buckets" ]; then
+    classify_peer_csv "${BDAG_FASTSYNC_LAN_PEERS:-${BDAG_FASTSYNC_LOCAL_PEERS:-}}"
+    classify_peer_csv "${BDAG_FASTSYNC_VPN_PEERS:-${BDAG_FASTSYNC_PRIVATE_PEERS:-}}"
+    classify_peer_csv "${BDAG_FASTSYNC_PUBLIC_PEERS:-}"
+    classify_peer_csv "${BDAG_FASTSYNC_PEERS:-} ${BDAG_FASTSNAP_PEERS:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $(addpeer_values | paste -sd, - || true)"
+  else
+    append_latency_peer_csv "${BDAG_FASTSYNC_PEERS:-}"
+    append_latency_peer_csv "${BDAG_FASTSNAP_PEERS:-}"
+    append_latency_peer_csv "${BOOTSTRAP_PEER_ADDRESSES:-}"
+    append_latency_peer_csv "$(addpeer_values | paste -sd, - || true)"
+    append_latency_peer_csv "${BDAG_FASTSYNC_LAN_PEERS:-${BDAG_FASTSYNC_LOCAL_PEERS:-}}"
+    append_latency_peer_csv "${BDAG_FASTSYNC_VPN_PEERS:-${BDAG_FASTSYNC_PRIVATE_PEERS:-}}"
+    append_latency_peer_csv "${BDAG_FASTSYNC_PUBLIC_PEERS:-}"
+  fi
 
   ordered="$fastsync_lan_peers"
   [ -n "$fastsync_vpn_peers" ] && ordered="${ordered:+$ordered,}$fastsync_vpn_peers"
@@ -687,7 +712,11 @@ apply_ordered_fastsync_peers() {
 
   export BDAG_FASTSNAP_PEERS="$ordered"
   count="$(printf '%s' "$ordered" | awk -F, '{print NF}')"
-  log "ordered FastSync candidates enabled: LAN first, private/VPN second, public last; total=$count"
+  if [ "$ordering" = "legacy-buckets" ] || [ "$ordering" = "buckets" ]; then
+    log "legacy bucket FastSync candidates enabled; total=$count"
+  else
+    log "latency-first FastSync candidates enabled; total=$count"
+  fi
   if [ "${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}" = "1" ]; then
     old_ifs="$IFS"
     IFS=,
@@ -861,6 +890,8 @@ configure_directory_artifact_serving() {
     export BDAG_FASTSYNC_ARTIFACT_DIRECTORY="$data_dir"
     export BDAG_FASTSYNC_ARTIFACT_MANIFEST="$manifest"
     log "enabled Fast Artifact Sync V2 directory serving from $data_dir"
+  else
+    log "Fast Artifact Sync V2 directory manifest unavailable at $manifest; using archive/legacy serving fallback"
   fi
 }
 

@@ -14,6 +14,11 @@ RPC_URL="${NODE2_RPC_URL:-${BDAG_NODE2_RPC_URL:-}}"
 
 mkdir -p "$LOG_DIR"
 
+if ! command -v jq >/dev/null 2>&1; then
+  echo "$(date -Is) jq missing; install jq or disable fastsync peer monitor" >>"$LOG_DIR/fastsync-peer-monitor.log"
+  exit 0
+fi
+
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "$(date -Is) env file missing: $ENV_FILE" >>"$LOG_DIR/fastsync-peer-monitor.log"
   exit 1

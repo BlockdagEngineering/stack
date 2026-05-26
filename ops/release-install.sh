@@ -117,6 +117,8 @@ configure_node_mode_env() {
     set_env_value .env BDAG_NODE_SERVICES "bdag-miner-node-1,bdag-miner-node-2"
     set_env_value .env BDAG_STACK_SERVICES "pool-db,bdag-miner-node-1,bdag-miner-node-2,rpc-failover,asic-pool"
     set_env_value .env POOL_RPC_BACKENDS "node1=http://bdag-miner-node-1:38131,node2=http://bdag-miner-node-2:38131"
+    set_env_value .env POOL_SUBMIT_RPC_URLS "node1=http://bdag-miner-node-1:38131,node2=http://bdag-miner-node-2:38131"
+    set_env_value .env POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT true
     set_env_value .env WALLET_RPC_URL "http://bdag-miner-node-2:18545"
     set_env_value .env WALLET_RPC_URLS "http://bdag-miner-node-2:18545,http://bdag-miner-node-1:18545"
   else
@@ -125,6 +127,8 @@ configure_node_mode_env() {
     set_env_value .env BDAG_NODE_SERVICES "bdag-miner-node-2"
     set_env_value .env BDAG_STACK_SERVICES "pool-db,bdag-miner-node-2,rpc-failover,asic-pool"
     set_env_value .env POOL_RPC_BACKENDS "node2=http://bdag-miner-node-2:38131"
+    set_env_value .env POOL_SUBMIT_RPC_URLS ""
+    set_env_value .env POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT true
     set_env_value .env WALLET_RPC_URL "http://bdag-miner-node-2:18545"
     set_env_value .env WALLET_RPC_URLS "http://bdag-miner-node-2:18545"
   fi
