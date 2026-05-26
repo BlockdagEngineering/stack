@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
 import pathlib
+import re
 import sys
 import unittest
 
 OPS_DIR = pathlib.Path(__file__).resolve().parents[1]
+ROOT_DIR = OPS_DIR.parent
 sys.path.insert(0, str(OPS_DIR))
 
 import pool_ops  # noqa: E402
@@ -74,6 +76,48 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertEqual(text, "pool_active_connections 0\n")
         self.assertEqual(captured["url"], "http://127.0.0.1:9090/metrics")
         self.assertEqual(captured["timeout"], 2.5)
+
+    def test_live_deploy_copy_contract_covers_live_validator_files(self) -> None:
+        deploy = (ROOT_DIR / "ops" / "deploy-live-runtime-update.sh").read_text(encoding="utf-8")
+        validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
+        files_match = re.search(r"FILES=\((.*?)\n\)", deploy, re.DOTALL)
+        self.assertIsNotNone(files_match)
+        deploy_files = set(re.findall(r'"([^"]+)"', files_match.group(1)))
+        ignored = {
+            ".github/workflows/rc-hardening.yml",
+            "docker-compose.yml",
+            "scripts/check-doc-consistency.py",
+        }
+        required = {
+            rel
+            for rel in re.findall(r'need_file "([^"]+)"', validator)
+            if rel not in ignored and not rel.startswith(".github/")
+        }
+
+        self.assertEqual([], sorted(required - deploy_files))
+
+    def test_live_runtime_validator_allows_legacy_runtime_surfaces(self) -> None:
+        validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
+
+        self.assertIn('if [[ "$mode" == "source" && -e "$root/ops/observability" ]]; then', validator)
+        self.assertIn('need_grep \'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS\' "docker-compose.yml"', validator)
+        self.assertRegex(
+            validator,
+            r'if \[\[ "\$mode" == "live-runtime" \]\]; then\n'
+            r'.*NODE_RPC_URLS: \.\*http://\(node\|rpc-failover\):38131.*\n'
+            r'else\n'
+            r'.*NODE_RPC_URLS: \.\*http://node:38131.*\n'
+            r'.*POOL_SUBMIT_RPC_URLS: \.\*POOL_SUBMIT_RPC_URLS.*\n'
+            r'fi',
+        )
+
+    def test_live_deploy_rollback_validates_manifest_not_new_rc_contract(self) -> None:
+        deploy = (ROOT_DIR / "ops" / "deploy-live-runtime-update.sh").read_text(encoding="utf-8")
+        rollback_body = deploy.split("rollback_from_backup()", 1)[1].split("if [[ -n \"$ROLLBACK_DIR\" ]]", 1)[0]
+
+        self.assertIn("validate_rollback_restored", deploy)
+        self.assertIn("validate_rollback_restored || die", rollback_body)
+        self.assertNotIn("run_target_validation", rollback_body)
 
 
 if __name__ == "__main__":
