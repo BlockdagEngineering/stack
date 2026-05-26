@@ -14,6 +14,8 @@ permissions:
 jobs:
   source-hardening:
     runs-on: ubuntu-latest
+    env:
+      BDAG_RUNTIME_DIR: ${{ runner.temp }}/bdag-runtime
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,6 +40,7 @@ jobs:
 
       - name: Remove generated Python bytecode
         run: |
+          rm -rf ops/runtime
           find ops scripts -type d -name __pycache__ -prune -exec rm -rf {} +
           find ops scripts -name '*.pyc' -delete
 
