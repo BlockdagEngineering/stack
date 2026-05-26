@@ -221,7 +221,11 @@ need_grep 'BDAG_ENTRYPOINT_CHOWN_MODE=needed' ".env.example"
 need_grep 'POOL_RPC_ROUTER_TEMPLATE_LANE_MODE=active-passive' ".env.example"
 need_grep 'NODE_RPC_URLS=http://node:38131' ".env.example"
 need_grep 'POOL_SUBMIT_RPC_URLS=' ".env.example"
-need_grep 'NODE_RPC_URLS: .*http://node:38131' "docker-compose.yml"
+if [[ "$mode" == "live-runtime" ]]; then
+  need_grep 'NODE_RPC_URLS: .*http://(node|rpc-failover):38131' "docker-compose.yml"
+else
+  need_grep 'NODE_RPC_URLS: .*http://node:38131' "docker-compose.yml"
+fi
 need_grep 'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS' "docker-compose.yml"
 need_grep 'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS' "ops/build-pi5-arm64-release.sh"
 need_grep 'BDAG_STACK_SERVICES=pool-db,bdag-miner-node-2,rpc-failover,asic-pool' ".env.example"

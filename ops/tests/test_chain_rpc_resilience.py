@@ -106,6 +106,9 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.assertEqual(parsed["some_avg10"], 12.34)
         self.assertEqual(parsed["full_avg10"], 0.25)
 
+    def test_strip_ansi_accepts_timeout_bytes(self) -> None:
+        self.assertEqual(pool_ops.strip_ansi(b"\x1b[31mtimeout\x1b[0m"), "timeout")
+
     def test_parse_proc_stat_cpu_extracts_iowait_counter(self) -> None:
         parsed = pool_ops.parse_proc_stat_cpu(
             "cpu  100 20 30 400 50 0 0 0 0 0\n"
