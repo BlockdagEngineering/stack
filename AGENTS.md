@@ -79,6 +79,13 @@ five miners the default install assumption. Future fixes must use
 MAC-address-based ASIC attribution for diagnostics; IP addresses, worker
 labels, ports, and display names remain ephemeral.
 
+For physical ASIC identity, MAC address is the primary key. The dashboard miner
+column must default to the full MAC address. If an operator assigns a human name,
+render it with the last three hex characters of the MAC as the suffix
+(`Name-abc`), never an IP suffix. Release defaults must not auto-generate or ship
+site-specific miner names; fresh installs start with no custom miner names and
+only display configured names after an operator explicitly adds them.
+
 ## Self-Healing Release Invariants
 
 The Pi5 release candidate must install `bdag-stack-sentinel.timer` and the
