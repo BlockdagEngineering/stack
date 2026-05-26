@@ -553,6 +553,18 @@
     </tbody>
   </table>
 
+  <h2>Implementation Status - 2026-05-26</h2>
+  <p>The concrete backlog above now has source-level implementation coverage in the release-candidate branches. The release default remains compatibility-safe: directory artifacts are preferred for Fast Artifact Sync V2, but <code>.bdsnap</code> archive fallback remains available for older peers and emergency recovery.</p>
+  <ul>
+    <li><strong>Measurement:</strong> <code>ops/optimization_measurement.py</code> records import/template/dashboard/resource evidence with host profile metadata.</li>
+    <li><strong>Directory artifact V2:</strong> <code>blockdag-corechain</code> PR <a href="https://github.com/BlockdagEngineering/blockdag-corechain/pull/112">#112</a> defines directory manifests, verification, atomic install, file-chunk wire protocol, P2P serving, and <code>fastsnap --dir-out</code>/<code>--install-dir</code>.</li>
+    <li><strong>No-miner sync-only:</strong> <code>pool</code> PR <a href="https://github.com/BlockdagEngineering/pool/pull/121">#121</a> defaults the pool template lane to idle with no authorized miners.</li>
+    <li><strong>Startup and storage:</strong> entrypoint ownership repair is stamped/targeted by default, and directory artifact bootstrap avoids archive assembly/import when capable peers exist.</li>
+    <li><strong>Control plane load:</strong> shared status sampling, append-only histories, adaptive worker counts, and pressure-aware background maintenance are wired into the stack source.</li>
+    <li><strong>Repair safety:</strong> timers use jitter/boot grace and shared locks; deploy updates now include a post-restart health gate with rollback.</li>
+    <li><strong>Mining latency:</strong> template serialization cache, no-miner lazy templates, submit dedupe, and candidate-only submit fanout are implemented in the pool/corechain source branches.</li>
+  </ul>
+
   <h2>Measurement Plan</h2>
   <p>Before changing code, run a baseline in three states: no miners syncing, no miners synced, and miners connected mining. Store results with commit SHA, image tag, filesystem, mount options, USB device, and dashboard URL. For every optimization, compare against the same scenario.</p>
   <ul>
