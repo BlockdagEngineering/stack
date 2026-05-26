@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 def path_from_env(name: str, default: str | Path, base: Path | None = None) -> Path:
@@ -556,6 +556,19 @@ def safe_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def effective_connected_miner_count(
+    miner_health: Mapping[str, Any],
+    pool_metrics: Mapping[str, Any],
+    source_job_health: Mapping[str, Any],
+) -> int:
+    return max(
+        safe_int(miner_health.get("connected_count"), 0),
+        safe_int(pool_metrics.get("active_connections"), 0),
+        safe_int(source_job_health.get("authorized_miners"), 0),
+        safe_int(source_job_health.get("ready_miners"), 0),
+    )
 
 
 def safe_float(value: Any, default: float | None = None) -> float | None:
@@ -4059,7 +4072,12 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         add_sync_warning("pool recently saw RPC connection refused")
 
     miner_health = collect_miner_health() if include_logs else {"failures": [], "warnings": [], "miners": []}
-    connected_miners = int(miner_health.get("connected_count", 0) or 0)
+    scan_connected_miners = safe_int(miner_health.get("connected_count"), 0)
+    connected_miners = effective_connected_miner_count(miner_health, pool_metrics, source_job_health)
+    miner_health["connected_count_effective"] = connected_miners
+    miner_health["connected_count_source"] = (
+        "miner-health" if connected_miners == scan_connected_miners else "pool-metrics"
+    )
     managed_miners = int(miner_health.get("managed_count", 0) or 0)
     miner_demand_present = connected_miners > 0 or managed_miners > 0
     template_probe_running_nodes = any(containers.get(node, {}).get("running") for node in NODES)
