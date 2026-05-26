@@ -29,6 +29,11 @@ bash install.sh
 
 The installer detects the host OS and CPU architecture, writes `.env` and `node.conf`, generates a strong Postgres password unless `POSTGRES_PASSWORD` is already set, downloads `latest.bdsnap` when needed, and runs `docker compose build && docker compose up -d --no-build --pull never`. The release currently runs the service images as `linux/amd64`; ARM hosts need Docker Desktop or Docker Engine with amd64 emulation enabled.
 
+Fresh installs assume zero miner sources. Initial install and chain sync must
+work with no ASICs or Stratum miners configured; operators can opt in to the
+miner wizard after sync and may configure 0..N miner sources. The RC must not
+treat this host's five X100 devices as a release default.
+
 On macOS, the installer uses `aria2c` for faster, resumable snapshot downloads and installs it with Homebrew when missing. If that path fails, it opens a browser download link and Finder at the installer folder, then waits for `latest.bdsnap` to appear there. Browsers may still save to Downloads unless you choose the installer folder. To skip the dependency install, force curl with `BDAG_SNAPSHOT_DOWNLOADER=curl bash install.sh`; to go straight to the browser helper, use `BDAG_SNAPSHOT_DOWNLOADER=browser bash install.sh`. On Windows, the installer uses `aria2c` when available, tries to install it with `winget`, then falls back to BITS and PowerShell download.
 
 Snapshot import happens while the node image is built. If you re-run the installer against an existing Docker `node-data` volume, Docker will keep using the old volume and the newly imported snapshot will be hidden. The installer resets the local node data volume by default so the snapshot is used. To keep existing node data instead, use:
@@ -300,12 +305,14 @@ temporary runtime directory, and leaves any live `ops/runtime` state in the
 checkout alone. It verifies the pool schema, source-health gates, no-miner
 service semantics, FastSync/FastSnap safety defaults, dashboard source-of-truth
 rules, and packaged self-healing files. See
-`docs/release-readiness-gates.html`. Five-X100 mining deployments must also
-preserve the template-conversion release guard in
+`docs/release-readiness-gates.html`. Active multi-miner deployments, including
+five-X100 hosts, must also preserve the template-conversion release guard in
 `docs/five-asic-template-conversion-guard.html`: accepted block conversion per
-miner-hour is the success metric, and tip-overdue, duplicate-local,
-invalidated-job, and non-current-job losses must not be hidden by connected
-miner count alone. FastSnap maintenance must keep the CPU cap guard in
+miner-hour is the success metric for active multi-miner deployments, and
+tip-overdue, duplicate-local, invalidated-job, and non-current-job losses must
+not be hidden by connected miner count alone. The guard is conditional on the
+configured or observed miner source count; five miners are not an install-time
+default. FastSnap maintenance must keep the CPU cap guard in
 `docs/fastsnap-maintenance-resource-guard.html` and must not run archive
 finalization or verification without an explicit bounded CPU policy.
   

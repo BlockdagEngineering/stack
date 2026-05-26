@@ -26,6 +26,11 @@ miners. If a node is behind tip and `miner_health.connected_count == 0` or
 `miner_health.managed_count == 0`, preserve sync-only behavior and prioritize
 chain catch-up over template generation.
 
+Fresh installs assume zero miner sources. Do not hard-code one, four, five, or
+any other miner count into release defaults, installers, watchdog repairs,
+dashboard success criteria, or tests. Miner sources are configured after initial
+install and sync, and the runtime must handle 0..N ASIC or Stratum miners.
+
 `ops/pool_ops.py` must skip live `getBlockTemplate` probe RPCs entirely when
 both managed and connected miner counts are zero. Suppressing warnings after
 probing is not enough; no-miner mode should not spend node CPU, pool RPC, or USB
@@ -54,11 +59,11 @@ steady catch-up beat the small parallel precheck speedup.
 
 ## Five ASIC Template Conversion Invariant
 
-For five-X100 local mining hosts, connected miner count and raw hash activity are
-not enough. The release success metric is accepted block conversion per
-miner-hour. The pool must keep one canonical mining-template epoch at a time,
-and backend switches, catch-up maintenance, and clean-job broadcasts must be
-atomic from the ASIC point of view.
+For five-X100 local mining hosts and other multi-miner deployments, connected
+miner count and raw hash activity are not enough. The release success metric is
+accepted block conversion per miner-hour. The pool must keep one canonical
+mining-template epoch at a time, and backend switches, catch-up maintenance,
+and clean-job broadcasts must be atomic from the miner point of view.
 
 Do not re-enable active/active template fan-in as a quick fix for low output.
 The 2026-05-25 regression showed that five ASICs can amplify stale-parent,
@@ -69,8 +74,10 @@ the dashboard/router path must not treat the paused follower as global mining
 unavailability.
 
 Keep the RC guard in `docs/five-asic-template-conversion-guard.html` current.
-Future fixes must use MAC-address-based ASIC attribution for diagnostics; IP
-addresses, worker labels, ports, and display names remain ephemeral.
+The guard is conditional on observed/configured miner sources; it must not make
+five miners the default install assumption. Future fixes must use
+MAC-address-based ASIC attribution for diagnostics; IP addresses, worker
+labels, ports, and display names remain ephemeral.
 
 ## Self-Healing Release Invariants
 

@@ -132,6 +132,7 @@ if [[ "$mode" == "source" ]]; then
   need_file "scripts/verify-release-architecture.py"
   need_file "ops/tests/test_no_miner_collect_status.py"
   need_file "ops/tests/test_deployment_portability.py"
+  need_file "ops/tests/test_watchdog_miner_source_counts.py"
   need_grep 'copy_source_tree' "scripts/validate-rc-local.sh"
   need_grep 'ls-files.*--cached.*--others.*--exclude-standard' "scripts/validate-rc-local.sh"
 fi
@@ -365,6 +366,12 @@ need_grep 'critical_containers_ready' "ops/deploy-live-runtime-update.sh"
 need_grep 'watchdog_state_fresh' "ops/deploy-live-runtime-update.sh"
 need_grep 'guard_runtime_compose' "ops/release-install.sh"
 need_grep 'compose_cmd up -d --no-build --pull never' "ops/release-install.sh"
+need_grep 'Fresh installs assume zero miner sources' "AGENTS.md"
+need_grep 'Fresh installs assume zero miner sources' "README.md"
+need_grep 'configure discovered miner sources now\?" "n"' "ops/release-install.sh"
+need_grep 'expected_lane_count == 0 or imbalanced_count == 0' "ops/watchdog.py"
+need_grep 'no-window-work' "ops/watchdog.py"
+need_grep 'active miner source\(s\) are connected/submitting' "ops/watchdog.py"
 need_grep 'verify-release-architecture.py' "ops/build-pi5-arm64-release.sh"
 
 if [[ "$mode" == "source" ]]; then

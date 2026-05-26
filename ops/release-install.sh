@@ -391,7 +391,7 @@ install_dashboard() {
 }
 
 configure_miners() {
-  if yes_no "Scan the LAN and optionally configure discovered ASICs now?" "y"; then
+  if yes_no "After initial sync, scan the LAN and optionally configure discovered miner sources now?" "n"; then
     set -a
     # shellcheck disable=SC1091
     source .env

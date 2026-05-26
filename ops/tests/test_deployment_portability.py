@@ -119,6 +119,19 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("validate_rollback_restored || die", rollback_body)
         self.assertNotIn("run_target_validation", rollback_body)
 
+    def test_release_installer_defaults_to_zero_miner_sources(self) -> None:
+        installer = (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8")
+
+        self.assertIn('configure discovered miner sources now?" "n"', installer)
+
+    def test_release_docs_keep_zero_miner_default_invariant(self) -> None:
+        agents = (ROOT_DIR / "AGENTS.md").read_text(encoding="utf-8")
+        readme = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("Fresh installs assume zero miner sources", agents)
+        self.assertIn("Fresh installs assume zero miner sources", readme)
+        self.assertIn("0..N ASIC or Stratum miners", agents)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -49,6 +49,7 @@ FILES=(
   "ops/tests/test_miner_retirement_identity.py"
   "ops/tests/test_no_miner_collect_status.py"
   "ops/tests/test_optimization_measurement.py"
+  "ops/tests/test_watchdog_miner_source_counts.py"
   "ops/update-local-peers.py"
   "ops/watchdog.py"
   "ops/systemd/user-bdag-chain-restore-guard.timer"
