@@ -99,6 +99,7 @@ services:
       POOL_FEE_PERCENTAGE: ${POOL_FEE_PERCENTAGE:-0.0}
       PG_URL: ${PG_URL:-postgres://test:test@pool-db:5432/pool}
       POOL_PRIVATE_KEY: ${POOL_PRIVATE_KEY:-}
+      METRICS_ADDR: ${METRICS_ADDR:-0.0.0.0:9090}
     ports:
       - "${POOL_PORT:-3334}:3334"
       - "127.0.0.1:${POOL_METRICS_PORT:-9092}:9090"
@@ -401,6 +402,7 @@ POOL_IMAGE=bdag-release/asic-pool:local
 BLOCKDAG_NODE_IMAGE=bdag-release/node:local
 POOL_PORT=3334
 POOL_METRICS_PORT=9092
+METRICS_ADDR=0.0.0.0:9090
 POOL_STARTING_PDIFF=0.06
 
 # You will be prompted for this during install. Leave this placeholder here.
