@@ -19,7 +19,7 @@ from pool_ops import (
     LOG_DIR,
     NODES,
     RUNTIME_DIR,
-    collect_status,
+    collect_status_cached,
     container_peer_ips,
     ensure_runtime,
     is_lan_ipv4,
@@ -344,7 +344,7 @@ def pool_quality(status: dict[str, Any]) -> dict[str, Any]:
 
 def build_snapshot(previous: dict[str, Any] | None = None) -> dict[str, Any]:
     ensure_runtime()
-    status = collect_status(include_logs=True)
+    status = collect_status_cached(include_logs=True)
     route = default_route()
     iface = str(route.get("interface") or "")
     current_iface_stats = iface_stats(iface)

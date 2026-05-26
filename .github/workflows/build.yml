@@ -15,6 +15,7 @@ permissions:
 
 env:
   GO_VERSION: "1.26.x"
+  GOFLAGS: "-buildvcs=false"
   PACKAGE_NAME: "pool-stack-docker"
 
 jobs:
@@ -43,7 +44,7 @@ jobs:
           repository: BlockdagEngineering/blockdag-corechain
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/blockdag-node
-          ref: codex/fast-artifact-sync-v2-core
+          ref: e10dd5d8fb57aefa73a682ff69c94eac5c2b50f4
 
       - name: Checkout private mining pool repo
         uses: actions/checkout@v4
@@ -51,7 +52,7 @@ jobs:
           repository: BlockdagEngineering/pool
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/pool
-          ref: 0d22a385c7b738f8e4fa93d63dee7373428d3bae
+          ref: 61b231c0501b32338f4ad47561a09e03e5933adc
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -72,8 +73,8 @@ jobs:
         shell: bash
         run: |
           cd src/pool
-          go build -o build/bin/pool ./cmd/pool
-          go build -o build/bin/dashboard-api ./cmd/dashboard-api
+          go build -buildvcs=false -o build/bin/pool ./cmd/pool
+          go build -buildvcs=false -o build/bin/dashboard-api ./cmd/dashboard-api
           cp -f ./build/bin/pool ../../bin/mining-pool
           cp -f ./build/bin/dashboard-api ../../bin/dashboard-api
 
@@ -123,6 +124,7 @@ jobs:
             sudo apt-get install -y zip
           fi
           zip -qr "${OUT}" "${ROOT}"
+          python3 scripts/check-release-archive.py "${OUT}"
           cp "${OUT}" "${LATEST_OUT}"
           sha256sum "${LATEST_OUT}" > "${LATEST_SHA256}"
           rm -rf "${ROOT}"

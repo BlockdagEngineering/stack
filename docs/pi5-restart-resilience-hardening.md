@@ -24,6 +24,11 @@ The restart-safe policy is:
   tip, pause the laggiest running node and let exactly one selected leader sync
   alone. The selected leader must receive the highest Docker CPU shares and
   block IO weight while this policy is active.
+- When a single running node, or the selected dual-node leader, is more than
+  1000 blocks behind, the release default is fastest catch-up rather than
+  passive monitoring. The node must start with `--fastartifactsync` enabled, and
+  the sync coordinator may restart an unaccelerated or stale importer after the
+  cooldown window so V2 artifact sync and preferred peers are active.
 - Do not seed a follower unless the leader is proven near the highest observed
   network block height.
 
@@ -84,9 +89,10 @@ candidate rejected with reasons.
 Large catch-up should avoid wasting startup dials on unreachable or paused
 peers. The local peer updater should:
 
-- Prefer complete FastSync multiaddr candidates in this order: LAN, private or
-  VPN, then public internet. This default applies to pre-start FastSnap and
-  normal node startup `--addpeer` arguments.
+- Prefer complete FastSync multiaddr candidates by observed libp2p latency
+  instead of LAN/private/VPN/public address buckets. Sub-10ms peers naturally
+  win when present, while ordinary internet peers still work through the same
+  protocol 46 transport.
 - Sort known public peer multiaddrs by TCP reachability and latency.
 - When one managed node is paused for leader catch-up, assign all known public
   peers to the active leader.
@@ -118,6 +124,9 @@ The next Pi5 release candidate must also preserve these defaults:
   `BDAG_NODE_MINING_ARGS` until actual miners are present.
 - `BDAG_FASTSYNC_PREPROCESS_WORKERS=1` on Pi catch-up hosts until the node-side
   parallel FastSync preprocessor fault is fixed and soaked.
+- `BDAG_FASTARTIFACTSYNC_ENABLED=1` and
+  `BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC=1`; a node more than 1000 blocks
+  behind should use V2 artifact sync and the ordered peer list by default.
 - `bdag-stack-sentinel.timer` and the guard timers are installed by default.
 - Displayed dashboard block height comes only from chain RPC `getBlockCount`.
 

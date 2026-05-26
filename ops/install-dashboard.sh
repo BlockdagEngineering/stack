@@ -129,7 +129,31 @@ BDAG_NODE_MODE=single
 BDAG_NODE_SERVICES=bdag-miner-node-2
 BDAG_STACK_SERVICES=pool-db,bdag-miner-node-2,rpc-failover,asic-pool
 BDAG_ENABLE_NODE_MINING=0
+BDAG_FASTARTIFACTSYNC_ENABLED=1
 BDAG_FASTSYNC_PREPROCESS_WORKERS=1
+BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC=1
+BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS=900
+BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT=1
+BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT=1
+BDAG_SHARED_STATUS_CACHE_ENABLED=1
+BDAG_SHARED_STATUS_CACHE_SECONDS=3.0
+BDAG_HOST_PROFILE=auto
+BDAG_ADAPTIVE_CONCURRENCY_ENABLED=1
+BDAG_ADAPTIVE_IOWAIT_WARN_PERCENT=25
+BDAG_ADAPTIVE_IO_SOME_AVG10_WARN=20.0
+BDAG_ADAPTIVE_CPU_SOME_AVG10_WARN=80.0
+BDAG_ADAPTIVE_CHAIN_RPC_WARN_MS=1000
+BDAG_GLOBAL_RPC_WORKERS=24
+BDAG_MINER_SCAN_WORKERS=64
+BDAG_MINER_HASHRATE_PROBE_WORKERS=8
+BDAG_BACKGROUND_MAINTENANCE_BACKOFF_ENABLED=1
+BDAG_BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS=0
+BDAG_BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT=25
+BDAG_BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN=20.0
+BDAG_BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN=80.0
+BDAG_BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS=1000
+BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER=2
+BDAG_ENTRYPOINT_CHOWN_MODE=needed
 BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE=0
 BDAG_BOOT_REPAIR_DIRTY_POLICY=start
 BDAG_BOOT_REPAIR_CRITICAL_POLICY=restart
@@ -161,7 +185,34 @@ ensure_env_value BDAG_NODE_MODE single
 ensure_env_value BDAG_NODE_SERVICES bdag-miner-node-2
 ensure_env_value BDAG_STACK_SERVICES "pool-db,bdag-miner-node-2,rpc-failover,asic-pool"
 ensure_env_value BDAG_ENABLE_NODE_MINING 0
+ensure_env_value BDAG_FASTARTIFACTSYNC_ENABLED 1
 ensure_env_value BDAG_FASTSYNC_PREPROCESS_WORKERS 1
+ensure_env_value BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC 1
+ensure_env_value BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS 900
+ensure_env_value BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT 1
+ensure_env_value BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT 1
+ensure_env_value BDAG_SHARED_STATUS_CACHE_ENABLED 1
+ensure_env_value BDAG_SHARED_STATUS_CACHE_SECONDS 3.0
+ensure_env_value BDAG_HOST_PROFILE auto
+ensure_env_value BDAG_ADAPTIVE_CONCURRENCY_ENABLED 1
+ensure_env_value BDAG_ADAPTIVE_IOWAIT_WARN_PERCENT 25
+ensure_env_value BDAG_ADAPTIVE_IO_SOME_AVG10_WARN 20.0
+ensure_env_value BDAG_ADAPTIVE_CPU_SOME_AVG10_WARN 80.0
+ensure_env_value BDAG_ADAPTIVE_CHAIN_RPC_WARN_MS 1000
+ensure_env_value BDAG_STATUS_SAMPLER_ENABLED 1
+ensure_env_value BDAG_STATUS_SAMPLER_INTERVAL_SECONDS 10
+ensure_env_value BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS 12
+ensure_env_value BDAG_GLOBAL_RPC_WORKERS 24
+ensure_env_value BDAG_MINER_SCAN_WORKERS 64
+ensure_env_value BDAG_MINER_HASHRATE_PROBE_WORKERS 8
+ensure_env_value BDAG_BACKGROUND_MAINTENANCE_BACKOFF_ENABLED 1
+ensure_env_value BDAG_BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS 0
+ensure_env_value BDAG_BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT 25
+ensure_env_value BDAG_BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN 20.0
+ensure_env_value BDAG_BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN 80.0
+ensure_env_value BDAG_BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS 1000
+ensure_env_value BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER 2
+ensure_env_value BDAG_ENTRYPOINT_CHOWN_MODE needed
 ensure_env_value BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE 0
 ensure_env_value BDAG_BOOT_REPAIR_DIRTY_POLICY start
 ensure_env_value BDAG_BOOT_REPAIR_CRITICAL_POLICY restart
@@ -169,6 +220,7 @@ ensure_env_value BDAG_INCIDENT_REPORT_ENABLED 0
 ensure_env_value BDAG_INCIDENT_REPORT_REPO ""
 
 DASHBOARD_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-dashboard.service"
+STATUS_SAMPLER_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-status-sampler.service"
 WATCHDOG_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-watchdog.service"
 BOOT_REPAIR_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-boot-repair.service"
 SYNC_COORDINATOR_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-sync-coordinator.service"
@@ -192,7 +244,7 @@ INCIDENT_REPORTER_TIMER="$HOME/.config/systemd/user/${INSTANCE}-incident-reporte
 cat > "$DASHBOARD_SERVICE" <<EOF
 [Unit]
 Description=BlockDAG pool operations dashboard ($INSTANCE)
-After=${INSTANCE}-boot-repair.service default.target
+After=${INSTANCE}-boot-repair.service ${INSTANCE}-status-sampler.service default.target
 
 [Service]
 Type=simple
@@ -210,11 +262,35 @@ RestartSec=5
 WantedBy=default.target
 EOF
 
+cat > "$STATUS_SAMPLER_SERVICE" <<EOF
+[Unit]
+Description=BlockDAG shared status sampler ($INSTANCE)
+After=${INSTANCE}-boot-repair.service default.target
+
+[Service]
+Type=simple
+WorkingDirectory=$PROJECT_ROOT
+Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
+Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
+EnvironmentFile=-$ENV_FILE
+Nice=12
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=30
+IOWeight=25
+ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/status_sampler.py --loop
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+EOF
+
 if [[ "$INSTALL_WATCHDOG" -eq 1 ]]; then
   cat > "$WATCHDOG_SERVICE" <<EOF
 [Unit]
 Description=BlockDAG pool watchdog and auto-repair worker ($INSTANCE)
-After=${INSTANCE}-boot-repair.service default.target
+After=${INSTANCE}-boot-repair.service ${INSTANCE}-status-sampler.service default.target
 
 [Service]
 Type=simple
@@ -254,6 +330,10 @@ Environment=BDAG_SYNC_COORDINATOR_SEED_NEAR_TIP_BLOCKS=5
 Environment=BDAG_SYNC_COORDINATOR_LEADER_CPU_SHARES=8192
 Environment=BDAG_SYNC_COORDINATOR_LEADER_BLKIO_WEIGHT=1000
 Environment=BDAG_SYNC_COORDINATOR_FINAL_RSYNC_TIMEOUT_SECONDS=600
+Environment=BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC=1
+Environment=BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS=900
+Environment=BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT=1
+Environment=BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT=1
 EnvironmentFile=-$ENV_FILE
 Nice=10
 IOSchedulingClass=best-effort
@@ -272,6 +352,7 @@ OnBootSec=3min
 OnUnitActiveSec=2min
 AccuracySec=30s
 Persistent=true
+RandomizedDelaySec=20s
 Unit=${INSTANCE}-sync-coordinator.service
 
 [Install]
@@ -365,6 +446,7 @@ OnBootSec=90s
 OnUnitActiveSec=60s
 AccuracySec=15s
 Persistent=true
+RandomizedDelaySec=10s
 Unit=${INSTANCE}-node-child-guard.service
 
 [Install]
@@ -555,6 +637,7 @@ OnBootSec=5min
 OnUnitActiveSec=15min
 AccuracySec=1min
 Persistent=true
+RandomizedDelaySec=2min
 Unit=${INSTANCE}-incident-reporter.service
 
 [Install]
@@ -567,6 +650,7 @@ if [[ "$START_SERVICES" -eq 1 ]]; then
   if [[ "$INSTALL_WATCHDOG" -eq 1 ]]; then
     systemctl --user enable --now "${INSTANCE}-boot-repair.service"
   fi
+  systemctl --user enable --now "${INSTANCE}-status-sampler.service"
   systemctl --user enable --now "${INSTANCE}-dashboard.service"
   if [[ "$INSTALL_WATCHDOG" -eq 1 ]]; then
     systemctl --user enable --now "${INSTANCE}-watchdog.service"
