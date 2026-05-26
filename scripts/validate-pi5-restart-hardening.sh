@@ -129,6 +129,9 @@ if [[ "$mode" == "source" ]]; then
   need_file "scripts/validate-rc-local.sh"
   need_file "scripts/verify-release-architecture.py"
   need_file "ops/tests/test_no_miner_collect_status.py"
+  need_file "ops/tests/test_deployment_portability.py"
+  need_grep 'copy_source_tree' "scripts/validate-rc-local.sh"
+  need_grep 'ls-files.*--cached.*--others.*--exclude-standard' "scripts/validate-rc-local.sh"
 fi
 
 if [[ -e "$root/ops/observability" ]]; then
@@ -238,6 +241,9 @@ need_grep 'RandomizedDelaySec=2m' "ops/systemd/user-bdag-incident-reporter.timer
 need_grep 'RandomizedDelaySec=10s' "host/mining-appliance/bdag-runtime-priority.timer"
 
 need_grep '"status_version": 2' "ops/pool_ops.py"
+need_grep 'blockdag-node' "ops/pool_ops.py"
+need_grep 'urllib.request.Request' "ops/pool_ops.py"
+reject_grep 'command = \["curl"' "ops/pool_ops.py"
 need_grep '"mode": mode' "ops/pool_ops.py"
 need_grep '"can_mine": can_mine' "ops/pool_ops.py"
 need_grep '"can_accept_shares": can_accept_shares' "ops/pool_ops.py"

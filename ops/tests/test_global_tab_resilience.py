@@ -63,6 +63,7 @@ class GlobalTabFallbackTests(unittest.TestCase):
         self.old_seconds_since_epoch = pool_ops.seconds_since_epoch
         self.old_global_evm_rpc_urls = pool_ops.global_evm_rpc_urls
         self.old_json_rpc_call = pool_ops.json_rpc_call
+        self.old_background_maintenance_decision = pool_ops.background_maintenance_decision
         self.addCleanup(self.restore_globals)
 
     def restore_globals(self) -> None:
@@ -71,6 +72,7 @@ class GlobalTabFallbackTests(unittest.TestCase):
         pool_ops.seconds_since_epoch = self.old_seconds_since_epoch
         pool_ops.global_evm_rpc_urls = self.old_global_evm_rpc_urls
         pool_ops.json_rpc_call = self.old_json_rpc_call
+        pool_ops.background_maintenance_decision = self.old_background_maintenance_decision
 
     def test_global_returns_stale_cache_instead_of_raising_when_evm_rpc_fails(self) -> None:
         cached = {
@@ -90,6 +92,7 @@ class GlobalTabFallbackTests(unittest.TestCase):
         pool_ops.read_global_history = lambda limit=None: [{"latest_block": 122, "clusters": []}]
         pool_ops.seconds_since_epoch = lambda: 999_999
         pool_ops.global_evm_rpc_urls = lambda: [("bad-node", "http://127.0.0.1:18545")]
+        pool_ops.background_maintenance_decision = lambda task: {"allowed": True, "task": task, "reasons": []}
 
         def fail_rpc(*_args: object, **_kwargs: object) -> object:
             raise RuntimeError("rpc unavailable")

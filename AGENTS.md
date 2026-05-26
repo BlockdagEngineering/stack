@@ -128,6 +128,24 @@ ARM64 Pi package or container by accident. Prefer header-based verification
 over host-specific `file` output so the same gate works from Linux, macOS, and
 Windows build hosts.
 
+Source-checkout validation must never delete an active local runtime. If a live
+machine runs the RC directly from the source checkout, `ops/runtime` can hold
+the dashboard environment and sampler state currently used by systemd. Keep
+`scripts/validate-rc-local.sh` validating a temporary source copy with a
+temporary runtime directory instead of cleaning the checkout in place.
+
+Dashboard collectors must avoid host-only command dependencies for normal
+status. Use Python's standard HTTP client for local pool metrics and public
+enrichment calls so Linux AMD64, Linux ARM64/Pi5, macOS Docker Desktop, and
+Windows Docker Desktop behave consistently once Docker and Python are present.
+
+When operating from source, keep dashboard surfaces explicit: Compose owns the
+container dashboard on `9280`; the Python operations dashboard owns the `8088`
+control-plane view and must be configured with the real container names and
+Docker access for the stack being watched. Do not report a source checkout
+healthy until `8088/api/status` points at the intended project root and returns
+`overall=ok` or the expected no-miner mode.
+
 ## FastSync Candidate Ordering
 
 New nodes must prefer nearby FastSync candidates before public internet seeds.
