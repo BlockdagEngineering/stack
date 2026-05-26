@@ -334,6 +334,36 @@ print(f"watchdog state fresh: mtime={mtime}")
 PY
 }
 
+validate_rollback_restored() {
+  local manifest="$ROLLBACK_DIR/manifest.tsv"
+  local failed=0 rel state
+  while IFS=$'\t' read -r rel state; do
+    [[ -n "$rel" ]] || continue
+    case "$state" in
+      existing)
+        if [[ ! -f "$TARGET_ROOT/$rel" ]]; then
+          printf 'rollback validation missing restored file: %s\n' "$rel" >&2
+          failed=1
+        elif ! cmp -s "$ROLLBACK_DIR/files/$rel" "$TARGET_ROOT/$rel"; then
+          printf 'rollback validation content mismatch: %s\n' "$rel" >&2
+          failed=1
+        fi
+        ;;
+      absent)
+        if [[ -e "$TARGET_ROOT/$rel" ]]; then
+          printf 'rollback validation expected absent path: %s\n' "$rel" >&2
+          failed=1
+        fi
+        ;;
+      *)
+        printf 'rollback validation invalid state for %s: %s\n' "$rel" "$state" >&2
+        failed=1
+        ;;
+    esac
+  done < "$manifest"
+  [[ "$failed" -eq 0 ]]
+}
+
 post_deploy_health_check() {
   [[ "$POST_DEPLOY_HEALTH_CHECK" == "1" ]] || {
     warn "Post-deploy health check skipped by BDAG_DEPLOY_HEALTH_CHECK=0"
@@ -375,7 +405,7 @@ rollback_from_backup() {
         ;;
     esac
   done < "$manifest"
-  run_target_validation
+  validate_rollback_restored || die "rollback file verification failed"
   say "Rollback complete"
 }
 
