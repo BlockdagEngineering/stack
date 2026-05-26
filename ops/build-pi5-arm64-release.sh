@@ -817,9 +817,26 @@ maybe_fastsnap_bootstrap() {
   log "P2P snapshot bootstrap unavailable; falling back to normal FastSync/legacy sync"
 }
 
+configure_directory_artifact_serving() {
+  if [ -n "${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}" ] || [ -n "${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}" ]; then
+    return 0
+  fi
+  network="${BDAG_FASTSNAP_NETWORK:-mainnet}"
+  data_parent="${BDAG_FASTSNAP_DATADIR:-$(node_arg_value datadir || true)}"
+  data_parent="${data_parent:-/data}"
+  data_dir="$(network_datadir "$data_parent" "$network")"
+  manifest="$data_dir/artifact.manifest.json"
+  if [ -s "$manifest" ] && [ -d "$data_dir/BdagChain" ]; then
+    export BDAG_FASTSYNC_ARTIFACT_DIRECTORY="$data_dir"
+    export BDAG_FASTSYNC_ARTIFACT_MANIFEST="$manifest"
+    log "enabled Fast Artifact Sync V2 directory serving from $data_dir"
+  fi
+}
+
 echo "Using node binary: $BIN"
 apply_ordered_fastsync_peers
 maybe_fastsnap_bootstrap
+configure_directory_artifact_serving
 
 exec nodeworker \
   --node-binary="$BIN" \

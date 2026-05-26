@@ -432,6 +432,28 @@ maybe_fastsnap_bootstrap() {
   log "P2P snapshot bootstrap unavailable; falling back to normal FastSync/legacy sync"
 }
 
+configure_directory_artifact_serving() {
+  if [ -n "${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}" ] || [ -n "${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}" ]; then
+    return 0
+  fi
+  local node_args network config_file data_parent data_dir manifest
+  node_args="$(node_args_from_argv "$@" || true)"
+  network="${BDAG_FASTSNAP_NETWORK:-mainnet}"
+  config_file="$(node_arg_value configfile "$node_args" || true)"
+  data_parent="${BDAG_FASTSNAP_DATADIR:-$(node_arg_value datadir "$node_args" || true)}"
+  if [ -z "$data_parent" ] && [ -n "$config_file" ]; then
+    data_parent="$(read_config_value "$config_file" datadir || true)"
+  fi
+  data_parent="${data_parent:-/var/lib/bdagStack/node}"
+  data_dir="$(network_datadir "$data_parent" "$network")"
+  manifest="$data_dir/artifact.manifest.json"
+  if [ -s "$manifest" ] && [ -d "$data_dir/BdagChain" ]; then
+    export BDAG_FASTSYNC_ARTIFACT_DIRECTORY="$data_dir"
+    export BDAG_FASTSYNC_ARTIFACT_MANIFEST="$manifest"
+    log "enabled Fast Artifact Sync V2 directory serving from $data_dir"
+  fi
+}
+
 apply_ordered_fastsync_peers "$@"
 
 if [ -n "${NODE_ARGS_APPEND:-}" ]; then
@@ -459,10 +481,12 @@ if [ "$(id -u)" = 0 ]; then
   ensure_owned_runtime_dirs
   fix_ownership_if_needed
   maybe_fastsnap_bootstrap "$@"
+  configure_directory_artifact_serving "$@"
   if [ "$FASTSNAP_BOOTSTRAP_MUTATED" = "1" ]; then
     fix_ownership_if_needed
   fi
   exec runuser -u bdagStack -g bdagStack -- "$@"
 fi
 maybe_fastsnap_bootstrap "$@"
+configure_directory_artifact_serving "$@"
 exec "$@"
