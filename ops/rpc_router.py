@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from incident_journal import append_incident
-from pool_ops import NODES, PROJECT_ROOT, RUNTIME_DIR, collect_status, ensure_runtime, now_iso
+from pool_ops import NODES, PROJECT_ROOT, RUNTIME_DIR, collect_status_cached, ensure_runtime, now_iso
 
 
 RPC_ROUTER_STATE_FILE = Path(os.environ.get("BDAG_RPC_ROUTER_STATE_FILE", RUNTIME_DIR / "rpc-router-state.json"))
@@ -466,7 +466,7 @@ def main() -> int:
     parser.add_argument("--min-delta", type=float, default=MIN_SCORE_DELTA, help="minimum score delta before switching")
     args = parser.parse_args()
 
-    status = collect_status(include_logs=True)
+    status = collect_status_cached(include_logs=True)
     decision = recommend_rpc_primary(status, min_delta=args.min_delta)
     write_rpc_router_state(status, decision)
     applied = False

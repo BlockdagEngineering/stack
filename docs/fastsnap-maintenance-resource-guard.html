@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FastSnap Maintenance Resource Guard</title>
+  <style>
+    :root { color-scheme: dark; --bg:#101318; --panel:#171c23; --line:#344052; --text:#eef3f8; --muted:#aeb8c5; --accent:#62d0a4; --warn:#f2c14e; --bad:#ff6b6b; --code:#d7f5ff; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { max-width:1080px; margin:0 auto; padding:28px 20px 52px; }
+    h1 { margin:0 0 8px; font-size:30px; line-height:1.15; }
+    h2 { margin-top:26px; border-bottom:1px solid var(--line); padding-bottom:8px; }
+    table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); }
+    th, td { padding:9px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { background:#202632; font-size:12px; text-transform:uppercase; }
+    code, pre { color:var(--code); background:#0b0e13; border:1px solid var(--line); border-radius:6px; }
+    code { padding:1px 5px; }
+    pre { padding:12px; overflow:auto; }
+    .lede { color:var(--muted); max-width:900px; }
+    .chip { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:2px 8px; margin:0 4px 4px 0; color:var(--muted); font-size:12px; }
+    .good { color:var(--accent); }
+    .warn { color:var(--warn); }
+  </style>
+  <script type="application/json" id="agent-metadata">
+  {
+    "document_type": "release_candidate_failure_mode",
+    "failure_mode_id": "STACK-P1-FASTSNAP-MAINTENANCE-CPU-CAP-20260525",
+    "created_at": "2026-05-25T08:48:00+0200",
+    "scope": "pool-stack-docker FastSnap maintenance",
+    "root_cause": "FastSnap export and verify containers had no default Docker CPU quota, so CPU-heavy archive finalization could compete with the live mining backend.",
+    "mitigation": "Default BDAG_FASTSNAP_DOCKER_CPUS to 1.5 in ops/build-fastsnap-seed.sh.",
+    "backlog": "/home/jeremy/blockdag-source/SOURCE_ACCESS_IMPROVEMENT_BACKLOG.md#stack-p1-fastsnap-maintenance-cpu-cap-20260525"
+  }
+  </script>
+</head>
+<body>
+<main>
+  <h1>FastSnap Maintenance Resource Guard</h1>
+  <p class="lede">Release-candidate guard for FastSnap seed exports on a live mining host. The export may intentionally drain one standby node, but it must not let archive work compete unbounded with the active mining path.</p>
+  <span class="chip good">Mitigation added</span>
+  <span class="chip">FastSnap</span>
+  <span class="chip">CPU cap</span>
+  <span class="chip">Live mining host</span>
+
+  <h2>Failure Mode</h2>
+  <table>
+    <tr><th>Item</th><th>Details</th></tr>
+    <tr><td>Observed trigger</td><td>USB FastSnap refresh on 2026-05-25.</td></tr>
+    <tr><td>Root cause</td><td><code>BDAG_FASTSNAP_DOCKER_CPUS</code> defaulted to empty, so Docker did not impose a CPU quota on the export or verify container.</td></tr>
+    <tr><td>Runtime symptom</td><td>Archive finalization and verification reached roughly 1.1 to 1.5 CPU cores before manual capping. Pool remained online, but transient submit-error windows appeared during maintenance samples.</td></tr>
+    <tr><td>Risk</td><td>On smaller release hosts, uncapped maintenance work could starve the active backend, increase submit latency, or amplify stale/tip-overdue loss.</td></tr>
+  </table>
+
+  <h2>Permanent Guard</h2>
+  <pre><code># FastSnap export finalization and verify are CPU-heavy. Keep the default
+# bounded so maintenance cannot freely compete with the live mining backend.
+DOCKER_CPUS="${BDAG_FASTSNAP_DOCKER_CPUS:-1.5}"</code></pre>
+  <p>The value can still be overridden deliberately with <code>BDAG_FASTSNAP_DOCKER_CPUS</code>, but the release default is now bounded.</p>
+
+  <h2>Acceptance Criteria</h2>
+  <ul>
+    <li><code>bash -n ops/build-fastsnap-seed.sh</code> passes.</li>
+    <li>Release validation fails if the default CPU cap is removed without an explicit resource review.</li>
+    <li>Future maintenance reports include export duration, verify duration, CPU cap, selected backend, miner count, and submit-error deltas.</li>
+    <li>FastSnap export continues to drain only the standby backend and restores it before archive verification.</li>
+  </ul>
+</main>
+</body>
+</html>

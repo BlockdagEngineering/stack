@@ -24,7 +24,7 @@ from pool_ops import (
     RUNTIME_DIR,
     collect_global_blockchain,
     collect_earnings,
-    collect_status,
+    collect_status_cached,
     configure_miners,
     default_miner_pool_settings,
     ensure_runtime,
@@ -443,7 +443,14 @@ def enrich_status_with_template_backend_state(payload: dict[str, object]) -> dic
 
 
 def dashboard_status_payload() -> dict[str, object]:
-    return enrich_status_with_template_backend_state(enrich_status_with_sync_estimate(collect_status(include_logs=True)))
+    payload = enrich_status_with_template_backend_state(enrich_status_with_sync_estimate(collect_status_cached(include_logs=True)))
+    payload["dashboard_bind"] = HOST
+    payload["dashboard_port"] = PORT
+    display_host = "127.0.0.1" if HOST in {"0.0.0.0", "::", ""} else HOST
+    if ":" in display_host and not display_host.startswith("["):
+        display_host = f"[{display_host}]"
+    payload["dashboard_url"] = f"http://{display_host}:{PORT}"
+    return payload
 
 
 def token_required() -> bool:
@@ -1585,7 +1592,7 @@ HTML = r"""<!doctype html>
       }
     }
     function render(data) {
-      text("meta", data.generated_at + " | " + data.project_root);
+      text("meta", data.generated_at + " | " + data.project_root + " | dashboard " + (data.dashboard_url || "unknown"));
       text("overall", data.overall);
       text("statusReason", data.overall === "ok" ? "" : (data.status_reason || "Reason unavailable."));
       document.getElementById("overall").className = "kpi-value " + statusClass(data.overall);
@@ -1625,10 +1632,14 @@ HTML = r"""<!doctype html>
       const templateBackendStatus = templateBackendStatusText(data);
       const sourceHealthStatus = sourceHealthStatusText(data);
       const lossLedgerStatus = lossLedgerStatusText(data);
+      const hostPressureStatus = hostPressureText(data.host_pressure || {});
+      const rpcRefusedStatus = data.pool?.rpc_refused_recent
+        ? "recent"
+        : (data.pool?.rpc_refused ? `stale age=${fmt(data.pool.last_rpc_refused_age_seconds)}s` : "false");
       text(
         "poolSummary",
         `endpoint=${data.pool_endpoint || "unknown"} local_ips=${(data.local_ips || []).join(", ") || "none"} `
-        + `initial_download=${data.pool.initial_download} gbt_errors=${data.pool.gbt_errors} rpc_refused=${data.pool.rpc_refused} `
+        + `initial_download=${data.pool.initial_download} gbt_errors=${data.pool.gbt_errors} rpc_refused=${rpcRefusedStatus} `
         + `valid_shares=${fmt(poolHealth.valid_share_count)} stale_submits=${fmt(poolHealth.stale_submit_count)} `
         + `stale_jobs=${fmt(poolHealth.stale_job_candidate_count)} submit_errors=${fmt(poolHealth.block_submit_error_count)} `
         + `duplicate_blocks=${fmt(poolHealth.duplicate_block_count)} `
@@ -1636,6 +1647,7 @@ HTML = r"""<!doctype html>
         + `selected_backend=${selectedBackend}${templateBackendStatus ? ` ${templateBackendStatus}` : ""}`
         + `${sourceHealthStatus ? ` ${sourceHealthStatus}` : ""}`
         + `${lossLedgerStatus ? ` ${lossLedgerStatus}` : ""} ${submitRecovery}`
+        + `${hostPressureStatus ? ` ${hostPressureStatus}` : ""}`
       );
       text("poolLog", (data.pool.tail || []).join("\n"));
       text("actionLog", data.latest_action ? JSON.stringify(data.latest_action, null, 2) : "No action has run yet.");
@@ -1683,6 +1695,17 @@ HTML = r"""<!doctype html>
       if (!Number.isFinite(rate) || rate <= 0) return "estimating from the next sample";
       const source = estimate.rate_source ? ` (${estimate.rate_source})` : "";
       return `${rate.toFixed(rate >= 10 ? 1 : 2)} blocks/s${source}`;
+    }
+    function hostPressureText(host) {
+      const parts = [];
+      if (hasValue(host.loadavg_1m)) parts.push(`load1=${Number(host.loadavg_1m).toFixed(2)}`);
+      if (hasValue(host.io_some_avg10)) parts.push(`io_some10=${Number(host.io_some_avg10).toFixed(2)}%`);
+      if (hasValue(host.io_full_avg10)) parts.push(`io_full10=${Number(host.io_full_avg10).toFixed(2)}%`);
+      if (hasValue(host.iowait_percent)) parts.push(`iowait=${Number(host.iowait_percent).toFixed(2)}%`);
+      if (hasValue(host.cpu_busy_percent)) parts.push(`cpu_busy=${Number(host.cpu_busy_percent).toFixed(2)}%`);
+      if (host.iowait_warning_active) parts.push("io_wait=sustained");
+      if (hasValue(host.cpu_some_avg10)) parts.push(`cpu_some10=${Number(host.cpu_some_avg10).toFixed(2)}%`);
+      return parts.length ? `host_pressure ${parts.join(" ")}` : "";
     }
     function renderSyncEstimate(data, progress) {
       const estimate = data.sync_estimate || {};
@@ -1765,7 +1788,9 @@ HTML = r"""<!doctype html>
     function nodeSummaryText(node) {
       if (!node) return "node data unavailable";
       const chain = hasValue(node.chain_block_count) ? ` chain_blocks=${fmt(node.chain_block_count)} source=${node.chain_rpc_source || "getBlockCount"}` : " chain_blocks=n/a";
-      return `child=${node.child_running}${chain} main_height=${fmt(node.chain_main_height)} best_main_order=${fmt(node.best_main_order)} import_age=${fmt(node.last_import_age_seconds)}s peer_ahead=${fmt(node.peer_ahead_blocks)} bad_peers=${fmt(node.invalid_peer_errors)} p2p_resets=${fmt(node.p2p_stream_errors)}`;
+      const rpcLatency = hasValue(node.chain_rpc_latency_ms) ? ` rpc_ms=${fmt(node.chain_rpc_latency_ms)}` : (node.chain_rpc_error ? " rpc=unavailable" : "");
+      const rpcAttempts = Number(node.chain_rpc_attempts) > 1 ? ` rpc_attempts=${fmt(node.chain_rpc_attempts)}/${fmt(node.chain_rpc_retry_limit)}` : "";
+      return `child=${node.child_running}${chain}${rpcLatency}${rpcAttempts} main_height=${fmt(node.chain_main_height)} best_main_order=${fmt(node.best_main_order)} import_age=${fmt(node.last_import_age_seconds)}s peer_ahead=${fmt(node.peer_ahead_blocks)} bad_peers=${fmt(node.invalid_peer_errors)} p2p_resets=${fmt(node.p2p_stream_errors)}`;
     }
     function nodeBlockHeight(name, node, syncNode, data) {
       if (node?.planned_sync_pause && !hasValue(node?.chain_block_count) && !hasValue(syncNode?.chain_block_count)) return "paused";
@@ -2031,11 +2056,31 @@ HTML = r"""<!doctype html>
       }
       return Math.abs(hash);
     }
+    function normalizedMac(value) {
+      const text = String(value || "").trim().toLowerCase().replaceAll("-", ":");
+      if (/^[0-9a-f]{12}$/.test(text)) return text.match(/.{1,2}/g).join(":");
+      return /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(text) ? text : "";
+    }
+    function minerMac(row) {
+      const direct = normalizedMac(row.mac);
+      if (direct) return direct;
+      const device = String(row.device_id || row.identity_key || "").trim().toLowerCase();
+      return device.startsWith("mac:") ? normalizedMac(device.slice(4)) : "";
+    }
+    function minerMacSuffix(row) {
+      const mac = minerMac(row).replaceAll(":", "");
+      return mac ? mac.slice(-3) : "";
+    }
     function minerIdentity(row) {
-      return String(row.device_id || (row.mac ? `mac:${row.mac}` : row.ip) || "").trim();
+      const mac = minerMac(row);
+      if (mac) return `mac:${mac}`;
+      return String(row.identity_key || row.device_id || "").trim();
     }
     function minerDisplayName(row) {
-      return String(row.display_name || row.name || minerIdentity(row) || "Miner").trim();
+      const explicit = String(row.display_name || row.name || "").trim();
+      if (explicit) return explicit;
+      const mac = minerMac(row);
+      return mac || "unknown-mac";
     }
     function minerShortIp(row) {
       const ip = String(row.ip || "").trim();
@@ -2044,8 +2089,12 @@ HTML = r"""<!doctype html>
       return /^\d{1,3}$/.test(last) ? `.${last}` : "";
     }
     function minerDisplayLabel(row) {
-      const suffix = minerShortIp(row);
-      return `${minerDisplayName(row)}${suffix ? " " + suffix : ""}`;
+      const provided = String(row.display_label || "").trim();
+      if (provided) return provided;
+      const explicit = String(row.display_name || row.name || "").trim();
+      const suffix = minerMacSuffix(row);
+      if (explicit) return `${explicit}-${suffix || "unknown-mac"}`;
+      return minerMac(row) || "unknown-mac";
     }
     function minerColor(identity) {
       if (!identity) return "#4b5563";
