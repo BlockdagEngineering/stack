@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Five ASIC Template Conversion Guard</title>
+  <title>Multi-Miner Template Conversion Guard</title>
   <style>
     :root { color-scheme: dark; --bg:#0f1318; --panel:#171d25; --panel2:#202837; --text:#eef4fa; --muted:#aab6c5; --line:#334052; --good:#73d99a; --warn:#f4c65d; --bad:#ff7676; --accent:#82b7ff; }
     body { margin:0; background:var(--bg); color:var(--text); font:14px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
@@ -26,28 +26,28 @@
   {
     "document_type": "release_candidate_guard",
     "created_local": "2026-05-25T01:06:28+02:00",
-    "scope": "BlockDAG pool stack RCs with multiple local X100 ASICs",
-    "failure_mode": "five ASICs can amplify stale/tip-overdue/duplicate conversion loss when template epochs, backend routing, and catch-up status are not atomic",
+    "scope": "BlockDAG pool stack RCs with zero to many ASIC or Stratum miner sources, with special attention to multiple local X100 ASICs",
+    "failure_mode": "multiple miner sources can amplify stale/tip-overdue/duplicate conversion loss when template epochs, backend routing, and catch-up status are not atomic",
     "source_incident_report": "/home/jeremy/blockdag-asic-pool/ops/runtime/reports/five-asic-efficiency-regression-rca-20260525-010628.html",
-    "release_rule": "Do not call a five-ASIC release mining-ready without a measured template-conversion SLO and catch-up routing guard."
+    "release_rule": "Do not call a multi-miner release mining-ready without a measured template-conversion SLO and catch-up routing guard; do not make five miners the default install assumption."
   }
   </script>
 </head>
 <body>
 <main>
-  <h1>Five ASIC Template Conversion Guard</h1>
-  <p class="lede">Release-candidate guard for the 2026-05-25 five-X100 efficiency regression. The RC must treat accepted block conversion, not raw hashes or connected miner count, as the mining success metric.</p>
+  <h1>Multi-Miner Template Conversion Guard</h1>
+  <p class="lede">Release-candidate guard for the 2026-05-25 five-X100 efficiency regression. The RC must treat accepted block conversion, not raw hashes or connected miner count, as the mining success metric for active miner sources.</p>
 
   <section>
     <h2>Invariant</h2>
     <div class="callout">
-      A five-X100 local pool must have one canonical mining-template epoch at a time. Backend switches, catch-up maintenance, and clean-job broadcasts must be atomic from the ASIC point of view. If old-parent, duplicate, or non-current submissions rise, the pool must repair the template epoch in code instead of relying on manual restarts.
+      Fresh installs assume zero miner sources. A deployment may later run 0..N ASIC or Stratum miner sources. Multi-miner pools, including five-X100 local pools, must have one canonical mining-template epoch at a time. Backend switches, catch-up maintenance, and clean-job broadcasts must be atomic from the miner point of view. If old-parent, duplicate, or non-current submissions rise, the pool must repair the template epoch in code instead of relying on manual restarts.
     </div>
   </section>
 
   <section>
     <h2>Why</h2>
-    <p>Five ASICs sharing one local pool can find block candidates faster than the pool can sometimes submit, observe a new DAG tip, invalidate old jobs, and deliver fresh jobs to every ASIC. Every accepted block invalidates all five current jobs. Any backend churn or catch-up status churn during that transition turns useful hash into <code>tip-overdue</code>, <code>duplicate-block-job</code>, <code>invalidated_job</code>, or <code>non_current_job</code> loss.</p>
+    <p>Multiple miner sources sharing one local pool can find block candidates faster than the pool can sometimes submit, observe a new DAG tip, invalidate old jobs, and deliver fresh jobs to every miner. Five ASICs made this visible because every accepted block invalidates five current jobs, but the same rule applies to one, two, or many active sources. Any backend churn or catch-up status churn during that transition turns useful hash into <code>tip-overdue</code>, <code>duplicate-block-job</code>, <code>invalidated_job</code>, or <code>non_current_job</code> loss.</p>
   </section>
 
   <section>
@@ -55,10 +55,12 @@
     <table>
       <thead><tr><th>Requirement</th><th>Acceptance Criteria</th></tr></thead>
       <tbody>
-        <tr><td>Template conversion SLO</td><td>Release readiness samples active five-miner windows and fails if accepted block submits, tip-overdue loss, duplicate-local loss, stale-job rejects, or average submit/share latency exceed configured thresholds.</td></tr>
+        <tr><td>Zero-miner install default</td><td>Installer and first boot must start sync-only with zero miner sources. LAN scanning and miner configuration are explicit opt-in steps after initial install and sync.</td></tr>
+        <tr><td>Dynamic miner source count</td><td>Release readiness samples active miner windows using the observed/configured 0..N miner source count. A one-miner host is evaluated as one miner, and a five-miner host is evaluated as five miners.</td></tr>
+        <tr><td>Template conversion SLO</td><td>Release readiness fails if miner-normalized accepted block submits, tip-overdue loss, duplicate-local loss, stale-job rejects, or average submit/share latency exceed configured thresholds during active mining windows.</td></tr>
         <tr><td>Atomic backend epoch</td><td>Changing selected backend also invalidates old backend jobs, pins submit route to the same backend, and broadcasts clean work. Template-fetch fallback cannot silently flip the mining lane.</td></tr>
         <tr><td>Catch-up maintenance semantics</td><td>When sync coordinator pauses a follower, the follower is marked maintenance standby. If the leader is near tip and accepting blocks, dashboard/router status must not present the paused follower as global mining unavailability.</td></tr>
-        <tr><td>No active/active quick fix</td><td>Do not re-enable template fan-in to chase throughput unless a controlled A/B test proves miner-normalized accepted blocks improve under five ASICs.</td></tr>
+        <tr><td>No active/active quick fix</td><td>Do not re-enable template fan-in to chase throughput unless a controlled A/B test proves miner-normalized accepted blocks improve for the target miner source count.</td></tr>
         <tr><td>MAC-based miner diagnostics</td><td>Per-ASIC stale and duplicate attribution must use the MAC-address registry. IPs, ports, and worker labels remain ephemeral observations.</td></tr>
       </tbody>
     </table>
