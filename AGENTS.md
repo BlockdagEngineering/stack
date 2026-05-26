@@ -52,6 +52,26 @@ prefer `BDAG_FASTSYNC_PREPROCESS_WORKERS=1` on Pi catch-up hosts. The parallel
 preprocessor has previously panicked in `processFastBlockRange`; uptime and
 steady catch-up beat the small parallel precheck speedup.
 
+## Five ASIC Template Conversion Invariant
+
+For five-X100 local mining hosts, connected miner count and raw hash activity are
+not enough. The release success metric is accepted block conversion per
+miner-hour. The pool must keep one canonical mining-template epoch at a time,
+and backend switches, catch-up maintenance, and clean-job broadcasts must be
+atomic from the ASIC point of view.
+
+Do not re-enable active/active template fan-in as a quick fix for low output.
+The 2026-05-25 regression showed that five ASICs can amplify stale-parent,
+tip-overdue, duplicate-block, invalidated-job, and non-current-job losses when
+template epochs or routing are unstable. During one-node catch-up, a paused
+follower is maintenance standby; if the leader is near tip and accepting blocks,
+the dashboard/router path must not treat the paused follower as global mining
+unavailability.
+
+Keep the RC guard in `docs/five-asic-template-conversion-guard.html` current.
+Future fixes must use MAC-address-based ASIC attribution for diagnostics; IP
+addresses, worker labels, ports, and display names remain ephemeral.
+
 ## Self-Healing Release Invariants
 
 The Pi5 release candidate must install `bdag-stack-sentinel.timer` and the

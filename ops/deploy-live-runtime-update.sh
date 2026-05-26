@@ -20,6 +20,8 @@ COMPOSE_BACKUP_BEFORE_MARK=""
 FILES=(
   "asic-pool/schema.sql"
   "docker/entrypoint-nodeworker.sh"
+  "docs/fastsnap-maintenance-resource-guard.html"
+  "docs/five-asic-template-conversion-guard.html"
   "docs/platform-adaptive-runtime.md"
   "haproxy.cfg"
   "host/mining-appliance/bdag-runtime-priority.timer"
