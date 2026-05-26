@@ -117,6 +117,8 @@ configure_node_mode_env() {
     set_env_value .env BDAG_NODE_SERVICES "bdag-miner-node-1,bdag-miner-node-2"
     set_env_value .env BDAG_STACK_SERVICES "pool-db,bdag-miner-node-1,bdag-miner-node-2,rpc-failover,asic-pool"
     set_env_value .env POOL_RPC_BACKENDS "node1=http://bdag-miner-node-1:38131,node2=http://bdag-miner-node-2:38131"
+    set_env_value .env POOL_SUBMIT_RPC_URLS "node1=http://bdag-miner-node-1:38131,node2=http://bdag-miner-node-2:38131"
+    set_env_value .env POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT true
     set_env_value .env WALLET_RPC_URL "http://bdag-miner-node-2:18545"
     set_env_value .env WALLET_RPC_URLS "http://bdag-miner-node-2:18545,http://bdag-miner-node-1:18545"
   else
@@ -125,6 +127,8 @@ configure_node_mode_env() {
     set_env_value .env BDAG_NODE_SERVICES "bdag-miner-node-2"
     set_env_value .env BDAG_STACK_SERVICES "pool-db,bdag-miner-node-2,rpc-failover,asic-pool"
     set_env_value .env POOL_RPC_BACKENDS "node2=http://bdag-miner-node-2:38131"
+    set_env_value .env POOL_SUBMIT_RPC_URLS ""
+    set_env_value .env POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT true
     set_env_value .env WALLET_RPC_URL "http://bdag-miner-node-2:18545"
     set_env_value .env WALLET_RPC_URLS "http://bdag-miner-node-2:18545"
   fi
@@ -140,6 +144,21 @@ configure_node_mining_env() {
     set_env_value .env BDAG_ENABLE_NODE_MINING 0
     set_env_value .env BDAG_NODE_MODULES "Blockdag"
     set_env_value .env BDAG_NODE_MINING_ARGS ""
+  fi
+}
+
+guard_runtime_compose() {
+  if [[ ! -f docker-compose.yml ]]; then
+    echo "Missing docker-compose.yml in release root." >&2
+    exit 1
+  fi
+  if ! grep -q '^# BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1$' docker-compose.yml; then
+    echo "This installer requires the generated Pi5 runtime compose. Refusing to start an unmarked compose file." >&2
+    exit 1
+  fi
+  if grep -Eq '^[[:space:]]*(build|dockerfile):' docker-compose.yml; then
+    echo "Runtime compose contains build/dockerfile entries. Refusing to overwrite the deployed image set." >&2
+    exit 1
   fi
 }
 
@@ -199,6 +218,11 @@ configure_env() {
   set_env_value .env BDAG_POOL_URL "stratum+tcp://$lan_ip:3334"
   set_env_value .env BDAG_MINER_SCAN_TARGET "$scan_target"
   set_env_value .env BDAG_FASTSYNC_PREPROCESS_WORKERS 1
+  set_env_value .env BDAG_FASTARTIFACTSYNC_ENABLED 1
+  set_env_value .env BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC 1
+  set_env_value .env BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS 900
+  set_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT 1
+  set_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT 1
   configure_node_mode_env "$node_mode"
   configure_node_mining_env "$node_mining_enabled" "$mining_address"
 
@@ -217,6 +241,24 @@ configure_env() {
   fi
 
   cp .env asic-pool/.env
+}
+
+run_appliance_preflight() {
+  if [[ "${BDAG_APPLIANCE_PREFLIGHT:-1}" != "1" ]]; then
+    warn "Skipping mining appliance preflight because BDAG_APPLIANCE_PREFLIGHT=0."
+    return 0
+  fi
+  if [[ ! -f scripts/mining-appliance-preflight.py ]]; then
+    warn "Mining appliance preflight script is missing from this package."
+    return 0
+  fi
+
+  say "Running mining appliance preflight"
+  if [[ "${BDAG_APPLIANCE_PREFLIGHT_STRICT:-0}" == "1" ]]; then
+    python3 scripts/mining-appliance-preflight.py --root "$ROOT" --env-file "$ROOT/.env"
+  else
+    python3 scripts/mining-appliance-preflight.py --root "$ROOT" --env-file "$ROOT/.env" --warn-only
+  fi
 }
 
 load_or_build_images() {
@@ -355,8 +397,13 @@ publish_p2p_snapshot_archive() {
 
 start_stack() {
   say "Starting BlockDAG pool stack"
-  compose_cmd pull pool-db rpc-failover || true
-  compose_cmd up -d
+  guard_runtime_compose
+  if [[ "${BDAG_RELEASE_PULL_BASE_IMAGES:-0}" == "1" ]]; then
+    compose_cmd pull pool-db rpc-failover || true
+  else
+    warn "Skipping implicit image pulls. Set BDAG_RELEASE_PULL_BASE_IMAGES=1 for an explicit base-image refresh."
+  fi
+  compose_cmd up -d --no-build --pull never
   compose_cmd ps
 }
 
@@ -371,7 +418,7 @@ install_dashboard() {
 }
 
 configure_miners() {
-  if yes_no "Scan the LAN and optionally configure discovered ASICs now?" "y"; then
+  if yes_no "After initial sync, scan the LAN and optionally configure discovered miner sources now?" "n"; then
     set -a
     # shellcheck disable=SC1091
     source .env
@@ -389,6 +436,7 @@ main() {
   install_packages
   init_docker_access
   configure_env
+  run_appliance_preflight
   load_or_build_images "$arch"
   seed_chain_data
   publish_p2p_snapshot_archive "$arch"

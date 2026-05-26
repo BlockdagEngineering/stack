@@ -95,6 +95,27 @@ Action buttons are intentionally limited to known maintenance tasks:
 
 It does not provide arbitrary shell access.
 
+## Shared Status Sampler
+
+Routine monitoring processes should share one status collection instead of each
+process independently collecting Docker logs, node RPC, pool metrics, and miner
+state. Run one sample:
+
+```bash
+python3 ops/status_sampler.py --json
+```
+
+Run continuously:
+
+```bash
+python3 ops/status_sampler.py --loop
+```
+
+The sampler writes `ops/runtime/status-sampler.json` atomically. Dashboard,
+watchdog, sync coordinator, P2P guard, and startup checks consume it through
+`collect_status_cached()` while it is fresh. Use `max_age_seconds=0` only for
+explicit live diagnostics or hard repair paths that must bypass cached state.
+
 ## Watchdog
 
 Run one check:

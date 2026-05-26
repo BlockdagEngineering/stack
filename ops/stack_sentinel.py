@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -82,6 +83,19 @@ def read_state() -> dict[str, Any]:
 def write_state(state: dict[str, Any]) -> None:
     ensure_runtime()
     STATE_FILE.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def acquire_run_lock() -> Any | None:
+    ensure_runtime()
+    handle = LOCK_FILE.open("w", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    handle.write(f"{os.getpid()} {now_iso()}\n")
+    handle.flush()
+    return handle
 
 
 def sync_coordinator_pause_state() -> tuple[str, dict[str, Any]]:
@@ -196,7 +210,7 @@ def start_container(service: str, reason: str, state: dict[str, Any], now: int) 
 def recreate_container(service: str, reason: str, state: dict[str, Any], now: int) -> bool:
     log_path = LOG_DIR / f"sentinel-recreate-{service}-{now}.log"
     result = run_logged(
-        compose_command("up", "-d", "--no-deps", "--force-recreate", service),
+        compose_command("up", "-d", "--no-deps", "--force-recreate", "--no-build", "--pull", "never", service),
         log_path,
         timeout=180,
     )
@@ -396,51 +410,59 @@ def check_node_log_red_flags(state: dict[str, Any], now: int) -> None:
 
 def main() -> int:
     ensure_runtime()
+    lock_handle = acquire_run_lock()
+    if lock_handle is None:
+        log("another stack sentinel run is active; skipping this tick")
+        return 0
+
     now = int(time.time())
     state = read_state()
 
-    for unit in [*USER_SERVICES, *USER_TIMERS]:
-        start_unit(unit, state, now)
+    try:
+        for unit in [*USER_SERVICES, *USER_TIMERS]:
+            start_unit(unit, state, now)
 
-    ensure_rpc_failover_config_boot_safe(state, now)
+        ensure_rpc_failover_config_boot_safe(state, now)
 
-    status, error = status_api()
-    state["dashboard_status_ok"] = status is not None
-    state["dashboard_status_error"] = error
-    if status is None and should_emit(state, "dashboard_status_unavailable", error or "unknown", now):
-        append_incident(
-            "sentinel_dashboard_status_unavailable",
-            "critical",
-            "stack-sentinel",
-            "Dashboard status API is unavailable to the stack sentinel",
-            {"url": DASHBOARD_URL, "error": error},
-        )
-        notify_user("BlockDAG dashboard status unavailable", error[:160] or "status API timed out")
-    elif status is not None:
-        overall = str(status.get("overall") or "")
-        failures = status.get("failures") if isinstance(status.get("failures"), list) else []
-        if overall == "down":
-            signature = stable_failure_signature(failures)
-            if should_emit(state, "dashboard_overall_down", signature, now):
-                append_incident(
-                    "sentinel_dashboard_overall_down",
-                    "critical",
-                    "stack-sentinel",
-                    "Dashboard status is down",
-                    {
-                        "overall": overall,
-                        "failures": failures,
-                        "miner_failures": status.get("miner_failures"),
-                        "stack_failures": status.get("stack_failures"),
-                    },
-                )
-                notify_user("BlockDAG mining degradation", signature[:220])
+        status, error = status_api()
+        state["dashboard_status_ok"] = status is not None
+        state["dashboard_status_error"] = error
+        if status is None and should_emit(state, "dashboard_status_unavailable", error or "unknown", now):
+            append_incident(
+                "sentinel_dashboard_status_unavailable",
+                "critical",
+                "stack-sentinel",
+                "Dashboard status API is unavailable to the stack sentinel",
+                {"url": DASHBOARD_URL, "error": error},
+            )
+            notify_user("BlockDAG dashboard status unavailable", error[:160] or "status API timed out")
+        elif status is not None:
+            overall = str(status.get("overall") or "")
+            failures = status.get("failures") if isinstance(status.get("failures"), list) else []
+            if overall == "down":
+                signature = stable_failure_signature(failures)
+                if should_emit(state, "dashboard_overall_down", signature, now):
+                    append_incident(
+                        "sentinel_dashboard_overall_down",
+                        "critical",
+                        "stack-sentinel",
+                        "Dashboard status is down",
+                        {
+                            "overall": overall,
+                            "failures": failures,
+                            "miner_failures": status.get("miner_failures"),
+                            "stack_failures": status.get("stack_failures"),
+                        },
+                    )
+                    notify_user("BlockDAG mining degradation", signature[:220])
 
-    inspect_and_repair_containers(status, state, now)
-    check_node_log_red_flags(state, now)
-    state["updated_at"] = now_iso()
-    write_state(state)
-    return 0
+        inspect_and_repair_containers(status, state, now)
+        check_node_log_red_flags(state, now)
+        state["updated_at"] = now_iso()
+        write_state(state)
+        return 0
+    finally:
+        lock_handle.close()
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ from pool_ops import (
     PROJECT_ROOT,
     RUNTIME_DIR,
     action_log_path,
-    collect_status,
+    collect_status_cached,
     configure_miner,
     default_miner_pool_settings,
     ensure_runtime,
@@ -308,19 +308,32 @@ def degraded_primary_miners(status: dict[str, Any], stale_seconds: int) -> list[
     pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
     if pool_initial_download_effective(status) or int(pool_health.get("job_notify_count") or 0) <= 0:
         return []
+    miner_health = status.get("miner_health") if isinstance(status.get("miner_health"), dict) else {}
+    lane_balance = miner_health.get("lane_balance") if isinstance(miner_health.get("lane_balance"), dict) else {}
+    expected_lane_count = int_or_none(lane_balance.get("expected_lane_count"))
+    imbalanced_count = int_or_none(lane_balance.get("imbalanced_count"))
+    if expected_lane_count == 0 or imbalanced_count == 0:
+        return []
     now = int(time.time())
     mining_address = str(status.get("mining_address") or "")
-    miners = ((status.get("miner_health") or {}).get("miners") or [])
+    miners = miner_health.get("miners") or []
     degraded: list[dict[str, Any]] = []
     for row in miners:
         if not isinstance(row, dict) or not is_primary_pool_miner(row, mining_address):
             continue
         if not is_lan_ipv4(str(row.get("ip", ""))):
             continue
+        lane_status = str(row.get("lane_status") or "")
+        if lane_status in {"balanced", "high", "no-window-work", "not-tracked"}:
+            continue
+        if lane_status and lane_status not in {"low", "no-work"}:
+            continue
         submits = int(row.get("submits") or 0)
         shares = int(row.get("shares") or 0)
         blocks = int(row.get("blocks_found") or 0)
-        last_submit_epoch = int(row.get("last_submit_epoch") or row.get("last_pool_seen_epoch") or 0)
+        last_submit_epoch = int(row.get("last_submit_epoch") or 0)
+        if not last_submit_epoch and submits > 0:
+            last_submit_epoch = int(row.get("last_pool_seen_epoch") or 0)
         last_share_epoch = int(row.get("last_share_epoch") or 0)
         recently_submitted = bool(last_submit_epoch and now - last_submit_epoch <= stale_seconds * 2)
         share_age = now - last_share_epoch if last_share_epoch else None
@@ -1544,7 +1557,7 @@ def boot_repair(
         reason = str(marker.get("reason") or "dirty shutdown marker detected")
         log(f"boot-repair found dirty shutdown marker: {reason}")
         try:
-            collect_status(include_logs=True)
+            collect_status_cached(include_logs=True)
         except Exception as exc:  # noqa: BLE001 - boot repair should still attempt the conservative repair.
             log(f"boot-repair preflight status check failed: {exc}")
 
@@ -1583,7 +1596,7 @@ def boot_repair(
         return payload
 
     try:
-        boot_status = collect_status(include_logs=True)
+        boot_status = collect_status_cached(include_logs=True)
     except Exception as exc:  # noqa: BLE001 - boot repair should degrade gracefully on a bad status probe.
         log(f"boot-repair status check failed: {exc}")
         boot_status = {"stack_failures": [str(exc)], "failures": [str(exc)]}
@@ -1662,7 +1675,7 @@ def check_once(
     repair: bool = True,
 ) -> dict[str, Any]:
     state = read_state()
-    status = collect_status(include_logs=True)
+    status = collect_status_cached(include_logs=True)
     router_decision = None
     try:
         router_decision = write_rpc_router_state(status)
@@ -2455,7 +2468,7 @@ def check_once(
         ]
         global_degradation = len(degraded_asics) >= max(2, (primary_miner_count + 1) // 2)
         reason = (
-            f"{len(degraded_asics)}/{primary_miner_count} primary ASIC miner(s) are connected/submitting "
+            f"{len(degraded_asics)}/{primary_miner_count} active miner source(s) are connected/submitting "
             f"but not receiving accepted shares"
         )
         if template_nodes:
