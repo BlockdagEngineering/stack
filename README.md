@@ -300,7 +300,14 @@ temporary runtime directory, and leaves any live `ops/runtime` state in the
 checkout alone. It verifies the pool schema, source-health gates, no-miner
 service semantics, FastSync/FastSnap safety defaults, dashboard source-of-truth
 rules, and packaged self-healing files. See
-`docs/release-readiness-gates.html`.
+`docs/release-readiness-gates.html`. Five-X100 mining deployments must also
+preserve the template-conversion release guard in
+`docs/five-asic-template-conversion-guard.html`: accepted block conversion per
+miner-hour is the success metric, and tip-overdue, duplicate-local,
+invalidated-job, and non-current-job losses must not be hidden by connected
+miner count alone. FastSnap maintenance must keep the CPU cap guard in
+`docs/fastsnap-maintenance-resource-guard.html` and must not run archive
+finalization or verification without an explicit bounded CPU policy.
   
 
 # Common operations
