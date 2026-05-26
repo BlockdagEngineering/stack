@@ -11,11 +11,15 @@ DOCKER_PLATFORM="linux/amd64"
 SNAPSHOT_URL="${BDAG_SNAPSHOT_URL:-https://bdagstack.bdagdev.xyz/latest.bdsnap}"
 SNAPSHOT_MIN_BYTES="${BDAG_SNAPSHOT_MIN_BYTES:-1048576}"
 BDAG_REQUIRE_SNAPSHOT="${BDAG_REQUIRE_SNAPSHOT:-1}"
-BDAG_RESET_NODE_DATA="${BDAG_RESET_NODE_DATA:-1}"
+BDAG_RESET_NODE_DATA="${BDAG_RESET_NODE_DATA:-0}"
 BDAG_SNAPSHOT_DOWNLOADER="${BDAG_SNAPSHOT_DOWNLOADER:-curl}"
 BDAG_ARIA2_CONNECTIONS="${BDAG_ARIA2_CONNECTIONS:-8}"
 BDAG_INSTALL_ARIA2="${BDAG_INSTALL_ARIA2:-0}"
 BDAG_BROWSER_SNAPSHOT_FALLBACK="${BDAG_BROWSER_SNAPSHOT_FALLBACK:-0}"
+BDAG_INSTALL_MIN_FREE_KB="${BDAG_INSTALL_MIN_FREE_KB:-10485760}"
+BDAG_INSTALL_CHECK_PORTS="${BDAG_INSTALL_CHECK_PORTS:-3334 9280 18545 18546 38131}"
+BDAG_INSTALL_STRICT_PORTS="${BDAG_INSTALL_STRICT_PORTS:-0}"
+BDAG_CLEAN_ORPHAN_CONTAINERS="${BDAG_CLEAN_ORPHAN_CONTAINERS:-0}"
 
 echo "=== BlockDAG Pool Stack Installer (${OS_NAME}/${ARCH_NAME}) ==="
 echo ""
@@ -233,6 +237,93 @@ compose_project_name() {
         | head -n 1
 }
 
+warn_or_fail_preflight() {
+    local message="$1"
+    if [[ "${BDAG_INSTALL_STRICT_PREFLIGHT:-0}" == "1" ]]; then
+        echo "Error: $message" >&2
+        exit 1
+    fi
+    echo "Warning: $message" >&2
+}
+
+port_in_use() {
+    local port="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
+        return $?
+    fi
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+        return $?
+    fi
+    return 1
+}
+
+run_release_preflight() {
+    echo "=== Release preflight ==="
+
+    case "$ARCH_NAME" in
+        x86_64|amd64|arm64|aarch64) ;;
+        *) warn_or_fail_preflight "unsupported CPU architecture '${ARCH_NAME}'." ;;
+    esac
+
+    local free_kb
+    free_kb="$(df -Pk . 2>/dev/null | awk 'NR==2 {print $4}')"
+    if [[ -n "$free_kb" && "$free_kb" -lt "$BDAG_INSTALL_MIN_FREE_KB" ]]; then
+        warn_or_fail_preflight "free disk ${free_kb}KB is below BDAG_INSTALL_MIN_FREE_KB=${BDAG_INSTALL_MIN_FREE_KB}KB."
+    fi
+
+    local port busy_ports=()
+    for port in $BDAG_INSTALL_CHECK_PORTS; do
+        if port_in_use "$port"; then
+            busy_ports+=("$port")
+        fi
+    done
+    if [[ "${#busy_ports[@]}" -gt 0 ]]; then
+        if [[ "$BDAG_INSTALL_STRICT_PORTS" == "1" ]]; then
+            echo "Error: host ports already listening: ${busy_ports[*]}" >&2
+            exit 1
+        fi
+        echo "Warning: host ports already listening: ${busy_ports[*]}. Existing stack services may be using them." >&2
+    fi
+
+    if command -v timedatectl >/dev/null 2>&1; then
+        local ntp
+        ntp="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
+        [[ "$ntp" == "yes" ]] || warn_or_fail_preflight "system time is not NTP synchronized."
+    fi
+
+    if command -v jq >/dev/null 2>&1; then
+        echo "jq found; release scripts do not require it for installer JSON parsing."
+    else
+        echo "jq not found; continuing because installer parsing avoids a jq dependency."
+    fi
+
+    curl --fail --location --head --silent --show-error --connect-timeout 10 "$SNAPSHOT_URL" >/dev/null \
+        || warn_or_fail_preflight "could not reach snapshot seed URL ${SNAPSHOT_URL}; P2P sync may still work if BDAG_REQUIRE_SNAPSHOT=0."
+    echo ""
+}
+
+plan_orphan_container_cleanup() {
+    local project
+    project="$(compose_project_name || true)"
+    [[ -n "$project" ]] || return 0
+
+    local containers
+    containers="$(docker ps -a --filter "label=com.docker.compose.project=${project}" --format '{{.Names}}\t{{.Status}}' 2>/dev/null || true)"
+    [[ -n "$containers" ]] || return 0
+
+    echo ""
+    echo "Compose project '${project}' has existing containers:"
+    printf '%s\n' "$containers" | sed 's/^/  /'
+    if [[ "$BDAG_CLEAN_ORPHAN_CONTAINERS" == "1" ]]; then
+        echo "BDAG_CLEAN_ORPHAN_CONTAINERS=1; running docker compose down --remove-orphans before start."
+        docker compose down --remove-orphans || true
+    else
+        echo "Dry-run cleanup only. Set BDAG_CLEAN_ORPHAN_CONTAINERS=1 to remove old/orphan compose containers during install."
+    fi
+}
+
 prepare_node_volume_for_snapshot() {
     [[ "$SNAPSHOT_PATH" == "./latest.bdsnap" ]] || return 0
 
@@ -306,6 +397,8 @@ if [[ ! -f .env.example || ! -f node.conf.example || ! -f docker-compose.yml ]];
     echo "Error: run this installer from the extracted pool-stack-docker release folder." >&2
     exit 1
 fi
+
+run_release_preflight
 
 SNAPSHOT_PATH="docker/no-snapshot.marker"
 SNAPSHOT_FILE=""
@@ -394,6 +487,7 @@ mkdir -p dashboard/logs
 
 clean_build_context_metadata
 prepare_node_volume_for_snapshot
+plan_orphan_container_cleanup
 
 export DOCKER_DEFAULT_PLATFORM="$DOCKER_PLATFORM"
 
@@ -404,7 +498,7 @@ docker compose build
 
 echo ""
 echo "=== Starting services ==="
-docker compose up -d
+docker compose up -d --no-build --pull never
 
 cat <<'EOF'
 

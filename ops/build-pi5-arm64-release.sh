@@ -56,6 +56,8 @@ extract_peer_value() {
 
 write_release_compose() {
   cat > "$PACKAGE_DIR/docker-compose.yml" <<'EOF'
+# BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1
+# Generated Pi5 runtime compose. Do not replace with the source/dev compose file.
 x-mining-logging: &mining-logging
   driver: local
   options:
@@ -84,7 +86,9 @@ services:
     environment:
       POOL_PORT: ${POOL_PORT:-3334}
       NODE_RPC_URL: http://rpc-failover:38131
-      NODE_RPC_URLS: http://rpc-failover:38131
+      NODE_RPC_URLS: ${NODE_RPC_URLS:-http://rpc-failover:38131}
+      POOL_SUBMIT_RPC_URLS: ${POOL_SUBMIT_RPC_URLS:-}
+      POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: ${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
       WALLET_RPC_URL: ${WALLET_RPC_URL:-http://bdag-miner-node-2:18545}
@@ -157,17 +161,25 @@ services:
       BDAG_FASTSNAP_MIN_TIP: ${BDAG_FASTSNAP_MIN_TIP:-0}
       BDAG_FASTSNAP_TIMEOUT: ${BDAG_FASTSNAP_TIMEOUT:-90s}
       BDAG_FASTSNAP_ARTIFACT_V2: ${BDAG_FASTSNAP_ARTIFACT_V2:-1}
+      BDAG_FASTSNAP_DIRECTORY_MODE: ${BDAG_FASTSNAP_DIRECTORY_MODE:-1}
+      BDAG_FASTSNAP_DIRECTORY_STAGING: ${BDAG_FASTSNAP_DIRECTORY_STAGING:-}
+      BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING: ${BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING:-1}
+      BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING: ${BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING:-1}
       BDAG_FASTSNAP_ALLOW_UNSIGNED: ${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}
       BDAG_FASTSNAP_PARALLELISM: ${BDAG_FASTSNAP_PARALLELISM:-4}
       BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
-      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-1}
+      BDAG_FASTSYNC_ARTIFACT_DIRECTORY: ${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}
+      BDAG_FASTSYNC_ARTIFACT_MANIFEST: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}
+      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-latency}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
+      BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
       BDAG_FASTSYNC_LAN_PREFIXES: ${BDAG_FASTSYNC_LAN_PREFIXES:-192.168.}
       BDAG_FASTSYNC_LAN_PEERS: ${BDAG_FASTSYNC_LAN_PEERS:-}
       BDAG_FASTSYNC_VPN_PEERS: ${BDAG_FASTSYNC_VPN_PEERS:-}
       BDAG_FASTSYNC_PUBLIC_PEERS: ${BDAG_FASTSYNC_PUBLIC_PEERS:-}
       BDAG_FASTSYNC_PEERS: ${BDAG_FASTSYNC_PEERS:-}
       BDAG_FASTSYNC_PREPROCESS_WORKERS: ${BDAG_FASTSYNC_PREPROCESS_WORKERS:-1}
+      BDAG_ENTRYPOINT_CHOWN_MODE: ${BDAG_ENTRYPOINT_CHOWN_MODE:-needed}
       NODE_ARGS: >
         --p2ptcpport=8151
         --listen=0.0.0.0
@@ -234,17 +246,25 @@ services:
       BDAG_FASTSNAP_MIN_TIP: ${BDAG_FASTSNAP_MIN_TIP:-0}
       BDAG_FASTSNAP_TIMEOUT: ${BDAG_FASTSNAP_TIMEOUT:-90s}
       BDAG_FASTSNAP_ARTIFACT_V2: ${BDAG_FASTSNAP_ARTIFACT_V2:-1}
+      BDAG_FASTSNAP_DIRECTORY_MODE: ${BDAG_FASTSNAP_DIRECTORY_MODE:-1}
+      BDAG_FASTSNAP_DIRECTORY_STAGING: ${BDAG_FASTSNAP_DIRECTORY_STAGING:-}
+      BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING: ${BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING:-1}
+      BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING: ${BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING:-1}
       BDAG_FASTSNAP_ALLOW_UNSIGNED: ${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}
       BDAG_FASTSNAP_PARALLELISM: ${BDAG_FASTSNAP_PARALLELISM:-4}
       BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
-      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-1}
+      BDAG_FASTSYNC_ARTIFACT_DIRECTORY: ${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}
+      BDAG_FASTSYNC_ARTIFACT_MANIFEST: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}
+      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-latency}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
+      BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
       BDAG_FASTSYNC_LAN_PREFIXES: ${BDAG_FASTSYNC_LAN_PREFIXES:-192.168.}
       BDAG_FASTSYNC_LAN_PEERS: ${BDAG_FASTSYNC_LAN_PEERS:-}
       BDAG_FASTSYNC_VPN_PEERS: ${BDAG_FASTSYNC_VPN_PEERS:-}
       BDAG_FASTSYNC_PUBLIC_PEERS: ${BDAG_FASTSYNC_PUBLIC_PEERS:-}
       BDAG_FASTSYNC_PEERS: ${BDAG_FASTSYNC_PEERS:-}
       BDAG_FASTSYNC_PREPROCESS_WORKERS: ${BDAG_FASTSYNC_PREPROCESS_WORKERS:-1}
+      BDAG_ENTRYPOINT_CHOWN_MODE: ${BDAG_ENTRYPOINT_CHOWN_MODE:-needed}
       NODE_ARGS: >
         --p2ptcpport=8152
         --listen=0.0.0.0
@@ -322,6 +342,18 @@ networks:
 EOF
 }
 
+guard_release_compose() {
+  local compose="$PACKAGE_DIR/docker-compose.yml"
+  if ! grep -q '^# BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1$' "$compose"; then
+    echo "Generated runtime compose marker missing from $compose" >&2
+    exit 1
+  fi
+  if grep -Eq '^[[:space:]]*(build|dockerfile):' "$compose"; then
+    echo "Generated runtime compose must not contain build/dockerfile entries: $compose" >&2
+    exit 1
+  fi
+}
+
 sanitize_release_tree() {
   rm -rf "$PACKAGE_DIR/ops/observability/testdata"
   rm -f "$PACKAGE_DIR/ops/observability/.env"
@@ -389,6 +421,34 @@ BDAG_STACK_SERVICES=pool-db,bdag-miner-node-2,rpc-failover,asic-pool
 BDAG_ENABLE_NODE_MINING=0
 BDAG_NODE_MODULES=Blockdag
 BDAG_NODE_MINING_ARGS=
+BDAG_NODE_CHAIN_RPC_TIMEOUT=8.0
+BDAG_NODE_CHAIN_RPC_RETRIES=2
+BDAG_POOL_RPC_REFUSED_WARN_SECONDS=120
+BDAG_HOST_PRESSURE_IOWAIT_WARN_PERCENT=25
+BDAG_HOST_PRESSURE_IOWAIT_WARN_SAMPLES=3
+BDAG_HOST_PRESSURE_HISTORY_SAMPLES=6
+BDAG_SHARED_STATUS_CACHE_ENABLED=1
+BDAG_SHARED_STATUS_CACHE_SECONDS=3.0
+BDAG_HOST_PROFILE=auto
+BDAG_ADAPTIVE_CONCURRENCY_ENABLED=1
+BDAG_ADAPTIVE_IOWAIT_WARN_PERCENT=25
+BDAG_ADAPTIVE_IO_SOME_AVG10_WARN=20.0
+BDAG_ADAPTIVE_CPU_SOME_AVG10_WARN=80.0
+BDAG_ADAPTIVE_CHAIN_RPC_WARN_MS=1000
+BDAG_STATUS_SAMPLER_ENABLED=1
+BDAG_STATUS_SAMPLER_INTERVAL_SECONDS=10
+BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS=12
+BDAG_GLOBAL_RPC_WORKERS=24
+BDAG_MINER_SCAN_WORKERS=64
+BDAG_MINER_HASHRATE_PROBE_WORKERS=8
+BDAG_BACKGROUND_MAINTENANCE_BACKOFF_ENABLED=1
+BDAG_BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS=0
+BDAG_BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT=25
+BDAG_BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN=20.0
+BDAG_BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN=80.0
+BDAG_BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS=1000
+BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER=2
+BDAG_ENTRYPOINT_CHOWN_MODE=needed
 BDAG_NODE_CACHE_MB=4096
 BDAG_NODE_CACHE_DATABASE_PERCENT=50
 BDAG_NODE_CACHE_SNAPSHOT_PERCENT=35
@@ -409,6 +469,7 @@ PG_URL=postgres://test:change-me-at-install@pool-db:5432/pool
 
 POOL_RPC_ROUTER_ENABLED=true
 POOL_RPC_BACKENDS=node2=http://bdag-miner-node-2:38131
+POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT=true
 POOL_TEMPLATE_FANIN_ENABLED=false
 POOL_TEMPLATE_FANIN_MAX_BACKENDS=2
 POOL_TEMPLATE_FANIN_REJECT_LAG_BLOCKS=0
@@ -431,19 +492,29 @@ BDAG_FASTSNAP_PEERS=
 BDAG_FASTSNAP_MIN_TIP=0
 BDAG_FASTSNAP_TIMEOUT=90s
 BDAG_FASTSNAP_ARTIFACT_V2=1
+BDAG_FASTSNAP_DIRECTORY_MODE=1
+BDAG_FASTSNAP_DIRECTORY_STAGING=
+BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING=1
+BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING=1
 BDAG_FASTSNAP_ALLOW_UNSIGNED=0
 BDAG_FASTSNAP_PARALLELISM=4
 BDAG_FASTSNAP_LEDGER=
-BDAG_FASTSYNC_PEER_ORDERING=1
+BDAG_FASTSYNC_ARTIFACT_DIRECTORY=
+BDAG_FASTSYNC_ARTIFACT_MANIFEST=
+BDAG_FASTSYNC_PEER_ORDERING=latency
 BDAG_FASTSYNC_APPEND_ADDPEERS=1
+BDAG_FASTARTIFACTSYNC_ENABLED=1
 BDAG_FASTSYNC_LAN_PREFIXES=192.168.
 BDAG_FASTSYNC_LAN_PEERS=
 BDAG_FASTSYNC_VPN_PEERS=
 BDAG_FASTSYNC_PUBLIC_PEERS=
 BDAG_FASTSYNC_PEERS=
 BDAG_FASTSYNC_PREPROCESS_WORKERS=1
+BDAG_ENTRYPOINT_CHOWN_MODE=needed
 
 NODE_RPC_URL=http://rpc-failover:38131
+NODE_RPC_URLS=http://rpc-failover:38131
+POOL_SUBMIT_RPC_URLS=
 WALLET_RPC_URL=http://bdag-miner-node-2:18545
 WALLET_RPC_URLS=http://bdag-miner-node-2:18545
 PPLNS_N_WORK=1000
@@ -592,6 +663,16 @@ classify_peer_csv() {
   IFS="$old_ifs"
 }
 
+append_latency_peer_csv() {
+  raw="$1"
+  old_ifs="$IFS"
+  IFS=', '
+  for peer in $raw; do
+    csv_append_unique fastsync_public_peers "$peer"
+  done
+  IFS="$old_ifs"
+}
+
 addpeer_values() {
   for word in ${NODE_ARGS:-}; do
     case "$word" in
@@ -601,15 +682,28 @@ addpeer_values() {
 }
 
 apply_ordered_fastsync_peers() {
-  [ "${BDAG_FASTSYNC_PEER_ORDERING:-1}" = "1" ] || return 0
+  case "${BDAG_FASTSYNC_PEER_ORDERING:-latency}" in
+    0|off|false|none) return 0 ;;
+  esac
   fastsync_lan_peers=""
   fastsync_vpn_peers=""
   fastsync_public_peers=""
 
-  classify_peer_csv "${BDAG_FASTSYNC_LAN_PEERS:-${BDAG_FASTSYNC_LOCAL_PEERS:-}}"
-  classify_peer_csv "${BDAG_FASTSYNC_VPN_PEERS:-${BDAG_FASTSYNC_PRIVATE_PEERS:-}}"
-  classify_peer_csv "${BDAG_FASTSYNC_PUBLIC_PEERS:-}"
-  classify_peer_csv "${BDAG_FASTSYNC_PEERS:-} ${BDAG_FASTSNAP_PEERS:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $(addpeer_values | paste -sd, - || true)"
+  ordering="${BDAG_FASTSYNC_PEER_ORDERING:-latency}"
+  if [ "$ordering" = "legacy-buckets" ] || [ "$ordering" = "buckets" ]; then
+    classify_peer_csv "${BDAG_FASTSYNC_LAN_PEERS:-${BDAG_FASTSYNC_LOCAL_PEERS:-}}"
+    classify_peer_csv "${BDAG_FASTSYNC_VPN_PEERS:-${BDAG_FASTSYNC_PRIVATE_PEERS:-}}"
+    classify_peer_csv "${BDAG_FASTSYNC_PUBLIC_PEERS:-}"
+    classify_peer_csv "${BDAG_FASTSYNC_PEERS:-} ${BDAG_FASTSNAP_PEERS:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $(addpeer_values | paste -sd, - || true)"
+  else
+    append_latency_peer_csv "${BDAG_FASTSYNC_PEERS:-}"
+    append_latency_peer_csv "${BDAG_FASTSNAP_PEERS:-}"
+    append_latency_peer_csv "${BOOTSTRAP_PEER_ADDRESSES:-}"
+    append_latency_peer_csv "$(addpeer_values | paste -sd, - || true)"
+    append_latency_peer_csv "${BDAG_FASTSYNC_LAN_PEERS:-${BDAG_FASTSYNC_LOCAL_PEERS:-}}"
+    append_latency_peer_csv "${BDAG_FASTSYNC_VPN_PEERS:-${BDAG_FASTSYNC_PRIVATE_PEERS:-}}"
+    append_latency_peer_csv "${BDAG_FASTSYNC_PUBLIC_PEERS:-}"
+  fi
 
   ordered="$fastsync_lan_peers"
   [ -n "$fastsync_vpn_peers" ] && ordered="${ordered:+$ordered,}$fastsync_vpn_peers"
@@ -618,7 +712,11 @@ apply_ordered_fastsync_peers() {
 
   export BDAG_FASTSNAP_PEERS="$ordered"
   count="$(printf '%s' "$ordered" | awk -F, '{print NF}')"
-  log "ordered FastSync candidates enabled: LAN first, private/VPN second, public last; total=$count"
+  if [ "$ordering" = "legacy-buckets" ] || [ "$ordering" = "buckets" ]; then
+    log "legacy bucket FastSync candidates enabled; total=$count"
+  else
+    log "latency-first FastSync candidates enabled; total=$count"
+  fi
   if [ "${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}" = "1" ]; then
     old_ifs="$IFS"
     IFS=,
@@ -628,6 +726,30 @@ apply_ordered_fastsync_peers() {
     IFS="$old_ifs"
     export NODE_ARGS
   fi
+}
+
+node_args_contains_word() {
+  needle="$1"
+  for word in ${NODE_ARGS:-}; do
+    [ "$word" = "$needle" ] && return 0
+  done
+  return 1
+}
+
+append_node_arg_once() {
+  flag="$1"
+  node_args_contains_word "$flag" && return 0
+  NODE_ARGS="${NODE_ARGS:-} $flag"
+  export NODE_ARGS
+}
+
+apply_default_fastsync_flags() {
+  [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-1}" = "1" ] || return 0
+  append_node_arg_once "--fastartifactsync"
+}
+
+fastsnap_supports_directory_mode() {
+  "$1" --help 2>&1 | grep -q -- "--dir-out"
 }
 
 node_arg_value() {
@@ -691,7 +813,14 @@ maybe_fastsnap_bootstrap() {
   min_tip="${BDAG_FASTSNAP_MIN_TIP:-0}"
   timeout="${BDAG_FASTSNAP_TIMEOUT:-90s}"
   tmp_archive="$archive.download.$$"
+  directory_mode="${BDAG_FASTSNAP_DIRECTORY_MODE:-1}"
+  if [ "$directory_mode" = "1" ] && ! fastsnap_supports_directory_mode "$fastsnap_bin"; then
+    log "fastsnap binary does not support directory install flags; using V2 archive fallback"
+    directory_mode=0
+  fi
+  tmp_dir="${BDAG_FASTSNAP_DIRECTORY_STAGING:-$data_parent/.fastsnap-directory-$network.$$}"
   rm -f "$tmp_archive" "$tmp_archive.manifest.json"
+  rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
 
   old_ifs="$IFS"
   IFS=', '
@@ -699,22 +828,45 @@ maybe_fastsnap_bootstrap() {
     [ -n "$peer" ] || continue
     log "trying P2P snapshot bootstrap from $peer"
     args="--peer $peer --out $tmp_archive --network $network --min-tip $min_tip --timeout $timeout"
+    if [ "$directory_mode" = "1" ]; then
+      args="$args --dir-out $tmp_dir --install-dir $data_dir"
+      [ "${BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING:-1}" = "1" ] && args="$args --replace-existing"
+      [ "${BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING:-1}" = "1" ] && args="$args --move-staging"
+    fi
     [ "${BDAG_FASTSNAP_ARTIFACT_V2:-1}" = "0" ] && args="$args --artifact-v2=false"
     [ "${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}" = "1" ] && args="$args --allow-unsigned"
     [ -n "${BDAG_FASTSNAP_PARALLELISM:-}" ] && args="$args --parallelism ${BDAG_FASTSNAP_PARALLELISM}"
     [ -n "${BDAG_FASTSNAP_LEDGER:-}" ] && args="$args --ledger ${BDAG_FASTSNAP_LEDGER}"
     # shellcheck disable=SC2086
     if "$FASTSNAP" $args; then
+      if [ -d "$data_dir/BdagChain" ]; then
+        if [ -f "$tmp_dir.manifest.json" ]; then
+          mv "$tmp_dir.manifest.json" "$data_dir/artifact.manifest.json"
+        fi
+        rm -f "$tmp_archive" "$tmp_archive.manifest.json"
+        rm -rf "$tmp_dir"
+        log "downloaded and installed P2P directory artifact before node startup"
+        IFS="$old_ifs"
+        return 0
+      fi
+      if [ ! -s "$tmp_archive" ]; then
+        log "fastsnap completed but did not install chain data or produce an archive"
+        rm -f "$tmp_archive" "$tmp_archive.manifest.json"
+        rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
+        continue
+      fi
       mv "$tmp_archive" "$archive"
       if [ -f "$tmp_archive.manifest.json" ]; then
         mv "$tmp_archive.manifest.json" "$archive.manifest.json"
       fi
       log "importing downloaded P2P snapshot before node startup"
       "$BIN" snap import --datadir "$data_dir" --path "$archive"
+      rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
       IFS="$old_ifs"
       return 0
     fi
     rm -f "$tmp_archive" "$tmp_archive.manifest.json"
+    rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
   done
   IFS="$old_ifs"
 
@@ -725,9 +877,29 @@ maybe_fastsnap_bootstrap() {
   log "P2P snapshot bootstrap unavailable; falling back to normal FastSync/legacy sync"
 }
 
+configure_directory_artifact_serving() {
+  if [ -n "${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}" ] || [ -n "${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}" ]; then
+    return 0
+  fi
+  network="${BDAG_FASTSNAP_NETWORK:-mainnet}"
+  data_parent="${BDAG_FASTSNAP_DATADIR:-$(node_arg_value datadir || true)}"
+  data_parent="${data_parent:-/data}"
+  data_dir="$(network_datadir "$data_parent" "$network")"
+  manifest="$data_dir/artifact.manifest.json"
+  if [ -s "$manifest" ] && [ -d "$data_dir/BdagChain" ]; then
+    export BDAG_FASTSYNC_ARTIFACT_DIRECTORY="$data_dir"
+    export BDAG_FASTSYNC_ARTIFACT_MANIFEST="$manifest"
+    log "enabled Fast Artifact Sync V2 directory serving from $data_dir"
+  else
+    log "Fast Artifact Sync V2 directory manifest unavailable at $manifest; using archive/legacy serving fallback"
+  fi
+}
+
 echo "Using node binary: $BIN"
 apply_ordered_fastsync_peers
+apply_default_fastsync_flags
 maybe_fastsnap_bootstrap
+configure_directory_artifact_serving
 
 exec nodeworker \
   --node-binary="$BIN" \
@@ -764,6 +936,12 @@ test -x "$BIN_DIR/pool" || { echo "Missing $BIN_DIR/pool" >&2; exit 1; }
 test -x "$BIN_DIR/dashboard-api" || { echo "Missing $BIN_DIR/dashboard-api" >&2; exit 1; }
 test -x "$BIN_DIR/bdag" || { echo "Missing $BIN_DIR/bdag" >&2; exit 1; }
 test -x "$BIN_DIR/nodeworker" || { echo "Missing $BIN_DIR/nodeworker" >&2; exit 1; }
+test -x "$BIN_DIR/fastsnap" || { echo "Missing $BIN_DIR/fastsnap" >&2; exit 1; }
+
+if [[ -f "$ROOT/scripts/verify-release-architecture.py" ]]; then
+  python3 "$ROOT/scripts/verify-release-architecture.py" --target "linux-$ARCH" \
+    "$BIN_DIR/pool" "$BIN_DIR/dashboard-api" "$BIN_DIR/bdag" "$BIN_DIR/nodeworker" "$BIN_DIR/fastsnap"
+fi
 
 cp "$BIN_DIR/pool" "$BUILD_DIR/pool/pool"
 cp "$BIN_DIR/dashboard-api" "$BUILD_DIR/pool/dashboard-api"
@@ -1139,18 +1317,21 @@ main() {
 
   say "Overlaying current production ops files"
   rsync -a --delete --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' "$PROJECT_ROOT/ops"/ "$PACKAGE_DIR/ops"/
-  rsync -a "$PROJECT_ROOT/docker-compose.yml" "$PROJECT_ROOT/haproxy.cfg" "$PACKAGE_DIR"/
+  rsync -a "$PROJECT_ROOT/scripts"/ "$PACKAGE_DIR/scripts"/
+  rsync -a "$PROJECT_ROOT/haproxy.cfg" "$PACKAGE_DIR"/
   mkdir -p "$PACKAGE_DIR/asic-pool"
   rsync -a "$PROJECT_ROOT/asic-pool/schema.sql" "$PACKAGE_DIR/asic-pool/schema.sql"
   cp "$PROJECT_ROOT/ops/release-install.sh" "$PACKAGE_DIR/install.sh"
   chmod +x "$PACKAGE_DIR/install.sh"
   write_release_compose
+  guard_release_compose
 
   rm -rf "$PACKAGE_DIR/artifacts/binaries" "$PACKAGE_DIR/artifacts/images"
   mkdir -p "$bin_dir" "$image_dir"
   write_env_examples "$node1_peers" "$node2_peers"
   write_image_build_files
   sanitize_release_tree
+  guard_release_compose
 
   say "Creating source worktrees"
   git -C "$POOL_REPO" worktree add --detach "$BUILD_ROOT/pool-src" "$POOL_COMMIT"
@@ -1178,6 +1359,8 @@ main() {
   )
 
   chmod +x "$bin_dir"/pool "$bin_dir"/dashboard-api "$bin_dir"/bdag "$bin_dir"/nodeworker "$bin_dir"/fastsnap
+  python3 "$PROJECT_ROOT/scripts/verify-release-architecture.py" --target linux-arm64 \
+    "$bin_dir"/pool "$bin_dir"/dashboard-api "$bin_dir"/bdag "$bin_dir"/nodeworker "$bin_dir"/fastsnap
   file "$bin_dir"/pool "$bin_dir"/dashboard-api "$bin_dir"/bdag "$bin_dir"/nodeworker "$bin_dir"/fastsnap | tee "$bin_dir/FILE_TYPES.txt"
   (cd "$bin_dir" && sha256sum pool dashboard-api bdag nodeworker fastsnap > SHA256SUMS)
 
