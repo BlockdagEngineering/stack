@@ -297,6 +297,41 @@ apply_ordered_fastsync_peers() {
   fi
 }
 
+node_args_contains_word() {
+  local node_args="$1"
+  local needle="$2"
+  local word
+  for word in $node_args; do
+    [ "$word" = "$needle" ] && return 0
+  done
+  return 1
+}
+
+append_node_arg_once() {
+  local flag="$1"
+  local node_args="$2"
+  if node_args_contains_word "$node_args" "$flag"; then
+    return 0
+  fi
+  NODE_ARGS_APPEND="${NODE_ARGS_APPEND:+$NODE_ARGS_APPEND }$flag"
+  export NODE_ARGS_APPEND
+}
+
+apply_default_fastsync_flags() {
+  if [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-1}" != "1" ]; then
+    return 0
+  fi
+
+  local node_args
+  node_args="$(node_args_from_argv "$@" || true)"
+  append_node_arg_once "--fastartifactsync" "$node_args ${NODE_ARGS_APPEND:-}"
+}
+
+fastsnap_supports_directory_mode() {
+  local fastsnap_bin="$1"
+  "$fastsnap_bin" --help 2>&1 | grep -q -- "--dir-out"
+}
+
 maybe_fastsnap_bootstrap() {
   if [ "${BDAG_FASTSNAP_ENABLED:-1}" != "1" ]; then
     return 0
@@ -354,6 +389,10 @@ maybe_fastsnap_bootstrap() {
   timeout="${BDAG_FASTSNAP_TIMEOUT:-90s}"
   tmp_archive="$archive.download.$$"
   directory_mode="${BDAG_FASTSNAP_DIRECTORY_MODE:-1}"
+  if [ "$directory_mode" = "1" ] && ! fastsnap_supports_directory_mode "$fastsnap_bin"; then
+    log "fastsnap binary does not support directory install flags; using V2 archive fallback"
+    directory_mode=0
+  fi
   tmp_dir="${BDAG_FASTSNAP_DIRECTORY_STAGING:-$data_parent/.fastsnap-directory-$network.$$}"
   rm -f "$tmp_archive" "$tmp_archive.manifest.json"
   rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
@@ -455,6 +494,7 @@ configure_directory_artifact_serving() {
 }
 
 apply_ordered_fastsync_peers "$@"
+apply_default_fastsync_flags "$@"
 
 if [ -n "${NODE_ARGS_APPEND:-}" ]; then
   args=("$@")

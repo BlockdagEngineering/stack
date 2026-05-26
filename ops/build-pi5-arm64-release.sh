@@ -171,6 +171,7 @@ services:
       BDAG_FASTSYNC_ARTIFACT_MANIFEST: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}
       BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-1}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
+      BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
       BDAG_FASTSYNC_LAN_PREFIXES: ${BDAG_FASTSYNC_LAN_PREFIXES:-192.168.}
       BDAG_FASTSYNC_LAN_PEERS: ${BDAG_FASTSYNC_LAN_PEERS:-}
       BDAG_FASTSYNC_VPN_PEERS: ${BDAG_FASTSYNC_VPN_PEERS:-}
@@ -255,6 +256,7 @@ services:
       BDAG_FASTSYNC_ARTIFACT_MANIFEST: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}
       BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-1}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
+      BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
       BDAG_FASTSYNC_LAN_PREFIXES: ${BDAG_FASTSYNC_LAN_PREFIXES:-192.168.}
       BDAG_FASTSYNC_LAN_PEERS: ${BDAG_FASTSYNC_LAN_PEERS:-}
       BDAG_FASTSYNC_VPN_PEERS: ${BDAG_FASTSYNC_VPN_PEERS:-}
@@ -499,6 +501,7 @@ BDAG_FASTSYNC_ARTIFACT_DIRECTORY=
 BDAG_FASTSYNC_ARTIFACT_MANIFEST=
 BDAG_FASTSYNC_PEER_ORDERING=1
 BDAG_FASTSYNC_APPEND_ADDPEERS=1
+BDAG_FASTARTIFACTSYNC_ENABLED=1
 BDAG_FASTSYNC_LAN_PREFIXES=192.168.
 BDAG_FASTSYNC_LAN_PEERS=
 BDAG_FASTSYNC_VPN_PEERS=
@@ -696,6 +699,30 @@ apply_ordered_fastsync_peers() {
   fi
 }
 
+node_args_contains_word() {
+  needle="$1"
+  for word in ${NODE_ARGS:-}; do
+    [ "$word" = "$needle" ] && return 0
+  done
+  return 1
+}
+
+append_node_arg_once() {
+  flag="$1"
+  node_args_contains_word "$flag" && return 0
+  NODE_ARGS="${NODE_ARGS:-} $flag"
+  export NODE_ARGS
+}
+
+apply_default_fastsync_flags() {
+  [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-1}" = "1" ] || return 0
+  append_node_arg_once "--fastartifactsync"
+}
+
+fastsnap_supports_directory_mode() {
+  "$1" --help 2>&1 | grep -q -- "--dir-out"
+}
+
 node_arg_value() {
   key="$1"
   next=0
@@ -758,6 +785,10 @@ maybe_fastsnap_bootstrap() {
   timeout="${BDAG_FASTSNAP_TIMEOUT:-90s}"
   tmp_archive="$archive.download.$$"
   directory_mode="${BDAG_FASTSNAP_DIRECTORY_MODE:-1}"
+  if [ "$directory_mode" = "1" ] && ! fastsnap_supports_directory_mode "$fastsnap_bin"; then
+    log "fastsnap binary does not support directory install flags; using V2 archive fallback"
+    directory_mode=0
+  fi
   tmp_dir="${BDAG_FASTSNAP_DIRECTORY_STAGING:-$data_parent/.fastsnap-directory-$network.$$}"
   rm -f "$tmp_archive" "$tmp_archive.manifest.json"
   rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
@@ -835,6 +866,7 @@ configure_directory_artifact_serving() {
 
 echo "Using node binary: $BIN"
 apply_ordered_fastsync_peers
+apply_default_fastsync_flags
 maybe_fastsnap_bootstrap
 configure_directory_artifact_serving
 

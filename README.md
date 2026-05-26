@@ -114,6 +114,15 @@ dials dominate startup. V2 is the default on upgraded full nodes; a separate
 `BDAG_FASTSNAP_PEERS` value is only needed when the operator wants to pin a
 specific artifact source.
 
+Nodes also start with `--fastartifactsync` by default
+(`BDAG_FASTARTIFACTSYNC_ENABLED=1`) so they advertise and consume Fast Artifact
+Sync V2 whenever the core binary supports it. The sync coordinator treats more
+than `BDAG_SYNC_COORDINATOR_FAR_BEHIND_BLOCKS=1000` remaining blocks as an
+automatic fastest-catch-up condition: it raises the selected leader's Docker CPU
+and IO weights, keeps duplicate sync work paused in dual-node mode, and restarts
+an unaccelerated or stale leader after the cooldown window so startup peer order
+and V2 artifact serving are active.
+
 `BDAG_FASTSYNC_LAN_PREFIXES` defaults to `192.168.`. If your premises LAN uses
 another private range, either put those complete multiaddrs in
 `BDAG_FASTSYNC_LAN_PEERS` or extend the prefix list in `.env`.
@@ -121,11 +130,12 @@ another private range, either put those complete multiaddrs in
 ## Fast Artifact Sync V2 Directory Mode
 
 Fast Artifact Sync V2 directory artifacts are now the preferred empty-datadir
-bootstrap path when a peer offers them. The node entrypoint passes both
-`--dir-out` and `--out` to `fastsnap`: directory-capable peers install verified
+bootstrap path when a peer offers them. The node entrypoint first checks whether
+the packaged `fastsnap` binary supports directory install flags. When supported,
+it passes both `--dir-out` and `--out`: directory-capable peers install verified
 manifest files directly into the node datadir, while archive-only peers still
-fall back to the `.bdsnap` path. This keeps new nodes compatible with old seeds
-without paying archive assembly overhead when a V2 directory source exists.
+fall back to the `.bdsnap` path. If the binary is older, the entrypoint stays on
+the V2 archive path instead of failing before normal sync can start.
 
 `BDAG_FASTSNAP_DIRECTORY_MODE=1` is the default. Set
 `BDAG_FASTSNAP_DIRECTORY_STAGING` only when the staging directory must live on a

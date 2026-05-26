@@ -423,6 +423,9 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         "BDAG_NODE_CACHE_MB": env.get("BDAG_NODE_CACHE_MB"),
         "NODE_MAX_PEERS": env.get("NODE_MAX_PEERS"),
         "BDAG_FASTSYNC_PREPROCESS_WORKERS": env.get("BDAG_FASTSYNC_PREPROCESS_WORKERS"),
+        "BDAG_FASTARTIFACTSYNC_ENABLED": env.get("BDAG_FASTARTIFACTSYNC_ENABLED"),
+        "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": env.get("BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC"),
+        "BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS": env.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS"),
         "BDAG_STATUS_SAMPLER_ENABLED": env.get("BDAG_STATUS_SAMPLER_ENABLED"),
         "BDAG_ADAPTIVE_CONCURRENCY_ENABLED": env.get("BDAG_ADAPTIVE_CONCURRENCY_ENABLED"),
         "BDAG_ENTRYPOINT_CHOWN_MODE": env.get("BDAG_ENTRYPOINT_CHOWN_MODE"),
@@ -450,6 +453,22 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         add(checks, "warn", "fastsync_preprocess_workers", f"BDAG_FASTSYNC_PREPROCESS_WORKERS={preprocess} can contend with mining.", "Use one preprocess worker on slow disks and two-core hosts.", evidence)
     else:
         add(checks, "pass", "fastsync_preprocess_workers", f"BDAG_FASTSYNC_PREPROCESS_WORKERS={preprocess}", evidence=evidence)
+
+    if not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True):
+        add(checks, "warn", "fastartifactsync", "BDAG_FASTARTIFACTSYNC_ENABLED is disabled.", "Enable Fast Artifact Sync V2 so nodes can advertise and use the fastest sync path.", evidence)
+    else:
+        add(checks, "pass", "fastartifactsync", "Fast Artifact Sync V2 startup flag is enabled", evidence=evidence)
+
+    if not bool_enabled(env.get("BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC"), True):
+        add(checks, "warn", "fastsync_acceleration", "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC is disabled.", "Enable coordinator acceleration so nodes more than 1000 blocks behind use fastest catch-up defaults.", evidence)
+    else:
+        add(checks, "pass", "fastsync_acceleration", "sync coordinator fastest catch-up is enabled", evidence=evidence)
+
+    fast_restart_cooldown = safe_int(env.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS"), 900)
+    if fast_restart_cooldown and fast_restart_cooldown > 1800:
+        add(checks, "warn", "fastsync_restart_cooldown", f"fast restart cooldown is {fast_restart_cooldown}s.", "Use 900s so a stale or unaccelerated importer does not remain down-level for too long.", evidence)
+    else:
+        add(checks, "pass", "fastsync_restart_cooldown", f"fast restart cooldown={fast_restart_cooldown}s", evidence=evidence)
 
     if not bool_enabled(env.get("BDAG_STATUS_SAMPLER_ENABLED"), True):
         add(checks, "warn", "status_sampler", "BDAG_STATUS_SAMPLER_ENABLED is disabled.", "Enable the sampler so dashboard, watchdog, and guards share one low-overhead status collection.", evidence)

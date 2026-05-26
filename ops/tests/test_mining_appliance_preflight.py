@@ -53,6 +53,9 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 "BDAG_NODE_CACHE_MB": "4096",
                 "NODE_MAX_PEERS": "512",
                 "BDAG_FASTSYNC_PREPROCESS_WORKERS": "4",
+                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
+                "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": "0",
+                "BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS": "3600",
                 "BDAG_STATUS_SAMPLER_ENABLED": "0",
                 "BDAG_ADAPTIVE_CONCURRENCY_ENABLED": "0",
                 "BDAG_ENTRYPOINT_CHOWN_MODE": "always",
@@ -64,6 +67,9 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         self.assertIn("node_cache_budget", warnings)
         self.assertIn("peer_budget", warnings)
         self.assertIn("fastsync_preprocess_workers", warnings)
+        self.assertIn("fastartifactsync", warnings)
+        self.assertIn("fastsync_acceleration", warnings)
+        self.assertIn("fastsync_restart_cooldown", warnings)
         self.assertIn("status_sampler", warnings)
         self.assertIn("adaptive_concurrency", warnings)
         self.assertIn("entrypoint_chown_mode", warnings)
