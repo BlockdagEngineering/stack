@@ -130,7 +130,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertRegex(
             validator,
             r'if \[\[ "\$mode" == "source" \]\]; then\n'
-            r'  need_grep .BDAG_FASTSYNC_PEER_ORDERING=latency. ".env.cpu.example"\n'
+            r'  need_grep .BDAG_FASTSYNC_PEER_ORDERING=tiered-latency. ".env.cpu.example"\n'
             r'fi',
         )
 

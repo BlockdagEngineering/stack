@@ -5319,10 +5319,15 @@ def annotate_global_pool_labels(payload: dict[str, Any]) -> dict[str, Any]:
 
     def annotate_cluster(cluster: dict[str, Any]) -> dict[str, Any]:
         address = str(cluster.get("address") or "")
+        existing_name = str(cluster.get("pool_name") or "").strip()
         label = labels.get(address.lower(), "")
-        if label:
+        if label and not (cluster.get("local_pool") and existing_name):
             cluster["pool_name"] = label
             cluster["pool_label"] = f"{label} ({short_eth_address(address)})"
+        elif existing_name and address:
+            cluster["pool_label"] = f"{existing_name} ({short_eth_address(address)})"
+        elif existing_name:
+            cluster["pool_label"] = existing_name
         elif address:
             cluster["pool_label"] = short_eth_address(address)
         return cluster
@@ -5744,6 +5749,159 @@ def _pool_earning_rates_from_cluster(cluster: dict[str, Any], scan_window_hours:
     )
 
 
+def local_worker_identity_map() -> dict[str, dict[str, Any]]:
+    registry = read_miner_registry()
+    workers: dict[str, dict[str, Any]] = {}
+    for miner in registry.get("miners", []) or []:
+        if not isinstance(miner, dict):
+            continue
+        worker_values = merge_unique_strings(miner.get("last_workers"), miner.get("workers"))
+        label = miner_display_label(miner)
+        for worker in worker_values:
+            if not is_spendable_eth_address(worker):
+                continue
+            workers[str(worker).lower()] = {
+                "pool_name": label,
+                "display_name": miner.get("display_name") or miner.get("name") or "",
+                "display_label": label,
+                "device_type": miner.get("device_type") or "",
+                "ip": miner.get("ip") or "",
+                "mac": normalize_mac(miner.get("mac")),
+                "identity_key": miner_identity_key(miner),
+            }
+    return workers
+
+
+def collect_local_pool_global_clusters(
+    scan_window_seconds: int,
+    total_global_blocks: int,
+    scan_window_hours: Decimal | None,
+    price: dict[str, Any],
+) -> list[dict[str, Any]]:
+    seconds = max(1, int(scan_window_seconds or 1))
+    sql = f"""
+    SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json)
+    FROM (
+      SELECT c.miner_address,
+             count(*) AS credit_count,
+             count(DISTINCT c.block_hash) AS found_blocks,
+             COALESCE(sum(c.amount), 0)::text AS total_wei,
+             COALESCE(sum(c.amount) FILTER (WHERE b.status = 'PAID'), 0)::text AS paid_wei,
+             COALESCE(sum(c.amount) FILTER (WHERE b.status <> 'PAID' OR b.status IS NULL), 0)::text AS pending_wei,
+             min(c.created_at)::text AS first_credit_at,
+             max(c.created_at)::text AS last_credit_at,
+             to_char(min(c.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS first_seen_at,
+             to_char(max(c.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_seen_at
+      FROM credits c
+      LEFT JOIN blocks b ON b.hash = c.block_hash
+      WHERE c.created_at >= now() - ({seconds} * interval '1 second')
+      GROUP BY c.miner_address
+      ORDER BY count(DISTINCT c.block_hash) DESC, sum(c.amount) DESC
+    ) t;
+    """
+    try:
+        rows = pool_db_json(sql) or []
+    except Exception as exc:  # noqa: BLE001
+        return [{"source": "local-pool-db", "status": "failed", "error": str(exc), "local_pool": True}]
+    if not isinstance(rows, list):
+        return []
+
+    identities = local_worker_identity_map()
+    clusters: list[dict[str, Any]] = []
+    denominator = Decimal(max(1, int(total_global_blocks or 0)))
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        address = str(row.get("miner_address") or "").strip()
+        if not is_spendable_eth_address(address):
+            continue
+        credit_count = int(row.get("credit_count", 0) or 0)
+        found_blocks = int(row.get("found_blocks", 0) or 0)
+        total_bdag = wei_to_bdag(row.get("total_wei"))
+        hourly_bdag = total_bdag / scan_window_hours if scan_window_hours and scan_window_hours > 0 else None
+        identity = identities.get(address.lower(), {})
+        pool_name = str(identity.get("display_label") or identity.get("pool_name") or "Local pool")
+        share = Decimal(found_blocks) / denominator
+        clusters.append(
+            {
+                "rank": None,
+                "address": address,
+                "address_short": short_eth_address(address),
+                "pool_name": pool_name,
+                "pool_label": f"{pool_name} ({short_eth_address(address)})",
+                "source": "local-pool-db",
+                "local_pool": True,
+                "nodes": list(NODES),
+                "rpc_sources": ["local-pool-db"],
+                "workers": [address],
+                "shares": credit_count,
+                "blocks": found_blocks,
+                "credit_blocks": credit_count,
+                "found_blocks": found_blocks,
+                "share_percent": decimal_to_str(share * Decimal("100"), places=2),
+                "credited_bdag": decimal_to_str(total_bdag),
+                "estimated_bdag": decimal_to_str(total_bdag),
+                "estimated_usd": fiat_value(total_bdag, price, "usd"),
+                "estimated_zar": fiat_value(total_bdag, price, "zar"),
+                "estimated_wallet_bdag": decimal_to_str(total_bdag),
+                "estimated_bdag_avg_hour": decimal_to_str(hourly_bdag) if hourly_bdag is not None else None,
+                "estimated_usd_avg_hour": fiat_value(hourly_bdag, price, "usd") if hourly_bdag is not None else None,
+                "estimated_zar_avg_hour": fiat_value(hourly_bdag, price, "zar") if hourly_bdag is not None else None,
+                "estimated_bdag_recent_hour": decimal_to_str(hourly_bdag) if hourly_bdag is not None else None,
+                "estimated_usd_recent_hour": fiat_value(hourly_bdag, price, "usd") if hourly_bdag is not None else None,
+                "estimated_zar_recent_hour": fiat_value(hourly_bdag, price, "zar") if hourly_bdag is not None else None,
+                "first_seen_at": row.get("first_seen_at") or row.get("first_credit_at"),
+                "last_seen_at": row.get("last_seen_at") or row.get("last_credit_at"),
+                "location": "local pool",
+                "location_confidence": "pool-db",
+                "identity_key": identity.get("identity_key") or "",
+                "ip": identity.get("ip") or "",
+                "mac": identity.get("mac") or "",
+                "device_type": identity.get("device_type") or "",
+            }
+        )
+    return clusters
+
+
+def merge_global_local_pool_clusters(
+    chain_clusters: list[dict[str, Any]],
+    local_clusters: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged = [dict(cluster) for cluster in chain_clusters if isinstance(cluster, dict)]
+    by_address = {str(cluster.get("address") or "").lower(): cluster for cluster in merged}
+    for local in local_clusters:
+        if not isinstance(local, dict) or local.get("status") == "failed":
+            continue
+        address = str(local.get("address") or "").lower()
+        existing = by_address.get(address)
+        if existing is None:
+            merged.append(dict(local))
+            continue
+        existing["local_pool"] = True
+        existing["source"] = "on-chain+local-pool-db"
+        for key in (
+            "pool_name",
+            "pool_label",
+            "nodes",
+            "workers",
+            "shares",
+            "credit_blocks",
+            "credited_bdag",
+            "found_blocks",
+            "estimated_wallet_bdag",
+            "identity_key",
+            "ip",
+            "mac",
+            "device_type",
+        ):
+            if local.get(key) not in (None, "", []):
+                existing[key] = local[key]
+    merged.sort(key=lambda item: (int(item.get("blocks", 0) or 0), str(item.get("last_seen_at") or "")), reverse=True)
+    for rank, cluster in enumerate(merged, start=1):
+        cluster["rank"] = rank
+    return merged
+
+
 def collect_global_blockchain() -> dict[str, Any]:
     cached = read_json_file(GLOBAL_CACHE_FILE, {})
     cached_at = int(cached.get("updated_at_epoch", 0) or 0) if isinstance(cached, dict) else 0
@@ -5930,6 +6088,14 @@ def collect_global_blockchain() -> dict[str, Any]:
             }
         )
 
+    local_pool_clusters = collect_local_pool_global_clusters(
+        window_seconds,
+        total_blocks,
+        scan_window_hours,
+        price,
+    )
+    display_clusters = merge_global_local_pool_clusters(enriched_clusters, local_pool_clusters)
+
     payload = {
         "status": "ok",
         "source": "on-chain",
@@ -5950,8 +6116,11 @@ def collect_global_blockchain() -> dict[str, Any]:
         "estimated_total_reward_bdag": total_reward_estimate_bdag,
         "estimated_total_reward_usd": fiat_value(total_reward_estimate, price, "usd") if total_reward_estimate is not None else None,
         "estimated_total_reward_zar": fiat_value(total_reward_estimate, price, "zar") if total_reward_estimate is not None else None,
-        "unique_miners": unique_miners,
-        "clusters": enriched_clusters,
+        "unique_miners": len(display_clusters),
+        "chain_unique_miners": unique_miners,
+        "clusters": display_clusters,
+        "chain_clusters": enriched_clusters,
+        "local_pool_clusters": local_pool_clusters,
         "peer_location": peer_location,
         "fetch_errors": fetch_errors[:20],
     }
@@ -5968,19 +6137,25 @@ def collect_global_blockchain() -> dict[str, Any]:
                     "address_short": cluster["address_short"],
                     "pool_name": cluster.get("pool_name", ""),
                     "pool_label": cluster.get("pool_label", cluster["address_short"]),
-                    "estimated_bdag_avg_hour": cluster["estimated_bdag_avg_hour"],
-                    "estimated_usd_avg_hour": cluster["estimated_usd_avg_hour"],
-                    "estimated_zar_avg_hour": cluster["estimated_zar_avg_hour"],
-                    "estimated_bdag_recent_hour": cluster["estimated_bdag_recent_hour"],
-                    "estimated_usd_recent_hour": cluster["estimated_usd_recent_hour"],
-                    "estimated_zar_recent_hour": cluster["estimated_zar_recent_hour"],
-                    "blocks": cluster["blocks"],
-                    "share_percent": cluster["share_percent"],
-                    "estimated_bdag": cluster["estimated_bdag"],
-                    "estimated_usd": cluster["estimated_usd"],
-                    "estimated_zar": cluster["estimated_zar"],
+                    "source": cluster.get("source", "on-chain"),
+                    "local_pool": bool(cluster.get("local_pool")),
+                    "estimated_bdag_avg_hour": cluster.get("estimated_bdag_avg_hour"),
+                    "estimated_usd_avg_hour": cluster.get("estimated_usd_avg_hour"),
+                    "estimated_zar_avg_hour": cluster.get("estimated_zar_avg_hour"),
+                    "estimated_bdag_recent_hour": cluster.get("estimated_bdag_recent_hour"),
+                    "estimated_usd_recent_hour": cluster.get("estimated_usd_recent_hour"),
+                    "estimated_zar_recent_hour": cluster.get("estimated_zar_recent_hour"),
+                    "blocks": cluster.get("blocks"),
+                    "shares": cluster.get("shares", cluster.get("blocks")),
+                    "credit_blocks": cluster.get("credit_blocks", cluster.get("blocks")),
+                    "found_blocks": cluster.get("found_blocks", cluster.get("blocks")),
+                    "share_percent": cluster.get("share_percent"),
+                    "credited_bdag": cluster.get("credited_bdag", cluster.get("estimated_bdag")),
+                    "estimated_bdag": cluster.get("estimated_bdag"),
+                    "estimated_usd": cluster.get("estimated_usd"),
+                    "estimated_zar": cluster.get("estimated_zar"),
                 }
-                for cluster in enriched_clusters
+                for cluster in display_clusters
             ],
         }
     )

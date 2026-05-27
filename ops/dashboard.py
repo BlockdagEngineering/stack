@@ -1566,6 +1566,8 @@ HTML = r"""<!doctype html>
       return name ? `${name} (${shortEth(address)})` : shortEth(address);
     }
     function globalNodesLabel(row) {
+      if (Array.isArray(row?.nodes) && row.nodes.length) return row.nodes.join(", ");
+      if (row?.local_pool) return "local pool";
       const name = row?.pool_name || globalPoolName(row?.address);
       if (name) return name;
       return (row?.rpc_sources || []).join(", ");
@@ -3151,13 +3153,21 @@ HTML = r"""<!doctype html>
         const poolAddress = row.address || row.address_short || "";
         const poolIdentity = globalPoolIdentity(row);
         const poolColor = globalPoolColor(poolIdentity);
+        const sourceBadge = row.local_pool ? ` <span class="subtle">local pool</span>` : "";
         const poolCell = poolName
-          ? `<span class="pool-dot"></span>${escapeHtml(poolName)} <span class="subtle">${escapeShortEth(poolAddress)}</span>`
+          ? `<span class="pool-dot"></span>${escapeHtml(poolName)} <span class="subtle">${escapeShortEth(poolAddress)}</span>${sourceBadge}`
           : `<span class="pool-dot"></span>${escapeShortEth(poolAddress)}`;
+        const shares = firstPresent(row.shares, row.blocks);
+        const creditBlocks = firstPresent(row.credit_blocks, row.blocks);
+        const creditedBdag = firstPresent(row.credited_bdag, row.estimated_bdag);
+        const foundBlocks = firstPresent(row.found_blocks, row.blocks);
+        const walletBdag = firstPresent(row.estimated_wallet_bdag, row.estimated_bdag);
+        const avgUsd = firstPresent(row.estimated_usd_avg_hour, row.estimated_usd_recent_hour);
+        const avgBdag = firstPresent(row.estimated_bdag_avg_hour, row.estimated_bdag_recent_hour);
         tr.className = "pool-row";
         tr.style.setProperty("--pool-row-color", transparentColor(poolColor, 0.08));
         tr.style.setProperty("--pool-color", poolColor);
-        tr.innerHTML = `<td class="nowrap pool-name" title="${escapeHtml(poolAddress)}">${poolCell}</td><td class="nowrap">${escapeHtml(nodes || "")}</td><td class="right">${fmt(row.blocks)}</td><td class="right">${share}</td><td class="right">${fmt(row.blocks)}</td><td class="right">${escapeHtml(row.estimated_bdag || "")}</td><td class="right">${fmt(row.blocks)}</td><td class="right">${escapeHtml(row.estimated_bdag || "")}</td><td class="right">${currency(row.estimated_usd_avg_hour || row.estimated_usd_recent_hour, "$")}</td><td class="right">${currency(row.estimated_bdag_avg_hour || row.estimated_bdag_recent_hour, "")}</td><td class="right">${currency(row.estimated_usd, "$")}</td><td class="right">${currency(row.estimated_zar, "R")}</td><td class="nowrap">${escapeHtml(formatDisplayTime(row.last_seen_at))}</td>`;
+        tr.innerHTML = `<td class="nowrap pool-name" title="${escapeHtml(poolAddress)}">${poolCell}</td><td class="nowrap">${escapeHtml(nodes || "")}</td><td class="right">${fmt(shares)}</td><td class="right">${share}</td><td class="right">${fmt(creditBlocks)}</td><td class="right">${escapeHtml(creditedBdag || "")}</td><td class="right">${fmt(foundBlocks)}</td><td class="right">${escapeHtml(walletBdag || "")}</td><td class="right">${currency(avgUsd, "$")}</td><td class="right">${currency(avgBdag, "")}</td><td class="right">${currency(row.estimated_usd, "$")}</td><td class="right">${currency(row.estimated_zar, "R")}</td><td class="nowrap">${escapeHtml(formatDisplayTime(row.last_seen_at))}</td>`;
         body.appendChild(tr);
       }
       drawGlobalChart(data);

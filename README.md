@@ -96,21 +96,33 @@ blocks per miner-hour, not maximum dashboard refresh rate or synthetic CPU use.
 
 ## FastSync Peer Selection
 
-New nodes use protocol 46 Fast Artifact Sync V2 by default and prefer the
-lowest-latency responding peers. Configure complete multiaddrs with peer IDs in
-`.env`:
+New nodes use protocol 46 Fast Artifact Sync V2 by default and prefer nearby
+peers before public internet seeds. Configure complete multiaddrs with peer IDs
+in `.env`:
 
 ```text
-BDAG_FASTSYNC_PEERS=/ip4/203.0.113.10/tcp/8151/p2p/...
-BDAG_FASTSNAP_PEERS=/ip4/203.0.113.11/tcp/8151/p2p/...
+BDAG_P2P_LAN_PEERS=/ip4/192.168.68.55/tcp/8151/p2p/...
+BDAG_P2P_VPN_PEERS=/ip4/10.207.244.12/tcp/8151/p2p/...
+BDAG_P2P_PUBLIC_PEERS=/ip4/203.0.113.10/tcp/8151/p2p/...
 ```
 
-The node entrypoint folds those values together with `BDAG_FASTSNAP_PEERS`,
-`BOOTSTRAP_PEER_ADDRESSES`, and `node.conf` `addpeer` lines without LAN/private
-bucket sorting. The core binary and `fastsnap` then sort usable V2 artifact
-sources by observed latency. Sub-10ms peers naturally win when they are on the
-same LAN, but public internet peers still work through the same libp2p transport
-without special routing or ZeroTier assumptions.
+The node entrypoint and `ops/update-local-peers.py` fold those values together
+with `BDAG_FASTSYNC_PEERS`, `BDAG_FASTSNAP_PEERS`,
+`BOOTSTRAP_PEER_ADDRESSES`, and `node.conf` `addpeer` lines. The release
+default is `BDAG_FASTSYNC_PEER_ORDERING=tiered-latency`: reachable LAN peers
+first, private/VPN peers second, and public internet peers last. Within each
+tier, the peer refresh helper sorts candidates by TCP latency so sub-10ms local
+or VPN seeds win before slower public routes.
+Generic private peers are treated as LAN only when they are on a currently
+connected non-VPN host subnet, or when `BDAG_FASTSYNC_LAN_PREFIXES` is set as an
+operator override; stale private subnets fall back to the private/VPN tier.
+
+Single-node ASIC-router hosts are detected when the default route is on one
+interface, usually WiFi, while the ASIC Ethernet interface owns
+`BDAG_ASIC_LAN_CIDRS` (`192.168.50.0/24` by default). That ASIC-facing subnet is
+not a blockchain P2P LAN by default, because directly attached ASICs are
+Stratum clients, not FastSync peers. Set `BDAG_ALLOW_ASIC_LAN_P2P=1` only if a
+real BlockDAG node is deliberately placed on that Ethernet segment.
 
 Nodes also start with `--fastartifactsync` by default
 (`BDAG_FASTARTIFACTSYNC_ENABLED=1`) so they advertise and consume Fast Artifact
@@ -122,10 +134,9 @@ an unaccelerated or stale leader after the cooldown window so startup peer order
 and V2 artifact serving are active.
 
 `BDAG_FASTSYNC_LAN_PEERS`, `BDAG_FASTSYNC_VPN_PEERS`, and
-`BDAG_FASTSYNC_PUBLIC_PEERS` remain accepted as compatibility aliases, but the
-release default is `BDAG_FASTSYNC_PEER_ORDERING=latency`. Set
-`BDAG_FASTSYNC_PEER_ORDERING=legacy-buckets` only to reproduce the older bucket
-ordering during a rollback.
+`BDAG_FASTSYNC_PUBLIC_PEERS` remain accepted as compatibility aliases. Set
+`BDAG_FASTSYNC_PEER_ORDERING=flat-latency` only to reproduce the older flat
+latency path during a rollback.
 
 ## Fast Artifact Sync V2 Directory Mode
 
