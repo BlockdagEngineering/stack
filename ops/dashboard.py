@@ -3044,7 +3044,7 @@ HTML = r"""<!doctype html>
       const usdPrice = priceOk ? numberValue(data.price?.usd) : null;
       const zarPrice = priceOk ? numberValue(data.price?.zar) : null;
       const avgIncomeUsdHour = numberValue(avgIncomeHour) !== null && usdPrice !== null ? currency(numberValue(avgIncomeHour) * usdPrice, "$") : "n/a";
-      const walletRecentHour = hourly.wallet_recent_bdag_hour || data.credits?.recent_1h?.total_bdag || "n/a";
+      const walletRecentHour = hourly.wallet_recent_bdag_hour || data.onchain_earnings?.last_1h?.earned_bdag || "n/a";
       const wallet24hBdag = data.earnings_24h?.bdag || hourly.wallet_24h_bdag || "n/a";
       const wallet24hUsd = currency(data.earnings_24h?.usd || data.wallet_24h_usd, "$");
       const wallet24hZar = currency(data.earnings_24h?.zar || data.wallet_24h_zar, "R");
