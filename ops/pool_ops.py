@@ -398,6 +398,15 @@ def is_no_miner_sync_noise(item: Any) -> bool:
     )
 
 
+def is_recent_mining_sync_noise(item: Any) -> bool:
+    text = str(item)
+    return (
+        "live mining template probes" in text
+        or "pool recently saw RPC connection refused" in text
+        or text.startswith("pool is waiting for node sync to finish")
+    )
+
+
 DEFAULT_GLOBAL_POOL_LABELS = {}
 
 
@@ -4321,6 +4330,22 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     pool["initial_download_needs_repair"] = pool_initial_download_needs_repair
     sync_health["pool_initial_download_transient"] = pool_initial_download_transient
     sync_health["pool_has_recent_mining"] = pool_has_recent_mining
+    if connected_miners > 0 and pool_has_recent_mining and sync_warnings:
+        advisory_sync_warnings = [
+            item for item in sync_warnings
+            if is_recent_mining_sync_noise(item)
+        ]
+        if advisory_sync_warnings:
+            sync_warnings = [
+                item for item in sync_warnings
+                if not is_recent_mining_sync_noise(item)
+            ]
+            warnings = [
+                item for item in warnings
+                if not is_recent_mining_sync_noise(item)
+            ]
+            for item in advisory_sync_warnings:
+                add_maintenance_warning(f"{item}; accepted mining work remains fresh")
     readiness_contract = selected_backend_readiness_contract(
         str(pool.get("selected_backend") or ""),
         selected_source_health,
@@ -4440,8 +4465,17 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "needs_fast_repair": bool(
             pool_initial_download_needs_repair
             or (pool.get("rpc_refused_recent") and connected_miners > 0)
-            or (isinstance(rpc_failover_probe, dict) and rpc_failover_probe.get("failing") and connected_miners > 0)
-            or (template_probe_health.get("failing_nodes") and connected_miners > 0)
+            or (
+                isinstance(rpc_failover_probe, dict)
+                and rpc_failover_probe.get("failing")
+                and connected_miners > 0
+                and not pool_has_recent_mining
+            )
+            or (
+                template_probe_health.get("failing_nodes")
+                and connected_miners > 0
+                and not pool_has_recent_mining
+            )
             or (pool.get("pool_template_frozen") and connected_miners > 0)
             or (pool.get("duplicate_block_storm") and connected_miners > 0)
             or (pool.get("stale_job_candidate_storm") and connected_miners > 0)
