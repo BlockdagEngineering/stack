@@ -97,6 +97,38 @@ class MinerRetirementIdentityTests(unittest.TestCase):
         self.assertFalse(decision["conflict"])
         self.assertEqual(decision["matched_by"], "")
 
+    def test_configure_miners_skips_retired_mac_identity(self) -> None:
+        self.write_retirement()
+        old_discover_miner = pool_ops.discover_miner
+        old_configure_miner = pool_ops.configure_miner
+        old_read_neighbor_macs = pool_ops.read_neighbor_macs
+        self.addCleanup(lambda: setattr(pool_ops, "discover_miner", old_discover_miner))
+        self.addCleanup(lambda: setattr(pool_ops, "configure_miner", old_configure_miner))
+        self.addCleanup(lambda: setattr(pool_ops, "read_neighbor_macs", old_read_neighbor_macs))
+        pool_ops.read_neighbor_macs = lambda: {}
+        pool_ops.discover_miner = lambda ip, timeout=0: {
+            "ip": ip,
+            "mac": "28:e2:97:4c:e4:0a",
+            "model": "X100",
+        }
+
+        def fail_if_called(**_kwargs):
+            raise AssertionError("retired miner should not be configured")
+
+        pool_ops.configure_miner = fail_if_called
+
+        result = pool_ops.configure_miners(
+            ["192.168.1.102"],
+            admin_password="admin-pass",
+            pool_url="stratum+tcp://192.168.1.120:3334",
+            worker_user="0x05518E03e148C56e426ff9e1CBdB962B4FC5250A",
+        )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["results"][0]["status"], "skipped")
+        self.assertEqual(result["results"][0]["reason"], "retired-miner-mac")
+        self.assertEqual(result["results"][0]["mac"], "28:e2:97:4c:e4:0a")
+
 
 class MinerHealthCountTests(unittest.TestCase):
     def test_ok_count_includes_unmanaged_tracked_miners(self) -> None:
@@ -144,6 +176,32 @@ class MinerRegistryIdentityTests(unittest.TestCase):
 
         macs = {item["mac"] for item in registry["miners"]}
         self.assertEqual(macs, {"28:e2:97:2e:00:1b", "88:a2:9e:a8:02:79"})
+
+    def test_registry_suppresses_unknown_mac_observation_at_retired_ip(self) -> None:
+        self.retirements_file.write_text(
+            json.dumps(
+                {
+                    "retired_miners": [
+                        {
+                            "display_name": "ExternalPool",
+                            "mac": "28:e2:97:4c:e4:0a",
+                            "ips": ["192.168.1.103"],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        registry = pool_ops.save_miner_registry(
+            [
+                {"ip": "192.168.1.103", "device_type": "stratum", "discovered_by": "pool-log"},
+                {"ip": "192.168.1.103", "mac": "28:e2:97:2e:00:1b", "device_type": "asic"},
+            ]
+        )
+
+        self.assertEqual(len(registry["miners"]), 1)
+        self.assertEqual(registry["miners"][0]["mac"], "28:e2:97:2e:00:1b")
 
     def test_display_label_defaults_to_mac_and_suffixes_explicit_name(self) -> None:
         self.assertEqual(
