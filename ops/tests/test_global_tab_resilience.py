@@ -5,6 +5,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from decimal import Decimal
 
 OPS_DIR = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OPS_DIR))
@@ -148,6 +149,95 @@ class GlobalHistoryWriteTests(unittest.TestCase):
             state = pool_ops.read_json_file(pool_ops.GLOBAL_HISTORY_STATE_FILE, {})
             self.assertEqual(state["row_count"], 3)
             self.assertTrue(state["compacted"])
+
+
+class GlobalLocalPoolOverlayTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.old_pool_db_json = pool_ops.pool_db_json
+        self.old_read_miner_registry = pool_ops.read_miner_registry
+        self.old_read_global_pool_labels = pool_ops.read_global_pool_labels
+        self.old_nodes = pool_ops.NODES
+        self.addCleanup(self.restore_globals)
+
+    def restore_globals(self) -> None:
+        pool_ops.pool_db_json = self.old_pool_db_json
+        pool_ops.read_miner_registry = self.old_read_miner_registry
+        pool_ops.read_global_pool_labels = self.old_read_global_pool_labels
+        pool_ops.NODES = self.old_nodes
+
+    def test_local_pool_credit_row_uses_asic_worker_identity(self) -> None:
+        wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        pool_ops.NODES = ["bdag-miner-node-2"]
+        pool_ops.pool_db_json = lambda _sql: [
+            {
+                "miner_address": wallet,
+                "credit_count": 7,
+                "found_blocks": 7,
+                "total_wei": "70000000000000000000",
+                "first_seen_at": "2026-05-27T00:00:00Z",
+                "last_seen_at": "2026-05-27T00:01:00Z",
+            }
+        ]
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {
+                    "ip": "192.168.50.177",
+                    "mac": "28:e2:97:1e:c0:b5",
+                    "display_name": "Achilles",
+                    "device_type": "asic",
+                    "last_workers": [wallet],
+                }
+            ]
+        }
+
+        rows = pool_ops.collect_local_pool_global_clusters(
+            scan_window_seconds=120,
+            total_global_blocks=100,
+            scan_window_hours=Decimal("0.0333333333"),
+            price={"status": "ok", "usd": "0.01", "zar": "0.18"},
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["address"], wallet)
+        self.assertEqual(rows[0]["pool_name"], "Achilles-0b5")
+        self.assertEqual(rows[0]["nodes"], ["bdag-miner-node-2"])
+        self.assertTrue(rows[0]["local_pool"])
+        self.assertEqual(rows[0]["shares"], 7)
+        self.assertEqual(rows[0]["credit_blocks"], 7)
+        self.assertEqual(rows[0]["found_blocks"], 7)
+        self.assertEqual(rows[0]["credited_bdag"], "70.00")
+
+    def test_local_pool_overlay_is_preserved_when_address_matches_chain_cluster(self) -> None:
+        wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        merged = pool_ops.merge_global_local_pool_clusters(
+            [{"address": wallet, "blocks": 2, "last_seen_at": "2026-05-27T00:01:00Z"}],
+            [{"address": wallet, "blocks": 3, "pool_name": "Achilles-0b5", "local_pool": True, "credit_blocks": 3}],
+        )
+
+        self.assertEqual(len(merged), 1)
+        self.assertTrue(merged[0]["local_pool"])
+        self.assertEqual(merged[0]["pool_name"], "Achilles-0b5")
+        self.assertEqual(merged[0]["credit_blocks"], 3)
+
+    def test_local_pool_identity_is_not_replaced_by_static_global_label(self) -> None:
+        wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        pool_ops.read_global_pool_labels = lambda: {wallet.lower(): "Pipin"}
+
+        payload = pool_ops.annotate_global_pool_labels(
+            {
+                "clusters": [
+                    {
+                        "address": wallet,
+                        "pool_name": "Achilles-0b5",
+                        "local_pool": True,
+                    }
+                ],
+                "history": [],
+            }
+        )
+
+        self.assertEqual(payload["clusters"][0]["pool_name"], "Achilles-0b5")
+        self.assertEqual(payload["clusters"][0]["pool_label"], "Achilles-0b5 (0xA1Ee...7DFc)")
 
 
 class GlobalMaintenanceBackoffTests(unittest.TestCase):

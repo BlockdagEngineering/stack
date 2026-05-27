@@ -188,10 +188,12 @@ healthy until `8088/api/status` points at the intended project root and returns
 ## FastSync Candidate Ordering
 
 New nodes must prefer nearby FastSync candidates before public internet seeds.
-The default ordering is:
+The release default is `BDAG_FASTSYNC_PEER_ORDERING=tiered-latency`, with this
+ordering:
 
-1. LAN candidates from `BDAG_FASTSYNC_LAN_PEERS` or addresses matching
-   `BDAG_FASTSYNC_LAN_PREFIXES`.
+1. LAN candidates from `BDAG_FASTSYNC_LAN_PEERS`, addresses on a currently
+   connected non-VPN host subnet, or addresses matching an explicit
+   `BDAG_FASTSYNC_LAN_PREFIXES` override.
 2. Private/VPN candidates from `BDAG_FASTSYNC_VPN_PEERS` or private-address
    multiaddrs.
 3. Public internet candidates from `BDAG_FASTSYNC_PUBLIC_PEERS` plus any
@@ -199,8 +201,13 @@ The default ordering is:
    `BDAG_FASTSNAP_PEERS`, `BOOTSTRAP_PEER_ADDRESSES`, and `node.conf`
    `addpeer` lines.
 
-Peer candidates must be complete multiaddrs with peer IDs. Do not replace this
-ordering with public-first bootstrapping in future RCs.
+Peer candidates must be complete multiaddrs with peer IDs. On single-node
+ASIC-router hosts, the direct ASIC Ethernet subnet (`BDAG_ASIC_LAN_CIDRS`,
+default `192.168.50.0/24`) is not a blockchain P2P LAN unless
+`BDAG_ALLOW_ASIC_LAN_P2P=1` is explicitly set. ASICs on that subnet are Stratum
+clients; adding them to FastSync or P2P peer lists wastes time and can hide the
+actual low-latency VPN/LAN node candidates. Do not replace this ordering with
+public-first bootstrapping in future RCs.
 
 ## Fast Artifact Sync V2 Directory Mode
 
