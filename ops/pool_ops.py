@@ -6279,7 +6279,7 @@ def collect_wallet_balances_for_addresses(addresses: list[str]) -> dict[str, Any
             "addresses": [],
         }
 
-    rpc_sources = [(source, url, "local-rpc") for source, url in node_rpc_urls()]
+    rpc_sources = [(source, url, "evm-rpc") for source, url in global_evm_rpc_urls()]
     rpc_sources.extend(
         (source, url, "public-rpc")
         for source, url in named_urls_from_env(
@@ -6406,7 +6406,7 @@ def archive_rpc_urls() -> list[tuple[str, str]]:
                 ("blockdag-engineering-rpc", "https://rpc.blockdag.engineering"),
             ],
         ),
-        *node_rpc_urls(),
+        *global_evm_rpc_urls(),
     ]
 
 
@@ -6443,7 +6443,7 @@ def collect_onchain_wallet_window_earnings(address: str | None, hours: int = 24)
     if isinstance(cached, dict) and now_epoch - int(cached.get("generated_epoch", 0)) < EARNINGS_ONCHAIN_CACHE_SECONDS:
         return {**cached, "cache_hit": True}
 
-    local_sources = node_rpc_urls()
+    local_sources = global_evm_rpc_urls()
     if not local_sources:
         return {"status": "failed", "hours": hours, "address": address, "error": "no local node RPC sources"}
     local_name, local_url = local_sources[0]
