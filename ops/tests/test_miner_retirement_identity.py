@@ -307,6 +307,40 @@ class PoolActivityAttributionTests(unittest.TestCase):
         self.assertEqual(miners["192.168.1.14"]["share_work"], 500)
         self.assertNotIn("192.168.1.103", miners)
 
+    def test_recovery_resend_maps_ephemeral_lane_suffix_to_current_ip(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {
+                    "ip": "192.168.1.14",
+                    "mac": "28:e2:97:3e:39:63",
+                    "expected_worker_user": worker,
+                    "last_pool_job_extranonces": ["07000000"],
+                },
+                {
+                    "ip": "192.168.1.103",
+                    "mac": "28:e2:97:2e:00:1b",
+                    "expected_worker_user": worker,
+                    "last_pool_job_extranonces": ["0f000000"],
+                },
+            ]
+        }
+        log = "\n".join(
+            [
+                "2026/05/26 06:20:00 [RECOVERY] resending current job to 192.168.1.14:55264 after 3 expired job rejects (job=job-1_0f000000)",
+                f"2026/05/26 06:20:01 ✅ valid share accepted 100.0 → 500 worker={worker} job=job-2_0f000000",
+                "2026/05/26 06:20:02 🎯 BLOCK FOUND height(le)=1 job=job-3_0f000000 hash=abc target=def",
+            ]
+        )
+
+        miners = {item["ip"]: item for item in pool_ops.parse_pool_activity(log)["miners"]}
+
+        self.assertEqual(miners["192.168.1.14"]["shares"], 1)
+        self.assertEqual(miners["192.168.1.14"]["share_work"], 500)
+        self.assertEqual(miners["192.168.1.14"]["blocks_found"], 1)
+        self.assertIn("0f000000", miners["192.168.1.14"]["job_extranonces"])
+        self.assertNotIn("192.168.1.103", miners)
+
     def test_collect_pool_activity_bootstraps_when_short_tail_is_unattributed(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
         pool_ops.read_miner_registry = lambda: {
@@ -512,7 +546,9 @@ class MinerHealthConfiguredScopeTests(unittest.TestCase):
         self.assertEqual(health["miners"][0]["configured"], False)
         self.assertEqual(health["miners"][0]["pool_active"], True)
         self.assertEqual(health["miners"][0]["work_pool_active"], True)
-        self.assertEqual(health["lane_balance"]["expected_lane_count"], 1)
+        self.assertEqual(health["lane_balance"]["expected_lane_count"], 0)
+        self.assertFalse(health["miners"][0]["expected_work_lane"])
+        self.assertEqual(health["miners"][0]["expected_work_percent"], "0.00")
 
 
 if __name__ == "__main__":
