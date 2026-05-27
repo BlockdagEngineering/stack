@@ -42,7 +42,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: BlockdagEngineering/blockdag-corechain
-          ref: codex/fast-artifact-sync-v2-core
+          ref: feature/block-template-stream-2
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/blockdag-node
 
@@ -50,7 +50,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: BlockdagEngineering/pool
-          ref: 0d22a385c7b738f8e4fa93d63dee7373428d3bae
+          ref: feature/block-template-stream 
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/pool
 
@@ -74,7 +74,6 @@ jobs:
           make all
           cp -f ./build/bin/bdag ../../bin/blockdag-node
           cp -f ./build/bin/nodeworker ../../bin/nodeworker
-          cp -f ./build/bin/fastsnap ../../bin/fastsnap
 
       - name: Build mining-pool
         shell: bash
@@ -91,12 +90,12 @@ jobs:
           cp -f ./build/bin/miner ../../bin/cpu-miner
 
       - name: Ensure executables
-        run: chmod +x bin/blockdag-node bin/nodeworker bin/fastsnap bin/mining-pool bin/cpu-miner
+        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool bin/cpu-miner
 
       - name: Generate checksums
         shell: bash
         run: |
-          sha256sum bin/blockdag-node bin/nodeworker bin/fastsnap bin/mining-pool bin/cpu-miner > checksums.txt
+          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool bin/cpu-miner > checksums.txt
 
       - name: Validate compose (CPU Dockerfile + miner profile)
         shell: bash
@@ -105,7 +104,6 @@ jobs:
           test -f .env.cpu.example
           docker compose --env-file .env.cpu.example --profile miner config > /tmp/compose.cpu-miner.yml
           grep -q '^  miner:' /tmp/compose.cpu-miner.yml || { echo "::error::Resolved compose must include miner service when profile miner is active"; exit 1; }
-          scripts/validate-pi5-restart-hardening.sh .
 
       - name: Create release tarball
         id: package
@@ -120,9 +118,8 @@ jobs:
           ROOT="${PACKAGE_NAME}-${VERSION}"
           rm -rf "${ROOT}"
           mkdir "${ROOT}"
-          cp docker-compose.yml dockerfile-cpu-release .dockerignore .env.cpu.example .env.pool.example node.conf.example README.md SNAPSHOT-README.md checksums.txt haproxy.cfg "${ROOT}/"
-          cp -a sql netdata scripts bin docker asic-pool tools "${ROOT}/"
-          rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
+          cp docker-compose.yml dockerfile-cpu-release .env.cpu.example .env.pool.example node.conf.example  README.md SNAPSHOT-README.md checksums.txt "${ROOT}/"
+          cp -a sql netdata scripts bin docker "${ROOT}/"
 
           tar -czf "${OUT}" "${ROOT}"
           rm -rf "${ROOT}"
@@ -143,3 +140,4 @@ jobs:
           files: ${{ steps.package.outputs.artifact }}
           draft: false
           prerelease: false
+

@@ -114,7 +114,7 @@ jobs:
           echo "${VERSION}" > "${ROOT}/version.txt"
           cp scripts/release/install.sh scripts/release/install.ps1 scripts/release/install.cmd "${ROOT}/"
           cp -a scripts/release/installers "${ROOT}/installers"
-          cp -a bin sql docker scripts dashboard asic-pool tools "${ROOT}/"
+          cp -a bin sql docker scripts asic-pool tools "${ROOT}/"
           rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
           chmod +x "${ROOT}/install.sh" "${ROOT}/installers/"*.sh
 

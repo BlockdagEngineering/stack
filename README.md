@@ -1,6 +1,6 @@
 # pool-stack-docker-stack
 
-This stack can be run in any environment where docker is installed. It includes an upgradable BDAG node, a mining pool with its db, and a minimal dashboard that  provides essential realtime monitoring.
+This stack can be run in any environment where docker is installed. It includes an upgradable BDAG node, a mining pool with its db, and the canonical operations dashboard/control plane.
 
 
 | Service     | Image / build                           | Purpose |
@@ -13,7 +13,7 @@ This stack can be run in any environment where docker is installed. It includes 
 
 ## Release package
 
-GitHub Releases attach `pool-stack-docker-<tag>.zip` with `bin/` (pre-built `**blockdag-node**`, `**nodeworker**`, `**mining-pool**`), `dashboard/` (Compose builds `dashboard`), `docker-compose.yml`, `dockerfile`, `.env.example`, `docker/`, and cross-platform installers. **Release images** stage binaries from `./bin`; no git clone inside Docker.
+GitHub Releases attach `pool-stack-docker-<tag>.zip` with `bin/` (pre-built `**blockdag-node**`, `**nodeworker**`, `**mining-pool**`), `docker-compose.yml`, `dockerfile`, `.env.example`, `docker/`, and cross-platform installers. **Node and pool release images** stage binaries from `./bin`; the `dashboard` image checks out `BlockdagEngineering/pool-dashboard` at `POOL_DASHBOARD_REF`. Export `GITHUB_TOKEN` before `docker compose build` if that repository is private in your environment.
 
 After unpacking, run the installer from the extracted directory:
 

@@ -26,6 +26,10 @@
 x-build-args: &build-args
   SNAPSHOT_PATH: ${SNAPSHOT_PATH:-pool-stack-docker/docker/no-snapshot.marker}
 
+x-dashboard-build-args: &dashboard-build-args
+  POOL_DASHBOARD_REPO: ${POOL_DASHBOARD_REPO:-https://github.com/BlockdagEngineering/pool-dashboard.git}
+  POOL_DASHBOARD_REF: ${POOL_DASHBOARD_REF:-6585347bfa78a1e6ed2a6178eaa38c7ccac9d022}
+
 services:
 
   # --------------------------------------------------------------------------
@@ -136,7 +140,7 @@ services:
 
 
   # --------------------------------------------------------------------------
-  # Dashboard. just uses rpc calls so far
+  # Canonical operations dashboard/control plane from BlockdagEngineering/pool-dashboard.
   # --------------------------------------------------------------------------
 
   dashboard:
@@ -145,24 +149,38 @@ services:
       dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile-dev}
       target: dashboard
       args:
-        <<: *build-args
+        <<: *dashboard-build-args
+      secrets:
+        - github_token
     restart: unless-stopped
     depends_on:
       node: { condition: service_started }
       pool: { condition: service_started }
     environment:
-      BDAG_RPC_URL: http://node:38131
-      DASHBOARD_EVM_RPC_URL: http://node:18545
-      DASHBOARD_LISTEN: 0.0.0.0:9280
-      DASHBOARD_RPC_POLL_SECONDS: 5
-      DASHBOARD_MAX_POINTS: 120
-      DASHBOARD_MINING_MAX_BARS: 48
-      DASHBOARD_MINING_POLL_INTERVAL: 10m
-      MINING_POOL_ADDRESS: ${MINING_POOL_ADDRESS:-0x0000000000000000000000000000000000000000}
+      BDAG_PROJECT_ROOT: /workspace
+      BDAG_RUNTIME_DIR: /var/lib/bdag-dashboard/runtime
+      BDAG_POOL_ENV_FILE: /workspace/.env
+      BDAG_DASHBOARD_BIND: 0.0.0.0
+      BDAG_DASHBOARD_PORT: 9280
+      BDAG_DASHBOARD_REQUIRE_TOKEN: ${BDAG_DASHBOARD_REQUIRE_TOKEN:-auto}
+      BDAG_POOL_CONTAINER: pool
+      BDAG_POOL_CONTAINERS: pool
+      BDAG_POOL_DB_CONTAINER: postgres
+      BDAG_POOL_DB_USER: ${POSTGRES_USER:-bdag_pool}
+      BDAG_POOL_DB_NAME: ${POSTGRES_DB:-bdagpool}
+      BDAG_NODE_SERVICES: node
+      BDAG_STACK_SERVICES: postgres,node,pool
+      BDAG_NODE_DATA_DIRS: node
+      NODE_RPC_USER: ${NODE_RPC_USER:-test}
+      NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
+      BDAG_NODE_MINING_RPC_USER: ${NODE_RPC_USER:-test}
+      BDAG_NODE_MINING_RPC_PASS: ${NODE_RPC_PASS:-test}
     ports:
       - "9280:9280"
     volumes:
-      - ./dashboard/logs:/app/logs
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/workspace:ro
+      - dashboard-runtime:/var/lib/bdag-dashboard
   # --------------------------------------------------------------------------
   # CPU miner (source: cpu-miner repo). On by default for Git dev via
   # COMPOSE_PROFILES=miner in .env.cpu.example; pool-only release must leave
@@ -188,3 +206,8 @@ volumes:
   postgres-data:
   node-data:
   nodeworker-data:
+  dashboard-runtime:
+
+secrets:
+  github_token:
+    environment: GITHUB_TOKEN
