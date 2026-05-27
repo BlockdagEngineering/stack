@@ -1419,7 +1419,13 @@ def save_miner_registry(miners: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         item = dict(miner)
         mac = miner_mac_from_payload(item, ip, neighbors)
-        if is_retired_miner_identity(item, ip, mac):
+        retirement_decision = retired_miner_identity_decision(item, ip, mac)
+        if retirement_decision.get("retired"):
+            continue
+        if retirement_decision.get("conflict") and not mac:
+            # A no-MAC pool-log observation at a retired miner's last known IP
+            # is not a stable identity. Keep it out of the local managed
+            # registry until a MAC proves this is a different physical ASIC.
             continue
         if mac:
             item["mac"] = mac
@@ -1901,6 +1907,24 @@ def configure_miners(
     results: list[dict[str, Any]] = []
     for ip in ips:
         try:
+            discovered_for_guard: dict[str, Any] = {}
+            try:
+                discovered_for_guard = discover_miner(ip, timeout=MINER_HTTP_TIMEOUT)
+            except Exception:
+                discovered_for_guard = {}
+            guard_mac = normalize_mac(discovered_for_guard.get("mac")) or mac_for_ip(ip)
+            guard_decision = retired_miner_identity_decision({**discovered_for_guard, "ip": ip, "mac": guard_mac}, ip, guard_mac)
+            if guard_decision.get("retired"):
+                results.append(
+                    {
+                        "ip": ip,
+                        "mac": guard_mac,
+                        "status": "skipped",
+                        "reason": "retired-miner-mac",
+                        "retired_name": guard_decision.get("retired_name") or "",
+                    }
+                )
+                continue
             results.append(
                 configure_miner(
                     ip=ip,
@@ -1916,7 +1940,16 @@ def configure_miners(
 
     failed = [item for item in results if item.get("status") == "failed"]
     partial = [item for item in results if item.get("status") == "partial"]
-    status = "failed" if len(failed) == len(results) and results else "partial" if failed or partial else "ok"
+    skipped = [item for item in results if item.get("status") == "skipped"]
+    status = (
+        "failed"
+        if len(failed) == len(results) and results
+        else "skipped"
+        if len(skipped) == len(results) and results
+        else "partial"
+        if failed or partial or skipped
+        else "ok"
+    )
     return {"status": status, "finished_at": now_iso(), "results": results}
 
 
