@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import fcntl
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -30,9 +31,13 @@ from pool_ops import (
     ensure_runtime,
     make_handoff,
     mark_configured_miners,
+    miner_display_label,
+    miner_identity_key,
+    normalize_mac,
     now_iso,
     read_latest_earnings_snapshot_info,
     read_miner_registry,
+    record_earnings_snapshot,
     save_miner_admin_password,
     scan_miners,
     upsert_miner_registry,
@@ -51,11 +56,18 @@ STATUS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_STATUS_CACHE_SECONDS
 EARNINGS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_EARNINGS_CACHE_SECONDS", "30"))
 GLOBAL_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_GLOBAL_CACHE_SECONDS", "60"))
 SAMPLER_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS", "10"))
+EARNINGS_SAMPLER_ENABLED = os.environ.get("BDAG_DASHBOARD_EARNINGS_SAMPLER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+EARNINGS_SAMPLER_INTERVAL_SECONDS = max(
+    30.0,
+    float(os.environ.get("BDAG_DASHBOARD_EARNINGS_SAMPLER_INTERVAL_SECONDS", str(EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS))),
+)
 DASHBOARD_POOL_METRICS_TIMEOUT = float(os.environ.get("BDAG_DASHBOARD_POOL_METRICS_TIMEOUT", "1.5"))
 TEMPLATE_BACKEND_STATE_CACHE_SECONDS = float(
     os.environ.get("BDAG_DASHBOARD_TEMPLATE_BACKEND_STATE_CACHE_SECONDS", str(STATUS_CACHE_SECONDS))
 )
 SYNC_ESTIMATE_STATE_FILE = RUNTIME_DIR / "dashboard-sync-estimate-state.json"
+EARNINGS_SAMPLER_LOCK_FILE = RUNTIME_DIR / "dashboard-earnings-sampler.lock"
+EARNINGS_SAMPLER_STATE_FILE = RUNTIME_DIR / "dashboard-earnings-sampler-state.json"
 PROMETHEUS_SAMPLE_RE = re.compile(
     r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|[-+]?Inf|NaN)$"
 )
@@ -75,6 +87,81 @@ def cached_payload(key: str, ttl: float, factory):
     with API_CACHE_LOCK:
         API_CACHE[key] = (now, payload)
     return payload
+
+
+def clear_api_cache(*keys: str) -> None:
+    with API_CACHE_LOCK:
+        if keys:
+            for key in keys:
+                API_CACHE.pop(key, None)
+        else:
+            API_CACHE.clear()
+
+
+def write_earnings_sampler_state(payload: dict[str, object]) -> None:
+    try:
+        write_json(EARNINGS_SAMPLER_STATE_FILE, payload)
+    except Exception:
+        pass
+
+
+def latest_earnings_snapshot_age() -> float | None:
+    info = read_latest_earnings_snapshot_info()
+    latest_epoch = info.get("latest_epoch")
+    if latest_epoch is None:
+        return None
+    try:
+        return max(0.0, time.time() - float(latest_epoch))
+    except (TypeError, ValueError):
+        return None
+
+
+def record_dashboard_earnings_sample(reason: str) -> bool:
+    ensure_runtime()
+    age = latest_earnings_snapshot_age()
+    if age is not None and age < EARNINGS_SAMPLER_INTERVAL_SECONDS * 0.8:
+        return False
+    try:
+        with EARNINGS_SAMPLER_LOCK_FILE.open("w", encoding="utf-8") as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+            snapshot = record_earnings_snapshot()
+    except Exception as exc:  # noqa: BLE001 - dashboard sampling must never stop serving.
+        write_earnings_sampler_state(
+            {
+                "updated_at": now_iso(),
+                "status": "failed",
+                "reason": reason,
+                "error": str(exc),
+            }
+        )
+        return False
+    clear_api_cache("earnings", "sampler")
+    write_earnings_sampler_state(
+        {
+            "updated_at": now_iso(),
+            "status": "ok",
+            "reason": reason,
+            "snapshot_at": snapshot.get("generated_at"),
+            "miner_count": len(snapshot.get("miner_estimates") or []),
+        }
+    )
+    return True
+
+
+def earnings_sampler_loop() -> None:
+    while True:
+        record_dashboard_earnings_sample("dashboard-background-sampler")
+        time.sleep(EARNINGS_SAMPLER_INTERVAL_SECONDS)
+
+
+def start_earnings_sampler() -> None:
+    if not EARNINGS_SAMPLER_ENABLED:
+        return
+    thread = threading.Thread(target=earnings_sampler_loop, name="earnings-sampler", daemon=True)
+    thread.start()
 
 
 def parse_prometheus_labels(label_text: str) -> dict[str, str]:
@@ -1212,7 +1299,7 @@ HTML = r"""<!doctype html>
         <div class="panel span-12">
           <div class="kpi-label">Discovered Miners</div>
           <table>
-            <thead><tr><th class="checkbox-cell"></th><th>Host</th><th>Model</th><th>Firmware</th><th>Current Pool</th><th>Active</th><th>Result</th></tr></thead>
+            <thead><tr><th class="checkbox-cell"></th><th>Miner</th><th>Model</th><th>Firmware</th><th>Current Pool</th><th>Active</th><th>Result</th></tr></thead>
             <tbody id="minersTable"></tbody>
           </table>
           <pre id="minersOutput">No scan has run yet.</pre>
@@ -1900,7 +1987,7 @@ HTML = r"""<!doctype html>
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td class="checkbox-cell"><input type="checkbox" class="miner-select" value="${escapeHtml(miner.ip)}" checked></td>
-          <td>${escapeHtml(minerShortIp(miner) || "")}</td>
+          <td class="nowrap miner-name"><span class="miner-dot"></span>${escapeHtml(minerDisplayLabel(miner))}<br><span class="subtle">${escapeHtml(miner.ip ? `observed ${miner.ip}` : "")}</span></td>
           <td>${escapeHtml(miner.model || miner.hardware || "unknown")}</td>
           <td>${escapeHtml(miner.firmware || miner.mcbversion || "")}</td>
           <td>${escapeHtml(pool.url || "")}<br><span class="subtle">${escapeShortEth(pool.user || "")}</span></td>
@@ -3295,6 +3382,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
             return
         if path == "/api/earnings":
+            record_dashboard_earnings_sample("api-earnings")
             self.send_json(cached_payload("earnings", EARNINGS_CACHE_SECONDS, lambda: collect_earnings(include_history=True)))
             return
         if path == "/api/sampler":
@@ -3347,7 +3435,19 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 result = scan_miners(payload.get("target"))
                 defaults = default_miner_pool_settings()
-                upsert_miner_registry(result.get("miners", []), defaults["pool_url"], defaults["worker_user"])
+                registry = upsert_miner_registry(result.get("miners", []), defaults["pool_url"], defaults["worker_user"])
+                registry_by_mac = {
+                    normalize_mac(item.get("mac")): item
+                    for item in registry.get("miners", [])
+                    if normalize_mac(item.get("mac"))
+                }
+                for miner in result.get("miners", []):
+                    mac = normalize_mac(miner.get("mac"))
+                    registered = registry_by_mac.get(mac, {}) if mac else {}
+                    if registered.get("display_name"):
+                        miner["display_name"] = registered["display_name"]
+                    miner["identity_key"] = miner_identity_key({**registered, **miner})
+                    miner["display_label"] = miner_display_label({**registered, **miner})
                 self.send_json(result)
             except Exception as exc:  # noqa: BLE001 - return scanner validation errors to the browser.
                 self.send_json({"error": str(exc)}, status=400)
@@ -3433,6 +3533,7 @@ def main() -> int:
         token = get_action_token()
         print(f"Action token file: {RUNTIME_DIR / 'dashboard-token.txt'}")
         print(f"Action token: {token}")
+    start_earnings_sampler()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"BlockDAG dashboard listening on http://{HOST}:{PORT}")
     httpd.serve_forever()

@@ -47,6 +47,7 @@ FILES=(
   "ops/sync_coordinator.py"
   "ops/tests/test_chain_rpc_resilience.py"
   "ops/tests/test_deployment_portability.py"
+  "ops/tests/test_earnings_onchain_sources.py"
   "ops/tests/test_mining_appliance_preflight.py"
   "ops/tests/test_miner_retirement_identity.py"
   "ops/tests/test_no_miner_collect_status.py"
