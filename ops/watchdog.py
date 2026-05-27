@@ -262,6 +262,21 @@ def pool_initial_download_effective(status: dict[str, Any]) -> bool:
     return True
 
 
+def pool_has_recent_mining_work(status: dict[str, Any], freshness_seconds: int = 60) -> bool:
+    sync_health = status.get("sync_health") if isinstance(status.get("sync_health"), dict) else {}
+    if sync_health.get("pool_has_recent_mining"):
+        return True
+    pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
+    share_age = int_or_none(pool_health.get("last_valid_share_age_seconds"))
+    block_age = int_or_none(pool_health.get("last_block_submit_age_seconds"))
+    valid_shares = int_or_none(pool_health.get("valid_share_count")) or 0
+    accepted_blocks = int_or_none(pool_health.get("block_submit_success_count")) or 0
+    return bool(
+        (valid_shares > 0 and share_age is not None and share_age <= freshness_seconds)
+        or (accepted_blocks > 0 and block_age is not None and block_age <= freshness_seconds)
+    )
+
+
 def miner_debug_hashrate_ghs(row: dict[str, Any]) -> float | None:
     debug = row.get("debug") if isinstance(row.get("debug"), dict) else {}
     return float_or_none(debug.get("hashrate")) or float_or_none(debug.get("av_hashrate"))
@@ -1880,6 +1895,7 @@ def check_once(
     elif active_rpc_template_failing(status) and int(miner_health.get("connected_count", 0) or 0) > 0:
         current_primary = current_rpc_primary()
         active_probe = ((status.get("rpc_template_health") or {}).get("rpc_failover") or {})
+        recent_mining_work = pool_has_recent_mining_work(status)
         reason = (
             "active RPC template path is refusing getBlockTemplate "
             f"({active_probe.get('error_count')}/{active_probe.get('sample_count')} failed)"
@@ -1887,7 +1903,10 @@ def check_once(
         if active_probe.get("last_error"):
             reason += f": {active_probe.get('last_error')}"
         state["consecutive_failures"] = 0
-        state["consecutive_syncing"] = int(state.get("consecutive_syncing", 0) or 0) + 1
+        if recent_mining_work:
+            state["consecutive_syncing"] = 0
+        else:
+            state["consecutive_syncing"] = int(state.get("consecutive_syncing", 0) or 0) + 1
         state["consecutive_share_stalls"] = 0
         state["last_status"] = "rpc_template_degraded"
         state["last_failures"] = []
@@ -1901,6 +1920,7 @@ def check_once(
                 "current_primary": current_primary,
                 "rpc_template_health": status.get("rpc_template_health"),
                 "connected_miners": miner_health.get("connected_count"),
+                "recent_mining_work": recent_mining_work,
             },
         )
         if repair:
@@ -1942,7 +1962,24 @@ def check_once(
                 node_cooldown_remaining = DEFAULT_NODE_TEMPLATE_RESTART_COOLDOWN - (
                     now - int(node_template_restart_by_node.get(repair_node, 0) or 0)
                 )
-                if state["consecutive_syncing"] >= 2 and node_cooldown_remaining <= 0:
+                if recent_mining_work:
+                    pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
+                    log(
+                        f"node template restart for {repair_node} suppressed because pool mining work is fresh "
+                        f"last_share_age={pool_health.get('last_valid_share_age_seconds')}s "
+                        f"last_block_submit_age={pool_health.get('last_block_submit_age_seconds')}s"
+                    )
+                    record_efficiency_event(
+                        "repair_suppressed",
+                        "warning",
+                        f"node template restart for {repair_node} suppressed because pool mining work is fresh",
+                        {
+                            "reason": reason,
+                            "last_valid_share_age_seconds": pool_health.get("last_valid_share_age_seconds"),
+                            "last_block_submit_age_seconds": pool_health.get("last_block_submit_age_seconds"),
+                        },
+                    )
+                elif state["consecutive_syncing"] >= 2 and node_cooldown_remaining <= 0:
                     ok = run_node_restart(repair_node, "active RPC template probe failure: " + reason)
                     node_template_restart_by_node[repair_node] = int(time.time())
                     state["last_node_template_restart_at_by_node"] = node_template_restart_by_node
