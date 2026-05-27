@@ -88,6 +88,16 @@ class SyncCoordinatorFastCatchupTest(unittest.TestCase):
         )
         self.assertIn("stale", reason)
 
+    def test_legacy_restart_lagging_follower_flag_remains_compatible(self) -> None:
+        args = sync_coordinator.parse_args([
+            "--once",
+            "--repair",
+            "--pause-follower",
+            "--resume-follower",
+            "--restart-lagging-follower",
+        ])
+        self.assertTrue(args.accelerate_fastsync)
+
 
 if __name__ == "__main__":
     unittest.main()

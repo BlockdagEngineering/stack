@@ -13,6 +13,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 
@@ -31,6 +32,8 @@ ADDR_RE = re.compile(r"/ip4/[^,\s]+/tcp/(\d+)/p2p/([A-Za-z0-9]+)")
 PEER_RE_FULL = re.compile(r"/ip4/([^/]+)/tcp/(\d+)/p2p/([^,\s]+)")
 PEER_LATENCY_TIMEOUT = float(os.environ.get("BDAG_LOCAL_PEER_LATENCY_TIMEOUT", "0.75"))
 PEER_LATENCY_WORKERS = int(os.environ.get("BDAG_LOCAL_PEER_LATENCY_WORKERS", "16"))
+DASHBOARD_STATUS_URL = os.environ.get("BDAG_DASHBOARD_STATUS_URL", "http://127.0.0.1:8088/api/status")
+ACTIVE_MINING_RECENT_SECONDS = int(os.environ.get("BDAG_LOCAL_PEERS_ACTIVE_MINING_RECENT_SECONDS", "300"))
 
 
 def docker_top_has_bdag_child(output: str) -> bool:
@@ -280,6 +283,50 @@ def update_value_changed(key: str, current: str | None, new: str) -> bool:
     return (current or "") != new
 
 
+def env_enabled(name: str, default: bool = True) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def safe_int(value: object, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def fetch_dashboard_status() -> dict[str, object]:
+    request = urllib.request.Request(DASHBOARD_STATUS_URL, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=3) as response:
+        payload = json.loads(response.read().decode("utf-8", "replace"))
+    return payload if isinstance(payload, dict) else {}
+
+
+def active_mining_recreate_guard_reason() -> str:
+    if not env_enabled("BDAG_LOCAL_PEERS_DEFER_NODE_RECREATE_WHILE_MINING", True):
+        return ""
+    try:
+        status = fetch_dashboard_status()
+    except Exception:
+        return ""
+    pool = status.get("pool") if isinstance(status.get("pool"), dict) else {}
+    active_connections = safe_int(pool.get("metrics_active_connections"), 0)
+    recent_share_age = safe_int(pool.get("last_valid_share_age_seconds"), 999999)
+    recent_submit_age = safe_int(pool.get("last_submit_age_seconds"), 999999)
+    recent_work = min(recent_share_age, recent_submit_age) <= ACTIVE_MINING_RECENT_SECONDS
+    if active_connections <= 0 or not (status.get("can_accept_shares") or status.get("can_mine") or recent_work):
+        return ""
+    return (
+        f"active mining detected: {active_connections} stratum connection(s), "
+        f"last_valid_share_age_seconds={recent_share_age}, "
+        f"last_submit_age_seconds={recent_submit_age}"
+    )
+
+
 def planned_paused_follower() -> str:
     try:
         state = json.loads(SYNC_COORDINATOR_STATE_FILE.read_text(encoding="utf-8"))
@@ -386,6 +433,12 @@ def main() -> int:
         return 0
 
     apply_needed = args.force_apply or (args.apply and (changed or DEFERRED_APPLY_FILE.exists()))
+    if args.apply and not args.force_apply and apply_needed:
+        guard_reason = active_mining_recreate_guard_reason()
+        if guard_reason:
+            write_deferred_apply(guard_reason)
+            print(f"deferring container recreation: {guard_reason}")
+            return 0
     if args.apply or args.force_apply:
         stop_inactive_nodes(active_nodes)
     if len(active_nodes) == 1 and args.apply and not args.force_apply and apply_needed:
