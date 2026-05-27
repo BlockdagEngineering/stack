@@ -6409,17 +6409,43 @@ def merge_global_local_pool_clusters(
     return merged
 
 
+def normalize_global_chain_cluster(cluster: dict[str, Any]) -> dict[str, Any]:
+    row = dict(cluster)
+    if row.get("local_pool"):
+        return row
+    is_zero_address = str(row.get("address") or "").lower() == ZERO_ETH_ADDRESS
+    row.setdefault("nodes", [])
+    row.setdefault("source", "on-chain-evm-header")
+    row.setdefault("source_truth", "evm-header-miner")
+    row["zero_address"] = is_zero_address
+    if is_zero_address:
+        row["zero_address_note"] = "EVM header miner field is zero; this is not local pool payout evidence."
+    return row
+
+
+def normalize_global_cached_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    for key in ("clusters", "chain_clusters"):
+        rows = normalized.get(key)
+        if isinstance(rows, list):
+            normalized[key] = [
+                normalize_global_chain_cluster(row) if isinstance(row, dict) else row
+                for row in rows
+            ]
+    return normalized
+
+
 def collect_global_blockchain() -> dict[str, Any]:
     cached = read_json_file(GLOBAL_CACHE_FILE, {})
     cached_at = int(cached.get("updated_at_epoch", 0) or 0) if isinstance(cached, dict) else 0
     if cached.get("status") == "ok" and seconds_since_epoch() - cached_at <= GLOBAL_CACHE_TTL_SECONDS:
-        return annotate_global_pool_labels({**cached, "cache_hit": True, "history": read_global_history(limit=GLOBAL_HISTORY_LIMIT)})
+        return annotate_global_pool_labels(normalize_global_cached_payload({**cached, "cache_hit": True, "history": read_global_history(limit=GLOBAL_HISTORY_LIMIT)}))
 
     def stale_or_failed(error: str, errors: list[str] | None = None) -> dict[str, Any]:
         history = read_global_history(limit=GLOBAL_HISTORY_LIMIT)
         if isinstance(cached, dict) and cached.get("status") == "ok":
             return annotate_global_pool_labels(
-                {
+                normalize_global_cached_payload({
                     **cached,
                     "status": "stale",
                     "stale": True,
@@ -6427,7 +6453,7 @@ def collect_global_blockchain() -> dict[str, Any]:
                     "error": error,
                     "fetch_errors": errors or cached.get("fetch_errors", []),
                     "history": history,
-                }
+                })
             )
         return {
             "status": "failed",

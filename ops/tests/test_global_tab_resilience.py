@@ -109,6 +109,33 @@ class GlobalTabFallbackTests(unittest.TestCase):
         self.assertEqual(payload["clusters"][0]["blocks"], cached["clusters"][0]["blocks"])
         self.assertIn("unable to fetch latest global block height", payload["error"])
 
+    def test_global_cache_hit_normalizes_zero_header_rows(self) -> None:
+        cached = {
+            "status": "ok",
+            "updated_at_epoch": 100,
+            "latest_block": 123,
+            "clusters": [{"address": pool_ops.ZERO_ETH_ADDRESS, "blocks": 7, "rpc_sources": ["node2"]}],
+            "fetch_errors": [],
+        }
+
+        def fake_read_json_file(path: pathlib.Path, fallback: object) -> object:
+            if path == pool_ops.GLOBAL_CACHE_FILE:
+                return cached
+            return fallback
+
+        pool_ops.read_json_file = fake_read_json_file
+        pool_ops.read_global_history = lambda limit=None: []
+        pool_ops.seconds_since_epoch = lambda: 101
+
+        payload = pool_ops.collect_global_blockchain()
+
+        self.assertTrue(payload["cache_hit"])
+        row = payload["clusters"][0]
+        self.assertTrue(row["zero_address"])
+        self.assertEqual(row["nodes"], [])
+        self.assertEqual(row["source_truth"], "evm-header-miner")
+        self.assertIn("not local pool payout", row["zero_address_note"])
+
 
 class LocalPoolSourceTruthTests(unittest.TestCase):
     def setUp(self) -> None:
