@@ -2,6 +2,10 @@
 x-build-args: &build-args
   SNAPSHOT_PATH: ${SNAPSHOT_PATH:-./latest.bdsnap}
 
+x-dashboard-build-args: &dashboard-build-args
+  POOL_DASHBOARD_REPO: ${POOL_DASHBOARD_REPO:-https://github.com/BlockdagEngineering/pool-dashboard.git}
+  POOL_DASHBOARD_REF: ${POOL_DASHBOARD_REF:-6585347bfa78a1e6ed2a6178eaa38c7ccac9d022}
+
 x-node-critical: &node-critical
   cpu_shares: 4096
   blkio_config:
@@ -83,6 +87,13 @@ services:
       BDAG_FASTSNAP_TRUSTED_SIGNERS: ${BDAG_FASTSNAP_TRUSTED_SIGNERS:-}
       BDAG_FASTSNAP_ALLOW_UNSIGNED: ${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}
       BDAG_FASTSNAP_KEEP_ARCHIVE: ${BDAG_FASTSNAP_KEEP_ARCHIVE:-0}
+      BDAG_FASTSNAP_ARTIFACT_V2: ${BDAG_FASTSNAP_ARTIFACT_V2:-1}
+      BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
+      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-1}
+      BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
+      BDAG_FASTSYNC_PUBLIC_PEERS: ${BDAG_FASTSYNC_PUBLIC_PEERS:-}
+      BDAG_FASTSYNC_PEERS: ${BDAG_FASTSYNC_PEERS:-}
+      BDAG_FASTSYNC_PREPROCESS_WORKERS: ${BDAG_FASTSYNC_PREPROCESS_WORKERS:-1}
     volumes:
     # Note: The default behaviour is to keep any DB state from a previous run, 
     # to prevent unintentional loss of synced chain data.
@@ -93,21 +104,7 @@ services:
       - nodeworker-data:/var/lib/bdagStack/nodeworker
       # node.conf in project root (copy from node.conf.example). gitignored.
       - ./node.conf:/etc/bdagStack/node.conf:ro
-    environment:
-      BDAG_FASTSNAP_ENABLED: ${BDAG_FASTSNAP_ENABLED:-1}
-      BDAG_FASTSNAP_REQUIRED: ${BDAG_FASTSNAP_REQUIRED:-0}
-      BDAG_FASTSNAP_PEERS: ${BDAG_FASTSNAP_PEERS:-}
-      BDAG_FASTSNAP_MIN_TIP: ${BDAG_FASTSNAP_MIN_TIP:-0}
-      BDAG_FASTSNAP_TIMEOUT: ${BDAG_FASTSNAP_TIMEOUT:-90s}
-      BDAG_FASTSNAP_ARTIFACT_V2: ${BDAG_FASTSNAP_ARTIFACT_V2:-1}
-      BDAG_FASTSNAP_ALLOW_UNSIGNED: ${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}
-      BDAG_FASTSNAP_PARALLELISM: ${BDAG_FASTSNAP_PARALLELISM:-4}
-      BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
-      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-1}
-      BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
-      BDAG_FASTSYNC_PUBLIC_PEERS: ${BDAG_FASTSYNC_PUBLIC_PEERS:-}
-      BDAG_FASTSYNC_PEERS: ${BDAG_FASTSYNC_PEERS:-}
-      BDAG_FASTSYNC_PREPROCESS_WORKERS: ${BDAG_FASTSYNC_PREPROCESS_WORKERS:-1}
+
 
   # --------------------------------------------------------------------------
   # Dedicated hot-snapshot node. It syncs separately from the pool RPC node so
@@ -228,41 +225,58 @@ services:
 
 
   # --------------------------------------------------------------------------
-  # Dashboard. just uses rpc calls so far
+  # Canonical operations dashboard/control plane from BlockdagEngineering/pool-dashboard.
   # --------------------------------------------------------------------------
 
   dashboard:
     <<: *dashboard-low
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
-      context: ${BUILD_CONTEXT:-..}
-      dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile}
+      context: ${BUILD_CONTEXT:-.}
+      dockerfile: ${DOCKERFILE:-dockerfile}
       target: dashboard
       args:
-        <<: *build-args
+        <<: *dashboard-build-args
+      secrets:
+        - github_token
     restart: unless-stopped
     depends_on:
       node: { condition: service_started }
       pool: { condition: service_started }
     environment:
-      BDAG_RPC_URL: http://node:38131
-      # Must match node.conf rpcuser / rpcpass (same as pool service).
+      BDAG_PROJECT_ROOT: /workspace
+      BDAG_RUNTIME_DIR: /var/lib/bdag-dashboard/runtime
+      BDAG_POOL_ENV_FILE: /workspace/.env
+      BDAG_DASHBOARD_BIND: 0.0.0.0
+      BDAG_DASHBOARD_PORT: 9280
+      BDAG_DASHBOARD_REQUIRE_TOKEN: ${BDAG_DASHBOARD_REQUIRE_TOKEN:-auto}
+      BDAG_POOL_CONTAINER: pool
+      BDAG_POOL_CONTAINERS: pool
+      BDAG_POOL_DB_CONTAINER: postgres
+      BDAG_POOL_DB_USER: ${POSTGRES_USER:-bdag_pool}
+      BDAG_POOL_DB_NAME: ${POSTGRES_DB:-bdagpool}
+      BDAG_NODE_SERVICES: node
+      BDAG_STACK_SERVICES: postgres,node,pool
+      BDAG_NODE_DATA_DIRS: node
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
-      DASHBOARD_EVM_RPC_URL: http://node:18545
-      DASHBOARD_LISTEN: 0.0.0.0:9280
-      DASHBOARD_RPC_POLL_SECONDS: 5
-      DASHBOARD_MAX_POINTS: 120
-      DASHBOARD_MINING_MAX_BARS: 48
-      DASHBOARD_MINING_POLL_INTERVAL: 10m
-      MINING_POOL_ADDRESS: ${MINING_POOL_ADDRESS:-0x0000000000000000000000000000000000000000}
+      BDAG_NODE_MINING_RPC_USER: ${NODE_RPC_USER:-test}
+      BDAG_NODE_MINING_RPC_PASS: ${NODE_RPC_PASS:-test}
     ports:
       - "${DASHBOARD_HOST_PORT:-9280}:9280"
     volumes:
-      - ./dashboard/logs:/app/logs
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/workspace:ro
+      - dashboard-runtime:/var/lib/bdag-dashboard
+
+secrets:
+  github_token:
+    environment: GITHUB_TOKEN
+
 volumes:
   postgres-data:
   node-data:
   nodeworker-data:
   snapshot-node-data:
   snapshot-nodeworker-data:
+  dashboard-runtime:
