@@ -876,7 +876,7 @@ def loop(args: argparse.Namespace) -> None:
         time.sleep(args.interval)
 
 
-def main(argv: list[str]) -> int:
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Coordinate large BlockDAG dual-node catch-up")
     parser.add_argument("--once", action="store_true", help="run one check and print JSON")
     parser.add_argument("--loop", action="store_true", help="run continuously")
@@ -898,8 +898,22 @@ def main(argv: list[str]) -> int:
         action="store_false",
         help="disable fastest-sync acceleration even when the node is far behind",
     )
+    parser.add_argument(
+        "--restart-lagging-follower",
+        dest="accelerate_fastsync",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--interval", type=int, default=int(os.environ.get("BDAG_SYNC_COORDINATOR_INTERVAL", "120")))
-    args = parser.parse_args(argv)
+    return parser
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    return build_arg_parser().parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
 
     if args.loop:
         loop(args)
