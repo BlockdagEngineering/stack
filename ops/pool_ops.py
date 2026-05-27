@@ -171,6 +171,29 @@ def host_runtime_profile(force_refresh: bool = False) -> dict[str, Any]:
         "hardware_model": hardware_model,
         "psi_available": os_name == "linux" and Path("/proc/pressure/io").exists(),
     }
+    try:
+        from ops import capability_profile as bdag_capability_profile
+    except Exception:
+        try:
+            import capability_profile as bdag_capability_profile  # type: ignore[no-redef]
+        except Exception:
+            bdag_capability_profile = None  # type: ignore[assignment]
+    if bdag_capability_profile is not None:
+        try:
+            root = path_from_env("BDAG_PROJECT_ROOT", Path(__file__).resolve().parents[1])
+            capability = bdag_capability_profile.resolve(root, os.environ.copy())
+            facts = capability.get("host_facts") if isinstance(capability, dict) else {}
+            chain_paths = facts.get("chain_paths") if isinstance(facts, dict) else []
+            payload["capability_profile"] = capability.get("capability_profile")
+            payload["chain_storage_classes"] = [
+                item.get("storage_class")
+                for item in chain_paths
+                if isinstance(item, dict) and item.get("storage_class")
+            ]
+            payload["network_topology"] = facts.get("topology") if isinstance(facts, dict) else None
+            payload["node_mode"] = facts.get("node_mode") if isinstance(facts, dict) else None
+        except Exception as exc:
+            payload["capability_profile_error"] = str(exc)
     _HOST_RUNTIME_PROFILE_CACHE = dict(payload)
     return payload
 
@@ -759,6 +782,54 @@ def collect_host_pressure() -> dict[str, Any]:
 
 
 ADAPTIVE_WORKER_PROFILE_LIMITS: dict[str, dict[str, int]] = {
+    "pi5-usb-asic-router": {
+        "global_rpc": 4,
+        "miner_scan": 12,
+        "miner_hashrate": 2,
+        "peer_geo": 1,
+        "wallet_balance": 2,
+        "price_fetch": 1,
+    },
+    "usb-asic-router": {
+        "global_rpc": 4,
+        "miner_scan": 12,
+        "miner_hashrate": 2,
+        "peer_geo": 1,
+        "wallet_balance": 2,
+        "price_fetch": 1,
+    },
+    "fragile-flash": {
+        "global_rpc": 4,
+        "miner_scan": 12,
+        "miner_hashrate": 2,
+        "peer_geo": 1,
+        "wallet_balance": 2,
+        "price_fetch": 1,
+    },
+    "usb-ssd": {
+        "global_rpc": 8,
+        "miner_scan": 24,
+        "miner_hashrate": 4,
+        "peer_geo": 3,
+        "wallet_balance": 4,
+        "price_fetch": 2,
+    },
+    "nvme-single-node": {
+        "global_rpc": 24,
+        "miner_scan": 72,
+        "miner_hashrate": 8,
+        "peer_geo": 8,
+        "wallet_balance": 10,
+        "price_fetch": 3,
+    },
+    "nvme-dual-node": {
+        "global_rpc": 32,
+        "miner_scan": 96,
+        "miner_hashrate": 12,
+        "peer_geo": 8,
+        "wallet_balance": 12,
+        "price_fetch": 3,
+    },
     "pi5": {
         "global_rpc": 6,
         "miner_scan": 16,
@@ -839,7 +910,7 @@ def adaptive_worker_count(
 
     profile = host_runtime_profile()
     profile_limits = ADAPTIVE_WORKER_PROFILE_LIMITS.get(
-        str(profile.get("profile") or ""),
+        str(profile.get("capability_profile") or profile.get("profile") or ""),
         ADAPTIVE_WORKER_PROFILE_LIMITS["standard"],
     )
     cpu_scaled_ceiling = max(1, int(profile.get("cpu_count") or 1) * 2)

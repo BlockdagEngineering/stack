@@ -64,6 +64,27 @@ nodes may consume sync and relay blocks, but they must not advertise or handle
 FastSync range, snapshot, or artifact serving while mining; disk latency on USB
 directly reduces paid-block conversion.
 
+## Capability Profile Invariant
+
+Use `ops/capability_profile.py` as the shared source for runtime configuration
+choices that depend on hardware, storage, RAM, OS, node mode, and ASIC-router
+topology. Do not add new Pi-only constants, generic ARM64/AMD64 assumptions, or
+one-off cache/peer/VM values in installers, dashboards, watchdogs, or tuning
+scripts without routing them through this resolver or documenting why the
+resolver is intentionally bypassed.
+
+The release default is `BDAG_CAPABILITY_PROFILE=auto`. For
+`pi5-usb-asic-router` and `usb-asic-router`, bulk FastSync serving must remain
+off, `BDAG_FASTSYNC_PREPROCESS_WORKERS` must remain conservative, and RAM should
+be used for hot node/EVM/database/page cache while preserving enough free memory
+to avoid swap/writeback stalls. The goal is accepted paid blocks, not raw hash
+rate or snapshot-serving throughput from the miner's USB chain device.
+
+Any future change that adjusts node cache, EVM cache, `GOMEMLIMIT`, peer count,
+FastSnap parallelism, VM dirty writeback, read-ahead, Postgres buffers, or
+dashboard/guard worker budgets must update the capability-profile tests and
+`docs/platform-adaptive-runtime.md`.
+
 ## Five ASIC Template Conversion Invariant
 
 For five-X100 local mining hosts and other multi-miner deployments, connected

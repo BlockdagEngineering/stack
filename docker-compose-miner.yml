@@ -76,6 +76,8 @@ services:
       # node.conf in project root (copy from node.conf.example). gitignored.
       - ./node.conf:/etc/bdagStack/node.conf:ro
     environment:
+      GOMEMLIMIT: ${BDAG_NODE_GOMEMLIMIT:-off}
+      GOGC: ${BDAG_NODE_GOGC:-100}
       BDAG_FASTSNAP_PEERS: ${BDAG_FASTSNAP_PEERS:-}
       BDAG_FASTSNAP_MIN_TIP: ${BDAG_FASTSNAP_MIN_TIP:-0}
       BDAG_FASTSNAP_TIMEOUT: ${BDAG_FASTSNAP_TIMEOUT:-90s}
@@ -117,6 +119,7 @@ services:
       postgres: { condition: service_healthy }
       node:     { condition: service_started }
     environment:
+      GOMEMLIMIT: ${BDAG_POOL_GOMEMLIMIT:-512MiB}
       # Compose interpolates ${...} from the project root .env file.
       NODE_RPC_URL: http://node:38131
       NODE_RPC_URLS: ${NODE_RPC_URLS:-http://node:38131}

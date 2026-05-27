@@ -95,6 +95,29 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         statuses = {check.name: check.status for check in checks}
         self.assertEqual(statuses["fastartifactsync"], "pass")
 
+    def test_capability_profile_requires_no_fastsync_serving_on_usb_router(self) -> None:
+        checks = []
+        preflight.check_capability_profile(
+            checks,
+            {"BDAG_NO_FASTSYNC_SERVE": "auto", "BDAG_NODE_CACHE_MB": "6144"},
+            {
+                "capability_profile": "pi5-usb-asic-router",
+                "host_facts": {
+                    "topology": "single-node-asic-router",
+                    "node_mode": "single",
+                    "chain_paths": [{"storage_class": "usb-removable-flash"}],
+                },
+                "recommendations": {
+                    "BDAG_NODE_CACHE_MB": "6144",
+                    "BDAG_BLOCK_READ_AHEAD_KB": "256",
+                    "BDAG_BLOCK_NR_REQUESTS": "128",
+                },
+            },
+        )
+        statuses = {check.name: check.status for check in checks}
+        self.assertEqual(statuses["capability_profile"], "pass")
+        self.assertEqual(statuses["capability_no_fastsync_serve"], "fail")
+
     def test_zero_wallet_is_release_blocking(self) -> None:
         checks = []
         preflight.check_wallet(checks, {"MINING_ADDRESS": preflight.ZERO_ETH_ADDRESS, "BDAG_ENABLE_NODE_MINING": "0"})

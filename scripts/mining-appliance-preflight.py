@@ -12,6 +12,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,14 @@ GIB = 1024**3
 ZERO_ETH_ADDRESS = "0x0000000000000000000000000000000000000000"
 FLASH_UNFRIENDLY_FS = {"exfat", "vfat", "ntfs", "fuseblk"}
 CHAIN_DB_MARKERS = ("BdagChain", "Blockdag", "chaindata", "mainnet")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    from ops import capability_profile
+except Exception:  # pragma: no cover - preflight should degrade in trimmed packages.
+    capability_profile = None  # type: ignore[assignment]
 
 
 @dataclass
@@ -510,6 +519,99 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         add(checks, "pass", "entrypoint_chown_mode", f"BDAG_ENTRYPOINT_CHOWN_MODE={chown_mode}", evidence=evidence)
 
 
+def check_capability_profile(checks: list[Check], env: dict[str, str], payload: dict[str, Any] | None) -> None:
+    if not payload:
+        add(
+            checks,
+            "warn",
+            "capability_profile",
+            "capability profile resolver is unavailable.",
+            "Include ops/capability_profile.py so installers, preflight, dashboard, and tuning scripts share one hardware/storage policy.",
+        )
+        return
+
+    profile = str(payload.get("capability_profile") or "")
+    facts = payload.get("host_facts") if isinstance(payload.get("host_facts"), dict) else {}
+    recs = payload.get("recommendations") if isinstance(payload.get("recommendations"), dict) else {}
+    storage_classes = [
+        item.get("storage_class")
+        for item in (facts.get("chain_paths") or [])
+        if isinstance(item, dict) and item.get("storage_class")
+    ]
+    evidence = {
+        "capability_profile": profile,
+        "topology": facts.get("topology"),
+        "node_mode": facts.get("node_mode"),
+        "chain_storage_classes": storage_classes,
+        "recommendations": recs,
+    }
+    add(
+        checks,
+        "pass",
+        "capability_profile",
+        f"resolved {profile or 'unknown'} for topology={facts.get('topology') or 'unknown'} storage={','.join(storage_classes) or 'unknown'}",
+        "Keep BDAG_CAPABILITY_PROFILE=auto unless deliberately testing a different appliance class.",
+        evidence,
+    )
+
+    if profile in {"pi5-usb-asic-router", "usb-asic-router"}:
+        if (env.get("BDAG_NO_FASTSYNC_SERVE") or "auto").strip().lower() not in {"1", "true", "yes", "on"}:
+            add(
+                checks,
+                "fail",
+                "capability_no_fastsync_serve",
+                f"{profile} must not serve bulk FastSync from the mining USB chain device.",
+                "Set BDAG_NO_FASTSYNC_SERVE=1; this host can consume FastSync and relay blocks but must not spend USB IO serving snapshots while mining.",
+                evidence,
+            )
+        else:
+            add(checks, "pass", "capability_no_fastsync_serve", "USB ASIC-router profile suppresses bulk FastSync serving", evidence=evidence)
+
+    cache_actual = safe_int(env.get("BDAG_NODE_CACHE_MB"), None)
+    cache_recommended = safe_int(recs.get("BDAG_NODE_CACHE_MB") if recs else None, None)
+    if cache_actual and cache_recommended:
+        if cache_actual < max(1024, int(cache_recommended * 0.75)):
+            add(
+                checks,
+                "warn",
+                "capability_node_cache_budget",
+                f"BDAG_NODE_CACHE_MB={cache_actual} is materially below the {profile} recommendation of {cache_recommended}.",
+                "Use the capability-profile recommendation unless measured memory pressure proves it is too high; more hot DB cache reduces USB/SD reads.",
+                evidence,
+            )
+        elif cache_actual > int(cache_recommended * 1.5):
+            add(
+                checks,
+                "warn",
+                "capability_node_cache_budget",
+                f"BDAG_NODE_CACHE_MB={cache_actual} is materially above the {profile} recommendation of {cache_recommended}.",
+                "Leave RAM for the Linux page cache and Postgres; overcommitting process heap can turn RAM pressure into USB writes.",
+                evidence,
+            )
+        else:
+            add(checks, "pass", "capability_node_cache_budget", f"BDAG_NODE_CACHE_MB={cache_actual} matches {profile} budget", evidence=evidence)
+
+    for key in (
+        "BDAG_BLOCK_READ_AHEAD_KB",
+        "BDAG_BLOCK_NR_REQUESTS",
+        "BDAG_VM_SWAPPINESS",
+        "BDAG_VM_VFS_CACHE_PRESSURE",
+    ):
+        expected = str(recs.get(key) or "")
+        actual = str(env.get(key) or "")
+        if not expected or not actual:
+            continue
+        if actual != expected:
+            add(
+                checks,
+                "warn",
+                f"capability_{key.lower()}",
+                f"{key}={actual} differs from {profile} recommendation {expected}.",
+                "Align host tuning with the resolved capability profile, then measure IO wait and accepted blocks before overriding.",
+                evidence,
+            )
+
+
 def check_swap(checks: list[Check], profile: HostProfile) -> None:
     swaps = parse_swaps()
     total = sum(item["size_bytes"] for item in swaps)
@@ -815,11 +917,15 @@ def run_preflight(root: Path, env_file: Path) -> dict[str, Any]:
     env = os.environ.copy()
     env.update(load_env_file(env_file))
     profile = detect_host_profile()
+    capability_payload = None
+    if capability_profile is not None:
+        capability_payload = capability_profile.resolve(root, env)
     checks: list[Check] = []
     check_host(checks, profile)
     check_storage(checks, root, env, profile)
     check_node_data_layout(checks, root, env)
     check_env_defaults(checks, env, profile)
+    check_capability_profile(checks, env, capability_payload)
     check_swap(checks, profile)
     check_network(checks, env)
     check_docker_storage(checks, root, env, profile)
@@ -833,6 +939,7 @@ def run_preflight(root: Path, env_file: Path) -> dict[str, Any]:
         "root": str(root),
         "env_file": str(env_file),
         "host_profile": profile.as_dict(),
+        "capability_profile": capability_payload,
         "failure_count": len(failures),
         "warning_count": len(warnings),
         "checks": [check.as_dict() for check in checks],

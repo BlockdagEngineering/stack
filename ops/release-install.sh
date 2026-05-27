@@ -147,6 +147,24 @@ configure_node_mining_env() {
   fi
 }
 
+apply_capability_profile_env() {
+  if [[ ! -f ops/capability_profile.py ]]; then
+    return 1
+  fi
+  say "Resolving hardware/storage capability profile"
+  local applied=0
+  while IFS='=' read -r key value; do
+    [[ -n "$key" ]] || continue
+    case "$key" in
+      BDAG_CAPABILITY_PROFILE|BDAG_HOST_PROFILE|BDAG_CHAIN_DATA_PATHS|BDAG_NODE_CACHE_MB|BDAG_NODE_CACHE_DATABASE_PERCENT|BDAG_NODE_CACHE_SNAPSHOT_PERCENT|BDAG_NODE_BD_CACHE_SIZE|BDAG_NODE_DAG_CACHE_SIZE|BDAG_EVM_CACHE_MB|BDAG_EVM_CACHE_DATABASE_PERCENT|BDAG_EVM_CACHE_SNAPSHOT_PERCENT|BDAG_NODE_GOMEMLIMIT|BDAG_NODE_GOGC|BDAG_POOL_GOMEMLIMIT|BDAG_BLOCK_READ_AHEAD_KB|BDAG_BLOCK_NR_REQUESTS|BDAG_VM_TUNING_ENABLED|BDAG_VM_SWAPPINESS|BDAG_VM_VFS_CACHE_PRESSURE|BDAG_VM_DIRTY_BACKGROUND_BYTES|BDAG_VM_DIRTY_BYTES|BDAG_FSTRIM_ENABLED|NODE_MAX_PEERS|BDAG_FASTSYNC_PREPROCESS_WORKERS|BDAG_FASTSNAP_PARALLELISM|BDAG_NO_FASTSYNC_SERVE|BDAG_FASTARTIFACTSYNC_ENABLED|BDAG_BACKGROUND_MAINTENANCE_BACKOFF_ENABLED|BDAG_STATUS_SAMPLER_ENABLED|BDAG_ADAPTIVE_CONCURRENCY_ENABLED|POSTGRES_SHARED_BUFFERS|POSTGRES_EFFECTIVE_CACHE_SIZE|POSTGRES_MAX_WAL_SIZE|POSTGRES_CHECKPOINT_TIMEOUT)
+        set_env_value .env "$key" "$value"
+        applied=1
+        ;;
+    esac
+  done < <(python3 ops/capability_profile.py --root "$ROOT" --env-file "$ROOT/.env" --env 2>/dev/null || true)
+  [[ "$applied" == "1" ]]
+}
+
 guard_runtime_compose() {
   if [[ ! -f docker-compose.yml ]]; then
     echo "Missing docker-compose.yml in release root." >&2
@@ -227,9 +245,13 @@ configure_env() {
   configure_node_mode_env "$node_mode"
   configure_node_mining_env "$node_mining_enabled" "$mining_address"
 
-  mem_kb="$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-  mem_gb=$(( mem_kb / 1024 / 1024 ))
-  if (( mem_gb > 0 && mem_gb <= 8 )); then
+  if apply_capability_profile_env; then
+    say "Capability profile applied"
+  else
+    mem_kb="$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    mem_gb=$(( mem_kb / 1024 / 1024 ))
+  fi
+  if [[ -n "${mem_gb:-}" ]] && (( mem_gb > 0 && mem_gb <= 8 )); then
     say "Applying Pi/low-memory defaults"
     set_env_value .env BDAG_NODE_CACHE_MB 1024
     set_env_value .env NODE_MAX_PEERS 160
