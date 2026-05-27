@@ -159,10 +159,12 @@ class MinerRegistryIdentityTests(unittest.TestCase):
 class PoolActivityAttributionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.old_read_miner_registry = pool_ops.read_miner_registry
+        self.old_read_neighbor_macs = pool_ops.read_neighbor_macs
         self.addCleanup(self.restore_registry)
 
     def restore_registry(self) -> None:
         pool_ops.read_miner_registry = self.old_read_miner_registry
+        pool_ops.read_neighbor_macs = self.old_read_neighbor_macs
 
     def test_shared_worker_without_job_mapping_is_not_assigned_to_one_miner(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
@@ -205,6 +207,48 @@ class PoolActivityAttributionTests(unittest.TestCase):
         self.assertEqual(miners["192.168.1.14"]["shares"], 1)
         self.assertEqual(miners["192.168.1.14"]["share_work"], 500)
         self.assertNotIn("192.168.1.103", miners)
+
+    def test_same_mac_ip_change_keeps_worker_and_work_on_one_identity(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        mac = "28:e2:97:3e:39:63"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {
+                    "ip": "192.168.1.14",
+                    "mac": mac,
+                    "display_name": "Athena",
+                    "expected_worker_user": worker,
+                    "ip_history": ["192.168.1.14"],
+                },
+            ]
+        }
+        pool_ops.read_neighbor_macs = lambda: {
+            "192.168.1.14": mac,
+            "192.168.1.114": mac,
+        }
+        log = "\n".join(
+            [
+                f"2026/05/26 06:20:00 [192.168.1.14:40541] authorize accepted user={worker}",
+                f"2026/05/26 06:20:01 [192.168.1.114:45403] authorize accepted user={worker}",
+                f"2026/05/26 06:20:02 valid share accepted 100.0 -> 500 worker={worker} job=missing-client",
+                "2026/05/26 06:20:03 Sending to 192.168.1.114:45403: jobID=job-1",
+                f"2026/05/26 06:20:04 valid share accepted 100.0 -> 700 worker={worker} job=job-1",
+                "2026/05/26 06:20:05 BLOCK FOUND height(le)=8000001 job=job-1 hash=aaa target=bbb",
+            ]
+        )
+
+        activity = pool_ops.parse_pool_activity(log)
+        miners = activity["miners"]
+
+        self.assertEqual(activity["unattributed_valid_shares"], 0)
+        self.assertEqual(len(miners), 1)
+        self.assertEqual(miners[0]["identity_key"], f"mac:{mac}")
+        self.assertEqual(miners[0]["display_label"], "Athena-963")
+        self.assertEqual(miners[0]["ip"], "192.168.1.114")
+        self.assertEqual(set(miners[0]["ip_history"]), {"192.168.1.14", "192.168.1.114"})
+        self.assertEqual(miners[0]["shares"], 2)
+        self.assertEqual(miners[0]["share_work"], 1200)
+        self.assertEqual(miners[0]["blocks_found"], 1)
 
     def test_shared_worker_with_direct_client_log_uses_client_identity(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
