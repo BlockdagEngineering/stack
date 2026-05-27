@@ -270,6 +270,10 @@ PRICE_MIN_OK_SOURCES = int(os.environ.get("BDAG_PRICE_MIN_OK_SOURCES", "2"))
 GLOBAL_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_GLOBAL_CACHE_TTL_SECONDS", "300"))
 GLOBAL_BLOCK_WINDOW = int(os.environ.get("BDAG_GLOBAL_BLOCK_WINDOW", "2048"))
 GLOBAL_RPC_WORKERS = env_int("BDAG_GLOBAL_RPC_WORKERS", 24, minimum=1)
+LOCAL_POOL_SOURCE_TRUTH_LIMIT = env_int("BDAG_LOCAL_POOL_SOURCE_TRUTH_LIMIT", 512, minimum=1)
+LOCAL_POOL_SOURCE_TRUTH_WORKERS = env_int("BDAG_LOCAL_POOL_SOURCE_TRUTH_WORKERS", 4, minimum=1)
+LOCAL_POOL_SOURCE_TRUTH_SETTLE_SECONDS = env_int("BDAG_LOCAL_POOL_SOURCE_TRUTH_SETTLE_SECONDS", 90, minimum=0)
+LOCAL_POOL_SOURCE_TRUTH_RPC_TIMEOUT = env_float("BDAG_LOCAL_POOL_SOURCE_TRUTH_RPC_TIMEOUT", 4.0, minimum=0.5)
 GLOBAL_HISTORY_LIMIT = int(os.environ.get("BDAG_GLOBAL_HISTORY_LIMIT", "9000"))
 GLOBAL_HISTORY_COMPACT_MULTIPLIER = max(1, int(os.environ.get("BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER", "2")))
 NODE_EVM_RPC_PORT = int(os.environ.get("BDAG_NODE_EVM_RPC_PORT", "18545"))
@@ -6127,26 +6131,29 @@ def collect_local_pool_global_clusters(
     total_global_blocks: int,
     scan_window_hours: Decimal | None,
     price: dict[str, Any],
+    avg_reward_bdag: Decimal | None = None,
 ) -> list[dict[str, Any]]:
     seconds = max(1, int(scan_window_seconds or 1))
+    settle_seconds = min(max(0, LOCAL_POOL_SOURCE_TRUTH_SETTLE_SECONDS), seconds - 1)
+    limit = max(1, LOCAL_POOL_SOURCE_TRUTH_LIMIT)
     sql = f"""
     SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json)
     FROM (
-      SELECT c.miner_address,
-             count(*) AS credit_count,
-             count(DISTINCT c.block_hash) AS found_blocks,
-             COALESCE(sum(c.amount), 0)::text AS total_wei,
-             COALESCE(sum(c.amount) FILTER (WHERE b.status = 'PAID'), 0)::text AS paid_wei,
-             COALESCE(sum(c.amount) FILTER (WHERE b.status <> 'PAID' OR b.status IS NULL), 0)::text AS pending_wei,
-             min(c.created_at)::text AS first_credit_at,
-             max(c.created_at)::text AS last_credit_at,
-             to_char(min(c.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS first_seen_at,
-             to_char(max(c.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_seen_at
-      FROM credits c
-      LEFT JOIN blocks b ON b.hash = c.block_hash
-      WHERE c.created_at >= now() - ({seconds} * interval '1 second')
-      GROUP BY c.miner_address
-      ORDER BY count(DISTINCT c.block_hash) DESC, sum(c.amount) DESC
+      SELECT id,
+             candidate_hash,
+             node_block_hash,
+             height,
+             backend,
+             template_seq,
+             to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS submitted_at
+      FROM block_submissions
+      WHERE accepted = true
+        AND node_block_hash IS NOT NULL
+        AND node_block_hash <> ''
+        AND created_at >= now() - ({seconds} * interval '1 second')
+        AND created_at <= now() - ({settle_seconds} * interval '1 second')
+      ORDER BY created_at DESC
+      LIMIT {limit}
     ) t;
     """
     try:
@@ -6156,60 +6163,161 @@ def collect_local_pool_global_clusters(
     if not isinstance(rows, list):
         return []
 
+    rpc_urls = node_rpc_urls()
+    if not rpc_urls:
+        return [{"source": "local-pool-bdag-rpc", "status": "failed", "error": "no BDAG mining RPC source configured", "local_pool": True}]
+    rpc_name, rpc_url = rpc_urls[0]
+
+    def inspect_submission(row: dict[str, Any]) -> dict[str, Any]:
+        block_hash = str(row.get("node_block_hash") or "").strip()
+        result = {
+            "row": row,
+            "node_block_hash": block_hash,
+            "blue": None,
+            "coinbase": "",
+            "confirmations": None,
+            "order": None,
+            "status": "unknown",
+            "error": "",
+        }
+        if not block_hash:
+            result["status"] = "missing-hash"
+            return result
+        try:
+            blue = mining_rpc_call(rpc_url, "isBlue", [block_hash], timeout=LOCAL_POOL_SOURCE_TRUTH_RPC_TIMEOUT)
+            block = mining_rpc_call(
+                rpc_url,
+                "getBlockV2",
+                [block_hash, True, False, False],
+                timeout=LOCAL_POOL_SOURCE_TRUTH_RPC_TIMEOUT,
+            )
+            coinbase = mining_rpc_call(
+                rpc_url,
+                "getCoinbaseAddress",
+                [block_hash],
+                timeout=LOCAL_POOL_SOURCE_TRUTH_RPC_TIMEOUT,
+            )
+            result["blue"] = safe_int(blue, None)
+            result["coinbase"] = str(coinbase or "").strip()
+            if isinstance(block, dict):
+                result["confirmations"] = safe_int(block.get("confirmations"), None)
+                result["order"] = safe_int(block.get("order"), None)
+            result["status"] = "confirmed-blue" if result["blue"] == 1 else "unconfirmed"
+        except Exception as exc:  # noqa: BLE001 - source-truth enrichment must not break global tab.
+            result["status"] = "error"
+            result["error"] = str(exc)
+        return result
+
+    source_pressure = {
+        "chain_rpc_latency_ms": None,
+        "iowait_percent": None,
+        "io_some_avg10": None,
+        "cpu_some_avg10": None,
+    }
+    worker_count = min(
+        LOCAL_POOL_SOURCE_TRUTH_WORKERS,
+        adaptive_worker_count("global_rpc", LOCAL_POOL_SOURCE_TRUTH_WORKERS, len(rows), source_pressure),
+        max(1, len(rows)),
+    )
+    if rows:
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            inspections = list(pool.map(inspect_submission, [row for row in rows if isinstance(row, dict)]))
+    else:
+        inspections = []
+
     identities = local_worker_identity_map()
-    clusters: list[dict[str, Any]] = []
+    by_address: dict[str, dict[str, Any]] = {}
     denominator = Decimal(max(1, int(total_global_blocks or 0)))
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        address = str(row.get("miner_address") or "").strip()
+    for item in inspections:
+        address = str(item.get("coinbase") or "").strip()
         if not is_spendable_eth_address(address):
             continue
-        credit_count = int(row.get("credit_count", 0) or 0)
-        found_blocks = int(row.get("found_blocks", 0) or 0)
-        total_bdag = wei_to_bdag(row.get("total_wei"))
-        hourly_bdag = total_bdag / scan_window_hours if scan_window_hours and scan_window_hours > 0 else None
+        normalized = address.lower()
         identity = identities.get(address.lower(), {})
         pool_name = str(identity.get("display_label") or identity.get("pool_name") or "Local pool")
-        share = Decimal(found_blocks) / denominator
-        clusters.append(
+        entry = by_address.setdefault(
+            normalized,
             {
                 "rank": None,
-                "address": address,
-                "address_short": short_eth_address(address),
+                "address": normalized,
+                "address_short": short_eth_address(normalized),
                 "pool_name": pool_name,
-                "pool_label": f"{pool_name} ({short_eth_address(address)})",
-                "source": "local-pool-db",
+                "pool_label": f"{pool_name} ({short_eth_address(normalized)})",
+                "source": "local-pool-bdag-rpc",
+                "source_truth": "bdag-rpc-isBlue",
                 "local_pool": True,
                 "nodes": list(NODES),
-                "rpc_sources": ["local-pool-db"],
-                "workers": [address],
-                "shares": credit_count,
-                "blocks": found_blocks,
-                "credit_blocks": credit_count,
-                "found_blocks": found_blocks,
+                "rpc_sources": [rpc_name],
+                "workers": [normalized],
+                "shares": 0,
+                "blocks": 0,
+                "credit_blocks": 0,
+                "found_blocks": 0,
+                "accepted_submissions": 0,
+                "pending_submissions": 0,
+                "unconfirmed_submissions": 0,
+                "source_truth_checked_submissions": 0,
+                "source_truth_errors": 0,
+                "first_seen_at": item.get("row", {}).get("submitted_at"),
+                "last_seen_at": item.get("row", {}).get("submitted_at"),
+                "location": "local pool",
+                "location_confidence": "bdag-rpc",
+                "identity_key": identity.get("identity_key") or "",
+                "ip": identity.get("ip") or "",
+                "mac": identity.get("mac") or "",
+                "device_type": identity.get("device_type") or "",
+            },
+        )
+        entry["accepted_submissions"] += 1
+        entry["source_truth_checked_submissions"] += 1
+        submitted_at = item.get("row", {}).get("submitted_at")
+        if submitted_at:
+            entry["first_seen_at"] = min(str(entry.get("first_seen_at") or submitted_at), str(submitted_at))
+            entry["last_seen_at"] = max(str(entry.get("last_seen_at") or submitted_at), str(submitted_at))
+        if item.get("status") == "confirmed-blue":
+            entry["shares"] += 1
+            entry["blocks"] += 1
+            entry["credit_blocks"] += 1
+            entry["found_blocks"] += 1
+        elif item.get("status") == "error":
+            entry["source_truth_errors"] += 1
+        else:
+            entry["pending_submissions"] += 1
+            entry["unconfirmed_submissions"] += 1
+
+    clusters: list[dict[str, Any]] = []
+    for entry in by_address.values():
+        confirmed = int(entry.get("blocks", 0) or 0)
+        share = Decimal(confirmed) / denominator
+        total_bdag = avg_reward_bdag * Decimal(confirmed) if avg_reward_bdag is not None else None
+        hourly_bdag = total_bdag / scan_window_hours if total_bdag is not None and scan_window_hours and scan_window_hours > 0 else None
+        entry.update(
+            {
                 "share_percent": decimal_to_str(share * Decimal("100"), places=2),
-                "credited_bdag": decimal_to_str(total_bdag),
-                "estimated_bdag": decimal_to_str(total_bdag),
-                "estimated_usd": fiat_value(total_bdag, price, "usd"),
-                "estimated_zar": fiat_value(total_bdag, price, "zar"),
-                "estimated_wallet_bdag": decimal_to_str(total_bdag),
+                "credited_bdag": decimal_to_str(total_bdag) if total_bdag is not None else None,
+                "estimated_bdag": decimal_to_str(total_bdag) if total_bdag is not None else None,
+                "estimated_usd": fiat_value(total_bdag, price, "usd") if total_bdag is not None else None,
+                "estimated_zar": fiat_value(total_bdag, price, "zar") if total_bdag is not None else None,
+                "estimated_wallet_bdag": decimal_to_str(total_bdag) if total_bdag is not None else None,
                 "estimated_bdag_avg_hour": decimal_to_str(hourly_bdag) if hourly_bdag is not None else None,
                 "estimated_usd_avg_hour": fiat_value(hourly_bdag, price, "usd") if hourly_bdag is not None else None,
                 "estimated_zar_avg_hour": fiat_value(hourly_bdag, price, "zar") if hourly_bdag is not None else None,
                 "estimated_bdag_recent_hour": decimal_to_str(hourly_bdag) if hourly_bdag is not None else None,
                 "estimated_usd_recent_hour": fiat_value(hourly_bdag, price, "usd") if hourly_bdag is not None else None,
                 "estimated_zar_recent_hour": fiat_value(hourly_bdag, price, "zar") if hourly_bdag is not None else None,
-                "first_seen_at": row.get("first_seen_at") or row.get("first_credit_at"),
-                "last_seen_at": row.get("last_seen_at") or row.get("last_credit_at"),
-                "location": "local pool",
-                "location_confidence": "pool-db",
-                "identity_key": identity.get("identity_key") or "",
-                "ip": identity.get("ip") or "",
-                "mac": identity.get("mac") or "",
-                "device_type": identity.get("device_type") or "",
+                "source_truth_summary": {
+                    "checked": len(inspections),
+                    "confirmed_blue": confirmed,
+                    "accepted_submissions": int(entry.get("accepted_submissions", 0) or 0),
+                    "pending": int(entry.get("pending_submissions", 0) or 0),
+                    "errors": int(entry.get("source_truth_errors", 0) or 0),
+                    "settle_seconds": settle_seconds,
+                    "limit": limit,
+                },
             }
         )
+        clusters.append(entry)
+    clusters.sort(key=lambda item: (int(item.get("blocks", 0) or 0), str(item.get("last_seen_at") or "")), reverse=True)
     return clusters
 
 
@@ -6228,7 +6336,8 @@ def merge_global_local_pool_clusters(
             merged.append(dict(local))
             continue
         existing["local_pool"] = True
-        existing["source"] = "on-chain+local-pool-db"
+        local_source = str(local.get("source") or "local-pool").strip()
+        existing["source"] = f"on-chain+{local_source}"
         for key in (
             "pool_name",
             "pool_label",
@@ -6243,6 +6352,13 @@ def merge_global_local_pool_clusters(
             "ip",
             "mac",
             "device_type",
+            "source_truth",
+            "accepted_submissions",
+            "pending_submissions",
+            "unconfirmed_submissions",
+            "source_truth_checked_submissions",
+            "source_truth_errors",
+            "source_truth_summary",
         ):
             if local.get(key) not in (None, "", []):
                 existing[key] = local[key]
@@ -6443,6 +6559,7 @@ def collect_global_blockchain() -> dict[str, Any]:
         total_blocks,
         scan_window_hours,
         price,
+        avg_reward_bdag,
     )
     display_clusters = merge_global_local_pool_clusters(enriched_clusters, local_pool_clusters)
 
