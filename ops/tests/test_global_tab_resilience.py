@@ -151,6 +151,43 @@ class GlobalHistoryWriteTests(unittest.TestCase):
             self.assertTrue(state["compacted"])
 
 
+class EarningsEvmRpcSourceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.old_global_evm_rpc_urls = pool_ops.global_evm_rpc_urls
+        self.old_node_rpc_urls = pool_ops.node_rpc_urls
+        self.old_named_urls_from_env = pool_ops.named_urls_from_env
+        self.old_json_rpc_balance = pool_ops.json_rpc_balance
+        self.old_adaptive_worker_count = pool_ops.adaptive_worker_count
+        self.addCleanup(self.restore_globals)
+
+    def restore_globals(self) -> None:
+        pool_ops.global_evm_rpc_urls = self.old_global_evm_rpc_urls
+        pool_ops.node_rpc_urls = self.old_node_rpc_urls
+        pool_ops.named_urls_from_env = self.old_named_urls_from_env
+        pool_ops.json_rpc_balance = self.old_json_rpc_balance
+        pool_ops.adaptive_worker_count = self.old_adaptive_worker_count
+
+    def test_wallet_balances_use_evm_rpc_not_mining_rpc(self) -> None:
+        wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        called_urls: list[str] = []
+        pool_ops.global_evm_rpc_urls = lambda: [("node2-evm", "http://172.22.0.5:18545")]
+        pool_ops.node_rpc_urls = lambda: [("node2-mining", "http://127.0.0.1:38131")]
+        pool_ops.named_urls_from_env = lambda _name, _defaults: []
+        pool_ops.adaptive_worker_count = lambda *_args, **_kwargs: 1
+
+        def fake_balance(url: str, _address: str, timeout: float = 6.0) -> dict[str, str]:
+            called_urls.append(url)
+            return {"wei": "1000000000000000000", "bdag": "1.00"}
+
+        pool_ops.json_rpc_balance = fake_balance
+
+        payload = pool_ops.collect_wallet_balances_for_addresses([wallet])
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(called_urls, ["http://172.22.0.5:18545"])
+        self.assertEqual(payload["addresses"][0]["type"], "evm-rpc")
+
+
 class GlobalLocalPoolOverlayTests(unittest.TestCase):
     def setUp(self) -> None:
         self.old_pool_db_json = pool_ops.pool_db_json
