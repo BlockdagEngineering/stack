@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import pathlib
+import os
 import sys
 import tempfile
 import unittest
@@ -601,6 +602,7 @@ class AdaptiveConcurrencyTests(unittest.TestCase):
         self.old_cpu_count = pool_ops.os.cpu_count
         self.old_platform_system = pool_ops.platform.system
         self.old_platform_machine = pool_ops.platform.machine
+        self.old_capability_profile = os.environ.get("BDAG_CAPABILITY_PROFILE")
         self.addCleanup(self.restore_globals)
 
     def restore_globals(self) -> None:
@@ -609,6 +611,10 @@ class AdaptiveConcurrencyTests(unittest.TestCase):
         pool_ops.os.cpu_count = self.old_cpu_count
         pool_ops.platform.system = self.old_platform_system
         pool_ops.platform.machine = self.old_platform_machine
+        if self.old_capability_profile is None:
+            os.environ.pop("BDAG_CAPABILITY_PROFILE", None)
+        else:
+            os.environ["BDAG_CAPABILITY_PROFILE"] = self.old_capability_profile
 
     def test_host_profile_detects_pi5_class_hardware(self) -> None:
         pool_ops.HOST_PROFILE_OVERRIDE = "auto"
@@ -627,6 +633,7 @@ class AdaptiveConcurrencyTests(unittest.TestCase):
 
     def test_adaptive_workers_shrink_under_pressure_on_constrained_hosts(self) -> None:
         pool_ops.HOST_PROFILE_OVERRIDE = "pi5"
+        os.environ["BDAG_CAPABILITY_PROFILE"] = "pi5"
         pool_ops.ADAPTIVE_CONCURRENCY_ENABLED = True
         pool_ops.ADAPTIVE_IOWAIT_WARN_PERCENT = 25.0
         pool_ops._HOST_RUNTIME_PROFILE_CACHE = None
@@ -639,6 +646,7 @@ class AdaptiveConcurrencyTests(unittest.TestCase):
 
     def test_adaptive_workers_expand_on_large_idle_hosts(self) -> None:
         pool_ops.HOST_PROFILE_OVERRIDE = "large"
+        os.environ["BDAG_CAPABILITY_PROFILE"] = "large"
         pool_ops.ADAPTIVE_CONCURRENCY_ENABLED = True
         pool_ops._HOST_RUNTIME_PROFILE_CACHE = None
         pool_ops.os.cpu_count = lambda: 16
@@ -650,6 +658,7 @@ class AdaptiveConcurrencyTests(unittest.TestCase):
 
     def test_adaptive_workers_shrink_when_chain_rpc_latency_is_high(self) -> None:
         pool_ops.HOST_PROFILE_OVERRIDE = "standard"
+        os.environ["BDAG_CAPABILITY_PROFILE"] = "standard"
         pool_ops.ADAPTIVE_CONCURRENCY_ENABLED = True
         pool_ops.ADAPTIVE_CHAIN_RPC_WARN_MS = 1000.0
         pool_ops._HOST_RUNTIME_PROFILE_CACHE = None

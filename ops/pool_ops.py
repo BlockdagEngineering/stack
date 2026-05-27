@@ -3274,6 +3274,33 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
             or (client_for_worker(worker) if worker else None)
         )
 
+    def non_bridge_client(client: dict[str, str] | None) -> bool:
+        return bool(client and not is_docker_bridge_pool_log_client(str(client.get("ip") or "")))
+
+    def remap_bridge_client(
+        client: dict[str, str] | None,
+        worker: str = "",
+        job_id: str = "",
+        extranonce: str = "",
+    ) -> dict[str, str] | None:
+        if not client:
+            return None
+        if not is_docker_bridge_pool_log_client(str(client.get("ip") or "")):
+            return client
+        suffix = str(extranonce or job_extranonce(job_id) or "").lower()
+        if job_id or suffix:
+            cached = job_to_client.get(job_id) or (extranonce_to_client.get(suffix) if suffix else None)
+            if non_bridge_client(cached):
+                return cached
+        if worker:
+            mapped = client_for_worker(worker)
+            if non_bridge_client(mapped):
+                return mapped
+            recent = recent_client_for_unknown_job(job_id, worker) if job_id else None
+            if non_bridge_client(recent):
+                return recent
+        return client
+
     for registered in registered_by_ip.values():
         ip = str(registered.get("ip") or "")
         if not is_ipv4(ip):
@@ -3382,19 +3409,20 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         subscribe = SUBSCRIBE_ACCEPT_RE.search(line)
         if subscribe:
             ip, port, extranonce = subscribe.groups()
-            client = {"ip": ip, "port": port}
+            client = remap_bridge_client({"ip": ip, "port": port}, extranonce=extranonce) or {"ip": ip, "port": port}
             extranonce_to_client.setdefault(extranonce.lower(), client)
-            item = miner_for_ip(ip)
-            note_port(item, port)
+            item = miner_for_ip(client["ip"])
+            note_port(item, client.get("port") or port)
             note_seen(item, line)
             continue
 
         notify = JOB_NOTIFY_DETAIL_RE.search(line)
         if notify:
             ip, port, job_id = notify.groups()
-            note_job_client(job_id, {"ip": ip, "port": port})
-            item = miner_for_ip(ip)
-            note_port(item, port)
+            client = remap_bridge_client({"ip": ip, "port": port}, job_id=job_id) or {"ip": ip, "port": port}
+            note_job_client(job_id, client)
+            item = miner_for_ip(client["ip"])
+            note_port(item, client.get("port") or port)
             item["jobs"] += 1
             note_seen(item, line, "last_job_at")
             continue
@@ -3402,8 +3430,9 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         legacy_notify = JOB_NOTIFY_RE.search(line)
         if legacy_notify:
             ip, job_id = legacy_notify.groups()
-            note_job_client(job_id, {"ip": ip, "port": ""})
-            item = miner_for_ip(ip)
+            client = remap_bridge_client({"ip": ip, "port": ""}, job_id=job_id) or {"ip": ip, "port": ""}
+            note_job_client(job_id, client)
+            item = miner_for_ip(client["ip"])
             item["jobs"] += 1
             note_seen(item, line, "last_job_at")
             continue
@@ -3411,10 +3440,10 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         recovery_resend = RECOVERY_JOB_TO_CLIENT_RE.search(line)
         if recovery_resend:
             ip, port, job_id = recovery_resend.groups()
-            client = {"ip": ip, "port": port}
+            client = remap_bridge_client({"ip": ip, "port": port}, job_id=job_id) or {"ip": ip, "port": port}
             note_job_client(job_id, client)
-            item = miner_for_ip(ip)
-            note_port(item, port)
+            item = miner_for_ip(client["ip"])
+            note_port(item, client.get("port") or port)
             note_item_extranonce(item, job_id)
             item["jobs"] += 1
             note_seen(item, line, "last_job_at")
@@ -3423,7 +3452,7 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         submit = SUBMIT_RE.search(line)
         if submit:
             client_ip, client_port, worker, job_id = submit.groups()
-            direct_client = client_from_addr(client_ip, client_port)
+            direct_client = remap_bridge_client(client_from_addr(client_ip, client_port), worker, job_id)
             if direct_client:
                 note_job_client(job_id, direct_client)
             client = direct_client or client_for_job_or_worker(job_id, worker)
@@ -3443,7 +3472,7 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
             client_port = share.group(4)
             worker = share.group(5)
             job_id = share.group(6)
-            direct_client = client_from_addr(client_ip, client_port)
+            direct_client = remap_bridge_client(client_from_addr(client_ip, client_port), worker, job_id)
             if direct_client:
                 note_job_client(job_id, direct_client)
             client = direct_client or client_for_job_or_worker(job_id, worker)
@@ -3468,7 +3497,7 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         block = BLOCK_FOUND_RE.search(line)
         if block:
             job_id = block.group(1)
-            direct_client = client_from_line(line)
+            direct_client = remap_bridge_client(client_from_line(line), job_id=job_id)
             if direct_client:
                 note_job_client(job_id, direct_client)
             client = direct_client or client_for_job_or_worker(job_id)
@@ -7411,32 +7440,38 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
             normalize_mac((registered_for_activity(item) or {}).get("mac")) or normalize_mac(item.get("mac")),
         )
     ]
-    hashrate_by_ip = collect_miner_hashrate_debug(registry.get("miners", []), active_activity_miners)
-    credit_by_address = {
-        str(item.get("miner_address")): item
-        for item in credit_totals.get("by_address", [])
-        if item.get("miner_address")
-    }
-    worker_to_identities: dict[str, set[str]] = {}
+    visible_activity_miners: list[dict[str, Any]] = []
     for item in active_activity_miners:
         activity_ip = str(item.get("ip") or "")
         registered = registered_for_activity(item)
         activity_mac = normalize_mac((registered or {}).get("mac")) or normalize_mac(item.get("mac"))
         if is_docker_bridge_pool_log_client(activity_ip, activity_mac):
             continue
+        visible_activity_miners.append(item)
+
+    hashrate_by_ip = collect_miner_hashrate_debug(registry.get("miners", []), visible_activity_miners)
+    credit_by_address = {
+        str(item.get("miner_address")): item
+        for item in credit_totals.get("by_address", [])
+        if item.get("miner_address")
+    }
+    worker_to_identities: dict[str, set[str]] = {}
+    for item in visible_activity_miners:
+        activity_ip = str(item.get("ip") or "")
+        registered = registered_for_activity(item)
+        activity_mac = normalize_mac((registered or {}).get("mac")) or normalize_mac(item.get("mac"))
         identity = str(item.get("identity_key") or miner_identity_key({**registered, **item}) or f"ip:{activity_ip}")
         for worker in item.get("workers", []):
             worker_to_identities.setdefault(str(worker), set()).add(identity)
-    total_work = sum(int(item.get("share_work", 0) or 0) for item in active_activity_miners)
+    total_work = sum(int(item.get("share_work", 0) or 0) for item in visible_activity_miners)
     total_bdag = wei_to_bdag(credit_totals.get("totals", {}).get("total_wei"))
     recent_bdag = wei_to_bdag(credit_totals.get("recent_1h", {}).get("total_wei"))
     estimates: list[dict[str, Any]] = []
-    for item in active_activity_miners:
+    visible_count = len(visible_activity_miners)
+    for item in visible_activity_miners:
         activity_ip = str(item.get("ip") or "")
         registered = registered_for_activity(item)
         registered_mac = normalize_mac(registered.get("mac")) or normalize_mac(item.get("mac"))
-        if is_docker_bridge_pool_log_client(activity_ip, registered_mac):
-            continue
         work = int(item.get("share_work", 0) or 0)
         hashrate = hashrate_by_ip.get(activity_ip, {})
         workers = merge_unique_strings(item.get("workers"), registered.get("last_workers"))
@@ -7449,7 +7484,15 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
         paid_bdag = sum(((decimal_value(row.get("paid_bdag")) or Decimal("0")) for row in credit_rows), Decimal("0"))
         credited_blocks = sum(int(row.get("credit_count", 0) or 0) for row in credit_rows)
         last_credit_at = max([str(row.get("last_credit_at") or "") for row in credit_rows] or [""]) or None
-        share = Decimal(work) / Decimal(total_work) if total_work else Decimal("0")
+        if total_work:
+            share = Decimal(work) / Decimal(total_work)
+            work_percent_source = "visible-share-work"
+        elif visible_count == 1:
+            share = Decimal("1")
+            work_percent_source = "single-visible-miner"
+        else:
+            share = Decimal("0")
+            work_percent_source = "no-visible-work"
         estimated_total = total_bdag * share
         estimated_hour = recent_bdag * share
         estimates.append(
@@ -7473,6 +7516,7 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
                 "shares": item.get("shares", 0),
                 "share_work": work,
                 "work_percent": percent_to_str(share * Decimal("100")),
+                "work_percent_source": work_percent_source,
                 "blocks_found": item.get("blocks_found", 0),
                 "hashrate": hashrate.get("hashrate"),
                 "av_hashrate": hashrate.get("av_hashrate"),
@@ -7545,6 +7589,7 @@ def compact_miner_estimate_for_history(miner: dict[str, Any]) -> dict[str, Any]:
         "shares",
         "share_work",
         "work_percent",
+        "work_percent_source",
         "blocks_found",
         "hashrate",
         "av_hashrate",
@@ -7569,6 +7614,38 @@ def compact_miner_estimate_for_history(miner: dict[str, Any]) -> dict[str, Any]:
         "estimated_wallet_zar_1h",
     ]
     return {key: miner.get(key) for key in keys if key in miner}
+
+
+def normalize_history_miner_work_percent(miners: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    visible = [
+        miner
+        for miner in miners
+        if isinstance(miner, dict)
+        and (miner.get("ip") or miner.get("mac") or miner.get("device_id") or miner.get("identity_key"))
+        and not is_docker_bridge_pool_log_client(str(miner.get("ip") or ""), normalize_mac(miner.get("mac")))
+    ]
+    if len(visible) == 1:
+        visible[0]["work_percent"] = "100.00"
+        visible[0]["work_percent_source"] = visible[0].get("work_percent_source") or "single-visible-history"
+        return miners
+
+    total_work = 0
+    visible_work: list[tuple[dict[str, Any], int]] = []
+    for miner in visible:
+        try:
+            work = int(miner.get("share_work", 0) or 0)
+        except (TypeError, ValueError):
+            work_decimal = decimal_value(miner.get("share_work"))
+            work = int(work_decimal) if work_decimal is not None else 0
+        visible_work.append((miner, work))
+        total_work += work
+    if total_work <= 0:
+        return miners
+    for miner, work in visible_work:
+        share = Decimal(work) / Decimal(total_work)
+        miner["work_percent"] = percent_to_str(share * Decimal("100"))
+        miner["work_percent_source"] = "visible-history-share-work"
+    return miners
 
 
 def earnings_snapshot_has_plot_data(snapshot: dict[str, Any]) -> bool:
@@ -7634,17 +7711,20 @@ def read_latest_earnings_snapshot_info(max_tail_bytes: int = 2 * 1024 * 1024) ->
 
 def compact_earnings_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     credit_balance = snapshot.get("credit_balance_check") if isinstance(snapshot.get("credit_balance_check"), dict) else {}
+    miners = normalize_history_miner_work_percent(
+        [
+            compact_miner_estimate_for_history(miner)
+            for miner in snapshot.get("miner_estimates") or []
+            if isinstance(miner, dict)
+        ]
+    )
     return {
         "generated_at": snapshot.get("generated_at"),
         "total_bdag": snapshot.get("total_bdag"),
         "credit_balance_check": {
             "wallet_bdag": credit_balance.get("wallet_bdag"),
         },
-        "miner_estimates": [
-            compact_miner_estimate_for_history(miner)
-            for miner in snapshot.get("miner_estimates") or []
-            if isinstance(miner, dict)
-        ],
+        "miner_estimates": miners,
     }
 
 
@@ -8331,11 +8411,13 @@ def record_earnings_snapshot() -> dict[str, Any]:
         "generated_at": earnings["generated_at"],
         "total_bdag": earnings.get("credits", {}).get("totals", {}).get("total_bdag"),
         "credit_balance_check": earnings.get("credit_balance_check"),
-        "miner_estimates": [
-            compact_miner_estimate_for_history(miner)
-            for miner in earnings.get("miner_estimates", [])
-            if isinstance(miner, dict)
-        ],
+        "miner_estimates": normalize_history_miner_work_percent(
+            [
+                compact_miner_estimate_for_history(miner)
+                for miner in earnings.get("miner_estimates", [])
+                if isinstance(miner, dict)
+            ]
+        ),
     }
     with EARNINGS_SNAPSHOT_FILE.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(snapshot) + "\n")

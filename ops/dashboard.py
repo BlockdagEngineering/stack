@@ -2687,7 +2687,17 @@ HTML = r"""<!doctype html>
         ctx.fill();
       }
     }
-    function minerWorkPercent(row) {
+    function minerWorkPercent(row, snapshotMiners = null) {
+      const visibleRows = Array.isArray(snapshotMiners)
+        ? snapshotMiners.filter(item => minerIdentity(item))
+        : [];
+      const rowIdentity = minerIdentity(row);
+      if (visibleRows.length === 1 && minerIdentity(visibleRows[0]) === rowIdentity) return 100;
+      const rowWork = firstNumeric(row.share_work);
+      if (visibleRows.length > 1 && rowWork !== null) {
+        const visibleWork = visibleRows.reduce((sum, item) => sum + (firstNumeric(item.share_work) || 0), 0);
+        if (visibleWork > 0) return (rowWork / visibleWork) * 100;
+      }
       const parsed = numberValue(row.work_percent);
       return parsed === null ? null : parsed;
     }
@@ -2703,10 +2713,10 @@ HTML = r"""<!doctype html>
         row.hashrate
       );
     }
-    function minerChartMetricValue(row) {
+    function minerChartMetricValue(row, snapshotMiners = null) {
       if (minerWorkChartMetric === "blocks") return minerBlocksFound(row);
       if (minerWorkChartMetric === "hashrate") return minerHashrateGhs(row);
-      return minerWorkPercent(row);
+      return minerWorkPercent(row, snapshotMiners);
     }
     function formatMinerMetricValue(value, metric = minerWorkChartMetric) {
       if (metric === "work") return `${value.toFixed(0)}%`;
@@ -2751,7 +2761,7 @@ HTML = r"""<!doctype html>
       const seriesMap = new Map();
       for (const snapshot of timestamped) {
         for (const row of snapshot.miners) {
-          const value = minerChartMetricValue(row);
+          const value = minerChartMetricValue(row, snapshot.miners);
           if (value === null) continue;
           const key = minerIdentity(row);
           if (!key) continue;
