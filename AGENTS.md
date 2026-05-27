@@ -57,6 +57,13 @@ prefer `BDAG_FASTSYNC_PREPROCESS_WORKERS=1` on Pi catch-up hosts. The parallel
 preprocessor has previously panicked in `processFastBlockRange`; uptime and
 steady catch-up beat the small parallel precheck speedup.
 
+USB-backed ASIC router/mining hosts must not serve bulk sync. Keep
+`BDAG_NO_FASTSYNC_SERVE=auto` or set it explicitly to `1` on Pi5 profiles where
+chain data lives on USB and the same host is the ASIC DHCP/NAT gateway. These
+nodes may consume sync and relay blocks, but they must not advertise or handle
+FastSync range, snapshot, or artifact serving while mining; disk latency on USB
+directly reduces paid-block conversion.
+
 ## Five ASIC Template Conversion Invariant
 
 For five-X100 local mining hosts and other multi-miner deployments, connected

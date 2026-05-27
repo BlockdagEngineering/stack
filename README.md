@@ -137,6 +137,12 @@ and IO weights, keeps duplicate sync work paused in dual-node mode, and restarts
 an unaccelerated or stale leader after the cooldown window so startup peer order
 and V2 artifact serving are active.
 
+USB-backed ASIC router/mining profiles are the exception. Leave
+`BDAG_NO_FASTSYNC_SERVE=auto` enabled, or set it to `1`, when a Pi5 runs chain
+data from USB and also serves DHCP/NAT to directly attached ASICs. The node will
+still consume sync and relay found blocks, but it will not advertise bulk
+FastSync range, snapshot, or artifact serving from the same USB-backed miner.
+
 `BDAG_FASTSYNC_LAN_PEERS`, `BDAG_FASTSYNC_VPN_PEERS`, and
 `BDAG_FASTSYNC_PUBLIC_PEERS` remain accepted as compatibility aliases. Set
 `BDAG_FASTSYNC_PEER_ORDERING=flat-latency` only to reproduce the older flat

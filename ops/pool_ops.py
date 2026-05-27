@@ -540,6 +540,15 @@ def is_spendable_eth_address(value: Any) -> bool:
     return valid_eth_address(address) and address.lower() != ZERO_ETH_ADDRESS
 
 
+def require_spendable_eth_address(value: Any, label: str = "address") -> str:
+    address = str(value or "").strip()
+    if not valid_eth_address(address):
+        raise ValueError(f"{label} must be a 20-byte hex address")
+    if address.lower() == ZERO_ETH_ADDRESS:
+        raise ValueError(f"{label} cannot be the zero address")
+    return address
+
+
 def configured_command(name: str, default: list[str]) -> list[str]:
     if name not in os.environ:
         return default
@@ -1314,10 +1323,13 @@ def default_miner_pool_settings() -> dict[str, str]:
             local_ips = local_ipv4_addresses()
             pool_host = local_ips[0] if local_ips else "127.0.0.1"
         pool_url = f"stratum+tcp://{pool_host}:{pool_port}"
+    worker_user = os.environ.get("BDAG_MINER_WORKER_USER") or read_env_value("MINING_ADDRESS") or ""
+    if worker_user and not is_spendable_eth_address(worker_user):
+        worker_user = ""
     return {
         "scan_target": default_miner_scan_target(),
         "pool_url": pool_url,
-        "worker_user": os.environ.get("BDAG_MINER_WORKER_USER") or read_env_value("MINING_ADDRESS") or "",
+        "worker_user": worker_user,
         "pool_password": os.environ.get("BDAG_MINER_POOL_PASSWORD", "1234"),
     }
 
@@ -1840,6 +1852,10 @@ def configure_miner(
 ) -> dict[str, Any]:
     if not admin_password:
         raise MinerAPIError("admin password is required")
+    try:
+        worker_user = require_spendable_eth_address(worker_user, "worker_user")
+    except ValueError as exc:
+        raise MinerAPIError(str(exc)) from exc
     desired = {"url": pool_url, "user": worker_user, "pass": pool_password}
 
     before = get_miner_pools(ip)
@@ -6345,6 +6361,15 @@ def merge_global_local_pool_clusters(
             "credited_bdag",
             "found_blocks",
             "estimated_wallet_bdag",
+            "estimated_bdag",
+            "estimated_usd",
+            "estimated_zar",
+            "estimated_bdag_avg_hour",
+            "estimated_usd_avg_hour",
+            "estimated_zar_avg_hour",
+            "estimated_bdag_recent_hour",
+            "estimated_usd_recent_hour",
+            "estimated_zar_recent_hour",
         ):
             if local.get(key) not in (None, "", []):
                 existing[f"local_{key}"] = local[key]
@@ -6367,7 +6392,18 @@ def merge_global_local_pool_clusters(
         ):
             if local.get(key) not in (None, "", []):
                 existing[key] = local[key]
-    merged.sort(key=lambda item: (int(item.get("blocks", 0) or 0), str(item.get("last_seen_at") or "")), reverse=True)
+    def display_blocks(item: dict[str, Any]) -> int:
+        if item.get("local_pool") and item.get("local_blocks") not in (None, "", []):
+            try:
+                return int(item.get("local_blocks") or 0)
+            except (TypeError, ValueError):
+                return 0
+        try:
+            return int(item.get("blocks", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    merged.sort(key=lambda item: (display_blocks(item), str(item.get("last_seen_at") or "")), reverse=True)
     for rank, cluster in enumerate(merged, start=1):
         cluster["rank"] = rank
     return merged
@@ -6524,6 +6560,7 @@ def collect_global_blockchain() -> dict[str, Any]:
     enriched_clusters: list[dict[str, Any]] = []
     for rank, cluster in enumerate(clusters, start=1):
         blocks = int(cluster["blocks"])
+        is_zero_address = str(cluster["address"] or "").lower() == ZERO_ETH_ADDRESS
         share = Decimal(blocks) / Decimal(total_blocks) if total_blocks else Decimal("0")
         est_bdag = avg_reward_bdag * Decimal(blocks) if avg_reward_bdag is not None else None
         est_bdag_hour, est_usd_hour, est_zar_hour = _pool_earning_rates_from_cluster(
@@ -6556,6 +6593,12 @@ def collect_global_blockchain() -> dict[str, Any]:
                 "location": str(peer_location.get("location") or "Unknown"),
                 "location_confidence": str(peer_location.get("location_confidence") or "n/a"),
                 "rpc_sources": unique_names(cluster["rpc_sources"]),
+                "nodes": [],
+                "local_pool": False,
+                "source": "on-chain-evm-header",
+                "source_truth": "evm-header-miner",
+                "zero_address": is_zero_address,
+                "zero_address_note": "EVM header miner field is zero; this is not local pool payout evidence." if is_zero_address else "",
             }
         )
 

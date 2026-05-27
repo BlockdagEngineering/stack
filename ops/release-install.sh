@@ -218,6 +218,7 @@ configure_env() {
   set_env_value .env BDAG_POOL_URL "stratum+tcp://$lan_ip:3334"
   set_env_value .env BDAG_MINER_SCAN_TARGET "$scan_target"
   set_env_value .env BDAG_FASTSYNC_PREPROCESS_WORKERS 1
+  set_env_value .env BDAG_NO_FASTSYNC_SERVE auto
   set_env_value .env BDAG_FASTARTIFACTSYNC_ENABLED 1
   set_env_value .env BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC 1
   set_env_value .env BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS 900

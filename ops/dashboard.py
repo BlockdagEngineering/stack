@@ -38,6 +38,7 @@ from pool_ops import (
     read_latest_earnings_snapshot_info,
     read_miner_registry,
     record_earnings_snapshot,
+    require_spendable_eth_address,
     save_miner_admin_password,
     scan_miners,
     upsert_miner_registry,
@@ -1339,7 +1340,7 @@ HTML = r"""<!doctype html>
           <div class="subtle" style="margin-top: 8px;">Pool addresses are clustered from recent block headers and rendered like miner rows for consistency.</div>
           <div class="table-scroll" style="margin-top: 12px;">
             <table class="wide-table">
-              <thead><tr><th class="nowrap">Pool</th><th class="nowrap">Nodes</th><th class="right">Shares</th><th class="right">Work %</th><th class="right">Credit Blocks</th><th class="right">Credited BDAG</th><th class="right">Found Blocks</th><th class="right">Est. Wallet BDAG</th><th class="right">Avg USD/h</th><th class="right">Wallet Avg BDAG/h</th><th class="right">USD Total</th><th class="right">ZAR Total</th><th>Last Seen</th></tr></thead>
+              <thead><tr><th class="nowrap">Pool</th><th class="nowrap">Pool Nodes</th><th class="right">Shares</th><th class="right">Work %</th><th class="right">Credit Blocks</th><th class="right">Credited BDAG</th><th class="right">Found Blocks</th><th class="right">Est. Wallet BDAG</th><th class="right">Avg USD/h</th><th class="right">Wallet Avg BDAG/h</th><th class="right">USD Total</th><th class="right">ZAR Total</th><th>Last Seen</th></tr></thead>
               <tbody id="globalPoolsTable"></tbody>
             </table>
           </div>
@@ -1653,11 +1654,19 @@ HTML = r"""<!doctype html>
       return name ? `${name} (${shortEth(address)})` : shortEth(address);
     }
     function globalNodesLabel(row) {
-      if (Array.isArray(row?.nodes) && row.nodes.length) return row.nodes.join(", ");
+      if (row?.local_pool && Array.isArray(row?.nodes) && row.nodes.length) return row.nodes.join(", ");
       if (row?.local_pool) return "local pool";
-      const name = row?.pool_name || globalPoolName(row?.address);
-      if (name) return name;
-      return (row?.rpc_sources || []).join(", ");
+      return "";
+    }
+    function globalObservedLabel(row) {
+      if (row?.zero_address) return "header zero";
+      if (row?.local_pool) return "local pool";
+      const sources = Array.isArray(row?.rpc_sources) ? row.rpc_sources.filter(Boolean) : [];
+      return sources.length ? `observed via ${sources.join(", ")}` : "";
+    }
+    function globalRowValue(row, key, ...fallbacks) {
+      if (row?.local_pool && hasValue(row?.[`local_${key}`])) return row[`local_${key}`];
+      return firstPresent(row?.[key], ...fallbacks);
     }
     function showTab(name) {
       for (const page of document.querySelectorAll(".tab-page")) page.classList.add("hidden");
@@ -2894,6 +2903,8 @@ HTML = r"""<!doctype html>
     }
     function poolUsdPerHour(row) {
       return numberValue(
+        (row?.local_pool ? row.local_estimated_usd_avg_hour : null) ??
+        (row?.local_pool ? row.local_estimated_usd_recent_hour : null) ??
         row.estimated_usd_avg_hour ??
         row.estimated_usd_recent_hour ??
         row.estimated_wallet_usd_avg_hour ??
@@ -2904,13 +2915,16 @@ HTML = r"""<!doctype html>
     }
     function poolBlocksPerHour(row, snapshot) {
       const direct = firstNumeric(
+        row?.local_pool ? row.local_blocks_per_hour : null,
         row.blocks_per_hour,
         row.blocks_avg_hour,
         row.blocks_recent_hour,
         row.blocks_1h
       );
       if (direct !== null) return direct;
-      const blocks = numberValue(row.blocks);
+      const blocks = row?.local_pool
+        ? firstNumeric(row.local_blocks, row.local_found_blocks, row.local_credit_blocks, row.blocks)
+        : numberValue(row.blocks);
       const windowHours = firstNumeric(row.scan_window_hours, snapshot?.scan_window_hours);
       return blocks !== null && windowHours !== null && windowHours > 0 ? blocks / windowHours : null;
     }
@@ -3240,21 +3254,25 @@ HTML = r"""<!doctype html>
         const poolAddress = row.address || row.address_short || "";
         const poolIdentity = globalPoolIdentity(row);
         const poolColor = globalPoolColor(poolIdentity);
-        const sourceBadge = row.local_pool ? ` <span class="subtle">local pool</span>` : "";
+        const observedLabel = globalObservedLabel(row);
+        const observedTitle = row.zero_address_note || (observedLabel ? observedLabel : "");
+        const sourceBadge = observedLabel ? ` <span class="subtle" title="${escapeHtml(observedTitle)}">${escapeHtml(observedLabel)}</span>` : "";
         const poolCell = poolName
           ? `<span class="pool-dot"></span>${escapeHtml(poolName)} <span class="subtle">${escapeShortEth(poolAddress)}</span>${sourceBadge}`
-          : `<span class="pool-dot"></span>${escapeShortEth(poolAddress)}`;
-        const shares = firstPresent(row.shares, row.blocks);
-        const creditBlocks = firstPresent(row.credit_blocks, row.blocks);
-        const creditedBdag = firstPresent(row.credited_bdag, row.estimated_bdag);
-        const foundBlocks = firstPresent(row.found_blocks, row.blocks);
-        const walletBdag = firstPresent(row.estimated_wallet_bdag, row.estimated_bdag);
-        const avgUsd = firstPresent(row.estimated_usd_avg_hour, row.estimated_usd_recent_hour);
-        const avgBdag = firstPresent(row.estimated_bdag_avg_hour, row.estimated_bdag_recent_hour);
+          : `<span class="pool-dot"></span>${escapeShortEth(poolAddress)}${sourceBadge}`;
+        const shares = globalRowValue(row, "shares", row.blocks);
+        const creditBlocks = globalRowValue(row, "credit_blocks", row.blocks);
+        const creditedBdag = globalRowValue(row, "credited_bdag", row.estimated_bdag);
+        const foundBlocks = globalRowValue(row, "found_blocks", row.blocks);
+        const walletBdag = globalRowValue(row, "estimated_wallet_bdag", row.estimated_bdag);
+        const avgUsd = globalRowValue(row, "estimated_usd_avg_hour", row.estimated_usd_recent_hour);
+        const avgBdag = globalRowValue(row, "estimated_bdag_avg_hour", row.estimated_bdag_recent_hour);
+        const usdTotal = globalRowValue(row, "estimated_usd");
+        const zarTotal = globalRowValue(row, "estimated_zar");
         tr.className = "pool-row";
         tr.style.setProperty("--pool-row-color", transparentColor(poolColor, 0.08));
         tr.style.setProperty("--pool-color", poolColor);
-        tr.innerHTML = `<td class="nowrap pool-name" title="${escapeHtml(poolAddress)}">${poolCell}</td><td class="nowrap">${escapeHtml(nodes || "")}</td><td class="right">${fmt(shares)}</td><td class="right">${share}</td><td class="right">${fmt(creditBlocks)}</td><td class="right">${escapeHtml(creditedBdag || "")}</td><td class="right">${fmt(foundBlocks)}</td><td class="right">${escapeHtml(walletBdag || "")}</td><td class="right">${currency(avgUsd, "$")}</td><td class="right">${currency(avgBdag, "")}</td><td class="right">${currency(row.estimated_usd, "$")}</td><td class="right">${currency(row.estimated_zar, "R")}</td><td class="nowrap">${escapeHtml(formatDisplayTime(row.last_seen_at))}</td>`;
+        tr.innerHTML = `<td class="nowrap pool-name" title="${escapeHtml(poolAddress)}">${poolCell}</td><td class="nowrap">${escapeHtml(nodes || "")}</td><td class="right">${fmt(shares)}</td><td class="right">${share}</td><td class="right">${fmt(creditBlocks)}</td><td class="right">${escapeHtml(creditedBdag || "")}</td><td class="right">${fmt(foundBlocks)}</td><td class="right">${escapeHtml(walletBdag || "")}</td><td class="right">${currency(avgUsd, "$")}</td><td class="right">${currency(avgBdag, "")}</td><td class="right">${currency(usdTotal, "$")}</td><td class="right">${currency(zarTotal, "R")}</td><td class="nowrap">${escapeHtml(formatDisplayTime(row.last_seen_at))}</td>`;
         body.appendChild(tr);
       }
       drawGlobalChart(data);
@@ -3476,6 +3494,11 @@ class Handler(BaseHTTPRequestHandler):
             pool_password = str(payload.get("pool_password") or "1234")
             if not admin_password or not pool_url or not worker_user:
                 self.send_json({"error": "admin_password, pool_url, and worker_user are required"}, status=400)
+                return
+            try:
+                worker_user = require_spendable_eth_address(worker_user, "worker_user")
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=400)
                 return
             result = configure_miners(
                 ips=ips,

@@ -384,8 +384,27 @@ def check_storage(checks: list[Check], root: Path, env: dict[str, str], profile:
     elif not data_same_as_root:
         add(checks, "pass", "chain_data_placement", "chain data is separated from the project/root filesystem", evidence=evidence)
 
-    if is_usb_source(str(data_mount.get("source") or "")) and data_fstype not in {"f2fs", "ext4"}:
+    usb_chain_data = is_usb_source(str(data_mount.get("source") or ""))
+    if usb_chain_data and data_fstype not in {"f2fs", "ext4"}:
         add(checks, "warn", "usb_chain_filesystem", f"USB chain device uses {data_fstype or 'unknown'} filesystem.", "Use F2FS for USB flash or ext4 for USB SSD.", evidence)
+
+    mining_address = (env.get("MINING_ADDRESS") or env.get("MINING_POOL_ADDRESS") or "").strip()
+    topology = (env.get("BDAG_DETECTED_NETWORK_TOPOLOGY") or env.get("BDAG_NETWORK_TOPOLOGY") or "").strip().lower()
+    mining_appliance = (
+        mining_address and mining_address.lower() != ZERO_ETH_ADDRESS
+    ) or topology == "single-node-asic-router"
+    no_fastsync_serve = bool_enabled(env.get("BDAG_NO_FASTSYNC_SERVE"), False)
+    if usb_chain_data and mining_appliance and not no_fastsync_serve:
+        add(
+            checks,
+            "fail",
+            "usb_mining_fastsync_serving",
+            "USB-backed mining node is not configured to suppress FastSync serving.",
+            "Set BDAG_NO_FASTSYNC_SERVE=1 so the miner can consume sync but does not serve bulk range, snapshot, or artifact traffic from USB while mining.",
+            evidence,
+        )
+    elif usb_chain_data and mining_appliance:
+        add(checks, "pass", "usb_mining_fastsync_serving", "USB-backed mining node will not serve bulk FastSync data", evidence=evidence)
 
 
 def chain_marker_exists(path: Path) -> bool:
@@ -423,6 +442,7 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         "BDAG_NODE_CACHE_MB": env.get("BDAG_NODE_CACHE_MB"),
         "NODE_MAX_PEERS": env.get("NODE_MAX_PEERS"),
         "BDAG_FASTSYNC_PREPROCESS_WORKERS": env.get("BDAG_FASTSYNC_PREPROCESS_WORKERS"),
+        "BDAG_NO_FASTSYNC_SERVE": env.get("BDAG_NO_FASTSYNC_SERVE"),
         "BDAG_FASTARTIFACTSYNC_ENABLED": env.get("BDAG_FASTARTIFACTSYNC_ENABLED"),
         "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": env.get("BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC"),
         "BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS": env.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS"),
@@ -454,7 +474,9 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     else:
         add(checks, "pass", "fastsync_preprocess_workers", f"BDAG_FASTSYNC_PREPROCESS_WORKERS={preprocess}", evidence=evidence)
 
-    if not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True):
+    if bool_enabled(env.get("BDAG_NO_FASTSYNC_SERVE"), False):
+        add(checks, "pass", "fastartifactsync", "Fast Artifact Sync serving is suppressed for this mining node", evidence=evidence)
+    elif not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True):
         add(checks, "warn", "fastartifactsync", "BDAG_FASTARTIFACTSYNC_ENABLED is disabled.", "Enable Fast Artifact Sync V2 so nodes can advertise and use the fastest sync path.", evidence)
     else:
         add(checks, "pass", "fastartifactsync", "Fast Artifact Sync V2 startup flag is enabled", evidence=evidence)
@@ -599,11 +621,8 @@ def check_schema_file(checks: list[Check], root: Path) -> None:
 
 def check_wallet(checks: list[Check], env: dict[str, str]) -> None:
     address = (env.get("MINING_ADDRESS") or env.get("MINING_POOL_ADDRESS") or "").strip()
-    node_mining_enabled = bool_enabled(env.get("BDAG_ENABLE_NODE_MINING"), False)
-    if node_mining_enabled and (not address or address.lower() == ZERO_ETH_ADDRESS):
-        add(checks, "fail", "mining_address", "node mining is enabled but the reward wallet is unset or zero.", "Set MINING_ADDRESS/MINING_POOL_ADDRESS before attaching ASICs.", {"address": address, "BDAG_ENABLE_NODE_MINING": env.get("BDAG_ENABLE_NODE_MINING")})
-    elif not address or address.lower() == ZERO_ETH_ADDRESS:
-        add(checks, "warn", "mining_address", "reward wallet is unset or zero.", "Set the wallet before enabling miner sources or node mining.", {"address": address})
+    if not address or address.lower() == ZERO_ETH_ADDRESS:
+        add(checks, "fail", "mining_address", "reward wallet is unset or zero.", "Set MINING_ADDRESS/MINING_POOL_ADDRESS before attaching ASICs; mining to 0x0000000000000000000000000000000000000000 is never valid.", {"address": address, "BDAG_ENABLE_NODE_MINING": env.get("BDAG_ENABLE_NODE_MINING")})
     else:
         add(checks, "pass", "mining_address", f"reward wallet configured: {address[:10]}...{address[-6:]}", evidence={"address": address})
 

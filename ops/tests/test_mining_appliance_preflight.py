@@ -74,6 +74,33 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         self.assertIn("adaptive_concurrency", warnings)
         self.assertIn("entrypoint_chown_mode", warnings)
 
+    def test_no_fastsync_serve_suppresses_fastartifact_warning(self) -> None:
+        profile = preflight.HostProfile(
+            os_name="linux",
+            arch="aarch64",
+            cpu_count=4,
+            memory_bytes=8 * preflight.GIB,
+            profile="pi5",
+            kernel="test",
+        )
+        checks = []
+        preflight.check_env_defaults(
+            checks,
+            {
+                "BDAG_NO_FASTSYNC_SERVE": "1",
+                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
+            },
+            profile,
+        )
+        statuses = {check.name: check.status for check in checks}
+        self.assertEqual(statuses["fastartifactsync"], "pass")
+
+    def test_zero_wallet_is_release_blocking(self) -> None:
+        checks = []
+        preflight.check_wallet(checks, {"MINING_ADDRESS": preflight.ZERO_ETH_ADDRESS, "BDAG_ENABLE_NODE_MINING": "0"})
+        self.assertEqual(checks[0].name, "mining_address")
+        self.assertEqual(checks[0].status, "fail")
+
     def test_single_node_duplicate_data_detection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

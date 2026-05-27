@@ -367,6 +367,32 @@ class GlobalLocalPoolOverlayTests(unittest.TestCase):
         self.assertEqual(merged[0]["accepted_submissions"], 4)
         self.assertEqual(merged[0]["pending_submissions"], 1)
 
+    def test_local_pool_overlay_preserves_local_display_amounts(self) -> None:
+        wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        merged = pool_ops.merge_global_local_pool_clusters(
+            [{"address": wallet, "blocks": 2, "estimated_usd": "$old", "last_seen_at": "2026-05-27T00:01:00Z"}],
+            [
+                {
+                    "address": wallet,
+                    "blocks": 5,
+                    "shares": 6,
+                    "local_pool": True,
+                    "source": "local-pool-bdag-rpc",
+                    "estimated_usd": "$new",
+                    "estimated_usd_avg_hour": "$1.23",
+                }
+            ],
+        )
+
+        self.assertEqual(merged[0]["local_blocks"], 5)
+        self.assertEqual(merged[0]["local_shares"], 6)
+        self.assertEqual(merged[0]["local_estimated_usd"], "$new")
+        self.assertEqual(merged[0]["local_estimated_usd_avg_hour"], "$1.23")
+
+    def test_require_spendable_eth_address_rejects_zero_worker(self) -> None:
+        with self.assertRaises(ValueError):
+            pool_ops.require_spendable_eth_address(pool_ops.ZERO_ETH_ADDRESS, "worker_user")
+
     def test_local_pool_identity_is_not_replaced_by_static_global_label(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         pool_ops.read_global_pool_labels = lambda: {wallet.lower(): "Pipin"}
