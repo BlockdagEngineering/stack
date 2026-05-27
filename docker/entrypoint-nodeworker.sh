@@ -377,6 +377,18 @@ append_node_arg_once() {
   export NODE_ARGS_APPEND
 }
 
+node_args_has_flag() {
+  local node_args="$1"
+  local key="$2"
+  local word
+  for word in $node_args; do
+    case "$word" in
+      --"$key"|--"$key"=*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 apply_default_fastsync_flags() {
   if [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-1}" != "1" ]; then
     return 0
@@ -385,6 +397,20 @@ apply_default_fastsync_flags() {
   local node_args
   node_args="$(node_args_from_argv "$@" || true)"
   append_node_arg_once "--fastartifactsync" "$node_args ${NODE_ARGS_APPEND:-}"
+}
+
+apply_submit_obsolete_height_flag() {
+  local value="${BDAG_NODE_SUBMIT_OBSOLETE_HEIGHT:-20}"
+  case "$value" in
+    ""|0|off|false|none) return 0 ;;
+  esac
+
+  local node_args
+  node_args="$(node_args_from_argv "$@" || true)"
+  if node_args_has_flag "$node_args ${NODE_ARGS_APPEND:-}" "obsoleteheight"; then
+    return 0
+  fi
+  append_node_arg_once "--obsoleteheight=$value" "$node_args ${NODE_ARGS_APPEND:-}"
 }
 
 fastsnap_supports_directory_mode() {
@@ -562,6 +588,7 @@ configure_directory_artifact_serving() {
 
 apply_ordered_fastsync_peers "$@"
 apply_default_fastsync_flags "$@"
+apply_submit_obsolete_height_flag "$@"
 
 if [ -n "${NODE_ARGS_APPEND:-}" ]; then
   args=("$@")

@@ -215,6 +215,7 @@ services:
         --cache.snapshot=${BDAG_NODE_CACHE_SNAPSHOT_PERCENT:-35}
         --bdcachesize=${BDAG_NODE_BD_CACHE_SIZE:-8192}
         --dagcachesize=${BDAG_NODE_DAG_CACHE_SIZE:-8192}
+        --obsoleteheight=${BDAG_NODE_SUBMIT_OBSOLETE_HEIGHT:-20}
         --debuglevel=${BDAG_NODE_DEBUG_LEVEL:-warn}
         --evmtrietimeout=${BDAG_EVM_TRIE_TIMEOUT_SECONDS:-7200}
         --nofilelogging
@@ -313,6 +314,7 @@ services:
         --cache.snapshot=${BDAG_NODE_CACHE_SNAPSHOT_PERCENT:-35}
         --bdcachesize=${BDAG_NODE_BD_CACHE_SIZE:-8192}
         --dagcachesize=${BDAG_NODE_DAG_CACHE_SIZE:-8192}
+        --obsoleteheight=${BDAG_NODE_SUBMIT_OBSOLETE_HEIGHT:-20}
         --debuglevel=${BDAG_NODE_DEBUG_LEVEL:-warn}
         --evmtrietimeout=${BDAG_EVM_TRIE_TIMEOUT_SECONDS:-7200}
         --nofilelogging
