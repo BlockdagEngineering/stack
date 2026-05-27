@@ -178,15 +178,17 @@ def node_importing(status: dict[str, Any], node: str) -> bool:
 
 def node_hard_bad(status: dict[str, Any], node: str) -> bool:
     info = node_info(status, node)
+    import_stale = safe_int(info.get("last_import_age_seconds"), 0) > max(LEADER_IMPORT_STALE_SECONDS * 3, 600)
+    behind_tip = node_remaining(status, node) > LEADER_NEAR_TIP_BLOCKS
     return bool(
         info.get("critical")
         or info.get("mining_template_failing")
-        or safe_int(info.get("last_import_age_seconds"), 0) > max(LEADER_IMPORT_STALE_SECONDS * 3, 600)
+        or (behind_tip and import_stale)
     )
 
 
 def choose_leader(status: dict[str, Any]) -> str | None:
-    candidates: list[tuple[int, int, int, str]] = []
+    candidates: list[tuple[int, int, int, int, str]] = []
     for node in NODES:
         if not container_running(status, node):
             continue
@@ -195,11 +197,14 @@ def choose_leader(status: dict[str, Any]) -> str | None:
             continue
         healthy = 0 if node_hard_bad(status, node) else 1
         importing = 1 if node_importing(status, node) else 0
-        candidates.append((healthy, importing, height, node))
+        # A caught-up node can be idle because there is nothing left to import.
+        # Height must outrank importing state so catch-up never pauses the node
+        # closest to tip in favor of a lower node that is still importing.
+        candidates.append((healthy, height, importing, -node_remaining(status, node), node))
     if not candidates:
         return None
     candidates.sort(reverse=True)
-    return candidates[0][3]
+    return candidates[0][4]
 
 
 def stopped_by_coordinator(state: dict[str, Any], node: str) -> bool:
@@ -255,6 +260,23 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
     previous_nodes = previous_decision.get("nodes") if isinstance(previous_decision.get("nodes"), dict) else {}
     if paused_follower and paused_follower_remaining <= 0 and isinstance(previous_nodes.get(paused_follower), dict):
         paused_follower_remaining = safe_int(previous_nodes.get(paused_follower, {}).get("remaining_blocks"))
+    if paused_follower and paused_follower_remaining <= 0:
+        paused_follower_remaining = safe_int(previous_state.get("paused_follower_remaining_blocks"))
+    paused_previous_height = safe_int(previous_state.get("paused_follower_height"))
+    if isinstance(previous_nodes.get(paused_follower), dict):
+        paused_previous_height = max(paused_previous_height, safe_int(previous_nodes.get(paused_follower, {}).get("height")))
+    paused_follower_was_ahead = bool(
+        paused_still_down
+        and leader
+        and paused_previous_height > heights.get(leader, 0) + FOLLOWER_LAG_BLOCKS
+    )
+    paused_follower_was_near_tip = bool(
+        paused_still_down
+        and leader
+        and paused_previous_height > 0
+        and paused_follower_remaining <= LEADER_NEAR_TIP_BLOCKS
+        and leader_remaining >= FAR_BEHIND_BLOCKS
+    )
 
     action = "monitor"
     reason = "dual-node sync is acceptable"
@@ -263,6 +285,14 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
     if not leader:
         action = "none"
         reason = "no running node has a usable height"
+    elif paused_follower_was_ahead or paused_follower_was_near_tip:
+        action = "seed_or_resume_follower"
+        target = paused_follower
+        reason = (
+            f"{paused_follower} is paused but its remembered height/lag is better than the running leader "
+            f"({paused_follower} height {paused_previous_height}, remaining {paused_follower_remaining}; "
+            f"{leader} height {heights.get(leader, 0)}, remaining {leader_remaining}); resuming it prevents mining on a lagging node"
+        )
     elif paused_still_down and leader_near_tip:
         action = "seed_or_resume_follower"
         target = paused_follower
@@ -291,7 +321,7 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
             f"fast sync catch-up is within policy "
             f"(max remaining {max_remaining} block(s), threshold {FAR_BEHIND_BLOCKS})"
         )
-    elif far_behind and follower and running.get(follower) and importing.get(leader):
+    elif far_behind and follower and running.get(follower) and leader and not node_hard_bad(status, leader):
         action = "pause_follower"
         target = follower
         if follower_materially_lagging:
@@ -345,6 +375,31 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
             for node in NODES
         },
     }
+
+
+def pause_follower_safety(decision: dict[str, Any]) -> tuple[bool, str]:
+    leader = str(decision.get("leader") or "")
+    target = str(decision.get("target") or "")
+    nodes = decision.get("nodes") if isinstance(decision.get("nodes"), dict) else {}
+    leader_row = nodes.get(leader) if isinstance(nodes.get(leader), dict) else {}
+    target_row = nodes.get(target) if isinstance(nodes.get(target), dict) else {}
+    leader_height = safe_int(leader_row.get("height"))
+    target_height = safe_int(target_row.get("height"))
+    leader_remaining = safe_int(leader_row.get("remaining_blocks"))
+    target_remaining = safe_int(target_row.get("remaining_blocks"))
+    if not leader or not target or leader == target:
+        return False, f"invalid leader/target leader={leader!r} target={target!r}"
+    if leader_height > 0 and target_height > leader_height:
+        return (
+            False,
+            f"refusing to pause {target}: target height {target_height} is ahead of leader {leader} height {leader_height}",
+        )
+    if leader_remaining >= FAR_BEHIND_BLOCKS and target_remaining + FOLLOWER_LAG_BLOCKS < leader_remaining:
+        return (
+            False,
+            f"refusing to pause {target}: target remaining {target_remaining} is materially better than leader {leader} remaining {leader_remaining}",
+        )
+    return True, ""
 
 
 def preserve_node_identity(source_dir: Path, preserve_dir: Path) -> dict[str, str]:
@@ -507,6 +562,8 @@ def fast_sync_restart_reason(
 ) -> str:
     if fast_sync_restart_cooldown_remaining(state) > 0:
         return ""
+    if safe_int(decision.get("leader_remaining_blocks")) <= LEADER_NEAR_TIP_BLOCKS:
+        return ""
     if (
         FAST_CATCHUP_RESTART_ON_MISSING_FASTARTIFACT
         and command_ok
@@ -584,6 +641,21 @@ def pause_follower(decision: dict[str, Any], state: dict[str, Any], log_path: Pa
     leader = str(decision.get("leader") or "")
     if target not in NODES or leader not in NODES:
         return False
+    safe_to_pause, unsafe_reason = pause_follower_safety(decision)
+    if not safe_to_pause:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{now_iso()}] {unsafe_reason}\n")
+        state["last_pause_refused_at"] = now_iso()
+        state["last_pause_refused_reason"] = unsafe_reason
+        state["last_pause_refused_decision"] = decision
+        append_incident(
+            "sync_coordinator_pause_refused",
+            "critical",
+            "sync-coordinator",
+            unsafe_reason,
+            {"decision": decision},
+        )
+        return False
     ok = stop_node(target, log_path)
     if ok:
         state.update(
@@ -593,6 +665,10 @@ def pause_follower(decision: dict[str, Any], state: dict[str, Any], log_path: Pa
                 "leader": leader,
                 "paused_at": now_iso(),
                 "paused_reason": decision.get("reason"),
+                "paused_follower_height": safe_int(((decision.get("nodes") or {}).get(target) or {}).get("height")),
+                "paused_follower_remaining_blocks": safe_int(((decision.get("nodes") or {}).get(target) or {}).get("remaining_blocks")),
+                "pause_leader_height": safe_int(((decision.get("nodes") or {}).get(leader) or {}).get("height")),
+                "pause_leader_remaining_blocks": safe_int(((decision.get("nodes") or {}).get(leader) or {}).get("remaining_blocks")),
             }
         )
         apply_leader_catchup_resources(decision, state, log_path, record_incident=True)

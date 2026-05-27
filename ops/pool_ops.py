@@ -1144,6 +1144,10 @@ def merge_miner_records(existing: dict[str, Any], incoming: dict[str, Any]) -> d
     result["sources"] = merge_unique_strings(existing.get("sources"), incoming.get("sources"))
     result["last_workers"] = merge_unique_strings(existing.get("last_workers"), incoming.get("last_workers"))
     result["last_ports"] = merge_unique_strings(existing.get("last_ports"), incoming.get("last_ports"))
+    result["last_pool_job_extranonces"] = merge_unique_strings(
+        existing.get("last_pool_job_extranonces"),
+        incoming.get("last_pool_job_extranonces"),
+    )
     result["ip_history"] = merge_unique_strings(existing.get("ip_history"), old_ip, incoming.get("ip_history"), new_ip)
     result["managed"] = bool(existing.get("managed") or incoming.get("managed"))
     result["last_configured_ok"] = bool(existing.get("last_configured_ok") or incoming.get("last_configured_ok"))
@@ -2327,6 +2331,9 @@ SUBSCRIBE_ACCEPT_RE = re.compile(
 )
 JOB_NOTIFY_RE = re.compile(r"Sending to ((?:\d{1,3}\.){3}\d{1,3}):\d+:\s+jobID=([^\s]+)")
 JOB_NOTIFY_DETAIL_RE = re.compile(r"Sending to ((?:\d{1,3}\.){3}\d{1,3}):([0-9]+):\s+jobID=([^\s]+)")
+RECOVERY_JOB_TO_CLIENT_RE = re.compile(
+    r"resending current job to ((?:\d{1,3}\.){3}\d{1,3}):([0-9]+).*?\(job=([^\s)]+)"
+)
 CLIENT_ADDR_RE = re.compile(r"\bclient=((?:\d{1,3}\.){3}\d{1,3}):([0-9]+)")
 JOB_EXTRANONCE_RE = re.compile(r"_([0-9a-fA-F]{8})(?:\s|$)")
 SUBMIT_RE = re.compile(
@@ -3025,10 +3032,13 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
     def note_job_client(job_id: str, client: dict[str, str]) -> None:
         if not job_id or not client:
             return
-        job_to_client.setdefault(job_id, client)
+        job_to_client[job_id] = client
         extranonce = job_extranonce(job_id)
         if extranonce:
-            extranonce_to_client.setdefault(extranonce, client)
+            # The extranonce/job suffix is a volatile pool lane identifier. A
+            # fresh pool log line must override cached registry hints after a
+            # miner reconnects and receives a new lane suffix.
+            extranonce_to_client[extranonce] = client
 
     def note_legacy_extranonce_client(client: dict[str, str]) -> None:
         nonlocal legacy_authorized_client_count
@@ -3165,6 +3175,18 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
             ip, job_id = legacy_notify.groups()
             note_job_client(job_id, {"ip": ip, "port": ""})
             item = miner_for_ip(ip)
+            item["jobs"] += 1
+            note_seen(item, line, "last_job_at")
+            continue
+
+        recovery_resend = RECOVERY_JOB_TO_CLIENT_RE.search(line)
+        if recovery_resend:
+            ip, port, job_id = recovery_resend.groups()
+            client = {"ip": ip, "port": port}
+            note_job_client(job_id, client)
+            item = miner_for_ip(ip)
+            note_port(item, port)
+            note_item_extranonce(item, job_id)
             item["jobs"] += 1
             note_seen(item, line, "last_job_at")
             continue
@@ -3638,8 +3660,14 @@ def collect_miner_health() -> dict[str, Any]:
     expected_lane_rows = [
         item
         for item in health
-        if item.get("relevant_for_work_share") and item.get("work_pool_active")
+        if item.get("relevant_for_work_share")
+        and item.get("work_pool_active")
+        and (item.get("configured") or item.get("managed"))
     ]
+    expected_lane_ids = {
+        str(item.get("identity_key") or item.get("device_id") or item.get("mac") or item.get("ip") or "")
+        for item in expected_lane_rows
+    }
     expected_lane_count = len(expected_lane_rows)
     expected_lane_percent = Decimal("100") / Decimal(expected_lane_count) if expected_lane_count > 0 else Decimal("0")
     imbalanced_lanes: list[str] = []
@@ -3647,10 +3675,13 @@ def collect_miner_health() -> dict[str, Any]:
         share_work_int = int(item.get("share_work", 0) or 0)
         if total_work > 0 and share_work_int > 0:
             item["work_percent"] = percent_to_str((Decimal(share_work_int) / Decimal(total_work)) * Decimal("100"))
-        item["expected_work_percent"] = percent_to_str(expected_lane_percent) if expected_lane_count > 0 and item.get("relevant_for_work_share") else "0.00"
+        lane_id = str(item.get("identity_key") or item.get("device_id") or item.get("mac") or item.get("ip") or "")
+        expected_lane = bool(lane_id and lane_id in expected_lane_ids)
+        item["expected_work_lane"] = expected_lane
+        item["expected_work_percent"] = percent_to_str(expected_lane_percent) if expected_lane_count > 0 and expected_lane else "0.00"
         item["work_ratio_to_expected"] = None
         item["lane_status"] = "not-tracked"
-        if expected_lane_count > 0 and item.get("relevant_for_work_share"):
+        if expected_lane_count > 0 and expected_lane:
             if total_work <= 0:
                 item["lane_status"] = "no-window-work"
                 continue
