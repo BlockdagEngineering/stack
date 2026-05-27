@@ -2999,6 +2999,7 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
     extranonce_to_client: dict[str, dict[str, str]] = {}
     worker_to_client: dict[str, dict[str, str]] = {}
     worker_client_priority: dict[str, int] = {}
+    recent_worker_clients: dict[str, list[dict[str, str]]] = {}
     ambiguous_worker_clients: set[str] = set()
     miners: dict[str, dict[str, Any]] = {}
     legacy_authorized_client_count = 0
@@ -3096,6 +3097,33 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
             # miner reconnects and receives a new lane suffix.
             extranonce_to_client[extranonce] = client
 
+    def remember_recent_worker_client(worker: str, client: dict[str, str]) -> None:
+        if not worker or not client:
+            return
+        key = client_identity_key(client)
+        recent = [
+            item
+            for item in recent_worker_clients.get(worker, [])
+            if client_identity_key(item) != key or str(item.get("port") or "") != str(client.get("port") or "")
+        ]
+        recent.append(client)
+        recent_worker_clients[worker] = recent[-8:]
+
+    def recent_client_for_unknown_job(job_id: str, worker: str = "") -> dict[str, str] | None:
+        extranonce = job_extranonce(job_id)
+        if not worker or not extranonce or extranonce in extranonce_to_client:
+            return None
+        candidates = recent_worker_clients.get(worker) or []
+        if not candidates:
+            return None
+        # Legacy pool logs sometimes omit client= on submit/share lines after
+        # a miner reconnects. Use only the most recent authorize hint, and only
+        # for a previously unseen volatile job suffix. Once mapped, subsequent
+        # shares and blocks stay keyed by that MAC identity.
+        client = candidates[-1]
+        note_job_client(job_id, client)
+        return client
+
     def note_legacy_extranonce_client(client: dict[str, str]) -> None:
         nonlocal legacy_authorized_client_count
         if not client:
@@ -3118,6 +3146,7 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         return (
             job_to_client.get(job_id)
             or extranonce_to_client.get(job_extranonce(job_id))
+            or recent_client_for_unknown_job(job_id, worker)
             or (client_for_worker(worker) if worker else None)
         )
 
@@ -3218,6 +3247,7 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
             legacy_client = client_from_identity(ip, port)
             if is_docker_bridge_pool_log_client(ip):
                 legacy_client = client_for_worker(worker) or legacy_client
+            remember_recent_worker_client(worker, legacy_client)
             note_legacy_extranonce_client(legacy_client)
             item = miner_for_ip(ip)
             note_port(item, port)

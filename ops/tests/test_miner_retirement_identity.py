@@ -351,6 +351,49 @@ class PoolActivityAttributionTests(unittest.TestCase):
         self.assertEqual(miners["192.168.1.14"]["share_work"], 500)
         self.assertNotIn("192.168.1.103", miners)
 
+    def test_reconnect_unknown_extranonce_uses_recent_authorized_mac_client(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {
+                    "ip": "192.168.1.14",
+                    "mac": "28:e2:97:3e:39:63",
+                    "display_name": "Achilles",
+                    "expected_worker_user": worker,
+                    "last_pool_job_extranonces": ["25000000"],
+                },
+                {
+                    "ip": "192.168.1.103",
+                    "mac": "28:e2:97:4c:e4:0a",
+                    "display_name": "Hector",
+                    "expected_worker_user": worker,
+                    "last_pool_job_extranonces": ["26000000"],
+                },
+            ]
+        }
+        log = "\n".join(
+            [
+                f"2026/05/27 07:24:16 [192.168.1.103:51374] authorize accepted user={worker}",
+                "2026/05/27 07:24:16 PUSHDIF -> 192.168.1.103:51374 mining.set_difficulty 0.05000000",
+                f"2026/05/27 07:24:25 submit from worker={worker} job=80978-18b35b4d0363621e_2a000000 extranonce2=00000000 ntime=6a169c28 nonce=b8ba6f7b suppressed=0",
+                f"2026/05/27 07:24:25 valid share accepted 4024.201881 -> 263730094 worker={worker} job=80978-18b35b4d0363621e_2a000000 suppressed=0",
+                "2026/05/27 07:24:27 BLOCK FOUND height(le)=7135944 job=80979-18b35b4d68217614_2a000000 hash=abc target=def",
+                f"2026/05/27 07:24:28 valid share accepted 100.0 -> 500 worker={worker} job=80980-18b35b4d68217615_25000000",
+            ]
+        )
+
+        activity = pool_ops.parse_pool_activity(log)
+        miners = {item["display_label"]: item for item in activity["miners"]}
+
+        self.assertEqual(activity["unattributed_valid_shares"], 0)
+        self.assertEqual(activity["unattributed_blocks"], 0)
+        self.assertEqual(miners["Hector-40a"]["shares"], 1)
+        self.assertEqual(miners["Hector-40a"]["share_work"], 263730094)
+        self.assertEqual(miners["Hector-40a"]["blocks_found"], 1)
+        self.assertEqual(miners["Hector-40a"]["job_extranonces"], ["2a000000"])
+        self.assertEqual(miners["Achilles-963"]["shares"], 1)
+        self.assertEqual(miners["Achilles-963"]["share_work"], 500)
+
     def test_recovery_resend_maps_ephemeral_lane_suffix_to_current_ip(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
         pool_ops.read_miner_registry = lambda: {
