@@ -325,6 +325,12 @@ main-order units of the selected backend. The default is `1000`.
 
 See `docs/fastsnap-maintenance-handoff.html`.
 
+For operator-requested full raw datadir copies over libp2p, use the signed
+Fast Artifact Sync V2 `raw_datadir_checkpoint` flow in
+`docs/rawdatadir-libp2p-sync.md`. It is opt-in, drains/stops only a standby
+backend on dual-node hosts, excludes node identity/private material, and keeps
+receiver rollback data parked during the RC.
+
 ## Release readiness
 
 Container health alone does not prove that a deployment can mine. Before
