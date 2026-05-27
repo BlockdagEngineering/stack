@@ -413,6 +413,20 @@ apply_submit_obsolete_height_flag() {
   append_node_arg_once "--obsoleteheight=$value" "$node_args ${NODE_ARGS_APPEND:-}"
 }
 
+apply_max_bad_peer_responses_flag() {
+  local value="${BDAG_NODE_MAX_BAD_RESPONSES:-12}"
+  case "$value" in
+    ""|0|off|false|none) return 0 ;;
+  esac
+
+  local node_args
+  node_args="$(node_args_from_argv "$@" || true)"
+  if node_args_has_flag "$node_args ${NODE_ARGS_APPEND:-}" "maxbadresp"; then
+    return 0
+  fi
+  append_node_arg_once "--maxbadresp=$value" "$node_args ${NODE_ARGS_APPEND:-}"
+}
+
 fastsnap_supports_directory_mode() {
   local fastsnap_bin="$1"
   "$fastsnap_bin" --help 2>&1 | grep -q -- "--dir-out"
@@ -589,6 +603,7 @@ configure_directory_artifact_serving() {
 apply_ordered_fastsync_peers "$@"
 apply_default_fastsync_flags "$@"
 apply_submit_obsolete_height_flag "$@"
+apply_max_bad_peer_responses_flag "$@"
 
 if [ -n "${NODE_ARGS_APPEND:-}" ]; then
   args=("$@")
