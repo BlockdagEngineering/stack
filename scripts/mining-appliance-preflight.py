@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import platform
@@ -523,7 +524,188 @@ def check_swap(checks: list[Check], profile: HostProfile) -> None:
         add(checks, "pass", "swap_budget", f"swap total={round(total / GIB, 2)}GiB used={round(used / GIB, 2)}GiB", evidence=evidence)
 
 
-def check_network(checks: list[Check]) -> None:
+def parse_cidrs(value: str) -> list[ipaddress.IPv4Network]:
+    networks: list[ipaddress.IPv4Network] = []
+    for raw in re.split(r"[\s,]+", value or ""):
+        token = raw.strip()
+        if not token:
+            continue
+        try:
+            network = ipaddress.ip_network(token, strict=False)
+        except ValueError:
+            continue
+        if isinstance(network, ipaddress.IPv4Network):
+            networks.append(network)
+    return networks
+
+
+def iface_ipv4_addresses(line: str) -> list[ipaddress.IPv4Interface]:
+    addresses: list[ipaddress.IPv4Interface] = []
+    for token in line.split():
+        if "/" not in token:
+            continue
+        try:
+            addr = ipaddress.ip_interface(token)
+        except ValueError:
+            continue
+        if isinstance(addr, ipaddress.IPv4Interface):
+            addresses.append(addr)
+    return addresses
+
+
+def nat_rules_text() -> str:
+    commands = (
+        ["nft", "list", "ruleset"],
+        ["sudo", "-n", "nft", "list", "ruleset"],
+        ["iptables", "-t", "nat", "-S"],
+        ["sudo", "-n", "iptables", "-t", "nat", "-S"],
+    )
+    for command in commands:
+        try:
+            proc = run(command, timeout=4)
+        except FileNotFoundError:
+            continue
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout
+    return ""
+
+
+def ethtool_error_counters(interface: str) -> dict[str, int]:
+    proc = run(["ethtool", "-S", interface], timeout=4)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return {}
+    error_names = {
+        "rx_errors",
+        "tx_errors",
+        "rx_frame_check_sequence_errors",
+        "rx_symbol_errors",
+        "rx_alignment_errors",
+        "rx_resource_errors",
+        "rx_overruns",
+        "rx_ip_header_checksum_errors",
+        "rx_tcp_checksum_errors",
+        "rx_udp_checksum_errors",
+        "tx_excessive_collisions",
+        "tx_late_collisions",
+        "tx_carrier_sense_errors",
+    }
+    counters: dict[str, int] = {}
+    for raw_line in proc.stdout.splitlines():
+        if ":" not in raw_line:
+            continue
+        name, raw_value = raw_line.strip().split(":", 1)
+        name = name.strip()
+        if name not in error_names:
+            continue
+        value = safe_int(raw_value.strip(), 0) or 0
+        if value:
+            counters[name] = value
+    return counters
+
+
+def check_asic_router_network(checks: list[Check], env: dict[str, str], default_dev: str) -> None:
+    topology = (env.get("BDAG_DETECTED_NETWORK_TOPOLOGY") or env.get("BDAG_NETWORK_TOPOLOGY") or "").strip().lower()
+    if topology != "single-node-asic-router":
+        return
+
+    lan_iface = (env.get("BDAG_ASIC_LAN_INTERFACE") or "eth0").strip() or "eth0"
+    cidrs = parse_cidrs(env.get("BDAG_ASIC_LAN_CIDRS") or "192.168.50.0/24")
+    evidence: dict[str, Any] = {"topology": topology, "lan_interface": lan_iface, "cidrs": [str(item) for item in cidrs]}
+
+    addr_proc = run(["ip", "-br", "-4", "addr", "show", "dev", lan_iface], timeout=3)
+    evidence["address_line"] = addr_proc.stdout.strip()
+    addresses = iface_ipv4_addresses(addr_proc.stdout)
+    matching_addresses = [
+        str(addr)
+        for addr in addresses
+        if any(addr.ip in network for network in cidrs)
+    ]
+    if not matching_addresses:
+        add(
+            checks,
+            "fail",
+            "asic_router_lan_address",
+            f"{lan_iface} does not have an IPv4 address inside {', '.join(str(item) for item in cidrs) or 'the ASIC LAN CIDRs'}.",
+            "Configure the ASIC-facing interface with the static gateway address before attaching miners.",
+            evidence,
+        )
+    else:
+        add(checks, "pass", "asic_router_lan_address", f"{lan_iface} serves ASIC LAN at {', '.join(matching_addresses)}", evidence=evidence)
+
+    if default_dev == lan_iface:
+        add(
+            checks,
+            "fail",
+            "asic_router_default_route",
+            f"default route is using ASIC LAN interface {lan_iface}.",
+            "The ASIC-facing interface must not be the internet route; use Wi-Fi, another Ethernet interface, or a VPN-capable uplink.",
+            {**evidence, "default_dev": default_dev},
+        )
+    else:
+        add(checks, "pass", "asic_router_default_route", f"internet default route is separate from ASIC LAN ({default_dev or 'unknown'} != {lan_iface})", evidence={**evidence, "default_dev": default_dev})
+
+    forward_proc = run(["sysctl", "-n", "net.ipv4.ip_forward"], timeout=3)
+    forwarding = forward_proc.stdout.strip()
+    if forwarding != "1":
+        add(
+            checks,
+            "fail",
+            "asic_router_ip_forward",
+            "IPv4 forwarding is not enabled for the ASIC router profile.",
+            "Set net.ipv4.ip_forward=1 so directly attached ASICs can reach firmware services and the internet when needed.",
+            {**evidence, "ip_forward": forwarding, "stderr": forward_proc.stderr.strip()},
+        )
+    else:
+        add(checks, "pass", "asic_router_ip_forward", "IPv4 forwarding is enabled", evidence={**evidence, "ip_forward": forwarding})
+
+    rules = nat_rules_text()
+    nat_evidence = {**evidence, "nat_rules_present": bool(rules)}
+    has_masquerade = "masquerade" in rules.lower() or "MASQUERADE" in rules
+    has_asic_source = any(str(network) in rules for network in cidrs)
+    if has_masquerade and has_asic_source:
+        add(checks, "pass", "asic_router_nat", "ASIC LAN masquerade/NAT rule is present", evidence=nat_evidence)
+    else:
+        add(
+            checks,
+            "warn",
+            "asic_router_nat",
+            "ASIC LAN masquerade/NAT rule was not detected.",
+            "Ensure the ASIC subnet is masqueraded through the uplink, usually by NetworkManager shared mode or an explicit nftables rule.",
+            nat_evidence,
+        )
+
+    neigh_proc = run(["ip", "neigh", "show", "dev", lan_iface], timeout=3)
+    neighbours = []
+    for line in neigh_proc.stdout.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        try:
+            neighbour_ip = ipaddress.ip_address(parts[0])
+        except ValueError:
+            continue
+        if any(neighbour_ip in network for network in cidrs):
+            neighbours.append(line)
+    if neighbours:
+        add(checks, "pass", "asic_router_lan_neighbour", f"{len(neighbours)} ASIC-LAN neighbour(s) visible", evidence={**evidence, "neighbours": neighbours[:10]})
+    else:
+        add(checks, "warn", "asic_router_lan_neighbour", "no ASIC-LAN neighbours are currently visible.", "Attach or power on the ASIC, then rerun preflight to prove the direct Ethernet leg.", evidence)
+
+    errors = ethtool_error_counters(lan_iface)
+    if errors:
+        add(
+            checks,
+            "warn",
+            "asic_router_link_errors",
+            f"{lan_iface} reports non-zero link/NIC error counters.",
+            "Check the direct cable, ASIC Ethernet negotiation, and Pi power before comparing pool performance.",
+            {**evidence, "error_counters": errors},
+        )
+    else:
+        add(checks, "pass", "asic_router_link_errors", f"{lan_iface} has no non-zero NIC error counters reported", evidence=evidence)
+
+
+def check_network(checks: list[Check], env: dict[str, str]) -> None:
     proc = run(["ip", "-o", "-4", "route", "get", "1.1.1.1"], timeout=3)
     if proc.returncode != 0 or not proc.stdout.strip():
         add(checks, "warn", "default_route", "no IPv4 default route was detected.", "Configure networking before FastSnap peer discovery or ASIC setup.", {"stderr": proc.stderr.strip()})
@@ -537,6 +719,7 @@ def check_network(checks: list[Check]) -> None:
         add(checks, "warn", "default_route", f"default route uses Wi-Fi interface {dev} with source {src}.", "Keep ASIC and trusted FastSnap peers on the same low-latency LAN; prefer wired Ethernet if shares or submits stall.", evidence)
     else:
         add(checks, "pass", "default_route", f"default route uses {dev or 'unknown'} source {src or 'unknown'}", evidence=evidence)
+    check_asic_router_network(checks, env, dev)
 
 
 def docker_root_dir() -> str:
@@ -638,7 +821,7 @@ def run_preflight(root: Path, env_file: Path) -> dict[str, Any]:
     check_node_data_layout(checks, root, env)
     check_env_defaults(checks, env, profile)
     check_swap(checks, profile)
-    check_network(checks)
+    check_network(checks, env)
     check_docker_storage(checks, root, env, profile)
     check_live_node_child(checks, root)
     check_schema_file(checks, root)

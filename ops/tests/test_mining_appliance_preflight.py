@@ -173,6 +173,111 @@ class MiningAppliancePreflightTest(unittest.TestCase):
 
         self.assertEqual(checks[0].status, "fail")
 
+    def test_asic_router_network_profile_checks_direct_miner_path(self) -> None:
+        old_run = preflight.run
+
+        def fake_run(command: list[str], timeout: float = 5.0, cwd: Path | None = None):
+            class Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            result = Result()
+            if command == ["ip", "-o", "-4", "route", "get", "1.1.1.1"]:
+                result.stdout = "1.1.1.1 via 192.168.68.1 dev wlan0 src 192.168.68.60 uid 1000\n"
+            elif command == ["ip", "-br", "-4", "addr", "show", "dev", "eth0"]:
+                result.stdout = "eth0 UP 192.168.50.1/24\n"
+            elif command == ["sysctl", "-n", "net.ipv4.ip_forward"]:
+                result.stdout = "1\n"
+            elif command == ["nft", "list", "ruleset"]:
+                result.stdout = "ip saddr 192.168.50.0/24 ip daddr != 192.168.50.0/24 masquerade\n"
+            elif command == ["ip", "neigh", "show", "dev", "eth0"]:
+                result.stdout = "192.168.50.177 lladdr 28:e2:97:1e:c0:b5 REACHABLE\n"
+            elif command == ["ethtool", "-S", "eth0"]:
+                result.stdout = "rx_frame_check_sequence_errors: 0\ntx_late_collisions: 0\n"
+            else:
+                raise AssertionError(command)
+            return result
+
+        try:
+            preflight.run = fake_run
+            checks = []
+            preflight.check_network(
+                checks,
+                {
+                    "BDAG_DETECTED_NETWORK_TOPOLOGY": "single-node-asic-router",
+                    "BDAG_ASIC_LAN_INTERFACE": "eth0",
+                    "BDAG_ASIC_LAN_CIDRS": "192.168.50.0/24",
+                },
+            )
+        finally:
+            preflight.run = old_run
+
+        statuses = {check.name: check.status for check in checks}
+        self.assertEqual(statuses["default_route"], "warn")
+        self.assertEqual(statuses["asic_router_lan_address"], "pass")
+        self.assertEqual(statuses["asic_router_default_route"], "pass")
+        self.assertEqual(statuses["asic_router_ip_forward"], "pass")
+        self.assertEqual(statuses["asic_router_nat"], "pass")
+        self.assertEqual(statuses["asic_router_lan_neighbour"], "pass")
+        self.assertEqual(statuses["asic_router_link_errors"], "pass")
+
+    def test_asic_router_network_fails_when_default_route_uses_miner_lan(self) -> None:
+        old_run = preflight.run
+
+        def fake_run(command: list[str], timeout: float = 5.0, cwd: Path | None = None):
+            class Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            result = Result()
+            if command == ["ip", "-o", "-4", "route", "get", "1.1.1.1"]:
+                result.stdout = "1.1.1.1 via 192.168.50.1 dev eth0 src 192.168.50.1 uid 1000\n"
+            elif command == ["ip", "-br", "-4", "addr", "show", "dev", "eth0"]:
+                result.stdout = "eth0 UP 192.168.50.1/24\n"
+            elif command == ["sysctl", "-n", "net.ipv4.ip_forward"]:
+                result.stdout = "0\n"
+            elif command == ["nft", "list", "ruleset"]:
+                result.stdout = ""
+                result.returncode = 1
+            elif command == ["sudo", "-n", "nft", "list", "ruleset"]:
+                result.stdout = ""
+                result.returncode = 1
+            elif command == ["iptables", "-t", "nat", "-S"]:
+                result.stdout = ""
+            elif command == ["sudo", "-n", "iptables", "-t", "nat", "-S"]:
+                result.stdout = ""
+            elif command == ["ip", "neigh", "show", "dev", "eth0"]:
+                result.stdout = ""
+            elif command == ["ethtool", "-S", "eth0"]:
+                result.stdout = "rx_frame_check_sequence_errors: 3\n"
+            else:
+                raise AssertionError(command)
+            return result
+
+        try:
+            preflight.run = fake_run
+            checks = []
+            preflight.check_network(
+                checks,
+                {
+                    "BDAG_DETECTED_NETWORK_TOPOLOGY": "single-node-asic-router",
+                    "BDAG_ASIC_LAN_INTERFACE": "eth0",
+                    "BDAG_ASIC_LAN_CIDRS": "192.168.50.0/24",
+                },
+            )
+        finally:
+            preflight.run = old_run
+
+        statuses = {check.name: check.status for check in checks}
+        self.assertEqual(statuses["default_route"], "pass")
+        self.assertEqual(statuses["asic_router_default_route"], "fail")
+        self.assertEqual(statuses["asic_router_ip_forward"], "fail")
+        self.assertEqual(statuses["asic_router_nat"], "warn")
+        self.assertEqual(statuses["asic_router_lan_neighbour"], "warn")
+        self.assertEqual(statuses["asic_router_link_errors"], "warn")
+
 
 if __name__ == "__main__":
     unittest.main()
