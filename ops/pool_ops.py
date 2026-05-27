@@ -281,6 +281,7 @@ PEER_GEO_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_PEER_GEO_CACHE_TTL_SECONDS
 PEER_GEO_LOOKUP_TIMEOUT = float(os.environ.get("BDAG_PEER_GEO_LOOKUP_TIMEOUT", "8.0"))
 MINER_STALE_SECONDS = int(os.environ.get("BDAG_MINER_STALE_SECONDS", "120"))
 POOL_ACTIVITY_LOG_LINES = int(os.environ.get("BDAG_POOL_ACTIVITY_LOG_LINES", "2000"))
+POOL_ACTIVITY_BOOTSTRAP_LOG_LINES = int(os.environ.get("BDAG_POOL_ACTIVITY_BOOTSTRAP_LOG_LINES", "20000"))
 POOL_CONNECTED_STALE_SECONDS = int(os.environ.get("BDAG_POOL_CONNECTED_STALE_SECONDS", str(MINER_STALE_SECONDS)))
 MINER_REGISTRY_POOL_LOG_STALE_SECONDS = int(
     os.environ.get("BDAG_MINER_REGISTRY_POOL_LOG_STALE_SECONDS", str(max(POOL_CONNECTED_STALE_SECONDS * 2, 600)))
@@ -2973,6 +2974,9 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
     worker_client_priority: dict[str, int] = {}
     ambiguous_worker_clients: set[str] = set()
     miners: dict[str, dict[str, Any]] = {}
+    legacy_authorized_client_count = 0
+    unattributed_valid_shares = 0
+    unattributed_blocks = 0
 
     def note_worker_client(worker: str, ip: str, port: str = "", priority: int = 1) -> None:
         current = worker_to_client.get(worker)
@@ -3026,6 +3030,24 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         if extranonce:
             extranonce_to_client.setdefault(extranonce, client)
 
+    def note_legacy_extranonce_client(client: dict[str, str]) -> None:
+        nonlocal legacy_authorized_client_count
+        if not client:
+            return
+        legacy_authorized_client_count += 1
+        # Older pool images omit subscribe/job-notify client details but encode
+        # each connection's little-endian extranonce suffix in the job id.
+        extranonce = f"{legacy_authorized_client_count:02x}000000"
+        extranonce_to_client.setdefault(extranonce, client)
+
+    def note_item_extranonce(item: dict[str, Any], job_id: str) -> None:
+        extranonce = job_extranonce(job_id)
+        if not extranonce:
+            return
+        values = item.setdefault("job_extranonces", [])
+        if extranonce not in values:
+            values.append(extranonce)
+
     def client_for_job_or_worker(job_id: str, worker: str = "") -> dict[str, str] | None:
         return (
             job_to_client.get(job_id)
@@ -3040,6 +3062,10 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         priority = 2 if normalize_mac(registered.get("mac")) or registered.get("display_name") else 1
         for worker in merge_unique_strings(registered.get("last_workers"), registered.get("expected_worker_user")):
             note_worker_client(worker, ip, priority=priority)
+        client = {"ip": ip, "port": ""}
+        for extranonce in merge_unique_strings(registered.get("last_pool_job_extranonces")):
+            if re.fullmatch(r"[0-9a-fA-F]{8}", str(extranonce or "")):
+                extranonce_to_client.setdefault(str(extranonce).lower(), client)
 
     def miner_for_ip(ip: str) -> dict[str, Any]:
         item = miners.setdefault(
@@ -3063,6 +3089,7 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
                 "last_block_at": None,
                 "last_difficulty": None,
                 "workers": [],
+                "job_extranonces": [],
             },
         )
         return item
@@ -3103,6 +3130,10 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         if auth:
             ip, port, worker = auth.groups()
             note_worker_client(worker, ip, port=port, priority=1)
+            legacy_client = {"ip": ip, "port": port}
+            if is_docker_bridge_pool_log_client(ip):
+                legacy_client = client_for_worker(worker) or legacy_client
+            note_legacy_extranonce_client(legacy_client)
             item = miner_for_ip(ip)
             note_port(item, port)
             note_worker(item, worker)
@@ -3166,10 +3197,12 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
                 note_job_client(job_id, direct_client)
             client = direct_client or client_for_job_or_worker(job_id, worker)
             if not client:
+                unattributed_valid_shares += valid_share_line_weight(line)
                 continue
             note_job_client(job_id, client)
             item = miner_for_ip(client["ip"])
             note_port(item, client.get("port"))
+            note_item_extranonce(item, job_id)
             item["shares"] += valid_share_line_weight(line)
             item["share_difficulty"] = round(
                 float(item["share_difficulty"]) + float(share.group(1)) + valid_share_line_suppressed_diff(line),
@@ -3189,9 +3222,11 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
                 note_job_client(job_id, direct_client)
             client = direct_client or client_for_job_or_worker(job_id)
             if not client:
+                unattributed_blocks += 1
                 continue
             item = miner_for_ip(client["ip"])
             note_port(item, client.get("port"))
+            note_item_extranonce(item, job_id)
             item["blocks_found"] += 1
             note_seen(item, line, "last_block_at")
 
@@ -3203,6 +3238,8 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
     return {
         "generated_at": now_iso(),
         "miners": sorted(miners.values(), key=lambda item: int(ipaddress.ip_address(item["ip"]))),
+        "unattributed_valid_shares": unattributed_valid_shares,
+        "unattributed_blocks": unattributed_blocks,
     }
 
 
@@ -3237,7 +3274,16 @@ def valid_share_line_suppressed_work(line: str) -> int:
 
 def collect_pool_activity(lines: int = 2500) -> dict[str, Any]:
     log = docker_logs_many(POOL_CONTAINERS, lines=lines)
-    return parse_pool_activity(log)
+    activity = parse_pool_activity(log)
+    if (
+        lines < POOL_ACTIVITY_BOOTSTRAP_LOG_LINES
+        and (safe_int(activity.get("unattributed_valid_shares"), 0) > 0 or safe_int(activity.get("unattributed_blocks"), 0) > 0)
+    ):
+        has_work = any(int(item.get("share_work", 0) or 0) > 0 or int(item.get("blocks_found", 0) or 0) > 0 for item in activity.get("miners", []))
+        if not has_work:
+            activity = parse_pool_activity(docker_logs_many(POOL_CONTAINERS, lines=POOL_ACTIVITY_BOOTSTRAP_LOG_LINES))
+            activity["bootstrap_log_lines"] = POOL_ACTIVITY_BOOTSTRAP_LOG_LINES
+    return activity
 
 
 def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
@@ -3265,6 +3311,7 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
         item = dict(item or existing.get(ip, {"ip": ip}))
         workers = merge_unique_strings(item.get("last_workers"), miner.get("workers"))
         ports = merge_unique_strings(item.get("last_ports"), miner.get("ports"))
+        job_extranonces = merge_unique_strings(item.get("last_pool_job_extranonces"), miner.get("job_extranonces"))
         last_seen_log_at = str(miner.get("last_seen_at") or "")
         previous_seen_log_at = str(item.get("last_pool_seen_log_at") or "")
         last_submit_log_at = str(miner.get("last_submit_at") or "")
@@ -3300,6 +3347,7 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
                 "last_block_at": miner.get("last_block_at") or item.get("last_block_at"),
                 "last_workers": workers,
                 "last_ports": ports,
+                "last_pool_job_extranonces": job_extranonces,
                 "last_difficulty": miner.get("last_difficulty") or item.get("last_difficulty"),
                 "last_jobs_window": int(miner.get("jobs", 0) or 0),
                 "last_submits_window": int(miner.get("submits", 0) or 0),
@@ -6171,7 +6219,7 @@ def collect_wallet_balances(address: str | None = None) -> dict[str, Any]:
         return {"address": None, "sources": []}
 
     sources: list[dict[str, Any]] = []
-    for name, url in node_rpc_urls():
+    for name, url in global_evm_rpc_urls():
         try:
             balance = json_rpc_balance(url, wallet)
             sources.append({"source": name, "type": "local-rpc", "status": "ok", **balance})
@@ -6445,7 +6493,7 @@ def collect_onchain_wallet_window_earnings(address: str | None, hours: int = 24)
 
     local_sources = global_evm_rpc_urls()
     if not local_sources:
-        return {"status": "failed", "hours": hours, "address": address, "error": "no local node RPC sources"}
+        return {"status": "failed", "hours": hours, "address": address, "error": "no local EVM RPC sources"}
     local_name, local_url = local_sources[0]
     try:
         latest_block = int(str(json_rpc_call(local_url, "eth_blockNumber", [], timeout=8.0)), 16)
@@ -7326,11 +7374,9 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
     onchain_24h = collect_onchain_wallet_window_earnings(primary_mining_address, hours=24)
     onchain_1h = collect_onchain_wallet_window_earnings(primary_mining_address, hours=1)
     recent_24h_bdag = decimal_value(onchain_24h.get("earned_bdag")) if onchain_24h.get("status") == "ok" else None
-    if recent_24h_bdag is None:
-        recent_24h_bdag = db_recent_24h_bdag
     recent_bdag = decimal_value(onchain_1h.get("earned_bdag")) if onchain_1h.get("status") == "ok" else None
     if recent_bdag is None:
-        recent_bdag = db_recent_bdag
+        recent_bdag = Decimal("0")
     payment_wallet_addresses = [primary_mining_address] if is_spendable_eth_address(primary_mining_address) else []
     payment_wallet_balance = collect_wallet_balances_for_addresses(payment_wallet_addresses)
     credit_wallet_balance = collect_wallet_balances_for_addresses(wallet_addresses_from_credits(credits)) if "error" not in credits else {
@@ -7365,7 +7411,7 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
         wallet_bdag,
         credits.get("totals", {}).get("first_credit_at"),
         current_earned_24h_bdag=recent_24h_bdag,
-        current_earned_24h_source=onchain_24h.get("source") if onchain_24h.get("status") == "ok" else "pool-db-credits-24h",
+        current_earned_24h_source=onchain_24h.get("source") if onchain_24h.get("status") == "ok" else None,
     )
     wallet_runtime_avg = decimal_value(hourly_averages.get("wallet_avg_bdag_hour_since_pool_start"))
     wallet_recent_avg = decimal_value(hourly_averages.get("wallet_recent_bdag_hour")) or wallet_runtime_avg
@@ -7478,15 +7524,19 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
             "last_24h": onchain_24h,
         },
         "earnings_24h": {
-            "source": onchain_24h.get("source") if onchain_24h.get("status") == "ok" else "pool-db-credits-24h",
-            "bdag": decimal_to_str(recent_24h_bdag),
-            "usd": fiat_value(recent_24h_bdag, price, "usd"),
-            "zar": fiat_value(recent_24h_bdag, price, "zar"),
+            "status": onchain_24h.get("status"),
+            "source": onchain_24h.get("source") if onchain_24h.get("status") == "ok" else "on-chain-unavailable",
+            "source_truth": "on-chain balance window reconciled with native transfers",
+            "fallback_used": False,
+            "bdag": decimal_to_str(recent_24h_bdag) if recent_24h_bdag is not None else None,
+            "usd": fiat_value(recent_24h_bdag, price, "usd") if recent_24h_bdag is not None else None,
+            "zar": fiat_value(recent_24h_bdag, price, "zar") if recent_24h_bdag is not None else None,
             "credit_count": credits.get("recent_24h", {}).get("credit_count"),
             "first_credit_at": credits.get("recent_24h", {}).get("first_credit_at"),
             "last_credit_at": credits.get("recent_24h", {}).get("last_credit_at"),
             "onchain_reconciliation": onchain_24h,
             "db_credit_fallback_bdag": decimal_to_str(db_recent_24h_bdag),
+            "db_credit_diagnostic_bdag": decimal_to_str(db_recent_24h_bdag),
         },
         "credit_balance_check": credit_balance_check,
         "hourly_averages": hourly_averages,

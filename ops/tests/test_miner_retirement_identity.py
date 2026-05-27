@@ -247,6 +247,96 @@ class PoolActivityAttributionTests(unittest.TestCase):
         self.assertEqual(miners["192.168.1.14"]["shares"], 1)
         self.assertEqual(miners["192.168.1.14"]["share_work"], 500)
 
+    def test_legacy_authorize_order_maps_job_extranonce_suffixes(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {"ip": "192.168.1.14", "mac": "28:e2:97:3e:39:63", "expected_worker_user": worker},
+                {"ip": "192.168.1.16", "mac": "28:e2:97:4d:44:3a", "expected_worker_user": worker},
+                {"ip": "192.168.1.101", "mac": "2a:71:c7:f5:1f:1e", "expected_worker_user": worker},
+                {"ip": "192.168.1.103", "mac": "28:e2:97:2e:00:1b", "expected_worker_user": worker},
+            ]
+        }
+        log = "\n".join(
+            [
+                f"2026/05/27 00:20:57 [192.168.1.14:52953] authorize accepted user={worker}",
+                f"2026/05/27 00:20:57 [192.168.1.16:42015] authorize accepted user={worker}",
+                f"2026/05/27 00:20:57 [192.168.1.101:41101] authorize accepted user={worker}",
+                f"2026/05/27 00:20:57 [192.168.1.103:43866] authorize accepted user={worker}",
+                f"2026/05/27 00:21:01 valid share accepted 10.0 -> 100 worker={worker} job=abc_01000000",
+                f"2026/05/27 00:21:02 valid share accepted 10.0 -> 200 worker={worker} job=abc_02000000",
+                f"2026/05/27 00:21:03 valid share accepted 10.0 -> 300 worker={worker} job=abc_03000000",
+                f"2026/05/27 00:21:04 valid share accepted 10.0 -> 400 worker={worker} job=abc_04000000",
+                "2026/05/27 00:21:05 BLOCK FOUND height(le)=8000001 job=abc_01000000 hash=aaa target=bbb",
+                "2026/05/27 00:21:06 BLOCK FOUND height(le)=8000002 job=abc_02000000 hash=aaa target=bbb",
+                "2026/05/27 00:21:07 BLOCK FOUND height(le)=8000003 job=abc_03000000 hash=aaa target=bbb",
+                "2026/05/27 00:21:08 BLOCK FOUND height(le)=8000004 job=abc_04000000 hash=aaa target=bbb",
+            ]
+        )
+
+        activity = pool_ops.parse_pool_activity(log)
+        miners = {item["ip"]: item for item in activity["miners"]}
+
+        self.assertEqual(activity["unattributed_valid_shares"], 0)
+        self.assertEqual(activity["unattributed_blocks"], 0)
+        self.assertEqual(miners["192.168.1.14"]["share_work"], 100)
+        self.assertEqual(miners["192.168.1.16"]["share_work"], 200)
+        self.assertEqual(miners["192.168.1.101"]["share_work"], 300)
+        self.assertEqual(miners["192.168.1.103"]["share_work"], 400)
+        self.assertEqual(miners["192.168.1.14"]["blocks_found"], 1)
+        self.assertEqual(miners["192.168.1.16"]["job_extranonces"], ["02000000"])
+
+    def test_registry_extranonce_mapping_recovers_short_log_tail(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {
+                    "ip": "192.168.1.14",
+                    "mac": "28:e2:97:3e:39:63",
+                    "expected_worker_user": worker,
+                    "last_pool_job_extranonces": ["07000000"],
+                },
+                {"ip": "192.168.1.103", "mac": "28:e2:97:2e:00:1b", "expected_worker_user": worker},
+            ]
+        }
+        log = f"2026/05/27 00:21:01 valid share accepted 10.0 -> 500 worker={worker} job=abc_07000000"
+
+        miners = {item["ip"]: item for item in pool_ops.parse_pool_activity(log)["miners"]}
+
+        self.assertEqual(miners["192.168.1.14"]["shares"], 1)
+        self.assertEqual(miners["192.168.1.14"]["share_work"], 500)
+        self.assertNotIn("192.168.1.103", miners)
+
+    def test_collect_pool_activity_bootstraps_when_short_tail_is_unattributed(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {"ip": "192.168.1.14", "mac": "28:e2:97:3e:39:63", "expected_worker_user": worker},
+                {"ip": "192.168.1.103", "mac": "28:e2:97:2e:00:1b", "expected_worker_user": worker},
+            ]
+        }
+        short_log = f"2026/05/27 00:21:01 valid share accepted 10.0 -> 500 worker={worker} job=abc_01000000"
+        full_log = "\n".join(
+            [
+                f"2026/05/27 00:20:57 [192.168.1.14:52953] authorize accepted user={worker}",
+                short_log,
+            ]
+        )
+        old_docker_logs_many = pool_ops.docker_logs_many
+        old_bootstrap_lines = pool_ops.POOL_ACTIVITY_BOOTSTRAP_LOG_LINES
+        self.addCleanup(lambda: setattr(pool_ops, "docker_logs_many", old_docker_logs_many))
+        self.addCleanup(lambda: setattr(pool_ops, "POOL_ACTIVITY_BOOTSTRAP_LOG_LINES", old_bootstrap_lines))
+        calls = []
+        pool_ops.POOL_ACTIVITY_BOOTSTRAP_LOG_LINES = 20
+        pool_ops.docker_logs_many = lambda _containers, lines=2500: calls.append(lines) or (full_log if lines == 20 else short_log)
+
+        activity = pool_ops.collect_pool_activity(lines=2)
+        miners = {item["ip"]: item for item in activity["miners"]}
+
+        self.assertEqual(calls, [2, 20])
+        self.assertEqual(activity["bootstrap_log_lines"], 20)
+        self.assertEqual(miners["192.168.1.14"]["share_work"], 500)
+
     def test_docker_bridge_alias_does_not_hide_registered_asic_work(self) -> None:
         worker = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         pool_ops.read_miner_registry = lambda: {
