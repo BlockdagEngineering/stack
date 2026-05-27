@@ -34,6 +34,7 @@ class NoMinerCollectStatusTests(unittest.TestCase):
                 "docker_top",
                 "docker_logs",
                 "docker_logs_many",
+                "parse_pool_log",
                 "collect_template_probe_health",
                 "collect_pool_prometheus_metrics",
                 "collect_miner_health",
@@ -173,6 +174,173 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         joined_warnings = "\n".join(status["warnings"])
         self.assertNotIn("live mining template probes", joined_warnings)
         self.assertNotIn("pool recently saw RPC connection refused", joined_warnings)
+
+    def test_recent_paid_work_keeps_template_probe_noise_advisory_during_sync_progress(self) -> None:
+        now = datetime(2026, 5, 27, 8, 30, 0, tzinfo=timezone.utc).timestamp()
+        pool_ops.time.time = lambda: now
+        pool_ops.NODES = ["bdag-miner-node-2"]
+        pool_ops.OBSERVER_NODES = []
+        pool_ops.STACK_SERVICES = ["pool-db", "bdag-miner-node-2", "rpc-failover", "asic-pool"]
+        pool_ops.SERVICES = list(pool_ops.STACK_SERVICES)
+        pool_ops.POOL_CONTAINER = "asic-pool"
+        pool_ops.POOL_CONTAINERS = ["asic-pool"]
+        pool_ops.ensure_runtime = lambda: None
+        pool_ops.docker_access_error = lambda: None
+        pool_ops.local_ipv4_addresses = lambda: ["192.168.68.55"]
+        pool_ops.default_miner_pool_settings = lambda: {
+            "pool_url": "stratum+tcp://192.168.68.55:3334",
+            "worker_user": "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc",
+            "pool_password": "1234",
+        }
+        pool_ops.run = lambda command, timeout=20: pool_ops.CommandResult(command, 0, "", "", 0.0)
+        pool_ops.read_latest_action = lambda: None
+        pool_ops.discover_observer_node_services = lambda: []
+        pool_ops.docker_top = lambda _name: (
+            "UID PID PPID C STIME TTY TIME CMD\n"
+            "root 1 0 0 12:00 ? 00:00:01 /usr/local/bin/bdag\n"
+        )
+        pool_ops.docker_logs = lambda _name, lines=160: ""
+        pool_ops.docker_logs_many = lambda _names, lines=160: ""
+        pool_ops.collect_host_pressure = lambda: {
+            "iowait_percent": 10.0,
+            "iowait_warning_active": False,
+            "samples": [],
+        }
+
+        def fake_inspect(names):
+            return {
+                name: {
+                    "name": name,
+                    "image": "test",
+                    "running": True,
+                    "status": "running",
+                    "restart_count": 0,
+                    "exit_code": 0,
+                    "error": "",
+                    "ports": {},
+                }
+                for name in names
+            }
+
+        pool_ops.docker_inspect = fake_inspect
+        base_pool = self.originals["parse_pool_log"]("")
+        base_pool.update(
+            {
+                "initial_download": True,
+                "submit_count": 1,
+                "valid_share_count": 1,
+                "block_submit_success_count": 1,
+                "block_submit_failure_count": 0,
+                "last_submit_age_seconds": 1,
+                "last_valid_share_age_seconds": 1,
+                "last_block_submit_age_seconds": 1,
+                "share_stall": False,
+                "job_stall": False,
+                "pool_template_frozen": False,
+                "duplicate_block_storm": False,
+                "stale_job_candidate_storm": False,
+                "block_submit_error_storm": False,
+                "accepted_job_expired_storm": False,
+                "block_submit_zero_success_storm": False,
+            }
+        )
+        pool_ops.parse_pool_log = lambda _log: dict(base_pool)
+        pool_ops.collect_template_probe_health = lambda: {
+            "generated_at": "2026-05-27T08:30:00+0000",
+            "cached": False,
+            "nodes": {
+                "bdag-miner-node-2": {
+                    "sample_count": 1,
+                    "ok_count": 0,
+                    "error_count": 1,
+                    "failing": True,
+                    "last_error": "timed out",
+                    "benign_tx_template_error": False,
+                    "benign_tx_throttle": False,
+                }
+            },
+            "rpc_failover": {
+                "sample_count": 1,
+                "ok_count": 0,
+                "error_count": 1,
+                "failing": True,
+                "last_error": "timed out",
+            },
+            "failing_nodes": ["bdag-miner-node-2"],
+            "all_nodes_failing": True,
+        }
+        pool_ops.collect_pool_prometheus_metrics = lambda _containers: {
+            "generated_at": "2026-05-27T08:30:00+0000",
+            "status": "ok",
+            "active_connections": 1.0,
+            "selected_backend": "node2",
+            "source_job_health": {"ok": True, "authorized_miners": 1, "ready_miners": 1},
+            "source_backend_health": {},
+            "selected_backend_source_health": {
+                "healthy": True,
+                "node_mineable": True,
+                "node_submit_ready": True,
+                "node_p2p_mining_fresh": True,
+                "ws_connected": True,
+            },
+            "template_conversion_stall": {},
+            "loss_ledger": {},
+        }
+        pool_ops.collect_miner_health = lambda: {
+            "managed_count": 1,
+            "connected_count": 0,
+            "failures": [],
+            "warnings": [],
+            "miners": [],
+        }
+        pool_ops.collect_sync_progress = lambda: {
+            "status": "syncing",
+            "percent": 99.9,
+            "current_block": 8_658_580,
+            "highest_block": 8_658_598,
+            "remaining_blocks": 18,
+            "source": "nodes",
+            "error": "",
+            "nodes": {
+                "bdag-miner-node-2": {
+                    "status": "syncing",
+                    "percent": 99.9,
+                    "current_block": 8_658_580,
+                    "highest_block": 8_658_598,
+                    "remaining_blocks": 18,
+                    "source": "bdag-miner-node-2",
+                    "error": "",
+                    "chain_block_count": 8_658_580,
+                    "chain_main_height": 7_001_812,
+                    "chain_rpc_source": "getBlockCount",
+                    "chain_rpc_latency_ms": 3.3,
+                    "chain_rpc_attempts": 1,
+                    "chain_rpc_retry_limit": 2,
+                    "chain_rpc_error": "",
+                }
+            },
+        }
+        pool_ops.observe_sync_progress_health = lambda _sync_progress: {
+            "active_nodes": ["bdag-miner-node-2"],
+            "active_node_count": 1,
+            "node_rates_blocks_per_second": {"bdag-miner-node-2": 2.0},
+            "lookback_seconds": 2700,
+        }
+        pool_ops.read_sync_coordinator_state = lambda: {}
+
+        status = pool_ops.collect_status(include_logs=True)
+
+        self.assertEqual(status["overall"], "ok")
+        self.assertEqual(status["mode"], "mining")
+        self.assertTrue(status["can_submit_blocks"])
+        self.assertTrue(status["can_mine"])
+        self.assertEqual(status["sync_warnings"], [])
+        self.assertFalse(status["pool_health"]["needs_fast_repair"])
+        self.assertFalse(status["sync_health"]["needs_fast_sync_repair"])
+        self.assertTrue(status["pool_health"]["node_template_probe_failing"])
+        joined_maintenance = "\n".join(status["maintenance_warnings"])
+        self.assertIn("accepted mining work remains fresh", joined_maintenance)
+        self.assertIn("transient initial-download", joined_maintenance)
 
 
 class EffectiveMinerDemandTests(unittest.TestCase):

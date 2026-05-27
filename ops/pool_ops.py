@@ -4721,24 +4721,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             int(sync_health.get("nodes_with_recent_imports") or 0),
             int(sync_progress_health.get("active_node_count") or 0),
         )
-        hard_pool_needs_repair = bool(
-            pool_health.get("rpc_refused")
-            or pool_health.get("rpc_template_failing")
-            or pool_health.get("node_template_probe_failing")
-            or pool_health.get("share_stall")
-            or pool_health.get("job_stall")
-            or pool_health.get("pool_template_frozen")
-            or pool_health.get("duplicate_block_storm")
-            or pool_health.get("stale_job_candidate_storm")
-            or pool_health.get("block_submit_error_storm")
-            or pool_health.get("accepted_job_expired_storm")
-            or pool_health.get("source_job_hard_degraded")
-            or pool_health.get("source_selected_backend_hard_degraded")
-            or (
-                pool_health.get("block_submit_zero_success_storm")
-                and not pool_health.get("submit_stall_recovery_recent")
-            )
-        )
+        hard_pool_needs_repair = bool(pool_health.get("needs_fast_repair"))
         if sync_progress.get("status") == "syncing" and pool_health.get("initial_download"):
             pool_health["initial_download_needs_repair"] = False
             pool_health["needs_fast_repair"] = hard_pool_needs_repair
