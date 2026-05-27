@@ -414,7 +414,7 @@ apply_submit_obsolete_height_flag() {
 }
 
 apply_max_bad_peer_responses_flag() {
-  local value="${BDAG_NODE_MAX_BAD_RESPONSES:-12}"
+  local value="${BDAG_NODE_MAX_BAD_RESPONSES:-4}"
   case "$value" in
     ""|0|off|false|none) return 0 ;;
   esac

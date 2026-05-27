@@ -6339,15 +6339,20 @@ def merge_global_local_pool_clusters(
         local_source = str(local.get("source") or "local-pool").strip()
         existing["source"] = f"on-chain+{local_source}"
         for key in (
-            "pool_name",
-            "pool_label",
-            "nodes",
-            "workers",
+            "blocks",
             "shares",
             "credit_blocks",
             "credited_bdag",
             "found_blocks",
             "estimated_wallet_bdag",
+        ):
+            if local.get(key) not in (None, "", []):
+                existing[f"local_{key}"] = local[key]
+        for key in (
+            "pool_name",
+            "pool_label",
+            "nodes",
+            "workers",
             "identity_key",
             "ip",
             "mac",

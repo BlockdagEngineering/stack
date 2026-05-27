@@ -362,7 +362,8 @@ class GlobalLocalPoolOverlayTests(unittest.TestCase):
         self.assertEqual(merged[0]["pool_name"], "Achilles-0b5")
         self.assertEqual(merged[0]["source"], "on-chain+local-pool-bdag-rpc")
         self.assertEqual(merged[0]["source_truth"], "bdag-rpc-isBlue")
-        self.assertEqual(merged[0]["credit_blocks"], 3)
+        self.assertNotIn("credit_blocks", merged[0])
+        self.assertEqual(merged[0]["local_credit_blocks"], 3)
         self.assertEqual(merged[0]["accepted_submissions"], 4)
         self.assertEqual(merged[0]["pending_submissions"], 1)
 
