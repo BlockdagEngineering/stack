@@ -2736,20 +2736,42 @@ def check_once(
                 state["consecutive_share_stalls"] = 0
     elif status.get("sync_health", {}).get("needs_fast_sync_repair"):
         sync_warnings = status.get("sync_warnings", status.get("warnings", []))
+        recent_mining_work = pool_has_recent_mining_work(status)
         state["consecutive_failures"] = 0
-        state["consecutive_syncing"] = int(state.get("consecutive_syncing", 0) or 0) + 1
+        if recent_mining_work:
+            state["consecutive_syncing"] = 0
+        else:
+            state["consecutive_syncing"] = int(state.get("consecutive_syncing", 0) or 0) + 1
         state["consecutive_share_stalls"] = 0
         state["last_status"] = "syncing"
         state["last_failures"] = []
         state["last_sync_warnings"] = sync_warnings
-        log(f"syncing consecutive={state['consecutive_syncing']} warnings={'; '.join(sync_warnings) or 'none'}")
+        log(
+            f"syncing consecutive={state['consecutive_syncing']} "
+            f"recent_mining_work={recent_mining_work} "
+            f"warnings={'; '.join(sync_warnings) or 'none'}"
+        )
         record_efficiency_event(
             "syncing",
             "warning",
             "; ".join(sync_warnings) or "sync repair needed",
-            {"consecutive_syncing": state["consecutive_syncing"]},
+            {
+                "consecutive_syncing": state["consecutive_syncing"],
+                "recent_mining_work": recent_mining_work,
+            },
         )
-        if repair and template_nodes:
+        if repair and recent_mining_work:
+            log("sync repair suppressed because pool mining work is fresh")
+            record_efficiency_event(
+                "repair_suppressed",
+                "warning",
+                "sync repair suppressed because pool mining work is fresh",
+                {
+                    "sync_warnings": sync_warnings,
+                    "freshness_seconds": 60,
+                },
+            )
+        elif repair and template_nodes:
             current_primary = current_rpc_primary()
             alternate_primary = (
                 healthy_rpc_alternate(status, template_nodes, current_primary)
