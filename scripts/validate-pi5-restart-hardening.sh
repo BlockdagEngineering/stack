@@ -57,17 +57,16 @@ def server_line(name: str, address: str) -> list[str]:
         tokens = line.split()
         if len(tokens) >= 3 and tokens[0] == "server" and tokens[1] == name and tokens[2] == address:
             return tokens
-    raise SystemExit(f"missing HAProxy server {name} {address}")
+    return []
 
-node2 = server_line("node2", "bdag-miner-node-2:38131")
 node1 = server_line("node1", "bdag-miner-node-1:38131")
-if "backup" in node2:
-    raise SystemExit("node2 must be the primary HAProxy backend")
-if "backup" not in node1:
-    raise SystemExit("node1 must be configured as the backup backend")
-if node1[-1] != "backup":
-    raise SystemExit("node1 backup token must be last to match stack-sentinel canonical form")
-for name, tokens in (("node2", node2), ("node1", node1)):
+node2 = server_line("node2", "bdag-miner-node-2:38131")
+if not node1:
+    raise SystemExit("missing HAProxy server node1 bdag-miner-node-1:38131")
+
+for name, tokens in (("node1", node1), ("node2", node2)):
+    if not tokens:
+        continue
     if "resolvers" not in tokens or "docker" not in tokens:
         raise SystemExit(f"{name} is missing docker resolver semantics")
     try:
@@ -76,6 +75,17 @@ for name, tokens in (("node2", node2), ("node1", node1)):
         raise SystemExit(f"{name} is missing init-addr") from exc
     if index + 1 >= len(tokens) or tokens[index + 1] != "libc,none":
         raise SystemExit(f"{name} init-addr must include libc,none")
+if node2:
+    primary = [name for name, tokens in (("node1", node1), ("node2", node2)) if "backup" not in tokens]
+    backup = [name for name, tokens in (("node1", node1), ("node2", node2)) if "backup" in tokens]
+    if len(primary) != 1 or len(backup) != 1:
+        raise SystemExit("dual-node HAProxy config must have exactly one primary and one backup server")
+    if node1[-1] == "backup" or node2[-1] == "backup":
+        pass
+    else:
+        raise SystemExit("HAProxy backup token must be last to match stack-sentinel canonical form")
+elif "backup" in node1:
+    raise SystemExit("single-node HAProxy config must not mark node1 as backup")
 PY
 }
 
