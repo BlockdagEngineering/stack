@@ -318,6 +318,7 @@ need_grep 'fastsnap_supports_directory_mode' "docker/entrypoint-nodeworker.sh"
 need_grep 'apply_default_fastsync_flags' "ops/build-pi5-arm64-release.sh"
 need_grep 'BDAG_FASTARTIFACTSYNC_ENABLED' "ops/build-pi5-arm64-release.sh"
 need_grep 'fastsnap_supports_directory_mode' "ops/build-pi5-arm64-release.sh"
+need_grep 'fastsnap_supports_directory_mode "\$FASTSNAP"' "ops/build-pi5-arm64-release.sh"
 if [[ "$mode" == "live-runtime" ]]; then
   need_grep 'NODE_RPC_URLS: .*http://(node|rpc-failover):38131' "docker-compose.yml"
 else
@@ -500,6 +501,9 @@ reject_grep 'BDAG_P2P_LAN_PEERS:' "ops/build-pi5-arm64-release.sh"
 reject_grep 'BDAG_P2P_VPN_PEERS:' "ops/build-pi5-arm64-release.sh"
 reject_grep 'BDAG_FASTSYNC_LAN_PEERS:' "ops/build-pi5-arm64-release.sh"
 reject_grep 'BDAG_FASTSYNC_VPN_PEERS:' "ops/build-pi5-arm64-release.sh"
+reject_grep 'REMOTE_ZT_IP' "ops/monitor-fastsync-peers.sh"
+reject_grep 'remote_zerotier_ip' "ops/monitor-fastsync-peers.sh"
+reject_grep 'zerotier_peers' "ops/monitor-fastsync-peers.sh"
 if [[ "$mode" == "source" ]]; then
   need_grep 'BDAG_FASTSYNC_PEER_ORDERING=p2p-latency' ".env.cpu.example"
   reject_grep 'BDAG_ALLOW_ASIC_LAN_P2P' ".env.cpu.example"

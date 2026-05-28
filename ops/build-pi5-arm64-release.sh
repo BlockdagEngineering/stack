@@ -854,7 +854,7 @@ maybe_fastsnap_bootstrap() {
   timeout="${BDAG_FASTSNAP_TIMEOUT:-90s}"
   tmp_archive="$archive.download.$$"
   directory_mode="${BDAG_FASTSNAP_DIRECTORY_MODE:-1}"
-  if [ "$directory_mode" = "1" ] && ! fastsnap_supports_directory_mode "$fastsnap_bin"; then
+  if [ "$directory_mode" = "1" ] && ! fastsnap_supports_directory_mode "$FASTSNAP"; then
     log "fastsnap binary does not support directory install flags; using V2 archive fallback"
     directory_mode=0
   fi

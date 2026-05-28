@@ -59,6 +59,7 @@ def main() -> None:
         "--delay-updates",
         "--exclude=/network.key",
         "--exclude=/bdageth/nodekey",
+        "BDAG_NODE_SERVICES:-bdag-miner-node-1",
     ):
         assert_contains(sidecar, needle, SIDECAR)
 
@@ -74,6 +75,7 @@ def main() -> None:
         "BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=1",
         "single-node artifact publish requires",
         "BDAG_RAWDATADIR_SOURCE_DIR",
+        "BDAG_NODE_SERVICES:-bdag-miner-node-1",
     ):
         assert_contains(publish, needle, PUBLISH)
 

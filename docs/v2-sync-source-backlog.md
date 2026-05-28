@@ -82,17 +82,53 @@ Required behavior:
 Status: stack default node commit now points at the raw-datadir-capable
 corechain commit. Receiver testing is still required on a second host.
 
-## P0 - Receivers Must Keep Trying The Fastest Verified Path
+## P0 - Raw Datadir Source Promotion Must Prove Mining Readiness
 
-Problem: A node that starts before a fast source is reachable can fall back to
-normal P2P and stay slow, even if a LAN/VPN/public FastArtifact source appears
-minutes later. On mining hardware, time spent far behind tip is lost production
-time.
+Problem: On 2026-05-29, a raw-datadir-capable corechain image
+(`c74f88b9c1b4`) was manually promoted into the live single-node mining lane.
+The node stayed near tip, but `getBlockTemplate` intermittently returned
+`Client in initial download`; the pool backend score fell to zero during the
+test and mining source health degraded. The immediate rollback restored the
+previous mining image. The root failure was treating FastSync source capability
+as sufficient evidence for active mining-node promotion.
 
 Required behavior:
 
-- While a managed node is materially behind, probe raw datadir, FastSnap, LAN,
-  VPN, and public peer candidates in fastest-first order.
+- Never promote a rawdatadir/FastArtifact source image into an active mining
+  lane until a guarded preflight proves RPC height, `getBlockTemplate`, backend
+  score, fresh accepted work, and pool job health are all ready on that exact
+  image.
+- If the source-serving code is not mining-ready, run it as a separate bounded
+  P2P source service that serves only a finalized signed artifact directory and
+  cannot own the live mining datadir or template lane.
+- Keep raw datadir source publication fail-closed when the active backend is in
+  initial-download, backend score is degraded, or no finalized signed sidecar
+  artifact exists.
+- Add a release validation check that fails if a deploy path can replace the
+  selected mining backend image without proving template readiness.
+
+Acceptance criteria:
+
+- A reproducible deploy preflight fails against an image that returns
+  `Client in initial download` from `getBlockTemplate`.
+- The preflight passes on a healthy mining image only after backend score is at
+  least 90, `pool_job_health_ok=1`, and accepted work remains fresh.
+- A source-only FastSync service, if used, has bounded CPU/IO weights and no
+  write access to the live node datadir.
+- The incident report for the 2026-05-29 failed promotion is linked from the
+  release-candidate handoff.
+
+## P0 - Receivers Must Keep Trying The Fastest Verified Path
+
+Problem: A node that starts before a fast source is reachable can fall back to
+normal P2P and stay slow, even if a P2P FastArtifact source appears minutes
+later. On mining hardware, time spent far behind tip is lost production time.
+
+Required behavior:
+
+- While a managed node is materially behind, probe one deduplicated set of
+  complete P2P multiaddr candidates and let measured P2P latency/usefulness
+  choose the fastest source.
 - Retry periodically; never permanently downgrade just because no source was
   available on the first attempt.
 - If a signed `raw_datadir_checkpoint` is ahead enough, stop only the receiver,

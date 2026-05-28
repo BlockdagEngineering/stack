@@ -95,13 +95,14 @@ Default release behavior:
 
 The sync coordinator treats the fastest verified receiver path as the first
 choice whenever a managed node is materially behind. Every retry window it
-probes configured raw datadir, FastSnap, LAN, VPN, and public FastSync peer
-multiaddrs in that order. If a peer offers a signed `raw_datadir_checkpoint`
-that is ahead enough, the coordinator stops only the receiver node, imports the
-verified artifact with `ops/fetch-rawdatadir-artifact.sh`, preserves local
-identity files, restarts the node, and lets normal FastSync catch the remaining
-tail. If no source is available, it records the reason and retries instead of
-falling back permanently.
+probes one deduplicated set of complete P2P multiaddrs. LAN, VPN, and public
+route labels are not sync modes and are not priority classes. If a peer offers a
+signed `raw_datadir_checkpoint` that is ahead enough, the coordinator stops only
+the receiver node, imports the verified artifact with
+`ops/fetch-rawdatadir-artifact.sh`, preserves local identity files, restarts the
+node, and lets normal FastSync catch the remaining tail. If no source is
+available, it records the reason and retries instead of falling back
+permanently.
 
 Relevant defaults:
 
