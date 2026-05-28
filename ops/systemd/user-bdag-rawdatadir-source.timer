@@ -1,0 +1,12 @@
+[Unit]
+Description=Publish BlockDAG raw datadir FastArtifact source when eligible
+
+[Timer]
+OnBootSec=45m
+OnUnitActiveSec=2h
+RandomizedDelaySec=15m
+Persistent=false
+Unit=bdag-rawdatadir-source.service
+
+[Install]
+WantedBy=timers.target

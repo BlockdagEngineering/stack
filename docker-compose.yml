@@ -101,6 +101,8 @@ services:
       BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
       BDAG_FASTSYNC_ARTIFACT_DIRECTORY: ${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}
       BDAG_FASTSYNC_ARTIFACT_MANIFEST: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}
+      BDAG_RAWDATADIR_SOURCE_MODE: ${BDAG_RAWDATADIR_SOURCE_MODE:-auto}
+      BDAG_RAWDATADIR_ARTIFACT_BASE: ${BDAG_RAWDATADIR_ARTIFACT_BASE:-./data-restore/rawdatadir}
       BDAG_NETWORK_TOPOLOGY: ${BDAG_NETWORK_TOPOLOGY:-auto}
       BDAG_DETECTED_NETWORK_TOPOLOGY: ${BDAG_DETECTED_NETWORK_TOPOLOGY:-}
       BDAG_ASIC_LAN_INTERFACE: ${BDAG_ASIC_LAN_INTERFACE:-eth0}
@@ -134,6 +136,7 @@ services:
       - nodeworker-data:/var/lib/bdagStack/nodeworker
       # node.conf in project root (copy from node.conf.example). gitignored.
       - ./node.conf:/etc/bdagStack/node.conf:ro
+      - ${BDAG_RAWDATADIR_ARTIFACT_BASE:-./data-restore/rawdatadir}:/fastartifact/rawdatadir:ro
 
   # --------------------------------------------------------------------------
   # Dedicated hot-snapshot node. It syncs separately from the pool RPC node so

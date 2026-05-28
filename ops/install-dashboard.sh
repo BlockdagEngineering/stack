@@ -126,8 +126,8 @@ BDAG_POOL_DB_CONTAINER=pool-db
 BDAG_POOL_DB_USER=test
 BDAG_POOL_DB_NAME=pool
 BDAG_NODE_MODE=single
-BDAG_NODE_SERVICES=bdag-miner-node-2
-BDAG_STACK_SERVICES=pool-db,bdag-miner-node-2,rpc-failover,asic-pool
+BDAG_NODE_SERVICES=bdag-miner-node-1
+BDAG_STACK_SERVICES=pool-db,bdag-miner-node-1,rpc-failover,asic-pool
 BDAG_ENABLE_NODE_MINING=0
 BDAG_FASTARTIFACTSYNC_ENABLED=1
 BDAG_FASTSYNC_PREPROCESS_WORKERS=1
@@ -182,11 +182,16 @@ ensure_env_value BDAG_PROJECT_ROOT "$PROJECT_ROOT"
 ensure_env_value BDAG_RUNTIME_DIR "$RUNTIME_DIR"
 ensure_env_value BDAG_POOL_ENV_FILE "$PROJECT_ROOT/asic-pool/.env"
 ensure_env_value BDAG_NODE_MODE single
-ensure_env_value BDAG_NODE_SERVICES bdag-miner-node-2
-ensure_env_value BDAG_STACK_SERVICES "pool-db,bdag-miner-node-2,rpc-failover,asic-pool"
+ensure_env_value BDAG_NODE_SERVICES bdag-miner-node-1
+ensure_env_value BDAG_STACK_SERVICES "pool-db,bdag-miner-node-1,rpc-failover,asic-pool"
 ensure_env_value BDAG_ENABLE_NODE_MINING 0
 ensure_env_value BDAG_FASTARTIFACTSYNC_ENABLED 1
 ensure_env_value BDAG_FASTSYNC_PREPROCESS_WORKERS 1
+ensure_env_value BDAG_FASTSNAP_SEED_TIMER_ENABLED 0
+ensure_env_value BDAG_RAWDATADIR_SOURCE_MODE auto
+ensure_env_value BDAG_RAWDATADIR_ARTIFACT_BASE "$PROJECT_ROOT/data-restore/rawdatadir"
+ensure_env_value BDAG_RAWDATADIR_MAX_EXPORT_BACKEND_LAG 10000
+ensure_env_value BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE 0
 ensure_env_value BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC 1
 ensure_env_value BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS 900
 ensure_env_value BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT 1

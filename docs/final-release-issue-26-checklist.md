@@ -7,7 +7,7 @@ while removing local assumptions that caused install or sync drift.
 ## Source Manifest
 
 - `pool-stack-docker`: `release/pool-stack-20260524-rc4-sre`
-- `blockdag-corechain`: `develop` at `e10dd5d8fb57aefa73a682ff69c94eac5c2b50f4`
+- `blockdag-corechain`: raw-datadir V2 sync source commit `c74f88b9c1b4fbf4213e15272d3bf1f63943e839`
   or newer, including directory V2 artifact support, latency-first artifact
   peer preference, and the zero-state-root `HasState` guard.
 - `pool`: `develop` at `61b231c0501b32338f4ad47561a09e03e5933adc` or newer,

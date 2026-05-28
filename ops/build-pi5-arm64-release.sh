@@ -19,7 +19,7 @@ CHAIN_SOURCE="${BDAG_RELEASE_CHAIN_SOURCE:-$PROJECT_ROOT/data-restore/latest-hou
 POOL_REPO="${BDAG_POOL_REPO:-$SOURCE_ROOT/pool}"
 NODE_REPO="${BDAG_NODE_REPO:-$SOURCE_ROOT/blockdag-corechain}"
 POOL_COMMIT="${BDAG_POOL_COMMIT:-56fe111b46c0f5fe4e8f007078fcd69c1a53d588}"
-NODE_COMMIT="${BDAG_NODE_COMMIT:-c268d4b5f743b6cb1b6afd5115904221d528456a}"
+NODE_COMMIT="${BDAG_NODE_COMMIT:-c74f88b9c1b4fbf4213e15272d3bf1f63943e839}"
 
 say() { printf '\n==> %s\n' "$*"; }
 warn() { printf '\nWARNING: %s\n' "$*" >&2; }
@@ -43,13 +43,18 @@ base_package() {
 
 extract_peer_value() {
   local key="$1" value
+  local peer_env_file="${BDAG_PEER_ENV_FILE:-$PROJECT_ROOT/asic-pool/.env}"
+  if [[ ! -f "$peer_env_file" ]]; then
+    peer_env_file="$PROJECT_ROOT/.env.example"
+  fi
   value="$(
-    python3 "$PROJECT_ROOT/ops/multinode_peer_sets.py" --nodes 2 --print-values |
+    python3 "$PROJECT_ROOT/ops/multinode_peer_sets.py" --nodes 2 --env-file "$peer_env_file" --print-values 2>/dev/null |
       awk -v k="$key" 'index($0, k "=") == 1 {sub(k "=", ""); print; exit}'
   )"
   if [[ -z "$value" ]]; then
-    echo "Could not generate $key" >&2
-    exit 1
+    warn "Could not generate $key from $peer_env_file; installer will rely on BOOTSTRAP_PEER_ADDRESSES/BDAG_FASTSYNC_PEERS"
+    printf '\n'
+    return 0
   fi
   printf '%s\n' "$value"
 }
@@ -101,8 +106,8 @@ services:
       POOL_PREEMPTIVE_BLOCK_CANDIDATE_REFRESH_ENABLED: ${POOL_PREEMPTIVE_BLOCK_CANDIDATE_REFRESH_ENABLED:-true}
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
-      WALLET_RPC_URL: ${WALLET_RPC_URL:-http://bdag-miner-node-2:18545}
-      WALLET_RPC_URLS: ${WALLET_RPC_URLS:-http://bdag-miner-node-2:18545}
+      WALLET_RPC_URL: ${WALLET_RPC_URL:-http://bdag-miner-node-1:18545}
+      WALLET_RPC_URLS: ${WALLET_RPC_URLS:-http://bdag-miner-node-1:18545}
       PPLNS_N_WORK: ${PPLNS_N_WORK:-1000}
       POOL_BLOCK_MATURITY: ${POOL_BLOCK_MATURITY:-10}
       POOL_PAYOUT_MATURITY: ${POOL_PAYOUT_MATURITY:-9999999999}
@@ -143,12 +148,10 @@ services:
     volumes:
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     depends_on:
-      bdag-miner-node-2:
+      bdag-miner-node-1:
         condition: service_started
 
   bdag-miner-node-1:
-    profiles:
-      - dual-node
     image: ${BLOCKDAG_NODE_IMAGE:-bdag-release/node:local}
     container_name: bdag-miner-node-1
     restart: unless-stopped
@@ -163,6 +166,7 @@ services:
         hard: 1048576
     volumes:
       - ${BDAG_NODE1_DATA_DIR:-./data/node1}:/data
+      - ${BDAG_RAWDATADIR_ARTIFACT_BASE:-./data-restore/rawdatadir}:/fastartifact/rawdatadir:ro
     environment:
       ROLLOUT_WINDOW: 30m
       HEALTH_MIN_PEERS: 1
@@ -247,6 +251,8 @@ services:
       - "6061:6060"
 
   bdag-miner-node-2:
+    profiles:
+      - dual-node
     image: ${BLOCKDAG_NODE_IMAGE:-bdag-release/node:local}
     container_name: bdag-miner-node-2
     restart: unless-stopped
@@ -261,6 +267,7 @@ services:
         hard: 1048576
     volumes:
       - ${BDAG_NODE2_DATA_DIR:-./data/node2}:/data
+      - ${BDAG_RAWDATADIR_ARTIFACT_BASE:-./data-restore/rawdatadir}:/fastartifact/rawdatadir:ro
     environment:
       ROLLOUT_WINDOW: 30m
       HEALTH_MIN_PEERS: 1
@@ -479,8 +486,8 @@ BDAG_CONTAINER_TMPFS_SIZE=128m
 # nodes. Nodes stay sync-only until BDAG_NODE_MINING_ARGS is explicitly set.
 BDAG_NODE_MODE=single
 COMPOSE_PROFILES=
-BDAG_NODE_SERVICES=bdag-miner-node-2
-BDAG_STACK_SERVICES=pool-db,bdag-miner-node-2,rpc-failover,asic-pool
+BDAG_NODE_SERVICES=bdag-miner-node-1
+BDAG_STACK_SERVICES=pool-db,bdag-miner-node-1,rpc-failover,asic-pool
 BDAG_ENABLE_NODE_MINING=0
 BDAG_NODE_MODULES=Blockdag
 BDAG_NODE_MINING_ARGS=
@@ -532,7 +539,7 @@ PG_URL=postgres://test:change-me-at-install@pool-db:5432/pool
 
 POOL_RPC_ROUTER_ENABLED=true
 POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true
-POOL_RPC_BACKENDS=node2=http://bdag-miner-node-2:38131
+POOL_RPC_BACKENDS=node1=http://bdag-miner-node-1:38131
 POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT=true
 POOL_TEMPLATE_FANIN_ENABLED=false
 POOL_TEMPLATE_FANIN_MAX_BACKENDS=2
@@ -581,6 +588,18 @@ BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING=1
 BDAG_FASTSNAP_ALLOW_UNSIGNED=0
 BDAG_FASTSNAP_PARALLELISM=4
 BDAG_FASTSNAP_LEDGER=
+BDAG_FASTSNAP_SEED_TIMER_ENABLED=0
+BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG=10000
+BDAG_RAWDATADIR_SOURCE_MODE=auto
+BDAG_RAWDATADIR_ARTIFACT_BASE=./data-restore/rawdatadir
+BDAG_RAWDATADIR_ARTIFACT_KEEP=3
+BDAG_RAWDATADIR_REQUIRE_SIGNED=1
+BDAG_RAWDATADIR_MAX_EXPORT_BACKEND_LAG=10000
+BDAG_RAWDATADIR_SIDECAR_SOURCE=
+BDAG_RAWDATADIR_SIDECAR_DIR=
+BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=0
+BDAG_RAWDATADIR_MIN_FREE_GIB=100
+BDAG_RAWDATADIR_FREE_SPACE_MULTIPLIER=2.5
 BDAG_FASTSYNC_ARTIFACT_DIRECTORY=
 BDAG_FASTSYNC_ARTIFACT_MANIFEST=
 BDAG_FASTSYNC_PEER_ORDERING=tiered-latency
@@ -597,8 +616,8 @@ BDAG_ENTRYPOINT_CHOWN_MODE=needed
 NODE_RPC_URL=http://rpc-failover:38131
 NODE_RPC_URLS=http://rpc-failover:38131
 POOL_SUBMIT_RPC_URLS=
-WALLET_RPC_URL=http://bdag-miner-node-2:18545
-WALLET_RPC_URLS=http://bdag-miner-node-2:18545
+WALLET_RPC_URL=http://bdag-miner-node-1:18545
+WALLET_RPC_URLS=http://bdag-miner-node-1:18545
 PPLNS_N_WORK=1000
 POOL_BLOCK_MATURITY=10
 POOL_PAYOUT_MATURITY=9999999999
@@ -1479,20 +1498,20 @@ main() {
   say "Building ARM64 pool binaries"
   (
     cd "$BUILD_ROOT/pool-src"
-    env CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o "$bin_dir/pool" ./cmd/pool
-    env CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o "$bin_dir/dashboard-api" ./cmd/dashboard-api
+    env GOFLAGS=-buildvcs=false CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o "$bin_dir/pool" ./cmd/pool
+    env GOFLAGS=-buildvcs=false CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o "$bin_dir/dashboard-api" ./cmd/dashboard-api
   )
 
   say "Building ARM64 node binaries"
   (
     cd "$BUILD_ROOT/node-src"
-    env CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
+    env GOFLAGS=-buildvcs=false CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
       go build -trimpath -ldflags="-X github.com/BlockdagNetworkLabs/bdag/version.Build=release-${NODE_COMMIT:0:7}" \
       -o "$bin_dir/bdag" "github.com/BlockdagNetworkLabs/bdag/cmd/bdag"
-    env CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
+    env GOFLAGS=-buildvcs=false CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
       go build -trimpath -ldflags="-X github.com/BlockdagNetworkLabs/bdag/version.Build=release-${NODE_COMMIT:0:7}" \
       -o "$bin_dir/nodeworker" "github.com/BlockdagNetworkLabs/bdag/cmd/nodeworker"
-    env CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
+    env GOFLAGS=-buildvcs=false CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
       go build -trimpath -ldflags="-X github.com/BlockdagNetworkLabs/bdag/version.Build=release-${NODE_COMMIT:0:7}" \
       -o "$bin_dir/fastsnap" "github.com/BlockdagNetworkLabs/bdag/cmd/fastsnap"
   )
