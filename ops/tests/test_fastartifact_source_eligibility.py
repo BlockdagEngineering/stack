@@ -19,6 +19,26 @@ def test_active_node_defaults_to_node1() -> None:
     assert str(eligibility.node_data_dir(env, "bdag-miner-node-1")).endswith("data/node1")
 
 
+def test_empty_path_env_values_use_defaults() -> None:
+    env = {
+        "BDAG_NODE1_DATA_DIR": "",
+        "BDAG_RAWDATADIR_SIDECAR_SOURCE": "",
+        "BDAG_RAWDATADIR_SIDECAR_DIR": "",
+        "BDAG_RAWDATADIR_ARTIFACT_BASE": "",
+    }
+
+    assert eligibility.node_data_dir(env, "bdag-miner-node-1") == eligibility.resolve_path("./data/node1")
+    assert eligibility.env_path(env, "BDAG_RAWDATADIR_SIDECAR_SOURCE", "./data/node1/mainnet") == eligibility.resolve_path(
+        "./data/node1/mainnet"
+    )
+    assert eligibility.env_path(env, "BDAG_RAWDATADIR_SIDECAR_DIR", "./data-restore/rawdatadir-sidecar/mainnet") == eligibility.resolve_path(
+        "./data-restore/rawdatadir-sidecar/mainnet"
+    )
+    assert eligibility.env_path(env, "BDAG_RAWDATADIR_ARTIFACT_BASE", "./data-restore/rawdatadir") == eligibility.resolve_path(
+        "./data-restore/rawdatadir"
+    )
+
+
 def test_path_classification_flags_usb_transport(monkeypatch, tmp_path: Path) -> None:
     def fake_mount_info(_path: Path) -> dict[str, str]:
         return {"source": "/dev/sda1", "fstype": "ext4", "target": str(tmp_path), "options": "rw"}

@@ -216,12 +216,17 @@ def active_node_service(env: dict[str, str]) -> str:
     return services[0] if services else "bdag-miner-node-1"
 
 
+def env_path(env: dict[str, str], key: str, default: str | Path) -> Path:
+    value = env.get(key)
+    return resolve_path(value if value else default)
+
+
 def node_data_dir(env: dict[str, str], service: str) -> Path:
     if service.endswith("node-1") or service == "node1":
-        return resolve_path(env.get("BDAG_NODE1_DATA_DIR", "./data/node1"))
+        return env_path(env, "BDAG_NODE1_DATA_DIR", "./data/node1")
     if service.endswith("node-2") or service == "node2":
-        return resolve_path(env.get("BDAG_NODE2_DATA_DIR", "./data/node2"))
-    return resolve_path(env.get("BDAG_NODE_DATA_DIR", env.get("BDAG_DATA_DIR", "./data/node")))
+        return env_path(env, "BDAG_NODE2_DATA_DIR", "./data/node2")
+    return env_path(env, "BDAG_NODE_DATA_DIR", env.get("BDAG_DATA_DIR") or "./data/node")
 
 
 def build_payload(full: bool) -> dict[str, Any]:
@@ -229,12 +234,12 @@ def build_payload(full: bool) -> dict[str, Any]:
     network = env.get("BDAG_RAWDATADIR_NETWORK") or env.get("BDAG_FASTSNAP_NETWORK") or "mainnet"
     service = active_node_service(env)
     data_dir = node_data_dir(env, service)
-    source_dir = resolve_path(env.get("BDAG_RAWDATADIR_SIDECAR_SOURCE", data_dir / network))
-    sidecar_dir = resolve_path(
-        env.get("BDAG_RAWDATADIR_SIDECAR_DIR", ROOT / "data-restore" / "rawdatadir-sidecar" / network)
+    source_dir = env_path(env, "BDAG_RAWDATADIR_SIDECAR_SOURCE", data_dir / network)
+    sidecar_dir = env_path(
+        env, "BDAG_RAWDATADIR_SIDECAR_DIR", ROOT / "data-restore" / "rawdatadir-sidecar" / network
     )
-    artifact_base = resolve_path(env.get("BDAG_RAWDATADIR_ARTIFACT_BASE", ROOT / "data-restore" / "rawdatadir"))
-    tmp_dir = resolve_path(env.get("BDAG_RAWDATADIR_TMPDIR", artifact_base / "tmp"))
+    artifact_base = env_path(env, "BDAG_RAWDATADIR_ARTIFACT_BASE", ROOT / "data-restore" / "rawdatadir")
+    tmp_dir = env_path(env, "BDAG_RAWDATADIR_TMPDIR", artifact_base / "tmp")
     mode = (env.get("BDAG_RAWDATADIR_SOURCE_MODE") or env.get("BDAG_FASTARTIFACT_SOURCE_MODE") or "auto").lower()
     node_mode = (env.get("BDAG_NODE_MODE") or "single").lower()
 
