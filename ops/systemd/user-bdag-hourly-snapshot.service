@@ -6,6 +6,7 @@ After=bdag-watchdog.service bdag-dashboard.service default.target
 Type=oneshot
 WorkingDirectory=/home/jeremy/blockdag-asic-pool
 Environment=BDAG_PROJECT_ROOT=/home/jeremy/blockdag-asic-pool
+EnvironmentFile=-/home/jeremy/blockdag-asic-pool/ops/runtime/ops.env
 Nice=19
 IOSchedulingClass=idle
 CPUWeight=10
