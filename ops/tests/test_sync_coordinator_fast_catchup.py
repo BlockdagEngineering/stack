@@ -50,6 +50,7 @@ class SyncCoordinatorFastCatchupTest(unittest.TestCase):
     def test_single_node_within_policy_monitors(self) -> None:
         decision = sync_coordinator.build_decision(self.status(remaining=999), {})
         self.assertEqual(decision["action"], "monitor")
+        self.assertEqual(decision["reason"], "single-node sync is within policy")
         self.assertFalse(decision["far_behind"])
 
     def test_single_node_ignores_retired_paused_follower_state(self) -> None:
