@@ -82,6 +82,29 @@ Required behavior:
 Status: stack default node commit now points at the raw-datadir-capable
 corechain commit. Receiver testing is still required on a second host.
 
+## P0 - Receivers Must Keep Trying The Fastest Verified Path
+
+Problem: A node that starts before a fast source is reachable can fall back to
+normal P2P and stay slow, even if a LAN/VPN/public FastArtifact source appears
+minutes later. On mining hardware, time spent far behind tip is lost production
+time.
+
+Required behavior:
+
+- While a managed node is materially behind, probe raw datadir, FastSnap, LAN,
+  VPN, and public peer candidates in fastest-first order.
+- Retry periodically; never permanently downgrade just because no source was
+  available on the first attempt.
+- If a signed `raw_datadir_checkpoint` is ahead enough, stop only the receiver,
+  import it, preserve receiver identity files, restart, and let normal FastSync
+  finish the tail.
+- Keep content verification and manifest signature verification in the path.
+  Trust-on-first-signed-manifest is allowed by default; accepting fully unsigned
+  artifacts remains an explicit local-test override.
+
+Status: sync coordinator defaults now implement persistent fastest-verified raw
+datadir artifact retry through `BDAG_FAST_CATCHUP_ARTIFACT_MODE=auto`.
+
 ## P1 - Installer Must Make New Pools Self-Describing
 
 Problem: A new location/install needs enough local context to understand whether

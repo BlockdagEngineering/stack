@@ -4,6 +4,7 @@ import pathlib
 import sys
 import time
 import unittest
+import unittest.mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -119,6 +120,59 @@ class SyncCoordinatorFastCatchupTest(unittest.TestCase):
             True,
         )
         self.assertIn("stale", reason)
+
+    def test_rawdatadir_peer_candidates_are_fastest_first_and_deduped(self) -> None:
+        env_values = {
+            "BDAG_RAWDATADIR_PEERS": "/ip4/10.0.0.2/tcp/8151/p2p/raw",
+            "BDAG_FASTSYNC_LAN_PEERS": "/ip4/192.168.1.2/tcp/8151/p2p/lan,/ip4/10.0.0.2/tcp/8151/p2p/raw",
+            "BDAG_FASTSYNC_VPN_PEERS": "/ip4/10.207.244.12/tcp/8151/p2p/vpn",
+            "BDAG_FASTSYNC_PUBLIC_PEERS": "/ip4/203.0.113.1/tcp/8151/p2p/public",
+            "NODE_ARGS_APPEND": "--addpeer=/ip4/198.51.100.1/tcp/8151/p2p/addpeer",
+        }
+        with unittest.mock.patch.dict(sync_coordinator.os.environ, {}, clear=True):
+            self.assertEqual(
+                sync_coordinator.fastest_artifact_peer_candidates(env_values),
+                [
+                    "/ip4/10.0.0.2/tcp/8151/p2p/raw",
+                    "/ip4/192.168.1.2/tcp/8151/p2p/lan",
+                    "/ip4/10.207.244.12/tcp/8151/p2p/vpn",
+                    "/ip4/203.0.113.1/tcp/8151/p2p/public",
+                    "/ip4/198.51.100.1/tcp/8151/p2p/addpeer",
+                ],
+            )
+
+    def test_signed_manifest_provides_trust_on_first_signed_spec(self) -> None:
+        manifest = {
+            "artifact_type": "raw_datadir_checkpoint",
+            "block_total": 9_100_000,
+            "signatures": [
+                {
+                    "key_id": "pool-abc",
+                    "public_key": "0123456789abcdef",
+                    "signature": "feedface",
+                }
+            ],
+        }
+        self.assertEqual(
+            sync_coordinator.collect_signature_specs(manifest),
+            ["pool-abc:0123456789abcdef"],
+        )
+        self.assertEqual(sync_coordinator.rawdatadir_manifest_progress(manifest)["best_height"], 9_100_000)
+
+    def test_unsigned_manifest_does_not_create_trust_spec(self) -> None:
+        manifest = {
+            "artifact_type": "raw_datadir_checkpoint",
+            "block_total": 9_100_000,
+            "key_id": "pool-abc",
+            "public_key": "0123456789abcdef",
+        }
+        self.assertEqual(sync_coordinator.collect_signature_specs(manifest), [])
+
+    def test_rawdatadir_retry_cooldown_suppresses_immediate_retry(self) -> None:
+        remaining = sync_coordinator.fast_artifact_retry_cooldown_remaining(
+            {"last_fast_artifact_attempt_epoch": int(time.time())}
+        )
+        self.assertGreater(remaining, 0)
 
     def test_legacy_restart_lagging_follower_flag_remains_compatible(self) -> None:
         args = sync_coordinator.parse_args([

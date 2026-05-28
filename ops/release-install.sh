@@ -428,10 +428,19 @@ configure_env() {
   set_env_value .env BDAG_RAWDATADIR_ARTIFACT_BASE "./data-restore/rawdatadir"
   set_env_value .env BDAG_RAWDATADIR_MAX_EXPORT_BACKEND_LAG 10000
   set_env_value .env BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE 0
+  set_env_value .env BDAG_RAWDATADIR_PEERS ""
+  set_env_value .env BDAG_RAWDATADIR_TRUSTED_SIGNERS ""
   set_env_value .env BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC 1
   set_env_value .env BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS 900
   set_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT 1
   set_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT 1
+  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MODE auto
+  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS 300
+  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS 1000
+  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MIN_GAIN_BLOCKS 1000
+  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED 1
+  set_env_value .env BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS 0
+  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT 7200s
   configure_node_mode_env "$node_mode"
   configure_node_mining_env "$node_mining_enabled" "$mining_address"
 

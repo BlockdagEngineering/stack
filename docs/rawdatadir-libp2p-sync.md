@@ -91,6 +91,36 @@ never a default source.
 
 ## Receiver Flow
 
+Default release behavior:
+
+The sync coordinator treats the fastest verified receiver path as the first
+choice whenever a managed node is materially behind. Every retry window it
+probes configured raw datadir, FastSnap, LAN, VPN, and public FastSync peer
+multiaddrs in that order. If a peer offers a signed `raw_datadir_checkpoint`
+that is ahead enough, the coordinator stops only the receiver node, imports the
+verified artifact with `ops/fetch-rawdatadir-artifact.sh`, preserves local
+identity files, restarts the node, and lets normal FastSync catch the remaining
+tail. If no source is available, it records the reason and retries instead of
+falling back permanently.
+
+Relevant defaults:
+
+```bash
+BDAG_FAST_CATCHUP_ARTIFACT_MODE=auto
+BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS=300
+BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS=1000
+BDAG_FAST_CATCHUP_ARTIFACT_MIN_GAIN_BLOCKS=1000
+BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED=1
+BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS=0
+```
+
+`BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED=1` allows the receiver to
+learn a signer public key from a signed manifest during probing, then fetch and
+verify the artifact using that signer. It does not make unsigned data trusted;
+fully unsigned raw datadir artifacts still require
+`BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS=1` or
+`BDAG_RAWDATADIR_ALLOW_UNSIGNED=1`, and those are local-test overrides.
+
 Fetch only:
 
 ```bash
@@ -125,7 +155,9 @@ datadir into place.
 - Never export from the active single mining backend unless the operator has
   explicitly approved downtime.
 - Do not serve a live datadir. Serve only a finalized artifact directory.
-- Do not accept unsigned raw datadir artifacts outside local tests.
+- Do not accept unsigned raw datadir artifacts outside local tests. Automatic
+  receiver catch-up may trust a newly discovered signed manifest, but the
+  content and manifest signature still have to verify before import.
 - Trust signer public keys, not peer IDs.
 - Do not import the sender's `network.key`, `bdageth/nodekey`, `keystore`,
   `peerstore`, or IPC/socket files.
@@ -142,6 +174,8 @@ datadir into place.
 - Automatic local/VPN discovery is preferred when peer multiaddrs are available;
   public internet serving still requires reachable P2P ports or relays.
 - No automatic live-service restart to enable serving env.
-- Receiver import is an operator action against a stopped datadir.
+- Receiver import is automatic only for the local managed node during far-behind
+  catch-up, and only after a signed/verified manifest is found. Manual fetch
+  remains available for operator-directed recovery.
 - The sidecar timer is optional and must be disabled during IO-sensitive ASIC
   test windows unless the operator asks for it.
