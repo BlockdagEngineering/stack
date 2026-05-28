@@ -8061,9 +8061,9 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
 
 def record_earnings_snapshot() -> dict[str, Any]:
     ensure_runtime()
-    # The watchdog only appends a fresh point. Loading the full historical
-    # earnings plot here adds avoidable memory pressure to a mining-critical
-    # process.
+    # The status sampler/watchdog only appends a fresh point. Loading the full
+    # historical earnings plot here adds avoidable memory pressure to a
+    # mining-critical process.
     earnings = collect_earnings(include_history=False)
     snapshot = {
         "generated_at": earnings["generated_at"],
