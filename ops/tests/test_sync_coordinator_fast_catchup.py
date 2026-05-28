@@ -54,6 +54,18 @@ class SyncCoordinatorFastCatchupTest(unittest.TestCase):
         self.assertEqual(decision["reason"], "single-node sync is within policy")
         self.assertFalse(decision["far_behind"])
 
+    def test_running_node_with_unknown_height_accelerates_recovery(self) -> None:
+        status = {
+            "containers": {"node": {"running": True}},
+            "nodes": {"node": {"latest_block": 0, "last_import_age_seconds": 9999}},
+            "sync_progress": {"highest_block": 0, "nodes": {"node": {"current_block": 0}}},
+        }
+        decision = sync_coordinator.build_decision(status, {})
+        self.assertEqual(decision["action"], "accelerate_leader_catchup")
+        self.assertEqual(decision["leader"], "node")
+        self.assertTrue(decision["leader_height_unknown"])
+        self.assertTrue(decision["far_behind"])
+
     def test_single_node_ignores_retired_paused_follower_state(self) -> None:
         previous_state = {
             "mode": "leader_catchup",

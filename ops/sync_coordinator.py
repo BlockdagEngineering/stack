@@ -473,6 +473,12 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
     running = {node: container_running(status, node) for node in NODES}
     importing = {node: node_importing(status, node) for node in NODES}
     leader = choose_leader(status)
+    leader_height_unknown = False
+    if leader is None:
+        running_nodes = [node for node in NODES if running.get(node, False)]
+        if running_nodes:
+            leader = running_nodes[0]
+            leader_height_unknown = True
     highest_height = max([value for value in heights.values() if value > 0] or [0])
     lowest_height = min([value for value in heights.values() if value > 0] or [0])
     block_lag = highest_height - lowest_height if highest_height and lowest_height else 0
@@ -494,6 +500,10 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
         follower = sorted(candidate_followers, key=lambda item: (heights.get(item, 0), item))[0]
 
     leader_remaining = remaining.get(leader or "", 0)
+    if leader_height_unknown:
+        leader_remaining = max(leader_remaining, FAR_BEHIND_BLOCKS)
+        remaining[leader or ""] = leader_remaining
+        max_remaining = max(max_remaining, leader_remaining)
     leader_near_tip = bool(leader and network_highest > 0 and leader_remaining <= LEADER_NEAR_TIP_BLOCKS)
     far_behind = bool(max_remaining >= FAR_BEHIND_BLOCKS)
     follower_lag = max(0, heights.get(leader or "", 0) - heights.get(follower, 0)) if leader and follower else 0
@@ -532,6 +542,12 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
     if not leader:
         action = "none"
         reason = "no running node has a usable height"
+    elif leader_height_unknown:
+        action = "accelerate_leader_catchup"
+        reason = (
+            f"{leader} is running but has no usable chain height; probing fastest verified sync sources "
+            "instead of waiting for slow or damaged local state"
+        )
     elif paused_follower_was_ahead or paused_follower_was_near_tip:
         action = "seed_or_resume_follower"
         target = paused_follower
@@ -601,6 +617,7 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
         "max_remaining_blocks": max_remaining,
         "leader_remaining_blocks": leader_remaining,
         "leader_near_tip": leader_near_tip,
+        "leader_height_unknown": leader_height_unknown,
         "far_behind": far_behind,
         "target_remaining_blocks": paused_follower_remaining if target == paused_follower else remaining.get(target, 0),
         "thresholds": {
