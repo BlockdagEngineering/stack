@@ -64,12 +64,12 @@ P(no newer tip) = exp(-lambda_b * a)</code></pre>
   <table>
     <thead><tr><th>Knob</th><th>Purpose</th><th>Safe prior</th></tr></thead>
     <tbody>
-      <tr><td><code>POOL_TEMPLATE_TTL_REFRESH_MS</code></td><td>Same-parent template freshness. Pool code caps fast-DAG TTL to 1s.</td><td>500-1000ms</td></tr>
-      <tr><td><code>POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS</code></td><td>Local reject cliff for old candidate work.</td><td>900-1500ms, fit from source truth</td></tr>
+      <tr><td><code>POOL_TEMPLATE_TTL_REFRESH_MS</code></td><td>Same-parent template freshness. Pool code caps fast-DAG TTL to 1s.</td><td>250-1000ms; release starts at 500ms</td></tr>
+      <tr><td><code>POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS</code></td><td>Local reject cliff for old candidate work.</td><td>600-1400ms; release starts at 800ms</td></tr>
       <tr><td><code>POOL_MAX_BLOCK_CANDIDATE_SAME_TEMPLATE_AGE_MS</code></td><td>Hard cliff for aged same-template work.</td><td>6000ms until empirical cliff is known</td></tr>
       <tr><td><code>POOL_ACK_STALE_SHARES</code></td><td>Acknowledge recent non-block stale pipeline tail without PPLNS/vardiff credit.</td><td>true with 3000ms grace</td></tr>
       <tr><td><code>POOL_VARDIFF_TARGET_SHARE_SECONDS</code></td><td>Telemetry share interval per miner.</td><td>3s; explore 2-6s</td></tr>
-      <tr><td><code>POOL_VARDIFF_WINDOW_SECONDS</code></td><td>Retarget window.</td><td>60s</td></tr>
+      <tr><td><code>POOL_VARDIFF_WINDOW_SECONDS</code></td><td>Retarget window.</td><td>120s</td></tr>
       <tr><td><code>POOL_SUBMIT_STALE_BLOCK_CANDIDATES</code></td><td>Whether stale candidates are sent to the node.</td><td>false</td></tr>
     </tbody>
   </table>
@@ -98,7 +98,7 @@ python3 ops/pool_job_timing_optimizer.py --apply --yes --duration-seconds 1800 -
     <li>No accepted shares for 90-120s while the ASIC still reports hashing.</li>
     <li>Current job stale/invalidated miners persist for more than 30s.</li>
     <li>Template age exceeds 5s or submit-ready becomes false while mining continues.</li>
-    <li>Stale block/node reject slope doubles versus baseline.</li>
+    <li>Stale block/node reject slope doubles versus baseline while accepted blocks stop flowing. If accepted blocks are still flowing, treat stale block rejects as a bounded tuning signal rather than an abort.</li>
     <li>Accepted block conversion drops by more than 15% after the minimum sample.</li>
     <li>Host iowait remains above 25%, ASIC valid chips drop below 6, or hardware error ratio spikes.</li>
   </ul>

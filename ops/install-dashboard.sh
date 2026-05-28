@@ -692,7 +692,7 @@ Environment=BDAG_POOL_OPTIMIZER_OUTPUT_DIR=$RUNTIME_DIR/reports/pool-adaptive-op
 Environment=BDAG_POOL_OPTIMIZER_STATE_FILE=$RUNTIME_DIR/pool-adaptive-optimizer-state.json
 EnvironmentFile=-$ENV_FILE
 ExecStartPre=/bin/sh -c 'curl -fsS http://127.0.0.1:$PORT/api/status >/dev/null'
-ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/pool_adaptive_optimizer.py --iterations 1 --window-seconds 300 --sample-interval-seconds 15
+ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/pool_adaptive_optimizer.py --apply --yes --iterations 1 --window-seconds 900 --sample-interval-seconds 30
 Nice=12
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
@@ -706,7 +706,7 @@ Description=Run BlockDAG pool adaptive optimizer advisory pass ($INSTANCE)
 
 [Timer]
 OnBootSec=10m
-OnUnitActiveSec=15m
+OnUnitActiveSec=30m
 AccuracySec=1m
 Persistent=true
 RandomizedDelaySec=2m

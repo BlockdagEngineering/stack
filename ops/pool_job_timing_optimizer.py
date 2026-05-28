@@ -256,10 +256,10 @@ def score_summary(
 def default_candidates() -> list[Candidate]:
     return [
         Candidate("baseline-observe"),
-        Candidate("fresh-500ms-share-2s", template_ttl_ms=500, block_candidate_job_age_ms=900, vardiff_target_share_seconds=2.0, vardiff_window_seconds=60),
-        Candidate("fresh-750ms-share-3s", template_ttl_ms=750, block_candidate_job_age_ms=1200, vardiff_target_share_seconds=3.0, vardiff_window_seconds=60),
-        Candidate("fresh-1000ms-share-3s", template_ttl_ms=1000, block_candidate_job_age_ms=1200, vardiff_target_share_seconds=3.0, vardiff_window_seconds=60),
-        Candidate("fresh-1000ms-share-5s", template_ttl_ms=1000, block_candidate_job_age_ms=1500, vardiff_target_share_seconds=5.0, vardiff_window_seconds=60),
+        Candidate("fastdag-250ms-age-800-share-3s", template_ttl_ms=250, block_candidate_job_age_ms=800, vardiff_target_share_seconds=3.0, vardiff_window_seconds=120),
+        Candidate("fastdag-500ms-age-900-share-3s", template_ttl_ms=500, block_candidate_job_age_ms=900, vardiff_target_share_seconds=3.0, vardiff_window_seconds=120),
+        Candidate("fastdag-750ms-age-1000-share-3s", template_ttl_ms=750, block_candidate_job_age_ms=1000, vardiff_target_share_seconds=3.0, vardiff_window_seconds=120),
+        Candidate("io-relief-1000ms-age-1100-share-4s", template_ttl_ms=1000, block_candidate_job_age_ms=1100, vardiff_target_share_seconds=4.0, vardiff_window_seconds=120),
     ]
 
 

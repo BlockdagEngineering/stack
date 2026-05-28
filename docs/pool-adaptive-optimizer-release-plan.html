@@ -30,13 +30,13 @@
 <body>
 <main>
   <h1>BlockDAG Pool Adaptive Optimizer Release Plan</h1>
-  <p class="note">The release design is guarded-adaptive. The optimizer can recommend continuously, but it mutates live pool knobs only when runtime admin is enabled and a human explicitly starts apply mode. This prevents the controller from chasing short-window luck or transient Pi I/O stalls.</p>
+  <p class="note">The release design is guarded-adaptive and active-capable. The optimizer can mutate live pool knobs when runtime admin is available, but it uses long samples, small bounded steps, and damping cooldowns so it does not chase short-window luck or transient Pi I/O stalls.</p>
 
   <h2>Control Model</h2>
   <p>The optimizer runs three conceptual loops:</p>
   <ol>
-    <li><strong>Fast safety loop, 10-30 seconds:</strong> watch dashboard readiness, pool job health, MAC lane count, template age, submit readiness, ASIC hardware state, and host pressure. This loop can only hold, recommend revert, or mark a candidate unsafe.</li>
-    <li><strong>Medium control loop, 5-15 minutes:</strong> adjust only pool-local knobs in a bounded safe range: VarDiff target share interval, template TTL refresh, and max block-candidate job age.</li>
+    <li><strong>Fast safety loop, 30 seconds:</strong> watch dashboard readiness, pool job health, MAC lane count, template age, submit readiness, ASIC hardware state, and host pressure. Transient warnings are recorded without ending the window; hard failures still stop or revert.</li>
+    <li><strong>Medium control loop, 15 minutes:</strong> adjust only one pool-local step per window in a bounded safe range: VarDiff target share interval, template TTL refresh, and max block-candidate job age.</li>
     <li><strong>Slow reward loop, 30-120 minutes or settled sample minimum:</strong> promote settings only from source-truth accepted/blue/paid block conversion per active MAC miner-hour.</li>
   </ol>
 
@@ -47,7 +47,7 @@
 hard constraints:
   dashboard overall == ok
   can_mine && can_submit_blocks
-  pool_job_health_ok
+  sustained pool_job_health_ok failure is absent
   stable active mac: lane count
   no current-job stale/invalidated miner condition
   no submit-disabled or transport-failed regression
@@ -67,37 +67,37 @@ secondary penalties:
   <h2>Implemented Controller</h2>
   <p><code>ops/pool_adaptive_optimizer.py</code> now implements the first release slice:</p>
   <ul>
-    <li>Advisory mode by default; no runtime mutation unless <code>--apply --yes</code> and <code>/admin/vardiff</code> is reachable.</li>
+    <li>Apply mode requires <code>--apply --yes</code> and reachable local runtime admin endpoints; release systemd units use apply mode with damping.</li>
     <li>MAC lane extraction from dashboard miner health so exposure and work share are based on <code>mac:</code> identities.</li>
-    <li>Safety scoring from dashboard health, share/block outcomes, stale reject reasons, template fetch latency, iowait, and ASIC lane health.</li>
+    <li>Safety scoring from dashboard health, share/block outcomes, stale reject reasons, template fetch latency, iowait, and ASIC lane health. High block rejects are a hard failure only when no accepted blocks are flowing; otherwise they are a corrective tuning signal.</li>
     <li>Bounded recommendations for VarDiff target share interval, template TTL refresh, and block-candidate age.</li>
     <li>JSONL evidence, state file, summary JSON, and HTML report for every run.</li>
-    <li><code>ops/install-dashboard.sh</code> installs a low-priority periodic advisory timer by default when guard services are enabled; <code>--no-adaptive-optimizer</code> opts out.</li>
+    <li><code>ops/install-dashboard.sh</code> installs a low-priority periodic active timer by default when guard services are enabled; <code>--no-adaptive-optimizer</code> opts out.</li>
   </ul>
 
   <h2>Release Defaults</h2>
   <table>
     <thead><tr><th>Knob</th><th>Safe band</th><th>Initial value</th><th>Reason</th></tr></thead>
     <tbody>
-      <tr><td><code>template_ttl_ms</code></td><td>500-1500</td><td>1000</td><td>Fresh enough for a fast DAG without blindly increasing RPC pressure.</td></tr>
-      <tr><td><code>block_candidate_job_age_ms</code></td><td>800-1800</td><td>1200</td><td>Rejects candidates old enough to have poor source-truth odds while preserving same-parent opportunity.</td></tr>
+      <tr><td><code>template_ttl_ms</code></td><td>250-1000</td><td>500</td><td>Starts around half of the observed main-chain block interval; backs off if template fetch or iowait pressure rises.</td></tr>
+      <tr><td><code>block_candidate_job_age_ms</code></td><td>600-1400</td><td>800</td><td>Starts below the roughly 1s main-chain cadence while preserving a small ASIC/network pipeline tail and avoiding the stale-work cliff.</td></tr>
       <tr><td><code>vardiff_target_share_seconds</code></td><td>2-6</td><td>3</td><td>Enough telemetry for MAC lanes without overloading the Pi with share traffic.</td></tr>
-      <tr><td><code>vardiff_window_seconds</code></td><td>10+</td><td>60</td><td>Slow enough to avoid oscillation from ASIC pipeline tail and block-rate noise.</td></tr>
+      <tr><td><code>vardiff_window_seconds</code></td><td>10+</td><td>120</td><td>Slower share retargeting reduces oscillation from ASIC pipeline tail and block-rate noise.</td></tr>
     </tbody>
   </table>
 
   <h2>OfficePool Baseline Finding</h2>
-  <p>On 2026-05-28, OfficePool was mining with one X100 ASIC at <code>mac:28:e2:97:1e:c0:b5</code>. Runtime admin was disabled (<code>POOL_RUNTIME_ADMIN_ENABLED=false</code>), so full live mutation would require a pool-only canary deploy before apply-mode testing. This is why the first controller run must be advisory-only on the existing image.</p>
-  <p>The live advisory samples produced useful hard-stop evidence. A 107 second sample measured 8 accepted block submissions, 1 old-template-age rejection, 51.52% share acceptance, 0.416 second average template fetch latency, and 53.57% host iowait; the controller held because the host was under too much I/O pressure. A second patched 45 second sample measured 5 accepted block submissions, 0 rejected block submissions, 88.24% share acceptance, 0.139 second average template fetch latency, and a <code>pool_job_health_ok=0</code> abort; the controller held and recorded <code>runtime_abort_pool_job_health_ok_0</code> plus <code>pool_job_health_not_ok</code>.</p>
+  <p>On 2026-05-28, OfficePool was mining with one X100 ASIC at <code>mac:28:e2:97:1e:c0:b5</code>. A 30 second live chain sample measured <code>chain_block_count</code> at roughly 1.48 blocks/s and <code>chain_main_height</code> at roughly 0.855 blocks/s, or about 1.17 seconds per main-chain height. Runtime admin was disabled in the previous live container, so release defaults now enable it on the localhost-bound metrics/admin port.</p>
+  <p>The live advisory samples produced useful hard-stop evidence. A 107 second sample measured 8 accepted block submissions, 1 old-template-age rejection, 51.52% share acceptance, 0.416 second average template fetch latency, and 53.57% host iowait; the controller held because the host was under too much I/O pressure. A second patched 45 second sample measured 5 accepted block submissions, 0 rejected block submissions, 88.24% share acceptance, 0.139 second average template fetch latency, and a <code>pool_job_health_ok=0</code> abort; the controller held and recorded <code>runtime_abort_pool_job_health_ok_0</code> plus <code>pool_job_health_not_ok</code>. A live active smoke after runtime-admin deployment showed accepted blocks still flowing while local stale block candidates were high, so the controller now treats that condition as a damped candidate-age reduction instead of freezing all tuning.</p>
 
   <h2>Steelman</h2>
   <p>The strongest objection is correct: dynamic tuning can be unsafe because rewards are sparse, delayed, and confounded by network/DAG conditions. One lucky or unlucky block can dominate a short window, and global knobs can degrade all miners at once. The answer is not free-running PID control; it is bounded safe exploration with a baseline arm, minimum evidence windows, hard stop rules, and source-truth settlement before promotion.</p>
 
   <h2>Next Release Slice</h2>
   <ol>
-    <li>Deploy a pool image containing the runtime admin endpoints in a pool-only canary, with rollback to the current image.</li>
-    <li>Run observe-only baseline for at least 4-8 hours on the live Pi.</li>
-    <li>Enable apply-mode only for VarDiff target share interval first; leave template TTL and block-candidate age advisory until source-truth evidence is stable.</li>
+    <li>Keep runtime admin enabled only on localhost/private management paths and keep host port publishing bound to localhost.</li>
+    <li>Run active windows at 900 seconds, 30 second sample cadence, 30 minute timer cadence, and 30 minute damping cooldown.</li>
+    <li>Apply only one bounded step per window; increase TTL/share interval under iowait pressure, reduce candidate-age on stale block-candidate evidence, and avoid changing multiple knobs at once.</li>
     <li>Add on-chain/blue/coinbase reconciliation into the optimizer score before unattended apply mode can be considered.</li>
   </ol>
 

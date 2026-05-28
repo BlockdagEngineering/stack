@@ -3,7 +3,7 @@ Description=Run BlockDAG pool adaptive optimizer advisory pass periodically
 
 [Timer]
 OnBootSec=10m
-OnUnitActiveSec=15m
+OnUnitActiveSec=30m
 AccuracySec=1m
 Persistent=true
 RandomizedDelaySec=2m

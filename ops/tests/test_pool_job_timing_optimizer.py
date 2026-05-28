@@ -107,7 +107,7 @@ class PoolAdaptiveOptimizerTests(unittest.TestCase):
         self.assertEqual(health["max_work_imbalance_percent"], 20.0)
         self.assertEqual(health["weak_lanes"][0]["identity_key"], "mac:28:e2:97:1e:c0:b5")
 
-    def test_safety_rejects_unhealthy_runtime_and_high_iowait(self) -> None:
+    def test_safety_treats_transient_runtime_and_iowait_as_warnings(self) -> None:
         args = adaptive.build_parser().parse_args([])
         status = {
             "overall": "degraded",
@@ -130,11 +130,130 @@ class PoolAdaptiveOptimizerTests(unittest.TestCase):
             "pool_job_health_ok=0",
         )
 
+        self.assertTrue(safety["ok"])
+        self.assertIn("runtime_abort_pool_job_health_ok_0", safety["warnings"])
+        self.assertIn("pool_job_health_not_ok_transient", safety["warnings"])
+        self.assertIn("dashboard_overall_degraded", safety["warnings"])
+        self.assertIn("host_iowait_high", safety["warnings"])
+
+    def test_safety_still_blocks_when_submit_is_disabled(self) -> None:
+        args = adaptive.build_parser().parse_args([])
+        status = {
+            "overall": "ok",
+            "can_mine": True,
+            "can_submit_blocks": False,
+            "host_pressure": {"iowait_percent": 10.0},
+            "miner_health": {"lane_balance": {"identity_basis": "mac"}, "miners": []},
+        }
+        summary = {
+            "shares": {"accept_ratio": 0.8, "stale_rejects_per_minute": 0.0},
+            "blocks": {"accepted_per_hour": 0.0, "rejected_per_hour": 0.0},
+            "templates": {"fetch_avg_seconds": 0.1},
+        }
+
+        safety = adaptive.summarize_safety(summary, status, args)
+
         self.assertFalse(safety["ok"])
-        self.assertIn("runtime_abort_pool_job_health_ok_0", safety["violations"])
-        self.assertIn("pool_job_health_not_ok", safety["violations"])
-        self.assertIn("dashboard_overall_degraded", safety["violations"])
-        self.assertIn("host_iowait_high", safety["violations"])
+        self.assertIn("dashboard_can_submit_blocks_false", safety["violations"])
+
+    def test_safety_warns_when_job_health_metric_lags_dashboard_truth(self) -> None:
+        args = adaptive.build_parser().parse_args([])
+        status = {
+            "overall": "ok",
+            "can_mine": True,
+            "can_submit_blocks": True,
+            "source_job_health": {"ok": True},
+            "host_pressure": {"iowait_percent": 10.0},
+            "miner_health": {"lane_balance": {"identity_basis": "mac"}, "miners": []},
+        }
+        summary = {
+            "shares": {"accept_ratio": 0.8, "stale_rejects_per_minute": 0.0},
+            "blocks": {"accepted_per_hour": 20.0, "rejected_per_hour": 0.0},
+            "templates": {"fetch_avg_seconds": 0.1},
+        }
+
+        safety = adaptive.summarize_safety(summary, status, args, {"pool_job_health_ok": 0.0})
+
+        self.assertTrue(safety["ok"])
+        self.assertIn("pool_job_health_metric_lag", safety["warnings"])
+
+    def test_safety_treats_high_block_rejects_as_tuning_signal_when_blocks_are_flowing(self) -> None:
+        args = adaptive.build_parser().parse_args([])
+        status = {
+            "overall": "ok",
+            "can_mine": True,
+            "can_submit_blocks": True,
+            "host_pressure": {"iowait_percent": 10.0},
+            "miner_health": {"lane_balance": {"identity_basis": "mac"}, "miners": []},
+        }
+        summary = {
+            "shares": {"accept_ratio": 0.8, "stale_rejects_per_minute": 0.0},
+            "blocks": {"accepted_per_hour": 100.0, "rejected_per_hour": 300.0},
+            "templates": {"fetch_avg_seconds": 0.1},
+        }
+
+        safety = adaptive.summarize_safety(summary, status, args)
+
+        self.assertTrue(safety["ok"])
+        self.assertIn("block_reject_rate_high", safety["warnings"])
+
+    def test_safety_blocks_high_block_rejects_when_no_blocks_are_accepted(self) -> None:
+        args = adaptive.build_parser().parse_args([])
+        status = {
+            "overall": "ok",
+            "can_mine": True,
+            "can_submit_blocks": True,
+            "host_pressure": {"iowait_percent": 10.0},
+            "miner_health": {"lane_balance": {"identity_basis": "mac"}, "miners": []},
+        }
+        summary = {
+            "shares": {"accept_ratio": 0.8, "stale_rejects_per_minute": 0.0},
+            "blocks": {"accepted_per_hour": 0.0, "rejected_per_hour": 300.0},
+            "templates": {"fetch_avg_seconds": 0.1},
+        }
+
+        safety = adaptive.summarize_safety(summary, status, args)
+
+        self.assertFalse(safety["ok"])
+        self.assertIn("block_reject_rate_high", safety["violations"])
+
+    def test_sample_health_bad_ratio_warns_when_blocks_are_flowing(self) -> None:
+        args = adaptive.build_parser().parse_args([])
+        safety = {"ok": True, "violations": [], "warnings": [], "accepted_blocks_per_hour": 50.0}
+        status = {"can_submit_blocks": True}
+
+        result = adaptive.add_sample_health_signals(
+            safety,
+            status,
+            args,
+            pool_job_health_bad_samples=2,
+            pool_job_health_metric_lag_samples=0,
+            stale_job_samples=0,
+            invalidated_job_samples=0,
+            sample_count=6,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertIn("pool_job_health_bad_sample_ratio_high", result["warnings"])
+
+    def test_sample_health_bad_ratio_blocks_when_no_blocks_are_flowing(self) -> None:
+        args = adaptive.build_parser().parse_args([])
+        safety = {"ok": True, "violations": [], "warnings": [], "accepted_blocks_per_hour": 0.0}
+        status = {"can_submit_blocks": True}
+
+        result = adaptive.add_sample_health_signals(
+            safety,
+            status,
+            args,
+            pool_job_health_bad_samples=2,
+            pool_job_health_metric_lag_samples=0,
+            stale_job_samples=0,
+            invalidated_job_samples=0,
+            sample_count=6,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("pool_job_health_bad_sample_ratio_high", result["violations"])
 
     def test_choose_next_config_reduces_candidate_age_on_old_template_rejects(self) -> None:
         args = adaptive.build_parser().parse_args([])
@@ -147,8 +266,22 @@ class PoolAdaptiveOptimizerTests(unittest.TestCase):
 
         next_config, reason = adaptive.choose_next_config(current, summary, {"host_pressure": {}}, args)
 
-        self.assertEqual(next_config.block_candidate_job_age_ms, 1050)
-        self.assertIn("old-template-age", reason)
+        self.assertEqual(next_config.block_candidate_job_age_ms, 1150)
+        self.assertIn("stale block-candidate", reason)
+
+    def test_choose_next_config_reduces_candidate_age_on_local_stale_block_rejects(self) -> None:
+        args = adaptive.build_parser().parse_args([])
+        current = adaptive.AdaptiveConfig(block_candidate_job_age_ms=900)
+        summary = {
+            "shares": {"rejected_by_reason": {"stale_block_candidate": 5}, "stale_rejects_per_minute": 2.0},
+            "blocks": {"by_outcome_reason": {"rejected-local:stale-job": 4, "rejected-local:stale-parent": 1}},
+            "templates": {"fetch_avg_seconds": 0.1},
+        }
+
+        next_config, reason = adaptive.choose_next_config(current, summary, {"host_pressure": {}}, args)
+
+        self.assertEqual(next_config.block_candidate_job_age_ms, 850)
+        self.assertIn("candidate age", reason)
 
     def test_choose_next_config_reduces_share_load_on_stale_share_rejects(self) -> None:
         args = adaptive.build_parser().parse_args([])
@@ -164,7 +297,7 @@ class PoolAdaptiveOptimizerTests(unittest.TestCase):
 
         next_config, reason = adaptive.choose_next_config(current, summary, {"host_pressure": {}}, args)
 
-        self.assertEqual(next_config.vardiff_target_share_seconds, 4.0)
+        self.assertEqual(next_config.vardiff_target_share_seconds, 3.5)
         self.assertIn("telemetry share load", reason)
 
 
