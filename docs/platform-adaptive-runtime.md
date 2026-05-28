@@ -4,6 +4,66 @@ The release stack is expected to run on Linux AMD64 and ARM64 hosts first, with
 installer support for macOS and Windows Docker hosts. Runtime optimization must
 therefore be adaptive instead of Pi-only.
 
+## Capability Profiles
+
+`ops/capability_profile.py` is the shared resolver for hardware, storage,
+network-topology, and memory policy. It deliberately looks past CPU architecture:
+accepted block production is usually limited by the active chain device, network
+topology, memory pressure, template freshness, and whether background sync
+serving is competing with mining.
+
+The resolver emits a named `BDAG_CAPABILITY_PROFILE` and recommended environment
+settings for:
+
+- node and embedded EVM cache sizes
+- Go `GOMEMLIMIT` budgets
+- FastSync serving policy
+- FastSnap/FastSync parallelism
+- P2P peer budget
+- block device read-ahead and queue depth
+- Linux VM writeback/cache settings
+- PostgreSQL cache/checkpoint defaults
+
+Supported automatic profile names include:
+
+- `pi5-usb-asic-router`: Pi5-style host serving DHCP/NAT to directly attached
+  ASICs while the active chain DB is on USB/flash.
+- `usb-asic-router`: same topology on non-Pi hardware.
+- `fragile-flash`: SD card, removable USB flash, or F2FS flash-backed active
+  chain data without the ASIC-router topology.
+- `usb-ssd`: USB-attached SSD-class chain storage.
+- `nvme-single-node` / `nvme-dual-node`: NVMe chain storage.
+- `standard`, `constrained`, and `large-ssd`: fallback host classes.
+
+Keep `BDAG_CAPABILITY_PROFILE=auto` for normal installs. Override it only for a
+measured A/B test or a known lab setup.
+
+For a `pi5-usb-asic-router` profile the resolver forces
+`BDAG_NO_FASTSYNC_SERVE=1`. That host can consume FastSync, relay blocks, and
+mine, but it must not spend the same USB chain device on bulk snapshot/range
+serving while ASICs are trying to earn paid blocks.
+
+The cache policy uses RAM aggressively but does not try to pin the whole chain
+inside Go heap. It sets process cache and `GOMEMLIMIT` budgets while reserving
+RAM for the Linux page cache and PostgreSQL. This matches how LevelDB/Pebble and
+RocksDB-style databases benefit from both database block cache and OS page
+cache, and avoids converting memory pressure into slow USB/SD swap or writeback
+stalls.
+
+Primary references behind this policy:
+
+- Linux VM dirty writeback/cache sysctls:
+  <https://www.kernel.org/doc/html/latest/admin-guide/sysctl/vm.html>
+- Go `GOMEMLIMIT` behavior:
+  <https://go.dev/doc/gc-guide>
+- systemd resource controls for memory/IO weighting:
+  <https://www.freedesktop.org/software/systemd/man/devel/systemd.resource-control.html>
+- F2FS flash-oriented filesystem behavior:
+  <https://docs.kernel.org/filesystems/f2fs.html>
+- RocksDB/LevelDB cache and memory budgeting:
+  <https://github.com/facebook/rocksdb/wiki/Memory-usage-in-RocksDB>
+  and <https://chromium.googlesource.com/external/leveldb/+/HEAD/doc/index.md>
+
 `ops/pool_ops.py` detects a lightweight host profile from OS, CPU architecture,
 CPU count, memory, and hardware model:
 
@@ -61,6 +121,11 @@ shrinking simply degrades to the available signals.
 This preserves the Pi5 behavior that protects USB-backed chain import, while
 letting AMD64 or larger ARM64 hosts use more concurrency when the machine is
 idle enough to benefit.
+
+When the capability resolver is available, dashboard/watchdog status includes
+both the legacy `profile` and the richer `capability_profile`. Adaptive worker
+budgets prefer the richer profile, so an AMD64 box with USB flash chain data is
+treated as a flash-constrained miner rather than as a generic desktop.
 
 Pool block submit fanout is also adaptive by configuration. Single-node hosts
 keep one endpoint by default. Dual-node or larger hosts can set

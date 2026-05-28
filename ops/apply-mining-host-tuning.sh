@@ -14,16 +14,44 @@ set -eu
 # seeding, browser, and maintenance work must yield under load.
 
 ROOT="${BDAG_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-read_ahead_kb="${BDAG_BLOCK_READ_AHEAD_KB:-1024}"
-nr_requests="${BDAG_BLOCK_NR_REQUESTS:-256}"
-active_node_nice="${BDAG_MINING_ACTIVE_NODE_NICE:--8}"
-pool_nice="${BDAG_MINING_POOL_NICE:--7}"
-standby_node_nice="${BDAG_MINING_STANDBY_NODE_NICE:--2}"
-rpc_nice="${BDAG_MINING_RPC_NICE:--4}"
-observability_nice="${BDAG_OBSERVABILITY_NICE:-15}"
-desktop_nice="${BDAG_DESKTOP_BACKGROUND_NICE:-19}"
-pool_metrics_url="${BDAG_POOL_METRICS_URL:-http://127.0.0.1:9092/metrics}"
-sync_state_file="${BDAG_SYNC_COORDINATOR_STATE_FILE:-$ROOT/ops/runtime/sync-coordinator-state.json}"
+
+env_file_value() {
+  key="$1"
+  case "$key" in
+    ""|*[!A-Za-z0-9_]*)
+      return 0
+      ;;
+  esac
+  [ -f "$ROOT/.env" ] || return 0
+  sed -n -E "s/^[[:space:]]*$key[[:space:]]*=[[:space:]]*//p" "$ROOT/.env" |
+    tail -n1 |
+    sed -E "s/^['\"]//; s/['\"]$//"
+}
+
+setting() {
+  key="$1"
+  fallback="$2"
+  value="$(printenv "$key" 2>/dev/null || true)"
+  [ -n "$value" ] || value="$(env_file_value "$key")"
+  printf '%s\n' "${value:-$fallback}"
+}
+
+read_ahead_kb="$(setting BDAG_BLOCK_READ_AHEAD_KB 1024)"
+nr_requests="$(setting BDAG_BLOCK_NR_REQUESTS 256)"
+vm_tuning_enabled="$(setting BDAG_VM_TUNING_ENABLED 1)"
+vm_swappiness="$(setting BDAG_VM_SWAPPINESS 10)"
+vm_vfs_cache_pressure="$(setting BDAG_VM_VFS_CACHE_PRESSURE 50)"
+vm_dirty_background_bytes="$(setting BDAG_VM_DIRTY_BACKGROUND_BYTES 67108864)"
+vm_dirty_bytes="$(setting BDAG_VM_DIRTY_BYTES 268435456)"
+chain_data_paths="$(setting BDAG_CHAIN_DATA_PATHS "$ROOT/data/node1,$ROOT/data/node2,$ROOT/data/postgres")"
+active_node_nice="$(setting BDAG_MINING_ACTIVE_NODE_NICE -8)"
+pool_nice="$(setting BDAG_MINING_POOL_NICE -7)"
+standby_node_nice="$(setting BDAG_MINING_STANDBY_NODE_NICE -2)"
+rpc_nice="$(setting BDAG_MINING_RPC_NICE -4)"
+observability_nice="$(setting BDAG_OBSERVABILITY_NICE 15)"
+desktop_nice="$(setting BDAG_DESKTOP_BACKGROUND_NICE 19)"
+pool_metrics_url="$(setting BDAG_POOL_METRICS_URL http://127.0.0.1:9092/metrics)"
+sync_state_file="$(setting BDAG_SYNC_COORDINATOR_STATE_FILE "$ROOT/ops/runtime/sync-coordinator-state.json")"
 
 log() {
   printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"
@@ -39,12 +67,55 @@ block_device_for_path() {
   [ -n "$name" ] && printf '%s\n' "$name"
 }
 
+docker_root_dir() {
+  command -v docker >/dev/null 2>&1 || return 0
+  docker info --format '{{.DockerRootDir}}' 2>/dev/null || true
+}
+
+resolve_runtime_path() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s\n' "$ROOT/$1" ;;
+  esac
+}
+
 tune_block_device() {
   queue="/sys/block/$1/queue"
   [ -d "$queue" ] || return 0
   [ -w "$queue/read_ahead_kb" ] && printf '%s\n' "$read_ahead_kb" > "$queue/read_ahead_kb" || true
   [ -w "$queue/nr_requests" ] && printf '%s\n' "$nr_requests" > "$queue/nr_requests" || true
   log "block_device=$1 read_ahead_kb=$(cat "$queue/read_ahead_kb" 2>/dev/null || echo unknown) nr_requests=$(cat "$queue/nr_requests" 2>/dev/null || echo unknown)"
+}
+
+numeric_setting() {
+  case "$1" in
+    ''|*[!0-9]*)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+apply_sysctl_value() {
+  key="$1"
+  value="$2"
+  numeric_setting "$value" || return 0
+  command -v sysctl >/dev/null 2>&1 || return 0
+  sysctl -w "$key=$value" >/dev/null 2>&1 || true
+}
+
+apply_vm_tuning() {
+  [ "$vm_tuning_enabled" = "1" ] || return 0
+  apply_sysctl_value vm.swappiness "$vm_swappiness"
+  apply_sysctl_value vm.vfs_cache_pressure "$vm_vfs_cache_pressure"
+  if numeric_setting "$vm_dirty_background_bytes" && numeric_setting "$vm_dirty_bytes" &&
+    [ "$vm_dirty_background_bytes" -gt 0 ] && [ "$vm_dirty_bytes" -gt "$vm_dirty_background_bytes" ]; then
+    apply_sysctl_value vm.dirty_background_bytes "$vm_dirty_background_bytes"
+    apply_sysctl_value vm.dirty_bytes "$vm_dirty_bytes"
+  fi
+  log "vm_tuning swappiness=$(cat /proc/sys/vm/swappiness 2>/dev/null || echo unknown) vfs_cache_pressure=$(cat /proc/sys/vm/vfs_cache_pressure 2>/dev/null || echo unknown) dirty_background_bytes=$(cat /proc/sys/vm/dirty_background_bytes 2>/dev/null || echo unknown) dirty_bytes=$(cat /proc/sys/vm/dirty_bytes 2>/dev/null || echo unknown)"
 }
 
 renice_pids() {
@@ -269,12 +340,22 @@ tune_docker_weights() {
   fi
 }
 
+paths_for_block_tuning() {
+  printf '%s\n' "$ROOT"
+  printf '%s\n' "/"
+  printf '%s\n' "$chain_data_paths" | tr ',;' '\n' | while IFS= read -r path; do
+    [ -n "$path" ] && resolve_runtime_path "$path"
+  done
+  docker_root="$(docker_root_dir)"
+  [ -n "$docker_root" ] && printf '%s\n' "$docker_root"
+}
+
 devices="$(
-  {
-    block_device_for_path "$ROOT"
-    block_device_for_path /
-  } | awk 'NF' | sort -u
+  paths_for_block_tuning | while IFS= read -r path; do
+    [ -n "$path" ] && block_device_for_path "$path"
+  done | awk 'NF' | sort -u
 )"
+apply_vm_tuning
 for dev in $devices; do
   tune_block_device "$dev"
 done

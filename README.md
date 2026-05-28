@@ -137,6 +137,12 @@ and IO weights, keeps duplicate sync work paused in dual-node mode, and restarts
 an unaccelerated or stale leader after the cooldown window so startup peer order
 and V2 artifact serving are active.
 
+USB-backed ASIC router/mining profiles are the exception. Leave
+`BDAG_NO_FASTSYNC_SERVE=auto` enabled, or set it to `1`, when a Pi5 runs chain
+data from USB and also serves DHCP/NAT to directly attached ASICs. The node will
+still consume sync and relay found blocks, but it will not advertise bulk
+FastSync range, snapshot, or artifact serving from the same USB-backed miner.
+
 `BDAG_FASTSYNC_LAN_PEERS`, `BDAG_FASTSYNC_VPN_PEERS`, and
 `BDAG_FASTSYNC_PUBLIC_PEERS` remain accepted as compatibility aliases. Set
 `BDAG_FASTSYNC_PEER_ORDERING=flat-latency` only to reproduce the older flat
@@ -181,15 +187,15 @@ Dashboard block height is sourced from chain RPC `getBlockCount`; template
 height, logs, fan-in metrics, and main-order values are shown only as
 diagnostics. Chain RPC checks retry slow storage-bound samples via
 `BDAG_NODE_CHAIN_RPC_TIMEOUT` and `BDAG_NODE_CHAIN_RPC_RETRIES`, and the status
-payload exposes the active dashboard URL, RPC latency, and Linux IO pressure
-metrics. When PSI is unavailable, the dashboard falls back to `/proc/stat`
-`iowait` deltas and raises a maintenance warning after sustained high IO wait.
-The ops layer also detects a host profile with `BDAG_HOST_PROFILE=auto` and
-uses adaptive worker budgets for expensive dashboard/global/miner scans. The
-same release source is expected to behave conservatively on Pi5 or other
-constrained ARM64 hosts, while AMD64 and larger ARM64 hosts can use more
-parallelism when pressure is low. See
-`docs/platform-adaptive-runtime.md`.
+payload exposes the active dashboard URL, RPC latency, Linux IO pressure
+metrics, and the resolved capability profile. When PSI is unavailable, the
+dashboard falls back to `/proc/stat` `iowait` deltas and raises a maintenance
+warning after sustained high IO wait. The ops layer detects both
+`BDAG_HOST_PROFILE=auto` and `BDAG_CAPABILITY_PROFILE=auto`, then uses adaptive
+worker budgets for expensive dashboard/global/miner scans. Capability profiles
+include chain storage class and ASIC-router topology, so a USB-backed Pi5
+router is treated differently from an NVMe dual-node server even when both are
+ARM64. See `docs/platform-adaptive-runtime.md`.
 
 The dashboard, watchdog, sync coordinator, P2P guard, and startup checks also
 share one cross-process status sample. `ops/status_sampler.py` writes
@@ -207,12 +213,13 @@ before cutting an RC, and use `--mode live-runtime` for an installed stack where
 
 Constrained mining appliances also run a read-only install preflight before
 chain seeding or stack start. `scripts/mining-appliance-preflight.py` checks the
-host profile, root and chain-data free space, filesystem and mount options,
-single-node duplicate data, swap sizing, Docker root placement, network route,
-schema presence, and resource-sensitive `.env` defaults. The installer reports
-warnings and continues by default. Set `BDAG_APPLIANCE_PREFLIGHT_STRICT=1` to
-make hard failures stop the install, or `BDAG_APPLIANCE_PREFLIGHT=0` to skip it
-explicitly. The field report behind these checks is in
+host/capability profile, root and chain-data free space, filesystem and mount
+options, single-node duplicate data, swap sizing, Docker root placement,
+network route, schema presence, and resource-sensitive `.env` defaults. The
+installer reports warnings and continues by default. Set
+`BDAG_APPLIANCE_PREFLIGHT_STRICT=1` to make hard failures stop the install, or
+`BDAG_APPLIANCE_PREFLIGHT=0` to skip it explicitly. The field report behind
+these checks is in
 `docs/t430-single-node-appliance-hardening.md`.
 
 The release builder also runs `scripts/verify-release-architecture.py` before

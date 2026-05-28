@@ -18,6 +18,8 @@ Options:
   --no-sync-coordinator
                       Do not install the large-catch-up node sync coordinator
   --no-guards         Do not install sentinel, P2P, peer, chain, or snapshot guards
+  --no-adaptive-optimizer
+                      Do not install the advisory pool adaptive optimizer timer
   --no-start          Write units but do not enable/start services
   -h, --help          Show this help
 
@@ -37,6 +39,7 @@ ENV_FILE=""
 INSTALL_WATCHDOG=1
 INSTALL_SYNC_COORDINATOR=1
 INSTALL_GUARDS=1
+INSTALL_ADAPTIVE_OPTIMIZER=1
 START_SERVICES=1
 RUNTIME_SET=0
 
@@ -67,6 +70,7 @@ while [[ $# -gt 0 ]]; do
       INSTALL_WATCHDOG=0
       INSTALL_SYNC_COORDINATOR=0
       INSTALL_GUARDS=0
+      INSTALL_ADAPTIVE_OPTIMIZER=0
       shift
       ;;
     --no-sync-coordinator)
@@ -75,6 +79,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-guards)
       INSTALL_GUARDS=0
+      INSTALL_ADAPTIVE_OPTIMIZER=0
+      shift
+      ;;
+    --no-adaptive-optimizer)
+      INSTALL_ADAPTIVE_OPTIMIZER=0
       shift
       ;;
     --no-start)
@@ -129,6 +138,7 @@ BDAG_NODE_MODE=single
 BDAG_NODE_SERVICES=bdag-miner-node-2
 BDAG_STACK_SERVICES=pool-db,bdag-miner-node-2,rpc-failover,asic-pool
 BDAG_ENABLE_NODE_MINING=0
+BDAG_NO_FASTSYNC_SERVE=auto
 BDAG_FASTARTIFACTSYNC_ENABLED=1
 BDAG_FASTSYNC_PREPROCESS_WORKERS=1
 BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC=1
@@ -185,6 +195,7 @@ ensure_env_value BDAG_NODE_MODE single
 ensure_env_value BDAG_NODE_SERVICES bdag-miner-node-2
 ensure_env_value BDAG_STACK_SERVICES "pool-db,bdag-miner-node-2,rpc-failover,asic-pool"
 ensure_env_value BDAG_ENABLE_NODE_MINING 0
+ensure_env_value BDAG_NO_FASTSYNC_SERVE auto
 ensure_env_value BDAG_FASTARTIFACTSYNC_ENABLED 1
 ensure_env_value BDAG_FASTSYNC_PREPROCESS_WORKERS 1
 ensure_env_value BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC 1
@@ -193,7 +204,20 @@ ensure_env_value BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT 1
 ensure_env_value BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT 1
 ensure_env_value BDAG_SHARED_STATUS_CACHE_ENABLED 1
 ensure_env_value BDAG_SHARED_STATUS_CACHE_SECONDS 3.0
+ensure_env_value BDAG_CAPABILITY_PROFILE auto
+ensure_env_value BDAG_CACHE_POLICY auto
+ensure_env_value BDAG_CHAIN_DATA_PATHS "./data/node1,./data/node2,./data/postgres"
 ensure_env_value BDAG_HOST_PROFILE auto
+ensure_env_value BDAG_NODE_GOMEMLIMIT off
+ensure_env_value BDAG_NODE_GOGC 100
+ensure_env_value BDAG_POOL_GOMEMLIMIT 512MiB
+ensure_env_value BDAG_BLOCK_READ_AHEAD_KB 256
+ensure_env_value BDAG_BLOCK_NR_REQUESTS 128
+ensure_env_value BDAG_VM_TUNING_ENABLED 1
+ensure_env_value BDAG_VM_SWAPPINESS 10
+ensure_env_value BDAG_VM_VFS_CACHE_PRESSURE 50
+ensure_env_value BDAG_VM_DIRTY_BACKGROUND_BYTES 67108864
+ensure_env_value BDAG_VM_DIRTY_BYTES 268435456
 ensure_env_value BDAG_ADAPTIVE_CONCURRENCY_ENABLED 1
 ensure_env_value BDAG_ADAPTIVE_IOWAIT_WARN_PERCENT 25
 ensure_env_value BDAG_ADAPTIVE_IO_SOME_AVG10_WARN 20.0
@@ -218,6 +242,9 @@ ensure_env_value BDAG_BOOT_REPAIR_DIRTY_POLICY start
 ensure_env_value BDAG_BOOT_REPAIR_CRITICAL_POLICY restart
 ensure_env_value BDAG_INCIDENT_REPORT_ENABLED 0
 ensure_env_value BDAG_INCIDENT_REPORT_REPO ""
+ensure_env_value BDAG_POOL_OPTIMIZER_METRICS_URL http://127.0.0.1:9092/metrics
+ensure_env_value BDAG_POOL_OPTIMIZER_ADMIN_URL http://127.0.0.1:9092
+ensure_env_value BDAG_POOL_OPTIMIZER_DASHBOARD_STATUS_URL "http://127.0.0.1:$PORT/api/status"
 
 DASHBOARD_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-dashboard.service"
 STATUS_SAMPLER_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-status-sampler.service"
@@ -240,6 +267,12 @@ HOURLY_SNAPSHOT_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-hourly-snapshot.
 HOURLY_SNAPSHOT_TIMER="$HOME/.config/systemd/user/${INSTANCE}-hourly-snapshot.timer"
 INCIDENT_REPORTER_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-incident-reporter.service"
 INCIDENT_REPORTER_TIMER="$HOME/.config/systemd/user/${INSTANCE}-incident-reporter.timer"
+POOL_ADAPTIVE_OPTIMIZER_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-pool-adaptive-optimizer.service"
+POOL_ADAPTIVE_OPTIMIZER_TIMER="$HOME/.config/systemd/user/${INSTANCE}-pool-adaptive-optimizer.timer"
+SENTINEL_USER_TIMERS="${INSTANCE}-stack-sentinel.timer,${INSTANCE}-node-child-guard.timer,${INSTANCE}-sync-coordinator.timer,${INSTANCE}-chain-restore-guard.timer,${INSTANCE}-chain-presync.timer,${INSTANCE}-hourly-snapshot.timer,${INSTANCE}-local-peers.timer,${INSTANCE}-incident-reporter.timer"
+if [[ "$INSTALL_ADAPTIVE_OPTIMIZER" -eq 1 ]]; then
+  SENTINEL_USER_TIMERS="${SENTINEL_USER_TIMERS},${INSTANCE}-pool-adaptive-optimizer.timer"
+fi
 
 cat > "$DASHBOARD_SERVICE" <<EOF
 [Unit]
@@ -398,7 +431,7 @@ WorkingDirectory=$PROJECT_ROOT
 Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
 Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
 Environment=BDAG_SENTINEL_USER_SERVICES=${INSTANCE}-dashboard.service,${INSTANCE}-watchdog.service,${INSTANCE}-node-child-guard.service,${INSTANCE}-p2p-guard.service
-Environment=BDAG_SENTINEL_USER_TIMERS=${INSTANCE}-stack-sentinel.timer,${INSTANCE}-node-child-guard.timer,${INSTANCE}-sync-coordinator.timer,${INSTANCE}-chain-restore-guard.timer,${INSTANCE}-chain-presync.timer,${INSTANCE}-hourly-snapshot.timer,${INSTANCE}-local-peers.timer,${INSTANCE}-incident-reporter.timer
+Environment=BDAG_SENTINEL_USER_TIMERS=$SENTINEL_USER_TIMERS
 EnvironmentFile=-$ENV_FILE
 ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/stack_sentinel.py
 Nice=10
@@ -643,6 +676,46 @@ Unit=${INSTANCE}-incident-reporter.service
 [Install]
 WantedBy=timers.target
 EOF
+
+  if [[ "$INSTALL_ADAPTIVE_OPTIMIZER" -eq 1 ]]; then
+    cat > "$POOL_ADAPTIVE_OPTIMIZER_SERVICE" <<EOF
+[Unit]
+Description=BlockDAG pool adaptive optimizer advisory pass ($INSTANCE)
+After=${INSTANCE}-dashboard.service default.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=$PROJECT_ROOT
+Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
+Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
+Environment=BDAG_POOL_OPTIMIZER_OUTPUT_DIR=$RUNTIME_DIR/reports/pool-adaptive-optimizer
+Environment=BDAG_POOL_OPTIMIZER_STATE_FILE=$RUNTIME_DIR/pool-adaptive-optimizer-state.json
+EnvironmentFile=-$ENV_FILE
+ExecStartPre=/bin/sh -c 'curl -fsS http://127.0.0.1:$PORT/api/status >/dev/null'
+ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/pool_adaptive_optimizer.py --apply --yes --iterations 1 --window-seconds 900 --sample-interval-seconds 30
+Nice=12
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=25
+IOWeight=20
+EOF
+
+    cat > "$POOL_ADAPTIVE_OPTIMIZER_TIMER" <<EOF
+[Unit]
+Description=Run BlockDAG pool adaptive optimizer advisory pass ($INSTANCE)
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=30m
+AccuracySec=1m
+Persistent=true
+RandomizedDelaySec=2m
+Unit=${INSTANCE}-pool-adaptive-optimizer.service
+
+[Install]
+WantedBy=timers.target
+EOF
+  fi
 fi
 
 systemctl --user daemon-reload
@@ -667,6 +740,9 @@ if [[ "$START_SERVICES" -eq 1 ]]; then
     systemctl --user enable --now "${INSTANCE}-chain-presync.timer"
     systemctl --user enable --now "${INSTANCE}-hourly-snapshot.timer"
     systemctl --user enable --now "${INSTANCE}-incident-reporter.timer"
+    if [[ "$INSTALL_ADAPTIVE_OPTIMIZER" -eq 1 ]]; then
+      systemctl --user enable --now "${INSTANCE}-pool-adaptive-optimizer.timer"
+    fi
   fi
 fi
 
@@ -705,4 +781,8 @@ if [[ "$INSTALL_GUARDS" -eq 1 ]]; then
   echo "  $HOURLY_SNAPSHOT_TIMER"
   echo "  $INCIDENT_REPORTER_SERVICE"
   echo "  $INCIDENT_REPORTER_TIMER"
+  if [[ "$INSTALL_ADAPTIVE_OPTIMIZER" -eq 1 ]]; then
+    echo "  $POOL_ADAPTIVE_OPTIMIZER_SERVICE"
+    echo "  $POOL_ADAPTIVE_OPTIMIZER_TIMER"
+  fi
 fi

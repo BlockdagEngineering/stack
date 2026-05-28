@@ -531,6 +531,7 @@ class PoolActivityAttributionTests(unittest.TestCase):
             [
                 f"2026/05/26 22:34:00 [172.22.0.1:55572] authorize accepted user={worker}",
                 "2026/05/26 22:34:01 PUSHDIF -> 172.22.0.1:55572 mining.set_difficulty 0.14229287",
+                "2026/05/26 22:34:01 [RECOVERY] resending current job to 172.22.0.1:55572 after 1 stale-template races (job=job-1_01000000 reason=non-current-job)",
                 f"2026/05/26 22:34:02 ✅ valid share accepted 100.0 → 500 worker={worker} job=job-1_01000000",
                 f"2026/05/26 22:34:03 🎯 BLOCK FOUND height(le)=7105000 job=job-1_01000000 hash=abc target=def",
             ]
@@ -542,18 +543,126 @@ class PoolActivityAttributionTests(unittest.TestCase):
         self.assertEqual(miners["192.168.50.177"]["share_work"], 500)
         self.assertEqual(miners["192.168.50.177"]["blocks_found"], 1)
 
+    def test_docker_bridge_direct_client_lines_map_to_registered_asic(self) -> None:
+        worker = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {
+                    "ip": "192.168.50.177",
+                    "mac": "28:e2:97:1e:c0:b5",
+                    "expected_worker_user": worker,
+                }
+            ]
+        }
+        log = "\n".join(
+            [
+                f"2026/05/26 22:34:00 [172.22.0.1:55572] authorize accepted user={worker}",
+                f"2026/05/26 22:34:01 submit from client=172.22.0.1:55572 worker={worker} job=job-1_01000000",
+                f"2026/05/26 22:34:02 ✅ valid share accepted 100.0 → 500 client=172.22.0.1:55572 worker={worker} job=job-1_01000000",
+                f"2026/05/26 22:34:03 🎯 BLOCK FOUND height(le)=7105000 job=job-1_01000000 hash=abc target=def client=172.22.0.1:55572",
+            ]
+        )
+
+        miners = {item["ip"]: item for item in pool_ops.parse_pool_activity(log)["miners"]}
+
+        self.assertEqual(miners["192.168.50.177"]["submits"], 2)
+        self.assertEqual(miners["192.168.50.177"]["shares"], 1)
+        self.assertEqual(miners["192.168.50.177"]["share_work"], 500)
+        self.assertEqual(miners["192.168.50.177"]["blocks_found"], 1)
+
+
+class MinerEarningsWorkPercentTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.old_collect_pool_activity = pool_ops.collect_pool_activity
+        self.old_upsert_pool_activity_miners = pool_ops.upsert_pool_activity_miners
+        self.old_collect_miner_hashrate_debug = pool_ops.collect_miner_hashrate_debug
+        self.old_is_retired_miner_identity = pool_ops.is_retired_miner_identity
+        self.addCleanup(self.restore)
+
+    def restore(self) -> None:
+        pool_ops.collect_pool_activity = self.old_collect_pool_activity
+        pool_ops.upsert_pool_activity_miners = self.old_upsert_pool_activity_miners
+        pool_ops.collect_miner_hashrate_debug = self.old_collect_miner_hashrate_debug
+        pool_ops.is_retired_miner_identity = self.old_is_retired_miner_identity
+
+    def test_hidden_docker_bridge_work_is_excluded_from_visible_work_percent(self) -> None:
+        worker = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        physical = {
+            "ip": "192.168.50.177",
+            "mac": "28:e2:97:1e:c0:b5",
+            "identity_key": "mac:28:e2:97:1e:c0:b5",
+            "workers": [worker],
+            "shares": 1,
+            "share_work": 100,
+            "blocks_found": 1,
+        }
+        bridge = {
+            "ip": "172.22.0.1",
+            "identity_key": "ip:172.22.0.1",
+            "workers": [worker],
+            "shares": 9,
+            "share_work": 900,
+            "blocks_found": 9,
+        }
+        registered = {
+            "ip": "192.168.50.177",
+            "mac": "28:e2:97:1e:c0:b5",
+            "expected_worker_user": worker,
+            "last_workers": [worker],
+            "device_type": "asic",
+        }
+        pool_ops.collect_pool_activity = lambda lines=0: {"miners": [physical, bridge]}
+        pool_ops.upsert_pool_activity_miners = lambda activity: {"miners": [registered]}
+        pool_ops.collect_miner_hashrate_debug = lambda registry, active: {}
+        pool_ops.is_retired_miner_identity = lambda item, ip="", mac="": False
+
+        estimates = pool_ops.collect_miner_earnings_estimates(
+            {"totals": {"total_wei": "0"}, "recent_1h": {"total_wei": "0"}, "by_address": []},
+            {},
+        )
+
+        self.assertEqual(len(estimates), 1)
+        self.assertEqual(estimates[0]["ip"], "192.168.50.177")
+        self.assertEqual(estimates[0]["work_percent"], "100.00")
+        self.assertEqual(estimates[0]["work_percent_source"], "visible-share-work")
+
+    def test_history_compaction_repairs_single_visible_miner_work_percent(self) -> None:
+        snapshot = pool_ops.compact_earnings_snapshot(
+            {
+                "generated_at": "2026-05-28T00:54:31+0200",
+                "miner_estimates": [
+                    {
+                        "ip": "192.168.50.177",
+                        "mac": "28:e2:97:1e:c0:b5",
+                        "display_label": "Achilles-0b5",
+                        "share_work": 4426677747,
+                        "work_percent": "1.55",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(snapshot["miner_estimates"][0]["work_percent"], "100.00")
+        self.assertEqual(snapshot["miner_estimates"][0]["work_percent_source"], "single-visible-history")
+
 
 class MinerHealthConfiguredScopeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.old_collect_pool_activity = pool_ops.collect_pool_activity
         self.old_upsert_pool_activity_miners = pool_ops.upsert_pool_activity_miners
         self.old_seconds_since_epoch = pool_ops.seconds_since_epoch
+        self.old_discover_miner = pool_ops.discover_miner
+        self.old_get_miner_cgminer_devs = pool_ops.get_miner_cgminer_devs
+        pool_ops.discover_miner = lambda ip, timeout=0: {}
+        pool_ops.get_miner_cgminer_devs = lambda ip, timeout=0: {}
         self.addCleanup(self.restore)
 
     def restore(self) -> None:
         pool_ops.collect_pool_activity = self.old_collect_pool_activity
         pool_ops.upsert_pool_activity_miners = self.old_upsert_pool_activity_miners
         pool_ops.seconds_since_epoch = self.old_seconds_since_epoch
+        pool_ops.discover_miner = self.old_discover_miner
+        pool_ops.get_miner_cgminer_devs = self.old_get_miner_cgminer_devs
 
     def test_stale_unconfigured_pool_log_miner_does_not_drive_failure(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"

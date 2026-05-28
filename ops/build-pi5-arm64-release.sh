@@ -84,19 +84,26 @@ services:
     volumes:
       - ./asic-pool:/data/asic-pool:ro
     environment:
+      GOMEMLIMIT: ${BDAG_POOL_GOMEMLIMIT:-512MiB}
       POOL_PORT: ${POOL_PORT:-3334}
       NODE_RPC_URL: http://rpc-failover:38131
       NODE_RPC_URLS: ${NODE_RPC_URLS:-http://rpc-failover:38131}
       POOL_SUBMIT_RPC_URLS: ${POOL_SUBMIT_RPC_URLS:-}
       POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: ${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}
+      POOL_RUNTIME_ADMIN_ENABLED: ${POOL_RUNTIME_ADMIN_ENABLED:-true}
+      POOL_TEMPLATE_TTL_REFRESH_MS: ${POOL_TEMPLATE_TTL_REFRESH_MS:-500}
       POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}
-      POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS: ${POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS:-2500}
+      POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS: ${POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS:-800}
+      POOL_MAX_BLOCK_CANDIDATE_SAME_TEMPLATE_AGE_MS: ${POOL_MAX_BLOCK_CANDIDATE_SAME_TEMPLATE_AGE_MS:-6000}
+      POOL_MAX_BLOCK_CANDIDATE_TEMPLATE_LAG_BLOCKS: ${POOL_MAX_BLOCK_CANDIDATE_TEMPLATE_LAG_BLOCKS:-16}
       POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}
       POOL_STALE_RACE_REJECT_WINDOW_SECONDS: ${POOL_STALE_RACE_REJECT_WINDOW_SECONDS:-10}
       POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD: ${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}
       POOL_STALE_RACE_RECOVERY_COOLDOWN_SECONDS: ${POOL_STALE_RACE_RECOVERY_COOLDOWN_SECONDS:-1}
       POOL_ALLOW_MULTIPLE_BLOCK_CANDIDATES_PER_JOB: ${POOL_ALLOW_MULTIPLE_BLOCK_CANDIDATES_PER_JOB:-true}
       POOL_PREEMPTIVE_BLOCK_CANDIDATE_REFRESH_ENABLED: ${POOL_PREEMPTIVE_BLOCK_CANDIDATE_REFRESH_ENABLED:-true}
+      POOL_VARDIFF_WINDOW_SECONDS: ${POOL_VARDIFF_WINDOW_SECONDS:-120}
+      POOL_VARDIFF_TARGET_SHARE_SECONDS: ${POOL_VARDIFF_TARGET_SHARE_SECONDS:-3}
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
       WALLET_RPC_URL: ${WALLET_RPC_URL:-http://bdag-miner-node-2:18545}
@@ -160,6 +167,8 @@ services:
     volumes:
       - ./data/node1:/data
     environment:
+      GOMEMLIMIT: ${BDAG_NODE_GOMEMLIMIT:-off}
+      GOGC: ${BDAG_NODE_GOGC:-100}
       ROLLOUT_WINDOW: 30m
       HEALTH_MIN_PEERS: 1
       RPC_URL: "ws://127.0.0.1:18546"
@@ -194,6 +203,7 @@ services:
       ZEROTIER_PEER_ADDRESSES: ${ZEROTIER_PEER_ADDRESSES:-}
       BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-tiered-latency}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
+      BDAG_NO_FASTSYNC_SERVE: ${BDAG_NO_FASTSYNC_SERVE:-auto}
       BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
       BDAG_FASTSYNC_LAN_PREFIXES: ${BDAG_FASTSYNC_LAN_PREFIXES:-}
       BDAG_FASTSYNC_LAN_PEERS: ${BDAG_FASTSYNC_LAN_PEERS:-}
@@ -215,6 +225,8 @@ services:
         --cache.snapshot=${BDAG_NODE_CACHE_SNAPSHOT_PERCENT:-35}
         --bdcachesize=${BDAG_NODE_BD_CACHE_SIZE:-8192}
         --dagcachesize=${BDAG_NODE_DAG_CACHE_SIZE:-8192}
+        --obsoleteheight=${BDAG_NODE_SUBMIT_OBSOLETE_HEIGHT:-20}
+        --maxbadresp=${BDAG_NODE_MAX_BAD_RESPONSES:-4}
         --debuglevel=${BDAG_NODE_DEBUG_LEVEL:-warn}
         --evmtrietimeout=${BDAG_EVM_TRIE_TIMEOUT_SECONDS:-7200}
         --nofilelogging
@@ -258,6 +270,8 @@ services:
     volumes:
       - ./data/node2:/data
     environment:
+      GOMEMLIMIT: ${BDAG_NODE_GOMEMLIMIT:-off}
+      GOGC: ${BDAG_NODE_GOGC:-100}
       ROLLOUT_WINDOW: 30m
       HEALTH_MIN_PEERS: 1
       RPC_URL: "ws://127.0.0.1:18546"
@@ -292,6 +306,7 @@ services:
       ZEROTIER_PEER_ADDRESSES: ${ZEROTIER_PEER_ADDRESSES:-}
       BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-tiered-latency}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
+      BDAG_NO_FASTSYNC_SERVE: ${BDAG_NO_FASTSYNC_SERVE:-auto}
       BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
       BDAG_FASTSYNC_LAN_PREFIXES: ${BDAG_FASTSYNC_LAN_PREFIXES:-}
       BDAG_FASTSYNC_LAN_PEERS: ${BDAG_FASTSYNC_LAN_PEERS:-}
@@ -313,6 +328,8 @@ services:
         --cache.snapshot=${BDAG_NODE_CACHE_SNAPSHOT_PERCENT:-35}
         --bdcachesize=${BDAG_NODE_BD_CACHE_SIZE:-8192}
         --dagcachesize=${BDAG_NODE_DAG_CACHE_SIZE:-8192}
+        --obsoleteheight=${BDAG_NODE_SUBMIT_OBSOLETE_HEIGHT:-20}
+        --maxbadresp=${BDAG_NODE_MAX_BAD_RESPONSES:-4}
         --debuglevel=${BDAG_NODE_DEBUG_LEVEL:-warn}
         --evmtrietimeout=${BDAG_EVM_TRIE_TIMEOUT_SECONDS:-7200}
         --nofilelogging
@@ -465,6 +482,9 @@ BDAG_HOST_PRESSURE_IOWAIT_WARN_SAMPLES=3
 BDAG_HOST_PRESSURE_HISTORY_SAMPLES=6
 BDAG_SHARED_STATUS_CACHE_ENABLED=1
 BDAG_SHARED_STATUS_CACHE_SECONDS=3.0
+BDAG_CAPABILITY_PROFILE=auto
+BDAG_CACHE_POLICY=auto
+BDAG_CHAIN_DATA_PATHS=./data/node1,./data/node2,./data/postgres
 BDAG_HOST_PROFILE=auto
 BDAG_ADAPTIVE_CONCURRENCY_ENABLED=1
 BDAG_ADAPTIVE_IOWAIT_WARN_PERCENT=25
@@ -493,6 +513,17 @@ BDAG_NODE_DAG_CACHE_SIZE=8192
 BDAG_EVM_CACHE_MB=8192
 BDAG_EVM_CACHE_DATABASE_PERCENT=80
 BDAG_EVM_CACHE_SNAPSHOT_PERCENT=1
+BDAG_NODE_GOMEMLIMIT=off
+BDAG_NODE_GOGC=100
+BDAG_POOL_GOMEMLIMIT=512MiB
+BDAG_BLOCK_READ_AHEAD_KB=256
+BDAG_BLOCK_NR_REQUESTS=128
+BDAG_VM_TUNING_ENABLED=1
+BDAG_VM_SWAPPINESS=10
+BDAG_VM_VFS_CACHE_PRESSURE=50
+BDAG_VM_DIRTY_BACKGROUND_BYTES=67108864
+BDAG_VM_DIRTY_BYTES=268435456
+BDAG_FSTRIM_ENABLED=1
 BDAG_EVM_TRIE_TIMEOUT_SECONDS=7200
 BDAG_NODE_DEBUG_LEVEL=warn
 
@@ -558,6 +589,7 @@ BDAG_FASTSYNC_ARTIFACT_DIRECTORY=
 BDAG_FASTSYNC_ARTIFACT_MANIFEST=
 BDAG_FASTSYNC_PEER_ORDERING=tiered-latency
 BDAG_FASTSYNC_APPEND_ADDPEERS=1
+BDAG_NO_FASTSYNC_SERVE=auto
 BDAG_FASTARTIFACTSYNC_ENABLED=1
 BDAG_FASTSYNC_LAN_PREFIXES=
 BDAG_FASTSYNC_LAN_PEERS=
@@ -604,9 +636,18 @@ POOL_WS_UNSUPPORTED_BACKOFF_SECONDS=300
 POOL_GBT_MIN_INTERVAL_MS=100
 POOL_GBT_PRESSURE_INTERVAL_MS=100
 POOL_GBT_PRESSURE_WINDOW_SECONDS=30
-POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS=2500
+POOL_RUNTIME_ADMIN_ENABLED=true
+POOL_TEMPLATE_TTL_REFRESH_MS=500
+POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS=800
+POOL_MAX_BLOCK_CANDIDATE_SAME_TEMPLATE_AGE_MS=6000
+POOL_MAX_BLOCK_CANDIDATE_TEMPLATE_LAG_BLOCKS=16
 POOL_ALLOW_MULTIPLE_BLOCK_CANDIDATES_PER_JOB=true
 POOL_PREEMPTIVE_BLOCK_CANDIDATE_REFRESH_ENABLED=true
+POOL_VARDIFF_WINDOW_SECONDS=120
+POOL_VARDIFF_TARGET_SHARE_SECONDS=3
+POOL_VARDIFF_TOLERANCE_FRACTION=0.5
+POOL_VARDIFF_STEP_EXPONENT=0.2
+POOL_VARDIFF_FAST_RETARGET_SECONDS=10
 EOF
   mkdir -p "$PACKAGE_DIR/asic-pool"
   cp "$PACKAGE_DIR/.env.example" "$PACKAGE_DIR/asic-pool/.env.example"
@@ -855,7 +896,68 @@ append_node_arg_once() {
   export NODE_ARGS
 }
 
+mount_source_for_path() {
+  path="$(readlink -m "$1" 2>/dev/null || printf '%s' "$1")"
+  awk -v path="$path" '
+    {
+      target=$2
+      gsub(/\\040/, " ", target)
+      if (path == target || index(path, target "/") == 1) {
+        if (length(target) > best_len) {
+          best_len = length(target)
+          best = $1
+        }
+      }
+    }
+    END { print best }
+  ' /proc/mounts
+}
+
+block_device_from_source() {
+  source="$1"
+  case "$source" in /dev/*) ;; *) return 1 ;; esac
+  base="$(basename "$source")"
+  case "$base" in
+    nvme*n*p*) printf '%s\n' "${base%p[0-9]*}" ;;
+    mmcblk*p*) printf '%s\n' "${base%p[0-9]*}" ;;
+    *) printf '%s\n' "${base%%[0-9]*}" ;;
+  esac
+}
+
+path_is_usb_backed() {
+  source="$(mount_source_for_path "$1")"
+  block="$(block_device_from_source "$source" 2>/dev/null || true)"
+  [ -n "$block" ] || return 1
+  device_path="$(readlink -f "/sys/block/$block/device" 2>/dev/null || true)"
+  case "$device_path" in *usb*) return 0 ;; *) return 1 ;; esac
+}
+
+node_data_parent() {
+  data_parent="${BDAG_FASTSNAP_DATADIR:-$(node_arg_value datadir || true)}"
+  printf '%s\n' "${data_parent:-/data}"
+}
+
+should_disable_fastsync_serving() {
+  case "${BDAG_NO_FASTSYNC_SERVE:-auto}" in
+    1|true|yes|on) return 0 ;;
+    0|false|no|off) return 1 ;;
+  esac
+  topology="${BDAG_DETECTED_NETWORK_TOPOLOGY:-${BDAG_NETWORK_TOPOLOGY:-auto}}"
+  [ "$topology" = "single-node-asic-router" ] || return 1
+  data_parent="$(node_data_parent)"
+  path_is_usb_backed "$data_parent"
+}
+
+apply_no_fastsync_serve_guard() {
+  should_disable_fastsync_serving || return 0
+  export BDAG_FASTARTIFACTSYNC_ENABLED=0
+  unset BDAG_FASTSYNC_ARTIFACT_DIRECTORY BDAG_FASTSYNC_ARTIFACT_MANIFEST
+  append_node_arg_once "--nofastsyncserve"
+  log "USB-backed ASIC router/mining profile detected; disabling bulk FastSync, snapshot, and artifact serving while keeping normal outbound sync and block relay."
+}
+
 apply_default_fastsync_flags() {
+  [ "${BDAG_NO_FASTSYNC_SERVE:-auto}" = "1" ] && return 0
   [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-1}" = "1" ] || return 0
   append_node_arg_once "--fastartifactsync"
 }
@@ -990,6 +1092,10 @@ maybe_fastsnap_bootstrap() {
 }
 
 configure_directory_artifact_serving() {
+  if [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-1}" != "1" ]; then
+    log "Fast Artifact Sync V2 serving disabled for this node"
+    return 0
+  fi
   if [ -n "${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}" ] || [ -n "${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}" ]; then
     return 0
   fi
@@ -1009,6 +1115,7 @@ configure_directory_artifact_serving() {
 
 echo "Using node binary: $BIN"
 apply_ordered_fastsync_peers
+apply_no_fastsync_serve_guard
 apply_default_fastsync_flags
 maybe_fastsnap_bootstrap
 configure_directory_artifact_serving

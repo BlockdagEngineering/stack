@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import pathlib
 import sys
 import time
@@ -58,6 +59,12 @@ class SyncCoordinatorFastCatchupTest(unittest.TestCase):
         self.assertFalse(sync_coordinator.node_command_has_fast_artifact_sync("/usr/local/bin/blockdag-node --fastartifactsync=false"))
         self.assertFalse(sync_coordinator.node_command_has_fast_artifact_sync("/usr/local/bin/blockdag-node"))
 
+    def test_command_line_nofastsyncserve_detection(self) -> None:
+        self.assertTrue(sync_coordinator.node_command_disables_fastsync_serve("/usr/local/bin/bdag --nofastsyncserve"))
+        self.assertTrue(sync_coordinator.node_command_disables_fastsync_serve("/usr/local/bin/bdag --nofastsyncserve=true"))
+        self.assertFalse(sync_coordinator.node_command_disables_fastsync_serve("/usr/local/bin/bdag --nofastsyncserve=false"))
+        self.assertFalse(sync_coordinator.node_command_disables_fastsync_serve("/usr/local/bin/bdag"))
+
     def test_missing_fastartifact_flag_requests_restart(self) -> None:
         decision = sync_coordinator.build_decision(self.status(remaining=1500), {})
         reason = sync_coordinator.fast_sync_restart_reason(
@@ -67,6 +74,34 @@ class SyncCoordinatorFastCatchupTest(unittest.TestCase):
             True,
         )
         self.assertIn("--fastartifactsync", reason)
+
+    def test_nofastsyncserve_suppresses_missing_fastartifact_restart(self) -> None:
+        decision = sync_coordinator.build_decision(self.status(remaining=1500), {})
+        reason = sync_coordinator.fast_sync_restart_reason(
+            decision,
+            {},
+            "/usr/local/bin/bdag --nofastsyncserve",
+            True,
+        )
+        self.assertEqual(reason, "")
+
+    def test_nofastsyncserve_env_suppresses_missing_fastartifact_restart(self) -> None:
+        previous = os.environ.get("BDAG_NO_FASTSYNC_SERVE")
+        os.environ["BDAG_NO_FASTSYNC_SERVE"] = "1"
+        try:
+            decision = sync_coordinator.build_decision(self.status(remaining=1500), {})
+            reason = sync_coordinator.fast_sync_restart_reason(
+                decision,
+                {},
+                "/usr/local/bin/bdag",
+                True,
+            )
+            self.assertEqual(reason, "")
+        finally:
+            if previous is None:
+                os.environ.pop("BDAG_NO_FASTSYNC_SERVE", None)
+            else:
+                os.environ["BDAG_NO_FASTSYNC_SERVE"] = previous
 
     def test_restart_cooldown_suppresses_restart_reason(self) -> None:
         decision = sync_coordinator.build_decision(self.status(remaining=1500), {})

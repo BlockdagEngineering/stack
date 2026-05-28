@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BlockDAG Pool Job Timing Dynamic Optimization Plan</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 0; background: #11161b; color: #e8edf2; line-height: 1.55; }
+    main { max-width: 980px; margin: 0 auto; padding: 32px 22px 48px; }
+    h1 { margin: 0 0 8px; font-size: 32px; line-height: 1.12; }
+    h2 { margin-top: 28px; color: #f0f5fa; }
+    h3 { margin-top: 20px; color: #dbe7f2; }
+    p, li { color: #c6d1dc; }
+    code { color: #8bd5ff; }
+    pre { overflow-x: auto; background: #18212a; border: 1px solid #293541; padding: 14px; border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; margin: 14px 0; background: #151d24; border: 1px solid #26313b; }
+    th, td { padding: 9px 10px; border-bottom: 1px solid #26313b; text-align: left; vertical-align: top; }
+    th { color: #a9bac9; font-size: 12px; text-transform: uppercase; }
+    .note { border-left: 4px solid #6fb5ff; padding: 10px 14px; background: #15202b; }
+  </style>
+  <script type="application/json" id="agent-metadata">
+  {
+    "document_type": "pool_job_timing_dynamic_optimization_plan",
+    "created_at": "2026-05-28T00:10:00Z",
+    "source_repos": {
+      "pool": "/home/jeremy/blockdag-source/pool",
+      "pool_stack": "/home/jeremy/blockdag-source/pool-stack-docker-fastsync-peer-order"
+    },
+    "related_harness": "/home/jeremy/blockdag-source/pool-stack-docker-fastsync-peer-order/ops/pool_job_timing_optimizer.py"
+  }
+  </script>
+</head>
+<body>
+<main>
+  <h1>BlockDAG Pool Job Timing Dynamic Optimization Plan</h1>
+  <p class="note">Goal: maximize confirmed useful block production per miner-hour while minimizing stale/rejected work. The controller must treat paid block conversion as the primary metric and share rate as a telemetry/load knob, not as a way to increase the ASIC's actual probability of finding a network-valid block.</p>
+
+  <h2>Verdict</h2>
+  <p>Use conservative defaults plus bounded adaptive exploration. Fixed constants are safer than blind autotuning, but this stack has measurable signals for template age, submit latency, share rejection reason, node readiness, and accepted block outcomes. The right release-candidate design is a guarded controller that changes one pool-local parameter at a time, compares equal windows, and reverts immediately on stale/reject or source-truth regression.</p>
+
+  <h2>Key Correction</h2>
+  <p>Lowering pool share difficulty creates more submitted shares and therefore more feedback samples. It does not make the ASIC more likely to find a network-difficulty block. Too-low share difficulty can increase pool CPU, DB, network, and Stratum pressure, which can worsen stale work. The useful target is enough accepted shares to measure the miner and tune vardiff, with low rejected-share tails after clean job rotations.</p>
+
+  <h2>Model</h2>
+  <p>If the DAG tip changes at rate <code>lambda_b</code> and a candidate has effective age <code>a</code> when the node can validate/propagate it, then the expected newer-tip count is approximately Poisson:</p>
+  <pre><code>N(a) ~ Poisson(lambda_b * a)
+P(no newer tip) = exp(-lambda_b * a)</code></pre>
+  <p>If BlockDAG acceptance tolerates up to <code>k</code> newer tips, the theoretical viability prior is:</p>
+  <pre><code>P(lag <= k) = exp(-lambda_b*a) * sum(j=0..k, (lambda_b*a)^j / j!)</code></pre>
+  <p>The release controller should not rely on this alone. It should fit an empirical <code>q_blue(age, height_lag, backend_health, p2p_freshness)</code> from source-truth block outcomes, then submit or reject locally based on expected value:</p>
+  <pre><code>submit iff q_blue * block_value - stale_submit_cost > 0</code></pre>
+
+  <h2>Objective</h2>
+  <pre><code>maximize U(theta) =
+  paid_blue_blocks_per_miner_hour
+  - w1 * stale_block_rate
+  - w2 * share_reject_rate
+  - w3 * submit_p99
+  - w4 * host_pressure
+  - w5 * clean_job_churn</code></pre>
+  <p>where <code>theta</code> includes template TTL, block-candidate job-age limit, same-template age limit, template lag limit, clean-job policy, and vardiff target share interval.</p>
+
+  <h2>Runtime Knobs</h2>
+  <table>
+    <thead><tr><th>Knob</th><th>Purpose</th><th>Safe prior</th></tr></thead>
+    <tbody>
+      <tr><td><code>POOL_TEMPLATE_TTL_REFRESH_MS</code></td><td>Same-parent template freshness. Pool code caps fast-DAG TTL to 1s.</td><td>250-1000ms; release starts at 500ms</td></tr>
+      <tr><td><code>POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS</code></td><td>Local reject cliff for old candidate work.</td><td>600-1400ms; release starts at 800ms</td></tr>
+      <tr><td><code>POOL_MAX_BLOCK_CANDIDATE_SAME_TEMPLATE_AGE_MS</code></td><td>Hard cliff for aged same-template work.</td><td>6000ms until empirical cliff is known</td></tr>
+      <tr><td><code>POOL_ACK_STALE_SHARES</code></td><td>Acknowledge recent non-block stale pipeline tail without PPLNS/vardiff credit.</td><td>true with 3000ms grace</td></tr>
+      <tr><td><code>POOL_VARDIFF_TARGET_SHARE_SECONDS</code></td><td>Telemetry share interval per miner.</td><td>3s; explore 2-6s</td></tr>
+      <tr><td><code>POOL_VARDIFF_WINDOW_SECONDS</code></td><td>Retarget window.</td><td>120s</td></tr>
+      <tr><td><code>POOL_SUBMIT_STALE_BLOCK_CANDIDATES</code></td><td>Whether stale candidates are sent to the node.</td><td>false</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Harness</h2>
+  <p>The harness lives at <code>ops/pool_job_timing_optimizer.py</code>. It defaults to observation only and writes <code>summary.json</code>, <code>events.jsonl</code>, and an HTML report. It can apply candidates only when run with <code>--apply --yes</code>, using local runtime-admin endpoints for template TTL, candidate age, and vardiff.</p>
+  <pre><code># Measurement-only smoke
+python3 ops/pool_job_timing_optimizer.py --duration-seconds 900
+
+# Controlled mutation, only after runtime admin is enabled and a human approves
+python3 ops/pool_job_timing_optimizer.py --apply --yes --duration-seconds 1800 --warmup-seconds 300</code></pre>
+
+  <h2>Experiment Design</h2>
+  <ol>
+    <li>Freeze ASIC speed, node topology, NAT/DHCP, and fastsync serving state.</li>
+    <li>Run a 20-30 minute baseline window with no mutation.</li>
+    <li>Change one knob at a time inside the safe prior range.</li>
+    <li>Use 5 minute warmup after pool reconnect/restart, then 20-30 minute share/freshness windows.</li>
+    <li>Use ABAB or rotating candidates for 4-8 hours before deciding on block-conversion improvements.</li>
+    <li>Promote only settings that improve source-truth accepted/blue blocks per miner-hour without worsening stale/reject or host-pressure guardrails.</li>
+  </ol>
+
+  <h2>Abort Criteria</h2>
+  <ul>
+    <li><code>overall != ok</code>, <code>can_mine=false</code>, or <code>can_submit_blocks=false</code> for more than 30-60s.</li>
+    <li>No accepted shares for 90-120s while the ASIC still reports hashing.</li>
+    <li>Current job stale/invalidated miners persist for more than 30s.</li>
+    <li>Template age exceeds 5s or submit-ready becomes false while mining continues.</li>
+    <li>Stale block/node reject slope doubles versus baseline while accepted blocks stop flowing. If accepted blocks are still flowing, treat stale block rejects as a bounded tuning signal rather than an abort.</li>
+    <li>Accepted block conversion drops by more than 15% after the minimum sample.</li>
+    <li>Host iowait remains above 25%, ASIC valid chips drop below 6, or hardware error ratio spikes.</li>
+  </ul>
+
+  <h2>Agent Review</h2>
+  <h3>Control/statistical review</h3>
+  <p>The statistical agent recommended a bounded contextual bandit using Gamma-Poisson modeling for block production and Beta-Binomial modeling for stale/reject ratios. It explicitly rejected “more shares equals more blocks” and treated vardiff as a feedback/load knob.</p>
+  <h3>SRE review</h3>
+  <p>The SRE agent recommended measurement-only by default on the live Pi5. Runtime mutation should be pool-only, one knob at a time, with exact rollback and stop-loss criteria. It rejected unattended node, DB, Docker, ASIC, NAT/DHCP, or fastsync changes during timing experiments.</p>
+  <h3>Steelman fixed settings</h3>
+  <p>The strongest fixed-settings argument is that a 1s DAG is noisy and feedback loops can chase luck. The response is to preserve fixed settings as priors and limit exploration to narrow, reversible, source-truth-verified bands.</p>
+
+  <h2>Release Plan</h2>
+  <ol>
+    <li>Ship stale non-block share ACK grace and same-parent old-job block-candidate validation in the pool.</li>
+    <li>Ship explicit vardiff timing env knobs and runtime-admin endpoint.</li>
+    <li>Ship the observe-first harness and report format.</li>
+    <li>Add source-truth confirmed blue/coinbase reconciliation into the harness scoring.</li>
+    <li>Only then enable a guarded adaptive controller, defaulting to advisory mode until enough live evidence exists.</li>
+  </ol>
+
+  <h2>Sources</h2>
+  <ul>
+    <li>BIP 22 describes getblocktemplate, submitblock, long-poll replacement, and <code>submitold</code> semantics: <a href="https://github.com/bitcoin/bips/blob/master/bip-0022.mediawiki">bitcoin/bips BIP 22</a>.</li>
+    <li>Stratum V2 describes immediate start semantics for fresh jobs, stale-share errors, and server-controlled share targets: <a href="https://stratumprotocol.org/specification/05-mining-protocol/">Stratum V2 Mining Protocol</a>.</li>
+    <li>The stack's Stratum V1 behavior is governed by local pool code in <code>internal/pool/server/handler.go</code>, <code>jobBroadcast.go</code>, and <code>vardiff.go</code>.</li>
+  </ul>
+</main>
+</body>
+</html>
