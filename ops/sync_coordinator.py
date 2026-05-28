@@ -254,6 +254,8 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
     follower_lag = max(0, heights.get(leader or "", 0) - heights.get(follower, 0)) if leader and follower else 0
     follower_materially_lagging = bool(follower and leader and follower_lag >= FOLLOWER_LAG_BLOCKS)
     paused_follower = str(previous_state.get("paused_follower") or "")
+    if paused_follower not in NODES:
+        paused_follower = ""
     paused_still_down = bool(stopped_by_coordinator(previous_state, paused_follower) and not running.get(paused_follower, False))
     paused_follower_remaining = remaining.get(paused_follower, 0)
     previous_decision = previous_state.get("last_decision") if isinstance(previous_state.get("last_decision"), dict) else {}
