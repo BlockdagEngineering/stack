@@ -109,6 +109,12 @@ DEFAULT_RPC_FAILOVER_URGENT_SWITCH_COOLDOWN = int(
 )
 DEFAULT_OPTIMUM_STATE_EVENT_COOLDOWN = int(os.environ.get("BDAG_WATCHDOG_OPTIMUM_STATE_EVENT_COOLDOWN", "300"))
 RPC_FAILOVER_SERVICE = os.environ.get("BDAG_RPC_FAILOVER_SERVICE", "rpc-failover")
+RPC_FAILOVER_ENABLED = os.environ.get("BDAG_RPC_FAILOVER_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 HAPROXY_CFG = PROJECT_ROOT / "haproxy.cfg"
 HAPROXY_RUNTIME_DNS_OPTIONS = "resolvers docker init-addr libc,none"
 NODE_TO_HAPROXY_SERVER = {
@@ -760,6 +766,8 @@ def run_node_restart(node_service: str, reason: str) -> bool:
 
 
 def current_rpc_primary() -> str | None:
+    if not RPC_FAILOVER_ENABLED:
+        return None
     try:
         lines = HAPROXY_CFG.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -770,7 +778,8 @@ def current_rpc_primary() -> str | None:
             continue
         options = match.group(3)
         if " backup" not in f" {options} ":
-            return match.group(2)
+            node = match.group(2)
+            return node if node in NODES else None
     return None
 
 
@@ -1062,6 +1071,22 @@ def apply_watchdog_rpc_router_decision(
     repair: bool,
 ) -> tuple[bool, bool]:
     if not isinstance(decision, dict):
+        return False, False
+    if not RPC_FAILOVER_ENABLED:
+        state["last_rpc_router_decision"] = {
+            "generated_at": decision.get("generated_at"),
+            "current_primary": decision.get("current_primary"),
+            "current_haproxy_primary": decision.get("current_haproxy_primary"),
+            "pool_selected_backend": decision.get("pool_selected_backend"),
+            "pool_selected_backend_node": decision.get("pool_selected_backend_node"),
+            "routing_alignment": decision.get("routing_alignment"),
+            "recommended_primary": decision.get("recommended_primary"),
+            "should_switch": False,
+            "reason": "rpc failover disabled",
+            "score_delta": decision.get("score_delta"),
+            "scores": decision.get("scores"),
+            "pool_pressure": decision.get("pool_pressure"),
+        }
         return False, False
 
     state["last_rpc_router_decision"] = {

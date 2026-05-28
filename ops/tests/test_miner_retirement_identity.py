@@ -548,12 +548,21 @@ class MinerHealthConfiguredScopeTests(unittest.TestCase):
         self.old_collect_pool_activity = pool_ops.collect_pool_activity
         self.old_upsert_pool_activity_miners = pool_ops.upsert_pool_activity_miners
         self.old_seconds_since_epoch = pool_ops.seconds_since_epoch
+        self.old_discover_miner = pool_ops.discover_miner
+        self.old_get_miner_cgminer_devs = pool_ops.get_miner_cgminer_devs
+        self.old_mac_for_ip = pool_ops.mac_for_ip
+        pool_ops.discover_miner = lambda ip, timeout=0: None
+        pool_ops.get_miner_cgminer_devs = lambda ip, timeout=0: {}
+        pool_ops.mac_for_ip = lambda ip: ""
         self.addCleanup(self.restore)
 
     def restore(self) -> None:
         pool_ops.collect_pool_activity = self.old_collect_pool_activity
         pool_ops.upsert_pool_activity_miners = self.old_upsert_pool_activity_miners
         pool_ops.seconds_since_epoch = self.old_seconds_since_epoch
+        pool_ops.discover_miner = self.old_discover_miner
+        pool_ops.get_miner_cgminer_devs = self.old_get_miner_cgminer_devs
+        pool_ops.mac_for_ip = self.old_mac_for_ip
 
     def test_stale_unconfigured_pool_log_miner_does_not_drive_failure(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
