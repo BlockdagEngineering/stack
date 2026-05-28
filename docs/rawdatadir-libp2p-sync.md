@@ -165,15 +165,15 @@ datadir into place.
 - Keep at least one parked receiver datadir until the imported node has started,
   verified chain ID `1404`, and caught the normal FastSync tail.
 - Direct public internet serving still needs reachable libp2p TCP ports or a
-  reachable relay/seed. Current RC operations should prefer explicit LAN/VPN
-  multiaddrs.
+  reachable relay/seed. Current RC operations should use explicit P2P multiaddrs
+  and let measured P2P latency/usefulness decide which source is fastest.
 
 ## RC Limitations
 
 - No deltas.
 - Full raw datadir checkpoints only.
-- Automatic local/VPN discovery is preferred when peer multiaddrs are available;
-  public internet serving still requires reachable P2P ports or relays.
+- Automatic discovery merges complete P2P multiaddrs into one candidate pool.
+  Address class is not a sync option or priority signal.
 - No automatic live-service restart to enable serving env.
 - Receiver import is automatic only for the local managed node during far-behind
   catch-up, and only after a signed/verified manifest is found. Manual fetch

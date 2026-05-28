@@ -18,8 +18,8 @@ The restart-safe policy is:
   snapshots are known safe.
 - Prefer the newest available chain data during recovery only after its
   manifest proves it is restore-safe.
-- During one-node catch-up, give the active leader all known public peers sorted
-  by reachability/latency and do not make it dial the paused follower.
+- During one-node catch-up, give the active leader the full deduplicated P2P
+  candidate set and do not make it dial the paused follower.
 - When any managed node is more than 1000 blocks behind the observed network
   tip, pause the laggiest running node and let exactly one selected leader sync
   alone. The selected leader must receive the highest Docker CPU shares and
@@ -89,13 +89,13 @@ candidate rejected with reasons.
 Large catch-up should avoid wasting startup dials on unreachable or paused
 peers. The local peer updater should:
 
-- Prefer complete FastSync multiaddr candidates by observed libp2p latency
-  instead of LAN/private/VPN/public address buckets. Sub-10ms peers naturally
-  win when present, while ordinary internet peers still work through the same
-  protocol 46 transport.
-- Sort known public peer multiaddrs by TCP reachability and latency.
-- When one managed node is paused for leader catch-up, assign all known public
-  peers to the active leader.
+- Prefer complete FastSync P2P multiaddr candidates by observed libp2p latency
+  and artifact usefulness. Address class is not a sync option or priority
+  signal.
+- Use bounded TCP reachability only as a cheap preflight for peer ordering; the
+  FastArtifact downloader remains responsible for P2P usefulness.
+- When one managed node is paused for leader catch-up, give the active leader
+  the full deduplicated P2P candidate set.
 - Omit the paused follower from the leader's startup peer list.
 - Keep the local peer deferred-apply marker instead of recreating the active
   leader solely to apply peer-list changes.

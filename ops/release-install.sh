@@ -537,7 +537,7 @@ find_or_extract_chain_seed() {
 seed_chain_data() {
   local seed chain_base node1_dir node2_dir template_dir node_mode
   if ! seed="$(find_or_extract_chain_seed)"; then
-    warn "No separate chain-data seed found. Nodes will sync from public peers."
+    warn "No separate chain-data seed found. Nodes will sync from configured P2P peers."
     warn "If you received chain-data parts, reassemble them first, then rerun ./install.sh."
     return 0
   fi
