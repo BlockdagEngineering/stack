@@ -42,7 +42,9 @@ def main() -> None:
         assert_contains(build, needle, BUILD)
 
     for needle in (
-        "--artifact-type raw_datadir_checkpoint",
+        "--artifact-type",
+        "raw_datadir_checkpoint",
+        "--dir-out",
         "--legacy-fallback=false",
         "BDAG_RAWDATADIR_IMPORT_REPLACE",
         "before-rawdatadir",

@@ -22,7 +22,12 @@ def bootstrap_stack_env() -> None:
     pool_env = Path(os.environ["BDAG_POOL_ENV_FILE"]) if os.environ.get("BDAG_POOL_ENV_FILE") else None
     if pool_env is not None and not pool_env.is_absolute():
         pool_env = project_root / pool_env
+    runtime_dir = Path(os.environ.get("BDAG_RUNTIME_DIR") or project_root / "ops" / "runtime")
+    ops_env = Path(os.environ["BDAG_OPS_ENV_FILE"]) if os.environ.get("BDAG_OPS_ENV_FILE") else runtime_dir / "ops.env"
+    if not ops_env.is_absolute():
+        ops_env = project_root / ops_env
     candidates = [
+        ops_env,
         pool_env,
         project_root / ".env",
         project_root / "asic-pool" / ".env",
@@ -284,6 +289,21 @@ def fastsnap_binary(env_values: dict[str, str]) -> str:
         if path.exists() and os.access(path, os.X_OK):
             return str(path)
     return "fastsnap"
+
+
+FASTSNAP_HELP_CACHE: dict[str, str] = {}
+
+
+def fastsnap_help(binary: str) -> str:
+    if binary not in FASTSNAP_HELP_CACHE:
+        proc = run([binary, "--help"], timeout=5)
+        FASTSNAP_HELP_CACHE[binary] = f"{proc.stdout}\n{proc.stderr}"
+    return FASTSNAP_HELP_CACHE[binary]
+
+
+def fastsnap_supports_option(binary: str, option: str) -> bool:
+    name = option.lstrip("-")
+    return f"-{name}" in fastsnap_help(binary)
 
 
 def compose_command(*args: str) -> list[str]:
@@ -955,12 +975,10 @@ def leader_local_height(decision: dict[str, Any], leader: str) -> int:
 def probe_rawdatadir_manifest(peer: str, env_values: dict[str, str], log_path: Path) -> dict[str, Any] | None:
     network = env_value(env_values, "BDAG_RAWDATADIR_NETWORK") or env_value(env_values, "BDAG_FASTSNAP_NETWORK", "mainnet")
     timeout = f"{FAST_CATCHUP_ARTIFACT_PROBE_TIMEOUT_SECONDS}s"
+    binary = fastsnap_binary(env_values)
     command = [
-        fastsnap_binary(env_values),
+        binary,
         "--manifest-only",
-        "--artifact-v2=true",
-        "--artifact-type",
-        "raw_datadir_checkpoint",
         "--legacy-fallback=false",
         "--network",
         network,
@@ -969,6 +987,10 @@ def probe_rawdatadir_manifest(peer: str, env_values: dict[str, str], log_path: P
         "--peer",
         peer,
     ]
+    if fastsnap_supports_option(binary, "--artifact-v2"):
+        command.insert(2, "--artifact-v2=true")
+    if fastsnap_supports_option(binary, "--artifact-type"):
+        command[2:2] = ["--artifact-type", "raw_datadir_checkpoint"]
     for signer in configured_trusted_signers(env_values):
         command.extend(["--trusted-signer", signer])
     if FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED or FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS:

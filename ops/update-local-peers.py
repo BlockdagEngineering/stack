@@ -253,7 +253,11 @@ def peer_is_lan(peer: str, values: dict[str, str]) -> bool:
     parts = peer_parts(peer)
     if not parts:
         return False
-    prefixes = env_value(values, "BDAG_FASTSYNC_LAN_PREFIXES")
+    prefixes = (
+        values.get("BDAG_FASTSYNC_LAN_PREFIXES")
+        if "BDAG_FASTSYNC_LAN_PREFIXES" in values
+        else env_value(values, "BDAG_FASTSYNC_LAN_PREFIXES")
+    )
     if prefixes and host_matches_lan_prefixes(parts[0], prefixes):
         return True
     return peer_in_networks(peer, local_lan_networks(values))
@@ -411,6 +415,8 @@ def sort_peers_by_latency(peers: list[str]) -> list[str]:
 
 
 def tiered_peer_addresses(values: dict[str, str], topology: str) -> PeerTiers:
+    values = dict(values)
+    values["BDAG_FASTSYNC_LAN_PREFIXES"] = normalize_lan_prefixes(values, topology)
     tiers = PeerTiers(lan=[], vpn=[], public=[], excluded_asic_lan=[])
     seen: set[str] = set()
 
