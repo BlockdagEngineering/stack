@@ -90,18 +90,25 @@ media classification, and no entropy collection from block IO.
 
 Use a stable mount such as `/mnt/bdag-usb`, mount ext4 or F2FS with
 `noatime,lazytime`, and make Docker require that mount before container
-startup. Then point only active data directories at the USB, for example:
+startup. On constrained appliances the release installer now resolves
+`BDAG_STORAGE_PROFILE=auto` into explicit paths. The default policy keeps the
+large, growing node datadirs on the capacity disk, then moves frequent small
+writes to internal storage when the boot disk has at least 4 GiB free:
 
 ```bash
-data/node1 -> /mnt/bdag-usb/blockdag-stack/data/node1
-data/node2 -> /mnt/bdag-usb/blockdag-stack/data/node2
-data/postgres -> /mnt/bdag-usb/blockdag-stack/data/postgres
-ops/runtime -> /mnt/bdag-usb/blockdag-stack/ops-runtime
+BDAG_CHAIN_DATA_DIR=/mnt/bdag-usb/blockdag-chain
+BDAG_NODE1_DATA_DIR=/mnt/bdag-usb/blockdag-chain/node1
+BDAG_NODE2_DATA_DIR=/mnt/bdag-usb/blockdag-chain/node2
+BDAG_POSTGRES_DATA_DIR=/opt/blockdag-pool/runtime-data/postgres
+BDAG_RUNTIME_DIR=/opt/blockdag-pool/runtime-data/ops-runtime
 ```
 
 Leave old parked chain snapshots on the SD card unless the USB has enough spare
-space. This keeps the USB focused on the hot node, pool DB, dashboard history,
-and guard-log write path while preserving rollback copies on the OS disk.
+space. This keeps the USB focused on the hot node chain and FastSnap artifacts
+while the OS disk absorbs Postgres WAL, dashboard history, guard state, and
+small log churn. If the internal disk is too small, the installer falls back to
+a single-device USB profile and the preflight reports that all hot writes share
+one device.
 
 The installer disables common non-mining timers and services such as apt daily
 jobs, cron, Avahi, CUPS, NFS/rpcbind, and desktop disk/power helpers. It leaves

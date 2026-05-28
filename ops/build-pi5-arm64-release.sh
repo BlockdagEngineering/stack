@@ -158,7 +158,7 @@ services:
         soft: 1048576
         hard: 1048576
     volumes:
-      - ./data/node1:/data
+      - ${BDAG_NODE1_DATA_DIR:-./data/node1}:/data
     environment:
       ROLLOUT_WINDOW: 30m
       HEALTH_MIN_PEERS: 1
@@ -256,7 +256,7 @@ services:
         soft: 1048576
         hard: 1048576
     volumes:
-      - ./data/node2:/data
+      - ${BDAG_NODE2_DATA_DIR:-./data/node2}:/data
     environment:
       ROLLOUT_WINDOW: 30m
       HEALTH_MIN_PEERS: 1
@@ -366,7 +366,7 @@ services:
     env_file:
       - ./asic-pool/.env
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - ${BDAG_POSTGRES_DATA_DIR:-./data/postgres}:/var/lib/postgresql/data
       - ./asic-pool/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
     networks:
       - pool-net
@@ -446,6 +446,19 @@ BDAG_POOL_URL=stratum+tcp://192.168.1.10:3334
 BDAG_MINER_SCAN_TARGET=192.168.1.0/24
 BDAG_DASHBOARD_BIND=127.0.0.1
 BDAG_DASHBOARD_PORT=8088
+
+# Storage placement. The installer resolves auto into concrete paths so large,
+# growing chain data can live on capacity storage while small frequent writes
+# stay on internal storage when the host has enough free space.
+BDAG_STORAGE_PROFILE=auto
+BDAG_CHAIN_DATA_DIR=./data
+BDAG_DATA_DIR=./data
+BDAG_NODE1_DATA_DIR=./data/node1
+BDAG_NODE2_DATA_DIR=./data/node2
+BDAG_POSTGRES_DATA_DIR=./data/postgres
+BDAG_RUNTIME_DIR=./ops/runtime
+BDAG_STORAGE_MIN_CHAIN_FREE_GIB=50
+BDAG_STORAGE_MIN_RUNTIME_FREE_GIB=4
 
 # Single-node is the safe default for Pi5 USB power and catch-up stability.
 # Set BDAG_NODE_MODE=double and COMPOSE_PROFILES=dual-node to run both backend

@@ -197,16 +197,22 @@ def same_filesystem(left: Path, right: Path) -> bool:
         return False
 
 
+def clean_mount_source(source: str) -> str:
+    return source.split("[", 1)[0]
+
+
 def block_name_from_source(source: str) -> str:
+    source = clean_mount_source(source)
     if not source.startswith("/dev/"):
         return ""
     name = Path(source).name
-    if name.startswith("nvme"):
+    if name.startswith(("nvme", "mmcblk")):
         return re.sub(r"p\d+$", "", name)
     return re.sub(r"\d+$", "", name)
 
 
 def is_usb_source(source: str) -> bool:
+    source = clean_mount_source(source)
     block = block_name_from_source(source)
     if not block:
         return False
@@ -248,7 +254,9 @@ def parse_compose_bind(line: str) -> tuple[str, str] | None:
         return None
     host, remainder = spec.split(":", 1)
     container = remainder.split(":", 1)[0]
-    if not host or host.startswith("${") or host in {"node-data", "nodeworker-data", "postgres-data"}:
+    if not host or host.startswith("${"):
+        return None
+    if not (host.startswith("/") or host.startswith(".") or host.startswith("~")):
         return None
     return host, container
 
@@ -281,9 +289,62 @@ def env_data_dir(root: Path, env: dict[str, str]) -> Path:
     compose_dir = discover_compose_data_dir(root)
     if compose_dir is not None:
         return compose_dir
-    raw = env.get("BDAG_DATA_DIR") or env.get("DATA_DIR") or "data"
+    raw = next(
+        (
+            value
+            for value in (env.get("BDAG_CHAIN_DATA_DIR"), env.get("BDAG_DATA_DIR"), env.get("DATA_DIR"))
+            if value and value.strip().lower() != "auto"
+        ),
+        "data",
+    )
     path = Path(raw)
     return path if path.is_absolute() else root / path
+
+
+def env_path(root: Path, env: dict[str, str], key: str, default: str | Path) -> Path:
+    raw = env.get(key) or str(default)
+    if raw.strip().lower() == "auto":
+        raw = str(default)
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else root / path
+
+
+def env_node_data_dir(root: Path, env: dict[str, str], node_name: str) -> Path:
+    key = "BDAG_NODE1_DATA_DIR" if node_name == "node1" else "BDAG_NODE2_DATA_DIR"
+    return env_path(root, env, key, env_data_dir(root, env) / node_name)
+
+
+def env_postgres_dir(root: Path, env: dict[str, str]) -> Path:
+    return env_path(root, env, "BDAG_POSTGRES_DATA_DIR", root / "data" / "postgres")
+
+
+def env_runtime_dir(root: Path, env: dict[str, str]) -> Path:
+    return env_path(root, env, "BDAG_RUNTIME_DIR", root / "ops" / "runtime")
+
+
+def storage_device(path: Path) -> dict[str, Any]:
+    mount = mount_info(path)
+    source = clean_mount_source(str(mount.get("source") or ""))
+    return {
+        "path": str(path),
+        "mount": mount,
+        "source": source,
+        "block": block_name_from_source(source),
+        "fstype": str(mount.get("fstype") or "").lower(),
+        "is_usb": is_usb_source(source),
+    }
+
+
+def same_storage_device(left: Path, left_device: dict[str, Any], right: Path, right_device: dict[str, Any]) -> bool:
+    left_block = str(left_device.get("block") or "")
+    right_block = str(right_device.get("block") or "")
+    if left_block and right_block:
+        return left_block == right_block
+    left_source = str(left_device.get("source") or "")
+    right_source = str(right_device.get("source") or "")
+    if left_source and right_source:
+        return left_source == right_source
+    return same_filesystem(left, right)
 
 
 def add(
@@ -386,6 +447,129 @@ def check_storage(checks: list[Check], root: Path, env: dict[str, str], profile:
 
     if is_usb_source(str(data_mount.get("source") or "")) and data_fstype not in {"f2fs", "ext4"}:
         add(checks, "warn", "usb_chain_filesystem", f"USB chain device uses {data_fstype or 'unknown'} filesystem.", "Use F2FS for USB flash or ext4 for USB SSD.", evidence)
+
+
+def check_storage_profile(checks: list[Check], root: Path, env: dict[str, str], profile: HostProfile) -> None:
+    selected = (env.get("BDAG_STORAGE_PROFILE") or "auto").strip().lower() or "auto"
+    known_profiles = {"auto", "single-device", "single-usb-constrained", "usb-chain-internal-runtime", "split-ssd", "dev"}
+    chain_base = env_data_dir(root, env)
+    node2_dir = env_node_data_dir(root, env, "node2")
+    postgres_dir = env_postgres_dir(root, env)
+    runtime_dir = env_runtime_dir(root, env)
+
+    chain_device = storage_device(node2_dir)
+    postgres_device = storage_device(postgres_dir)
+    runtime_device = storage_device(runtime_dir)
+    project_device = storage_device(root)
+
+    postgres_same_as_chain = same_storage_device(node2_dir, chain_device, postgres_dir, postgres_device)
+    runtime_same_as_chain = same_storage_device(node2_dir, chain_device, runtime_dir, runtime_device)
+    project_same_as_chain = same_storage_device(node2_dir, chain_device, root, project_device)
+
+    docker_root = docker_root_dir()
+    docker_same_as_chain = None
+    docker_device: dict[str, Any] | None = None
+    if docker_root:
+        docker_path = Path(docker_root)
+        docker_device = storage_device(docker_path)
+        docker_same_as_chain = same_storage_device(node2_dir, chain_device, docker_path, docker_device)
+
+    if selected not in known_profiles:
+        add(
+            checks,
+            "warn",
+            "storage_profile",
+            f"unknown BDAG_STORAGE_PROFILE={selected}",
+            "Use auto, usb-chain-internal-runtime, single-usb-constrained, split-ssd, single-device, or dev.",
+            {"BDAG_STORAGE_PROFILE": selected},
+        )
+        return
+
+    chain_is_usb = bool(chain_device.get("is_usb"))
+    if selected == "auto":
+        if chain_is_usb and not postgres_same_as_chain and not runtime_same_as_chain:
+            resolved = "usb-chain-internal-runtime"
+        elif chain_is_usb:
+            resolved = "single-usb-constrained"
+        elif not project_same_as_chain:
+            resolved = "split-ssd"
+        else:
+            resolved = "single-device"
+    else:
+        resolved = selected
+
+    evidence = {
+        "selected_profile": selected,
+        "resolved_profile": resolved,
+        "chain_base": str(chain_base),
+        "node2_data_dir": str(node2_dir),
+        "postgres_dir": str(postgres_dir),
+        "runtime_dir": str(runtime_dir),
+        "chain_device": chain_device,
+        "postgres_device": postgres_device,
+        "runtime_device": runtime_device,
+        "project_device": project_device,
+        "postgres_same_as_chain": postgres_same_as_chain,
+        "runtime_same_as_chain": runtime_same_as_chain,
+        "project_same_as_chain": project_same_as_chain,
+        "docker_root": docker_root,
+        "docker_device": docker_device,
+        "docker_same_as_chain": docker_same_as_chain,
+    }
+
+    add(checks, "pass", "storage_profile", f"{selected} resolved to {resolved}", evidence=evidence)
+
+    if profile.profile == "constrained" and chain_is_usb:
+        if not postgres_same_as_chain and not runtime_same_as_chain:
+            add(
+                checks,
+                "pass",
+                "storage_io_split",
+                "USB chain data is separated from Postgres and dashboard/runtime writes",
+                evidence=evidence,
+            )
+        else:
+            add(
+                checks,
+                "warn",
+                "storage_io_split",
+                "USB chain data shares a device with frequent small runtime writes.",
+                "Keep growing node chain data on the high-capacity USB, but place BDAG_POSTGRES_DATA_DIR and BDAG_RUNTIME_DIR on internal storage when it has at least 4GiB free.",
+                evidence,
+            )
+    elif profile.profile == "constrained" and project_same_as_chain:
+        add(
+            checks,
+            "warn",
+            "storage_io_split",
+            "constrained host is using one device for project, chain, and runtime writes.",
+            "Use a large USB/SSD for BDAG_CHAIN_DATA_DIR and keep BDAG_POSTGRES_DATA_DIR/BDAG_RUNTIME_DIR on internal storage if capacity allows.",
+            evidence,
+        )
+    else:
+        add(checks, "pass", "storage_io_split", "chain and runtime storage placement is acceptable for this host profile", evidence=evidence)
+
+    if selected in {"usb-chain-internal-runtime", "split-ssd"} and (postgres_same_as_chain or runtime_same_as_chain):
+        add(
+            checks,
+            "warn",
+            "explicit_storage_profile_mismatch",
+            f"BDAG_STORAGE_PROFILE={selected} expects Postgres and runtime writes away from the active chain device.",
+            "Correct BDAG_POSTGRES_DATA_DIR and BDAG_RUNTIME_DIR or set BDAG_STORAGE_PROFILE=auto if this is an intentional single-device install.",
+            evidence,
+        )
+
+    if docker_same_as_chain is True and profile.profile == "constrained":
+        add(
+            checks,
+            "warn",
+            "docker_chain_shared_device",
+            "Docker root shares the active chain device on a constrained host.",
+            "Keep Docker root on internal storage when image/build-cache budget fits; otherwise prune builder cache and keep local Docker log caps enabled.",
+            evidence,
+        )
+    elif docker_same_as_chain is False:
+        add(checks, "pass", "docker_chain_shared_device", "Docker root is separated from the active chain device", evidence=evidence)
 
 
 def chain_marker_exists(path: Path) -> bool:
@@ -616,6 +800,7 @@ def run_preflight(root: Path, env_file: Path) -> dict[str, Any]:
     checks: list[Check] = []
     check_host(checks, profile)
     check_storage(checks, root, env, profile)
+    check_storage_profile(checks, root, env, profile)
     check_node_data_layout(checks, root, env)
     check_env_defaults(checks, env, profile)
     check_swap(checks, profile)
