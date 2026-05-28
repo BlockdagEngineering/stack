@@ -440,7 +440,7 @@ configure_env() {
   set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MIN_GAIN_BLOCKS 1000
   set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED 1
   set_env_value .env BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS 0
-  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT 7200s
+  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT 21600s
   configure_node_mode_env "$node_mode"
   configure_node_mining_env "$node_mining_enabled" "$mining_address"
 
