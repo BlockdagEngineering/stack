@@ -79,6 +79,11 @@ BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=1 \
 ./ops/publish-rawdatadir-artifact.sh
 ```
 
+The publisher refuses to create a manifest unless live RPC returns a real
+`block_total`, `tip_order`, `tip_hash`, and, by default, `state_root`. It also
+uses `sudo -n tar` automatically when the finalized sidecar contains root-owned
+chain files.
+
 The optional `ops/systemd/user-bdag-rawdatadir-sidecar.timer` refreshes the
 sidecar every two hours, with jitter. `ops/install-p2p-services.sh` installs it
 only through the raw datadir source eligibility policy. USB-backed chain data is
