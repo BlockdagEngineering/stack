@@ -57,6 +57,69 @@ services:
         self.assertEqual(0, result.inserted_count)
         self.assertEqual(compose, result.text)
 
+    def test_adds_submit_hardening_flags_to_each_existing_pool_service(self) -> None:
+        compose = """services:
+  asic-pool:
+    environment:
+      NODE_RPC_URLS: http://rpc-failover:38131
+      POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: ${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}
+      NODE_RPC_USER: ${NODE_RPC_USER:-test}
+  asic-pool-hector:
+    environment:
+      NODE_RPC_URLS: http://rpc-failover:38131
+      NODE_RPC_USER: ${NODE_RPC_USER:-test}
+  bdag-miner-node-1:
+    environment:
+      NODE_RPC_URLS: unused
+"""
+
+        result = compose_migrations.ensure_pool_submit_hardening_flags(compose)
+
+        self.assertTrue(result.changed)
+        self.assertEqual(7, result.inserted_count)
+        self.assertIn(
+            "      POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: ${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}\n"
+            "      POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}\n"
+            "      POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}\n"
+            "      POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD: ${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}\n"
+            "      NODE_RPC_USER:",
+            result.text,
+        )
+        self.assertIn(
+            "  asic-pool-hector:\n"
+            "    environment:\n"
+            "      NODE_RPC_URLS: http://rpc-failover:38131\n"
+            "      POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: ${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}\n"
+            "      POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}\n"
+            "      POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}\n"
+            "      POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD: ${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}\n"
+            "      NODE_RPC_USER:",
+            result.text,
+        )
+        self.assertNotIn(
+            "bdag-miner-node-1:\n"
+            "    environment:\n"
+            "      POOL_SUBMIT_STALE_BLOCK_CANDIDATES",
+            result.text,
+        )
+
+    def test_existing_submit_hardening_flags_are_noop(self) -> None:
+        compose = """services:
+  asic-pool:
+    environment:
+      NODE_RPC_URLS: http://rpc-failover:38131
+      POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: ${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}
+      POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}
+      POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}
+      POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD: ${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}
+"""
+
+        result = compose_migrations.ensure_pool_submit_hardening_flags(compose)
+
+        self.assertFalse(result.changed)
+        self.assertEqual(0, result.inserted_count)
+        self.assertEqual(compose, result.text)
+
     def test_missing_pool_service_is_reported_as_unmodified(self) -> None:
         compose = """services:
   bdag-miner-node-1:
