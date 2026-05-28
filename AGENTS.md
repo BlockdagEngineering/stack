@@ -219,3 +219,12 @@ directory artifact is opt-in through `BDAG_FASTSYNC_ARTIFACT_DIRECTORY` and
 `BDAG_FASTSYNC_ARTIFACT_MANIFEST`; nodes bootstrapped from a directory artifact
 auto-serve that verified checkpoint from `artifact.manifest.json`. Do not make
 future changes that force archive assembly back into the default fast path.
+
+For single-node mining pools, raw datadir FastArtifact source serving is the
+preferred sync-source design. The live node datadir must never be served or
+exported directly. Use `ops/fastartifact_source_eligibility.py`,
+`ops/maintain-rawdatadir-sidecar.sh`, and `ops/publish-rawdatadir-artifact.sh`
+so source serving fails closed on USB/removable storage and publishes only a
+signed `raw_datadir_checkpoint` generation from a finalized sidecar. Keep
+`BDAG_FASTSNAP_SEED_TIMER_ENABLED=0` in single-node defaults; the old archive
+FastSnap seed timer is a dual-node compatibility path only.

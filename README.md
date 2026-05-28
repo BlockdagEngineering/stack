@@ -166,9 +166,9 @@ that verified checkpoint from the node datadir by using
 
 The Pi5 ARM64 release builder (`ops/build-pi5-arm64-release.sh`) now generates a
 self-monitoring stack package. It defaults to `BDAG_NODE_MODE=single`, which
-runs `bdag-miner-node-2` only to reduce USB power pressure. Choose `double` in
+runs `bdag-miner-node-1` only to reduce USB power pressure. Choose `double` in
 the installer, or set `BDAG_NODE_MODE=double` with `COMPOSE_PROFILES=dual-node`,
-to add `bdag-miner-node-1`.
+to add `bdag-miner-node-2`.
 
 No-miner deployments are sync-only by default: `BDAG_ENABLE_NODE_MINING=0`,
 `BDAG_NODE_MODULES=Blockdag`, and an empty `BDAG_NODE_MINING_ARGS`. Enable node
@@ -303,13 +303,46 @@ docker compose -p snapshot-node -f docker-compose.snapshot-node.yml --env-file .
 - Default host ports **`9150`** (P2P), **`48131`** (BDAG RPC), **`28545`** / **`28546`** (EVM), **`16060`** (metrics) avoid clashes with the mining compose defaults.
 - Point export automation at container **`snapshot-node-node-1`** (see `docker compose -p snapshot-node ps`).
 
-## Default dual-node FastSnap seeding
+## Default V2 Sync Source
 
-Dual-node mining hosts can serve a public P2P FastSnap archive without mining
-against a stopped node by using the pool router maintenance handoff. This is a
-default release behaviour: `bdag-fastsnap-seed.timer` refreshes the public seed
-every two hours at low CPU and I/O priority when
-`BDAG_FASTSNAP_SEED_TIMER_ENABLED=1`.
+New installs use Fast Artifact Sync V2 as the preferred bootstrap path. Client
+sync is enabled by default; source serving is gated by
+`BDAG_RAWDATADIR_SOURCE_MODE=auto` and only enables when the chain, sidecar,
+artifact, temporary, and Docker paths are not USB/removable/external and the
+host has enough CPU, RAM, and disk headroom.
+
+Eligible source hosts maintain a low-priority raw datadir sidecar and publish a
+signed `raw_datadir_checkpoint` artifact from a finalized sidecar generation.
+Single-node systems do not stop the live node automatically. Set
+`BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=1` only for an operator-approved
+finalization window.
+
+The old archive FastSnap seed timer is no longer a single-node release default.
+`BDAG_FASTSNAP_SEED_TIMER_ENABLED=0` keeps `bdag-fastsnap-seed.timer` disabled
+unless a dual-node host explicitly opts into the legacy standby-export workflow.
+The stale-seed threshold is `BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG=10000`.
+
+Check source eligibility and status with:
+
+```bash
+./ops/fastartifact_source_eligibility.py --full --json
+```
+
+Refresh/publish the raw datadir source path with:
+
+```bash
+./ops/publish-rawdatadir-artifact.sh
+```
+
+See `docs/rawdatadir-libp2p-sync.md` and
+`docs/v2-sync-source-backlog.md`.
+
+## Optional dual-node FastSnap archive seeding
+
+Dual-node mining hosts can still serve a P2P FastSnap archive without mining
+against a stopped node by using the pool router maintenance handoff. This is now
+an explicit compatibility path for older peers, not the preferred RC source
+design.
 
 Run an immediate refresh manually with:
 
@@ -328,7 +361,7 @@ keep separate per-node snapshot copies.
 
 The export path refuses to publish a stale public seed by default unless the
 standby/export backend is within `BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG`
-main-order units of the selected backend. The default is `1000`.
+main-order units of the selected backend. The default is `10000`.
 
 See `docs/fastsnap-maintenance-handoff.html`.
 
