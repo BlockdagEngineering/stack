@@ -281,7 +281,7 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
     )
 
     action = "monitor"
-    reason = "dual-node sync is acceptable"
+    reason = "single-node sync is within policy" if len(NODES) == 1 else "dual-node sync is acceptable"
     target = ""
 
     if not leader:
