@@ -16,6 +16,38 @@ import time
 from pathlib import Path
 from typing import Any
 
+
+def bootstrap_stack_env() -> None:
+    project_root = Path(os.environ.get("BDAG_PROJECT_ROOT") or Path(__file__).resolve().parents[1])
+    pool_env = Path(os.environ["BDAG_POOL_ENV_FILE"]) if os.environ.get("BDAG_POOL_ENV_FILE") else None
+    if pool_env is not None and not pool_env.is_absolute():
+        pool_env = project_root / pool_env
+    candidates = [
+        pool_env,
+        project_root / ".env",
+        project_root / "asic-pool" / ".env",
+    ]
+    for path in candidates:
+        if path is None or not path.exists():
+            continue
+        for line in path.read_text(errors="replace").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.startswith("export "):
+                stripped = stripped[7:].strip()
+            if "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            os.environ.setdefault(key, value)
+
+
+bootstrap_stack_env()
+
 from incident_journal import append_incident
 from pool_ops import (
     DATA_DIR,
