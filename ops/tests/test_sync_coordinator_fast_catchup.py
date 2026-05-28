@@ -52,6 +52,27 @@ class SyncCoordinatorFastCatchupTest(unittest.TestCase):
         self.assertEqual(decision["action"], "monitor")
         self.assertFalse(decision["far_behind"])
 
+    def test_single_node_ignores_retired_paused_follower_state(self) -> None:
+        previous_state = {
+            "mode": "leader_catchup",
+            "paused_follower": "node2",
+            "paused_follower_remaining_blocks": 200_000,
+            "last_decision": {
+                "network_highest": 10_500,
+                "nodes": {
+                    "node": {"height": 9000, "remaining_blocks": 1500},
+                    "node2": {"height": 0, "remaining_blocks": 200_000},
+                },
+            },
+        }
+
+        decision = sync_coordinator.build_decision(self.status(remaining=1500), previous_state)
+
+        self.assertEqual(decision["action"], "accelerate_leader_catchup")
+        self.assertEqual(decision["leader"], "node")
+        self.assertEqual(decision["target"], "")
+        self.assertNotIn("node2", decision["nodes"])
+
     def test_command_line_fastartifact_flag_detection(self) -> None:
         self.assertTrue(sync_coordinator.node_command_has_fast_artifact_sync("/usr/local/bin/blockdag-node --fastartifactsync"))
         self.assertTrue(sync_coordinator.node_command_has_fast_artifact_sync("/usr/local/bin/blockdag-node --fastartifactsync=true"))
