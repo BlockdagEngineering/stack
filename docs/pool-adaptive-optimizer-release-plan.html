@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BlockDAG Pool Adaptive Optimizer Release Plan</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 0; background: #11161b; color: #e8edf2; line-height: 1.55; }
+    main { max-width: 980px; margin: 0 auto; padding: 32px 22px 48px; }
+    h1 { margin: 0 0 8px; font-size: 32px; line-height: 1.12; }
+    h2 { margin-top: 28px; color: #f0f5fa; }
+    h3 { margin-top: 20px; color: #dbe7f2; }
+    p, li { color: #c6d1dc; }
+    code { color: #8bd5ff; }
+    pre { overflow-x: auto; background: #18212a; border: 1px solid #293541; padding: 14px; border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; margin: 14px 0; background: #151d24; border: 1px solid #26313b; }
+    th, td { padding: 9px 10px; border-bottom: 1px solid #26313b; text-align: left; vertical-align: top; }
+    th { color: #a9bac9; font-size: 12px; text-transform: uppercase; }
+    .note { border-left: 4px solid #6fb5ff; padding: 10px 14px; background: #15202b; }
+  </style>
+  <script type="application/json" id="agent-metadata">
+  {
+    "document_type": "pool_adaptive_optimizer_release_plan",
+    "created_at": "2026-05-28T02:45:00+02:00",
+    "related_controller": "/home/jeremy/blockdag-source/pool-stack-docker-fastsync-peer-order/ops/pool_adaptive_optimizer.py",
+    "related_harness": "/home/jeremy/blockdag-source/pool-stack-docker-fastsync-peer-order/ops/pool_job_timing_optimizer.py"
+  }
+  </script>
+</head>
+<body>
+<main>
+  <h1>BlockDAG Pool Adaptive Optimizer Release Plan</h1>
+  <p class="note">The release design is guarded-adaptive. The optimizer can recommend continuously, but it mutates live pool knobs only when runtime admin is enabled and a human explicitly starts apply mode. This prevents the controller from chasing short-window luck or transient Pi I/O stalls.</p>
+
+  <h2>Control Model</h2>
+  <p>The optimizer runs three conceptual loops:</p>
+  <ol>
+    <li><strong>Fast safety loop, 10-30 seconds:</strong> watch dashboard readiness, pool job health, MAC lane count, template age, submit readiness, ASIC hardware state, and host pressure. This loop can only hold, recommend revert, or mark a candidate unsafe.</li>
+    <li><strong>Medium control loop, 5-15 minutes:</strong> adjust only pool-local knobs in a bounded safe range: VarDiff target share interval, template TTL refresh, and max block-candidate job age.</li>
+    <li><strong>Slow reward loop, 30-120 minutes or settled sample minimum:</strong> promote settings only from source-truth accepted/blue/paid block conversion per active MAC miner-hour.</li>
+  </ol>
+
+  <h2>Objective</h2>
+  <pre><code>maximize:
+  source_truth_blue_paid_blocks / active_mac_miner_hour
+
+hard constraints:
+  dashboard overall == ok
+  can_mine && can_submit_blocks
+  pool_job_health_ok
+  stable active mac: lane count
+  no current-job stale/invalidated miner condition
+  no submit-disabled or transport-failed regression
+  no settled source-truth conversion regression
+
+secondary penalties:
+  node reject rate by reason
+  local stale/old-template/stale-parent reject rate
+  stale-share ACK/reject rate
+  p95 template fetch latency
+  p95 submit latency
+  backend switch churn
+  clean-job broadcast churn
+  Pi CPU/iowait pressure
+  MAC lane work imbalance</code></pre>
+
+  <h2>Implemented Controller</h2>
+  <p><code>ops/pool_adaptive_optimizer.py</code> now implements the first release slice:</p>
+  <ul>
+    <li>Advisory mode by default; no runtime mutation unless <code>--apply --yes</code> and <code>/admin/vardiff</code> is reachable.</li>
+    <li>MAC lane extraction from dashboard miner health so exposure and work share are based on <code>mac:</code> identities.</li>
+    <li>Safety scoring from dashboard health, share/block outcomes, stale reject reasons, template fetch latency, iowait, and ASIC lane health.</li>
+    <li>Bounded recommendations for VarDiff target share interval, template TTL refresh, and block-candidate age.</li>
+    <li>JSONL evidence, state file, summary JSON, and HTML report for every run.</li>
+    <li><code>ops/install-dashboard.sh</code> installs a low-priority periodic advisory timer by default when guard services are enabled; <code>--no-adaptive-optimizer</code> opts out.</li>
+  </ul>
+
+  <h2>Release Defaults</h2>
+  <table>
+    <thead><tr><th>Knob</th><th>Safe band</th><th>Initial value</th><th>Reason</th></tr></thead>
+    <tbody>
+      <tr><td><code>template_ttl_ms</code></td><td>500-1500</td><td>1000</td><td>Fresh enough for a fast DAG without blindly increasing RPC pressure.</td></tr>
+      <tr><td><code>block_candidate_job_age_ms</code></td><td>800-1800</td><td>1200</td><td>Rejects candidates old enough to have poor source-truth odds while preserving same-parent opportunity.</td></tr>
+      <tr><td><code>vardiff_target_share_seconds</code></td><td>2-6</td><td>3</td><td>Enough telemetry for MAC lanes without overloading the Pi with share traffic.</td></tr>
+      <tr><td><code>vardiff_window_seconds</code></td><td>10+</td><td>60</td><td>Slow enough to avoid oscillation from ASIC pipeline tail and block-rate noise.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>OfficePool Baseline Finding</h2>
+  <p>On 2026-05-28, OfficePool was mining with one X100 ASIC at <code>mac:28:e2:97:1e:c0:b5</code>. Runtime admin was disabled (<code>POOL_RUNTIME_ADMIN_ENABLED=false</code>), so full live mutation would require a pool-only canary deploy before apply-mode testing. This is why the first controller run must be advisory-only on the existing image.</p>
+  <p>The live advisory samples produced useful hard-stop evidence. A 107 second sample measured 8 accepted block submissions, 1 old-template-age rejection, 51.52% share acceptance, 0.416 second average template fetch latency, and 53.57% host iowait; the controller held because the host was under too much I/O pressure. A second patched 45 second sample measured 5 accepted block submissions, 0 rejected block submissions, 88.24% share acceptance, 0.139 second average template fetch latency, and a <code>pool_job_health_ok=0</code> abort; the controller held and recorded <code>runtime_abort_pool_job_health_ok_0</code> plus <code>pool_job_health_not_ok</code>.</p>
+
+  <h2>Steelman</h2>
+  <p>The strongest objection is correct: dynamic tuning can be unsafe because rewards are sparse, delayed, and confounded by network/DAG conditions. One lucky or unlucky block can dominate a short window, and global knobs can degrade all miners at once. The answer is not free-running PID control; it is bounded safe exploration with a baseline arm, minimum evidence windows, hard stop rules, and source-truth settlement before promotion.</p>
+
+  <h2>Next Release Slice</h2>
+  <ol>
+    <li>Deploy a pool image containing the runtime admin endpoints in a pool-only canary, with rollback to the current image.</li>
+    <li>Run observe-only baseline for at least 4-8 hours on the live Pi.</li>
+    <li>Enable apply-mode only for VarDiff target share interval first; leave template TTL and block-candidate age advisory until source-truth evidence is stable.</li>
+    <li>Add on-chain/blue/coinbase reconciliation into the optimizer score before unattended apply mode can be considered.</li>
+  </ol>
+
+  <h2>Sources</h2>
+  <ul>
+    <li>BIP 22 submit semantics and stale-work result classes: <a href="https://bips.dev/22/">BIP 22 getblocktemplate</a>.</li>
+    <li>Stratum V2 per-channel targets and server-controlled submission rate: <a href="https://stratumprotocol.org/specification/05-mining-protocol/">Stratum V2 Mining Protocol</a>.</li>
+    <li>Stratum V2 template freshness and immediate new-prev-hash behavior: <a href="https://stratumprotocol.org/specification/07-template-distribution-protocol/">Template Distribution Protocol</a>.</li>
+    <li>Safe exploration under uncertainty: <a href="https://proceedings.mlr.press/v37/sui15.pdf">SAFEOPT paper</a> and <a href="https://arxiv.org/abs/1908.05814">safe stochastic bandits</a>.</li>
+    <li>Production canary risk reduction: <a href="https://sre.google/workbook/canarying-releases/">Google SRE canarying releases</a>.</li>
+  </ul>
+</main>
+</body>
+</html>

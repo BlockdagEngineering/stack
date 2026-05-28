@@ -1,0 +1,13 @@
+[Unit]
+Description=Run BlockDAG pool adaptive optimizer advisory pass periodically
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=15m
+AccuracySec=1m
+Persistent=true
+RandomizedDelaySec=2m
+Unit=bdag-pool-adaptive-optimizer.service
+
+[Install]
+WantedBy=timers.target

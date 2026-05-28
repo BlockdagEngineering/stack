@@ -8,6 +8,7 @@ OPS_DIR = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OPS_DIR))
 
 import pool_job_timing_optimizer as optimizer  # noqa: E402
+import pool_adaptive_optimizer as adaptive  # noqa: E402
 
 
 class PoolJobTimingOptimizerTests(unittest.TestCase):
@@ -76,6 +77,95 @@ pool_rpc_backend_submit_duration_seconds_count{backend="node1",result="ok"} 4
         self.assertEqual(summary["templates"]["fetch_avg_seconds"], 0.3)
         self.assertEqual(summary["submit"]["avg_seconds"], 0.2)
         self.assertGreater(summary["score"], 0)
+
+
+class PoolAdaptiveOptimizerTests(unittest.TestCase):
+    def test_lane_health_uses_mac_identity_and_flags_weak_lanes(self) -> None:
+        status = {
+            "miner_health": {
+                "lane_balance": {"identity_basis": "mac"},
+                "miners": [
+                    {
+                        "identity_key": "mac:28:e2:97:1e:c0:b5",
+                        "mac": "28:e2:97:1e:c0:b5",
+                        "display_label": "Achilles-0b5",
+                        "connected": True,
+                        "work_percent": "80.00",
+                        "expected_work_percent": "100.00",
+                        "shares": 12,
+                        "blocks_found": 3,
+                        "debug": {"av_hashrate": 250.0, "hwerr_ratio": 0.03, "valid": 6},
+                    }
+                ],
+            }
+        }
+
+        health = adaptive.lane_health(status)
+
+        self.assertEqual(health["identity_basis"], "mac")
+        self.assertEqual(health["connected_count"], 1)
+        self.assertEqual(health["max_work_imbalance_percent"], 20.0)
+        self.assertEqual(health["weak_lanes"][0]["identity_key"], "mac:28:e2:97:1e:c0:b5")
+
+    def test_safety_rejects_unhealthy_runtime_and_high_iowait(self) -> None:
+        args = adaptive.build_parser().parse_args([])
+        status = {
+            "overall": "degraded",
+            "can_mine": True,
+            "can_submit_blocks": True,
+            "host_pressure": {"iowait_percent": 40.0},
+            "miner_health": {"lane_balance": {"identity_basis": "mac"}, "miners": []},
+        }
+        summary = {
+            "shares": {"accept_ratio": 0.5, "stale_rejects_per_minute": 0.0},
+            "blocks": {"accepted_per_hour": 10.0, "rejected_per_hour": 0.0},
+            "templates": {"fetch_avg_seconds": 0.1},
+        }
+
+        safety = adaptive.summarize_safety(
+            summary,
+            status,
+            args,
+            {"pool_job_health_ok": 0.0},
+            "pool_job_health_ok=0",
+        )
+
+        self.assertFalse(safety["ok"])
+        self.assertIn("runtime_abort_pool_job_health_ok_0", safety["violations"])
+        self.assertIn("pool_job_health_not_ok", safety["violations"])
+        self.assertIn("dashboard_overall_degraded", safety["violations"])
+        self.assertIn("host_iowait_high", safety["violations"])
+
+    def test_choose_next_config_reduces_candidate_age_on_old_template_rejects(self) -> None:
+        args = adaptive.build_parser().parse_args([])
+        current = adaptive.AdaptiveConfig(block_candidate_job_age_ms=1200)
+        summary = {
+            "shares": {"rejected_by_reason": {}, "stale_rejects_per_minute": 0.0},
+            "blocks": {"by_outcome_reason": {"rejected:old-template-age": 2}},
+            "templates": {"fetch_avg_seconds": 0.1},
+        }
+
+        next_config, reason = adaptive.choose_next_config(current, summary, {"host_pressure": {}}, args)
+
+        self.assertEqual(next_config.block_candidate_job_age_ms, 1050)
+        self.assertIn("old-template-age", reason)
+
+    def test_choose_next_config_reduces_share_load_on_stale_share_rejects(self) -> None:
+        args = adaptive.build_parser().parse_args([])
+        current = adaptive.AdaptiveConfig(vardiff_target_share_seconds=3.0)
+        summary = {
+            "shares": {
+                "rejected_by_reason": {"invalidated_job": 4},
+                "stale_rejects_per_minute": 2.0,
+            },
+            "blocks": {"by_outcome_reason": {}},
+            "templates": {"fetch_avg_seconds": 0.1},
+        }
+
+        next_config, reason = adaptive.choose_next_config(current, summary, {"host_pressure": {}}, args)
+
+        self.assertEqual(next_config.vardiff_target_share_seconds, 4.0)
+        self.assertIn("telemetry share load", reason)
 
 
 if __name__ == "__main__":
