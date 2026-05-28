@@ -307,12 +307,25 @@ backup_target_file_once() {
 migrate_runtime_compose() {
   local compose="$TARGET_ROOT/docker-compose.yml"
   [[ -f "$compose" ]] || die "missing target docker-compose.yml"
-  if grep -q 'POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:' "$compose"; then
+  local key
+  local missing=0
+  for key in \
+    POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT \
+    POOL_SUBMIT_STALE_BLOCK_CANDIDATES \
+    POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED \
+    POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD
+  do
+    if ! grep -q "${key}:" "$compose"; then
+      missing=1
+      break
+    fi
+  done
+  if [[ "$missing" -eq 0 ]]; then
     return 0
   fi
-  say "Migrating live runtime compose: POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT"
+  say "Migrating live runtime compose: pool submit hardening settings"
   backup_target_file_once "docker-compose.yml"
-  python3 "$SOURCE_ROOT/ops/compose_migrations.py" --ensure-duplicate-safe-submit "$compose"
+  python3 "$SOURCE_ROOT/ops/compose_migrations.py" --ensure-pool-submit-hardening "$compose"
 }
 
 post_deploy_critical_containers() {
