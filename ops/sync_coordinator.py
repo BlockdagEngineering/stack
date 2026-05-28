@@ -766,12 +766,27 @@ def rsync_node(source: Path, target: Path, log_path: Path, timeout: int) -> bool
     return run_logged(command, log_path, timeout=timeout).ok
 
 
+def docker_container_is_running(name: str) -> bool:
+    proc = run(["docker", "inspect", "-f", "{{.State.Running}}", name], timeout=20)
+    return bool(proc.ok and proc.stdout.strip().lower() == "true")
+
+
 def stop_node(node: str, log_path: Path) -> bool:
-    return run_logged(compose_command("stop", node), log_path, timeout=180).ok
+    compose_ok = run_logged(compose_command("stop", node), log_path, timeout=180).ok
+    if docker_container_is_running(node):
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{now_iso()}] compose stop left {node} running; using direct docker stop\n")
+        run_logged(["docker", "stop", node], log_path, timeout=180)
+    return compose_ok and not docker_container_is_running(node)
 
 
 def start_node(node: str, log_path: Path) -> bool:
-    return run_logged(compose_command("start", node), log_path, timeout=180).ok
+    start_ok = run_logged(compose_command("start", node), log_path, timeout=180).ok
+    if not start_ok:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{now_iso()}] compose start failed for {node}; using compose up -d fallback\n")
+        start_ok = run_logged(compose_command("up", "-d", node), log_path, timeout=240).ok
+    return start_ok and docker_container_is_running(node)
 
 
 def compose_service_container_ids(service: str) -> list[str]:
