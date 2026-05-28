@@ -80,8 +80,9 @@ The preflight checks:
   options.
 - whether chain data is separated from the project/root filesystem.
 - whether the selected storage profile keeps USB chain writes separated from
-  Postgres, dashboard/runtime state, and Docker churn when the host is
-  constrained.
+  Postgres, dashboard/runtime state, and Docker churn.
+- whether small ephemeral scratch resolves to RAM-backed storage rather than
+  adding disk writes to the USB chain device.
 - USB chain filesystem suitability.
 - duplicate node datadirs in single-node mode.
 - old parked chain backups that should be cleaned only after stable mining.

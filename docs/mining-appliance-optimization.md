@@ -90,10 +90,11 @@ media classification, and no entropy collection from block IO.
 
 Use a stable mount such as `/mnt/bdag-usb`, mount ext4 or F2FS with
 `noatime,lazytime`, and make Docker require that mount before container
-startup. On constrained appliances the release installer now resolves
-`BDAG_STORAGE_PROFILE=auto` into explicit paths. The default policy keeps the
-large, growing node datadirs on the capacity disk, then moves frequent small
-writes to internal storage when the boot disk has at least 4 GiB free:
+startup. For any install where the active chain data is on USB,
+`BDAG_STORAGE_PROFILE=auto` now treats split IO as the preferred pattern. The
+default policy keeps the large, growing node datadirs on the USB capacity disk,
+then moves frequent small writes to internal or other non-USB storage when it
+has at least 4 GiB free:
 
 ```bash
 BDAG_CHAIN_DATA_DIR=/mnt/bdag-usb/blockdag-chain
@@ -109,6 +110,20 @@ while the OS disk absorbs Postgres WAL, dashboard history, guard state, and
 small log churn. If the internal disk is too small, the installer falls back to
 a single-device USB profile and the preflight reports that all hot writes share
 one device.
+
+Small scratch files that are safe to lose should not use the chain disk either.
+The release defaults create `/run/bdag-pool` through tmpfiles and set:
+
+```bash
+BDAG_EPHEMERAL_TMPFS_ENABLED=1
+BDAG_EPHEMERAL_DIR=/run/bdag-pool
+BDAG_HOST_TMPDIR=/run/bdag-pool/tmp
+BDAG_CONTAINER_TMPFS_SIZE=128m
+```
+
+Compose services that generate small temporary files get a bounded `/tmp`
+tmpfs. Do not put large FastSnap directory staging, chain snapshots, or import
+artifacts on this RAM-backed path unless the host has been sized for it.
 
 The installer disables common non-mining timers and services such as apt daily
 jobs, cron, Avahi, CUPS, NFS/rpcbind, and desktop disk/power helpers. It leaves

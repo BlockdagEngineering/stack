@@ -212,8 +212,11 @@ storage profile split, single-node duplicate data, swap sizing, Docker root
 placement, network route, schema presence, and resource-sensitive `.env`
 defaults. The installer resolves `BDAG_STORAGE_PROFILE=auto` into concrete
 chain, Postgres, and runtime paths so capacity USB storage can carry the growing
-chain while internal storage absorbs small frequent writes when it has enough
-headroom. The installer reports
+chain while internal or other non-USB storage absorbs small frequent writes when
+it has enough headroom. USB-backed chain data always prefers this split. Small
+ephemeral scratch is kept on bounded tmpfs through `BDAG_EPHEMERAL_DIR` and
+`BDAG_CONTAINER_TMPFS_SIZE`; large snapshot and chain-artifact staging stays on
+capacity storage unless deliberately overridden. The installer reports
 warnings and continues by default. Set `BDAG_APPLIANCE_PREFLIGHT_STRICT=1` to
 make hard failures stop the install, or `BDAG_APPLIANCE_PREFLIGHT=0` to skip it
 explicitly. The field report behind these checks is in

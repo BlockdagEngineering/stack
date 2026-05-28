@@ -19,6 +19,7 @@ from typing import Any
 GIB = 1024**3
 ZERO_ETH_ADDRESS = "0x0000000000000000000000000000000000000000"
 FLASH_UNFRIENDLY_FS = {"exfat", "vfat", "ntfs", "fuseblk"}
+RAM_BACKED_FS = {"tmpfs", "ramfs"}
 CHAIN_DB_MARKERS = ("BdagChain", "Blockdag", "chaindata", "mainnet")
 
 
@@ -322,6 +323,10 @@ def env_runtime_dir(root: Path, env: dict[str, str]) -> Path:
     return env_path(root, env, "BDAG_RUNTIME_DIR", root / "ops" / "runtime")
 
 
+def env_ephemeral_dir(root: Path, env: dict[str, str]) -> Path:
+    return env_path(root, env, "BDAG_EPHEMERAL_DIR", Path("/run/bdag-pool"))
+
+
 def storage_device(path: Path) -> dict[str, Any]:
     mount = mount_info(path)
     source = clean_mount_source(str(mount.get("source") or ""))
@@ -519,7 +524,7 @@ def check_storage_profile(checks: list[Check], root: Path, env: dict[str, str], 
 
     add(checks, "pass", "storage_profile", f"{selected} resolved to {resolved}", evidence=evidence)
 
-    if profile.profile == "constrained" and chain_is_usb:
+    if chain_is_usb:
         if not postgres_same_as_chain and not runtime_same_as_chain:
             add(
                 checks,
@@ -534,7 +539,7 @@ def check_storage_profile(checks: list[Check], root: Path, env: dict[str, str], 
                 "warn",
                 "storage_io_split",
                 "USB chain data shares a device with frequent small runtime writes.",
-                "Keep growing node chain data on the high-capacity USB, but place BDAG_POSTGRES_DATA_DIR and BDAG_RUNTIME_DIR on internal storage when it has at least 4GiB free.",
+                "USB-backed chain installs should keep growing node data on USB capacity storage, but place BDAG_POSTGRES_DATA_DIR and BDAG_RUNTIME_DIR on internal or other non-USB storage when it has at least 4GiB free.",
                 evidence,
             )
     elif profile.profile == "constrained" and project_same_as_chain:
@@ -559,17 +564,76 @@ def check_storage_profile(checks: list[Check], root: Path, env: dict[str, str], 
             evidence,
         )
 
-    if docker_same_as_chain is True and profile.profile == "constrained":
+    if docker_same_as_chain is True and (profile.profile == "constrained" or chain_is_usb):
         add(
             checks,
             "warn",
             "docker_chain_shared_device",
-            "Docker root shares the active chain device on a constrained host.",
+            "Docker root shares the active chain device.",
             "Keep Docker root on internal storage when image/build-cache budget fits; otherwise prune builder cache and keep local Docker log caps enabled.",
             evidence,
         )
     elif docker_same_as_chain is False:
         add(checks, "pass", "docker_chain_shared_device", "Docker root is separated from the active chain device", evidence=evidence)
+
+
+def check_ephemeral_storage(checks: list[Check], root: Path, env: dict[str, str]) -> None:
+    enabled = bool_enabled(env.get("BDAG_EPHEMERAL_TMPFS_ENABLED"), True)
+    ephemeral_dir = env_ephemeral_dir(root, env)
+    tmpdir = env_path(root, env, "TMPDIR", ephemeral_dir / "tmp")
+    ephemeral_device = storage_device(ephemeral_dir)
+    tmpdir_device = storage_device(tmpdir)
+    staging_raw = (env.get("BDAG_FASTSNAP_DIRECTORY_STAGING") or "").strip()
+    staging_path = env_path(root, env, "BDAG_FASTSNAP_DIRECTORY_STAGING", staging_raw) if staging_raw else None
+    staging_device = storage_device(staging_path) if staging_path else None
+    evidence = {
+        "BDAG_EPHEMERAL_TMPFS_ENABLED": env.get("BDAG_EPHEMERAL_TMPFS_ENABLED"),
+        "BDAG_EPHEMERAL_DIR": str(ephemeral_dir),
+        "TMPDIR": str(tmpdir),
+        "BDAG_CONTAINER_TMPFS_SIZE": env.get("BDAG_CONTAINER_TMPFS_SIZE"),
+        "ephemeral_device": ephemeral_device,
+        "tmpdir_device": tmpdir_device,
+        "BDAG_FASTSNAP_DIRECTORY_STAGING": str(staging_path) if staging_path else "",
+        "fastsnap_staging_device": staging_device,
+    }
+    if not enabled:
+        add(
+            checks,
+            "warn",
+            "ephemeral_tmpfs",
+            "ephemeral tmpfs placement is disabled.",
+            "Use RAM-backed storage for small temporary files and caches that are safe to lose; keep large snapshot/chain staging on capacity storage.",
+            evidence,
+        )
+        return
+
+    if str(ephemeral_device.get("fstype") or "") in RAM_BACKED_FS and str(tmpdir_device.get("fstype") or "") in RAM_BACKED_FS:
+        add(
+            checks,
+            "pass",
+            "ephemeral_tmpfs",
+            "ephemeral scratch paths resolve to RAM-backed storage",
+            evidence=evidence,
+        )
+    else:
+        add(
+            checks,
+            "warn",
+            "ephemeral_tmpfs",
+            "ephemeral scratch paths are disk-backed.",
+            "Prefer /run/bdag-pool or container tmpfs mounts for small temporary files, transient caches, and scratch state that can be lost on reboot.",
+            evidence,
+        )
+
+    if staging_device and str(staging_device.get("fstype") or "") in RAM_BACKED_FS:
+        add(
+            checks,
+            "warn",
+            "fastsnap_staging_tmpfs",
+            "FastSnap directory staging is on RAM-backed storage.",
+            "Only small ephemeral scratch belongs on tmpfs. Keep large FastSnap artifact staging on chain/capacity storage unless the host has deliberately provisioned enough RAM.",
+            evidence,
+        )
 
 
 def chain_marker_exists(path: Path) -> bool:
@@ -801,6 +865,7 @@ def run_preflight(root: Path, env_file: Path) -> dict[str, Any]:
     check_host(checks, profile)
     check_storage(checks, root, env, profile)
     check_storage_profile(checks, root, env, profile)
+    check_ephemeral_storage(checks, root, env)
     check_node_data_layout(checks, root, env)
     check_env_defaults(checks, env, profile)
     check_swap(checks, profile)

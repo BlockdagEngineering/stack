@@ -33,6 +33,7 @@ profile_dir="${repo_root}/host/mining-appliance"
 
 install -D -m 0644 "${profile_dir}/90-mining-appliance-sysctl.conf" /etc/sysctl.d/90-mining-appliance.conf
 install -D -m 0644 "${profile_dir}/90-mining-appliance-journald.conf" /etc/systemd/journald.conf.d/90-mining-appliance.conf
+install -D -m 0644 "${profile_dir}/90-bdag-ephemeral.conf" /etc/tmpfiles.d/90-bdag-ephemeral.conf
 install -D -m 0755 "${profile_dir}/mining-appliance-host-tuning" /usr/local/sbin/mining-appliance-host-tuning
 install -D -m 0755 "${profile_dir}/bdag-runtime-priority" /usr/local/sbin/bdag-runtime-priority
 install -D -m 0755 "${profile_dir}/bdag-node-child-guard" /usr/local/sbin/bdag-node-child-guard
@@ -62,6 +63,7 @@ tmp.replace(dst)
 PY
 
 systemctl daemon-reload
+systemd-tmpfiles --create /etc/tmpfiles.d/90-bdag-ephemeral.conf
 systemctl enable --now mining-appliance-tuning.service
 systemctl enable --now bdag-runtime-priority.timer
 systemctl enable --now bdag-node-child-guard.timer
