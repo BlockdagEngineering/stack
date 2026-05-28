@@ -147,6 +147,180 @@ configure_node_mining_env() {
   fi
 }
 
+env_value() {
+  local key="$1" fallback="${2:-}" value
+  value="$(grep -E "^${key}=" .env 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
+  printf '%s\n' "${value:-$fallback}"
+}
+
+absolute_path() {
+  local path="$1"
+  if [[ "$path" == /* ]]; then
+    printf '%s\n' "$path"
+  else
+    printf '%s\n' "$ROOT/${path#./}"
+  fi
+}
+
+env_path_value() {
+  local key="$1" fallback="$2"
+  absolute_path "$(env_value "$key" "$fallback")"
+}
+
+env_path_value_for_auto_profile() {
+  local key="$1" fallback="$2" shipped_default="$3" value
+  value="$(env_value "$key" "")"
+  if [[ -z "$value" || "$value" == "auto" || "$value" == "$shipped_default" || "$value" == "${shipped_default#./}" ]]; then
+    absolute_path "$fallback"
+  else
+    absolute_path "$value"
+  fi
+}
+
+existing_parent() {
+  local path="$1"
+  while [[ ! -e "$path" && "$path" != "/" ]]; do
+    path="$(dirname "$path")"
+  done
+  printf '%s\n' "$path"
+}
+
+path_free_gib() {
+  local path parent
+  path="$1"
+  parent="$(existing_parent "$path")"
+  df -Pk "$parent" 2>/dev/null | awk 'NR == 2 {printf "%d", $4 / 1048576}'
+}
+
+mount_source_for_path() {
+  local path parent
+  path="$1"
+  parent="$(existing_parent "$path")"
+  findmnt -rn -T "$parent" -o SOURCE 2>/dev/null | sed 's/\[.*//'
+}
+
+same_mount_device() {
+  local left="$1" right="$2" left_source right_source
+  left_source="$(mount_source_for_path "$left")"
+  right_source="$(mount_source_for_path "$right")"
+  [[ -n "$left_source" && "$left_source" == "$right_source" ]]
+}
+
+path_is_usb() {
+  local source block tran
+  source="$(mount_source_for_path "$1")"
+  [[ "$source" == /dev/* ]] || return 1
+  tran="$(lsblk -no TRAN "$source" 2>/dev/null | head -n1 || true)"
+  if [[ "$tran" == "usb" ]]; then
+    return 0
+  fi
+  block="$(lsblk -no PKNAME "$source" 2>/dev/null | head -n1 || true)"
+  [[ -n "$block" ]] || block="$(basename "$source")"
+  tran="$(lsblk -dn -o TRAN "/dev/$block" 2>/dev/null | head -n1 || true)"
+  [[ "$tran" == "usb" ]]
+}
+
+select_chain_data_base() {
+  local configured target fstype source free_gib score best="" best_score=-1 profile min_chain_gib
+  configured="$(env_value BDAG_CHAIN_DATA_DIR "")"
+  profile="$(env_value BDAG_STORAGE_PROFILE auto)"
+  if [[ -n "$configured" && "$configured" != "auto" && ! ( "$profile" == "auto" && ( "$configured" == "./data" || "$configured" == "data" ) ) ]]; then
+    absolute_path "$configured"
+    return 0
+  fi
+  min_chain_gib="$(env_value BDAG_STORAGE_MIN_CHAIN_FREE_GIB "${BDAG_STORAGE_MIN_CHAIN_FREE_GIB:-50}")"
+
+  while read -r target fstype source; do
+    case "$target" in
+      /|/boot*|/dev*|/proc*|/run*|/sys*|/snap*|/var/lib/docker*|/var/lib/snapd*) continue ;;
+    esac
+    case "$fstype" in
+      tmpfs|devtmpfs|overlay|squashfs|proc|sysfs|cgroup*|devpts|securityfs|tracefs|debugfs|fusectl|configfs) continue ;;
+    esac
+    free_gib="$(path_free_gib "$target")"
+    free_gib="${free_gib:-0}"
+    (( free_gib >= min_chain_gib )) || continue
+    score="$free_gib"
+    if path_is_usb "$target"; then
+      score=$(( score + 100000 ))
+    fi
+    if (( score > best_score )); then
+      best="$target/blockdag-chain"
+      best_score="$score"
+    fi
+  done < <(findmnt -rn -o TARGET,FSTYPE,SOURCE)
+
+  if [[ -n "$best" ]]; then
+    printf '%s\n' "$best"
+  else
+    printf '%s\n' "$ROOT/data"
+  fi
+}
+
+select_runtime_data_base() {
+  local chain_base="$1" configured runtime_free min_runtime_gib
+  configured="$(env_value BDAG_RUNTIME_DATA_DIR "")"
+  if [[ -n "$configured" && "$configured" != "auto" ]]; then
+    absolute_path "$configured"
+    return 0
+  fi
+  min_runtime_gib="$(env_value BDAG_STORAGE_MIN_RUNTIME_FREE_GIB "${BDAG_STORAGE_MIN_RUNTIME_FREE_GIB:-4}")"
+  runtime_free="$(path_free_gib "$ROOT")"
+  runtime_free="${runtime_free:-0}"
+  if ! same_mount_device "$ROOT" "$chain_base" && (( runtime_free >= min_runtime_gib )); then
+    printf '%s\n' "$ROOT/runtime-data"
+  else
+    printf '%s\n' "$chain_base/runtime"
+  fi
+}
+
+configure_storage_profile() {
+  local chain_base runtime_base node1_dir node2_dir postgres_dir runtime_dir profile existing_profile
+  chain_base="$(absolute_path "$(select_chain_data_base)")"
+  runtime_base="$(absolute_path "$(select_runtime_data_base "$chain_base")")"
+  existing_profile="$(env_value BDAG_STORAGE_PROFILE auto)"
+  if [[ "$existing_profile" == "auto" || -z "$existing_profile" ]]; then
+    node1_dir="$(env_path_value_for_auto_profile BDAG_NODE1_DATA_DIR "$chain_base/node1" "./data/node1")"
+    node2_dir="$(env_path_value_for_auto_profile BDAG_NODE2_DATA_DIR "$chain_base/node2" "./data/node2")"
+    postgres_dir="$(env_path_value_for_auto_profile BDAG_POSTGRES_DATA_DIR "$runtime_base/postgres" "./data/postgres")"
+    runtime_dir="$(env_path_value_for_auto_profile BDAG_RUNTIME_DIR "$runtime_base/ops-runtime" "./ops/runtime")"
+  else
+    node1_dir="$(env_path_value BDAG_NODE1_DATA_DIR "$chain_base/node1")"
+    node2_dir="$(env_path_value BDAG_NODE2_DATA_DIR "$chain_base/node2")"
+    postgres_dir="$(env_path_value BDAG_POSTGRES_DATA_DIR "$runtime_base/postgres")"
+    runtime_dir="$(env_path_value BDAG_RUNTIME_DIR "$runtime_base/ops-runtime")"
+  fi
+  if [[ "$existing_profile" == "auto" || -z "$existing_profile" ]]; then
+    if path_is_usb "$chain_base" && ! same_mount_device "$chain_base" "$runtime_base"; then
+      profile="usb-chain-internal-runtime"
+    elif path_is_usb "$chain_base"; then
+      profile="single-usb-constrained"
+    elif ! same_mount_device "$chain_base" "$runtime_base"; then
+      profile="split-ssd"
+    else
+      profile="single-device"
+    fi
+  else
+    profile="$existing_profile"
+  fi
+
+  set_env_value .env BDAG_STORAGE_PROFILE "$profile"
+  set_env_value .env BDAG_CHAIN_DATA_DIR "$chain_base"
+  set_env_value .env BDAG_DATA_DIR "$chain_base"
+  set_env_value .env BDAG_NODE1_DATA_DIR "$node1_dir"
+  set_env_value .env BDAG_NODE2_DATA_DIR "$node2_dir"
+  set_env_value .env BDAG_POSTGRES_DATA_DIR "$postgres_dir"
+  set_env_value .env BDAG_RUNTIME_DIR "$runtime_dir"
+  set_env_value .env BDAG_STORAGE_MIN_CHAIN_FREE_GIB "$(env_value BDAG_STORAGE_MIN_CHAIN_FREE_GIB "${BDAG_STORAGE_MIN_CHAIN_FREE_GIB:-50}")"
+  set_env_value .env BDAG_STORAGE_MIN_RUNTIME_FREE_GIB "$(env_value BDAG_STORAGE_MIN_RUNTIME_FREE_GIB "${BDAG_STORAGE_MIN_RUNTIME_FREE_GIB:-4}")"
+
+  mkdir -p asic-pool "$node1_dir" "$node2_dir" "$postgres_dir" "$runtime_dir/logs"
+  say "Storage profile: $profile"
+  echo "Chain data: $chain_base"
+  echo "Postgres data: $postgres_dir"
+  echo "Runtime/dashboard state: $runtime_dir"
+}
+
 guard_runtime_compose() {
   if [[ ! -f docker-compose.yml ]]; then
     echo "Missing docker-compose.yml in release root." >&2
@@ -183,7 +357,7 @@ install_packages() {
 configure_env() {
   say "Preparing configuration"
   [[ -f .env ]] || cp .env.example .env
-  mkdir -p asic-pool data/node1 data/node2 data/postgres ops/runtime/logs
+  configure_storage_profile
 
   local lan_ip scan_target mining_address node_mode node_mining_enabled mem_kb mem_gb
   lan_ip="$(detect_lan_ip)"
@@ -277,7 +451,11 @@ load_or_build_images() {
 
   if (( loaded == 0 )); then
     say "No prebuilt image archives found; building local images from bundled binaries"
-    src/build-images.sh "$arch" "bundle"
+    if command -v ionice >/dev/null 2>&1; then
+      ionice -c 3 nice -n 19 src/build-images.sh "$arch" "bundle"
+    else
+      nice -n 19 src/build-images.sh "$arch" "bundle"
+    fi
   fi
 
   if "${DOCKER[@]}" image inspect "bdag-release/asic-pool:bundle-$arch" >/dev/null 2>&1; then
@@ -313,35 +491,45 @@ find_or_extract_chain_seed() {
 }
 
 seed_chain_data() {
-  local seed
+  local seed chain_base node1_dir node2_dir template_dir node_mode
   if ! seed="$(find_or_extract_chain_seed)"; then
     warn "No separate chain-data seed found. Nodes will sync from public peers."
     warn "If you received chain-data parts, reassemble them first, then rerun ./install.sh."
     return 0
   fi
 
-  if [[ -d data/node1/mainnet/BdagChain || -d data/node2/mainnet/BdagChain ]]; then
+  chain_base="$(env_path_value BDAG_CHAIN_DATA_DIR data)"
+  node1_dir="$(env_path_value BDAG_NODE1_DATA_DIR "$chain_base/node1")"
+  node2_dir="$(env_path_value BDAG_NODE2_DATA_DIR "$chain_base/node2")"
+  template_dir="$chain_base/chain-template"
+  node_mode="$(env_value BDAG_NODE_MODE single)"
+  if [[ -z "$template_dir" || "$template_dir" == "/" ]]; then
+    echo "Refusing unsafe chain template directory: $template_dir" >&2
+    exit 1
+  fi
+
+  if [[ -d "$node1_dir/mainnet/BdagChain" || -d "$node2_dir/mainnet/BdagChain" ]]; then
     if ! yes_no "Existing node chain data was found. Replace it from the chain seed?" "n"; then
       return 0
     fi
-    mv data/node1 "data/node1.backup.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
-    mv data/node2 "data/node2.backup.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
-    mkdir -p data/node1 data/node2
+    mv "$node1_dir" "$node1_dir.backup.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+    mv "$node2_dir" "$node2_dir.backup.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+    mkdir -p "$node1_dir" "$node2_dir"
   fi
 
   say "Unpacking one chain seed and copying it to configured node datadirs"
-  rm -rf data/chain-template
-  mkdir -p data/chain-template
-  unzip -q "$seed" -d data/chain-template
-  if [[ -d data/chain-template/chain-data ]]; then
-    rsync -a data/chain-template/chain-data/ data/node2/
-    if [[ "$(grep -E '^BDAG_NODE_MODE=' .env | cut -d= -f2-)" == "double" ]]; then
-      rsync -a data/chain-template/chain-data/ data/node1/
+  rm -rf "$template_dir"
+  mkdir -p "$template_dir" "$node1_dir" "$node2_dir"
+  unzip -q "$seed" -d "$template_dir"
+  if [[ -d "$template_dir/chain-data" ]]; then
+    rsync -a "$template_dir/chain-data/" "$node2_dir/"
+    if [[ "$node_mode" == "double" ]]; then
+      rsync -a "$template_dir/chain-data/" "$node1_dir/"
     fi
   else
-    rsync -a data/chain-template/ data/node2/
-    if [[ "$(grep -E '^BDAG_NODE_MODE=' .env | cut -d= -f2-)" == "double" ]]; then
-      rsync -a data/chain-template/ data/node1/
+    rsync -a "$template_dir/" "$node2_dir/"
+    if [[ "$node_mode" == "double" ]]; then
+      rsync -a "$template_dir/" "$node1_dir/"
     fi
   fi
 }
@@ -349,8 +537,11 @@ seed_chain_data() {
 publish_p2p_snapshot_archive() {
   local arch="$1"
   local bdag_bin="artifacts/binaries/linux-$arch/bdag"
-  local source_datadir="data/node2/mainnet"
-  local target_datadir="data/node2/mainnet"
+  local node1_dir node2_dir source_datadir target_datadir
+  node1_dir="$(env_path_value BDAG_NODE1_DATA_DIR data/node1)"
+  node2_dir="$(env_path_value BDAG_NODE2_DATA_DIR data/node2)"
+  source_datadir="$node2_dir/mainnet"
+  target_datadir="$node2_dir/mainnet"
   local source_archive="$source_datadir/snapshot.bdsnap"
   local target_archive="$target_datadir/snapshot.bdsnap"
   local force="${BDAG_P2P_SNAPSHOT_FORCE:-0}"
@@ -380,9 +571,9 @@ publish_p2p_snapshot_archive() {
     say "Existing node2 P2P snapshot archive found: $source_archive"
   fi
 
-  target_datadir="data/node1/mainnet"
+  target_datadir="$node1_dir/mainnet"
   target_archive="$target_datadir/snapshot.bdsnap"
-  if [[ "$(grep -E '^BDAG_NODE_MODE=' .env | cut -d= -f2-)" == "double" && -d "$target_datadir/BdagChain" ]]; then
+  if [[ "$(env_value BDAG_NODE_MODE single)" == "double" && -d "$target_datadir/BdagChain" ]]; then
     mkdir -p "$target_datadir"
     rm -f "$target_archive" "$target_archive.manifest.json"
     ln "$source_archive" "$target_archive" 2>/dev/null || cp -f "$source_archive" "$target_archive"
@@ -409,11 +600,13 @@ start_stack() {
 
 install_dashboard() {
   if yes_no "Install the local dashboard/watchdog service?" "y"; then
+    local runtime_dir
     set -a
     # shellcheck disable=SC1091
     source .env
     set +a
-    ops/install-dashboard.sh --bind "${BDAG_DASHBOARD_BIND:-127.0.0.1}" --port "${BDAG_DASHBOARD_PORT:-8088}" || true
+    runtime_dir="$(env_path_value BDAG_RUNTIME_DIR "ops/runtime")"
+    ops/install-dashboard.sh --bind "${BDAG_DASHBOARD_BIND:-127.0.0.1}" --port "${BDAG_DASHBOARD_PORT:-8088}" --runtime-dir "$runtime_dir" || true
   fi
 }
 

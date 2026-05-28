@@ -41,8 +41,9 @@ Field report from the `/home/hpool` mining host on 2026-05-26.
 
 ## Mitigations Used
 
-1. Moved chain data and Docker-heavy runtime storage off the internal eMMC and
-   onto a dedicated F2FS USB filesystem.
+1. Moved chain data off the internal eMMC and onto a dedicated F2FS USB
+   filesystem, then split small frequent writes back to internal storage where
+   there was enough free space.
 2. Used a single-node stack for the appliance.
 3. Downloaded and verified the FastSnap V2 artifact before import.
 4. Parked old datadirs with timestamped names instead of deleting them, then
@@ -78,6 +79,9 @@ The preflight checks:
 - chain data filesystem free space, mount point, filesystem type, and mount
   options.
 - whether chain data is separated from the project/root filesystem.
+- whether the selected storage profile keeps USB chain writes separated from
+  Postgres, dashboard/runtime state, and Docker churn when the host is
+  constrained.
 - USB chain filesystem suitability.
 - duplicate node datadirs in single-node mode.
 - old parked chain backups that should be cleaned only after stable mining.

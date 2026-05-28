@@ -1,4 +1,10 @@
 
+x-mining-logging: &mining-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "2"
+
 x-build-args: &build-args
   SNAPSHOT_PATH: ${SNAPSHOT_PATH:-./latest.bdsnap}
 
@@ -30,6 +36,7 @@ services:
     <<: *pool-critical
     image: postgres:15-bookworm
     restart: unless-stopped
+    logging: *mining-logging
     environment:
       POSTGRES_USER:     ${POSTGRES_USER:-bdag_pool}
       POSTGRES_DB:       ${POSTGRES_DB:-bdagpool}
@@ -56,6 +63,7 @@ services:
       args:
         <<: *build-args
     restart: unless-stopped
+    logging: *mining-logging
     ports:
       - "${P2P_PORT:-8150}:8150"
       - "${BDAG_RPC_PORT:-38131}:38131"
@@ -139,6 +147,7 @@ services:
       args:
         <<: *build-args
     restart: unless-stopped
+    logging: *mining-logging
     ports:
       - "${SNAPSHOT_P2P_PORT:-9150}:8150"
       - "${SNAPSHOT_BDAG_RPC_PORT:-48131}:38131"
@@ -179,6 +188,7 @@ services:
   hotsnap:
     image: docker:27-cli
     restart: unless-stopped
+    logging: *mining-logging
     depends_on:
       snapshot-node: { condition: service_started }
     environment:
@@ -207,6 +217,7 @@ services:
       args:
         <<: *build-args
     restart: unless-stopped
+    logging: *mining-logging
     depends_on:
       postgres: { condition: service_healthy }
       node:     { condition: service_started }
@@ -274,6 +285,7 @@ services:
       args:
         <<: *build-args
     restart: unless-stopped
+    logging: *mining-logging
     depends_on:
       node: { condition: service_started }
       pool: { condition: service_started }

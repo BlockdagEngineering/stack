@@ -102,6 +102,23 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             data_dir = preflight.env_data_dir(root, {})
         self.assertEqual(data_dir, Path("/srv/bdag-chain-usb/node-data"))
 
+    def test_named_compose_volume_does_not_override_default_data_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                "\n".join(
+                    [
+                        "services:",
+                        "  snapshot-node:",
+                        "    volumes:",
+                        "      - snapshot-node-data:/var/lib/bdagStack/node",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            data_dir = preflight.env_data_dir(root, {"BDAG_CHAIN_DATA_DIR": "./data"})
+        self.assertEqual(data_dir, root / "data")
+
     def test_live_node_child_passes_when_compose_node_is_absent(self) -> None:
         old_run = preflight.run
 
@@ -145,6 +162,80 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             preflight.run = old_run
 
         self.assertEqual(checks[0].status, "fail")
+
+    def test_storage_profile_passes_when_usb_chain_is_split_from_runtime(self) -> None:
+        old_mount_info = preflight.mount_info
+        old_is_usb_source = preflight.is_usb_source
+        old_docker_root_dir = preflight.docker_root_dir
+
+        def fake_mount_info(path: Path) -> dict[str, str]:
+            value = str(path)
+            if value.startswith("/mnt/usb"):
+                return {"target": "/mnt/usb", "source": "/dev/sda1", "fstype": "f2fs", "options": "rw,noatime,lazytime"}
+            return {"target": "/", "source": "/dev/mmcblk0p2", "fstype": "ext4", "options": "rw,relatime"}
+
+        try:
+            preflight.mount_info = fake_mount_info
+            preflight.is_usb_source = lambda source: source.startswith("/dev/sda")
+            preflight.docker_root_dir = lambda: "/var/lib/docker"
+            profile = preflight.HostProfile("linux", "aarch64", 4, 4 * preflight.GIB, "constrained", "test")
+            checks = []
+            preflight.check_storage_profile(
+                checks,
+                Path("/opt/blockdag-pool"),
+                {
+                    "BDAG_STORAGE_PROFILE": "auto",
+                    "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
+                    "BDAG_NODE2_DATA_DIR": "/mnt/usb/blockdag-chain/node2",
+                    "BDAG_POSTGRES_DATA_DIR": "/opt/blockdag-pool/runtime-data/postgres",
+                    "BDAG_RUNTIME_DIR": "/opt/blockdag-pool/runtime-data/ops-runtime",
+                },
+                profile,
+            )
+        finally:
+            preflight.mount_info = old_mount_info
+            preflight.is_usb_source = old_is_usb_source
+            preflight.docker_root_dir = old_docker_root_dir
+
+        found = {check.name: check for check in checks}
+        self.assertEqual(found["storage_io_split"].status, "pass")
+        self.assertEqual(found["storage_profile"].evidence["resolved_profile"], "usb-chain-internal-runtime")
+
+    def test_storage_profile_warns_when_runtime_shares_usb_chain_device(self) -> None:
+        old_mount_info = preflight.mount_info
+        old_is_usb_source = preflight.is_usb_source
+        old_docker_root_dir = preflight.docker_root_dir
+
+        def fake_mount_info(path: Path) -> dict[str, str]:
+            return {"target": "/mnt/usb", "source": "/dev/sda1", "fstype": "f2fs", "options": "rw,noatime,lazytime"}
+
+        try:
+            preflight.mount_info = fake_mount_info
+            preflight.is_usb_source = lambda source: source.startswith("/dev/sda")
+            preflight.docker_root_dir = lambda: "/mnt/usb/docker"
+            profile = preflight.HostProfile("linux", "aarch64", 4, 4 * preflight.GIB, "constrained", "test")
+            checks = []
+            preflight.check_storage_profile(
+                checks,
+                Path("/opt/blockdag-pool"),
+                {
+                    "BDAG_STORAGE_PROFILE": "usb-chain-internal-runtime",
+                    "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
+                    "BDAG_NODE2_DATA_DIR": "/mnt/usb/blockdag-chain/node2",
+                    "BDAG_POSTGRES_DATA_DIR": "/mnt/usb/blockdag-chain/runtime/postgres",
+                    "BDAG_RUNTIME_DIR": "/mnt/usb/blockdag-chain/runtime/ops-runtime",
+                },
+                profile,
+            )
+        finally:
+            preflight.mount_info = old_mount_info
+            preflight.is_usb_source = old_is_usb_source
+            preflight.docker_root_dir = old_docker_root_dir
+
+        found = {check.name: check.status for check in checks}
+        self.assertEqual(found["storage_io_split"], "warn")
+        self.assertEqual(found["explicit_storage_profile_mismatch"], "warn")
+        self.assertEqual(found["docker_chain_shared_device"], "warn")
 
 
 if __name__ == "__main__":
