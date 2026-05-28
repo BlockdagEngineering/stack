@@ -77,6 +77,7 @@ FILES=(
   "ops/systemd/user-bdag-status-sampler.service"
   "ops/systemd/user-bdag-sync-coordinator.timer"
   "scripts/validate-rc-local.sh"
+  "scripts/install-mining-appliance-profile.sh"
   "scripts/mining-appliance-preflight.py"
   "scripts/validate-pi5-restart-hardening.sh"
   "scripts/verify-release-architecture.py"
@@ -211,7 +212,19 @@ ignored = {
     "scripts/release/installers/install-windows.ps1",
 }
 required = set()
-for match in re.finditer(r'need_file "([^"]+)"', validator.read_text(encoding="utf-8")):
+text = validator.read_text(encoding="utf-8")
+for match in re.finditer(r'need_file "([^"]+)"', text):
+    rel = match.group(1)
+    if rel in ignored or rel.startswith(".github/"):
+        continue
+    required.add(rel)
+for line in text.splitlines():
+    stripped = line.strip()
+    if not stripped.startswith(("need_grep ", "reject_grep ")):
+        continue
+    match = re.search(r'"([^"]+)"\s*$', stripped)
+    if not match:
+        continue
     rel = match.group(1)
     if rel in ignored or rel.startswith(".github/"):
         continue
