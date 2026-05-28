@@ -109,6 +109,104 @@ class GlobalTabFallbackTests(unittest.TestCase):
         self.assertEqual(payload["clusters"][0]["blocks"], cached["clusters"][0]["blocks"])
         self.assertIn("unable to fetch latest global block height", payload["error"])
 
+    def test_global_cache_hit_normalizes_zero_header_rows(self) -> None:
+        cached = {
+            "status": "ok",
+            "updated_at_epoch": 100,
+            "latest_block": 123,
+            "clusters": [{"address": pool_ops.ZERO_ETH_ADDRESS, "blocks": 7, "rpc_sources": ["node2"]}],
+            "fetch_errors": [],
+        }
+
+        def fake_read_json_file(path: pathlib.Path, fallback: object) -> object:
+            if path == pool_ops.GLOBAL_CACHE_FILE:
+                return cached
+            return fallback
+
+        pool_ops.read_json_file = fake_read_json_file
+        pool_ops.read_global_history = lambda limit=None: []
+        pool_ops.seconds_since_epoch = lambda: 101
+
+        payload = pool_ops.collect_global_blockchain()
+
+        self.assertTrue(payload["cache_hit"])
+        row = payload["clusters"][0]
+        self.assertTrue(row["zero_address"])
+        self.assertEqual(row["nodes"], [])
+        self.assertEqual(row["source_truth"], "evm-header-miner")
+        self.assertIn("not local pool payout", row["zero_address_note"])
+
+
+class LocalPoolSourceTruthTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.originals = {
+            name: getattr(pool_ops, name)
+            for name in (
+                "pool_db_json",
+                "node_rpc_urls",
+                "mining_rpc_call",
+                "local_worker_identity_map",
+                "LOCAL_POOL_SOURCE_TRUTH_LIMIT",
+                "LOCAL_POOL_SOURCE_TRUTH_WORKERS",
+                "LOCAL_POOL_SOURCE_TRUTH_SETTLE_SECONDS",
+            )
+        }
+        self.addCleanup(self.restore_globals)
+
+    def restore_globals(self) -> None:
+        for name, value in self.originals.items():
+            setattr(pool_ops, name, value)
+
+    def test_local_pool_overlay_counts_only_confirmed_blue_coinbase_blocks(self) -> None:
+        wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        rows = [
+            {"node_block_hash": "0xblue", "submitted_at": "2026-05-27T13:00:00Z"},
+            {"node_block_hash": "0xpending", "submitted_at": "2026-05-27T13:01:00Z"},
+            {"node_block_hash": "0xzero", "submitted_at": "2026-05-27T13:02:00Z"},
+        ]
+        blue = {"0xblue": 1, "0xpending": 2, "0xzero": 1}
+        coinbase = {"0xblue": wallet, "0xpending": wallet, "0xzero": pool_ops.ZERO_ETH_ADDRESS}
+
+        pool_ops.pool_db_json = lambda _sql: rows
+        pool_ops.node_rpc_urls = lambda: [("node2", "http://node2:38131")]
+        pool_ops.local_worker_identity_map = lambda: {wallet.lower(): {"display_label": "Achilles-0b5"}}
+        pool_ops.LOCAL_POOL_SOURCE_TRUTH_LIMIT = 100
+        pool_ops.LOCAL_POOL_SOURCE_TRUTH_WORKERS = 1
+        pool_ops.LOCAL_POOL_SOURCE_TRUTH_SETTLE_SECONDS = 90
+
+        def fake_rpc(_url: str, method: str, params: list[object], timeout: float = 0) -> object:
+            block_hash = str(params[0])
+            if method == "isBlue":
+                return blue[block_hash]
+            if method == "getCoinbaseAddress":
+                return coinbase[block_hash]
+            if method == "getBlockV2":
+                return {"confirmations": 3, "order": 123} if blue[block_hash] == 1 else {"confirmations": 0}
+            raise AssertionError(method)
+
+        pool_ops.mining_rpc_call = fake_rpc
+
+        clusters = pool_ops.collect_local_pool_global_clusters(
+            scan_window_seconds=3600,
+            total_global_blocks=100,
+            scan_window_hours=Decimal("1"),
+            price={"usd": "0.01", "zar": "0.18"},
+            avg_reward_bdag=Decimal("10"),
+        )
+
+        self.assertEqual(len(clusters), 1)
+        cluster = clusters[0]
+        self.assertEqual(cluster["address"], wallet.lower())
+        self.assertEqual(cluster["pool_name"], "Achilles-0b5")
+        self.assertEqual(cluster["source_truth"], "bdag-rpc-isBlue")
+        self.assertEqual(cluster["blocks"], 1)
+        self.assertEqual(cluster["found_blocks"], 1)
+        self.assertEqual(cluster["shares"], 1)
+        self.assertEqual(cluster["accepted_submissions"], 2)
+        self.assertEqual(cluster["pending_submissions"], 1)
+        self.assertEqual(cluster["credited_bdag"], "10.00")
+        self.assertEqual(cluster["share_percent"], "1.00")
+
 
 class GlobalHistoryWriteTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -193,6 +291,11 @@ class GlobalLocalPoolOverlayTests(unittest.TestCase):
         self.old_pool_db_json = pool_ops.pool_db_json
         self.old_read_miner_registry = pool_ops.read_miner_registry
         self.old_read_global_pool_labels = pool_ops.read_global_pool_labels
+        self.old_node_rpc_urls = pool_ops.node_rpc_urls
+        self.old_mining_rpc_call = pool_ops.mining_rpc_call
+        self.old_source_truth_limit = pool_ops.LOCAL_POOL_SOURCE_TRUTH_LIMIT
+        self.old_source_truth_workers = pool_ops.LOCAL_POOL_SOURCE_TRUTH_WORKERS
+        self.old_source_truth_settle = pool_ops.LOCAL_POOL_SOURCE_TRUTH_SETTLE_SECONDS
         self.old_nodes = pool_ops.NODES
         self.addCleanup(self.restore_globals)
 
@@ -200,21 +303,37 @@ class GlobalLocalPoolOverlayTests(unittest.TestCase):
         pool_ops.pool_db_json = self.old_pool_db_json
         pool_ops.read_miner_registry = self.old_read_miner_registry
         pool_ops.read_global_pool_labels = self.old_read_global_pool_labels
+        pool_ops.node_rpc_urls = self.old_node_rpc_urls
+        pool_ops.mining_rpc_call = self.old_mining_rpc_call
+        pool_ops.LOCAL_POOL_SOURCE_TRUTH_LIMIT = self.old_source_truth_limit
+        pool_ops.LOCAL_POOL_SOURCE_TRUTH_WORKERS = self.old_source_truth_workers
+        pool_ops.LOCAL_POOL_SOURCE_TRUTH_SETTLE_SECONDS = self.old_source_truth_settle
         pool_ops.NODES = self.old_nodes
 
-    def test_local_pool_credit_row_uses_asic_worker_identity(self) -> None:
+    def test_local_pool_source_truth_row_uses_asic_worker_identity(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         pool_ops.NODES = ["bdag-miner-node-2"]
         pool_ops.pool_db_json = lambda _sql: [
             {
-                "miner_address": wallet,
-                "credit_count": 7,
-                "found_blocks": 7,
-                "total_wei": "70000000000000000000",
-                "first_seen_at": "2026-05-27T00:00:00Z",
-                "last_seen_at": "2026-05-27T00:01:00Z",
+                "node_block_hash": "0xblue",
+                "submitted_at": "2026-05-27T00:01:00Z",
             }
         ]
+        pool_ops.node_rpc_urls = lambda: [("node2", "http://node2:38131")]
+        pool_ops.LOCAL_POOL_SOURCE_TRUTH_LIMIT = 100
+        pool_ops.LOCAL_POOL_SOURCE_TRUTH_WORKERS = 1
+        pool_ops.LOCAL_POOL_SOURCE_TRUTH_SETTLE_SECONDS = 90
+
+        def fake_rpc(_url: str, method: str, params: list[object], timeout: float = 0) -> object:
+            if method == "isBlue":
+                return 1
+            if method == "getCoinbaseAddress":
+                return wallet
+            if method == "getBlockV2":
+                return {"confirmations": 3, "order": 123}
+            raise AssertionError(method)
+
+        pool_ops.mining_rpc_call = fake_rpc
         pool_ops.read_miner_registry = lambda: {
             "miners": [
                 {
@@ -232,29 +351,74 @@ class GlobalLocalPoolOverlayTests(unittest.TestCase):
             total_global_blocks=100,
             scan_window_hours=Decimal("0.0333333333"),
             price={"status": "ok", "usd": "0.01", "zar": "0.18"},
+            avg_reward_bdag=Decimal("10"),
         )
 
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["address"], wallet)
+        self.assertEqual(rows[0]["address"], wallet.lower())
         self.assertEqual(rows[0]["pool_name"], "Achilles-0b5")
         self.assertEqual(rows[0]["nodes"], ["bdag-miner-node-2"])
         self.assertTrue(rows[0]["local_pool"])
-        self.assertEqual(rows[0]["shares"], 7)
-        self.assertEqual(rows[0]["credit_blocks"], 7)
-        self.assertEqual(rows[0]["found_blocks"], 7)
-        self.assertEqual(rows[0]["credited_bdag"], "70.00")
+        self.assertEqual(rows[0]["source_truth"], "bdag-rpc-isBlue")
+        self.assertEqual(rows[0]["shares"], 1)
+        self.assertEqual(rows[0]["credit_blocks"], 1)
+        self.assertEqual(rows[0]["found_blocks"], 1)
+        self.assertEqual(rows[0]["credited_bdag"], "10.00")
 
     def test_local_pool_overlay_is_preserved_when_address_matches_chain_cluster(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         merged = pool_ops.merge_global_local_pool_clusters(
             [{"address": wallet, "blocks": 2, "last_seen_at": "2026-05-27T00:01:00Z"}],
-            [{"address": wallet, "blocks": 3, "pool_name": "Achilles-0b5", "local_pool": True, "credit_blocks": 3}],
+            [
+                {
+                    "address": wallet,
+                    "blocks": 3,
+                    "pool_name": "Achilles-0b5",
+                    "local_pool": True,
+                    "source": "local-pool-bdag-rpc",
+                    "source_truth": "bdag-rpc-isBlue",
+                    "credit_blocks": 3,
+                    "accepted_submissions": 4,
+                    "pending_submissions": 1,
+                }
+            ],
         )
 
         self.assertEqual(len(merged), 1)
         self.assertTrue(merged[0]["local_pool"])
         self.assertEqual(merged[0]["pool_name"], "Achilles-0b5")
-        self.assertEqual(merged[0]["credit_blocks"], 3)
+        self.assertEqual(merged[0]["source"], "on-chain+local-pool-bdag-rpc")
+        self.assertEqual(merged[0]["source_truth"], "bdag-rpc-isBlue")
+        self.assertNotIn("credit_blocks", merged[0])
+        self.assertEqual(merged[0]["local_credit_blocks"], 3)
+        self.assertEqual(merged[0]["accepted_submissions"], 4)
+        self.assertEqual(merged[0]["pending_submissions"], 1)
+
+    def test_local_pool_overlay_preserves_local_display_amounts(self) -> None:
+        wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        merged = pool_ops.merge_global_local_pool_clusters(
+            [{"address": wallet, "blocks": 2, "estimated_usd": "$old", "last_seen_at": "2026-05-27T00:01:00Z"}],
+            [
+                {
+                    "address": wallet,
+                    "blocks": 5,
+                    "shares": 6,
+                    "local_pool": True,
+                    "source": "local-pool-bdag-rpc",
+                    "estimated_usd": "$new",
+                    "estimated_usd_avg_hour": "$1.23",
+                }
+            ],
+        )
+
+        self.assertEqual(merged[0]["local_blocks"], 5)
+        self.assertEqual(merged[0]["local_shares"], 6)
+        self.assertEqual(merged[0]["local_estimated_usd"], "$new")
+        self.assertEqual(merged[0]["local_estimated_usd_avg_hour"], "$1.23")
+
+    def test_require_spendable_eth_address_rejects_zero_worker(self) -> None:
+        with self.assertRaises(ValueError):
+            pool_ops.require_spendable_eth_address(pool_ops.ZERO_ETH_ADDRESS, "worker_user")
 
     def test_local_pool_identity_is_not_replaced_by_static_global_label(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"

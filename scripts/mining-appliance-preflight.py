@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import platform
@@ -11,6 +12,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,14 @@ GIB = 1024**3
 ZERO_ETH_ADDRESS = "0x0000000000000000000000000000000000000000"
 FLASH_UNFRIENDLY_FS = {"exfat", "vfat", "ntfs", "fuseblk"}
 CHAIN_DB_MARKERS = ("BdagChain", "Blockdag", "chaindata", "mainnet")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    from ops import capability_profile
+except Exception:  # pragma: no cover - preflight should degrade in trimmed packages.
+    capability_profile = None  # type: ignore[assignment]
 
 
 @dataclass
@@ -384,8 +394,27 @@ def check_storage(checks: list[Check], root: Path, env: dict[str, str], profile:
     elif not data_same_as_root:
         add(checks, "pass", "chain_data_placement", "chain data is separated from the project/root filesystem", evidence=evidence)
 
-    if is_usb_source(str(data_mount.get("source") or "")) and data_fstype not in {"f2fs", "ext4"}:
+    usb_chain_data = is_usb_source(str(data_mount.get("source") or ""))
+    if usb_chain_data and data_fstype not in {"f2fs", "ext4"}:
         add(checks, "warn", "usb_chain_filesystem", f"USB chain device uses {data_fstype or 'unknown'} filesystem.", "Use F2FS for USB flash or ext4 for USB SSD.", evidence)
+
+    mining_address = (env.get("MINING_ADDRESS") or env.get("MINING_POOL_ADDRESS") or "").strip()
+    topology = (env.get("BDAG_DETECTED_NETWORK_TOPOLOGY") or env.get("BDAG_NETWORK_TOPOLOGY") or "").strip().lower()
+    mining_appliance = (
+        mining_address and mining_address.lower() != ZERO_ETH_ADDRESS
+    ) or topology == "single-node-asic-router"
+    no_fastsync_serve = bool_enabled(env.get("BDAG_NO_FASTSYNC_SERVE"), False)
+    if usb_chain_data and mining_appliance and not no_fastsync_serve:
+        add(
+            checks,
+            "fail",
+            "usb_mining_fastsync_serving",
+            "USB-backed mining node is not configured to suppress FastSync serving.",
+            "Set BDAG_NO_FASTSYNC_SERVE=1 so the miner can consume sync but does not serve bulk range, snapshot, or artifact traffic from USB while mining.",
+            evidence,
+        )
+    elif usb_chain_data and mining_appliance:
+        add(checks, "pass", "usb_mining_fastsync_serving", "USB-backed mining node will not serve bulk FastSync data", evidence=evidence)
 
 
 def chain_marker_exists(path: Path) -> bool:
@@ -423,6 +452,7 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         "BDAG_NODE_CACHE_MB": env.get("BDAG_NODE_CACHE_MB"),
         "NODE_MAX_PEERS": env.get("NODE_MAX_PEERS"),
         "BDAG_FASTSYNC_PREPROCESS_WORKERS": env.get("BDAG_FASTSYNC_PREPROCESS_WORKERS"),
+        "BDAG_NO_FASTSYNC_SERVE": env.get("BDAG_NO_FASTSYNC_SERVE"),
         "BDAG_FASTARTIFACTSYNC_ENABLED": env.get("BDAG_FASTARTIFACTSYNC_ENABLED"),
         "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": env.get("BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC"),
         "BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS": env.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS"),
@@ -454,7 +484,9 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     else:
         add(checks, "pass", "fastsync_preprocess_workers", f"BDAG_FASTSYNC_PREPROCESS_WORKERS={preprocess}", evidence=evidence)
 
-    if not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True):
+    if bool_enabled(env.get("BDAG_NO_FASTSYNC_SERVE"), False):
+        add(checks, "pass", "fastartifactsync", "Fast Artifact Sync serving is suppressed for this mining node", evidence=evidence)
+    elif not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True):
         add(checks, "warn", "fastartifactsync", "BDAG_FASTARTIFACTSYNC_ENABLED is disabled.", "Enable Fast Artifact Sync V2 so nodes can advertise and use the fastest sync path.", evidence)
     else:
         add(checks, "pass", "fastartifactsync", "Fast Artifact Sync V2 startup flag is enabled", evidence=evidence)
@@ -487,6 +519,99 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         add(checks, "pass", "entrypoint_chown_mode", f"BDAG_ENTRYPOINT_CHOWN_MODE={chown_mode}", evidence=evidence)
 
 
+def check_capability_profile(checks: list[Check], env: dict[str, str], payload: dict[str, Any] | None) -> None:
+    if not payload:
+        add(
+            checks,
+            "warn",
+            "capability_profile",
+            "capability profile resolver is unavailable.",
+            "Include ops/capability_profile.py so installers, preflight, dashboard, and tuning scripts share one hardware/storage policy.",
+        )
+        return
+
+    profile = str(payload.get("capability_profile") or "")
+    facts = payload.get("host_facts") if isinstance(payload.get("host_facts"), dict) else {}
+    recs = payload.get("recommendations") if isinstance(payload.get("recommendations"), dict) else {}
+    storage_classes = [
+        item.get("storage_class")
+        for item in (facts.get("chain_paths") or [])
+        if isinstance(item, dict) and item.get("storage_class")
+    ]
+    evidence = {
+        "capability_profile": profile,
+        "topology": facts.get("topology"),
+        "node_mode": facts.get("node_mode"),
+        "chain_storage_classes": storage_classes,
+        "recommendations": recs,
+    }
+    add(
+        checks,
+        "pass",
+        "capability_profile",
+        f"resolved {profile or 'unknown'} for topology={facts.get('topology') or 'unknown'} storage={','.join(storage_classes) or 'unknown'}",
+        "Keep BDAG_CAPABILITY_PROFILE=auto unless deliberately testing a different appliance class.",
+        evidence,
+    )
+
+    if profile in {"pi5-usb-asic-router", "usb-asic-router"}:
+        if (env.get("BDAG_NO_FASTSYNC_SERVE") or "auto").strip().lower() not in {"1", "true", "yes", "on"}:
+            add(
+                checks,
+                "fail",
+                "capability_no_fastsync_serve",
+                f"{profile} must not serve bulk FastSync from the mining USB chain device.",
+                "Set BDAG_NO_FASTSYNC_SERVE=1; this host can consume FastSync and relay blocks but must not spend USB IO serving snapshots while mining.",
+                evidence,
+            )
+        else:
+            add(checks, "pass", "capability_no_fastsync_serve", "USB ASIC-router profile suppresses bulk FastSync serving", evidence=evidence)
+
+    cache_actual = safe_int(env.get("BDAG_NODE_CACHE_MB"), None)
+    cache_recommended = safe_int(recs.get("BDAG_NODE_CACHE_MB") if recs else None, None)
+    if cache_actual and cache_recommended:
+        if cache_actual < max(1024, int(cache_recommended * 0.75)):
+            add(
+                checks,
+                "warn",
+                "capability_node_cache_budget",
+                f"BDAG_NODE_CACHE_MB={cache_actual} is materially below the {profile} recommendation of {cache_recommended}.",
+                "Use the capability-profile recommendation unless measured memory pressure proves it is too high; more hot DB cache reduces USB/SD reads.",
+                evidence,
+            )
+        elif cache_actual > int(cache_recommended * 1.5):
+            add(
+                checks,
+                "warn",
+                "capability_node_cache_budget",
+                f"BDAG_NODE_CACHE_MB={cache_actual} is materially above the {profile} recommendation of {cache_recommended}.",
+                "Leave RAM for the Linux page cache and Postgres; overcommitting process heap can turn RAM pressure into USB writes.",
+                evidence,
+            )
+        else:
+            add(checks, "pass", "capability_node_cache_budget", f"BDAG_NODE_CACHE_MB={cache_actual} matches {profile} budget", evidence=evidence)
+
+    for key in (
+        "BDAG_BLOCK_READ_AHEAD_KB",
+        "BDAG_BLOCK_NR_REQUESTS",
+        "BDAG_VM_SWAPPINESS",
+        "BDAG_VM_VFS_CACHE_PRESSURE",
+    ):
+        expected = str(recs.get(key) or "")
+        actual = str(env.get(key) or "")
+        if not expected or not actual:
+            continue
+        if actual != expected:
+            add(
+                checks,
+                "warn",
+                f"capability_{key.lower()}",
+                f"{key}={actual} differs from {profile} recommendation {expected}.",
+                "Align host tuning with the resolved capability profile, then measure IO wait and accepted blocks before overriding.",
+                evidence,
+            )
+
+
 def check_swap(checks: list[Check], profile: HostProfile) -> None:
     swaps = parse_swaps()
     total = sum(item["size_bytes"] for item in swaps)
@@ -501,7 +626,188 @@ def check_swap(checks: list[Check], profile: HostProfile) -> None:
         add(checks, "pass", "swap_budget", f"swap total={round(total / GIB, 2)}GiB used={round(used / GIB, 2)}GiB", evidence=evidence)
 
 
-def check_network(checks: list[Check]) -> None:
+def parse_cidrs(value: str) -> list[ipaddress.IPv4Network]:
+    networks: list[ipaddress.IPv4Network] = []
+    for raw in re.split(r"[\s,]+", value or ""):
+        token = raw.strip()
+        if not token:
+            continue
+        try:
+            network = ipaddress.ip_network(token, strict=False)
+        except ValueError:
+            continue
+        if isinstance(network, ipaddress.IPv4Network):
+            networks.append(network)
+    return networks
+
+
+def iface_ipv4_addresses(line: str) -> list[ipaddress.IPv4Interface]:
+    addresses: list[ipaddress.IPv4Interface] = []
+    for token in line.split():
+        if "/" not in token:
+            continue
+        try:
+            addr = ipaddress.ip_interface(token)
+        except ValueError:
+            continue
+        if isinstance(addr, ipaddress.IPv4Interface):
+            addresses.append(addr)
+    return addresses
+
+
+def nat_rules_text() -> str:
+    commands = (
+        ["nft", "list", "ruleset"],
+        ["sudo", "-n", "nft", "list", "ruleset"],
+        ["iptables", "-t", "nat", "-S"],
+        ["sudo", "-n", "iptables", "-t", "nat", "-S"],
+    )
+    for command in commands:
+        try:
+            proc = run(command, timeout=4)
+        except FileNotFoundError:
+            continue
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout
+    return ""
+
+
+def ethtool_error_counters(interface: str) -> dict[str, int]:
+    proc = run(["ethtool", "-S", interface], timeout=4)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return {}
+    error_names = {
+        "rx_errors",
+        "tx_errors",
+        "rx_frame_check_sequence_errors",
+        "rx_symbol_errors",
+        "rx_alignment_errors",
+        "rx_resource_errors",
+        "rx_overruns",
+        "rx_ip_header_checksum_errors",
+        "rx_tcp_checksum_errors",
+        "rx_udp_checksum_errors",
+        "tx_excessive_collisions",
+        "tx_late_collisions",
+        "tx_carrier_sense_errors",
+    }
+    counters: dict[str, int] = {}
+    for raw_line in proc.stdout.splitlines():
+        if ":" not in raw_line:
+            continue
+        name, raw_value = raw_line.strip().split(":", 1)
+        name = name.strip()
+        if name not in error_names:
+            continue
+        value = safe_int(raw_value.strip(), 0) or 0
+        if value:
+            counters[name] = value
+    return counters
+
+
+def check_asic_router_network(checks: list[Check], env: dict[str, str], default_dev: str) -> None:
+    topology = (env.get("BDAG_DETECTED_NETWORK_TOPOLOGY") or env.get("BDAG_NETWORK_TOPOLOGY") or "").strip().lower()
+    if topology != "single-node-asic-router":
+        return
+
+    lan_iface = (env.get("BDAG_ASIC_LAN_INTERFACE") or "eth0").strip() or "eth0"
+    cidrs = parse_cidrs(env.get("BDAG_ASIC_LAN_CIDRS") or "192.168.50.0/24")
+    evidence: dict[str, Any] = {"topology": topology, "lan_interface": lan_iface, "cidrs": [str(item) for item in cidrs]}
+
+    addr_proc = run(["ip", "-br", "-4", "addr", "show", "dev", lan_iface], timeout=3)
+    evidence["address_line"] = addr_proc.stdout.strip()
+    addresses = iface_ipv4_addresses(addr_proc.stdout)
+    matching_addresses = [
+        str(addr)
+        for addr in addresses
+        if any(addr.ip in network for network in cidrs)
+    ]
+    if not matching_addresses:
+        add(
+            checks,
+            "fail",
+            "asic_router_lan_address",
+            f"{lan_iface} does not have an IPv4 address inside {', '.join(str(item) for item in cidrs) or 'the ASIC LAN CIDRs'}.",
+            "Configure the ASIC-facing interface with the static gateway address before attaching miners.",
+            evidence,
+        )
+    else:
+        add(checks, "pass", "asic_router_lan_address", f"{lan_iface} serves ASIC LAN at {', '.join(matching_addresses)}", evidence=evidence)
+
+    if default_dev == lan_iface:
+        add(
+            checks,
+            "fail",
+            "asic_router_default_route",
+            f"default route is using ASIC LAN interface {lan_iface}.",
+            "The ASIC-facing interface must not be the internet route; use Wi-Fi, another Ethernet interface, or a VPN-capable uplink.",
+            {**evidence, "default_dev": default_dev},
+        )
+    else:
+        add(checks, "pass", "asic_router_default_route", f"internet default route is separate from ASIC LAN ({default_dev or 'unknown'} != {lan_iface})", evidence={**evidence, "default_dev": default_dev})
+
+    forward_proc = run(["sysctl", "-n", "net.ipv4.ip_forward"], timeout=3)
+    forwarding = forward_proc.stdout.strip()
+    if forwarding != "1":
+        add(
+            checks,
+            "fail",
+            "asic_router_ip_forward",
+            "IPv4 forwarding is not enabled for the ASIC router profile.",
+            "Set net.ipv4.ip_forward=1 so directly attached ASICs can reach firmware services and the internet when needed.",
+            {**evidence, "ip_forward": forwarding, "stderr": forward_proc.stderr.strip()},
+        )
+    else:
+        add(checks, "pass", "asic_router_ip_forward", "IPv4 forwarding is enabled", evidence={**evidence, "ip_forward": forwarding})
+
+    rules = nat_rules_text()
+    nat_evidence = {**evidence, "nat_rules_present": bool(rules)}
+    has_masquerade = "masquerade" in rules.lower() or "MASQUERADE" in rules
+    has_asic_source = any(str(network) in rules for network in cidrs)
+    if has_masquerade and has_asic_source:
+        add(checks, "pass", "asic_router_nat", "ASIC LAN masquerade/NAT rule is present", evidence=nat_evidence)
+    else:
+        add(
+            checks,
+            "warn",
+            "asic_router_nat",
+            "ASIC LAN masquerade/NAT rule was not detected.",
+            "Ensure the ASIC subnet is masqueraded through the uplink, usually by NetworkManager shared mode or an explicit nftables rule.",
+            nat_evidence,
+        )
+
+    neigh_proc = run(["ip", "neigh", "show", "dev", lan_iface], timeout=3)
+    neighbours = []
+    for line in neigh_proc.stdout.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        try:
+            neighbour_ip = ipaddress.ip_address(parts[0])
+        except ValueError:
+            continue
+        if any(neighbour_ip in network for network in cidrs):
+            neighbours.append(line)
+    if neighbours:
+        add(checks, "pass", "asic_router_lan_neighbour", f"{len(neighbours)} ASIC-LAN neighbour(s) visible", evidence={**evidence, "neighbours": neighbours[:10]})
+    else:
+        add(checks, "warn", "asic_router_lan_neighbour", "no ASIC-LAN neighbours are currently visible.", "Attach or power on the ASIC, then rerun preflight to prove the direct Ethernet leg.", evidence)
+
+    errors = ethtool_error_counters(lan_iface)
+    if errors:
+        add(
+            checks,
+            "warn",
+            "asic_router_link_errors",
+            f"{lan_iface} reports non-zero link/NIC error counters.",
+            "Check the direct cable, ASIC Ethernet negotiation, and Pi power before comparing pool performance.",
+            {**evidence, "error_counters": errors},
+        )
+    else:
+        add(checks, "pass", "asic_router_link_errors", f"{lan_iface} has no non-zero NIC error counters reported", evidence=evidence)
+
+
+def check_network(checks: list[Check], env: dict[str, str]) -> None:
     proc = run(["ip", "-o", "-4", "route", "get", "1.1.1.1"], timeout=3)
     if proc.returncode != 0 or not proc.stdout.strip():
         add(checks, "warn", "default_route", "no IPv4 default route was detected.", "Configure networking before FastSnap peer discovery or ASIC setup.", {"stderr": proc.stderr.strip()})
@@ -515,6 +821,7 @@ def check_network(checks: list[Check]) -> None:
         add(checks, "warn", "default_route", f"default route uses Wi-Fi interface {dev} with source {src}.", "Keep ASIC and trusted FastSnap peers on the same low-latency LAN; prefer wired Ethernet if shares or submits stall.", evidence)
     else:
         add(checks, "pass", "default_route", f"default route uses {dev or 'unknown'} source {src or 'unknown'}", evidence=evidence)
+    check_asic_router_network(checks, env, dev)
 
 
 def docker_root_dir() -> str:
@@ -599,11 +906,8 @@ def check_schema_file(checks: list[Check], root: Path) -> None:
 
 def check_wallet(checks: list[Check], env: dict[str, str]) -> None:
     address = (env.get("MINING_ADDRESS") or env.get("MINING_POOL_ADDRESS") or "").strip()
-    node_mining_enabled = bool_enabled(env.get("BDAG_ENABLE_NODE_MINING"), False)
-    if node_mining_enabled and (not address or address.lower() == ZERO_ETH_ADDRESS):
-        add(checks, "fail", "mining_address", "node mining is enabled but the reward wallet is unset or zero.", "Set MINING_ADDRESS/MINING_POOL_ADDRESS before attaching ASICs.", {"address": address, "BDAG_ENABLE_NODE_MINING": env.get("BDAG_ENABLE_NODE_MINING")})
-    elif not address or address.lower() == ZERO_ETH_ADDRESS:
-        add(checks, "warn", "mining_address", "reward wallet is unset or zero.", "Set the wallet before enabling miner sources or node mining.", {"address": address})
+    if not address or address.lower() == ZERO_ETH_ADDRESS:
+        add(checks, "fail", "mining_address", "reward wallet is unset or zero.", "Set MINING_ADDRESS/MINING_POOL_ADDRESS before attaching ASICs; mining to 0x0000000000000000000000000000000000000000 is never valid.", {"address": address, "BDAG_ENABLE_NODE_MINING": env.get("BDAG_ENABLE_NODE_MINING")})
     else:
         add(checks, "pass", "mining_address", f"reward wallet configured: {address[:10]}...{address[-6:]}", evidence={"address": address})
 
@@ -613,13 +917,17 @@ def run_preflight(root: Path, env_file: Path) -> dict[str, Any]:
     env = os.environ.copy()
     env.update(load_env_file(env_file))
     profile = detect_host_profile()
+    capability_payload = None
+    if capability_profile is not None:
+        capability_payload = capability_profile.resolve(root, env)
     checks: list[Check] = []
     check_host(checks, profile)
     check_storage(checks, root, env, profile)
     check_node_data_layout(checks, root, env)
     check_env_defaults(checks, env, profile)
+    check_capability_profile(checks, env, capability_payload)
     check_swap(checks, profile)
-    check_network(checks)
+    check_network(checks, env)
     check_docker_storage(checks, root, env, profile)
     check_live_node_child(checks, root)
     check_schema_file(checks, root)
@@ -631,6 +939,7 @@ def run_preflight(root: Path, env_file: Path) -> dict[str, Any]:
         "root": str(root),
         "env_file": str(env_file),
         "host_profile": profile.as_dict(),
+        "capability_profile": capability_payload,
         "failure_count": len(failures),
         "warning_count": len(warnings),
         "checks": [check.as_dict() for check in checks],

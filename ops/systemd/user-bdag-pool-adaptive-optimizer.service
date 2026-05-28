@@ -1,0 +1,18 @@
+[Unit]
+Description=BlockDAG pool adaptive optimizer advisory pass
+After=bdag-dashboard.service default.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/blockdag-asic-pool
+Environment=BDAG_RUNTIME_DIR=%h/blockdag-asic-pool/ops/runtime
+Environment=BDAG_POOL_OPTIMIZER_OUTPUT_DIR=%h/blockdag-asic-pool/ops/runtime/reports/pool-adaptive-optimizer
+Environment=BDAG_POOL_OPTIMIZER_STATE_FILE=%h/blockdag-asic-pool/ops/runtime/pool-adaptive-optimizer-state.json
+EnvironmentFile=-%h/.config/bdag-dashboard.env
+ExecStartPre=/usr/bin/env sh -c 'curl -fsS "${BDAG_POOL_OPTIMIZER_DASHBOARD_STATUS_URL:-http://127.0.0.1:8088/api/status}" >/dev/null'
+ExecStart=/usr/bin/env python3 ops/pool_adaptive_optimizer.py --apply --yes
+Nice=12
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=25
+IOWeight=20

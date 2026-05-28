@@ -15,6 +15,12 @@ The Compose files use:
 - Graceful stop windows for node and database shutdown.
 - Node cache, BD cache, DAG cache, reduced log verbosity, and no file logging
   via `NODE_ARGS_APPEND`.
+- `BDAG_NODE_SUBMIT_OBSOLETE_HEIGHT` defaults to `20` on mining appliances so
+  high-throughput ASIC solves that arrive a few DAG tips behind still reach
+  corechain consensus instead of being rejected by the RPC submit precheck.
+- `BDAG_NODE_MAX_BAD_RESPONSES` defaults to `4` so public peers that repeatedly
+  reset block-broadcast streams are rotated out sooner, while explicitly ordered
+  LAN/VPN fast-sync peers remain the preferred low-latency path.
 
 For dual-node overlays, apply the same settings to every production node:
 
@@ -33,6 +39,8 @@ environment:
     --cache=${BDAG_NODE_CACHE_MB:-4096}
     --bdcachesize=${BDAG_NODE_BD_CACHE_SIZE:-8192}
     --dagcachesize=${BDAG_NODE_DAG_CACHE_SIZE:-8192}
+    --obsoleteheight=${BDAG_NODE_SUBMIT_OBSOLETE_HEIGHT:-20}
+    --maxbadresp=${BDAG_NODE_MAX_BAD_RESPONSES:-4}
     --debuglevel=${BDAG_NODE_DEBUG_LEVEL:-error}
     --evmtrietimeout=${BDAG_EVM_TRIE_TIMEOUT_SECONDS:-7200}
     --nofilelogging
