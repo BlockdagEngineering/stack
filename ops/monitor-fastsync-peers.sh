@@ -8,7 +8,6 @@ STATE_DIR="$STACK_DIR/ops/runtime"
 LOG_DIR="$STATE_DIR/logs"
 STATE_FILE="$STATE_DIR/fastsync-peer-monitor-state.json"
 MARKER_FILE="$STATE_DIR/fastsync-peer-visible"
-REMOTE_ZT_IP="${REMOTE_ZT_IP:-10.207.244.12}"
 NODE_CONTAINER="${BDAG_FASTSYNC_MONITOR_NODE:-bdag-miner-node-2}"
 RPC_URL="${NODE2_RPC_URL:-${BDAG_NODE2_RPC_URL:-}}"
 
@@ -48,14 +47,12 @@ if ! raw_json="$(curl -fsS --max-time 10 \
   "$RPC_URL" 2>"$rpc_error_file")"; then
   rpc_error="$(tr '\n' ' ' <"$rpc_error_file" | sed 's/[[:space:]]*$//')"
   rm -f "$rpc_error_file"
-  state_json="$(jq -n --arg now "$(date -Is)" --arg remote "$REMOTE_ZT_IP" --arg rpc "$RPC_LABEL" --arg error "$rpc_error" '{
+  state_json="$(jq -n --arg now "$(date -Is)" --arg rpc "$RPC_LABEL" --arg error "$rpc_error" '{
     checked_at: $now,
-    remote_zerotier_ip: $remote,
     local_node_rpc: $rpc,
     rpc_available: false,
     fastsync_visible: false,
     upgraded_peers: [],
-    zerotier_peers: [],
     highest_peer_mainorder: null,
     connected_peer_count: 0,
     error: $error,
@@ -70,7 +67,7 @@ if ! raw_json="$(curl -fsS --max-time 10 \
 fi
 rm -f "$rpc_error_file"
 
-state_json="$(printf '%s' "$raw_json" | jq --arg now "$(date -Is)" --arg remote "$REMOTE_ZT_IP" --arg rpc "$RPC_LABEL" '
+state_json="$(printf '%s' "$raw_json" | jq --arg now "$(date -Is)" --arg rpc "$RPC_LABEL" '
   def peer_order:
     (.graphstate.mainorder // .graphstate.best_main_order // .graphstate.order // null);
   def is_upgraded:
@@ -78,7 +75,6 @@ state_json="$(printf '%s' "$raw_json" | jq --arg now "$(date -Is)" --arg remote 
     or ((.services // "") | tostring | test("FastSync|Unknown"));
   {
     checked_at: $now,
-    remote_zerotier_ip: $remote,
     local_node_rpc: $rpc,
     rpc_available: true,
     fastsync_visible: (([.result[]? | select(is_upgraded)] | length) > 0),
@@ -95,23 +91,9 @@ state_json="$(printf '%s' "$raw_json" | jq --arg now "$(date -Is)" --arg remote 
           version
         }
     ],
-    zerotier_peers: [
-      .result[]?
-      | select((.address | tostring | contains($remote)))
-      | {
-          id,
-          address,
-          direction,
-          protocol: (.protocol // .protocolversion // .protocolVersion // null),
-          services,
-          mainorder: peer_order,
-          version,
-          conntime
-        }
-    ],
     highest_peer_mainorder: ([.result[]? | peer_order] | map(select(. != null)) | max // null),
     connected_peer_count: ([.result[]?] | length),
-    note: "FastSync requires this local node to run the protocol v46 corechain binary before it can use fast-sync RPCs."
+    note: "FastSync source selection is P2P-only. Use complete libp2p multiaddrs; do not classify candidates by LAN, VPN, or route type."
   }')"
 
 tmp="$(mktemp "$STATE_FILE.XXXXXX")"
@@ -119,7 +101,7 @@ printf '%s\n' "$state_json" >"$tmp"
 mv "$tmp" "$STATE_FILE"
 
 summary="$(printf '%s' "$state_json" | jq -r '
-  "fastsync_visible=\(.fastsync_visible) upgraded=\(.upgraded_peers|length) zt=\(.zerotier_peers|length) highest=\(.highest_peer_mainorder // "n/a")"
+  "fastsync_visible=\(.fastsync_visible) upgraded=\(.upgraded_peers|length) highest=\(.highest_peer_mainorder // "n/a")"
 ')"
 echo "$(date -Is) $summary" >>"$LOG_DIR/fastsync-peer-monitor.log"
 
