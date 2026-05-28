@@ -65,14 +65,18 @@ BDAG_RAWDATADIR_SIDECAR_DIR=./data-restore/rawdatadir-sidecar/mainnet \
 ./ops/maintain-rawdatadir-sidecar.sh
 ```
 
-2. When an operator approves a finalization window, stop the single node,
-   run one final sidecar sync, restart the node, and build the artifact from the
-   sidecar:
+`maintain-rawdatadir-sidecar.sh` uses `sudo -n rsync` automatically when the
+live datadir contains root-owned chain files and passwordless sudo is available.
+Set `BDAG_RAWDATADIR_SIDECAR_USE_SUDO=0` only on hosts where all chain files are
+readable by the installing user.
+
+2. When an operator approves a finalization window, let the publisher stop the
+   single node, run one final sidecar sync, restart the node, and build the
+   signed artifact from the finalized sidecar:
 
 ```bash
-BDAG_RAWDATADIR_SOURCE_DIR=./data-restore/rawdatadir-sidecar/mainnet \
-BDAG_RAWDATADIR_SOURCE_LABEL=single-node-sidecar \
-./ops/build-rawdatadir-artifact.sh
+BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=1 \
+./ops/publish-rawdatadir-artifact.sh
 ```
 
 The optional `ops/systemd/user-bdag-rawdatadir-sidecar.timer` refreshes the

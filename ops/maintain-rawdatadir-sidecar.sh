@@ -23,6 +23,7 @@ LOG_FILE="${BDAG_RAWDATADIR_SIDECAR_LOG:-$PROJECT_ROOT/ops/runtime/logs/rawdatad
 STATUS_FILE="${BDAG_RAWDATADIR_SOURCE_STATUS:-$PROJECT_ROOT/ops/runtime/rawdatadir-source-status.json}"
 DELETE_MODE="${BDAG_RAWDATADIR_SIDECAR_DELETE:-1}"
 BWLIMIT="${BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT:-}"
+USE_SUDO="${BDAG_RAWDATADIR_SIDECAR_USE_SUDO:-auto}"
 
 mkdir -p "$(dirname "$LOCK_FILE")" "$(dirname "$LOG_FILE")" "$SIDECAR_DIR"
 
@@ -88,8 +89,30 @@ if [[ -n "$BWLIMIT" ]]; then
   rsync_args+=(--bwlimit "$BWLIMIT")
 fi
 
+rsync_command=(rsync)
+case "${USE_SUDO,,}" in
+  1|true|yes|on)
+    if ! command -v sudo >/dev/null 2>&1 || ! sudo -n true 2>/dev/null; then
+      log "BDAG_RAWDATADIR_SIDECAR_USE_SUDO is enabled, but passwordless sudo is unavailable"
+      exit 1
+    fi
+    rsync_command=(sudo -n rsync)
+    ;;
+  auto)
+    if [[ "$(id -u)" != "0" ]] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+      rsync_command=(sudo -n rsync)
+    fi
+    ;;
+  0|false|no|off)
+    ;;
+  *)
+    log "invalid BDAG_RAWDATADIR_SIDECAR_USE_SUDO=$USE_SUDO"
+    exit 1
+    ;;
+esac
+
 log "syncing raw datadir sidecar source=$SOURCE_DIR target=$SIDECAR_DIR"
-run_low_priority rsync "${rsync_args[@]}" "$SOURCE_DIR/" "$SIDECAR_DIR/" 2>&1 | tee -a "$LOG_FILE"
+run_low_priority "${rsync_command[@]}" "${rsync_args[@]}" "$SOURCE_DIR/" "$SIDECAR_DIR/" 2>&1 | tee -a "$LOG_FILE"
 log "raw datadir sidecar sync complete"
 python3 - "$STATUS_FILE" "$SOURCE_DIR" "$SIDECAR_DIR" <<'PY'
 import json
