@@ -187,27 +187,20 @@ healthy until `8088/api/status` points at the intended project root and returns
 
 ## FastSync Candidate Ordering
 
-New nodes must prefer nearby FastSync candidates before public internet seeds.
-The release default is `BDAG_FASTSYNC_PEER_ORDERING=tiered-latency`, with this
-ordering:
+New nodes must use P2P evidence, not address class, to choose FastSync sources.
+The release default is `BDAG_FASTSYNC_PEER_ORDERING=p2p-latency`.
 
-1. LAN candidates from `BDAG_FASTSYNC_LAN_PEERS`, addresses on a currently
-   connected non-VPN host subnet, or addresses matching an explicit
-   `BDAG_FASTSYNC_LAN_PREFIXES` override.
-2. Private/VPN candidates from `BDAG_FASTSYNC_VPN_PEERS` or private-address
-   multiaddrs.
-3. Public internet candidates from `BDAG_FASTSYNC_PUBLIC_PEERS` plus any
-   public entries discovered in generic `BDAG_FASTSYNC_PEERS`,
-   `BDAG_FASTSNAP_PEERS`, `BOOTSTRAP_PEER_ADDRESSES`, and `node.conf`
-   `addpeer` lines.
+Peer candidates must be complete P2P multiaddrs with peer IDs. Address class is
+not a sync mode, priority class, or eligibility signal. The downloader should
+receive the full deduplicated P2P candidate set and select useful sources by
+measured P2P ping/manifest/chunk response, artifact availability, and sustained
+transfer performance.
 
-Peer candidates must be complete multiaddrs with peer IDs. On single-node
-ASIC-router hosts, the direct ASIC Ethernet subnet (`BDAG_ASIC_LAN_CIDRS`,
-default `192.168.50.0/24`) is not a blockchain P2P LAN unless
-`BDAG_ALLOW_ASIC_LAN_P2P=1` is explicitly set. ASICs on that subnet are Stratum
-clients; adding them to FastSync or P2P peer lists wastes time and can hide the
-actual low-latency VPN/LAN node candidates. Do not replace this ordering with
-public-first bootstrapping in future RCs.
+Old installations may still contain legacy address-bucket variable names.
+Treat them only as migration input: normalize complete P2P multiaddrs into
+`BDAG_FASTSYNC_PEERS` and clear the bucket values. Do not add new LAN, VPN, or
+public sync options, and do not reintroduce LAN-first, VPN-second, public-last
+ordering.
 
 ## Fast Artifact Sync V2 Directory Mode
 

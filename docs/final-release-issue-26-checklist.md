@@ -34,9 +34,9 @@ while removing local assumptions that caused install or sync drift.
 - Fast Artifact Sync V2 is default. When more than 1000 blocks behind, the sync
   coordinator accelerates the leader and restarts stale or non-V2 catch-up after
   the cooldown.
-- V2 peer selection is latency-first over libp2p. LAN, VPN, ZeroTier, and public
-  peers use the same transport; sub-10ms peers naturally win without address
-  bucket ordering.
+- V2 peer selection is latency/usefulness-first over libp2p. Address class is
+  not a sync option or priority signal; complete P2P multiaddrs are the only
+  sync candidates.
 - Directory artifact serving must use a valid `artifact.manifest.json`; otherwise
   startup reports archive fallback instead of silently pretending directory mode
   is active.

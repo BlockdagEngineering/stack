@@ -137,7 +137,7 @@ Required behavior:
 Status: status JSON is written by the new tools; dashboard rendering remains a
 follow-up.
 
-## P1 - Automatic Discovery Should Prefer LAN/VPN Sources
+## P1 - Automatic Discovery Must Use P2P Usefulness
 
 Problem: New nodes should not fail with “no peers support V2 artifact protocol”
 when an eligible local source exists.
@@ -145,13 +145,17 @@ when an eligible local source exists.
 Required behavior:
 
 - Keep local peer discovery enabled.
-- Prefer complete LAN/VPN multiaddrs with peer IDs.
+- Accept only complete P2P multiaddrs with peer IDs.
+- Do not expose LAN, VPN, ZeroTier, private, or public route classes as sync
+  options or priority signals.
+- Rank and select download sources by measured P2P ping/manifest/chunk
+  response, artifact availability, and sustained transfer usefulness.
 - Pass all candidate peers into one `fastsnap` attempt where possible so the
   downloader can select the best provider.
-- Keep public peers as fallback.
+- Keep all reachable peers in the same candidate pool.
 
-Status: existing tiered peer discovery remains. End-to-end testing between this
-host and a fresh install is still required.
+Status: tiered address-class ordering has been removed from the RC intent.
+End-to-end testing between this host and a fresh install is still required.
 
 ## P2 - Simplify And Retire Duplicate Sync Systems
 

@@ -16,9 +16,9 @@ evm.http.port=18545
 evm.ws.addr=0.0.0.0
 evm.ws.port=18546
 
-# Public bootstrap peers (mainnet seed nodes). The node entrypoint now folds
-# these into the default FastSync candidate order after configured LAN and
-# private/VPN peers, so public internet seeds are the final fallback.
+# Bootstrap peers (mainnet seed nodes). The node entrypoint folds these into
+# the same P2P FastSync candidate set as operator-configured peers. Address
+# class is not a priority signal.
 addpeer=/ip4/52.8.80.249/tcp/8150/p2p/16Uiu2HAkxWjKnodZCv7RAJv4XPEFgVZQokoqiFeo7N2nswXHcRMv
 addpeer=/ip4/3.77.181.33/tcp/8150/p2p/16Uiu2HAmRW22ByMzBHKx86W7G6Gjt2XJ4EForKBGdxqS8K9GbCfS
 addpeer=/ip4/63.34.228.240/tcp/8150/p2p/16Uiu2HAkzD1v3x29W6qCNS6JbbtAoSNNjG8kD1Xzrxyi1tWoSasq

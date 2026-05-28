@@ -191,22 +191,11 @@ services:
       BDAG_DETECTED_NETWORK_TOPOLOGY: ${BDAG_DETECTED_NETWORK_TOPOLOGY:-}
       BDAG_ASIC_LAN_INTERFACE: ${BDAG_ASIC_LAN_INTERFACE:-eth0}
       BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-192.168.50.0/24}
-      BDAG_ALLOW_ASIC_LAN_P2P: ${BDAG_ALLOW_ASIC_LAN_P2P:-0}
       BDAG_P2P_ADVERTISE_IP: ${BDAG_P2P_ADVERTISE_IP:-}
       BDAG_P2P_INTERFACE: ${BDAG_P2P_INTERFACE:-}
-      BDAG_P2P_LAN_PEERS: ${BDAG_P2P_LAN_PEERS:-}
-      BDAG_P2P_VPN_PEERS: ${BDAG_P2P_VPN_PEERS:-}
-      BDAG_P2P_PUBLIC_PEERS: ${BDAG_P2P_PUBLIC_PEERS:-}
-      LAN_PEER_ADDRESSES: ${LAN_PEER_ADDRESSES:-}
-      VPN_PEER_ADDRESSES: ${VPN_PEER_ADDRESSES:-}
-      ZEROTIER_PEER_ADDRESSES: ${ZEROTIER_PEER_ADDRESSES:-}
-      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-tiered-latency}
+      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
       BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
-      BDAG_FASTSYNC_LAN_PREFIXES: ${BDAG_FASTSYNC_LAN_PREFIXES:-}
-      BDAG_FASTSYNC_LAN_PEERS: ${BDAG_FASTSYNC_LAN_PEERS:-}
-      BDAG_FASTSYNC_VPN_PEERS: ${BDAG_FASTSYNC_VPN_PEERS:-}
-      BDAG_FASTSYNC_PUBLIC_PEERS: ${BDAG_FASTSYNC_PUBLIC_PEERS:-}
       BDAG_FASTSYNC_PEERS: ${BDAG_FASTSYNC_PEERS:-}
       BDAG_FASTSYNC_PREPROCESS_WORKERS: ${BDAG_FASTSYNC_PREPROCESS_WORKERS:-1}
       BDAG_ENTRYPOINT_CHOWN_MODE: ${BDAG_ENTRYPOINT_CHOWN_MODE:-needed}
@@ -292,22 +281,11 @@ services:
       BDAG_DETECTED_NETWORK_TOPOLOGY: ${BDAG_DETECTED_NETWORK_TOPOLOGY:-}
       BDAG_ASIC_LAN_INTERFACE: ${BDAG_ASIC_LAN_INTERFACE:-eth0}
       BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-192.168.50.0/24}
-      BDAG_ALLOW_ASIC_LAN_P2P: ${BDAG_ALLOW_ASIC_LAN_P2P:-0}
       BDAG_P2P_ADVERTISE_IP: ${BDAG_P2P_ADVERTISE_IP:-}
       BDAG_P2P_INTERFACE: ${BDAG_P2P_INTERFACE:-}
-      BDAG_P2P_LAN_PEERS: ${BDAG_P2P_LAN_PEERS:-}
-      BDAG_P2P_VPN_PEERS: ${BDAG_P2P_VPN_PEERS:-}
-      BDAG_P2P_PUBLIC_PEERS: ${BDAG_P2P_PUBLIC_PEERS:-}
-      LAN_PEER_ADDRESSES: ${LAN_PEER_ADDRESSES:-}
-      VPN_PEER_ADDRESSES: ${VPN_PEER_ADDRESSES:-}
-      ZEROTIER_PEER_ADDRESSES: ${ZEROTIER_PEER_ADDRESSES:-}
-      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-tiered-latency}
+      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
       BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
-      BDAG_FASTSYNC_LAN_PREFIXES: ${BDAG_FASTSYNC_LAN_PREFIXES:-}
-      BDAG_FASTSYNC_LAN_PEERS: ${BDAG_FASTSYNC_LAN_PEERS:-}
-      BDAG_FASTSYNC_VPN_PEERS: ${BDAG_FASTSYNC_VPN_PEERS:-}
-      BDAG_FASTSYNC_PUBLIC_PEERS: ${BDAG_FASTSYNC_PUBLIC_PEERS:-}
       BDAG_FASTSYNC_PEERS: ${BDAG_FASTSYNC_PEERS:-}
       BDAG_FASTSYNC_PREPROCESS_WORKERS: ${BDAG_FASTSYNC_PREPROCESS_WORKERS:-1}
       BDAG_ENTRYPOINT_CHOWN_MODE: ${BDAG_ENTRYPOINT_CHOWN_MODE:-needed}
@@ -566,15 +544,8 @@ BDAG_NETWORK_TOPOLOGY=auto
 BDAG_DETECTED_NETWORK_TOPOLOGY=
 BDAG_ASIC_LAN_INTERFACE=eth0
 BDAG_ASIC_LAN_CIDRS=192.168.50.0/24
-BDAG_ALLOW_ASIC_LAN_P2P=0
 BDAG_P2P_ADVERTISE_IP=
 BDAG_P2P_INTERFACE=
-BDAG_P2P_LAN_PEERS=
-BDAG_P2P_VPN_PEERS=
-BDAG_P2P_PUBLIC_PEERS=
-LAN_PEER_ADDRESSES=
-VPN_PEER_ADDRESSES=
-ZEROTIER_PEER_ADDRESSES=
 BDAG_FASTSNAP_ENABLED=1
 BDAG_FASTSNAP_REQUIRED=0
 BDAG_FASTSNAP_PEERS=
@@ -607,13 +578,9 @@ BDAG_RAWDATADIR_PEERS=
 BDAG_RAWDATADIR_TRUSTED_SIGNERS=
 BDAG_FASTSYNC_ARTIFACT_DIRECTORY=
 BDAG_FASTSYNC_ARTIFACT_MANIFEST=
-BDAG_FASTSYNC_PEER_ORDERING=tiered-latency
+BDAG_FASTSYNC_PEER_ORDERING=p2p-latency
 BDAG_FASTSYNC_APPEND_ADDPEERS=1
 BDAG_FASTARTIFACTSYNC_ENABLED=1
-BDAG_FASTSYNC_LAN_PREFIXES=
-BDAG_FASTSYNC_LAN_PEERS=
-BDAG_FASTSYNC_VPN_PEERS=
-BDAG_FASTSYNC_PUBLIC_PEERS=
 BDAG_FASTSYNC_PEERS=
 BDAG_FASTSYNC_PREPROCESS_WORKERS=1
 BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC=1
@@ -741,99 +708,12 @@ csv_append_unique() {
   fi
 }
 
-peer_host() {
-  case "$1" in
-    /ip4/*) peer="${1#/ip4/}"; echo "${peer%%/*}" ;;
-    *) return 1 ;;
-  esac
-}
-
-host_matches_prefixes() {
-  host="$1"
-  prefixes="$2"
-  old_ifs="$IFS"
-  IFS=', '
-  for prefix in $prefixes; do
-    [ -n "$prefix" ] || continue
-    case "$host" in "$prefix"*) IFS="$old_ifs"; return 0 ;; esac
-  done
-  IFS="$old_ifs"
-  return 1
-}
-
-host_is_private_or_vpn() {
-  case "$1" in
-    10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*) return 0 ;;
-  esac
-  return 1
-}
-
-host_matches_cidr_prefix() {
-  host="$1"
-  cidr="$2"
-  case "$cidr" in
-    */*)
-      base="${cidr%/*}"
-      mask="${cidr#*/}"
-      ;;
-    *)
-      case "$host" in "$cidr"*) return 0 ;; esac
-      return 1
-      ;;
-  esac
-  case "$mask" in
-    8) prefix="${base%%.*}." ;;
-    16) prefix="$(printf '%s\n' "$base" | awk -F. '{print $1 "." $2 "."}')" ;;
-    24) prefix="$(printf '%s\n' "$base" | awk -F. '{print $1 "." $2 "." $3 "."}')" ;;
-    32) [ "$host" = "$base" ] && return 0; return 1 ;;
-    *) return 1 ;;
-  esac
-  case "$host" in "$prefix"*) return 0 ;; esac
-  return 1
-}
-
-host_is_excluded_asic_lan() {
-  host="$1"
-  topology="${BDAG_DETECTED_NETWORK_TOPOLOGY:-${BDAG_NETWORK_TOPOLOGY:-auto}}"
-  [ "${BDAG_ALLOW_ASIC_LAN_P2P:-0}" = "1" ] && return 1
-  [ "$topology" = "single-node-asic-router" ] || return 1
-  old_ifs="$IFS"
-  IFS=', '
-  for cidr in ${BDAG_ASIC_LAN_CIDRS:-192.168.50.0/24}; do
-    [ -n "$cidr" ] || continue
-    if host_matches_cidr_prefix "$host" "$cidr"; then
-      IFS="$old_ifs"
-      return 0
-    fi
-  done
-  IFS="$old_ifs"
-  return 1
-}
-
 peer_allowed_for_p2p() {
   peer="$1"
-  host="$(peer_host "$peer" || true)"
-  [ -n "$host" ] || return 0
-  ! host_is_excluded_asic_lan "$host"
-}
-
-classify_peer_csv() {
-  raw="$1"
-  old_ifs="$IFS"
-  IFS=', '
-  for peer in $raw; do
-    [ -n "$peer" ] || continue
-    peer_allowed_for_p2p "$peer" || continue
-    host="$(peer_host "$peer" || true)"
-    if [ -n "$host" ] && [ -n "${BDAG_FASTSYNC_LAN_PREFIXES:-}" ] && host_matches_prefixes "$host" "${BDAG_FASTSYNC_LAN_PREFIXES:-}"; then
-      csv_append_unique fastsync_lan_peers "$peer"
-    elif [ -n "$host" ] && host_is_private_or_vpn "$host"; then
-      csv_append_unique fastsync_vpn_peers "$peer"
-    else
-      csv_append_unique fastsync_public_peers "$peer"
-    fi
-  done
-  IFS="$old_ifs"
+  case "$peer" in
+    */p2p/*) return 0 ;;
+  esac
+  return 1
 }
 
 append_latency_peer_csv() {
@@ -842,7 +722,7 @@ append_latency_peer_csv() {
   IFS=', '
   for peer in $raw; do
     peer_allowed_for_p2p "$peer" || continue
-    csv_append_unique fastsync_public_peers "$peer"
+    csv_append_unique fastsync_p2p_peers "$peer"
   done
   IFS="$old_ifs"
 }
@@ -856,41 +736,27 @@ addpeer_values() {
 }
 
 apply_ordered_fastsync_peers() {
-  case "${BDAG_FASTSYNC_PEER_ORDERING:-tiered-latency}" in
+  case "${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}" in
     0|off|false|none) return 0 ;;
   esac
-  fastsync_lan_peers=""
-  fastsync_vpn_peers=""
-  fastsync_public_peers=""
+  fastsync_p2p_peers=""
 
-  ordering="${BDAG_FASTSYNC_PEER_ORDERING:-tiered-latency}"
-  if [ "$ordering" = "flat-latency" ] || [ "$ordering" = "flat" ]; then
-    append_latency_peer_csv "${BDAG_FASTSYNC_PEERS:-}"
-    append_latency_peer_csv "${BDAG_FASTSNAP_PEERS:-}"
-    append_latency_peer_csv "${BOOTSTRAP_PEER_ADDRESSES:-}"
-    append_latency_peer_csv "$(addpeer_values | paste -sd, - || true)"
-    append_latency_peer_csv "${BDAG_FASTSYNC_LAN_PEERS:-${BDAG_FASTSYNC_LOCAL_PEERS:-}}"
-    append_latency_peer_csv "${BDAG_FASTSYNC_VPN_PEERS:-${BDAG_FASTSYNC_PRIVATE_PEERS:-}}"
-    append_latency_peer_csv "${BDAG_FASTSYNC_PUBLIC_PEERS:-}"
-  else
-    classify_peer_csv "${BDAG_P2P_LAN_PEERS:-} ${LAN_PEER_ADDRESSES:-} ${BDAG_FASTSYNC_LAN_PEERS:-${BDAG_FASTSYNC_LOCAL_PEERS:-}}"
-    classify_peer_csv "${BDAG_P2P_VPN_PEERS:-} ${VPN_PEER_ADDRESSES:-} ${ZEROTIER_PEER_ADDRESSES:-} ${BDAG_FASTSYNC_VPN_PEERS:-${BDAG_FASTSYNC_PRIVATE_PEERS:-}}"
-    classify_peer_csv "${BDAG_P2P_PUBLIC_PEERS:-} ${BDAG_FASTSYNC_PUBLIC_PEERS:-}"
-    classify_peer_csv "${BDAG_FASTSYNC_PEERS:-} ${BDAG_FASTSNAP_PEERS:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $(addpeer_values | paste -sd, - || true)"
-  fi
+  ordering="${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}"
+  case "$ordering" in
+    p2p-latency|p2p|latency|flat-latency|flat|tiered-latency|legacy-buckets|buckets) ;;
+    *) log "unknown BDAG_FASTSYNC_PEER_ORDERING=$ordering; using p2p-latency" ;;
+  esac
+  append_latency_peer_csv "${BDAG_FASTSYNC_PEERS:-}"
+  append_latency_peer_csv "${BDAG_FASTSNAP_PEERS:-}"
+  append_latency_peer_csv "${BOOTSTRAP_PEER_ADDRESSES:-}"
+  append_latency_peer_csv "$(addpeer_values | paste -sd, - || true)"
 
-  ordered="$fastsync_lan_peers"
-  [ -n "$fastsync_vpn_peers" ] && ordered="${ordered:+$ordered,}$fastsync_vpn_peers"
-  [ -n "$fastsync_public_peers" ] && ordered="${ordered:+$ordered,}$fastsync_public_peers"
+  ordered="$fastsync_p2p_peers"
   [ -n "$ordered" ] || return 0
 
   export BDAG_FASTSNAP_PEERS="$ordered"
   count="$(printf '%s' "$ordered" | awk -F, '{print NF}')"
-  if [ "$ordering" = "flat-latency" ] || [ "$ordering" = "flat" ]; then
-    log "flat latency FastSync candidates enabled; total=$count"
-  else
-    log "tiered latency FastSync candidates enabled: LAN first, private/VPN second, public last; total=$count"
-  fi
+  log "P2P latency/usefulness FastSync candidates enabled; libp2p selects the fastest useful artifact source; total=$count"
   if [ "${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}" = "1" ]; then
     old_ifs="$IFS"
     IFS=,
