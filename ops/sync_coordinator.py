@@ -1050,7 +1050,7 @@ def install_rawdatadir_artifact(candidate: dict[str, Any], leader: str, env_valu
         "BDAG_RAWDATADIR_DOWNLOAD_BASE": env_value(
             env_values,
             "BDAG_RAWDATADIR_DOWNLOAD_BASE",
-            str(PROJECT_ROOT / "data-restore" / "rawdatadir-downloads"),
+            str(DATA_DIR.parent / "rawdatadir-downloads"),
         ),
         "BDAG_RAWDATADIR_FETCH_LOG": str(fetch_log),
         "BDAG_RAWDATADIR_ALLOW_UNSIGNED": "1" if FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS else "0",
