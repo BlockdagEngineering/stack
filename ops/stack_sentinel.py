@@ -19,8 +19,10 @@ from pool_ops import (
     LOG_DIR,
     NODES,
     POOL_CONTAINER,
+    POOL_DB_CONTAINER,
     POOL_ENV_FILE,
     PROJECT_ROOT,
+    RPC_FAILOVER_ENABLED,
     RUNTIME_DIR,
     SERVICES,
     docker_inspect,
@@ -54,6 +56,14 @@ DESKTOP_NOTIFY_ENABLED = os.environ.get("BDAG_SENTINEL_DESKTOP_NOTIFY", "false")
 
 def split_csv_env(name: str, default: str) -> list[str]:
     return [item.strip() for item in os.environ.get(name, default).split(",") if item.strip()]
+
+
+def unique_names(names: list[str]) -> list[str]:
+    result: list[str] = []
+    for name in names:
+        if name and name not in result:
+            result.append(name)
+    return result
 
 
 USER_SERVICES = split_csv_env(
@@ -308,10 +318,13 @@ def notify_user(title: str, body: str) -> None:
 def inspect_and_repair_containers(status: dict[str, Any] | None, state: dict[str, Any], now: int) -> None:
     inspected = docker_inspect(SERVICES)
     paused_follower, pause_state = sync_coordinator_pause_state()
-    stopped = [name for name in [POOL_CONTAINER, *NODES, "rpc-failover", "pool-db"] if not inspected.get(name, {}).get("running")]
+    critical_services = unique_names(
+        [POOL_DB_CONTAINER, *NODES, *([RPC_FAILOVER_SERVICE] if RPC_FAILOVER_ENABLED else []), POOL_CONTAINER]
+    )
+    stopped = [name for name in critical_services if not inspected.get(name, {}).get("running")]
     restarting = [
         name
-        for name in [POOL_CONTAINER, *NODES, RPC_FAILOVER_SERVICE, "pool-db"]
+        for name in critical_services
         if inspected.get(name, {}).get("status") == "restarting"
     ]
     actionable_stopped = [name for name in stopped if name != paused_follower]
@@ -338,17 +351,17 @@ def inspect_and_repair_containers(status: dict[str, Any] | None, state: dict[str
         )
         notify_user("BlockDAG mining stack needs attention", f"Stopped containers: {', '.join(actionable_stopped)}")
 
-    if "pool-db" in stopped:
-        start_container("pool-db", "database container is stopped", state, now)
+    if POOL_DB_CONTAINER in stopped:
+        start_container(POOL_DB_CONTAINER, "database container is stopped", state, now)
     for node in NODES:
         if node in stopped:
             if node == paused_follower:
                 continue
             start_container(node, "node container is stopped", state, now)
-    if RPC_FAILOVER_SERVICE in stopped:
+    if RPC_FAILOVER_ENABLED and RPC_FAILOVER_SERVICE in stopped:
         ensure_rpc_failover_config_boot_safe(state, now)
         recreate_container(RPC_FAILOVER_SERVICE, "RPC failover container is stopped", state, now)
-    elif RPC_FAILOVER_SERVICE in restarting:
+    elif RPC_FAILOVER_ENABLED and RPC_FAILOVER_SERVICE in restarting:
         ensure_rpc_failover_config_boot_safe(state, now)
         recreate_container(RPC_FAILOVER_SERVICE, "RPC failover container is restarting", state, now)
     if POOL_CONTAINER in stopped:

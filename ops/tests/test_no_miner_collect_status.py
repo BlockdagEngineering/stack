@@ -422,8 +422,10 @@ class SharedStatusCacheTests(unittest.TestCase):
         calls = []
         with tempfile.TemporaryDirectory() as tmp:
             pool_ops.SHARED_STATUS_CACHE_FILE = pathlib.Path(tmp) / "shared-status-cache.json"
+            pool_ops.STATUS_SAMPLER_FILE = pathlib.Path(tmp) / "status-sampler.json"
             pool_ops.SHARED_STATUS_CACHE_ENABLED = True
             pool_ops.SHARED_STATUS_CACHE_SECONDS = 60.0
+            pool_ops.STATUS_SAMPLER_ENABLED = False
             pool_ops.ensure_runtime = lambda: None
 
             def fake_collect_status(include_logs=True):
