@@ -2323,7 +2323,7 @@ HTML = r"""<!doctype html>
         return `Sampler stopped: earnings and miner plots are not receiving fresh history. No valid sample for ${ageText}.${latest}${reason}`;
       }
       if (data.history_sampler_status === "missing") {
-        return "No earnings/miner plot sampler history exists yet. The watchdog should create the first sample shortly.";
+        return "No earnings/miner plot sampler history exists yet. The status sampler should create the first sample shortly.";
       }
       return "";
     }
