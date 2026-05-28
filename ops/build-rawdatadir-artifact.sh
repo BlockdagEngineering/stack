@@ -560,9 +560,11 @@ run_manifest_builder() {
 promote_current() {
   local stage="$1"
   local current="$ARTIFACT_BASE/current"
-  ln -sfn "$stage" "$current.tmp"
+  local target
+  target="$(realpath --relative-to "$ARTIFACT_BASE" "$stage" 2>/dev/null || printf '%s\n' "$stage")"
+  ln -sfn "$target" "$current.tmp"
   mv -Tf "$current.tmp" "$current"
-  log "raw datadir artifact current -> $stage"
+  log "raw datadir artifact current -> $target"
 }
 
 prune_old_artifacts() {
