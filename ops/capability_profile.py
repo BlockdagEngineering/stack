@@ -557,15 +557,89 @@ def recommended_postgres_settings(profile: str, facts: HostFacts) -> dict[str, s
     }
 
 
+def recommended_pool_optimizer_settings(profile: str, facts: HostFacts) -> dict[str, str]:
+    if profile in {"pi5-usb-asic-router", "usb-asic-router"}:
+        return {
+            "BDAG_POOL_OPTIMIZER_WINDOW_SECONDS": "900",
+            "BDAG_POOL_OPTIMIZER_SAMPLE_INTERVAL_SECONDS": "30",
+            "BDAG_POOL_OPTIMIZER_CHANGE_COOLDOWN_SECONDS": "1800",
+            "BDAG_POOL_OPTIMIZER_SAFE_TEMPLATE_TTL_MS": "750",
+            "BDAG_POOL_OPTIMIZER_SAFE_BLOCK_CANDIDATE_JOB_AGE_MS": "1000",
+            "BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_TARGET_SHARE_SECONDS": "4.0",
+            "BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_WINDOW_SECONDS": "120",
+            "BDAG_POOL_OPTIMIZER_TIMER_ON_BOOT_SEC": "12m",
+            "BDAG_POOL_OPTIMIZER_TIMER_ON_UNIT_ACTIVE_SEC": "30m",
+            "BDAG_POOL_OPTIMIZER_TIMER_RANDOMIZED_DELAY_SEC": "3m",
+            "BDAG_POOL_OPTIMIZER_RUNNER_INTERVAL_SECONDS": "1800",
+        }
+    if profile in {"fragile-flash", "constrained"}:
+        return {
+            "BDAG_POOL_OPTIMIZER_WINDOW_SECONDS": "1200",
+            "BDAG_POOL_OPTIMIZER_SAMPLE_INTERVAL_SECONDS": "40",
+            "BDAG_POOL_OPTIMIZER_CHANGE_COOLDOWN_SECONDS": "2400",
+            "BDAG_POOL_OPTIMIZER_SAFE_TEMPLATE_TTL_MS": "750",
+            "BDAG_POOL_OPTIMIZER_SAFE_BLOCK_CANDIDATE_JOB_AGE_MS": "1000",
+            "BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_TARGET_SHARE_SECONDS": "4.0",
+            "BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_WINDOW_SECONDS": "150",
+            "BDAG_POOL_OPTIMIZER_TIMER_ON_BOOT_SEC": "15m",
+            "BDAG_POOL_OPTIMIZER_TIMER_ON_UNIT_ACTIVE_SEC": "45m",
+            "BDAG_POOL_OPTIMIZER_TIMER_RANDOMIZED_DELAY_SEC": "5m",
+            "BDAG_POOL_OPTIMIZER_RUNNER_INTERVAL_SECONDS": "2700",
+        }
+    if profile == "usb-ssd":
+        return {
+            "BDAG_POOL_OPTIMIZER_WINDOW_SECONDS": "900",
+            "BDAG_POOL_OPTIMIZER_SAMPLE_INTERVAL_SECONDS": "30",
+            "BDAG_POOL_OPTIMIZER_CHANGE_COOLDOWN_SECONDS": "1800",
+            "BDAG_POOL_OPTIMIZER_SAFE_TEMPLATE_TTL_MS": "500",
+            "BDAG_POOL_OPTIMIZER_SAFE_BLOCK_CANDIDATE_JOB_AGE_MS": "900",
+            "BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_TARGET_SHARE_SECONDS": "3.0",
+            "BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_WINDOW_SECONDS": "120",
+            "BDAG_POOL_OPTIMIZER_TIMER_ON_BOOT_SEC": "10m",
+            "BDAG_POOL_OPTIMIZER_TIMER_ON_UNIT_ACTIVE_SEC": "30m",
+            "BDAG_POOL_OPTIMIZER_TIMER_RANDOMIZED_DELAY_SEC": "2m",
+            "BDAG_POOL_OPTIMIZER_RUNNER_INTERVAL_SECONDS": "1800",
+        }
+    if profile.startswith("nvme") or profile == "large-ssd":
+        return {
+            "BDAG_POOL_OPTIMIZER_WINDOW_SECONDS": "600",
+            "BDAG_POOL_OPTIMIZER_SAMPLE_INTERVAL_SECONDS": "20",
+            "BDAG_POOL_OPTIMIZER_CHANGE_COOLDOWN_SECONDS": "1200",
+            "BDAG_POOL_OPTIMIZER_SAFE_TEMPLATE_TTL_MS": "500",
+            "BDAG_POOL_OPTIMIZER_SAFE_BLOCK_CANDIDATE_JOB_AGE_MS": "800",
+            "BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_TARGET_SHARE_SECONDS": "2.5",
+            "BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_WINDOW_SECONDS": "90",
+            "BDAG_POOL_OPTIMIZER_TIMER_ON_BOOT_SEC": "5m",
+            "BDAG_POOL_OPTIMIZER_TIMER_ON_UNIT_ACTIVE_SEC": "20m",
+            "BDAG_POOL_OPTIMIZER_TIMER_RANDOMIZED_DELAY_SEC": "90s",
+            "BDAG_POOL_OPTIMIZER_RUNNER_INTERVAL_SECONDS": "1200",
+        }
+    return {
+        "BDAG_POOL_OPTIMIZER_WINDOW_SECONDS": "900",
+        "BDAG_POOL_OPTIMIZER_SAMPLE_INTERVAL_SECONDS": "30",
+        "BDAG_POOL_OPTIMIZER_CHANGE_COOLDOWN_SECONDS": "1800",
+        "BDAG_POOL_OPTIMIZER_SAFE_TEMPLATE_TTL_MS": "500",
+        "BDAG_POOL_OPTIMIZER_SAFE_BLOCK_CANDIDATE_JOB_AGE_MS": "800",
+        "BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_TARGET_SHARE_SECONDS": "3.0",
+        "BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_WINDOW_SECONDS": "120",
+        "BDAG_POOL_OPTIMIZER_TIMER_ON_BOOT_SEC": "10m",
+        "BDAG_POOL_OPTIMIZER_TIMER_ON_UNIT_ACTIVE_SEC": "30m",
+        "BDAG_POOL_OPTIMIZER_TIMER_RANDOMIZED_DELAY_SEC": "2m",
+        "BDAG_POOL_OPTIMIZER_RUNNER_INTERVAL_SECONDS": "1800",
+    }
+
+
 def recommendations(profile: str, facts: HostFacts) -> dict[str, str]:
     result: dict[str, str] = {
         "BDAG_CAPABILITY_PROFILE": profile,
         "BDAG_HOST_PROFILE": facts.host_profile,
+        "BDAG_POOL_OPTIMIZER_ITERATIONS": "1",
     }
     result.update(recommended_cache_settings(profile, facts))
     result.update(recommended_io_settings(profile, facts))
     result.update(recommended_sync_settings(profile, facts))
     result.update(recommended_postgres_settings(profile, facts))
+    result.update(recommended_pool_optimizer_settings(profile, facts))
     return result
 
 
@@ -580,6 +654,7 @@ def resolve(root: Path, env: dict[str, str]) -> dict[str, Any]:
         "notes": [
             "Cache recommendations reserve RAM for the Linux page cache; they do not try to pin the whole chain in process heap.",
             "USB-backed ASIC-router miners consume FastSync but do not serve bulk sync from the mining chain device.",
+            "Pool adaptive optimizer timing is platform-adaptive; constrained flash hosts sample slowly while NVMe hosts can use shorter windows.",
         ],
     }
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import pathlib
 import sys
 import unittest
@@ -80,6 +81,36 @@ pool_rpc_backend_submit_duration_seconds_count{backend="node1",result="ok"} 4
 
 
 class PoolAdaptiveOptimizerTests(unittest.TestCase):
+    def test_parser_uses_platform_optimizer_env_defaults(self) -> None:
+        keys = {
+            "BDAG_POOL_OPTIMIZER_WINDOW_SECONDS": "600",
+            "BDAG_POOL_OPTIMIZER_SAMPLE_INTERVAL_SECONDS": "20",
+            "BDAG_POOL_OPTIMIZER_CHANGE_COOLDOWN_SECONDS": "1200",
+            "BDAG_POOL_OPTIMIZER_SAFE_TEMPLATE_TTL_MS": "500",
+            "BDAG_POOL_OPTIMIZER_SAFE_BLOCK_CANDIDATE_JOB_AGE_MS": "800",
+            "BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_TARGET_SHARE_SECONDS": "2.5",
+            "BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_WINDOW_SECONDS": "90",
+        }
+        old = {key: os.environ.get(key) for key in keys}
+        try:
+            for key, value in keys.items():
+                os.environ[key] = value
+            args = adaptive.build_parser().parse_args([])
+        finally:
+            for key, value in old.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertEqual(args.window_seconds, 600)
+        self.assertEqual(args.sample_interval_seconds, 20)
+        self.assertEqual(args.change_cooldown_seconds, 1200)
+        self.assertEqual(args.safe_template_ttl_ms, 500)
+        self.assertEqual(args.safe_block_candidate_job_age_ms, 800)
+        self.assertEqual(args.safe_vardiff_target_share_seconds, 2.5)
+        self.assertEqual(args.safe_vardiff_window_seconds, 90)
+
     def test_lane_health_uses_mac_identity_and_flags_weak_lanes(self) -> None:
         status = {
             "miner_health": {

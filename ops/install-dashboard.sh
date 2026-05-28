@@ -188,6 +188,38 @@ ensure_env_value() {
   fi
 }
 
+env_file_value() {
+  local key="$1" default="$2" line value
+  line="$(grep -E "^${key}=" "$ENV_FILE" | tail -n 1 || true)"
+  if [[ -z "$line" ]]; then
+    printf '%s\n' "$default"
+    return 0
+  fi
+  value="${line#*=}"
+  value="${value%\"}"
+  value="${value#\"}"
+  value="${value%\'}"
+  value="${value#\'}"
+  printf '%s\n' "$value"
+}
+
+apply_capability_profile_env() {
+  if [[ ! -f "$PROJECT_ROOT/ops/capability_profile.py" ]]; then
+    return 1
+  fi
+  local applied=0
+  while IFS='=' read -r key value; do
+    [[ -n "$key" ]] || continue
+    case "$key" in
+      BDAG_POOL_OPTIMIZER_*|BDAG_CAPABILITY_PROFILE|BDAG_HOST_PROFILE|BDAG_CHAIN_DATA_PATHS|BDAG_NODE_CACHE_MB|BDAG_NODE_CACHE_DATABASE_PERCENT|BDAG_NODE_CACHE_SNAPSHOT_PERCENT|BDAG_NODE_BD_CACHE_SIZE|BDAG_NODE_DAG_CACHE_SIZE|BDAG_EVM_CACHE_MB|BDAG_EVM_CACHE_DATABASE_PERCENT|BDAG_EVM_CACHE_SNAPSHOT_PERCENT|BDAG_NODE_GOMEMLIMIT|BDAG_NODE_GOGC|BDAG_POOL_GOMEMLIMIT|BDAG_BLOCK_READ_AHEAD_KB|BDAG_BLOCK_NR_REQUESTS|BDAG_VM_TUNING_ENABLED|BDAG_VM_SWAPPINESS|BDAG_VM_VFS_CACHE_PRESSURE|BDAG_VM_DIRTY_BACKGROUND_BYTES|BDAG_VM_DIRTY_BYTES|BDAG_FSTRIM_ENABLED|NODE_MAX_PEERS|BDAG_FASTSYNC_PREPROCESS_WORKERS|BDAG_FASTSNAP_PARALLELISM|BDAG_NO_FASTSYNC_SERVE|BDAG_FASTARTIFACTSYNC_ENABLED|BDAG_BACKGROUND_MAINTENANCE_BACKOFF_ENABLED|BDAG_STATUS_SAMPLER_ENABLED|BDAG_ADAPTIVE_CONCURRENCY_ENABLED|POSTGRES_SHARED_BUFFERS|POSTGRES_EFFECTIVE_CACHE_SIZE|POSTGRES_MAX_WAL_SIZE|POSTGRES_CHECKPOINT_TIMEOUT)
+        ensure_env_value "$key" "$value"
+        applied=1
+        ;;
+    esac
+  done < <(python3 "$PROJECT_ROOT/ops/capability_profile.py" --root "$PROJECT_ROOT" --env-file "$ENV_FILE" --env 2>/dev/null || true)
+  [[ "$applied" == "1" ]]
+}
+
 ensure_env_value BDAG_PROJECT_ROOT "$PROJECT_ROOT"
 ensure_env_value BDAG_RUNTIME_DIR "$RUNTIME_DIR"
 ensure_env_value BDAG_POOL_ENV_FILE "$PROJECT_ROOT/asic-pool/.env"
@@ -245,6 +277,24 @@ ensure_env_value BDAG_INCIDENT_REPORT_REPO ""
 ensure_env_value BDAG_POOL_OPTIMIZER_METRICS_URL http://127.0.0.1:9092/metrics
 ensure_env_value BDAG_POOL_OPTIMIZER_ADMIN_URL http://127.0.0.1:9092
 ensure_env_value BDAG_POOL_OPTIMIZER_DASHBOARD_STATUS_URL "http://127.0.0.1:$PORT/api/status"
+ensure_env_value BDAG_POOL_OPTIMIZER_USE_CAPABILITY_DEFAULTS 1
+apply_capability_profile_env || true
+ensure_env_value BDAG_POOL_OPTIMIZER_ITERATIONS 1
+ensure_env_value BDAG_POOL_OPTIMIZER_WINDOW_SECONDS 900
+ensure_env_value BDAG_POOL_OPTIMIZER_SAMPLE_INTERVAL_SECONDS 30
+ensure_env_value BDAG_POOL_OPTIMIZER_CHANGE_COOLDOWN_SECONDS 1800
+ensure_env_value BDAG_POOL_OPTIMIZER_SAFE_TEMPLATE_TTL_MS 500
+ensure_env_value BDAG_POOL_OPTIMIZER_SAFE_BLOCK_CANDIDATE_JOB_AGE_MS 800
+ensure_env_value BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_TARGET_SHARE_SECONDS 3.0
+ensure_env_value BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_WINDOW_SECONDS 120
+ensure_env_value BDAG_POOL_OPTIMIZER_TIMER_ON_BOOT_SEC 10m
+ensure_env_value BDAG_POOL_OPTIMIZER_TIMER_ON_UNIT_ACTIVE_SEC 30m
+ensure_env_value BDAG_POOL_OPTIMIZER_TIMER_RANDOMIZED_DELAY_SEC 2m
+ensure_env_value BDAG_POOL_OPTIMIZER_RUNNER_INTERVAL_SECONDS 1800
+
+POOL_OPTIMIZER_TIMER_ON_BOOT_SEC="$(env_file_value BDAG_POOL_OPTIMIZER_TIMER_ON_BOOT_SEC 10m)"
+POOL_OPTIMIZER_TIMER_ON_UNIT_ACTIVE_SEC="$(env_file_value BDAG_POOL_OPTIMIZER_TIMER_ON_UNIT_ACTIVE_SEC 30m)"
+POOL_OPTIMIZER_TIMER_RANDOMIZED_DELAY_SEC="$(env_file_value BDAG_POOL_OPTIMIZER_TIMER_RANDOMIZED_DELAY_SEC 2m)"
 
 DASHBOARD_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-dashboard.service"
 STATUS_SAMPLER_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-status-sampler.service"
@@ -692,7 +742,7 @@ Environment=BDAG_POOL_OPTIMIZER_OUTPUT_DIR=$RUNTIME_DIR/reports/pool-adaptive-op
 Environment=BDAG_POOL_OPTIMIZER_STATE_FILE=$RUNTIME_DIR/pool-adaptive-optimizer-state.json
 EnvironmentFile=-$ENV_FILE
 ExecStartPre=/bin/sh -c 'curl -fsS http://127.0.0.1:$PORT/api/status >/dev/null'
-ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/pool_adaptive_optimizer.py --apply --yes --iterations 1 --window-seconds 900 --sample-interval-seconds 30
+ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/pool_adaptive_optimizer.py --apply --yes
 Nice=12
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
@@ -705,11 +755,11 @@ EOF
 Description=Run BlockDAG pool adaptive optimizer advisory pass ($INSTANCE)
 
 [Timer]
-OnBootSec=10m
-OnUnitActiveSec=30m
+OnBootSec=$POOL_OPTIMIZER_TIMER_ON_BOOT_SEC
+OnUnitActiveSec=$POOL_OPTIMIZER_TIMER_ON_UNIT_ACTIVE_SEC
 AccuracySec=1m
 Persistent=true
-RandomizedDelaySec=2m
+RandomizedDelaySec=$POOL_OPTIMIZER_TIMER_RANDOMIZED_DELAY_SEC
 Unit=${INSTANCE}-pool-adaptive-optimizer.service
 
 [Install]

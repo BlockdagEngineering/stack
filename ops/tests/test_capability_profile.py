@@ -48,6 +48,9 @@ class CapabilityProfileTest(unittest.TestCase):
         self.assertEqual(recs["NODE_MAX_PEERS"], "96")
         self.assertEqual(recs["BDAG_BLOCK_READ_AHEAD_KB"], "256")
         self.assertEqual(recs["BDAG_VM_DIRTY_BYTES"], str(256 * capability_profile.MIB))
+        self.assertEqual(recs["BDAG_POOL_OPTIMIZER_SAFE_TEMPLATE_TTL_MS"], "750")
+        self.assertEqual(recs["BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_TARGET_SHARE_SECONDS"], "4.0")
+        self.assertEqual(recs["BDAG_POOL_OPTIMIZER_TIMER_ON_UNIT_ACTIVE_SEC"], "30m")
 
     def test_fragile_flash_keeps_sync_serving_auto_for_non_router(self) -> None:
         facts = capability_profile.HostFacts(
@@ -89,6 +92,9 @@ class CapabilityProfileTest(unittest.TestCase):
         self.assertEqual(recs["BDAG_FASTSYNC_PREPROCESS_WORKERS"], "4")
         self.assertEqual(recs["BDAG_FASTSNAP_PARALLELISM"], "8")
         self.assertEqual(recs["BDAG_NODE_BD_CACHE_SIZE"], "16384")
+        self.assertEqual(recs["BDAG_POOL_OPTIMIZER_WINDOW_SECONDS"], "600")
+        self.assertEqual(recs["BDAG_POOL_OPTIMIZER_SAMPLE_INTERVAL_SECONDS"], "20")
+        self.assertEqual(recs["BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_TARGET_SHARE_SECONDS"], "2.5")
 
 
 if __name__ == "__main__":

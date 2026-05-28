@@ -42,6 +42,36 @@ DEFAULT_CHANGE_COOLDOWN_SECONDS = 1800
 DEFAULT_SCORE_EWMA_ALPHA = 0.25
 
 
+def env_int(name: str, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    value = os.environ.get(name)
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        parsed = int(float(str(value).strip()))
+    except ValueError:
+        return default
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
+def env_float(name: str, default: float, minimum: float | None = None, maximum: float | None = None) -> float:
+    value = os.environ.get(name)
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        parsed = float(str(value).strip())
+    except ValueError:
+        return default
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
 @dataclass(frozen=True)
 class AdaptiveConfig:
     template_ttl_ms: int = DEFAULT_SAFE_TEMPLATE_TTL_MS
@@ -558,6 +588,8 @@ def run_controller(args: argparse.Namespace) -> dict[str, Any]:
         "admin_available": admin_ok,
         "metrics_url": args.metrics_url,
         "dashboard_status_url": args.dashboard_status_url,
+        "capability_profile": os.environ.get("BDAG_CAPABILITY_PROFILE_RESOLVED") or os.environ.get("BDAG_CAPABILITY_PROFILE"),
+        "host_profile": os.environ.get("BDAG_HOST_PROFILE"),
         "safe_config": asdict(safe_config),
         "starting_config": asdict(current),
         "iterations": [],
@@ -716,24 +748,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dashboard-status-url", default=os.environ.get("BDAG_POOL_OPTIMIZER_DASHBOARD_STATUS_URL", timing.DEFAULT_DASHBOARD_STATUS_URL))
     parser.add_argument("--output-dir", default=os.environ.get("BDAG_POOL_OPTIMIZER_OUTPUT_DIR"))
     parser.add_argument("--state-file", default=os.environ.get("BDAG_POOL_OPTIMIZER_STATE_FILE"))
-    parser.add_argument("--window-seconds", type=float, default=DEFAULT_WINDOW_SECONDS)
-    parser.add_argument("--sample-interval-seconds", type=float, default=DEFAULT_SAMPLE_INTERVAL_SECONDS)
-    parser.add_argument("--sample-log-every", type=int, default=5)
-    parser.add_argument("--iterations", type=int, default=1, help="0 means run forever")
+    parser.add_argument("--window-seconds", type=float, default=env_float("BDAG_POOL_OPTIMIZER_WINDOW_SECONDS", DEFAULT_WINDOW_SECONDS, minimum=1.0))
+    parser.add_argument("--sample-interval-seconds", type=float, default=env_float("BDAG_POOL_OPTIMIZER_SAMPLE_INTERVAL_SECONDS", DEFAULT_SAMPLE_INTERVAL_SECONDS, minimum=1.0))
+    parser.add_argument("--sample-log-every", type=int, default=env_int("BDAG_POOL_OPTIMIZER_SAMPLE_LOG_EVERY", 5, minimum=1))
+    parser.add_argument("--iterations", type=int, default=env_int("BDAG_POOL_OPTIMIZER_ITERATIONS", 1, minimum=0), help="0 means run forever")
     parser.add_argument("--apply", action="store_true", help="Apply decisions through runtime admin endpoints. Default is advisory.")
     parser.add_argument("--yes", action="store_true", help="Required with --apply.")
     parser.add_argument("--apply-initial-config", action="store_true")
     parser.add_argument("--stop-on-abort", action="store_true", default=False)
     parser.add_argument("--continue-on-abort", action="store_false", dest="stop_on_abort")
-    parser.add_argument("--change-cooldown-seconds", type=float, default=DEFAULT_CHANGE_COOLDOWN_SECONDS)
-    parser.add_argument("--score-ewma-alpha", type=float, default=DEFAULT_SCORE_EWMA_ALPHA)
+    parser.add_argument("--change-cooldown-seconds", type=float, default=env_float("BDAG_POOL_OPTIMIZER_CHANGE_COOLDOWN_SECONDS", DEFAULT_CHANGE_COOLDOWN_SECONDS, minimum=0.0))
+    parser.add_argument("--score-ewma-alpha", type=float, default=env_float("BDAG_POOL_OPTIMIZER_SCORE_EWMA_ALPHA", DEFAULT_SCORE_EWMA_ALPHA, minimum=0.0, maximum=1.0))
     parser.add_argument("--template-step-ms", type=int, default=100)
     parser.add_argument("--block-age-step-ms", type=int, default=50)
     parser.add_argument("--vardiff-step-seconds", type=float, default=0.5)
-    parser.add_argument("--safe-template-ttl-ms", type=int, default=DEFAULT_SAFE_TEMPLATE_TTL_MS)
-    parser.add_argument("--safe-block-candidate-job-age-ms", type=int, default=DEFAULT_SAFE_BLOCK_CANDIDATE_JOB_AGE_MS)
-    parser.add_argument("--safe-vardiff-target-share-seconds", type=float, default=DEFAULT_SAFE_VARDIFF_TARGET_SHARE_SECONDS)
-    parser.add_argument("--safe-vardiff-window-seconds", type=int, default=DEFAULT_SAFE_VARDIFF_WINDOW_SECONDS)
+    parser.add_argument("--safe-template-ttl-ms", type=int, default=env_int("BDAG_POOL_OPTIMIZER_SAFE_TEMPLATE_TTL_MS", DEFAULT_SAFE_TEMPLATE_TTL_MS, MIN_TEMPLATE_TTL_MS, MAX_TEMPLATE_TTL_MS))
+    parser.add_argument("--safe-block-candidate-job-age-ms", type=int, default=env_int("BDAG_POOL_OPTIMIZER_SAFE_BLOCK_CANDIDATE_JOB_AGE_MS", DEFAULT_SAFE_BLOCK_CANDIDATE_JOB_AGE_MS, MIN_BLOCK_CANDIDATE_JOB_AGE_MS, MAX_BLOCK_CANDIDATE_JOB_AGE_MS))
+    parser.add_argument("--safe-vardiff-target-share-seconds", type=float, default=env_float("BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_TARGET_SHARE_SECONDS", DEFAULT_SAFE_VARDIFF_TARGET_SHARE_SECONDS, MIN_TARGET_SHARE_SECONDS, MAX_TARGET_SHARE_SECONDS))
+    parser.add_argument("--safe-vardiff-window-seconds", type=int, default=env_int("BDAG_POOL_OPTIMIZER_SAFE_VARDIFF_WINDOW_SECONDS", DEFAULT_SAFE_VARDIFF_WINDOW_SECONDS, minimum=10))
     parser.add_argument("--min-share-accept-ratio", type=float, default=0.20)
     parser.add_argument("--warn-share-accept-ratio", type=float, default=0.70)
     parser.add_argument("--good-share-accept-ratio", type=float, default=0.90)

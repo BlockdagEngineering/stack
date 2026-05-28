@@ -71,11 +71,14 @@ secondary penalties:
     <li>MAC lane extraction from dashboard miner health so exposure and work share are based on <code>mac:</code> identities.</li>
     <li>Safety scoring from dashboard health, share/block outcomes, stale reject reasons, template fetch latency, iowait, and ASIC lane health. High block rejects are a hard failure only when no accepted blocks are flowing; otherwise they are a corrective tuning signal.</li>
     <li>Bounded recommendations for VarDiff target share interval, template TTL refresh, and block-candidate age.</li>
+    <li>Platform-adaptive defaults from <code>ops/capability_profile.py</code> so constrained flash and USB ASIC-router hosts sample more slowly while NVMe or larger SSD hosts can run shorter windows.</li>
+    <li>Portable non-systemd runner at <code>ops/pool_adaptive_optimizer_runner.py</code> for macOS, Windows Docker Desktop, cron, launchd, and plain shell operators. It is advisory by default and requires <code>--apply --yes</code> for mutation.</li>
     <li>JSONL evidence, state file, summary JSON, and HTML report for every run.</li>
-    <li><code>ops/install-dashboard.sh</code> installs a low-priority periodic active timer by default when guard services are enabled; <code>--no-adaptive-optimizer</code> opts out.</li>
+    <li><code>ops/install-dashboard.sh</code> installs a low-priority periodic active timer by default when guard services are enabled; timer cadence and safe knobs are resolved from the platform profile, and <code>--no-adaptive-optimizer</code> opts out.</li>
   </ul>
 
   <h2>Release Defaults</h2>
+  <p>The table below is the standard fallback. The capability resolver may choose more conservative values for flash/USB router hosts or shorter windows for NVMe hosts.</p>
   <table>
     <thead><tr><th>Knob</th><th>Safe band</th><th>Initial value</th><th>Reason</th></tr></thead>
     <tbody>

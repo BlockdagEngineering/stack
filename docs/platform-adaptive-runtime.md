@@ -122,6 +122,31 @@ This preserves the Pi5 behavior that protects USB-backed chain import, while
 letting AMD64 or larger ARM64 hosts use more concurrency when the machine is
 idle enough to benefit.
 
+The pool adaptive optimizer uses the same resolver. The recommendation payload
+includes `BDAG_POOL_OPTIMIZER_WINDOW_SECONDS`,
+`BDAG_POOL_OPTIMIZER_SAMPLE_INTERVAL_SECONDS`,
+`BDAG_POOL_OPTIMIZER_CHANGE_COOLDOWN_SECONDS`, safe starting values for
+template TTL, block-candidate age, VarDiff target/window, and timer cadence.
+Constrained flash or USB ASIC-router profiles use slower samples, longer
+cooldowns, and lower share pressure. NVMe and large SSD profiles can use shorter
+windows and faster checks because they are less likely to turn optimizer
+sampling into chain-data I/O stalls.
+
+Linux appliance installs write those values into the generated user systemd
+optimizer timer. Non-systemd hosts can run the same logic with:
+
+```sh
+python3 ops/pool_adaptive_optimizer_runner.py --once
+python3 ops/pool_adaptive_optimizer_runner.py --loop --interval-seconds 20m
+```
+
+The portable runner defaults to advisory mode. Active mutation still requires
+`--apply --yes` or explicit `BDAG_POOL_OPTIMIZER_APPLY=1` and
+`BDAG_POOL_OPTIMIZER_YES=1`, plus the localhost/private runtime admin endpoint.
+It treats env-file optimizer values as packaged defaults when
+`BDAG_POOL_OPTIMIZER_USE_CAPABILITY_DEFAULTS=1`; set that to `0` when testing a
+fixed optimizer configuration.
+
 When the capability resolver is available, dashboard/watchdog status includes
 both the legacy `profile` and the richer `capability_profile`. Adaptive worker
 budgets prefer the richer profile, so an AMD64 box with USB flash chain data is
