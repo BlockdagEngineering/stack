@@ -21,6 +21,7 @@ SNAPSHOT_RPC_RECOVERY_SECONDS="${BDAG_SNAPSHOT_RPC_RECOVERY_SECONDS:-180}"
 SNAPSHOT_FINAL_STOP_SYNC="${BDAG_SNAPSHOT_FINAL_STOP_SYNC:-0}"
 SNAPSHOT_FINAL_STOP_TIMEOUT_SECONDS="${BDAG_SNAPSHOT_FINAL_STOP_TIMEOUT_SECONDS:-45}"
 SNAPSHOT_WARM_SYNC_TIMEOUT_SECONDS="${BDAG_SNAPSHOT_WARM_SYNC_TIMEOUT_SECONDS:-2700}"
+SNAPSHOT_NODE_DIRS="${BDAG_SNAPSHOT_NODE_DIRS:-${BDAG_NODE_DATA_DIRS:-node1,node2}}"
 
 source "$PROJECT_ROOT/ops/chain-snapshot-common.sh"
 
@@ -214,13 +215,47 @@ compose() {
 
 choose_node() {
   local previous next
+  mapfile -t node_keys < <(configured_node_keys)
   previous="$(cat "$STATE_FILE" 2>/dev/null || true)"
-  if [[ "$previous" == "node1" ]]; then
-    next="node2"
-  else
-    next="node1"
+  next="${node_keys[0]}"
+  if ((${#node_keys[@]} > 1)); then
+    for index in "${!node_keys[@]}"; do
+      if [[ "${node_keys[$index]}" == "$previous" ]]; then
+        next="${node_keys[$(((index + 1) % ${#node_keys[@]}))]}"
+        break
+      fi
+    done
   fi
   printf '%s\n' "$next"
+}
+
+configured_node_keys() {
+  local raw="$SNAPSHOT_NODE_DIRS"
+  local item seen_node1=0 seen_node2=0 emitted=0
+  raw="${raw//;/,}"
+  IFS=',' read -ra items <<< "$raw"
+  for item in "${items[@]}"; do
+    item="${item//[[:space:]]/}"
+    case "$item" in
+      node1)
+        if [[ "$seen_node1" == "0" ]]; then
+          printf '%s\n' node1
+          seen_node1=1
+          emitted=1
+        fi
+        ;;
+      node2)
+        if [[ "$seen_node2" == "0" ]]; then
+          printf '%s\n' node2
+          seen_node2=1
+          emitted=1
+        fi
+        ;;
+    esac
+  done
+  if [[ "$emitted" == "0" ]]; then
+    printf '%s\n' node1
+  fi
 }
 
 service_for_node_key() {
@@ -240,11 +275,14 @@ dir_for_node_key() {
 }
 
 alternate_node_key() {
-  case "$1" in
-    node1) printf '%s\n' "node2" ;;
-    node2) printf '%s\n' "node1" ;;
-    *) return 1 ;;
-  esac
+  local current="$1" candidate
+  while IFS= read -r candidate; do
+    if [[ "$candidate" != "$current" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done < <(configured_node_keys)
+  return 1
 }
 
 current_rpc_primary() {
@@ -272,7 +310,11 @@ node_dir="$(dir_for_node_key "$node_key")"
 if [[ "$SNAPSHOT_AVOID_RPC_PRIMARY" == "1" ]]; then
   rpc_primary="$(current_rpc_primary)"
   if [[ -n "$rpc_primary" && "$node_service" == "$rpc_primary" ]]; then
-    alternate_key="$(alternate_node_key "$node_key")"
+    alternate_key="$(alternate_node_key "$node_key" || true)"
+    if [[ -z "$alternate_key" ]]; then
+      log "skipping hourly snapshot: selected node is active RPC primary $node_service and no alternate source is configured"
+      exit 0
+    fi
     alternate_service="$(service_for_node_key "$alternate_key")"
     alternate_dir="$(dir_for_node_key "$alternate_key")"
     if [[ -d "$PROJECT_ROOT/data/$alternate_dir" ]]; then
