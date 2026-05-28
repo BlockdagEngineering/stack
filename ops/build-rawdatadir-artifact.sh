@@ -9,7 +9,7 @@ set -Eeuo pipefail
 PROJECT_ROOT="${BDAG_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 ENV_FILE="${BDAG_ENV_FILE:-$PROJECT_ROOT/.env}"
 COMPOSE_FILE="${BDAG_COMPOSE_FILE:-$PROJECT_ROOT/docker-compose.yml}"
-POOL_ADMIN_URL="${BDAG_POOL_ADMIN_URL:-http://127.0.0.1:${POOL_METRICS_PORT:-${POOL_API_PORT:-9090}}}"
+POOL_ADMIN_URL="${BDAG_POOL_ADMIN_URL:-http://127.0.0.1:${POOL_METRICS_PORT:-${POOL_API_PORT:-9092}}}"
 ARTIFACT_BASE="${BDAG_RAWDATADIR_ARTIFACT_BASE:-$PROJECT_ROOT/data-restore/rawdatadir}"
 ARTIFACT_KEEP="${BDAG_RAWDATADIR_ARTIFACT_KEEP:-3}"
 NETWORK="${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}"
@@ -26,6 +26,8 @@ RESTORE_TIMEOUT_SECONDS="${BDAG_RAWDATADIR_RESTORE_TIMEOUT_SECONDS:-180}"
 MAX_EXPORT_BACKEND_LAG="${BDAG_RAWDATADIR_MAX_EXPORT_BACKEND_LAG:-10000}"
 REQUIRE_EXPORT_BACKEND_FRESH="${BDAG_RAWDATADIR_REQUIRE_EXPORT_BACKEND_FRESH:-1}"
 REQUIRE_SIGNED="${BDAG_RAWDATADIR_REQUIRE_SIGNED:-1}"
+REQUIRE_STATE_ROOT="${BDAG_RAWDATADIR_REQUIRE_STATE_ROOT:-1}"
+ARCHIVE_USE_SUDO="${BDAG_RAWDATADIR_ARCHIVE_USE_SUDO:-auto}"
 NODE_MODE="${BDAG_NODE_MODE:-single}"
 STATUS_FILE="${BDAG_RAWDATADIR_SOURCE_STATUS:-$PROJECT_ROOT/ops/runtime/rawdatadir-source-status.json}"
 DOCKER_CPU_SHARES="${BDAG_RAWDATADIR_DOCKER_CPU_SHARES:-128}"
@@ -314,18 +316,23 @@ resolve_node_image() {
 }
 
 restore_export_backend() {
+  local changed=0
   if [[ -n "$EXPORT_SERVICE" ]]; then
     log "starting exported backend service=$EXPORT_SERVICE"
     compose start "$EXPORT_SERVICE" 2>&1 | tee -a "$LOG_FILE"
     wait_container_running "$EXPORT_SERVICE"
     EXPORT_SERVICE=""
+    changed=1
   fi
   if [[ -n "$MAINTENANCE_BACKEND" ]]; then
     log "clearing pool maintenance backend=$MAINTENANCE_BACKEND"
     admin_maintenance "$MAINTENANCE_BACKEND" false rawdatadir-restore | tee -a "$LOG_FILE" >/dev/null
     MAINTENANCE_BACKEND=""
+    changed=1
   fi
-  wait_pool_jobs_ready "$RESTORE_TIMEOUT_SECONDS" || true
+  if [[ "$changed" == "1" ]]; then
+    wait_pool_jobs_ready "$RESTORE_TIMEOUT_SECONDS" || true
+  fi
 }
 
 cleanup() {
@@ -340,16 +347,18 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 collect_anchor_env() {
-  PYTHONDONTWRITEBYTECODE=1 python3 - "$ANCHOR_RPC_URL" "$RPC_USER" "$RPC_PASS" <<'PY'
+  PYTHONDONTWRITEBYTECODE=1 python3 - "$ANCHOR_RPC_URL" "$RPC_USER" "$RPC_PASS" "$REQUIRE_STATE_ROOT" <<'PY'
 import base64
 import json
 import os
 import shlex
 import sys
+import time
 import urllib.error
 import urllib.request
 
-url, user, password = sys.argv[1:4]
+url, user, password, require_state_root = sys.argv[1:5]
+require_state_root = require_state_root.lower() not in {"0", "false", "no", "off"}
 
 def rpc(method, params=None):
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}).encode()
@@ -373,53 +382,84 @@ def quantity(value):
 def env(name, value):
     print(f"{name}={shlex.quote(str(value))}")
 
-block_total = os.getenv("BDAG_RAWDATADIR_BLOCK_TOTAL")
-tip_order = os.getenv("BDAG_RAWDATADIR_TIP_ORDER")
-tip_hash = os.getenv("BDAG_RAWDATADIR_TIP_HASH")
-state_root = os.getenv("BDAG_RAWDATADIR_STATE_ROOT")
+configured_block_total = os.getenv("BDAG_RAWDATADIR_BLOCK_TOTAL")
+configured_tip_order = os.getenv("BDAG_RAWDATADIR_TIP_ORDER")
+configured_tip_hash = os.getenv("BDAG_RAWDATADIR_TIP_HASH")
+configured_state_root = os.getenv("BDAG_RAWDATADIR_STATE_ROOT")
 genesis_hash = os.getenv("BDAG_RAWDATADIR_GENESIS_HASH", "")
-
-if not block_total:
-    for method in ("getBlockTotal", "getBlockCount"):
-        try:
-            block_total = str(quantity(rpc(method)))
-            break
-        except Exception:
-            pass
-if not tip_order:
-    try:
-        tip_order = str(quantity(rpc("getMainChainHeight")))
-    except Exception:
-        tip_order = block_total
-if not tip_hash and tip_order:
-    for method, params in (("getBlockhash", [int(tip_order)]), ("getBestBlockHash", [])):
-        try:
-            tip_hash = str(rpc(method, params))
-            break
-        except Exception:
-            pass
-if not state_root and tip_hash:
-    for method, params in (("getBlockHeader", [tip_hash, True]), ("getStateRoot", [int(tip_order or 0), False])):
-        try:
-            result = rpc(method, params)
-            if isinstance(result, dict):
-                state_root = result.get("stateRoot") or result.get("stateroot") or result.get("StateRoot")
-            elif isinstance(result, str):
-                state_root = result
-            if state_root:
-                break
-        except Exception:
-            pass
-if not genesis_hash:
-    try:
-        genesis_hash = str(rpc("getBlockhash", [0]))
-    except Exception:
-        genesis_hash = ""
-
 zero = "0x" + ("0" * 64)
-env("RAW_BLOCK_TOTAL", block_total or "1")
-env("RAW_TIP_ORDER", tip_order or block_total or "1")
-env("RAW_TIP_HASH", tip_hash or zero)
+
+def zero_hash(value):
+    return not value or str(value).lower() in {"0x" + ("0" * 64), "0" * 64}
+
+for attempt in range(24):
+    block_total = configured_block_total
+    tip_order = configured_tip_order
+    tip_hash = configured_tip_hash
+    state_root = configured_state_root
+    if not block_total:
+        for method in ("getBlockTotal", "getBlockCount"):
+            try:
+                block_total = str(quantity(rpc(method)))
+                break
+            except Exception:
+                pass
+    if not tip_order:
+        try:
+            tip_order = str(quantity(rpc("getMainChainHeight")))
+        except Exception:
+            pass
+    if not tip_hash and tip_order:
+        for method, params in (("getBlockhash", [int(tip_order)]), ("getBestBlockHash", [])):
+            try:
+                tip_hash = str(rpc(method, params))
+                break
+            except Exception:
+                pass
+    if not state_root and tip_hash:
+        for method, params in (("getBlockHeader", [tip_hash, True]), ("getStateRoot", [int(tip_order or 0), False])):
+            try:
+                result = rpc(method, params)
+                if isinstance(result, dict):
+                    state_root = result.get("stateRoot") or result.get("stateroot") or result.get("StateRoot")
+                elif isinstance(result, str):
+                    state_root = result
+                if state_root:
+                    break
+            except Exception:
+                pass
+    missing = []
+    try:
+        if not block_total or quantity(block_total) <= 1:
+            missing.append("block_total")
+    except Exception:
+        missing.append("block_total")
+    try:
+        if not tip_order or quantity(tip_order) <= 1:
+            missing.append("tip_order")
+    except Exception:
+        missing.append("tip_order")
+    if zero_hash(tip_hash):
+        missing.append("tip_hash")
+    if require_state_root and zero_hash(state_root):
+        missing.append("state_root")
+    if not missing:
+        break
+    if attempt == 23:
+        raise SystemExit("raw datadir anchor unavailable from live RPC: " + ",".join(missing))
+    time.sleep(5)
+
+if not genesis_hash:
+    for _ in range(3):
+        try:
+            genesis_hash = str(rpc("getBlockhash", [0]))
+            break
+        except Exception:
+            time.sleep(1)
+
+env("RAW_BLOCK_TOTAL", block_total)
+env("RAW_TIP_ORDER", tip_order)
+env("RAW_TIP_HASH", tip_hash)
 env("RAW_STATE_ROOT", state_root or zero)
 env("RAW_GENESIS_HASH", genesis_hash)
 PY
@@ -449,13 +489,40 @@ archive_source_datadir() {
     "--exclude=*.sock"
     .
   )
-  if tar "${tar_args[@]}" 2>>"$LOG_FILE"; then
+  local tar_command=(tar)
+  case "${ARCHIVE_USE_SUDO,,}" in
+    1|true|yes|on)
+      if ! command -v sudo >/dev/null 2>&1 || ! sudo -n true 2>/dev/null; then
+        log "BDAG_RAWDATADIR_ARCHIVE_USE_SUDO is enabled, but passwordless sudo is unavailable"
+        return 1
+      fi
+      tar_command=(sudo -n tar)
+      log "archiving raw datadir with sudo tar"
+      ;;
+    auto)
+      if [[ "$(id -u)" != "0" ]] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        tar_command=(sudo -n tar)
+        log "archiving raw datadir with sudo tar"
+      fi
+      ;;
+    0|false|no|off)
+      ;;
+    *)
+      log "invalid BDAG_RAWDATADIR_ARCHIVE_USE_SUDO=$ARCHIVE_USE_SUDO"
+      return 1
+      ;;
+  esac
+
+  if "${tar_command[@]}" "${tar_args[@]}" 2>>"$LOG_FILE"; then
+    if [[ "${tar_command[0]}" == "sudo" ]]; then
+      sudo chown "$(id -u):$(id -g)" "$tmp"
+    fi
     mv -f "$tmp" "$archive"
     return 0
   fi
-  if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+  if [[ "${tar_command[0]}" != "sudo" ]] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
     log "retrying raw datadir archive with sudo because ordinary tar failed"
-    sudo tar "${tar_args[@]}" 2>>"$LOG_FILE"
+    sudo -n tar "${tar_args[@]}" 2>>"$LOG_FILE"
     sudo chown "$(id -u):$(id -g)" "$tmp"
     mv -f "$tmp" "$archive"
     return 0
