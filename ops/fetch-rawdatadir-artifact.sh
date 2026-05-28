@@ -33,13 +33,17 @@ if ! command -v "$FASTSNAP_BIN" >/dev/null 2>&1 && [[ ! -x "$FASTSNAP_BIN" ]]; t
   log "fastsnap binary not found: $FASTSNAP_BIN"
   exit 1
 fi
+FASTSNAP_HELP="$("$FASTSNAP_BIN" --help 2>&1 || true)"
+if ! grep -q -- "--dir-out" <<<"$FASTSNAP_HELP"; then
+  log "fastsnap binary does not support directory artifact downloads (--dir-out): $FASTSNAP_BIN"
+  exit 1
+fi
 
 STAMP="$(date +%Y%m%d-%H%M%S%Z)"
 DOWNLOAD_DIR="$STAGING_BASE/rawdatadir-$STAMP"
 mkdir -p "$DOWNLOAD_DIR"
 
 fastsnap_args=(
-  --artifact-type raw_datadir_checkpoint
   --legacy-fallback=false
   --network "$NETWORK"
   --min-tip "$MIN_TIP"
@@ -47,6 +51,9 @@ fastsnap_args=(
   --dir-out "$DOWNLOAD_DIR"
   --parallelism "$PARALLELISM"
 )
+if grep -q -- "--artifact-type" <<<"$FASTSNAP_HELP"; then
+  fastsnap_args=(--artifact-type raw_datadir_checkpoint "${fastsnap_args[@]}")
+fi
 
 old_ifs="$IFS"
 IFS=', '

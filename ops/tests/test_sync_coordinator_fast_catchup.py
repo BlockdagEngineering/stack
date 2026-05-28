@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pathlib
 import sys
+import tempfile
 import time
+import types
 import unittest
 import unittest.mock
 
@@ -152,6 +154,29 @@ class SyncCoordinatorFastCatchupTest(unittest.TestCase):
                     "/ip4/198.51.100.1/tcp/8151/p2p/addpeer",
                 ],
             )
+
+    def test_rawdatadir_manifest_probe_uses_supported_fastsnap_options(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(command: list[str], timeout: int = 20):
+            calls.append(command)
+            if command == ["fastsnap", "--help"]:
+                return types.SimpleNamespace(ok=True, stdout="Usage:\n  -manifest-only\n  -artifact-v2\n", stderr="")
+            return types.SimpleNamespace(ok=True, stdout='{"block_total": 9100000}', stderr="")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with unittest.mock.patch.object(sync_coordinator, "run", fake_run):
+                sync_coordinator.FASTSNAP_HELP_CACHE.clear()
+                manifest = sync_coordinator.probe_rawdatadir_manifest(
+                    "/ip4/10.0.0.2/tcp/8151/p2p/raw",
+                    {"BDAG_RAWDATADIR_FASTSNAP_BINARY": "fastsnap"},
+                    pathlib.Path(tmpdir) / "probe.log",
+                )
+
+        probe_command = next(command for command in calls if "--manifest-only" in command)
+        self.assertEqual(manifest, {"block_total": 9100000})
+        self.assertIn("--artifact-v2=true", probe_command)
+        self.assertNotIn("--artifact-type", probe_command)
 
     def test_signed_manifest_provides_trust_on_first_signed_spec(self) -> None:
         manifest = {
