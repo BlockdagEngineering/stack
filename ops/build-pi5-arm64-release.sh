@@ -70,6 +70,8 @@ services:
     container_name: asic-pool
     restart: unless-stopped
     logging: *mining-logging
+    tmpfs:
+      - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     cpu_shares: 3072
     blkio_config:
       weight: 900
@@ -124,6 +126,8 @@ services:
     container_name: rpc-failover
     restart: unless-stopped
     logging: *mining-logging
+    tmpfs:
+      - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     cpu_shares: 2048
     blkio_config:
       weight: 800
@@ -345,6 +349,8 @@ services:
     container_name: pool-db
     restart: unless-stopped
     logging: *mining-logging
+    tmpfs:
+      - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     command:
       - postgres
       - -c
@@ -459,6 +465,14 @@ BDAG_POSTGRES_DATA_DIR=./data/postgres
 BDAG_RUNTIME_DIR=./ops/runtime
 BDAG_STORAGE_MIN_CHAIN_FREE_GIB=50
 BDAG_STORAGE_MIN_RUNTIME_FREE_GIB=4
+
+# Ephemeral scratch policy. Small temporary files belong on RAM-backed tmpfs so
+# they do not add avoidable writes to the USB chain device. Large snapshot and
+# chain-artifact staging must stay on capacity storage unless explicitly sized.
+BDAG_EPHEMERAL_TMPFS_ENABLED=1
+BDAG_EPHEMERAL_DIR=/run/bdag-pool
+BDAG_HOST_TMPDIR=/run/bdag-pool/tmp
+BDAG_CONTAINER_TMPFS_SIZE=128m
 
 # Single-node is the safe default for Pi5 USB power and catch-up stability.
 # Set BDAG_NODE_MODE=double and COMPOSE_PROFILES=dual-node to run both backend

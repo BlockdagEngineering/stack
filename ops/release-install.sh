@@ -321,6 +321,35 @@ configure_storage_profile() {
   echo "Runtime/dashboard state: $runtime_dir"
 }
 
+configure_ephemeral_storage() {
+  local enabled ephemeral_dir tmpfs_size mem_kb mem_gb
+  enabled="$(env_value BDAG_EPHEMERAL_TMPFS_ENABLED 1)"
+  ephemeral_dir="$(env_path_value BDAG_EPHEMERAL_DIR /run/bdag-pool)"
+  tmpfs_size="$(env_value BDAG_CONTAINER_TMPFS_SIZE "")"
+  if [[ -z "$tmpfs_size" ]]; then
+    mem_kb="$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    mem_gb=$(( mem_kb / 1024 / 1024 ))
+    if (( mem_gb > 0 && mem_gb <= 4 )); then
+      tmpfs_size="64m"
+    else
+      tmpfs_size="128m"
+    fi
+  fi
+
+  set_env_value .env BDAG_EPHEMERAL_TMPFS_ENABLED "$enabled"
+  set_env_value .env BDAG_EPHEMERAL_DIR "$ephemeral_dir"
+  set_env_value .env BDAG_HOST_TMPDIR "$ephemeral_dir/tmp"
+  set_env_value .env BDAG_CONTAINER_TMPFS_SIZE "$tmpfs_size"
+
+  if [[ "$enabled" == "1" ]]; then
+    if ! need_sudo mkdir -p "$ephemeral_dir/tmp" ||
+      ! need_sudo chmod 0755 "$ephemeral_dir" ||
+      ! need_sudo chmod 1777 "$ephemeral_dir/tmp"; then
+      warn "Could not create $ephemeral_dir. Container tmpfs mounts will still protect in-container scratch; create the host ephemeral dir during host-profile install."
+    fi
+  fi
+}
+
 guard_runtime_compose() {
   if [[ ! -f docker-compose.yml ]]; then
     echo "Missing docker-compose.yml in release root." >&2
@@ -358,6 +387,7 @@ configure_env() {
   say "Preparing configuration"
   [[ -f .env ]] || cp .env.example .env
   configure_storage_profile
+  configure_ephemeral_storage
 
   local lan_ip scan_target mining_address node_mode node_mining_enabled mem_kb mem_gb
   lan_ip="$(detect_lan_ip)"

@@ -237,6 +237,106 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         self.assertEqual(found["explicit_storage_profile_mismatch"], "warn")
         self.assertEqual(found["docker_chain_shared_device"], "warn")
 
+    def test_usb_chain_split_is_preferred_on_standard_hosts_too(self) -> None:
+        old_mount_info = preflight.mount_info
+        old_is_usb_source = preflight.is_usb_source
+        old_docker_root_dir = preflight.docker_root_dir
+
+        def fake_mount_info(path: Path) -> dict[str, str]:
+            value = str(path)
+            if value.startswith("/mnt/usb"):
+                return {"target": "/mnt/usb", "source": "/dev/sda1", "fstype": "f2fs", "options": "rw,noatime,lazytime"}
+            return {"target": "/", "source": "/dev/nvme0n1p2", "fstype": "ext4", "options": "rw,relatime"}
+
+        try:
+            preflight.mount_info = fake_mount_info
+            preflight.is_usb_source = lambda source: source.startswith("/dev/sda")
+            preflight.docker_root_dir = lambda: "/mnt/usb/docker"
+            profile = preflight.HostProfile("linux", "x86_64", 8, 16 * preflight.GIB, "standard", "test")
+            checks = []
+            preflight.check_storage_profile(
+                checks,
+                Path("/opt/blockdag-pool"),
+                {
+                    "BDAG_STORAGE_PROFILE": "auto",
+                    "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
+                    "BDAG_NODE2_DATA_DIR": "/mnt/usb/blockdag-chain/node2",
+                    "BDAG_POSTGRES_DATA_DIR": "/mnt/usb/runtime/postgres",
+                    "BDAG_RUNTIME_DIR": "/mnt/usb/runtime/ops-runtime",
+                },
+                profile,
+            )
+        finally:
+            preflight.mount_info = old_mount_info
+            preflight.is_usb_source = old_is_usb_source
+            preflight.docker_root_dir = old_docker_root_dir
+
+        found = {check.name: check.status for check in checks}
+        self.assertEqual(found["storage_io_split"], "warn")
+        self.assertEqual(found["docker_chain_shared_device"], "warn")
+
+    def test_ephemeral_tmpfs_passes_for_run_backed_paths(self) -> None:
+        old_mount_info = preflight.mount_info
+        old_is_usb_source = preflight.is_usb_source
+
+        def fake_mount_info(path: Path) -> dict[str, str]:
+            return {"target": "/run", "source": "tmpfs", "fstype": "tmpfs", "options": "rw,nosuid,nodev"}
+
+        try:
+            preflight.mount_info = fake_mount_info
+            preflight.is_usb_source = lambda source: False
+            checks = []
+            preflight.check_ephemeral_storage(checks, Path("/opt/blockdag-pool"), {"BDAG_EPHEMERAL_DIR": "/run/bdag-pool"})
+        finally:
+            preflight.mount_info = old_mount_info
+            preflight.is_usb_source = old_is_usb_source
+
+        found = {check.name: check.status for check in checks}
+        self.assertEqual(found["ephemeral_tmpfs"], "pass")
+
+    def test_ephemeral_tmpfs_warns_for_disk_backed_scratch(self) -> None:
+        old_mount_info = preflight.mount_info
+        old_is_usb_source = preflight.is_usb_source
+
+        def fake_mount_info(path: Path) -> dict[str, str]:
+            return {"target": "/", "source": "/dev/sda1", "fstype": "ext4", "options": "rw,relatime"}
+
+        try:
+            preflight.mount_info = fake_mount_info
+            preflight.is_usb_source = lambda source: source.startswith("/dev/sda")
+            checks = []
+            preflight.check_ephemeral_storage(checks, Path("/opt/blockdag-pool"), {"BDAG_EPHEMERAL_DIR": "/opt/blockdag-pool/tmp"})
+        finally:
+            preflight.mount_info = old_mount_info
+            preflight.is_usb_source = old_is_usb_source
+
+        found = {check.name: check.status for check in checks}
+        self.assertEqual(found["ephemeral_tmpfs"], "warn")
+
+    def test_fastsnap_large_staging_on_tmpfs_warns(self) -> None:
+        old_mount_info = preflight.mount_info
+        old_is_usb_source = preflight.is_usb_source
+
+        def fake_mount_info(path: Path) -> dict[str, str]:
+            return {"target": "/run", "source": "tmpfs", "fstype": "tmpfs", "options": "rw,nosuid,nodev"}
+
+        try:
+            preflight.mount_info = fake_mount_info
+            preflight.is_usb_source = lambda source: False
+            checks = []
+            preflight.check_ephemeral_storage(
+                checks,
+                Path("/opt/blockdag-pool"),
+                {"BDAG_EPHEMERAL_DIR": "/run/bdag-pool", "BDAG_FASTSNAP_DIRECTORY_STAGING": "/run/bdag-pool/staging"},
+            )
+        finally:
+            preflight.mount_info = old_mount_info
+            preflight.is_usb_source = old_is_usb_source
+
+        found = {check.name: check.status for check in checks}
+        self.assertEqual(found["ephemeral_tmpfs"], "pass")
+        self.assertEqual(found["fastsnap_staging_tmpfs"], "warn")
+
 
 if __name__ == "__main__":
     unittest.main()
