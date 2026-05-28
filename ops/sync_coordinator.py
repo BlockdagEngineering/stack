@@ -250,14 +250,18 @@ def fastest_artifact_peer_candidates(env_values: dict[str, str]) -> list[str]:
     return peers
 
 
-def peer_probe_batch(peers: list[str], state: dict[str, Any]) -> list[str]:
+def peer_probe_batch(peers: list[str], state: dict[str, Any], pinned_count: int = 0) -> list[str]:
     if not peers:
         return []
     max_peers = max(1, FAST_CATCHUP_ARTIFACT_MAX_PROBE_PEERS)
-    cursor = safe_int(state.get("fast_artifact_probe_cursor"), 0) % len(peers)
-    ordered = peers[cursor:] + peers[:cursor]
-    batch = ordered[: min(max_peers, len(ordered))]
-    state["fast_artifact_probe_cursor"] = (cursor + len(batch)) % len(peers)
+    pinned = peers[: min(max(0, pinned_count), len(peers), max_peers)]
+    rotating = peers[len(pinned) :]
+    if not rotating:
+        return pinned
+    cursor = safe_int(state.get("fast_artifact_probe_cursor"), 0) % len(rotating)
+    ordered = rotating[cursor:] + rotating[:cursor]
+    batch = [*pinned, *ordered[: max_peers - len(pinned)]]
+    state["fast_artifact_probe_cursor"] = (cursor + max(0, len(batch) - len(pinned))) % len(rotating)
     return batch
 
 
@@ -991,7 +995,8 @@ def select_rawdatadir_artifact_candidate(
     leader = str(decision.get("leader") or state.get("leader") or "")
     local_height = leader_local_height(decision, leader)
     peers = fastest_artifact_peer_candidates(env_values)
-    batch = peer_probe_batch(peers, state)
+    pinned_count = len(split_list_value(env_value(env_values, "BDAG_RAWDATADIR_PEERS")))
+    batch = peer_probe_batch(peers, state, pinned_count=pinned_count)
     if not peers:
         state["last_fast_artifact_result"] = "no_peers"
         state["last_fast_artifact_reason"] = (

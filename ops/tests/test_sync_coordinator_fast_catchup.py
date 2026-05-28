@@ -186,6 +186,13 @@ class SyncCoordinatorFastCatchupTest(unittest.TestCase):
         )
         self.assertGreater(remaining, 0)
 
+    def test_rawdatadir_peer_batch_keeps_pinned_fastest_peer(self) -> None:
+        state = {"fast_artifact_probe_cursor": 2}
+        peers = ["raw", "lan", "vpn", "public"]
+        batch = sync_coordinator.peer_probe_batch(peers, state, pinned_count=1)
+        self.assertEqual(batch[0], "raw")
+        self.assertIn("public", batch)
+
     def test_legacy_restart_lagging_follower_flag_remains_compatible(self) -> None:
         args = sync_coordinator.parse_args([
             "--once",
