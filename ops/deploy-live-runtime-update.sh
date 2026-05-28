@@ -20,6 +20,7 @@ COMPOSE_BACKUP_BEFORE_MARK=""
 FILES=(
   "AGENTS.md"
   "asic-pool/schema.sql"
+  "docker-compose-miner.yml"
   "docker/entrypoint-nodeworker.sh"
   "docs/fastsnap-maintenance-resource-guard.html"
   "docs/five-asic-template-conversion-guard.html"
