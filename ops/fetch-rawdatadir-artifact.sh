@@ -20,7 +20,11 @@ PARALLELISM="${BDAG_RAWDATADIR_PARALLELISM:-4}"
 LOG_FILE="${BDAG_RAWDATADIR_FETCH_LOG:-$PROJECT_ROOT/ops/runtime/logs/rawdatadir-fetch-$(date +%Y%m%d).log}"
 EXISTING_DOWNLOAD_DIR="${BDAG_RAWDATADIR_EXISTING_DIR:-}"
 
-mkdir -p "$STAGING_BASE" "$(dirname "$LOG_FILE")"
+if [[ -n "$EXISTING_DOWNLOAD_DIR" ]]; then
+  mkdir -p "$(dirname "$LOG_FILE")"
+else
+  mkdir -p "$STAGING_BASE" "$(dirname "$LOG_FILE")"
+fi
 
 log() {
   echo "[$(date -Is)] $*" | tee -a "$LOG_FILE"
