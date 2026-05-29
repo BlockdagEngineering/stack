@@ -18,6 +18,7 @@ MIN_TIP="${BDAG_RAWDATADIR_MIN_TIP:-0}"
 TIMEOUT="${BDAG_RAWDATADIR_TIMEOUT:-300s}"
 PARALLELISM="${BDAG_RAWDATADIR_PARALLELISM:-4}"
 LOG_FILE="${BDAG_RAWDATADIR_FETCH_LOG:-$PROJECT_ROOT/ops/runtime/logs/rawdatadir-fetch-$(date +%Y%m%d).log}"
+EXISTING_DOWNLOAD_DIR="${BDAG_RAWDATADIR_EXISTING_DIR:-}"
 
 mkdir -p "$STAGING_BASE" "$(dirname "$LOG_FILE")"
 
@@ -25,13 +26,15 @@ log() {
   echo "[$(date -Is)] $*" | tee -a "$LOG_FILE"
 }
 
-if [[ -z "$PEERS" ]]; then
-  log "set BDAG_RAWDATADIR_PEERS to one or more libp2p multiaddrs"
-  exit 1
-fi
-if ! command -v "$FASTSNAP_BIN" >/dev/null 2>&1 && [[ ! -x "$FASTSNAP_BIN" ]]; then
-  log "fastsnap binary not found: $FASTSNAP_BIN"
-  exit 1
+if [[ -z "$EXISTING_DOWNLOAD_DIR" ]]; then
+  if [[ -z "$PEERS" ]]; then
+    log "set BDAG_RAWDATADIR_PEERS to one or more libp2p multiaddrs"
+    exit 1
+  fi
+  if ! command -v "$FASTSNAP_BIN" >/dev/null 2>&1 && [[ ! -x "$FASTSNAP_BIN" ]]; then
+    log "fastsnap binary not found: $FASTSNAP_BIN"
+    exit 1
+  fi
 fi
 FASTSNAP_HELP="$("$FASTSNAP_BIN" --help 2>&1 || true)"
 if ! grep -q -- "--dir-out" <<<"$FASTSNAP_HELP"; then
@@ -40,8 +43,17 @@ if ! grep -q -- "--dir-out" <<<"$FASTSNAP_HELP"; then
 fi
 
 STAMP="$(date +%Y%m%d-%H%M%S%Z)"
-DOWNLOAD_DIR="$STAGING_BASE/rawdatadir-$STAMP"
-mkdir -p "$DOWNLOAD_DIR"
+if [[ -n "$EXISTING_DOWNLOAD_DIR" ]]; then
+  DOWNLOAD_DIR="$(readlink -m "$EXISTING_DOWNLOAD_DIR")"
+  if [[ ! -d "$DOWNLOAD_DIR" ]]; then
+    log "existing raw datadir artifact directory not found: $DOWNLOAD_DIR"
+    exit 1
+  fi
+  log "using existing raw datadir artifact directory $DOWNLOAD_DIR"
+else
+  DOWNLOAD_DIR="$STAGING_BASE/rawdatadir-$STAMP"
+  mkdir -p "$DOWNLOAD_DIR"
+fi
 
 fastsnap_args=(
   --legacy-fallback=false
@@ -74,8 +86,10 @@ for signer in $TRUSTED_SIGNERS; do
 done
 IFS="$old_ifs"
 
-log "fetching raw datadir artifact into $DOWNLOAD_DIR"
-"$FASTSNAP_BIN" "${fastsnap_args[@]}" 2>&1 | tee -a "$LOG_FILE"
+if [[ -z "$EXISTING_DOWNLOAD_DIR" ]]; then
+  log "fetching raw datadir artifact into $DOWNLOAD_DIR"
+  "$FASTSNAP_BIN" "${fastsnap_args[@]}" 2>&1 | tee -a "$LOG_FILE"
+fi
 
 ARCHIVE="$(find "$DOWNLOAD_DIR" -maxdepth 2 -type f -name '*no-private-keys.tar.zst' | sort | head -n1 || true)"
 if [[ -z "$ARCHIVE" || ! -s "$ARCHIVE" ]]; then
@@ -121,7 +135,14 @@ preserve_identity_path() {
     return 0
   fi
   mkdir -p "$(dirname "$dst")"
-  cp -a "$src" "$dst"
+  if ! cp -a "$src" "$dst" 2>/dev/null; then
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+      sudo cp -a "$src" "$dst"
+    else
+      log "cannot preserve local identity path $rel; source is not readable by $(id -un) and passwordless sudo is unavailable"
+      return 1
+    fi
+  fi
   log "preserved local identity path $rel"
 }
 
