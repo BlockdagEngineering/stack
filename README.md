@@ -71,7 +71,7 @@ Docker Compose reads `**.env`** in this directory for variable substitution and 
 | `**.env`**      | Start from `**.env.example`**. `******NODE_RPC_URL` / `**PG_URL**` are set in `docker-compose.yml`. **Miner:** `MINER_POOL_URL`, `MINING_POOL_ADDRESS`, `MINER_POOL_PASS`, `MINER_WORKERS`.                                                                                     |
 
 
-The `**pool`** image bakes `**.env.example`** into the image at `/var/lib/bdagStack/pool/.env` for `godotenv` (release `**dockerfile`** uses `**COPY .env.example**` relative to tarball root; git dev `**dockerfile-dev**` uses `**COPY pool-stack-docker/.env.example**`). Compose still sets most variables via `environment:`.
+The `**pool`** image bakes `**.env.example`** into the image at `/var/lib/bdagStack/pool/.env` for `godotenv` (release `**dockerfile`** uses `**COPY .env.example**` from repo root; git dev `**dockerfile-dev**` copies it from the named `**stack_src**` context). Compose still sets most variables via `environment:`.
 
 ## Mining resource priority
 
@@ -145,6 +145,10 @@ bash install.sh
 docker compose logs -f node
 docker compose logs -f pool
 ```
+
+To include optional services controlled by `.env`, set `COMPOSE_PROFILES` before
+`docker compose up`. Example: `COMPOSE_PROFILES=miner` enables the CPU miner
+service; leave `COMPOSE_PROFILES` empty to disable it.
 
 Once everything is running:
 

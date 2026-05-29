@@ -6,6 +6,12 @@ x-dashboard-build-args: &dashboard-build-args
   POOL_DASHBOARD_REPO: ${POOL_DASHBOARD_REPO:-https://github.com/BlockdagEngineering/pool-dashboard.git}
   POOL_DASHBOARD_REF: ${POOL_DASHBOARD_REF:-6585347bfa78a1e6ed2a6178eaa38c7ccac9d022}
 
+x-dev-source-contexts: &dev-source-contexts
+  stack_src: ${STACK_SRC_CONTEXT:-.}
+  blockdag_corechain: ${BLOCKDAG_CORECHAIN_CONTEXT:-.}
+  pool_src: ${POOL_SRC_CONTEXT:-.}
+  cpu_miner_src: ${CPU_MINER_SRC_CONTEXT:-.}
+
 x-node-critical: &node-critical
   cpu_shares: 4096
   blkio_config:
@@ -54,9 +60,11 @@ services:
     <<: *node-critical
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
-      context: ${BUILD_CONTEXT:-.}
+      context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
       target: node
+      additional_contexts:
+        <<: *dev-source-contexts
       args:
         <<: *build-args
     restart: unless-stopped
@@ -114,9 +122,11 @@ services:
   snapshot-node:
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
-      context: ${BUILD_CONTEXT:-.}
+      context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
       target: node
+      additional_contexts:
+        <<: *dev-source-contexts
       args:
         <<: *build-args
     restart: unless-stopped
@@ -182,9 +192,11 @@ services:
     <<: *pool-critical
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
-      context: ${BUILD_CONTEXT:-.}
-      dockerfile: ${DOCKERFILE:-pool-stack-docker/dockerfile}
+      context: .
+      dockerfile: ${DOCKERFILE:-dockerfile}
       target: pool
+      additional_contexts:
+        <<: *dev-source-contexts
       args:
         <<: *build-args
     restart: unless-stopped
@@ -232,9 +244,11 @@ services:
     <<: *dashboard-low
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
-      context: ${BUILD_CONTEXT:-.}
+      context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
       target: dashboard
+      additional_contexts:
+        <<: *dev-source-contexts
       args:
         <<: *dashboard-build-args
       secrets:
@@ -268,6 +282,30 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./:/workspace:ro
       - dashboard-runtime:/var/lib/bdag-dashboard
+
+  # --------------------------------------------------------------------------
+  # Optional CPU miner (dockerfile-dev target only). Enable with:
+  #   COMPOSE_PROFILES=miner
+  # --------------------------------------------------------------------------
+  miner:
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    profiles: [miner]
+    build:
+      context: .
+      dockerfile: ${DOCKERFILE:-dockerfile-dev}
+      target: miner
+      additional_contexts:
+        <<: *dev-source-contexts
+      args:
+        <<: *build-args
+    restart: unless-stopped
+    depends_on:
+      pool: { condition: service_started }
+    environment:
+      POOL_URL: ${MINER_POOL_URL:-stratum+tcp://pool:3334}
+      POOL_USER: ${MINING_POOL_ADDRESS:-0x0000000000000000000000000000000000000000}
+      POOL_PASS: ${MINER_POOL_PASS:-x}
+      WORKERS: ${MINER_WORKERS:-1}
 
 secrets:
   github_token:

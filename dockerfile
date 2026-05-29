@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# Pool release build (GITHUB `pool-v*` tarball, BUILD_CONTEXT=.).
+# Pool release build (GITHUB `pool-v*` tarball, build context is repo root).
 #
 # Expects unpacked layout:
 #
