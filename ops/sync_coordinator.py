@@ -806,10 +806,18 @@ def stop_node(node: str, log_path: Path) -> bool:
 
 def start_node(node: str, log_path: Path) -> bool:
     start_ok = run_logged(compose_command("start", node), log_path, timeout=180).ok
+    if not start_ok and not docker_container_is_running(node):
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{now_iso()}] compose start failed for {node}; using direct docker start fallback\n")
+        start_ok = run_logged(["docker", "start", node], log_path, timeout=180).ok
     if not start_ok:
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"[{now_iso()}] compose start failed for {node}; using compose up -d fallback\n")
         start_ok = run_logged(compose_command("up", "-d", node), log_path, timeout=240).ok
+    if not start_ok and not docker_container_is_running(node):
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{now_iso()}] compose up failed for {node}; retrying direct docker start fallback\n")
+        start_ok = run_logged(["docker", "start", node], log_path, timeout=180).ok
     return start_ok and docker_container_is_running(node)
 
 
