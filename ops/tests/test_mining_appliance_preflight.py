@@ -123,6 +123,87 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         found = {check.name: check for check in checks}
         self.assertEqual(found["fastartifactsync"].status, "fail")
 
+    def test_constrained_mining_profile_rejects_snapshot_fastartifact_append_override(self) -> None:
+        profile = preflight.HostProfile(
+            os_name="linux",
+            arch="aarch64",
+            cpu_count=4,
+            memory_bytes=8 * preflight.GIB,
+            profile="constrained",
+            kernel="test",
+        )
+        checks = []
+        preflight.check_env_defaults(
+            checks,
+            {
+                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
+                "BDAG_STORAGE_PROFILE": "single-usb-constrained",
+                "BDAG_DETECTED_NETWORK_TOPOLOGY": "single-node-asic-router",
+                "SNAPSHOT_NODE_ARGS_APPEND": "--fastartifactsync",
+            },
+            profile,
+        )
+
+        found = {check.name: check for check in checks}
+        self.assertEqual(found["fastartifactsync"].status, "fail")
+
+    def test_constrained_mining_profile_accepts_no_fastsync_serve_policy(self) -> None:
+        profile = preflight.HostProfile(
+            os_name="linux",
+            arch="aarch64",
+            cpu_count=4,
+            memory_bytes=8 * preflight.GIB,
+            profile="constrained",
+            kernel="test",
+        )
+        checks = []
+        preflight.check_env_defaults(
+            checks,
+            {
+                "BDAG_NO_FASTSYNC_SERVE": "auto",
+                "BDAG_FASTARTIFACTSYNC_ENABLED": "1",
+                "BDAG_STORAGE_PROFILE": "single-usb-constrained",
+                "BDAG_DETECTED_NETWORK_TOPOLOGY": "single-node-asic-router",
+            },
+            profile,
+        )
+
+        found = {check.name: check for check in checks}
+        self.assertEqual(found["fastartifactsync"].status, "pass")
+
+    def test_usb_chain_mining_source_requires_no_fastsync_serve(self) -> None:
+        old_mount_info = preflight.mount_info
+        old_is_usb_source = preflight.is_usb_source
+
+        def fake_mount_info(path: Path) -> dict[str, str]:
+            value = str(path)
+            if value.startswith("/mnt/usb"):
+                return {"target": "/mnt/usb", "source": "/dev/sda1", "fstype": "f2fs", "options": "rw,noatime,lazytime"}
+            return {"target": "/", "source": "/dev/mmcblk0p2", "fstype": "ext4", "options": "rw,relatime"}
+
+        try:
+            preflight.mount_info = fake_mount_info
+            preflight.is_usb_source = lambda source: source.startswith("/dev/sda")
+            profile = preflight.HostProfile("linux", "aarch64", 4, 8 * preflight.GIB, "constrained", "test")
+            checks = []
+            preflight.check_storage(
+                checks,
+                Path("/opt/blockdag-pool"),
+                {
+                    "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
+                    "BDAG_NETWORK_TOPOLOGY": "single-node-asic-router",
+                    "BDAG_NO_FASTSYNC_SERVE": "0",
+                    "MINING_ADDRESS": "0x1111111111111111111111111111111111111111",
+                },
+                profile,
+            )
+        finally:
+            preflight.mount_info = old_mount_info
+            preflight.is_usb_source = old_is_usb_source
+
+        found = {check.name: check for check in checks}
+        self.assertEqual(found["usb_mining_fastsync_serving"].status, "fail")
+
     def test_single_node_duplicate_data_detection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

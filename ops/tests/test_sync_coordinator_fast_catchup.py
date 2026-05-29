@@ -96,6 +96,13 @@ class SyncCoordinatorFastCatchupTest(unittest.TestCase):
         self.assertFalse(sync_coordinator.node_command_has_fast_artifact_sync("/usr/local/bin/blockdag-node --fastartifactsync=false"))
         self.assertFalse(sync_coordinator.node_command_has_fast_artifact_sync("/usr/local/bin/blockdag-node"))
 
+    def test_command_line_no_fastsync_serve_detection(self) -> None:
+        self.assertTrue(sync_coordinator.node_command_disables_fastsync_serve("/usr/local/bin/blockdag-node --nofastsyncserve"))
+        self.assertTrue(sync_coordinator.node_command_disables_fastsync_serve("/usr/local/bin/blockdag-node --nofastsyncserve=true"))
+        self.assertFalse(sync_coordinator.node_command_disables_fastsync_serve("/usr/local/bin/blockdag-node --nofastsyncserve=false"))
+        with unittest.mock.patch.dict(sync_coordinator.os.environ, {"BDAG_NO_FASTSYNC_SERVE": "1"}, clear=False):
+            self.assertTrue(sync_coordinator.node_command_disables_fastsync_serve("/usr/local/bin/blockdag-node"))
+
     def test_missing_fastartifact_flag_requests_restart(self) -> None:
         decision = sync_coordinator.build_decision(self.status(remaining=1500), {})
         reason = sync_coordinator.fast_sync_restart_reason(
@@ -105,6 +112,27 @@ class SyncCoordinatorFastCatchupTest(unittest.TestCase):
             True,
         )
         self.assertIn("--fastartifactsync", reason)
+
+    def test_no_fastsync_serve_flag_suppresses_missing_fastartifact_restart(self) -> None:
+        decision = sync_coordinator.build_decision(self.status(remaining=1500), {})
+        reason = sync_coordinator.fast_sync_restart_reason(
+            decision,
+            {},
+            "/usr/local/bin/blockdag-node --nofastsyncserve",
+            True,
+        )
+        self.assertEqual(reason, "")
+
+    def test_no_fastsync_serve_env_suppresses_missing_fastartifact_restart(self) -> None:
+        decision = sync_coordinator.build_decision(self.status(remaining=1500), {})
+        with unittest.mock.patch.dict(sync_coordinator.os.environ, {"BDAG_NO_FASTSYNC_SERVE": "1"}, clear=False):
+            reason = sync_coordinator.fast_sync_restart_reason(
+                decision,
+                {},
+                "/usr/local/bin/blockdag-node --configfile /etc/bdagStack/node.conf",
+                True,
+            )
+        self.assertEqual(reason, "")
 
     def test_disabled_fastartifact_env_suppresses_missing_flag_restart(self) -> None:
         decision = sync_coordinator.build_decision(self.status(remaining=1500), {})

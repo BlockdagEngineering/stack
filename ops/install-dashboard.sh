@@ -129,6 +129,7 @@ BDAG_NODE_MODE=single
 BDAG_NODE_SERVICES=bdag-miner-node-1
 BDAG_STACK_SERVICES=pool-db,bdag-miner-node-1,rpc-failover,asic-pool
 BDAG_ENABLE_NODE_MINING=0
+BDAG_NO_FASTSYNC_SERVE=auto
 BDAG_FASTARTIFACTSYNC_ENABLED=1
 BDAG_FASTSYNC_PREPROCESS_WORKERS=1
 BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC=1
@@ -192,6 +193,7 @@ ensure_env_value BDAG_NODE_MODE single
 ensure_env_value BDAG_NODE_SERVICES bdag-miner-node-1
 ensure_env_value BDAG_STACK_SERVICES "pool-db,bdag-miner-node-1,rpc-failover,asic-pool"
 ensure_env_value BDAG_ENABLE_NODE_MINING 0
+ensure_env_value BDAG_NO_FASTSYNC_SERVE auto
 ensure_env_value BDAG_FASTARTIFACTSYNC_ENABLED 1
 ensure_env_value BDAG_FASTSYNC_PREPROCESS_WORKERS 1
 ensure_env_value BDAG_FASTSNAP_SEED_TIMER_ENABLED 0

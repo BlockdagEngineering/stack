@@ -91,6 +91,7 @@ LEADER_CATCHUP_BLKIO_WEIGHT = int(os.environ.get("BDAG_SYNC_COORDINATOR_LEADER_B
 FAST_CATCHUP_RESTART_COOLDOWN_SECONDS = int(os.environ.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS", "900"))
 FAST_CATCHUP_NODE_RESTART_TIMEOUT_SECONDS = int(os.environ.get("BDAG_SYNC_COORDINATOR_NODE_RESTART_TIMEOUT_SECONDS", "240"))
 FAST_CATCHUP_REQUIRED_NODE_FLAG = "--fastartifactsync"
+NO_FASTSYNC_SERVE_NODE_FLAG = "--nofastsyncserve"
 FAST_CATCHUP_ARTIFACT_MODE = os.environ.get("BDAG_FAST_CATCHUP_ARTIFACT_MODE", "auto").strip().lower()
 FAST_CATCHUP_ARTIFACT_RETRY_SECONDS = int(os.environ.get("BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS", "300"))
 FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS = int(
@@ -882,6 +883,16 @@ def node_command_has_fast_artifact_sync(command_line: str) -> bool:
     return False
 
 
+def node_command_disables_fastsync_serve(command_line: str) -> bool:
+    for word in command_line.split():
+        if word == NO_FASTSYNC_SERVE_NODE_FLAG:
+            return True
+        if word.startswith(f"{NO_FASTSYNC_SERVE_NODE_FLAG}="):
+            return word.split("=", 1)[1].strip().lower() not in {"0", "false", "no", "off"}
+    raw = os.environ.get("BDAG_NO_FASTSYNC_SERVE", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def node_command_line(node: str) -> Any:
     return run(
         compose_command(
@@ -911,8 +922,13 @@ def fastartifact_process_flag_required() -> bool:
     # local opt-out so constrained USB/router mining profiles are not forced
     # back into continuous FastArtifact mode after they become synced.
     values = [os.environ.get("BDAG_FASTARTIFACTSYNC_ENABLED")]
+    if env_value_enabled(os.environ.get("BDAG_NO_FASTSYNC_SERVE"), False):
+        return False
     for path in (PROJECT_ROOT / ".env", POOL_ENV_FILE):
-        values.append(read_env_file(path).get("BDAG_FASTARTIFACTSYNC_ENABLED"))
+        env = read_env_file(path)
+        values.append(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"))
+        if env_value_enabled(env.get("BDAG_NO_FASTSYNC_SERVE"), False):
+            return False
     return not any(not env_value_enabled(value, True) for value in values if value is not None)
 
 
@@ -930,6 +946,7 @@ def fast_sync_restart_reason(
         fastartifact_process_flag_required()
         and command_ok
         and command_line.strip()
+        and not node_command_disables_fastsync_serve(command_line)
         and not node_command_has_fast_artifact_sync(command_line)
     ):
         return f"node process is missing {FAST_CATCHUP_REQUIRED_NODE_FLAG}"

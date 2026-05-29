@@ -431,6 +431,7 @@ configure_env() {
     esac
   fi
   set_env_value .env BDAG_FASTARTIFACTSYNC_ENABLED "$fastartifact_enabled"
+  set_env_value .env BDAG_NO_FASTSYNC_SERVE "auto"
   set_env_value .env NODE_ARGS_APPEND ""
   if [[ "$fastartifact_enabled" != "1" ]]; then
     set_env_value .env SNAPSHOT_NODE_ARGS_APPEND ""
