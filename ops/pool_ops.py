@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 from collections import Counter, deque
+import glob
 import json
 import os
 import ipaddress
@@ -275,6 +276,10 @@ MINER_HASHRATE_PROBE_WORKERS = env_int("BDAG_MINER_HASHRATE_PROBE_WORKERS", 8, m
 MINER_SCAN_TIMEOUT = env_float("BDAG_MINER_SCAN_TIMEOUT", 0.8, minimum=0.1)
 MINER_SCAN_WORKERS = env_int("BDAG_MINER_SCAN_WORKERS", 64, minimum=1)
 MINER_SCAN_MAX_TARGETS = env_int("BDAG_MINER_SCAN_MAX_TARGETS", 1024, minimum=1)
+MINER_DHCP_LEASE_FILE_PATTERNS = split_env_list(
+    "BDAG_MINER_DHCP_LEASE_FILES",
+    "/var/lib/NetworkManager/dnsmasq-*.leases,/var/lib/misc/dnsmasq.leases,/run/dnsmasq/*.leases",
+)
 MINER_LOGIN_KEY_HEX = "21" * 16
 MINER_ZERO_IV_HEX = "00" * 16
 MINER_REGISTRY_FILE = RUNTIME_DIR / "miners.json"
@@ -1173,6 +1178,155 @@ def read_neighbor_macs() -> dict[str, str]:
     return neighbors
 
 
+def miner_scan_target_ips() -> set[str]:
+    try:
+        return set(parse_scan_targets(default_miner_scan_target()))
+    except Exception:
+        return set()
+
+
+def miner_dhcp_lease_paths() -> list[Path]:
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for pattern in MINER_DHCP_LEASE_FILE_PATTERNS:
+        expanded = glob.glob(str(Path(pattern).expanduser()))
+        if not expanded and not any(char in pattern for char in "*?["):
+            expanded = [pattern]
+        for item in expanded:
+            path = Path(item).expanduser()
+            if path in seen or not path.is_file():
+                continue
+            seen.add(path)
+            paths.append(path)
+    return paths
+
+
+def parse_dnsmasq_lease_line(line: str, now_epoch: int | None = None) -> dict[str, Any] | None:
+    parts = line.split()
+    if len(parts) < 3:
+        return None
+    try:
+        expires_epoch = int(parts[0])
+    except ValueError:
+        return None
+    mac = normalize_mac(parts[1])
+    ip = parts[2]
+    if not mac or not is_lan_ipv4(ip) or is_docker_bridge_pool_log_client(ip, mac):
+        return None
+    now_value = seconds_since_epoch() if now_epoch is None else now_epoch
+    if expires_epoch > 0 and expires_epoch < now_value - 86400:
+        return None
+    return {
+        "ip": ip,
+        "mac": mac,
+        "hostname": "" if len(parts) < 4 or parts[3] == "*" else parts[3],
+        "lease_expires_epoch": expires_epoch,
+        "lease_active": expires_epoch == 0 or expires_epoch >= now_value,
+        "device_id": f"mac:{mac}",
+        "device_type": "asic",
+        "discovered_by": "dhcp-lease",
+        "sources": ["dhcp-lease"],
+    }
+
+
+def read_miner_dhcp_leases() -> list[dict[str, Any]]:
+    leases: list[dict[str, Any]] = []
+    for path in miner_dhcp_lease_paths():
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            lease = parse_dnsmasq_lease_line(line)
+            if lease:
+                lease["lease_file"] = str(path)
+                leases.append(lease)
+    return leases
+
+
+def miner_lan_hint_candidates(registry: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    target_ips = miner_scan_target_ips()
+    by_identity: dict[str, dict[str, Any]] = {}
+
+    def add(item: Mapping[str, Any], source: str) -> None:
+        ip = str(item.get("ip") or "")
+        mac = normalize_mac(item.get("mac"))
+        if not ip or not is_lan_ipv4(ip) or not mac:
+            return
+        if target_ips and ip not in target_ips:
+            return
+        if is_docker_bridge_pool_log_client(ip, mac):
+            return
+        key = f"mac:{mac}"
+        existing = by_identity.get(key, {})
+        merged = merge_miner_records(dict(existing), dict(item)) if existing else dict(item)
+        merged.update(
+            {
+                "ip": ip,
+                "mac": mac,
+                "device_id": key,
+                "device_type": "asic",
+                "discovered_by": merged.get("discovered_by") or source,
+                "sources": merge_unique_strings(merged.get("sources"), source),
+                "ip_history": merge_unique_strings(merged.get("ip_history"), ip),
+            }
+        )
+        by_identity[key] = merged
+
+    for item in (registry or {}).get("miners", []) if isinstance(registry, dict) else []:
+        if isinstance(item, Mapping):
+            add(item, str(item.get("discovered_by") or "registry"))
+    for lease in read_miner_dhcp_leases():
+        add(lease, "dhcp-lease")
+    for ip, mac in read_neighbor_macs().items():
+        add({"ip": ip, "mac": mac, "discovered_by": "arp-neighbor"}, "arp-neighbor")
+    return sorted(by_identity.values(), key=lambda item: (str(item.get("mac") or ""), str(item.get("ip") or "")))
+
+
+def augment_miner_registry_with_lan_hints(registry: dict[str, Any]) -> dict[str, Any]:
+    miners = [dict(item) for item in registry.get("miners", []) if isinstance(item, dict)]
+    existing_by_mac = {normalize_mac(item.get("mac")): item for item in miners if normalize_mac(item.get("mac"))}
+    existing_by_ip = {str(item.get("ip") or ""): item for item in miners if item.get("ip")}
+    defaults = default_miner_pool_settings()
+    changed = False
+    for hint in miner_lan_hint_candidates({"miners": miners}):
+        ip = str(hint.get("ip") or "")
+        mac = normalize_mac(hint.get("mac"))
+        if not ip or not mac:
+            continue
+        if retired_miner_identity_decision(hint, ip, mac).get("retired"):
+            continue
+        item = existing_by_mac.get(mac) or existing_by_ip.get(ip)
+        if item is None:
+            item = {
+                "ip": ip,
+                "mac": mac,
+                "device_id": f"mac:{mac}",
+                "device_type": "asic",
+                "discovered_by": hint.get("discovered_by") or "lan-hint",
+                "sources": [],
+                "managed": False,
+                "last_configured_ok": False,
+            }
+            miners.append(item)
+            changed = True
+        for key in ("hostname", "lease_expires_epoch", "lease_active", "lease_file"):
+            if hint.get(key) not in (None, "", []):
+                item[key] = hint[key]
+        before_sources = list(item.get("sources") or [])
+        item["sources"] = merge_unique_strings(item.get("sources"), hint.get("sources"), "lan-hint")
+        item["ip_history"] = merge_unique_strings(item.get("ip_history"), ip)
+        item["expected_pool_url"] = item.get("expected_pool_url") or defaults["pool_url"]
+        item["expected_worker_user"] = item.get("expected_worker_user") or defaults["worker_user"]
+        if item.get("sources") != before_sources:
+            changed = True
+        existing_by_mac[mac] = item
+        existing_by_ip[ip] = item
+    if changed:
+        assign_miner_display_names(miners)
+    return {**registry, "miners": miners}
+
+
 def mac_for_ip(ip: str, neighbors: dict[str, str] | None = None) -> str:
     if not is_lan_ipv4(ip):
         return ""
@@ -1462,7 +1616,7 @@ def read_miner_registry() -> dict[str, Any]:
     miners = registry.get("miners")
     if not isinstance(miners, list):
         registry["miners"] = []
-    return registry
+    return augment_miner_registry_with_lan_hints(registry)
 
 
 def save_miner_registry(miners: list[dict[str, Any]]) -> dict[str, Any]:
@@ -3117,7 +3271,22 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
             registered = registered_by_mac[mac]
         return registered, mac
 
+    bridge_alias_candidates = [
+        item
+        for item in miner_lan_hint_candidates({"miners": list(registered_by_ip.values())})
+        if is_lan_ipv4(str(item.get("ip") or ""))
+        and normalize_mac(item.get("mac"))
+        and not is_docker_bridge_pool_log_client(str(item.get("ip") or ""), normalize_mac(item.get("mac")))
+    ]
+    bridge_alias_ip = str(bridge_alias_candidates[0].get("ip") or "") if len(bridge_alias_candidates) == 1 else ""
+
+    def canonical_client_ip(ip: str) -> str:
+        if bridge_alias_ip and is_docker_bridge_pool_log_client(ip):
+            return bridge_alias_ip
+        return ip
+
     def identity_key_for_ip(ip: str) -> str:
+        ip = canonical_client_ip(ip)
         _registered, mac = registered_for_ip(ip)
         return f"mac:{mac}" if mac else f"ip:{ip}"
 
@@ -3127,6 +3296,7 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         return str(client.get("identity_key") or identity_key_for_ip(str(client.get("ip") or "")))
 
     def client_from_identity(ip: str, port: str = "") -> dict[str, str]:
+        ip = canonical_client_ip(ip)
         return {"ip": ip, "port": port, "identity_key": identity_key_for_ip(ip)}
 
     def note_worker_client(worker: str, ip: str, port: str = "", priority: int = 1) -> None:
@@ -3251,6 +3421,7 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
                 extranonce_to_client.setdefault(str(extranonce).lower(), client)
 
     def miner_for_ip(ip: str) -> dict[str, Any]:
+        ip = canonical_client_ip(ip)
         registered, mac = registered_for_ip(ip)
         identity_key = f"mac:{mac}" if mac else ""
         storage_key = identity_key or f"ip:{ip}"
@@ -3520,9 +3691,17 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
     neighbors = read_neighbor_macs()
     defaults = default_miner_pool_settings()
     changed = False
+    bridge_alias_candidates = [
+        item
+        for item in miner_lan_hint_candidates(registry)
+        if is_lan_ipv4(str(item.get("ip") or "")) and normalize_mac(item.get("mac"))
+    ]
+    bridge_alias_ip = str(bridge_alias_candidates[0].get("ip") or "") if len(bridge_alias_candidates) == 1 else ""
 
     for miner in activity.get("miners", []):
         ip = str(miner.get("ip", ""))
+        if bridge_alias_ip and is_docker_bridge_pool_log_client(ip):
+            ip = bridge_alias_ip
         if not is_ipv4(ip):
             continue
 

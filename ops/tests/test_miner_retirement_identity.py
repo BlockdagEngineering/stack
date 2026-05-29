@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -212,6 +213,23 @@ class MinerRegistryIdentityTests(unittest.TestCase):
             pool_ops.miner_display_label({"display_name": "Athena", "mac": "28:e2:97:2e:00:1b"}),
             "Athena-01b",
         )
+
+    def test_registry_includes_direct_lan_neighbor_hint(self) -> None:
+        old_target = os.environ.get("BDAG_MINER_SCAN_TARGET")
+        old_read_neighbor_macs = pool_ops.read_neighbor_macs
+        os.environ["BDAG_MINER_SCAN_TARGET"] = "192.168.50.0/24"
+        self.addCleanup(lambda: os.environ.pop("BDAG_MINER_SCAN_TARGET", None) if old_target is None else os.environ.__setitem__("BDAG_MINER_SCAN_TARGET", old_target))
+        self.addCleanup(lambda: setattr(pool_ops, "read_neighbor_macs", old_read_neighbor_macs))
+        pool_ops.read_neighbor_macs = lambda: {"192.168.50.177": "28:e2:97:1e:c0:b5"}
+
+        registry = pool_ops.read_miner_registry()
+
+        self.assertEqual(len(registry["miners"]), 1)
+        miner = registry["miners"][0]
+        self.assertEqual(miner["ip"], "192.168.50.177")
+        self.assertEqual(miner["mac"], "28:e2:97:1e:c0:b5")
+        self.assertEqual(miner["device_type"], "asic")
+        self.assertIn("lan-hint", miner["sources"])
 
 
 class PoolActivityAttributionTests(unittest.TestCase):
@@ -538,6 +556,33 @@ class PoolActivityAttributionTests(unittest.TestCase):
 
         miners = {item["ip"]: item for item in pool_ops.parse_pool_activity(log)["miners"]}
 
+        self.assertEqual(miners["192.168.50.177"]["shares"], 1)
+        self.assertEqual(miners["192.168.50.177"]["share_work"], 500)
+        self.assertEqual(miners["192.168.50.177"]["blocks_found"], 1)
+
+    def test_docker_bridge_alias_uses_single_direct_lan_hint_without_saved_registry(self) -> None:
+        worker = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        old_target = os.environ.get("BDAG_MINER_SCAN_TARGET")
+        os.environ["BDAG_MINER_SCAN_TARGET"] = "192.168.50.0/24"
+        self.addCleanup(lambda: os.environ.pop("BDAG_MINER_SCAN_TARGET", None) if old_target is None else os.environ.__setitem__("BDAG_MINER_SCAN_TARGET", old_target))
+        pool_ops.read_neighbor_macs = lambda: {"192.168.50.177": "28:e2:97:1e:c0:b5"}
+        pool_ops.read_miner_registry = lambda: pool_ops.augment_miner_registry_with_lan_hints({"updated_at": None, "miners": []})
+        log = "\n".join(
+            [
+                f"2026/05/29 18:47:00 [172.18.0.1:40971] authorize accepted user={worker}",
+                "2026/05/29 18:47:01 PUSHDIF -> 172.18.0.1:40971 mining.set_difficulty 0.12452441",
+                f"2026/05/29 18:47:02 ✅ valid share accepted 100.0 → 500 worker={worker} job=job-1_02000000",
+                "2026/05/29 18:47:03 🎯 BLOCK FOUND height(le)=7349303 job=job-1_02000000 hash=abc target=def",
+            ]
+        )
+
+        activity = pool_ops.parse_pool_activity(log)
+        miners = {item["ip"]: item for item in activity["miners"]}
+
+        self.assertEqual(activity["unattributed_valid_shares"], 0)
+        self.assertEqual(activity["unattributed_blocks"], 0)
+        self.assertIn("192.168.50.177", miners)
+        self.assertEqual(miners["192.168.50.177"]["identity_key"], "mac:28:e2:97:1e:c0:b5")
         self.assertEqual(miners["192.168.50.177"]["shares"], 1)
         self.assertEqual(miners["192.168.50.177"]["share_work"], 500)
         self.assertEqual(miners["192.168.50.177"]["blocks_found"], 1)
