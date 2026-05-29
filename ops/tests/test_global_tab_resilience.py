@@ -283,6 +283,8 @@ class GlobalMaintenanceBackoffTests(unittest.TestCase):
         self.old_read_global_history = pool_ops.read_global_history
         self.old_background_maintenance_decision = pool_ops.background_maintenance_decision
         self.old_global_evm_rpc_urls = pool_ops.global_evm_rpc_urls
+        self.old_json_rpc_call = pool_ops.json_rpc_call
+        self.old_fetch_block_header = pool_ops.fetch_block_header
         self.addCleanup(self.restore_globals)
 
     def restore_globals(self) -> None:
@@ -290,6 +292,8 @@ class GlobalMaintenanceBackoffTests(unittest.TestCase):
         pool_ops.read_global_history = self.old_read_global_history
         pool_ops.background_maintenance_decision = self.old_background_maintenance_decision
         pool_ops.global_evm_rpc_urls = self.old_global_evm_rpc_urls
+        pool_ops.json_rpc_call = self.old_json_rpc_call
+        pool_ops.fetch_block_header = self.old_fetch_block_header
 
     def test_global_scan_defers_to_stale_cache_when_maintenance_backoff_blocks_work(self) -> None:
         cached = {
@@ -323,6 +327,38 @@ class GlobalMaintenanceBackoffTests(unittest.TestCase):
         self.assertTrue(payload["maintenance_deferred"])
         self.assertIn("global blockchain scan deferred", payload["error"])
         self.assertEqual(payload["latest_block"], 123)
+
+    def test_global_scan_returns_lightweight_head_when_deferred_without_cache(self) -> None:
+        def fake_read_json_file(path: pathlib.Path, fallback: object) -> object:
+            if path == pool_ops.GLOBAL_CACHE_FILE:
+                return {}
+            return fallback
+
+        pool_ops.read_json_file = fake_read_json_file
+        pool_ops.read_global_history = lambda limit=None: []
+        pool_ops.background_maintenance_decision = lambda task: {
+            "allowed": False,
+            "task": task,
+            "reasons": ["host io pressure avg10 28.00 >= 20.00"],
+            "adaptive_concurrency": {"workers": {"global_rpc": 1}},
+        }
+        pool_ops.global_evm_rpc_urls = lambda: [("node1", "http://127.0.0.1:18545")]
+        pool_ops.json_rpc_call = lambda *_args, **_kwargs: "0x7b"
+        pool_ops.fetch_block_header = lambda *_args, **_kwargs: {
+            "number": "0x7b",
+            "timestamp": "0x65a00000",
+            "miner": "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc",
+        }
+
+        payload = pool_ops.collect_global_blockchain()
+
+        self.assertEqual(payload["status"], "deferred")
+        self.assertTrue(payload["head_only"])
+        self.assertTrue(payload["maintenance_deferred"])
+        self.assertEqual(payload["latest_block"], 123)
+        self.assertEqual(payload["fetched_blocks"], 1)
+        self.assertEqual(payload["unique_miners"], 1)
+        self.assertEqual(payload["clusters"][0]["blocks"], 1)
 
 
 if __name__ == "__main__":

@@ -310,6 +310,7 @@ GLOBAL_RPC_WORKERS = env_int("BDAG_GLOBAL_RPC_WORKERS", 24, minimum=1)
 GLOBAL_HISTORY_LIMIT = int(os.environ.get("BDAG_GLOBAL_HISTORY_LIMIT", "9000"))
 GLOBAL_HISTORY_COMPACT_MULTIPLIER = max(1, int(os.environ.get("BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER", "2")))
 NODE_EVM_RPC_PORT = int(os.environ.get("BDAG_NODE_EVM_RPC_PORT", "18545"))
+EVM_SYNC_LAG_THRESHOLD_BLOCKS = env_int("BDAG_EVM_SYNC_LAG_THRESHOLD_BLOCKS", 1000, minimum=0)
 EARNINGS_HISTORY_RETENTION_SECONDS = int(os.environ.get("BDAG_EARNINGS_HISTORY_RETENTION_SECONDS", str(35 * 86400)))
 EARNINGS_DASHBOARD_HISTORY_SECONDS = int(os.environ.get("BDAG_EARNINGS_DASHBOARD_HISTORY_SECONDS", str(31 * 86400)))
 EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_EARNINGS_SNAPSHOT_INTERVAL_SECONDS", "120"))
@@ -5255,6 +5256,24 @@ def rpc_url_port(url: str) -> int | None:
         return None
 
 
+def sibling_evm_rpc_url(url: str) -> str:
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return f"http://127.0.0.1:{NODE_EVM_RPC_PORT}"
+    hostname = parsed.hostname or "127.0.0.1"
+    host = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
+    return urllib.parse.urlunsplit(
+        (
+            parsed.scheme or "http",
+            f"{host}:{NODE_EVM_RPC_PORT}",
+            parsed.path or "",
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
 def rpc_method_unavailable(error: str) -> bool:
     text = str(error).lower()
     return "-32601" in text or "method" in text and ("not exist" in text or "not available" in text)
@@ -5281,6 +5300,25 @@ def eth_syncing_details(url: str, timeout: float) -> dict[str, Any]:
             pass
         return details
     return {"eth_syncing": result, "chain_syncing": bool(result)}
+
+
+def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int, timeout: float) -> dict[str, Any]:
+    evm_url = node_rpc_url if rpc_url_port(node_rpc_url) == NODE_EVM_RPC_PORT else sibling_evm_rpc_url(node_rpc_url)
+    snapshot: dict[str, Any] = {
+        "evm_rpc_url": evm_url,
+        "evm_rpc_source": "eth_blockNumber",
+        "evm_block_count": None,
+        "evm_lag_to_chain": None,
+        "evm_rpc_error": "",
+    }
+    try:
+        evm_block = parse_rpc_quantity(json_rpc_call(evm_url, "eth_blockNumber", [], timeout=timeout))
+    except Exception as exc:  # noqa: BLE001 - EVM lag is a readiness diagnostic.
+        snapshot["evm_rpc_error"] = f"eth_blockNumber failed for {source}: {exc}"
+        return snapshot
+    snapshot["evm_block_count"] = evm_block
+    snapshot["evm_lag_to_chain"] = max(0, int(chain_block_count) - int(evm_block))
+    return snapshot
 
 
 def node_chain_rpc_snapshot(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TIMEOUT) -> dict[str, Any]:
@@ -5446,6 +5484,7 @@ def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TI
                 **unknown_sync_progress(source, str(chain.get("chain_rpc_error") or "getBlockCount unavailable")),
                 **chain,
             }
+        evm_lag = evm_rpc_lag_snapshot(source, url, current, timeout)
 
         sync_current = safe_int(chain.get("sync_current_block"), None)
         sync_highest = safe_int(chain.get("sync_highest_block"), None)
@@ -5468,11 +5507,30 @@ def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TI
                 "error": "",
                 "current_block_source": chain.get("chain_rpc_source"),
                 **chain,
+                **evm_lag,
+            }
+
+        evm_block = safe_int(evm_lag.get("evm_block_count"), None)
+        evm_remaining = safe_int(evm_lag.get("evm_lag_to_chain"), 0)
+        if evm_block is not None and evm_remaining > EVM_SYNC_LAG_THRESHOLD_BLOCKS:
+            return {
+                "status": "syncing",
+                "percent": round(max(0.0, min(100.0, (evm_block / max(1, current)) * 100)), 2),
+                "current_block": evm_block,
+                "highest_block": current,
+                "starting_block": None,
+                "remaining_blocks": evm_remaining,
+                "source": f"{source}:evm-head-lag",
+                "error": "",
+                "current_block_source": "eth_blockNumber",
+                **chain,
+                **evm_lag,
             }
 
         native = native_sync_progress(source)
         if native:
             native.update(chain)
+            native.update(evm_lag)
             native["current_block"] = current
             native["highest_block"] = None
             native["current_block_source"] = chain.get("chain_rpc_source")
@@ -5489,6 +5547,7 @@ def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TI
             "error": "",
             "current_block_source": chain.get("chain_rpc_source"),
             **chain,
+            **evm_lag,
         }
     except Exception as exc:
         return unknown_sync_progress(source, str(exc))
@@ -6295,7 +6354,91 @@ def collect_global_blockchain() -> dict[str, Any]:
     if cached.get("status") == "ok" and seconds_since_epoch() - cached_at <= GLOBAL_CACHE_TTL_SECONDS:
         return annotate_global_pool_labels({**cached, "cache_hit": True, "history": read_global_history(limit=GLOBAL_HISTORY_LIMIT)})
 
-    def stale_or_failed(error: str, errors: list[str] | None = None) -> dict[str, Any]:
+    def lightweight_global_head(
+        error: str,
+        errors: list[str],
+        history: list[dict[str, Any]],
+        maintenance_decision: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        fetch_errors = list(errors)
+        rpc_sources = global_evm_rpc_urls() or [("local-chain", f"http://127.0.0.1:{NODE_EVM_RPC_PORT}")]
+        for source_name, source_url in rpc_sources:
+            try:
+                latest_hex = json_rpc_call(source_url, "eth_blockNumber", [], timeout=4.0)
+                latest_block = int(str(latest_hex), 16)
+            except Exception as exc:  # noqa: BLE001
+                fetch_errors.append(f"{source_name}: {exc}")
+                continue
+
+            headers: list[dict[str, Any]] = []
+            clusters: list[dict[str, Any]] = []
+            try:
+                header = fetch_block_header(source_url, latest_block, timeout=4.0)
+                headers.append(header)
+                miner = str(header.get("miner") or header.get("author") or header.get("coinbase") or "").lower()
+                if miner:
+                    try:
+                        epoch = int(str(header.get("timestamp") or "0"), 16)
+                    except (TypeError, ValueError):
+                        epoch = 0
+                    seen_at = datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat() if epoch > 0 else ""
+                    clusters.append(
+                        {
+                            "rank": 1,
+                            "address": miner,
+                            "address_short": short_eth_address(miner),
+                            "blocks": 1,
+                            "share_percent": "100.00",
+                            "first_height": latest_block,
+                            "last_height": latest_block,
+                            "first_seen_at": seen_at,
+                            "last_seen_at": seen_at,
+                            "rpc_sources": [source_name],
+                            "source": "on-chain-head",
+                        }
+                    )
+            except Exception as exc:  # noqa: BLE001
+                fetch_errors.append(f"{source_name}: latest header: {exc}")
+
+            return annotate_global_pool_labels(
+                {
+                    "status": "deferred",
+                    "source": "on-chain-head",
+                    "updated_at": now_iso(),
+                    "updated_at_epoch": seconds_since_epoch(),
+                    "rpc_source": source_name,
+                    "latest_block": latest_block,
+                    "requested_blocks": 1,
+                    "fetched_blocks": len(headers),
+                    "global_rpc_worker_count": 1,
+                    "adaptive_concurrency": maintenance_decision.get("adaptive_concurrency", {}),
+                    "scan_start_block": latest_block,
+                    "scan_end_block": latest_block,
+                    "scan_window_seconds": 0,
+                    "scan_window_hours": "0.00",
+                    "avg_block_seconds": None,
+                    "unique_miners": len(clusters),
+                    "chain_unique_miners": len(clusters),
+                    "clusters": clusters,
+                    "chain_clusters": clusters,
+                    "local_pool_clusters": [],
+                    "peer_location": {"observations": []},
+                    "fetch_errors": fetch_errors[:20],
+                    "history": history,
+                    "cache_hit": False,
+                    "head_only": True,
+                    "maintenance_deferred": True,
+                    "maintenance_decision": maintenance_decision,
+                    "error": error,
+                }
+            )
+        return None
+
+    def stale_or_failed(
+        error: str,
+        errors: list[str] | None = None,
+        maintenance_decision: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         history = read_global_history(limit=GLOBAL_HISTORY_LIMIT)
         if isinstance(cached, dict) and cached.get("status") == "ok":
             return annotate_global_pool_labels(
@@ -6309,6 +6452,10 @@ def collect_global_blockchain() -> dict[str, Any]:
                     "history": history,
                 }
             )
+        if maintenance_decision is not None:
+            head = lightweight_global_head(error, errors or [], history, maintenance_decision)
+            if head is not None:
+                return head
         return {
             "status": "failed",
             "source": "on-chain",
@@ -6321,7 +6468,11 @@ def collect_global_blockchain() -> dict[str, Any]:
     maintenance_decision = background_maintenance_decision("global_blockchain_scan")
     if not maintenance_decision.get("allowed", True):
         reason = "; ".join(str(item) for item in maintenance_decision.get("reasons", []) if item)
-        result = stale_or_failed(f"global blockchain scan deferred: {reason}", [reason] if reason else [])
+        result = stale_or_failed(
+            f"global blockchain scan deferred: {reason}",
+            [reason] if reason else [],
+            maintenance_decision,
+        )
         result["maintenance_deferred"] = True
         result["maintenance_decision"] = maintenance_decision
         return result

@@ -3232,6 +3232,11 @@ HTML = r"""<!doctype html>
 
       const body = document.getElementById("globalPoolsTable");
       body.innerHTML = "";
+      if (!(data.clusters || []).length) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td colspan="13">${escapeHtml(data.error || "No global pool samples available yet.")}</td>`;
+        body.appendChild(tr);
+      }
       for (const row of data.clusters || []) {
         const tr = document.createElement("tr");
         const nodes = globalNodesLabel(row);
