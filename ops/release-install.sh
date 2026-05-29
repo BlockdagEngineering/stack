@@ -431,6 +431,10 @@ configure_env() {
     esac
   fi
   set_env_value .env BDAG_FASTARTIFACTSYNC_ENABLED "$fastartifact_enabled"
+  set_env_value .env NODE_ARGS_APPEND ""
+  if [[ "$fastartifact_enabled" != "1" ]]; then
+    set_env_value .env SNAPSHOT_NODE_ARGS_APPEND ""
+  fi
   set_env_value .env BDAG_FASTSNAP_SEED_TIMER_ENABLED 0
   set_env_value .env BDAG_RAWDATADIR_SOURCE_MODE auto
   set_env_value .env BDAG_RAWDATADIR_ARTIFACT_BASE "./data-restore/rawdatadir"
