@@ -54,7 +54,6 @@ P2P_GUARD_STATE = RUNTIME_DIR / "p2p-health-state.json"
 REPORTS_DIR = RUNTIME_DIR / "reports"
 STATUS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_STATUS_CACHE_SECONDS", "10"))
 EARNINGS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_EARNINGS_CACHE_SECONDS", "30"))
-GLOBAL_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_GLOBAL_CACHE_SECONDS", "60"))
 SAMPLER_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS", "10"))
 EARNINGS_SAMPLER_ENABLED = os.environ.get("BDAG_DASHBOARD_EARNINGS_SAMPLER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 EARNINGS_SAMPLER_INTERVAL_SECONDS = max(
@@ -1335,15 +1334,16 @@ HTML = r"""<!doctype html>
       </section>
       <section class="grid">
         <div class="panel span-12">
-          <div class="kpi-label">Estimated Earnings By Pool</div>
-          <div class="subtle" style="margin-top: 8px;">Pool addresses are clustered from recent block headers and rendered like miner rows for consistency.</div>
+          <div class="kpi-label">Confirmed Chain Production By Pool</div>
+          <div class="subtle" style="margin-top: 8px;">Pool addresses are clustered from BlockDAG chain RPC coinbase data; local pool credits are only shown as an overlay.</div>
+          <div class="subtle" id="globalSourceStatus" style="margin-top: 8px;">Waiting for chain RPC source details.</div>
           <div class="table-scroll" style="margin-top: 12px;">
             <table class="wide-table">
-              <thead><tr><th class="nowrap">Pool</th><th class="nowrap">Nodes</th><th class="right">Shares</th><th class="right">Work %</th><th class="right">Credit Blocks</th><th class="right">Credited BDAG</th><th class="right">Found Blocks</th><th class="right">Est. Wallet BDAG</th><th class="right">Avg USD/h</th><th class="right">Wallet Avg BDAG/h</th><th class="right">USD Total</th><th class="right">ZAR Total</th><th>Last Seen</th></tr></thead>
+              <thead><tr><th class="nowrap">Pool</th><th class="nowrap">Nodes</th><th class="right">Blocks</th><th class="right">Work %</th><th class="right">Chain Blocks</th><th class="right">Chain Reward BDAG</th><th class="right">Found Blocks</th><th class="right">Est. Wallet BDAG</th><th class="right">Avg USD/h</th><th class="right">Wallet Avg BDAG/h</th><th class="right">USD Total</th><th class="right">ZAR Total</th><th>Last Seen</th></tr></thead>
               <tbody id="globalPoolsTable"></tbody>
             </table>
           </div>
-          <div class="subtle" style="margin-top: 10px;">Per-pool earnings are estimated from recent block production share and current reward pricing.</div>
+          <div class="subtle" style="margin-top: 10px;">Per-pool earnings use recent chain rewards and current reward pricing; stale or untrusted sources are not rendered as current.</div>
         </div>
       </section>
       <section class="grid">
@@ -3220,6 +3220,23 @@ HTML = r"""<!doctype html>
       text("globalScanWindow", data.scan_window_hours ? `${data.scan_window_hours}h` : "n/a");
       text("globalAvgBlockSec", data.avg_block_seconds ? `${data.avg_block_seconds}s` : "n/a");
       text("globalTopShare", data.clusters?.[0]?.share_percent ? `${data.clusters[0].share_percent}%` : "n/a");
+      let freshnessLabel = "no trusted data";
+      if (data.status === "ok") freshnessLabel = data.cache_hit ? "validated cache" : "fresh chain scan";
+      else if (data.status === "stale") freshnessLabel = "last-good stale cache";
+      const sourceBits = [
+        data.status ? `status=${data.status}` : "",
+        data.source_truth || data.source || "",
+        data.rpc_source ? `rpc=${data.rpc_source}` : "",
+        data.latest_order !== undefined ? `order=${fmt(data.latest_order)}` : "",
+        freshnessLabel,
+        data.zero_address_blocks ? `zero-address blocks=${fmt(data.zero_address_blocks)}` : "",
+      ].filter(Boolean);
+      const sourceStatus = document.getElementById("globalSourceStatus");
+      if (sourceStatus) {
+        const error = data.error ? ` | ${data.error}` : "";
+        sourceStatus.textContent = `${sourceBits.join(" | ")}${error}`;
+        sourceStatus.className = data.status === "ok" && !data.zero_address_blocks ? "subtle ok" : data.status === "failed" ? "subtle down" : "subtle warn";
+      }
 
       const peerBody = document.getElementById("globalPeerIpsTable");
       peerBody.innerHTML = "";
@@ -3232,9 +3249,10 @@ HTML = r"""<!doctype html>
 
       const body = document.getElementById("globalPoolsTable");
       body.innerHTML = "";
-      if (!(data.clusters || []).length) {
+      if (!data.clusters || data.clusters.length === 0) {
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td colspan="13">${escapeHtml(data.error || "No global pool samples available yet.")}</td>`;
+        const reason = data.error || "No chain-sourced mining clusters are available for this window.";
+        tr.innerHTML = `<td colspan="13">${escapeHtml(reason)}</td>`;
         body.appendChild(tr);
       }
       for (const row of data.clusters || []) {
@@ -3245,7 +3263,7 @@ HTML = r"""<!doctype html>
         const poolAddress = row.address || row.address_short || "";
         const poolIdentity = globalPoolIdentity(row);
         const poolColor = globalPoolColor(poolIdentity);
-        const sourceBadge = row.local_pool ? ` <span class="subtle">local pool</span>` : "";
+        const sourceBadge = row.invalid_payout ? ` <span class="down">invalid payout</span>` : (row.local_pool ? ` <span class="subtle">local pool</span>` : "");
         const poolCell = poolName
           ? `<span class="pool-dot"></span>${escapeHtml(poolName)} <span class="subtle">${escapeShortEth(poolAddress)}</span>${sourceBadge}`
           : `<span class="pool-dot"></span>${escapeShortEth(poolAddress)}`;
@@ -3374,12 +3392,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/global":
             try:
-                self.send_json(cached_payload("global", GLOBAL_CACHE_SECONDS, collect_global_blockchain))
+                self.send_json(collect_global_blockchain())
             except Exception as exc:  # noqa: BLE001
                 self.send_json(
                     {
                         "status": "failed",
                         "source": "dashboard-global",
+                        "source_truth": "chain-rpc:getBlockCount/getBlockhashByRange/getBlockHeader/getCoinbaseAddress",
+                        "schema_version": 2,
                         "error": str(exc),
                         "clusters": [],
                         "history": [],

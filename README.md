@@ -214,15 +214,20 @@ image assembly so ARM64 packages cannot silently receive AMD64 binaries; the
 checker reads ELF/Mach-O/PE headers directly so it can be used from Linux,
 macOS, and Windows build hosts.
 
-When testing directly from a source checkout, keep the two dashboard surfaces
-separate. The Compose dashboard is the lightweight container UI on
-`DASHBOARD_HOST_PORT`/`9280`. The Python operations dashboard is the control
-plane normally exposed on `BDAG_DASHBOARD_PORT`/`8088`, and it must be started
-with environment that matches the actual container names for the stack it is
-watching. On Linux, that process also needs Docker API access; use a system
-service account with Docker socket access or an explicit `DOCKER_HOST`. On
-macOS and Windows Docker Desktop hosts, prefer the packaged installer or run the
-ops dashboard from a session where the Docker CLI already works instead of
+The Python operations dashboard is the canonical operator interface and source
+of truth, normally exposed on `BDAG_DASHBOARD_PORT`/`8088`. Its tabs separate
+pool status, miners, earnings, and global chain production, and each global
+production view must be sourced from native BlockDAG chain RPC
+`getBlockCount`/ordered block/coinbase calls. EVM RPC belongs to wallet balance
+views only. The Compose dashboard on `DASHBOARD_HOST_PORT`/`9280` is a legacy
+lightweight chart and must not be treated as the authoritative mining dashboard.
+
+When testing directly from a source checkout, start the Python operations
+dashboard with environment that matches the actual container names for the stack
+it is watching. On Linux, that process also needs Docker API access; use a
+system service account with Docker socket access or an explicit `DOCKER_HOST`.
+On macOS and Windows Docker Desktop hosts, prefer the packaged installer or run
+the ops dashboard from a session where the Docker CLI already works instead of
 installing Linux systemd units.
 
 The dashboard runtime collectors use Python's standard HTTP client for local
@@ -269,7 +274,8 @@ docker compose logs -f pool
 
 Once everything is running:
 
-- Dashboard: `http://localhost:9280` ( Run in browser, or use the VSC/Cursor Simple Browser! )
+- Operations dashboard: `http://localhost:8088`
+- Legacy lightweight chart: `http://localhost:9280`
 - Mining pool Stratum endpoint: `stratum+tcp://localhost:3334`
 - RPC endpoint: `http://localhost:38131`
 

@@ -292,6 +292,7 @@ HOST_PRESSURE_STATE_FILE = RUNTIME_DIR / "host-pressure-state.json"
 PEER_GEO_CACHE_FILE = RUNTIME_DIR / "peer-geo-cache.json"
 NODE_TEMPLATE_PROBE_CACHE_FILE = RUNTIME_DIR / "node-template-probe-cache.json"
 WEI_PER_BDAG = Decimal("1000000000000000000")
+ATOMS_PER_BDAG = Decimal("100000000")
 ZERO_ETH_ADDRESS = "0x" + ("0" * 40)
 ETH_ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 try:
@@ -309,6 +310,9 @@ GLOBAL_BLOCK_WINDOW = int(os.environ.get("BDAG_GLOBAL_BLOCK_WINDOW", "2048"))
 GLOBAL_RPC_WORKERS = env_int("BDAG_GLOBAL_RPC_WORKERS", 24, minimum=1)
 GLOBAL_HISTORY_LIMIT = int(os.environ.get("BDAG_GLOBAL_HISTORY_LIMIT", "9000"))
 GLOBAL_HISTORY_COMPACT_MULTIPLIER = max(1, int(os.environ.get("BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER", "2")))
+GLOBAL_CACHE_SCHEMA_VERSION = 2
+GLOBAL_STATS_SOURCE_TRUTH = "chain-rpc:getBlockCount/getBlockhashByRange/getBlockHeader/getCoinbaseAddress"
+GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS = env_int("BDAG_GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS", 30, minimum=0)
 NODE_EVM_RPC_PORT = int(os.environ.get("BDAG_NODE_EVM_RPC_PORT", "18545"))
 EVM_SYNC_LAG_THRESHOLD_BLOCKS = env_int("BDAG_EVM_SYNC_LAG_THRESHOLD_BLOCKS", 1000, minimum=0)
 EARNINGS_HISTORY_RETENTION_SECONDS = int(os.environ.get("BDAG_EARNINGS_HISTORY_RETENTION_SECONDS", str(35 * 86400)))
@@ -634,6 +638,13 @@ def safe_float(value: Any, default: float | None = None) -> float | None:
 def wei_to_bdag(value: str | int | Decimal | None) -> Decimal:
     try:
         return Decimal(str(value or "0")) / WEI_PER_BDAG
+    except (InvalidOperation, ValueError):
+        return Decimal("0")
+
+
+def atomic_to_bdag(value: str | int | Decimal | None) -> Decimal:
+    try:
+        return Decimal(str(value or "0")) / ATOMS_PER_BDAG
     except (InvalidOperation, ValueError):
         return Decimal("0")
 
@@ -4109,7 +4120,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "can_accept_shares": False,
             "can_submit_blocks": False,
             "truth_sources": {
-                "chain_block_count": "eth_blockNumber/getBlockCount fallback",
+                "chain_block_count": "getBlockCount chain RPC",
                 "chain_main_height": "getMainChainHeight diagnostic",
                 "template_height": "diagnostic_only",
                 "node_log_height": "diagnostic_only",
@@ -4784,7 +4795,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     can_submit_blocks = bool(can_accept_shares and not pool_health.get("needs_fast_repair") and not sync_warnings)
     can_mine = bool(can_accept_shares and can_submit_blocks)
     truth_sources = {
-        "chain_block_count": "eth_blockNumber/getBlockCount fallback",
+        "chain_block_count": "getBlockCount chain RPC",
         "chain_main_height": "getMainChainHeight diagnostic",
         "template_height": "diagnostic_only",
         "node_log_height": "diagnostic_only",
@@ -5224,6 +5235,21 @@ def global_evm_rpc_urls() -> list[tuple[str, str]]:
         if ip:
             urls.append((name, f"http://{ip}:{NODE_EVM_RPC_PORT}"))
     return urls
+
+
+def global_chain_rpc_urls() -> list[tuple[str, str]]:
+    configured = (
+        named_urls_from_env("BDAG_GLOBAL_CHAIN_RPC_URLS", [])
+        or named_urls_from_env("BDAG_NODE_RPC_URLS", [])
+    )
+    urls: list[tuple[str, str]] = []
+    for source, url in configured:
+        normalized = _host_url_for_dashboard(url.strip())
+        if valid_url(normalized):
+            urls.append((source.strip() or "configured-chain", normalized))
+    if urls:
+        return urls
+    return mining_rpc_urls(include_haproxy=True)
 
 
 def unknown_sync_progress(source: str = "node", error: str = "") -> dict[str, Any]:
@@ -5741,6 +5767,102 @@ def fetch_block_header(url: str, block_number: int, timeout: float = 8.0) -> dic
     return result
 
 
+def parse_global_block_epoch(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.startswith(("0x", "0X")):
+        try:
+            return int(text, 16)
+        except ValueError:
+            return None
+    if re.fullmatch(r"[0-9]+", text):
+        return int(text)
+    parsed = parse_chain_timestamp(text)
+    return int(parsed.timestamp()) if parsed else None
+
+
+def fetch_chain_order_hashes(url: str, start_order: int, end_order: int, timeout: float = 8.0) -> list[tuple[int, str]]:
+    try:
+        result = mining_rpc_call(url, "getBlockhashByRange", [start_order, end_order], timeout=timeout)
+        if isinstance(result, list) and len(result) == max(0, end_order - start_order + 1):
+            return [(start_order + idx, str(block_hash)) for idx, block_hash in enumerate(result)]
+    except Exception:
+        pass
+    hashes: list[tuple[int, str]] = []
+    for order in range(start_order, end_order + 1):
+        block_hash = mining_rpc_call(url, "getBlockhash", [order], timeout=timeout)
+        hashes.append((order, str(block_hash)))
+    return hashes
+
+
+def fetch_chain_order_header(
+    url: str,
+    source_name: str,
+    order: int,
+    block_hash: str,
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    if not block_hash:
+        raise RuntimeError(f"empty block hash for order {order}")
+    header: dict[str, Any] = {}
+    header_error = ""
+    try:
+        result = mining_rpc_call(url, "getBlockHeader", [block_hash, True], timeout=timeout)
+        if isinstance(result, dict):
+            header = result
+    except Exception as exc:  # noqa: BLE001 - reward/timestamp can degrade independently.
+        header_error = str(exc)
+
+    coinbase = mining_rpc_call(url, "getCoinbaseAddress", [block_hash], timeout=timeout)
+    miner = str(coinbase or "").strip().lower()
+    if not valid_eth_address(miner):
+        raise RuntimeError(f"invalid coinbase address for order {order}: {coinbase!r}")
+
+    epoch = parse_global_block_epoch(header.get("time"))
+    if epoch is None:
+        block = mining_rpc_call(url, "getBlockByOrder", [order, True, False, False], timeout=timeout)
+        if isinstance(block, dict):
+            epoch = parse_global_block_epoch(block.get("timestamp"))
+            if "reward" in block and "reward" not in header:
+                header["reward"] = block.get("reward")
+    if epoch is None:
+        raise RuntimeError(f"missing block timestamp for order {order}")
+
+    reward_bdag = atomic_to_bdag(header.get("reward")) if header.get("reward") is not None else None
+    return {
+        "order": order,
+        "hash": block_hash,
+        "miner": miner,
+        "timestamp_epoch": epoch,
+        "reward_atoms": header.get("reward"),
+        "reward_bdag": reward_bdag,
+        "header_error": header_error,
+        "_rpc_source": source_name,
+    }
+
+
+def probe_global_chain_block_count() -> tuple[int | None, str, str, list[str]]:
+    errors: list[str] = []
+    candidates: list[tuple[int, str, str]] = []
+    for source_name, source_url in global_chain_rpc_urls() or [("local-chain", f"http://127.0.0.1:{NODE_MINING_RPC_PORT}")]:
+        try:
+            block_count = parse_rpc_quantity(mining_rpc_call(source_url, "getBlockCount", [], timeout=8.0))
+            if block_count > 0:
+                candidates.append((block_count, source_name, source_url))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{source_name}: {exc}")
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    if not candidates:
+        return None, "", "", errors
+    block_count, source_name, source_url = candidates[0]
+    return block_count, source_name, source_url, errors
+
+
 def short_eth_address(address: str) -> str:
     value = str(address or "")
     if re.fullmatch(r"0x[a-fA-F0-9]{40}", value):
@@ -6153,6 +6275,20 @@ def read_global_history(limit: int | None = None) -> list[dict[str, Any]]:
     return read_jsonl_file(GLOBAL_HISTORY_FILE, limit=limit)
 
 
+def is_valid_global_chain_snapshot(snapshot: Mapping[str, Any] | None) -> bool:
+    if not isinstance(snapshot, Mapping):
+        return False
+    if snapshot.get("status") != "ok":
+        return False
+    if safe_int(snapshot.get("schema_version"), 0) != GLOBAL_CACHE_SCHEMA_VERSION:
+        return False
+    return str(snapshot.get("source_truth") or "") == GLOBAL_STATS_SOURCE_TRUTH
+
+
+def read_valid_global_history(limit: int | None = None) -> list[dict[str, Any]]:
+    return [row for row in read_global_history(limit=limit) if is_valid_global_chain_snapshot(row)]
+
+
 def record_global_snapshot(snapshot: dict[str, Any]) -> None:
     ensure_runtime()
     append_jsonl_file(GLOBAL_HISTORY_FILE, snapshot, mode=0o600)
@@ -6321,7 +6457,9 @@ def merge_global_local_pool_clusters(
         address = str(local.get("address") or "").lower()
         existing = by_address.get(address)
         if existing is None:
-            merged.append(dict(local))
+            # Global production rows are chain-confirmed only. Local pool DB rows
+            # can annotate a matching chain address, but must not create
+            # dashboard-visible block production that the chain did not report.
             continue
         existing["local_pool"] = True
         existing["source"] = "on-chain+local-pool-db"
@@ -6351,8 +6489,14 @@ def merge_global_local_pool_clusters(
 def collect_global_blockchain() -> dict[str, Any]:
     cached = read_json_file(GLOBAL_CACHE_FILE, {})
     cached_at = int(cached.get("updated_at_epoch", 0) or 0) if isinstance(cached, dict) else 0
-    if cached.get("status") == "ok" and seconds_since_epoch() - cached_at <= GLOBAL_CACHE_TTL_SECONDS:
-        return annotate_global_pool_labels({**cached, "cache_hit": True, "history": read_global_history(limit=GLOBAL_HISTORY_LIMIT)})
+    cached_valid = is_valid_global_chain_snapshot(cached)
+    invalid_cache_error = ""
+    if isinstance(cached, dict) and cached.get("status") == "ok" and not cached_valid:
+        invalid_cache_error = (
+            "ignored stale global cache with unsupported source/schema "
+            f"source_truth={cached.get('source_truth') or cached.get('source') or 'unknown'} "
+            f"schema={cached.get('schema_version') or 'missing'}"
+        )
 
     def lightweight_global_head(
         error: str,
@@ -6361,94 +6505,86 @@ def collect_global_blockchain() -> dict[str, Any]:
         maintenance_decision: dict[str, Any],
     ) -> dict[str, Any] | None:
         fetch_errors = list(errors)
-        rpc_sources = global_evm_rpc_urls() or [("local-chain", f"http://127.0.0.1:{NODE_EVM_RPC_PORT}")]
-        for source_name, source_url in rpc_sources:
-            try:
-                latest_hex = json_rpc_call(source_url, "eth_blockNumber", [], timeout=4.0)
-                latest_block = int(str(latest_hex), 16)
-            except Exception as exc:  # noqa: BLE001
-                fetch_errors.append(f"{source_name}: {exc}")
-                continue
-
-            headers: list[dict[str, Any]] = []
-            clusters: list[dict[str, Any]] = []
-            try:
-                header = fetch_block_header(source_url, latest_block, timeout=4.0)
-                headers.append(header)
-                miner = str(header.get("miner") or header.get("author") or header.get("coinbase") or "").lower()
-                if miner:
-                    try:
-                        epoch = int(str(header.get("timestamp") or "0"), 16)
-                    except (TypeError, ValueError):
-                        epoch = 0
-                    seen_at = datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat() if epoch > 0 else ""
-                    clusters.append(
-                        {
-                            "rank": 1,
-                            "address": miner,
-                            "address_short": short_eth_address(miner),
-                            "blocks": 1,
-                            "share_percent": "100.00",
-                            "first_height": latest_block,
-                            "last_height": latest_block,
-                            "first_seen_at": seen_at,
-                            "last_seen_at": seen_at,
-                            "rpc_sources": [source_name],
-                            "source": "on-chain-head",
-                        }
-                    )
-            except Exception as exc:  # noqa: BLE001
-                fetch_errors.append(f"{source_name}: latest header: {exc}")
-
-            return annotate_global_pool_labels(
-                {
-                    "status": "deferred",
-                    "source": "on-chain-head",
-                    "updated_at": now_iso(),
-                    "updated_at_epoch": seconds_since_epoch(),
-                    "rpc_source": source_name,
-                    "latest_block": latest_block,
-                    "requested_blocks": 1,
-                    "fetched_blocks": len(headers),
-                    "global_rpc_worker_count": 1,
-                    "adaptive_concurrency": maintenance_decision.get("adaptive_concurrency", {}),
-                    "scan_start_block": latest_block,
-                    "scan_end_block": latest_block,
-                    "scan_window_seconds": 0,
-                    "scan_window_hours": "0.00",
-                    "avg_block_seconds": None,
-                    "unique_miners": len(clusters),
-                    "chain_unique_miners": len(clusters),
-                    "clusters": clusters,
-                    "chain_clusters": clusters,
-                    "local_pool_clusters": [],
-                    "peer_location": {"observations": []},
-                    "fetch_errors": fetch_errors[:20],
-                    "history": history,
-                    "cache_hit": False,
-                    "head_only": True,
-                    "maintenance_deferred": True,
-                    "maintenance_decision": maintenance_decision,
-                    "error": error,
-                }
-            )
-        return None
+        block_count, source_name, _source_url, probe_errors = probe_global_chain_block_count()
+        fetch_errors.extend(probe_errors)
+        if block_count is None:
+            return None
+        latest_order = max(0, block_count - 1)
+        return annotate_global_pool_labels(
+            {
+                "status": "deferred",
+                "source": "on-chain-head",
+                "source_truth": GLOBAL_STATS_SOURCE_TRUTH,
+                "source_contract": "blockdag-mining-rpc-v1",
+                "schema_version": GLOBAL_CACHE_SCHEMA_VERSION,
+                "rpc_kind": "blockdag-chain-rpc",
+                "height_method": "getBlockCount",
+                "updated_at": now_iso(),
+                "updated_at_epoch": seconds_since_epoch(),
+                "rpc_source": source_name,
+                "chain_block_count": block_count,
+                "latest_block": block_count,
+                "latest_order": latest_order,
+                "requested_blocks": 0,
+                "fetched_blocks": 0,
+                "global_rpc_worker_count": 0,
+                "adaptive_concurrency": maintenance_decision.get("adaptive_concurrency", {}),
+                "scan_start_block": None,
+                "scan_end_block": None,
+                "scan_start_order": None,
+                "scan_end_order": None,
+                "scan_window_seconds": 0,
+                "scan_window_hours": "0.00",
+                "avg_block_seconds": None,
+                "unique_miners": 0,
+                "chain_unique_miners": 0,
+                "clusters": [],
+                "chain_clusters": [],
+                "local_pool_clusters": [],
+                "peer_location": {"observations": []},
+                "fetch_errors": fetch_errors[:20],
+                "history": history,
+                "cache_hit": False,
+                "cache": {
+                    "hit": False,
+                    "ttl_seconds": GLOBAL_CACHE_TTL_SECONDS,
+                    "max_tip_lag_blocks": GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS,
+                },
+                "head_only": True,
+                "maintenance_deferred": True,
+                "maintenance_decision": maintenance_decision,
+                "error": error,
+            }
+        )
 
     def stale_or_failed(
         error: str,
         errors: list[str] | None = None,
         maintenance_decision: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        history = read_global_history(limit=GLOBAL_HISTORY_LIMIT)
-        if isinstance(cached, dict) and cached.get("status") == "ok":
+        history = read_valid_global_history(limit=GLOBAL_HISTORY_LIMIT)
+        fetch_errors = list(errors or [])
+        if invalid_cache_error:
+            fetch_errors.insert(0, invalid_cache_error)
+        if cached_valid:
+            cache_meta = dict(cached.get("cache") or {}) if isinstance(cached.get("cache"), dict) else {}
+            cache_meta.update(
+                {
+                    "hit": True,
+                    "age_seconds": max(0, seconds_since_epoch() - cached_at),
+                    "ttl_seconds": GLOBAL_CACHE_TTL_SECONDS,
+                    "max_tip_lag_blocks": GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS,
+                }
+            )
             return annotate_global_pool_labels(
                 {
                     **cached,
                     "status": "stale",
                     "stale": True,
                     "cache_hit": True,
+                    "cache": cache_meta,
                     "error": error,
-                    "fetch_errors": errors or cached.get("fetch_errors", []),
+                    "fetch_errors": fetch_errors or cached.get("fetch_errors", []),
                     "history": history,
                 }
             )
@@ -6459,10 +6595,18 @@ def collect_global_blockchain() -> dict[str, Any]:
         return {
             "status": "failed",
             "source": "on-chain",
+            "source_truth": GLOBAL_STATS_SOURCE_TRUTH,
+            "schema_version": GLOBAL_CACHE_SCHEMA_VERSION,
+            "source_contract": "blockdag-mining-rpc-v1",
             "error": error,
-            "fetch_errors": errors or [],
+            "fetch_errors": fetch_errors,
             "clusters": [],
             "history": history,
+            "cache": {
+                "hit": False,
+                "ttl_seconds": GLOBAL_CACHE_TTL_SECONDS,
+                "max_tip_lag_blocks": GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS,
+            },
         }
 
     maintenance_decision = background_maintenance_decision("global_blockchain_scan")
@@ -6477,37 +6621,97 @@ def collect_global_blockchain() -> dict[str, Any]:
         result["maintenance_decision"] = maintenance_decision
         return result
 
-    rpc_sources = global_evm_rpc_urls() or [("local-chain", f"http://127.0.0.1:{NODE_EVM_RPC_PORT}")]
+    if cached_valid and seconds_since_epoch() - cached_at <= GLOBAL_CACHE_TTL_SECONDS:
+        live_count, live_source, _live_url, live_errors = probe_global_chain_block_count()
+        if live_count is not None:
+            cached_count = safe_int(cached.get("latest_block"), 0)
+            if cached_count > live_count:
+                cached_valid = False
+                invalid_cache_error = (
+                    f"ignored global cache ahead of live chain tip cached={cached_count} "
+                    f"live={live_count}; refreshing from chain RPC"
+                )
+            cache_tip_lag = max(0, live_count - cached_count)
+            if cached_valid and cache_tip_lag <= GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS:
+                cache_meta = dict(cached.get("cache") or {}) if isinstance(cached.get("cache"), dict) else {}
+                cache_meta.update(
+                    {
+                        "hit": True,
+                        "age_seconds": max(0, seconds_since_epoch() - cached_at),
+                        "ttl_seconds": GLOBAL_CACHE_TTL_SECONDS,
+                        "max_tip_lag_blocks": GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS,
+                        "tip_lag_blocks": cache_tip_lag,
+                    }
+                )
+                return annotate_global_pool_labels(
+                    {
+                        **cached,
+                        "cache_hit": True,
+                        "cache": cache_meta,
+                        "cache_tip_lag_blocks": cache_tip_lag,
+                        "cache_validated_by": live_source,
+                        "history": read_valid_global_history(limit=GLOBAL_HISTORY_LIMIT),
+                    }
+                )
+            if cached_valid:
+                invalid_cache_error = (
+                    f"global cache tip lag {cache_tip_lag} blocks exceeds "
+                    f"{GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS}; refreshing from chain RPC"
+                )
+        else:
+            invalid_cache_error = "unable to validate global cache freshness from chain RPC; refusing ok cache"
+
+    rpc_sources = global_chain_rpc_urls() or [("local-chain", f"http://127.0.0.1:{NODE_MINING_RPC_PORT}")]
     latest_errors: list[str] = []
-    rpc_name = ""
-    rpc_url = ""
-    latest_block: int | None = None
+    candidates: list[tuple[int, str, str]] = []
     for source_name, source_url in rpc_sources:
         try:
-            latest_hex = json_rpc_call(source_url, "eth_blockNumber", [], timeout=8.0)
-            latest_block = int(str(latest_hex), 16)
+            block_count = parse_rpc_quantity(mining_rpc_call(source_url, "getBlockCount", [], timeout=8.0))
+            if block_count > 0:
+                candidates.append((block_count, source_name, source_url))
+        except Exception as exc:  # noqa: BLE001
+            latest_errors.append(f"{source_name}: {exc}")
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    latest_block_count = candidates[0][0] if candidates else None
+    if latest_block_count is None:
+        return stale_or_failed("unable to fetch latest global block height from chain RPC getBlockCount", latest_errors)
+
+    order_hash_errors: list[str] = []
+    order_hashes: list[tuple[int, str]] = []
+    rpc_name = ""
+    rpc_url = ""
+    latest_order = latest_block_count - 1
+    requested_count = min(max(GLOBAL_BLOCK_WINDOW, 1), latest_block_count)
+    start_order = max(0, latest_order - requested_count + 1)
+    for candidate_count, source_name, source_url in candidates:
+        candidate_latest_order = candidate_count - 1
+        candidate_requested_count = min(max(GLOBAL_BLOCK_WINDOW, 1), candidate_count)
+        candidate_start_order = max(0, candidate_latest_order - candidate_requested_count + 1)
+        try:
+            order_hashes = fetch_chain_order_hashes(source_url, candidate_start_order, candidate_latest_order, timeout=8.0)
+            latest_block_count = candidate_count
+            latest_order = candidate_latest_order
+            requested_count = candidate_requested_count
+            start_order = candidate_start_order
             rpc_name = source_name
             rpc_url = source_url
             break
         except Exception as exc:  # noqa: BLE001
-            latest_errors.append(f"{source_name}: {exc}")
-    if latest_block is None:
-        return stale_or_failed("unable to fetch latest global block height from EVM RPC", latest_errors)
+            order_hash_errors.append(f"{source_name}: {exc}")
+    if not order_hashes:
+        return stale_or_failed("unable to fetch chain block hashes by order", latest_errors + order_hash_errors)
 
-    requested_count = min(max(GLOBAL_BLOCK_WINDOW, 1), latest_block + 1)
-    start_block = max(0, latest_block - requested_count + 1)
-    block_numbers = list(range(start_block, latest_block + 1))
+    primary_sources = [(rpc_name, rpc_url), *[(name, url) for _, name, url in candidates if url != rpc_url]]
 
-    def load_block(block_number: int) -> dict[str, Any]:
+    def load_block(order_hash: tuple[int, str]) -> dict[str, Any]:
+        order, block_hash = order_hash
         last_error: Exception | None = None
-        for source_name, source_url in rpc_sources:
+        for source_name, source_url in primary_sources:
             try:
-                header = fetch_block_header(source_url, block_number, timeout=8.0)
-                header["_rpc_source"] = source_name
-                return header
+                return fetch_chain_order_header(source_url, source_name, order, block_hash, timeout=8.0)
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
-        raise RuntimeError(str(last_error or f"failed to fetch block {block_number}"))
+        raise RuntimeError(str(last_error or f"failed to fetch chain block order {order}"))
 
     headers: list[dict[str, Any]] = []
     fetch_errors: list[str] = []
@@ -6517,70 +6721,77 @@ def collect_global_blockchain() -> dict[str, Any]:
         "cpu_some_avg10": maintenance_decision.get("cpu_some_avg10"),
         "chain_rpc_latency_ms": maintenance_decision.get("chain_rpc_latency_ms"),
     }
-    global_worker_count = adaptive_worker_count("global_rpc", GLOBAL_RPC_WORKERS, len(block_numbers), global_pressure)
+    global_worker_count = adaptive_worker_count("global_rpc", GLOBAL_RPC_WORKERS, len(order_hashes), global_pressure)
     with ThreadPoolExecutor(max_workers=global_worker_count) as pool:
-        future_map = {pool.submit(load_block, number): number for number in block_numbers}
+        future_map = {pool.submit(load_block, item): item[0] for item in order_hashes}
         for future in as_completed(future_map):
-            number = future_map[future]
+            order = future_map[future]
             try:
                 headers.append(future.result())
             except Exception as exc:  # noqa: BLE001
-                fetch_errors.append(f"{number}: {exc}")
+                fetch_errors.append(f"{order}: {exc}")
 
-    headers.sort(key=lambda item: int(str(item.get("number") or "0"), 16))
+    headers.sort(key=lambda item: safe_int(item.get("order"), 0))
     if not headers:
-        return stale_or_failed("unable to fetch block headers", fetch_errors)
+        return stale_or_failed("unable to fetch chain block headers", latest_errors + order_hash_errors + fetch_errors)
 
-    reward_summary = {}
-    try:
-        reward_summary = pool_db_json(
-            """
-            SELECT json_build_object(
-              'block_count', count(*),
-              'avg_reward_wei', COALESCE(avg(reward), 0)::text,
-              'total_reward_wei', COALESCE(sum(reward), 0)::text
-            )
-            FROM blocks;
-            """
-        ) or {}
-    except Exception as exc:  # noqa: BLE001
-        reward_summary = {"error": str(exc)}
-
-    avg_reward_bdag = None if reward_summary.get("error") else wei_to_bdag(reward_summary.get("avg_reward_wei"))
     total_blocks = len(headers)
-    total_reward_estimate = avg_reward_bdag * Decimal(total_blocks) if avg_reward_bdag is not None else None
+    reward_values = [item["reward_bdag"] for item in headers if isinstance(item.get("reward_bdag"), Decimal)]
+    known_reward_count = len(reward_values)
+    known_reward_total = sum(reward_values, Decimal("0"))
+    avg_reward_bdag = known_reward_total / Decimal(known_reward_count) if known_reward_count else None
+    missing_reward_blocks = max(0, total_blocks - known_reward_count)
+    total_reward_estimate = None
+    if avg_reward_bdag is not None:
+        total_reward_estimate = known_reward_total + (avg_reward_bdag * Decimal(missing_reward_blocks))
     price = fetch_cmc_price()
     peer_location = collect_peer_location_guess()
 
     cluster_map: dict[str, dict[str, Any]] = {}
     first_seen_epoch: int | None = None
     last_seen_epoch: int | None = None
+    zero_address_blocks = 0
+    zero_address_reward_bdag = Decimal("0")
     for header in headers:
-        miner = str(header.get("miner") or header.get("author") or header.get("coinbase") or "").lower()
+        miner = str(header.get("miner") or "").lower()
         if not miner:
             continue
-        epoch = int(str(header.get("timestamp") or "0"), 16)
-        height = int(str(header.get("number") or "0"), 16)
+        reward_bdag = header.get("reward_bdag")
+        epoch = safe_int(header.get("timestamp_epoch"), 0)
+        first_seen_epoch = epoch if first_seen_epoch is None else min(first_seen_epoch, epoch)
+        last_seen_epoch = epoch if last_seen_epoch is None else max(last_seen_epoch, epoch)
+        if miner == ZERO_ETH_ADDRESS:
+            zero_address_blocks += 1
+            if isinstance(reward_bdag, Decimal):
+                zero_address_reward_bdag += reward_bdag
+            continue
+        height = safe_int(header.get("order"), 0)
         entry = cluster_map.setdefault(
             miner,
             {
                 "address": miner,
                 "blocks": 0,
+                "reward_bdag": Decimal("0"),
+                "reward_count": 0,
                 "first_height": height,
                 "last_height": height,
                 "first_seen_epoch": epoch,
                 "last_seen_epoch": epoch,
                 "rpc_sources": [],
+                "header_errors": [],
             },
         )
         entry["blocks"] += 1
+        if isinstance(reward_bdag, Decimal):
+            entry["reward_bdag"] += reward_bdag
+            entry["reward_count"] += 1
         entry["first_height"] = min(entry["first_height"], height)
         entry["last_height"] = max(entry["last_height"], height)
         entry["first_seen_epoch"] = min(entry["first_seen_epoch"], epoch)
         entry["last_seen_epoch"] = max(entry["last_seen_epoch"], epoch)
         entry["rpc_sources"].append(str(header.get("_rpc_source") or rpc_name))
-        first_seen_epoch = epoch if first_seen_epoch is None else min(first_seen_epoch, epoch)
-        last_seen_epoch = epoch if last_seen_epoch is None else max(last_seen_epoch, epoch)
+        if header.get("header_error"):
+            entry["header_errors"].append(str(header["header_error"]))
 
     clusters = sorted(cluster_map.values(), key=lambda item: (item["blocks"], item["last_seen_epoch"]), reverse=True)
     unique_miners = len(clusters)
@@ -6592,7 +6803,10 @@ def collect_global_blockchain() -> dict[str, Any]:
     for rank, cluster in enumerate(clusters, start=1):
         blocks = int(cluster["blocks"])
         share = Decimal(blocks) / Decimal(total_blocks) if total_blocks else Decimal("0")
-        est_bdag = avg_reward_bdag * Decimal(blocks) if avg_reward_bdag is not None else None
+        missing_cluster_rewards = max(0, blocks - int(cluster.get("reward_count", 0) or 0))
+        est_bdag = None
+        if avg_reward_bdag is not None:
+            est_bdag = cluster["reward_bdag"] + (avg_reward_bdag * Decimal(missing_cluster_rewards))
         est_bdag_hour, est_usd_hour, est_zar_hour = _pool_earning_rates_from_cluster(
             {
                 "estimated_bdag": decimal_to_str(est_bdag, places=2) if est_bdag is not None else None,
@@ -6601,16 +6815,25 @@ def collect_global_blockchain() -> dict[str, Any]:
             },
             scan_window_hours,
         )
+        invalid_payout = cluster["address"] == ZERO_ETH_ADDRESS
         enriched_clusters.append(
             {
                 "rank": rank,
                 "address": cluster["address"],
                 "address_short": short_eth_address(cluster["address"]),
+                "pool_name": "ZERO ADDRESS" if invalid_payout else "",
+                "source": "chain-rpc",
+                "local_pool": False,
                 "blocks": blocks,
+                "shares": blocks,
+                "credit_blocks": blocks,
+                "found_blocks": blocks,
                 "share_percent": decimal_to_str(share * Decimal("100"), places=2),
+                "credited_bdag": decimal_to_str(est_bdag, places=2) if est_bdag is not None else None,
                 "estimated_bdag": decimal_to_str(est_bdag, places=2) if est_bdag is not None else None,
                 "estimated_usd": fiat_value(est_bdag, price, "usd") if est_bdag is not None else None,
                 "estimated_zar": fiat_value(est_bdag, price, "zar") if est_bdag is not None else None,
+                "estimated_wallet_bdag": decimal_to_str(est_bdag, places=2) if est_bdag is not None else None,
                 "estimated_bdag_avg_hour": est_bdag_hour,
                 "estimated_usd_avg_hour": est_usd_hour,
                 "estimated_zar_avg_hour": est_zar_hour,
@@ -6623,6 +6846,8 @@ def collect_global_blockchain() -> dict[str, Any]:
                 "location": str(peer_location.get("location") or "Unknown"),
                 "location_confidence": str(peer_location.get("location_confidence") or "n/a"),
                 "rpc_sources": unique_names(cluster["rpc_sources"]),
+                "invalid_payout": invalid_payout,
+                "header_errors": unique_names(cluster["header_errors"])[:3],
             }
         )
 
@@ -6637,16 +6862,25 @@ def collect_global_blockchain() -> dict[str, Any]:
     payload = {
         "status": "ok",
         "source": "on-chain",
+        "source_truth": GLOBAL_STATS_SOURCE_TRUTH,
+        "source_contract": "blockdag-mining-rpc-v1",
+        "schema_version": GLOBAL_CACHE_SCHEMA_VERSION,
+        "rpc_kind": "blockdag-chain-rpc",
+        "height_method": "getBlockCount",
         "updated_at": now_iso(),
         "updated_at_epoch": seconds_since_epoch(),
         "rpc_source": rpc_name,
-        "latest_block": latest_block,
+        "chain_block_count": latest_block_count,
+        "latest_block": latest_block_count,
+        "latest_order": latest_order,
         "requested_blocks": requested_count,
         "fetched_blocks": total_blocks,
         "global_rpc_worker_count": global_worker_count,
         "adaptive_concurrency": adaptive_worker_budgets(global_pressure),
-        "scan_start_block": start_block,
-        "scan_end_block": latest_block,
+        "scan_start_block": start_order,
+        "scan_end_block": latest_order,
+        "scan_start_order": start_order,
+        "scan_end_order": latest_order,
         "scan_window_seconds": window_seconds,
         "scan_window_hours": decimal_to_str(Decimal(str(window_seconds)) / Decimal("3600"), places=2),
         "avg_block_seconds": decimal_to_str(Decimal(str(avg_block_seconds)), places=1) if avg_block_seconds is not None else None,
@@ -6660,14 +6894,28 @@ def collect_global_blockchain() -> dict[str, Any]:
         "chain_clusters": enriched_clusters,
         "local_pool_clusters": local_pool_clusters,
         "peer_location": peer_location,
-        "fetch_errors": fetch_errors[:20],
+        "fetch_errors": (latest_errors + order_hash_errors + fetch_errors)[:20],
+        "zero_address_blocks": zero_address_blocks,
+        "attributed_blocks": max(0, total_blocks - zero_address_blocks),
+        "unattributed_reward_bdag": decimal_to_str(zero_address_reward_bdag, places=2),
+        "reward_source": "getBlockHeader.reward atomic units",
+        "reward_known_blocks": known_reward_count,
+        "reward_missing_blocks": missing_reward_blocks,
+        "cache": {
+            "hit": False,
+            "schema_version": GLOBAL_CACHE_SCHEMA_VERSION,
+            "ttl_seconds": GLOBAL_CACHE_TTL_SECONDS,
+            "max_tip_lag_blocks": GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS,
+        },
     }
-    if isinstance(reward_summary, dict) and reward_summary.get("error"):
-        payload["reward_summary_error"] = reward_summary["error"]
     record_global_snapshot(
         {
+            "status": "ok",
+            "schema_version": payload["schema_version"],
+            "source_truth": payload["source_truth"],
             "generated_at": payload["updated_at"],
             "latest_block": payload["latest_block"],
+            "latest_order": payload["latest_order"],
             "scan_window_hours": payload["scan_window_hours"],
             "clusters": [
                 {
@@ -6697,7 +6945,7 @@ def collect_global_blockchain() -> dict[str, Any]:
             ],
         }
     )
-    payload["history"] = read_global_history(limit=GLOBAL_HISTORY_LIMIT)
+    payload["history"] = read_valid_global_history(limit=GLOBAL_HISTORY_LIMIT)
     payload = annotate_global_pool_labels(payload)
     write_json_file(GLOBAL_CACHE_FILE, payload, mode=0o600)
     return payload
