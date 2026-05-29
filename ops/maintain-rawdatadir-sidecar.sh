@@ -49,7 +49,20 @@ run_low_priority() {
   "${command[@]}"
 }
 
-if [[ ! -d "$SOURCE_DIR/BdagChain" ]]; then
+source_datadir_exists() {
+  if [[ -d "$SOURCE_DIR/BdagChain" ]]; then
+    return 0
+  fi
+  case "${USE_SUDO,,}" in
+    1|true|yes|on|auto)
+      command -v sudo >/dev/null 2>&1 && sudo -n test -d "$SOURCE_DIR/BdagChain"
+      return
+      ;;
+  esac
+  return 1
+}
+
+if ! source_datadir_exists; then
   log "source dir does not look like a $NETWORK datadir: $SOURCE_DIR"
   exit 1
 fi
