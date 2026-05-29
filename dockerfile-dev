@@ -9,6 +9,7 @@
 #   blockdag_corechain -> local clone of blockdag node source
 #   pool_src           -> local clone of mining pool source
 #   cpu_miner_src      -> local clone of cpu miner source
+#   pool_dashboard_src -> local clone of dashboard/control-plane source
 #
 # Optional snapshot import: SNAPSHOT_PATH copies a .bdsnap from the build context
 # (see compose / Makefile). No URL download. Datadir matches node.conf.
@@ -55,29 +56,11 @@ COPY --from=cpu_miner_src . .
 RUN CGO_ENABLED=1 CGO_CFLAGS='-O2' go build -o /out/scrypt-miner ./cmd/miner
 
 # ----------------------------------------------------------------------------
-# Dashboard Source Stage (canonical pool-dashboard repo)
+# Dashboard Source Stage (canonical pool-dashboard local clone)
 # ----------------------------------------------------------------------------
 FROM alpine:3.20 AS dashboard-source
-ARG POOL_DASHBOARD_REPO=https://github.com/BlockdagEngineering/pool-dashboard.git
-ARG POOL_DASHBOARD_REF=6585347bfa78a1e6ed2a6178eaa38c7ccac9d022
-RUN apk add --no-cache ca-certificates git
-RUN --mount=type=secret,id=github_token,required=false set -eu; \
-    token="$(cat /run/secrets/github_token 2>/dev/null || true)"; \
-    if [ -n "$token" ]; then \
-      auth="$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"; \
-      export GIT_CONFIG_COUNT=1; \
-      export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader; \
-      export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"; \
-    fi; \
-    git clone --depth 1 "$POOL_DASHBOARD_REPO" /src/pool-dashboard; \
-    cd /src/pool-dashboard; \
-    if git rev-parse --verify "$POOL_DASHBOARD_REF^{commit}" >/dev/null 2>&1; then \
-      git checkout --detach "$POOL_DASHBOARD_REF"; \
-    else \
-      git fetch --depth 1 origin "$POOL_DASHBOARD_REF"; \
-      git checkout --detach FETCH_HEAD; \
-    fi; \
-    rm -rf .git
+COPY --from=pool_dashboard_src . /src/pool-dashboard
+RUN rm -rf /src/pool-dashboard/.git
 
 # ----------------------------------------------------------------------------
 # Node Runtime Stage (with optional snapshot import)

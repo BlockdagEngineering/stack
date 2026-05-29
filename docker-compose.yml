@@ -11,6 +11,7 @@ x-dev-source-contexts: &dev-source-contexts
   blockdag_corechain: ${BLOCKDAG_CORECHAIN_CONTEXT:-.}
   pool_src: ${POOL_SRC_CONTEXT:-.}
   cpu_miner_src: ${CPU_MINER_SRC_CONTEXT:-.}
+  pool_dashboard_src: ${POOL_DASHBOARD_SRC_CONTEXT:-.}
 
 x-node-critical: &node-critical
   cpu_shares: 4096
