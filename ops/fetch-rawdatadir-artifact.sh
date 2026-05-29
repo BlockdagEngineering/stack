@@ -30,6 +30,11 @@ log() {
   echo "[$(date -Is)] $*" | tee -a "$LOG_FILE"
 }
 
+fastsnap_help_has_flag() {
+  local flag="${1#--}"
+  grep -Eq "(^|[[:space:]])-{1,2}${flag}([[:space:]=]|$)" <<<"$FASTSNAP_HELP"
+}
+
 if [[ -z "$EXISTING_DOWNLOAD_DIR" ]]; then
   if [[ -z "$PEERS" ]]; then
     log "set BDAG_RAWDATADIR_PEERS to one or more libp2p multiaddrs"
@@ -43,8 +48,12 @@ fi
 FASTSNAP_HELP=""
 if [[ -z "$EXISTING_DOWNLOAD_DIR" ]]; then
   FASTSNAP_HELP="$("$FASTSNAP_BIN" --help 2>&1 || true)"
-  if ! grep -q -- "--dir-out" <<<"$FASTSNAP_HELP"; then
+  if ! fastsnap_help_has_flag "--dir-out"; then
     log "fastsnap binary does not support directory artifact downloads (--dir-out): $FASTSNAP_BIN"
+    exit 1
+  fi
+  if ! fastsnap_help_has_flag "--artifact-type"; then
+    log "fastsnap binary does not support selecting raw datadir artifacts (--artifact-type): $FASTSNAP_BIN"
     exit 1
   fi
 fi
@@ -63,6 +72,7 @@ else
 fi
 
 fastsnap_args=(
+  --artifact-type raw_datadir_checkpoint
   --legacy-fallback=false
   --network "$NETWORK"
   --min-tip "$MIN_TIP"
@@ -70,9 +80,6 @@ fastsnap_args=(
   --dir-out "$DOWNLOAD_DIR"
   --parallelism "$PARALLELISM"
 )
-if [[ -n "$FASTSNAP_HELP" ]] && grep -q -- "--artifact-type" <<<"$FASTSNAP_HELP"; then
-  fastsnap_args=(--artifact-type raw_datadir_checkpoint "${fastsnap_args[@]}")
-fi
 
 old_ifs="$IFS"
 IFS=', '
