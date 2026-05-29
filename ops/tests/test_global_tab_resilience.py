@@ -30,8 +30,14 @@ class GlobalTabRpcSelectionTests(unittest.TestCase):
         pool_ops.POOL_CONTAINERS = self.old_pool_containers
         pool_ops.docker_container_ip = self.old_docker_container_ip
 
-    def test_global_uses_evm_rpc_even_when_node_rpc_is_mining_rpc(self) -> None:
+    def test_global_chain_uses_mining_rpc_when_node_rpc_is_configured(self) -> None:
         os.environ["BDAG_NODE_RPC_URLS"] = "node2=http://127.0.0.1:38131"
+        for key in ("BDAG_GLOBAL_CHAIN_RPC_URLS",):
+            os.environ.pop(key, None)
+
+        self.assertEqual(pool_ops.global_chain_rpc_urls(), [("node2", "http://127.0.0.1:38131")])
+
+    def test_global_evm_rpc_stays_separate_for_wallet_reads(self) -> None:
         for key in ("BDAG_GLOBAL_RPC_URLS", "BDAG_EVM_RPC_URLS", "WALLET_RPC_URLS"):
             os.environ.pop(key, None)
         pool_ops.NODES = ["bdag-miner-node-2"]
@@ -45,15 +51,15 @@ class GlobalTabRpcSelectionTests(unittest.TestCase):
         )
 
     def test_global_rewrites_compose_service_hostname_for_host_dashboard(self) -> None:
-        os.environ["BDAG_GLOBAL_RPC_URLS"] = "node2=http://bdag-miner-node-2:18545"
+        os.environ["BDAG_GLOBAL_CHAIN_RPC_URLS"] = "node2=http://bdag-miner-node-2:38131"
         pool_ops.NODES = ["bdag-miner-node-2"]
         pool_ops.SERVICES = ["bdag-miner-node-2"]
         pool_ops.POOL_CONTAINERS = []
         pool_ops.docker_container_ip = lambda name: "172.22.0.2" if name == "bdag-miner-node-2" else ""
 
         self.assertEqual(
-            pool_ops.global_evm_rpc_urls(),
-            [("node2", "http://172.22.0.2:18545")],
+            pool_ops.global_chain_rpc_urls(),
+            [("node2", "http://172.22.0.2:38131")],
         )
 
 
@@ -62,8 +68,9 @@ class GlobalTabFallbackTests(unittest.TestCase):
         self.old_read_json_file = pool_ops.read_json_file
         self.old_read_global_history = pool_ops.read_global_history
         self.old_seconds_since_epoch = pool_ops.seconds_since_epoch
-        self.old_global_evm_rpc_urls = pool_ops.global_evm_rpc_urls
+        self.old_global_chain_rpc_urls = pool_ops.global_chain_rpc_urls
         self.old_json_rpc_call = pool_ops.json_rpc_call
+        self.old_mining_rpc_call = pool_ops.mining_rpc_call
         self.old_background_maintenance_decision = pool_ops.background_maintenance_decision
         self.addCleanup(self.restore_globals)
 
@@ -71,11 +78,12 @@ class GlobalTabFallbackTests(unittest.TestCase):
         pool_ops.read_json_file = self.old_read_json_file
         pool_ops.read_global_history = self.old_read_global_history
         pool_ops.seconds_since_epoch = self.old_seconds_since_epoch
-        pool_ops.global_evm_rpc_urls = self.old_global_evm_rpc_urls
+        pool_ops.global_chain_rpc_urls = self.old_global_chain_rpc_urls
         pool_ops.json_rpc_call = self.old_json_rpc_call
+        pool_ops.mining_rpc_call = self.old_mining_rpc_call
         pool_ops.background_maintenance_decision = self.old_background_maintenance_decision
 
-    def test_global_returns_stale_cache_instead_of_raising_when_evm_rpc_fails(self) -> None:
+    def test_global_rejects_old_evm_cache_instead_of_showing_it_stale(self) -> None:
         cached = {
             "status": "ok",
             "updated_at_epoch": 100,
@@ -92,22 +100,87 @@ class GlobalTabFallbackTests(unittest.TestCase):
         pool_ops.read_json_file = fake_read_json_file
         pool_ops.read_global_history = lambda limit=None: [{"latest_block": 122, "clusters": []}]
         pool_ops.seconds_since_epoch = lambda: 999_999
-        pool_ops.global_evm_rpc_urls = lambda: [("bad-node", "http://127.0.0.1:18545")]
+        pool_ops.global_chain_rpc_urls = lambda: [("bad-node", "http://127.0.0.1:38131")]
         pool_ops.background_maintenance_decision = lambda task: {"allowed": True, "task": task, "reasons": []}
 
         def fail_rpc(*_args: object, **_kwargs: object) -> object:
             raise RuntimeError("rpc unavailable")
 
-        pool_ops.json_rpc_call = fail_rpc
+        pool_ops.mining_rpc_call = fail_rpc
+
+        payload = pool_ops.collect_global_blockchain()
+
+        self.assertEqual(payload["status"], "failed")
+        self.assertFalse(payload["cache"]["hit"])
+        self.assertEqual(payload["clusters"], [])
+        self.assertIn("ignored stale global cache", payload["fetch_errors"][0])
+        self.assertIn("getBlockCount", payload["error"])
+
+    def test_global_returns_stale_only_for_trusted_chain_cache_when_rpc_fails(self) -> None:
+        wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        cached = {
+            "status": "ok",
+            "schema_version": pool_ops.GLOBAL_CACHE_SCHEMA_VERSION,
+            "source_truth": pool_ops.GLOBAL_STATS_SOURCE_TRUTH,
+            "updated_at_epoch": 100,
+            "latest_block": 9000000,
+            "clusters": [{"address": wallet, "blocks": 1}],
+            "fetch_errors": [],
+        }
+
+        def fake_read_json_file(path: pathlib.Path, fallback: object) -> object:
+            if path == pool_ops.GLOBAL_CACHE_FILE:
+                return cached
+            return fallback
+
+        pool_ops.read_json_file = fake_read_json_file
+        pool_ops.read_global_history = lambda limit=None: [cached]
+        pool_ops.seconds_since_epoch = lambda: 999_999
+        pool_ops.global_chain_rpc_urls = lambda: [("bad-node", "http://127.0.0.1:38131")]
+        pool_ops.background_maintenance_decision = lambda task: {"allowed": True, "task": task, "reasons": []}
+        pool_ops.mining_rpc_call = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("rpc unavailable"))
 
         payload = pool_ops.collect_global_blockchain()
 
         self.assertEqual(payload["status"], "stale")
         self.assertTrue(payload["cache_hit"])
-        self.assertEqual(payload["latest_block"], 123)
-        self.assertEqual(payload["clusters"][0]["address"], cached["clusters"][0]["address"])
-        self.assertEqual(payload["clusters"][0]["blocks"], cached["clusters"][0]["blocks"])
-        self.assertIn("unable to fetch latest global block height", payload["error"])
+        self.assertEqual(payload["latest_block"], 9000000)
+        self.assertEqual(payload["clusters"][0]["address"], wallet)
+
+    def test_global_rejects_trusted_cache_that_is_ahead_of_live_chain_tip(self) -> None:
+        cached = {
+            "status": "ok",
+            "schema_version": pool_ops.GLOBAL_CACHE_SCHEMA_VERSION,
+            "source_truth": pool_ops.GLOBAL_STATS_SOURCE_TRUTH,
+            "updated_at_epoch": 100,
+            "latest_block": 101,
+            "clusters": [{"address": "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc", "blocks": 1}],
+            "fetch_errors": [],
+        }
+
+        def fake_read_json_file(path: pathlib.Path, fallback: object) -> object:
+            if path == pool_ops.GLOBAL_CACHE_FILE:
+                return cached
+            return fallback
+
+        pool_ops.read_json_file = fake_read_json_file
+        pool_ops.read_global_history = lambda limit=None: [cached]
+        pool_ops.seconds_since_epoch = lambda: 120
+        pool_ops.global_chain_rpc_urls = lambda: [("chain", "http://chain-rpc")]
+        pool_ops.background_maintenance_decision = lambda task: {"allowed": True, "task": task, "reasons": []}
+
+        def fake_mining_rpc(_url: str, method: str, _params: list[object], timeout: float = 0) -> object:
+            if method == "getBlockCount":
+                return 100
+            raise RuntimeError("scan disabled in test")
+
+        pool_ops.mining_rpc_call = fake_mining_rpc
+
+        payload = pool_ops.collect_global_blockchain()
+
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["clusters"], [])
+        self.assertIn("ahead of live chain tip", payload["fetch_errors"][0])
 
 
 class GlobalHistoryWriteTests(unittest.TestCase):
@@ -149,6 +222,101 @@ class GlobalHistoryWriteTests(unittest.TestCase):
             state = pool_ops.read_json_file(pool_ops.GLOBAL_HISTORY_STATE_FILE, {})
             self.assertEqual(state["row_count"], 3)
             self.assertTrue(state["compacted"])
+
+
+class GlobalChainRpcCollectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.originals = {
+            name: getattr(pool_ops, name)
+            for name in (
+                "GLOBAL_BLOCK_WINDOW",
+                "read_json_file",
+                "read_global_history",
+                "global_chain_rpc_urls",
+                "global_evm_rpc_urls",
+                "json_rpc_call",
+                "mining_rpc_call",
+                "background_maintenance_decision",
+                "adaptive_worker_count",
+                "pool_db_json",
+                "fetch_cmc_price",
+                "collect_peer_location_guess",
+                "record_global_snapshot",
+                "write_json_file",
+            )
+        }
+        self.addCleanup(self.restore_globals)
+
+    def restore_globals(self) -> None:
+        for name, value in self.originals.items():
+            setattr(pool_ops, name, value)
+
+    def test_global_stats_use_chain_order_and_exclude_zero_address_cluster(self) -> None:
+        wallet_a = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc".lower()
+        wallet_b = "0x05518e03e148c56e426ff9e1cbdb962b4fc5250a".lower()
+        hashes = {
+            0: "0x" + "01" * 32,
+            1: "0x" + "02" * 32,
+            2: "0x" + "03" * 32,
+            3: "0x" + "04" * 32,
+        }
+        coinbase = {
+            hashes[0]: wallet_a,
+            hashes[1]: wallet_a,
+            hashes[2]: wallet_b,
+            hashes[3]: pool_ops.ZERO_ETH_ADDRESS,
+        }
+        calls: list[str] = []
+
+        pool_ops.GLOBAL_BLOCK_WINDOW = 4
+        pool_ops.read_json_file = lambda _path, fallback: fallback
+        pool_ops.read_global_history = lambda limit=None: []
+        pool_ops.global_chain_rpc_urls = lambda: [("chain", "http://chain-rpc")]
+        pool_ops.global_evm_rpc_urls = lambda: (_ for _ in ()).throw(AssertionError("Global mining stats must not use EVM RPC discovery"))
+        pool_ops.json_rpc_call = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Global mining stats must not use eth_* RPC"))
+        pool_ops.background_maintenance_decision = lambda task: {"allowed": True, "task": task, "reasons": []}
+        pool_ops.adaptive_worker_count = lambda *_args, **_kwargs: 1
+        pool_ops.pool_db_json = lambda _sql: []
+        pool_ops.fetch_cmc_price = lambda: {"status": "failed"}
+        pool_ops.collect_peer_location_guess = lambda: {"location": "Unknown", "location_confidence": "n/a", "observations": []}
+        pool_ops.record_global_snapshot = lambda _snapshot: None
+        pool_ops.write_json_file = lambda *_args, **_kwargs: None
+
+        def fake_mining_rpc(_url: str, method: str, params: list[object], timeout: float = 0) -> object:
+            calls.append(method)
+            if method == "getBlockCount":
+                return 4
+            if method == "getBlockhashByRange":
+                self.assertEqual(params, [0, 3])
+                return [hashes[idx] for idx in range(4)]
+            if method == "getBlockHeader":
+                order = {value: key for key, value in hashes.items()}[str(params[0])]
+                return {"time": 1_780_000_000 + order, "reward": 26_000_000_000}
+            if method == "getCoinbaseAddress":
+                return coinbase[str(params[0])]
+            raise AssertionError(f"unexpected RPC method {method}")
+
+        pool_ops.mining_rpc_call = fake_mining_rpc
+
+        payload = pool_ops.collect_global_blockchain()
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["source_truth"], pool_ops.GLOBAL_STATS_SOURCE_TRUTH)
+        self.assertEqual(payload["height_method"], "getBlockCount")
+        self.assertEqual(payload["chain_block_count"], 4)
+        self.assertEqual(payload["latest_order"], 3)
+        self.assertEqual(payload["scan_start_order"], 0)
+        self.assertEqual(payload["scan_end_order"], 3)
+        self.assertEqual(payload["fetched_blocks"], 4)
+        self.assertEqual(payload["unique_miners"], 2)
+        self.assertEqual(payload["zero_address_blocks"], 1)
+        self.assertEqual(payload["attributed_blocks"], 3)
+        self.assertNotIn(pool_ops.ZERO_ETH_ADDRESS, {row["address"] for row in payload["clusters"]})
+        self.assertEqual(payload["clusters"][0]["address"], wallet_a)
+        self.assertEqual(payload["clusters"][0]["blocks"], 2)
+        self.assertEqual(payload["clusters"][0]["estimated_bdag"], "520.00")
+        self.assertIn("getBlockCount", calls)
+        self.assertNotIn("eth_blockNumber", calls)
 
 
 class EarningsEvmRpcSourceTests(unittest.TestCase):
@@ -256,6 +424,15 @@ class GlobalLocalPoolOverlayTests(unittest.TestCase):
         self.assertEqual(merged[0]["pool_name"], "Achilles-0b5")
         self.assertEqual(merged[0]["credit_blocks"], 3)
 
+    def test_local_pool_only_rows_do_not_create_global_chain_production(self) -> None:
+        wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        merged = pool_ops.merge_global_local_pool_clusters(
+            [],
+            [{"address": wallet, "blocks": 3, "pool_name": "Achilles-0b5", "local_pool": True, "credit_blocks": 3}],
+        )
+
+        self.assertEqual(merged, [])
+
     def test_local_pool_identity_is_not_replaced_by_static_global_label(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         pool_ops.read_global_pool_labels = lambda: {wallet.lower(): "Pipin"}
@@ -282,25 +459,25 @@ class GlobalMaintenanceBackoffTests(unittest.TestCase):
         self.old_read_json_file = pool_ops.read_json_file
         self.old_read_global_history = pool_ops.read_global_history
         self.old_background_maintenance_decision = pool_ops.background_maintenance_decision
-        self.old_global_evm_rpc_urls = pool_ops.global_evm_rpc_urls
-        self.old_json_rpc_call = pool_ops.json_rpc_call
-        self.old_fetch_block_header = pool_ops.fetch_block_header
+        self.old_global_chain_rpc_urls = pool_ops.global_chain_rpc_urls
+        self.old_mining_rpc_call = pool_ops.mining_rpc_call
         self.addCleanup(self.restore_globals)
 
     def restore_globals(self) -> None:
         pool_ops.read_json_file = self.old_read_json_file
         pool_ops.read_global_history = self.old_read_global_history
         pool_ops.background_maintenance_decision = self.old_background_maintenance_decision
-        pool_ops.global_evm_rpc_urls = self.old_global_evm_rpc_urls
-        pool_ops.json_rpc_call = self.old_json_rpc_call
-        pool_ops.fetch_block_header = self.old_fetch_block_header
+        pool_ops.global_chain_rpc_urls = self.old_global_chain_rpc_urls
+        pool_ops.mining_rpc_call = self.old_mining_rpc_call
 
     def test_global_scan_defers_to_stale_cache_when_maintenance_backoff_blocks_work(self) -> None:
         cached = {
             "status": "ok",
+            "schema_version": pool_ops.GLOBAL_CACHE_SCHEMA_VERSION,
+            "source_truth": pool_ops.GLOBAL_STATS_SOURCE_TRUTH,
             "updated_at_epoch": 100,
             "latest_block": 123,
-            "clusters": [{"address": "0xabc", "blocks": 1}],
+            "clusters": [{"address": "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc", "blocks": 1}],
             "fetch_errors": [],
         }
 
@@ -310,16 +487,16 @@ class GlobalMaintenanceBackoffTests(unittest.TestCase):
             return fallback
 
         def should_not_fetch_rpc() -> list[tuple[str, str]]:
-            raise AssertionError("global EVM RPC discovery must not run while maintenance is deferred")
+            raise AssertionError("global chain RPC discovery must not run while maintenance is deferred")
 
         pool_ops.read_json_file = fake_read_json_file
-        pool_ops.read_global_history = lambda limit=None: [{"latest_block": 122, "clusters": []}]
+        pool_ops.read_global_history = lambda limit=None: [cached]
         pool_ops.background_maintenance_decision = lambda task: {
             "allowed": False,
             "task": task,
             "reasons": ["chain catch-up has priority status=syncing remaining=42 threshold=0"],
         }
-        pool_ops.global_evm_rpc_urls = should_not_fetch_rpc
+        pool_ops.global_chain_rpc_urls = should_not_fetch_rpc
 
         payload = pool_ops.collect_global_blockchain()
 
@@ -342,13 +519,8 @@ class GlobalMaintenanceBackoffTests(unittest.TestCase):
             "reasons": ["host io pressure avg10 28.00 >= 20.00"],
             "adaptive_concurrency": {"workers": {"global_rpc": 1}},
         }
-        pool_ops.global_evm_rpc_urls = lambda: [("node1", "http://127.0.0.1:18545")]
-        pool_ops.json_rpc_call = lambda *_args, **_kwargs: "0x7b"
-        pool_ops.fetch_block_header = lambda *_args, **_kwargs: {
-            "number": "0x7b",
-            "timestamp": "0x65a00000",
-            "miner": "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc",
-        }
+        pool_ops.global_chain_rpc_urls = lambda: [("node1", "http://127.0.0.1:38131")]
+        pool_ops.mining_rpc_call = lambda _url, method, _params, timeout=0: 123 if method == "getBlockCount" else None
 
         payload = pool_ops.collect_global_blockchain()
 
@@ -356,9 +528,11 @@ class GlobalMaintenanceBackoffTests(unittest.TestCase):
         self.assertTrue(payload["head_only"])
         self.assertTrue(payload["maintenance_deferred"])
         self.assertEqual(payload["latest_block"], 123)
-        self.assertEqual(payload["fetched_blocks"], 1)
-        self.assertEqual(payload["unique_miners"], 1)
-        self.assertEqual(payload["clusters"][0]["blocks"], 1)
+        self.assertEqual(payload["latest_order"], 122)
+        self.assertEqual(payload["height_method"], "getBlockCount")
+        self.assertEqual(payload["fetched_blocks"], 0)
+        self.assertEqual(payload["unique_miners"], 0)
+        self.assertEqual(payload["clusters"], [])
 
 
 if __name__ == "__main__":
