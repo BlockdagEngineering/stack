@@ -97,6 +97,38 @@ class MinerRetirementIdentityTests(unittest.TestCase):
         self.assertFalse(decision["conflict"])
         self.assertEqual(decision["matched_by"], "")
 
+    def test_configure_miners_skips_retired_mac_identity(self) -> None:
+        self.write_retirement()
+        old_discover_miner = pool_ops.discover_miner
+        old_configure_miner = pool_ops.configure_miner
+        old_read_neighbor_macs = pool_ops.read_neighbor_macs
+        self.addCleanup(lambda: setattr(pool_ops, "discover_miner", old_discover_miner))
+        self.addCleanup(lambda: setattr(pool_ops, "configure_miner", old_configure_miner))
+        self.addCleanup(lambda: setattr(pool_ops, "read_neighbor_macs", old_read_neighbor_macs))
+        pool_ops.read_neighbor_macs = lambda: {}
+        pool_ops.discover_miner = lambda ip, timeout=0: {
+            "ip": ip,
+            "mac": "28:e2:97:4c:e4:0a",
+            "model": "X100",
+        }
+
+        def fail_if_called(**_kwargs):
+            raise AssertionError("retired miner should not be configured")
+
+        pool_ops.configure_miner = fail_if_called
+
+        result = pool_ops.configure_miners(
+            ["192.168.1.102"],
+            admin_password="admin-pass",
+            pool_url="stratum+tcp://192.168.1.120:3334",
+            worker_user="0x05518E03e148C56e426ff9e1CBdB962B4FC5250A",
+        )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["results"][0]["status"], "skipped")
+        self.assertEqual(result["results"][0]["reason"], "retired-miner-mac")
+        self.assertEqual(result["results"][0]["mac"], "28:e2:97:4c:e4:0a")
+
 
 class MinerHealthCountTests(unittest.TestCase):
     def test_ok_count_includes_unmanaged_tracked_miners(self) -> None:
@@ -113,6 +145,555 @@ class MinerHealthCountTests(unittest.TestCase):
         self.assertEqual(counts["managed_count"], 1)
         self.assertEqual(counts["managed_ok_count"], 0)
         self.assertEqual(counts["ok_count"], 2)
+
+
+class MinerRegistryIdentityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.registry_file = pathlib.Path(self.tmp.name) / "miners.json"
+        self.retirements_file = pathlib.Path(self.tmp.name) / "retirements.json"
+        self.old_registry_file = pool_ops.MINER_REGISTRY_FILE
+        self.old_retirements_file = pool_ops.MINER_RETIREMENTS_FILE
+        self.old_read_neighbors = pool_ops.read_neighbor_macs
+        pool_ops.MINER_REGISTRY_FILE = self.registry_file
+        pool_ops.MINER_RETIREMENTS_FILE = self.retirements_file
+        pool_ops.read_neighbor_macs = lambda: {}
+        self.addCleanup(self.restore)
+
+    def restore(self) -> None:
+        pool_ops.MINER_REGISTRY_FILE = self.old_registry_file
+        pool_ops.MINER_RETIREMENTS_FILE = self.old_retirements_file
+        pool_ops.read_neighbor_macs = self.old_read_neighbors
+
+    def test_registry_keeps_distinct_macs_when_ip_is_reused(self) -> None:
+        registry = pool_ops.save_miner_registry(
+            [
+                {"ip": "192.168.1.103", "mac": "28:e2:97:2e:00:1b", "managed": True, "device_type": "asic"},
+                {"ip": "192.168.1.103", "mac": "88:a2:9e:a8:02:79", "managed": True, "device_type": "asic"},
+            ]
+        )
+
+        macs = {item["mac"] for item in registry["miners"]}
+        self.assertEqual(macs, {"28:e2:97:2e:00:1b", "88:a2:9e:a8:02:79"})
+
+    def test_registry_suppresses_unknown_mac_observation_at_retired_ip(self) -> None:
+        self.retirements_file.write_text(
+            json.dumps(
+                {
+                    "retired_miners": [
+                        {
+                            "display_name": "ExternalPool",
+                            "mac": "28:e2:97:4c:e4:0a",
+                            "ips": ["192.168.1.103"],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        registry = pool_ops.save_miner_registry(
+            [
+                {"ip": "192.168.1.103", "device_type": "stratum", "discovered_by": "pool-log"},
+                {"ip": "192.168.1.103", "mac": "28:e2:97:2e:00:1b", "device_type": "asic"},
+            ]
+        )
+
+        self.assertEqual(len(registry["miners"]), 1)
+        self.assertEqual(registry["miners"][0]["mac"], "28:e2:97:2e:00:1b")
+
+    def test_display_label_defaults_to_mac_and_suffixes_explicit_name(self) -> None:
+        self.assertEqual(
+            pool_ops.miner_display_label({"mac": "28:e2:97:2e:00:1b"}),
+            "28:e2:97:2e:00:1b",
+        )
+        self.assertEqual(
+            pool_ops.miner_display_label({"display_name": "Athena", "mac": "28:e2:97:2e:00:1b"}),
+            "Athena-01b",
+        )
+
+
+class PoolActivityAttributionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.old_read_miner_registry = pool_ops.read_miner_registry
+        self.old_read_neighbor_macs = pool_ops.read_neighbor_macs
+        self.addCleanup(self.restore_registry)
+
+    def restore_registry(self) -> None:
+        pool_ops.read_miner_registry = self.old_read_miner_registry
+        pool_ops.read_neighbor_macs = self.old_read_neighbor_macs
+
+    def test_shared_worker_without_job_mapping_is_not_assigned_to_one_miner(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {"ip": "192.168.1.14", "mac": "28:e2:97:3e:39:63", "expected_worker_user": worker},
+                {"ip": "192.168.1.103", "mac": "28:e2:97:1e:c0:b5", "expected_worker_user": worker},
+            ]
+        }
+        log = "\n".join(
+            [
+                f"2026/05/26 06:20:00 [192.168.1.14:40541] authorize accepted user={worker}",
+                f"2026/05/26 06:20:00 [192.168.1.103:45403] authorize accepted user={worker}",
+                f"2026/05/26 06:20:01 valid share accepted 100.0 -> 500 worker={worker} job=missing-notify",
+            ]
+        )
+
+        miners = {item["ip"]: item for item in pool_ops.parse_pool_activity(log)["miners"]}
+
+        self.assertEqual(miners["192.168.1.14"]["shares"], 0)
+        self.assertEqual(miners["192.168.1.103"]["shares"], 0)
+
+    def test_shared_worker_with_job_mapping_uses_job_client(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {"ip": "192.168.1.14", "mac": "28:e2:97:3e:39:63", "expected_worker_user": worker},
+                {"ip": "192.168.1.103", "mac": "28:e2:97:1e:c0:b5", "expected_worker_user": worker},
+            ]
+        }
+        log = "\n".join(
+            [
+                "2026/05/26 06:20:00 Sending to 192.168.1.14:40541: jobID=job-1",
+                f"2026/05/26 06:20:01 valid share accepted 100.0 -> 500 worker={worker} job=job-1",
+            ]
+        )
+
+        miners = {item["ip"]: item for item in pool_ops.parse_pool_activity(log)["miners"]}
+
+        self.assertEqual(miners["192.168.1.14"]["shares"], 1)
+        self.assertEqual(miners["192.168.1.14"]["share_work"], 500)
+        self.assertNotIn("192.168.1.103", miners)
+
+    def test_same_mac_ip_change_keeps_worker_and_work_on_one_identity(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        mac = "28:e2:97:3e:39:63"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {
+                    "ip": "192.168.1.14",
+                    "mac": mac,
+                    "display_name": "Athena",
+                    "expected_worker_user": worker,
+                    "ip_history": ["192.168.1.14"],
+                },
+            ]
+        }
+        pool_ops.read_neighbor_macs = lambda: {
+            "192.168.1.14": mac,
+            "192.168.1.114": mac,
+        }
+        log = "\n".join(
+            [
+                f"2026/05/26 06:20:00 [192.168.1.14:40541] authorize accepted user={worker}",
+                f"2026/05/26 06:20:01 [192.168.1.114:45403] authorize accepted user={worker}",
+                f"2026/05/26 06:20:02 valid share accepted 100.0 -> 500 worker={worker} job=missing-client",
+                "2026/05/26 06:20:03 Sending to 192.168.1.114:45403: jobID=job-1",
+                f"2026/05/26 06:20:04 valid share accepted 100.0 -> 700 worker={worker} job=job-1",
+                "2026/05/26 06:20:05 BLOCK FOUND height(le)=8000001 job=job-1 hash=aaa target=bbb",
+            ]
+        )
+
+        activity = pool_ops.parse_pool_activity(log)
+        miners = activity["miners"]
+
+        self.assertEqual(activity["unattributed_valid_shares"], 0)
+        self.assertEqual(len(miners), 1)
+        self.assertEqual(miners[0]["identity_key"], f"mac:{mac}")
+        self.assertEqual(miners[0]["display_label"], "Athena-963")
+        self.assertEqual(miners[0]["ip"], "192.168.1.114")
+        self.assertEqual(set(miners[0]["ip_history"]), {"192.168.1.14", "192.168.1.114"})
+        self.assertEqual(miners[0]["shares"], 2)
+        self.assertEqual(miners[0]["share_work"], 1200)
+        self.assertEqual(miners[0]["blocks_found"], 1)
+
+    def test_shared_worker_with_direct_client_log_uses_client_identity(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {"ip": "192.168.1.14", "mac": "28:e2:97:3e:39:63", "expected_worker_user": worker},
+                {"ip": "192.168.1.103", "mac": "28:e2:97:1e:c0:b5", "expected_worker_user": worker},
+            ]
+        }
+        log = "\n".join(
+            [
+                f"2026/05/26 06:20:00 submit from client=192.168.1.103:45403 worker={worker} job=job-1_01000000 extranonce2=00000000 ntime=6a15d193 nonce=1",
+                f"2026/05/26 06:20:01 ✅ valid share accepted 100.0 → 500 client=192.168.1.103:45403 worker={worker} job=job-1_01000000",
+            ]
+        )
+
+        miners = {item["ip"]: item for item in pool_ops.parse_pool_activity(log)["miners"]}
+
+        self.assertEqual(miners["192.168.1.103"]["shares"], 1)
+        self.assertEqual(miners["192.168.1.103"]["share_work"], 500)
+        self.assertNotIn("192.168.1.14", miners)
+
+    def test_shared_worker_with_submit_client_maps_later_share_by_extranonce(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {"ip": "192.168.1.14", "mac": "28:e2:97:3e:39:63", "expected_worker_user": worker},
+                {"ip": "192.168.1.103", "mac": "28:e2:97:1e:c0:b5", "expected_worker_user": worker},
+            ]
+        }
+        log = "\n".join(
+            [
+                f"2026/05/26 06:20:00 submit from client=192.168.1.14:40541 worker={worker} job=job-1_02000000 extranonce2=00000000 ntime=6a15d193 nonce=1",
+                f"2026/05/26 06:20:01 ✅ valid share accepted 100.0 → 500 worker={worker} job=job-2_02000000",
+            ]
+        )
+
+        miners = {item["ip"]: item for item in pool_ops.parse_pool_activity(log)["miners"]}
+
+        self.assertEqual(miners["192.168.1.14"]["shares"], 1)
+        self.assertEqual(miners["192.168.1.14"]["share_work"], 500)
+
+    def test_legacy_authorize_order_maps_job_extranonce_suffixes(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {"ip": "192.168.1.14", "mac": "28:e2:97:3e:39:63", "expected_worker_user": worker},
+                {"ip": "192.168.1.16", "mac": "28:e2:97:4d:44:3a", "expected_worker_user": worker},
+                {"ip": "192.168.1.101", "mac": "2a:71:c7:f5:1f:1e", "expected_worker_user": worker},
+                {"ip": "192.168.1.103", "mac": "28:e2:97:2e:00:1b", "expected_worker_user": worker},
+            ]
+        }
+        log = "\n".join(
+            [
+                f"2026/05/27 00:20:57 [192.168.1.14:52953] authorize accepted user={worker}",
+                f"2026/05/27 00:20:57 [192.168.1.16:42015] authorize accepted user={worker}",
+                f"2026/05/27 00:20:57 [192.168.1.101:41101] authorize accepted user={worker}",
+                f"2026/05/27 00:20:57 [192.168.1.103:43866] authorize accepted user={worker}",
+                f"2026/05/27 00:21:01 valid share accepted 10.0 -> 100 worker={worker} job=abc_01000000",
+                f"2026/05/27 00:21:02 valid share accepted 10.0 -> 200 worker={worker} job=abc_02000000",
+                f"2026/05/27 00:21:03 valid share accepted 10.0 -> 300 worker={worker} job=abc_03000000",
+                f"2026/05/27 00:21:04 valid share accepted 10.0 -> 400 worker={worker} job=abc_04000000",
+                "2026/05/27 00:21:05 BLOCK FOUND height(le)=8000001 job=abc_01000000 hash=aaa target=bbb",
+                "2026/05/27 00:21:06 BLOCK FOUND height(le)=8000002 job=abc_02000000 hash=aaa target=bbb",
+                "2026/05/27 00:21:07 BLOCK FOUND height(le)=8000003 job=abc_03000000 hash=aaa target=bbb",
+                "2026/05/27 00:21:08 BLOCK FOUND height(le)=8000004 job=abc_04000000 hash=aaa target=bbb",
+            ]
+        )
+
+        activity = pool_ops.parse_pool_activity(log)
+        miners = {item["ip"]: item for item in activity["miners"]}
+
+        self.assertEqual(activity["unattributed_valid_shares"], 0)
+        self.assertEqual(activity["unattributed_blocks"], 0)
+        self.assertEqual(miners["192.168.1.14"]["share_work"], 100)
+        self.assertEqual(miners["192.168.1.16"]["share_work"], 200)
+        self.assertEqual(miners["192.168.1.101"]["share_work"], 300)
+        self.assertEqual(miners["192.168.1.103"]["share_work"], 400)
+        self.assertEqual(miners["192.168.1.14"]["blocks_found"], 1)
+        self.assertEqual(miners["192.168.1.16"]["job_extranonces"], ["02000000"])
+
+    def test_registry_extranonce_mapping_recovers_short_log_tail(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {
+                    "ip": "192.168.1.14",
+                    "mac": "28:e2:97:3e:39:63",
+                    "expected_worker_user": worker,
+                    "last_pool_job_extranonces": ["07000000"],
+                },
+                {"ip": "192.168.1.103", "mac": "28:e2:97:2e:00:1b", "expected_worker_user": worker},
+            ]
+        }
+        log = f"2026/05/27 00:21:01 valid share accepted 10.0 -> 500 worker={worker} job=abc_07000000"
+
+        miners = {item["ip"]: item for item in pool_ops.parse_pool_activity(log)["miners"]}
+
+        self.assertEqual(miners["192.168.1.14"]["shares"], 1)
+        self.assertEqual(miners["192.168.1.14"]["share_work"], 500)
+        self.assertNotIn("192.168.1.103", miners)
+
+    def test_reconnect_unknown_extranonce_uses_recent_authorized_mac_client(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {
+                    "ip": "192.168.1.14",
+                    "mac": "28:e2:97:3e:39:63",
+                    "display_name": "Achilles",
+                    "expected_worker_user": worker,
+                    "last_pool_job_extranonces": ["25000000"],
+                },
+                {
+                    "ip": "192.168.1.103",
+                    "mac": "28:e2:97:4c:e4:0a",
+                    "display_name": "Hector",
+                    "expected_worker_user": worker,
+                    "last_pool_job_extranonces": ["26000000"],
+                },
+            ]
+        }
+        log = "\n".join(
+            [
+                f"2026/05/27 07:24:16 [192.168.1.103:51374] authorize accepted user={worker}",
+                "2026/05/27 07:24:16 PUSHDIF -> 192.168.1.103:51374 mining.set_difficulty 0.05000000",
+                f"2026/05/27 07:24:25 submit from worker={worker} job=80978-18b35b4d0363621e_2a000000 extranonce2=00000000 ntime=6a169c28 nonce=b8ba6f7b suppressed=0",
+                f"2026/05/27 07:24:25 valid share accepted 4024.201881 -> 263730094 worker={worker} job=80978-18b35b4d0363621e_2a000000 suppressed=0",
+                "2026/05/27 07:24:27 BLOCK FOUND height(le)=7135944 job=80979-18b35b4d68217614_2a000000 hash=abc target=def",
+                f"2026/05/27 07:24:28 valid share accepted 100.0 -> 500 worker={worker} job=80980-18b35b4d68217615_25000000",
+            ]
+        )
+
+        activity = pool_ops.parse_pool_activity(log)
+        miners = {item["display_label"]: item for item in activity["miners"]}
+
+        self.assertEqual(activity["unattributed_valid_shares"], 0)
+        self.assertEqual(activity["unattributed_blocks"], 0)
+        self.assertEqual(miners["Hector-40a"]["shares"], 1)
+        self.assertEqual(miners["Hector-40a"]["share_work"], 263730094)
+        self.assertEqual(miners["Hector-40a"]["blocks_found"], 1)
+        self.assertEqual(miners["Hector-40a"]["job_extranonces"], ["2a000000"])
+        self.assertEqual(miners["Achilles-963"]["shares"], 1)
+        self.assertEqual(miners["Achilles-963"]["share_work"], 500)
+
+    def test_recovery_resend_maps_ephemeral_lane_suffix_to_current_ip(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {
+                    "ip": "192.168.1.14",
+                    "mac": "28:e2:97:3e:39:63",
+                    "expected_worker_user": worker,
+                    "last_pool_job_extranonces": ["07000000"],
+                },
+                {
+                    "ip": "192.168.1.103",
+                    "mac": "28:e2:97:2e:00:1b",
+                    "expected_worker_user": worker,
+                    "last_pool_job_extranonces": ["0f000000"],
+                },
+            ]
+        }
+        log = "\n".join(
+            [
+                "2026/05/26 06:20:00 [RECOVERY] resending current job to 192.168.1.14:55264 after 3 expired job rejects (job=job-1_0f000000)",
+                f"2026/05/26 06:20:01 ✅ valid share accepted 100.0 → 500 worker={worker} job=job-2_0f000000",
+                "2026/05/26 06:20:02 🎯 BLOCK FOUND height(le)=1 job=job-3_0f000000 hash=abc target=def",
+            ]
+        )
+
+        miners = {item["ip"]: item for item in pool_ops.parse_pool_activity(log)["miners"]}
+
+        self.assertEqual(miners["192.168.1.14"]["shares"], 1)
+        self.assertEqual(miners["192.168.1.14"]["share_work"], 500)
+        self.assertEqual(miners["192.168.1.14"]["blocks_found"], 1)
+        self.assertIn("0f000000", miners["192.168.1.14"]["job_extranonces"])
+        self.assertNotIn("192.168.1.103", miners)
+
+    def test_collect_pool_activity_bootstraps_when_short_tail_is_unattributed(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {"ip": "192.168.1.14", "mac": "28:e2:97:3e:39:63", "expected_worker_user": worker},
+                {"ip": "192.168.1.103", "mac": "28:e2:97:2e:00:1b", "expected_worker_user": worker},
+            ]
+        }
+        short_log = f"2026/05/27 00:21:01 valid share accepted 10.0 -> 500 worker={worker} job=abc_01000000"
+        full_log = "\n".join(
+            [
+                f"2026/05/27 00:20:57 [192.168.1.14:52953] authorize accepted user={worker}",
+                short_log,
+            ]
+        )
+        old_docker_logs_many = pool_ops.docker_logs_many
+        old_bootstrap_lines = pool_ops.POOL_ACTIVITY_BOOTSTRAP_LOG_LINES
+        self.addCleanup(lambda: setattr(pool_ops, "docker_logs_many", old_docker_logs_many))
+        self.addCleanup(lambda: setattr(pool_ops, "POOL_ACTIVITY_BOOTSTRAP_LOG_LINES", old_bootstrap_lines))
+        calls = []
+        pool_ops.POOL_ACTIVITY_BOOTSTRAP_LOG_LINES = 20
+        pool_ops.docker_logs_many = lambda _containers, lines=2500: calls.append(lines) or (full_log if lines == 20 else short_log)
+
+        activity = pool_ops.collect_pool_activity(lines=2)
+        miners = {item["ip"]: item for item in activity["miners"]}
+
+        self.assertEqual(calls, [2, 20])
+        self.assertEqual(activity["bootstrap_log_lines"], 20)
+        self.assertEqual(miners["192.168.1.14"]["share_work"], 500)
+
+    def test_docker_bridge_alias_does_not_hide_registered_asic_work(self) -> None:
+        worker = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {
+                    "ip": "192.168.50.177",
+                    "mac": "28:e2:97:1e:c0:b5",
+                    "expected_worker_user": worker,
+                }
+            ]
+        }
+        log = "\n".join(
+            [
+                f"2026/05/26 22:34:00 [172.22.0.1:55572] authorize accepted user={worker}",
+                "2026/05/26 22:34:01 PUSHDIF -> 172.22.0.1:55572 mining.set_difficulty 0.14229287",
+                f"2026/05/26 22:34:02 ✅ valid share accepted 100.0 → 500 worker={worker} job=job-1_01000000",
+                f"2026/05/26 22:34:03 🎯 BLOCK FOUND height(le)=7105000 job=job-1_01000000 hash=abc target=def",
+            ]
+        )
+
+        miners = {item["ip"]: item for item in pool_ops.parse_pool_activity(log)["miners"]}
+
+        self.assertEqual(miners["192.168.50.177"]["shares"], 1)
+        self.assertEqual(miners["192.168.50.177"]["share_work"], 500)
+        self.assertEqual(miners["192.168.50.177"]["blocks_found"], 1)
+
+
+class MinerHealthConfiguredScopeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.old_collect_pool_activity = pool_ops.collect_pool_activity
+        self.old_upsert_pool_activity_miners = pool_ops.upsert_pool_activity_miners
+        self.old_seconds_since_epoch = pool_ops.seconds_since_epoch
+        self.addCleanup(self.restore)
+
+    def restore(self) -> None:
+        pool_ops.collect_pool_activity = self.old_collect_pool_activity
+        pool_ops.upsert_pool_activity_miners = self.old_upsert_pool_activity_miners
+        pool_ops.seconds_since_epoch = self.old_seconds_since_epoch
+
+    def test_stale_unconfigured_pool_log_miner_does_not_drive_failure(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.collect_pool_activity = lambda lines=0: {"miners": []}
+        pool_ops.upsert_pool_activity_miners = lambda activity: {
+            "updated_at": "2026-05-26T00:00:00+0200",
+            "miners": [
+                {
+                    "ip": "192.168.1.104",
+                    "mac": "10:27:f5:90:a4:2c",
+                    "device_id": "mac:10:27:f5:90:a4:2c",
+                    "device_type": "stratum",
+                    "discovered_by": "pool-log",
+                    "expected_pool_url": pool_ops.default_miner_pool_settings()["pool_url"],
+                    "last_workers": [worker],
+                    "last_pool_seen_epoch": 100,
+                    "last_configured_ok": False,
+                    "managed": False,
+                }
+            ],
+        }
+        pool_ops.seconds_since_epoch = lambda: 100 + pool_ops.POOL_CONNECTED_STALE_SECONDS + 10
+
+        health = pool_ops.collect_miner_health()
+
+        self.assertEqual(health["failures"], [])
+        self.assertEqual(health["miners"], [])
+
+    def test_recent_unconfigured_pool_log_ghost_is_not_an_expected_lane(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.collect_pool_activity = lambda lines=0: {"miners": []}
+        pool_ops.upsert_pool_activity_miners = lambda activity: {
+            "updated_at": "2026-05-26T00:00:00+0200",
+            "miners": [
+                {
+                    "ip": "192.168.1.104",
+                    "mac": "10:27:f5:90:a4:2c",
+                    "device_id": "mac:10:27:f5:90:a4:2c",
+                    "device_type": "stratum",
+                    "discovered_by": "pool-log",
+                    "expected_pool_url": pool_ops.default_miner_pool_settings()["pool_url"],
+                    "expected_worker_user": worker,
+                    "last_workers": [worker],
+                    "last_pool_seen_epoch": 100,
+                    "last_configured_ok": False,
+                    "managed": False,
+                }
+            ],
+        }
+        pool_ops.seconds_since_epoch = lambda: 110
+
+        health = pool_ops.collect_miner_health()
+
+        self.assertEqual(health["failures"], [])
+        self.assertEqual(health["miners"], [])
+        self.assertEqual(health["lane_balance"]["expected_lane_count"], 0)
+
+    def test_managed_pool_log_stratum_miner_is_ok_when_expected_worker_is_active(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.collect_pool_activity = lambda lines=0: {
+            "miners": [
+                {
+                    "ip": "192.168.1.14",
+                    "workers": [worker],
+                    "shares": 1,
+                    "share_work": 500,
+                    "blocks_found": 1,
+                    "last_seen_at": "2026/05/26 21:40:42",
+                }
+            ]
+        }
+        pool_ops.upsert_pool_activity_miners = lambda activity: {
+            "updated_at": "2026-05-26T00:00:00+0200",
+            "miners": [
+                {
+                    "ip": "192.168.1.14",
+                    "mac": "28:e2:97:3e:39:63",
+                    "device_id": "mac:28:e2:97:3e:39:63",
+                    "device_type": "stratum",
+                    "discovered_by": "pool-log",
+                    "expected_pool_url": pool_ops.default_miner_pool_settings()["pool_url"],
+                    "expected_worker_user": worker,
+                    "last_workers": [worker],
+                    "last_pool_seen_epoch": 100,
+                    "managed": True,
+                }
+            ],
+        }
+        pool_ops.seconds_since_epoch = lambda: 110
+
+        health = pool_ops.collect_miner_health()
+
+        self.assertEqual(health["failures"], [])
+        self.assertEqual(health["miners"][0]["configured"], True)
+        self.assertEqual(health["miners"][0]["status"], "ok")
+
+    def test_unmanaged_pool_log_stratum_miner_is_not_marked_configured(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.collect_pool_activity = lambda lines=0: {
+            "miners": [
+                {
+                    "ip": "192.168.1.106",
+                    "workers": [worker],
+                    "shares": 1,
+                    "share_work": 500,
+                    "blocks_found": 1,
+                    "last_seen_at": "2026/05/26 21:40:42",
+                }
+            ]
+        }
+        pool_ops.upsert_pool_activity_miners = lambda activity: {
+            "updated_at": "2026-05-26T00:00:00+0200",
+            "miners": [
+                {
+                    "ip": "192.168.1.106",
+                    "mac": "40:ae:30:34:35:a1",
+                    "device_id": "mac:40:ae:30:34:35:a1",
+                    "device_type": "stratum",
+                    "discovered_by": "pool-log",
+                    "expected_pool_url": pool_ops.default_miner_pool_settings()["pool_url"],
+                    "expected_worker_user": worker,
+                    "last_workers": [worker],
+                    "last_pool_seen_epoch": 100,
+                    "managed": False,
+                    "last_configured_ok": False,
+                }
+            ],
+        }
+        pool_ops.seconds_since_epoch = lambda: 110
+
+        health = pool_ops.collect_miner_health()
+
+        self.assertEqual(health["failures"], [])
+        self.assertEqual(health["miners"][0]["managed"], False)
+        self.assertEqual(health["miners"][0]["configured"], False)
+        self.assertEqual(health["miners"][0]["pool_active"], True)
+        self.assertEqual(health["miners"][0]["work_pool_active"], True)
+        self.assertEqual(health["lane_balance"]["expected_lane_count"], 0)
+        self.assertFalse(health["miners"][0]["expected_work_lane"])
+        self.assertEqual(health["miners"][0]["expected_work_percent"], "0.00")
 
 
 if __name__ == "__main__":

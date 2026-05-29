@@ -5,6 +5,7 @@ Description=Reapply passive BlockDAG mining host latency tuning
 OnBootSec=90s
 OnUnitActiveSec=5min
 AccuracySec=30s
+RandomizedDelaySec=30s
 Unit=bdag-mining-host-tuning.service
 
 [Install]

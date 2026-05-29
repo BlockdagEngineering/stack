@@ -24,10 +24,11 @@ from pool_ops import (
     PROJECT_ROOT,
     RUNTIME_DIR,
     action_log_path,
-    collect_status,
+    collect_status_cached,
     ensure_runtime,
     now_iso,
     read_json_file,
+    run,
     run_logged,
     write_action_state,
     write_json_file,
@@ -48,6 +49,26 @@ WARM_RSYNC_BWLIMIT_KB = os.environ.get("BDAG_SYNC_COORDINATOR_RSYNC_BWLIMIT_KB",
 MIN_TRUSTED_HEIGHT = int(os.environ.get("BDAG_SYNC_COORDINATOR_MIN_TRUSTED_HEIGHT", "0"))
 LEADER_CATCHUP_CPU_SHARES = int(os.environ.get("BDAG_SYNC_COORDINATOR_LEADER_CPU_SHARES", "8192"))
 LEADER_CATCHUP_BLKIO_WEIGHT = int(os.environ.get("BDAG_SYNC_COORDINATOR_LEADER_BLKIO_WEIGHT", "1000"))
+FAST_CATCHUP_RESTART_COOLDOWN_SECONDS = int(os.environ.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS", "900"))
+FAST_CATCHUP_NODE_RESTART_TIMEOUT_SECONDS = int(os.environ.get("BDAG_SYNC_COORDINATOR_NODE_RESTART_TIMEOUT_SECONDS", "240"))
+FAST_CATCHUP_REQUIRED_NODE_FLAG = "--fastartifactsync"
+
+
+def env_enabled(name: str, default: bool = True) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+FAST_CATCHUP_RESTART_ON_MISSING_FASTARTIFACT = env_enabled(
+    "BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT",
+    True,
+)
+FAST_CATCHUP_RESTART_ON_STALE_IMPORT = env_enabled(
+    "BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT",
+    True,
+)
 
 
 def log(message: str) -> None:
@@ -157,15 +178,17 @@ def node_importing(status: dict[str, Any], node: str) -> bool:
 
 def node_hard_bad(status: dict[str, Any], node: str) -> bool:
     info = node_info(status, node)
+    import_stale = safe_int(info.get("last_import_age_seconds"), 0) > max(LEADER_IMPORT_STALE_SECONDS * 3, 600)
+    behind_tip = node_remaining(status, node) > LEADER_NEAR_TIP_BLOCKS
     return bool(
         info.get("critical")
         or info.get("mining_template_failing")
-        or safe_int(info.get("last_import_age_seconds"), 0) > max(LEADER_IMPORT_STALE_SECONDS * 3, 600)
+        or (behind_tip and import_stale)
     )
 
 
 def choose_leader(status: dict[str, Any]) -> str | None:
-    candidates: list[tuple[int, int, int, str]] = []
+    candidates: list[tuple[int, int, int, int, str]] = []
     for node in NODES:
         if not container_running(status, node):
             continue
@@ -174,11 +197,14 @@ def choose_leader(status: dict[str, Any]) -> str | None:
             continue
         healthy = 0 if node_hard_bad(status, node) else 1
         importing = 1 if node_importing(status, node) else 0
-        candidates.append((healthy, importing, height, node))
+        # A caught-up node can be idle because there is nothing left to import.
+        # Height must outrank importing state so catch-up never pauses the node
+        # closest to tip in favor of a lower node that is still importing.
+        candidates.append((healthy, height, importing, -node_remaining(status, node), node))
     if not candidates:
         return None
     candidates.sort(reverse=True)
-    return candidates[0][3]
+    return candidates[0][4]
 
 
 def stopped_by_coordinator(state: dict[str, Any], node: str) -> bool:
@@ -234,6 +260,23 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
     previous_nodes = previous_decision.get("nodes") if isinstance(previous_decision.get("nodes"), dict) else {}
     if paused_follower and paused_follower_remaining <= 0 and isinstance(previous_nodes.get(paused_follower), dict):
         paused_follower_remaining = safe_int(previous_nodes.get(paused_follower, {}).get("remaining_blocks"))
+    if paused_follower and paused_follower_remaining <= 0:
+        paused_follower_remaining = safe_int(previous_state.get("paused_follower_remaining_blocks"))
+    paused_previous_height = safe_int(previous_state.get("paused_follower_height"))
+    if isinstance(previous_nodes.get(paused_follower), dict):
+        paused_previous_height = max(paused_previous_height, safe_int(previous_nodes.get(paused_follower, {}).get("height")))
+    paused_follower_was_ahead = bool(
+        paused_still_down
+        and leader
+        and paused_previous_height > heights.get(leader, 0) + FOLLOWER_LAG_BLOCKS
+    )
+    paused_follower_was_near_tip = bool(
+        paused_still_down
+        and leader
+        and paused_previous_height > 0
+        and paused_follower_remaining <= LEADER_NEAR_TIP_BLOCKS
+        and leader_remaining >= FAR_BEHIND_BLOCKS
+    )
 
     action = "monitor"
     reason = "dual-node sync is acceptable"
@@ -242,6 +285,14 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
     if not leader:
         action = "none"
         reason = "no running node has a usable height"
+    elif paused_follower_was_ahead or paused_follower_was_near_tip:
+        action = "seed_or_resume_follower"
+        target = paused_follower
+        reason = (
+            f"{paused_follower} is paused but its remembered height/lag is better than the running leader "
+            f"({paused_follower} height {paused_previous_height}, remaining {paused_follower_remaining}; "
+            f"{leader} height {heights.get(leader, 0)}, remaining {leader_remaining}); resuming it prevents mining on a lagging node"
+        )
     elif paused_still_down and leader_near_tip:
         action = "seed_or_resume_follower"
         target = paused_follower
@@ -264,7 +315,13 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
             f"{paused_follower} is running and catch-up is within policy "
             f"(max remaining {max_remaining} block(s), threshold {FAR_BEHIND_BLOCKS})"
         )
-    elif far_behind and follower and running.get(follower) and importing.get(leader):
+    elif previous_state.get("mode") == "fast_sync_catchup" and not far_behind:
+        action = "clear_pause_state"
+        reason = (
+            f"fast sync catch-up is within policy "
+            f"(max remaining {max_remaining} block(s), threshold {FAR_BEHIND_BLOCKS})"
+        )
+    elif far_behind and follower and running.get(follower) and leader and not node_hard_bad(status, leader):
         action = "pause_follower"
         target = follower
         if follower_materially_lagging:
@@ -278,8 +335,11 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
                 f"while {follower} is paused (node-to-node lag {follower_lag} block(s))"
             )
     elif far_behind:
-        action = "monitor_leader_catchup"
-        reason = f"large catch-up detected, but no safe follower pause target was found; leader={leader}"
+        action = "accelerate_leader_catchup"
+        reason = (
+            f"large catch-up detected; applying fastest sync defaults to {leader} "
+            f"(remaining {leader_remaining} block(s), threshold {FAR_BEHIND_BLOCKS})"
+        )
 
     return {
         "generated_at": now_iso(),
@@ -302,6 +362,7 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
             "leader_near_tip_blocks": LEADER_NEAR_TIP_BLOCKS,
             "seed_near_tip_blocks": SEED_NEAR_TIP_BLOCKS,
             "import_stale_seconds": LEADER_IMPORT_STALE_SECONDS,
+            "fast_restart_cooldown_seconds": FAST_CATCHUP_RESTART_COOLDOWN_SECONDS,
         },
         "nodes": {
             node: {
@@ -314,6 +375,31 @@ def build_decision(status: dict[str, Any], previous_state: dict[str, Any]) -> di
             for node in NODES
         },
     }
+
+
+def pause_follower_safety(decision: dict[str, Any]) -> tuple[bool, str]:
+    leader = str(decision.get("leader") or "")
+    target = str(decision.get("target") or "")
+    nodes = decision.get("nodes") if isinstance(decision.get("nodes"), dict) else {}
+    leader_row = nodes.get(leader) if isinstance(nodes.get(leader), dict) else {}
+    target_row = nodes.get(target) if isinstance(nodes.get(target), dict) else {}
+    leader_height = safe_int(leader_row.get("height"))
+    target_height = safe_int(target_row.get("height"))
+    leader_remaining = safe_int(leader_row.get("remaining_blocks"))
+    target_remaining = safe_int(target_row.get("remaining_blocks"))
+    if not leader or not target or leader == target:
+        return False, f"invalid leader/target leader={leader!r} target={target!r}"
+    if leader_height > 0 and target_height > leader_height:
+        return (
+            False,
+            f"refusing to pause {target}: target height {target_height} is ahead of leader {leader} height {leader_height}",
+        )
+    if leader_remaining >= FAR_BEHIND_BLOCKS and target_remaining + FOLLOWER_LAG_BLOCKS < leader_remaining:
+        return (
+            False,
+            f"refusing to pause {target}: target remaining {target_remaining} is materially better than leader {leader} remaining {leader_remaining}",
+        )
+    return True, ""
 
 
 def preserve_node_identity(source_dir: Path, preserve_dir: Path) -> dict[str, str]:
@@ -392,6 +478,12 @@ def start_node(node: str, log_path: Path) -> bool:
     return run_logged(compose_command("start", node), log_path, timeout=180).ok
 
 
+def compose_service_container_ids(service: str) -> list[str]:
+    proc = run(compose_command("ps", "-q", service), timeout=20)
+    ids = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    return ids or [service]
+
+
 def apply_leader_catchup_resources(
     decision: dict[str, Any],
     state: dict[str, Any],
@@ -402,6 +494,7 @@ def apply_leader_catchup_resources(
     leader = str(decision.get("leader") or state.get("leader") or "")
     if leader not in NODES:
         return False
+    targets = compose_service_container_ids(leader)
     command = [
         "docker",
         "update",
@@ -409,11 +502,12 @@ def apply_leader_catchup_resources(
         str(LEADER_CATCHUP_CPU_SHARES),
         "--blkio-weight",
         str(LEADER_CATCHUP_BLKIO_WEIGHT),
-        leader,
+        *targets,
     ]
     ok = run_logged(command, log_path, timeout=60).ok
     state["leader_catchup_resources"] = {
         "leader": leader,
+        "targets": targets,
         "cpu_shares": LEADER_CATCHUP_CPU_SHARES,
         "blkio_weight": LEADER_CATCHUP_BLKIO_WEIGHT,
         "applied_at": now_iso(),
@@ -430,10 +524,137 @@ def apply_leader_catchup_resources(
     return ok
 
 
+def node_command_has_fast_artifact_sync(command_line: str) -> bool:
+    for word in command_line.split():
+        if word == FAST_CATCHUP_REQUIRED_NODE_FLAG:
+            return True
+        if word.startswith(f"{FAST_CATCHUP_REQUIRED_NODE_FLAG}="):
+            return word.split("=", 1)[1].strip().lower() not in {"0", "false", "no", "off"}
+    return False
+
+
+def node_command_line(node: str) -> Any:
+    return run(
+        compose_command(
+            "exec",
+            "-T",
+            node,
+            "sh",
+            "-lc",
+            "ps -eo args | awk '/[b]lockdag-node/{print; exit}'",
+        ),
+        timeout=20,
+    )
+
+
+def fast_sync_restart_cooldown_remaining(state: dict[str, Any]) -> int:
+    last_epoch = safe_int(state.get("last_fast_sync_restart_epoch"), 0)
+    if last_epoch <= 0:
+        return 0
+    return max(0, FAST_CATCHUP_RESTART_COOLDOWN_SECONDS - int(time.time() - last_epoch))
+
+
+def fast_sync_restart_reason(
+    decision: dict[str, Any],
+    state: dict[str, Any],
+    command_line: str,
+    command_ok: bool,
+) -> str:
+    if fast_sync_restart_cooldown_remaining(state) > 0:
+        return ""
+    if safe_int(decision.get("leader_remaining_blocks")) <= LEADER_NEAR_TIP_BLOCKS:
+        return ""
+    if (
+        FAST_CATCHUP_RESTART_ON_MISSING_FASTARTIFACT
+        and command_ok
+        and command_line.strip()
+        and not node_command_has_fast_artifact_sync(command_line)
+    ):
+        return f"node process is missing {FAST_CATCHUP_REQUIRED_NODE_FLAG}"
+
+    leader = str(decision.get("leader") or state.get("leader") or "")
+    nodes = decision.get("nodes") if isinstance(decision.get("nodes"), dict) else {}
+    leader_row = nodes.get(leader) if isinstance(nodes.get(leader), dict) else {}
+    if FAST_CATCHUP_RESTART_ON_STALE_IMPORT and leader_row and not bool(leader_row.get("importing")):
+        return "node is far behind and import progress is stale"
+    return ""
+
+
+def maybe_restart_leader_for_fast_sync(decision: dict[str, Any], state: dict[str, Any], log_path: Path) -> bool:
+    leader = str(decision.get("leader") or state.get("leader") or "")
+    if leader not in NODES:
+        return True
+
+    command = node_command_line(leader)
+    reason = fast_sync_restart_reason(decision, state, command.stdout, command.ok)
+    with log_path.open("a", encoding="utf-8") as handle:
+        if command.ok and command.stdout.strip():
+            handle.write(f"[{now_iso()}] {leader} command line: {command.stdout.strip()}\n")
+        elif not command.ok:
+            handle.write(f"[{now_iso()}] could not inspect {leader} command line: {command.stderr.strip()}\n")
+        cooldown = fast_sync_restart_cooldown_remaining(state)
+        if cooldown > 0:
+            handle.write(f"[{now_iso()}] fast sync restart cooldown active for {cooldown}s\n")
+
+    if not reason:
+        return True
+
+    restart_ok = run_logged(
+        compose_command("restart", leader),
+        log_path,
+        timeout=FAST_CATCHUP_NODE_RESTART_TIMEOUT_SECONDS,
+    ).ok
+    state["last_fast_sync_restart_epoch"] = int(time.time())
+    state["last_fast_sync_restart_at"] = now_iso()
+    state["last_fast_sync_restart_reason"] = reason
+    state["last_fast_sync_restart_node"] = leader
+    state["last_fast_sync_restart_ok"] = restart_ok
+    append_incident(
+        "sync_coordinator_fast_sync_restart",
+        "warning" if restart_ok else "critical",
+        "sync-coordinator",
+        f"{'restarted' if restart_ok else 'failed to restart'} {leader} for fastest catch-up: {reason}",
+        {"decision": decision, "restart_ok": restart_ok, "reason": reason},
+    )
+    return restart_ok
+
+
+def accelerate_leader_fast_sync(decision: dict[str, Any], state: dict[str, Any], log_path: Path) -> bool:
+    leader = str(decision.get("leader") or state.get("leader") or "")
+    if leader not in NODES:
+        return False
+    state.update(
+        {
+            "mode": "fast_sync_catchup",
+            "leader": leader,
+            "fast_sync_accelerated_at": state.get("fast_sync_accelerated_at") or now_iso(),
+            "fast_sync_accelerated_reason": decision.get("reason"),
+        }
+    )
+    resource_ok = apply_leader_catchup_resources(decision, state, log_path, record_incident=False)
+    restart_ok = maybe_restart_leader_for_fast_sync(decision, state, log_path)
+    return resource_ok and restart_ok
+
+
 def pause_follower(decision: dict[str, Any], state: dict[str, Any], log_path: Path) -> bool:
     target = str(decision.get("target") or "")
     leader = str(decision.get("leader") or "")
     if target not in NODES or leader not in NODES:
+        return False
+    safe_to_pause, unsafe_reason = pause_follower_safety(decision)
+    if not safe_to_pause:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{now_iso()}] {unsafe_reason}\n")
+        state["last_pause_refused_at"] = now_iso()
+        state["last_pause_refused_reason"] = unsafe_reason
+        state["last_pause_refused_decision"] = decision
+        append_incident(
+            "sync_coordinator_pause_refused",
+            "critical",
+            "sync-coordinator",
+            unsafe_reason,
+            {"decision": decision},
+        )
         return False
     ok = stop_node(target, log_path)
     if ok:
@@ -444,9 +665,14 @@ def pause_follower(decision: dict[str, Any], state: dict[str, Any], log_path: Pa
                 "leader": leader,
                 "paused_at": now_iso(),
                 "paused_reason": decision.get("reason"),
+                "paused_follower_height": safe_int(((decision.get("nodes") or {}).get(target) or {}).get("height")),
+                "paused_follower_remaining_blocks": safe_int(((decision.get("nodes") or {}).get(target) or {}).get("remaining_blocks")),
+                "pause_leader_height": safe_int(((decision.get("nodes") or {}).get(leader) or {}).get("height")),
+                "pause_leader_remaining_blocks": safe_int(((decision.get("nodes") or {}).get(leader) or {}).get("remaining_blocks")),
             }
         )
         apply_leader_catchup_resources(decision, state, log_path, record_incident=True)
+        maybe_restart_leader_for_fast_sync(decision, state, log_path)
         append_incident(
             "sync_coordinator_pause_follower",
             "warning",
@@ -569,6 +795,7 @@ def apply_decision(
     allow_resume: bool,
     allow_seed: bool,
     allow_leader_stop: bool,
+    allow_accelerate_fastsync: bool,
 ) -> dict[str, Any]:
     action = str(decision.get("action") or "")
     action_name = f"sync-coordinator-{action}"
@@ -620,9 +847,17 @@ def apply_decision(
                     }
                 )
             ok = apply_leader_catchup_resources(decision, state, log_path, record_incident=False)
+            restart_ok = maybe_restart_leader_for_fast_sync(decision, state, log_path)
+            ok = ok and restart_ok
             applied = "keep_follower_paused" if ok else "keep_follower_paused_resource_boost_failed"
         else:
             applied = "keep_follower_paused_suppressed"
+    elif action == "accelerate_leader_catchup":
+        if allow_accelerate_fastsync:
+            ok = accelerate_leader_fast_sync(decision, state, log_path)
+            applied = "accelerate_leader_catchup" if ok else "accelerate_leader_catchup_failed"
+        else:
+            applied = "accelerate_leader_catchup_suppressed"
     elif action == "clear_pause_state":
         state.update(
             {
@@ -654,7 +889,7 @@ def apply_decision(
 def check_once(args: argparse.Namespace) -> dict[str, Any]:
     ensure_runtime()
     previous_state = read_json_file(STATE_FILE, {})
-    status = collect_status(include_logs=True)
+    status = collect_status_cached(include_logs=True)
     decision = build_decision(status, previous_state)
     state = dict(previous_state)
     observed_highest = max(
@@ -684,6 +919,7 @@ def check_once(args: argparse.Namespace) -> dict[str, Any]:
                     allow_resume=args.resume_follower,
                     allow_seed=args.seed_follower,
                     allow_leader_stop=args.allow_leader_stop,
+                    allow_accelerate_fastsync=args.accelerate_fastsync,
                 )
             finally:
                 lock.close()
@@ -698,7 +934,8 @@ def loop(args: argparse.Namespace) -> None:
     log(
         "sync coordinator started "
         f"interval={args.interval}s repair={args.repair} pause={args.pause_follower} "
-        f"resume={args.resume_follower} seed={args.seed_follower}"
+        f"resume={args.resume_follower} seed={args.seed_follower} "
+        f"accelerate_fastsync={args.accelerate_fastsync}"
     )
     while True:
         try:
@@ -715,7 +952,7 @@ def loop(args: argparse.Namespace) -> None:
         time.sleep(args.interval)
 
 
-def main(argv: list[str]) -> int:
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Coordinate large BlockDAG dual-node catch-up")
     parser.add_argument("--once", action="store_true", help="run one check and print JSON")
     parser.add_argument("--loop", action="store_true", help="run continuously")
@@ -724,8 +961,35 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--resume-follower", action="store_true", help="allow starting a paused follower when catch-up is near complete")
     parser.add_argument("--seed-follower", action="store_true", help="allow replacing the paused follower data from the leader")
     parser.add_argument("--allow-leader-stop", action="store_true", help="allow a brief leader stop for final consistent follower seeding")
+    parser.add_argument(
+        "--accelerate-fastsync",
+        dest="accelerate_fastsync",
+        action="store_true",
+        default=env_enabled("BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC", True),
+        help="allow fastest-sync acceleration when a running node is more than the far-behind threshold behind",
+    )
+    parser.add_argument(
+        "--no-accelerate-fastsync",
+        dest="accelerate_fastsync",
+        action="store_false",
+        help="disable fastest-sync acceleration even when the node is far behind",
+    )
+    parser.add_argument(
+        "--restart-lagging-follower",
+        dest="accelerate_fastsync",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--interval", type=int, default=int(os.environ.get("BDAG_SYNC_COORDINATOR_INTERVAL", "120")))
-    args = parser.parse_args(argv)
+    return parser
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    return build_arg_parser().parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
 
     if args.loop:
         loop(args)

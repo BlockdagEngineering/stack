@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import fcntl
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -24,15 +25,19 @@ from pool_ops import (
     RUNTIME_DIR,
     collect_global_blockchain,
     collect_earnings,
-    collect_status,
+    collect_status_cached,
     configure_miners,
     default_miner_pool_settings,
     ensure_runtime,
     make_handoff,
     mark_configured_miners,
+    miner_display_label,
+    miner_identity_key,
+    normalize_mac,
     now_iso,
     read_latest_earnings_snapshot_info,
     read_miner_registry,
+    record_earnings_snapshot,
     save_miner_admin_password,
     scan_miners,
     upsert_miner_registry,
@@ -51,11 +56,18 @@ STATUS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_STATUS_CACHE_SECONDS
 EARNINGS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_EARNINGS_CACHE_SECONDS", "30"))
 GLOBAL_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_GLOBAL_CACHE_SECONDS", "60"))
 SAMPLER_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS", "10"))
+EARNINGS_SAMPLER_ENABLED = os.environ.get("BDAG_DASHBOARD_EARNINGS_SAMPLER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+EARNINGS_SAMPLER_INTERVAL_SECONDS = max(
+    30.0,
+    float(os.environ.get("BDAG_DASHBOARD_EARNINGS_SAMPLER_INTERVAL_SECONDS", str(EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS))),
+)
 DASHBOARD_POOL_METRICS_TIMEOUT = float(os.environ.get("BDAG_DASHBOARD_POOL_METRICS_TIMEOUT", "1.5"))
 TEMPLATE_BACKEND_STATE_CACHE_SECONDS = float(
     os.environ.get("BDAG_DASHBOARD_TEMPLATE_BACKEND_STATE_CACHE_SECONDS", str(STATUS_CACHE_SECONDS))
 )
 SYNC_ESTIMATE_STATE_FILE = RUNTIME_DIR / "dashboard-sync-estimate-state.json"
+EARNINGS_SAMPLER_LOCK_FILE = RUNTIME_DIR / "dashboard-earnings-sampler.lock"
+EARNINGS_SAMPLER_STATE_FILE = RUNTIME_DIR / "dashboard-earnings-sampler-state.json"
 PROMETHEUS_SAMPLE_RE = re.compile(
     r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|[-+]?Inf|NaN)$"
 )
@@ -75,6 +87,81 @@ def cached_payload(key: str, ttl: float, factory):
     with API_CACHE_LOCK:
         API_CACHE[key] = (now, payload)
     return payload
+
+
+def clear_api_cache(*keys: str) -> None:
+    with API_CACHE_LOCK:
+        if keys:
+            for key in keys:
+                API_CACHE.pop(key, None)
+        else:
+            API_CACHE.clear()
+
+
+def write_earnings_sampler_state(payload: dict[str, object]) -> None:
+    try:
+        write_json(EARNINGS_SAMPLER_STATE_FILE, payload)
+    except Exception:
+        pass
+
+
+def latest_earnings_snapshot_age() -> float | None:
+    info = read_latest_earnings_snapshot_info()
+    latest_epoch = info.get("latest_epoch")
+    if latest_epoch is None:
+        return None
+    try:
+        return max(0.0, time.time() - float(latest_epoch))
+    except (TypeError, ValueError):
+        return None
+
+
+def record_dashboard_earnings_sample(reason: str) -> bool:
+    ensure_runtime()
+    age = latest_earnings_snapshot_age()
+    if age is not None and age < EARNINGS_SAMPLER_INTERVAL_SECONDS * 0.8:
+        return False
+    try:
+        with EARNINGS_SAMPLER_LOCK_FILE.open("w", encoding="utf-8") as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+            snapshot = record_earnings_snapshot()
+    except Exception as exc:  # noqa: BLE001 - dashboard sampling must never stop serving.
+        write_earnings_sampler_state(
+            {
+                "updated_at": now_iso(),
+                "status": "failed",
+                "reason": reason,
+                "error": str(exc),
+            }
+        )
+        return False
+    clear_api_cache("earnings", "sampler")
+    write_earnings_sampler_state(
+        {
+            "updated_at": now_iso(),
+            "status": "ok",
+            "reason": reason,
+            "snapshot_at": snapshot.get("generated_at"),
+            "miner_count": len(snapshot.get("miner_estimates") or []),
+        }
+    )
+    return True
+
+
+def earnings_sampler_loop() -> None:
+    while True:
+        record_dashboard_earnings_sample("dashboard-background-sampler")
+        time.sleep(EARNINGS_SAMPLER_INTERVAL_SECONDS)
+
+
+def start_earnings_sampler() -> None:
+    if not EARNINGS_SAMPLER_ENABLED:
+        return
+    thread = threading.Thread(target=earnings_sampler_loop, name="earnings-sampler", daemon=True)
+    thread.start()
 
 
 def parse_prometheus_labels(label_text: str) -> dict[str, str]:
@@ -443,7 +530,14 @@ def enrich_status_with_template_backend_state(payload: dict[str, object]) -> dic
 
 
 def dashboard_status_payload() -> dict[str, object]:
-    return enrich_status_with_template_backend_state(enrich_status_with_sync_estimate(collect_status(include_logs=True)))
+    payload = enrich_status_with_template_backend_state(enrich_status_with_sync_estimate(collect_status_cached(include_logs=True)))
+    payload["dashboard_bind"] = HOST
+    payload["dashboard_port"] = PORT
+    display_host = "127.0.0.1" if HOST in {"0.0.0.0", "::", ""} else HOST
+    if ":" in display_host and not display_host.startswith("["):
+        display_host = f"[{display_host}]"
+    payload["dashboard_url"] = f"http://{display_host}:{PORT}"
+    return payload
 
 
 def token_required() -> bool:
@@ -1205,7 +1299,7 @@ HTML = r"""<!doctype html>
         <div class="panel span-12">
           <div class="kpi-label">Discovered Miners</div>
           <table>
-            <thead><tr><th class="checkbox-cell"></th><th>Host</th><th>Model</th><th>Firmware</th><th>Current Pool</th><th>Active</th><th>Result</th></tr></thead>
+            <thead><tr><th class="checkbox-cell"></th><th>Miner</th><th>Model</th><th>Firmware</th><th>Current Pool</th><th>Active</th><th>Result</th></tr></thead>
             <tbody id="minersTable"></tbody>
           </table>
           <pre id="minersOutput">No scan has run yet.</pre>
@@ -1559,6 +1653,8 @@ HTML = r"""<!doctype html>
       return name ? `${name} (${shortEth(address)})` : shortEth(address);
     }
     function globalNodesLabel(row) {
+      if (Array.isArray(row?.nodes) && row.nodes.length) return row.nodes.join(", ");
+      if (row?.local_pool) return "local pool";
       const name = row?.pool_name || globalPoolName(row?.address);
       if (name) return name;
       return (row?.rpc_sources || []).join(", ");
@@ -1585,7 +1681,7 @@ HTML = r"""<!doctype html>
       }
     }
     function render(data) {
-      text("meta", data.generated_at + " | " + data.project_root);
+      text("meta", data.generated_at + " | " + data.project_root + " | dashboard " + (data.dashboard_url || "unknown"));
       text("overall", data.overall);
       text("statusReason", data.overall === "ok" ? "" : (data.status_reason || "Reason unavailable."));
       document.getElementById("overall").className = "kpi-value " + statusClass(data.overall);
@@ -1625,10 +1721,14 @@ HTML = r"""<!doctype html>
       const templateBackendStatus = templateBackendStatusText(data);
       const sourceHealthStatus = sourceHealthStatusText(data);
       const lossLedgerStatus = lossLedgerStatusText(data);
+      const hostPressureStatus = hostPressureText(data.host_pressure || {});
+      const rpcRefusedStatus = data.pool?.rpc_refused_recent
+        ? "recent"
+        : (data.pool?.rpc_refused ? `stale age=${fmt(data.pool.last_rpc_refused_age_seconds)}s` : "false");
       text(
         "poolSummary",
         `endpoint=${data.pool_endpoint || "unknown"} local_ips=${(data.local_ips || []).join(", ") || "none"} `
-        + `initial_download=${data.pool.initial_download} gbt_errors=${data.pool.gbt_errors} rpc_refused=${data.pool.rpc_refused} `
+        + `initial_download=${data.pool.initial_download} gbt_errors=${data.pool.gbt_errors} rpc_refused=${rpcRefusedStatus} `
         + `valid_shares=${fmt(poolHealth.valid_share_count)} stale_submits=${fmt(poolHealth.stale_submit_count)} `
         + `stale_jobs=${fmt(poolHealth.stale_job_candidate_count)} submit_errors=${fmt(poolHealth.block_submit_error_count)} `
         + `duplicate_blocks=${fmt(poolHealth.duplicate_block_count)} `
@@ -1636,6 +1736,7 @@ HTML = r"""<!doctype html>
         + `selected_backend=${selectedBackend}${templateBackendStatus ? ` ${templateBackendStatus}` : ""}`
         + `${sourceHealthStatus ? ` ${sourceHealthStatus}` : ""}`
         + `${lossLedgerStatus ? ` ${lossLedgerStatus}` : ""} ${submitRecovery}`
+        + `${hostPressureStatus ? ` ${hostPressureStatus}` : ""}`
       );
       text("poolLog", (data.pool.tail || []).join("\n"));
       text("actionLog", data.latest_action ? JSON.stringify(data.latest_action, null, 2) : "No action has run yet.");
@@ -1683,6 +1784,17 @@ HTML = r"""<!doctype html>
       if (!Number.isFinite(rate) || rate <= 0) return "estimating from the next sample";
       const source = estimate.rate_source ? ` (${estimate.rate_source})` : "";
       return `${rate.toFixed(rate >= 10 ? 1 : 2)} blocks/s${source}`;
+    }
+    function hostPressureText(host) {
+      const parts = [];
+      if (hasValue(host.loadavg_1m)) parts.push(`load1=${Number(host.loadavg_1m).toFixed(2)}`);
+      if (hasValue(host.io_some_avg10)) parts.push(`io_some10=${Number(host.io_some_avg10).toFixed(2)}%`);
+      if (hasValue(host.io_full_avg10)) parts.push(`io_full10=${Number(host.io_full_avg10).toFixed(2)}%`);
+      if (hasValue(host.iowait_percent)) parts.push(`iowait=${Number(host.iowait_percent).toFixed(2)}%`);
+      if (hasValue(host.cpu_busy_percent)) parts.push(`cpu_busy=${Number(host.cpu_busy_percent).toFixed(2)}%`);
+      if (host.iowait_warning_active) parts.push("io_wait=sustained");
+      if (hasValue(host.cpu_some_avg10)) parts.push(`cpu_some10=${Number(host.cpu_some_avg10).toFixed(2)}%`);
+      return parts.length ? `host_pressure ${parts.join(" ")}` : "";
     }
     function renderSyncEstimate(data, progress) {
       const estimate = data.sync_estimate || {};
@@ -1765,7 +1877,9 @@ HTML = r"""<!doctype html>
     function nodeSummaryText(node) {
       if (!node) return "node data unavailable";
       const chain = hasValue(node.chain_block_count) ? ` chain_blocks=${fmt(node.chain_block_count)} source=${node.chain_rpc_source || "getBlockCount"}` : " chain_blocks=n/a";
-      return `child=${node.child_running}${chain} main_height=${fmt(node.chain_main_height)} best_main_order=${fmt(node.best_main_order)} import_age=${fmt(node.last_import_age_seconds)}s peer_ahead=${fmt(node.peer_ahead_blocks)} bad_peers=${fmt(node.invalid_peer_errors)} p2p_resets=${fmt(node.p2p_stream_errors)}`;
+      const rpcLatency = hasValue(node.chain_rpc_latency_ms) ? ` rpc_ms=${fmt(node.chain_rpc_latency_ms)}` : (node.chain_rpc_error ? " rpc=unavailable" : "");
+      const rpcAttempts = Number(node.chain_rpc_attempts) > 1 ? ` rpc_attempts=${fmt(node.chain_rpc_attempts)}/${fmt(node.chain_rpc_retry_limit)}` : "";
+      return `child=${node.child_running}${chain}${rpcLatency}${rpcAttempts} main_height=${fmt(node.chain_main_height)} best_main_order=${fmt(node.best_main_order)} import_age=${fmt(node.last_import_age_seconds)}s peer_ahead=${fmt(node.peer_ahead_blocks)} bad_peers=${fmt(node.invalid_peer_errors)} p2p_resets=${fmt(node.p2p_stream_errors)}`;
     }
     function nodeBlockHeight(name, node, syncNode, data) {
       if (node?.planned_sync_pause && !hasValue(node?.chain_block_count) && !hasValue(syncNode?.chain_block_count)) return "paused";
@@ -1873,7 +1987,7 @@ HTML = r"""<!doctype html>
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td class="checkbox-cell"><input type="checkbox" class="miner-select" value="${escapeHtml(miner.ip)}" checked></td>
-          <td>${escapeHtml(minerShortIp(miner) || "")}</td>
+          <td class="nowrap miner-name"><span class="miner-dot"></span>${escapeHtml(minerDisplayLabel(miner))}<br><span class="subtle">${escapeHtml(miner.ip ? `observed ${miner.ip}` : "")}</span></td>
           <td>${escapeHtml(miner.model || miner.hardware || "unknown")}</td>
           <td>${escapeHtml(miner.firmware || miner.mcbversion || "")}</td>
           <td>${escapeHtml(pool.url || "")}<br><span class="subtle">${escapeShortEth(pool.user || "")}</span></td>
@@ -2031,11 +2145,31 @@ HTML = r"""<!doctype html>
       }
       return Math.abs(hash);
     }
+    function normalizedMac(value) {
+      const text = String(value || "").trim().toLowerCase().replaceAll("-", ":");
+      if (/^[0-9a-f]{12}$/.test(text)) return text.match(/.{1,2}/g).join(":");
+      return /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(text) ? text : "";
+    }
+    function minerMac(row) {
+      const direct = normalizedMac(row.mac);
+      if (direct) return direct;
+      const device = String(row.device_id || row.identity_key || "").trim().toLowerCase();
+      return device.startsWith("mac:") ? normalizedMac(device.slice(4)) : "";
+    }
+    function minerMacSuffix(row) {
+      const mac = minerMac(row).replaceAll(":", "");
+      return mac ? mac.slice(-3) : "";
+    }
     function minerIdentity(row) {
-      return String(row.device_id || (row.mac ? `mac:${row.mac}` : row.ip) || "").trim();
+      const mac = minerMac(row);
+      if (mac) return `mac:${mac}`;
+      return String(row.identity_key || row.device_id || "").trim();
     }
     function minerDisplayName(row) {
-      return String(row.display_name || row.name || minerIdentity(row) || "Miner").trim();
+      const explicit = String(row.display_name || row.name || "").trim();
+      if (explicit) return explicit;
+      const mac = minerMac(row);
+      return mac || "unknown-mac";
     }
     function minerShortIp(row) {
       const ip = String(row.ip || "").trim();
@@ -2044,8 +2178,12 @@ HTML = r"""<!doctype html>
       return /^\d{1,3}$/.test(last) ? `.${last}` : "";
     }
     function minerDisplayLabel(row) {
-      const suffix = minerShortIp(row);
-      return `${minerDisplayName(row)}${suffix ? " " + suffix : ""}`;
+      const provided = String(row.display_label || "").trim();
+      if (provided) return provided;
+      const explicit = String(row.display_name || row.name || "").trim();
+      const suffix = minerMacSuffix(row);
+      if (explicit) return `${explicit}-${suffix || "unknown-mac"}`;
+      return minerMac(row) || "unknown-mac";
     }
     function minerColor(identity) {
       if (!identity) return "#4b5563";
@@ -2185,7 +2323,7 @@ HTML = r"""<!doctype html>
         return `Sampler stopped: earnings and miner plots are not receiving fresh history. No valid sample for ${ageText}.${latest}${reason}`;
       }
       if (data.history_sampler_status === "missing") {
-        return "No earnings/miner plot sampler history exists yet. The watchdog should create the first sample shortly.";
+        return "No earnings/miner plot sampler history exists yet. The status sampler should create the first sample shortly.";
       }
       return "";
     }
@@ -2993,7 +3131,7 @@ HTML = r"""<!doctype html>
       const usdPrice = priceOk ? numberValue(data.price?.usd) : null;
       const zarPrice = priceOk ? numberValue(data.price?.zar) : null;
       const avgIncomeUsdHour = numberValue(avgIncomeHour) !== null && usdPrice !== null ? currency(numberValue(avgIncomeHour) * usdPrice, "$") : "n/a";
-      const walletRecentHour = hourly.wallet_recent_bdag_hour || data.credits?.recent_1h?.total_bdag || "n/a";
+      const walletRecentHour = hourly.wallet_recent_bdag_hour || data.onchain_earnings?.last_1h?.earned_bdag || "n/a";
       const wallet24hBdag = data.earnings_24h?.bdag || hourly.wallet_24h_bdag || "n/a";
       const wallet24hUsd = currency(data.earnings_24h?.usd || data.wallet_24h_usd, "$");
       const wallet24hZar = currency(data.earnings_24h?.zar || data.wallet_24h_zar, "R");
@@ -3102,13 +3240,21 @@ HTML = r"""<!doctype html>
         const poolAddress = row.address || row.address_short || "";
         const poolIdentity = globalPoolIdentity(row);
         const poolColor = globalPoolColor(poolIdentity);
+        const sourceBadge = row.local_pool ? ` <span class="subtle">local pool</span>` : "";
         const poolCell = poolName
-          ? `<span class="pool-dot"></span>${escapeHtml(poolName)} <span class="subtle">${escapeShortEth(poolAddress)}</span>`
+          ? `<span class="pool-dot"></span>${escapeHtml(poolName)} <span class="subtle">${escapeShortEth(poolAddress)}</span>${sourceBadge}`
           : `<span class="pool-dot"></span>${escapeShortEth(poolAddress)}`;
+        const shares = firstPresent(row.shares, row.blocks);
+        const creditBlocks = firstPresent(row.credit_blocks, row.blocks);
+        const creditedBdag = firstPresent(row.credited_bdag, row.estimated_bdag);
+        const foundBlocks = firstPresent(row.found_blocks, row.blocks);
+        const walletBdag = firstPresent(row.estimated_wallet_bdag, row.estimated_bdag);
+        const avgUsd = firstPresent(row.estimated_usd_avg_hour, row.estimated_usd_recent_hour);
+        const avgBdag = firstPresent(row.estimated_bdag_avg_hour, row.estimated_bdag_recent_hour);
         tr.className = "pool-row";
         tr.style.setProperty("--pool-row-color", transparentColor(poolColor, 0.08));
         tr.style.setProperty("--pool-color", poolColor);
-        tr.innerHTML = `<td class="nowrap pool-name" title="${escapeHtml(poolAddress)}">${poolCell}</td><td class="nowrap">${escapeHtml(nodes || "")}</td><td class="right">${fmt(row.blocks)}</td><td class="right">${share}</td><td class="right">${fmt(row.blocks)}</td><td class="right">${escapeHtml(row.estimated_bdag || "")}</td><td class="right">${fmt(row.blocks)}</td><td class="right">${escapeHtml(row.estimated_bdag || "")}</td><td class="right">${currency(row.estimated_usd_avg_hour || row.estimated_usd_recent_hour, "$")}</td><td class="right">${currency(row.estimated_bdag_avg_hour || row.estimated_bdag_recent_hour, "")}</td><td class="right">${currency(row.estimated_usd, "$")}</td><td class="right">${currency(row.estimated_zar, "R")}</td><td class="nowrap">${escapeHtml(formatDisplayTime(row.last_seen_at))}</td>`;
+        tr.innerHTML = `<td class="nowrap pool-name" title="${escapeHtml(poolAddress)}">${poolCell}</td><td class="nowrap">${escapeHtml(nodes || "")}</td><td class="right">${fmt(shares)}</td><td class="right">${share}</td><td class="right">${fmt(creditBlocks)}</td><td class="right">${escapeHtml(creditedBdag || "")}</td><td class="right">${fmt(foundBlocks)}</td><td class="right">${escapeHtml(walletBdag || "")}</td><td class="right">${currency(avgUsd, "$")}</td><td class="right">${currency(avgBdag, "")}</td><td class="right">${currency(row.estimated_usd, "$")}</td><td class="right">${currency(row.estimated_zar, "R")}</td><td class="nowrap">${escapeHtml(formatDisplayTime(row.last_seen_at))}</td>`;
         body.appendChild(tr);
       }
       drawGlobalChart(data);
@@ -3236,6 +3382,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
             return
         if path == "/api/earnings":
+            record_dashboard_earnings_sample("api-earnings")
             self.send_json(cached_payload("earnings", EARNINGS_CACHE_SECONDS, lambda: collect_earnings(include_history=True)))
             return
         if path == "/api/sampler":
@@ -3288,7 +3435,19 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 result = scan_miners(payload.get("target"))
                 defaults = default_miner_pool_settings()
-                upsert_miner_registry(result.get("miners", []), defaults["pool_url"], defaults["worker_user"])
+                registry = upsert_miner_registry(result.get("miners", []), defaults["pool_url"], defaults["worker_user"])
+                registry_by_mac = {
+                    normalize_mac(item.get("mac")): item
+                    for item in registry.get("miners", [])
+                    if normalize_mac(item.get("mac"))
+                }
+                for miner in result.get("miners", []):
+                    mac = normalize_mac(miner.get("mac"))
+                    registered = registry_by_mac.get(mac, {}) if mac else {}
+                    if registered.get("display_name"):
+                        miner["display_name"] = registered["display_name"]
+                    miner["identity_key"] = miner_identity_key({**registered, **miner})
+                    miner["display_label"] = miner_display_label({**registered, **miner})
                 self.send_json(result)
             except Exception as exc:  # noqa: BLE001 - return scanner validation errors to the browser.
                 self.send_json({"error": str(exc)}, status=400)
@@ -3374,6 +3533,7 @@ def main() -> int:
         token = get_action_token()
         print(f"Action token file: {RUNTIME_DIR / 'dashboard-token.txt'}")
         print(f"Action token: {token}")
+    start_earnings_sampler()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"BlockDAG dashboard listening on http://{HOST}:{PORT}")
     httpd.serve_forever()
