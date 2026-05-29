@@ -263,6 +263,100 @@ append_node_arg_once() {
   export NODE_ARGS_APPEND
 }
 
+remove_node_arg_prefix() {
+  local prefix="$1"
+  local filtered="" word
+  for word in ${NODE_ARGS_APPEND:-}; do
+    case "$word" in
+      "$prefix"|"$prefix"=*) continue ;;
+    esac
+    filtered="${filtered:+$filtered }$word"
+  done
+  NODE_ARGS_APPEND="$filtered"
+  export NODE_ARGS_APPEND
+}
+
+mount_source_for_path() {
+  local path="$1" real best_src="" best_target="" src target fstype rest
+  real="$(readlink -m "$path" 2>/dev/null || printf '%s' "$path")"
+  while read -r src target fstype rest; do
+    target="${target//\\040/ }"
+    if [[ "$real" == "$target" || "$real" == "$target"/* ]]; then
+      if [ "${#target}" -gt "${#best_target}" ]; then
+        best_target="$target"
+        best_src="$src"
+      fi
+    fi
+  done < /proc/mounts
+  printf '%s\n' "$best_src"
+}
+
+block_device_from_source() {
+  local source="$1" base
+  case "$source" in
+    /dev/*) ;;
+    *) return 1 ;;
+  esac
+  base="$(basename "$source")"
+  case "$base" in
+    nvme*n*p*) printf '%s\n' "${base%p[0-9]*}" ;;
+    mmcblk*p*) printf '%s\n' "${base%p[0-9]*}" ;;
+    *) printf '%s\n' "${base%%[0-9]*}" ;;
+  esac
+}
+
+path_is_usb_backed() {
+  local path="$1" source block device_path
+  source="$(mount_source_for_path "$path")"
+  block="$(block_device_from_source "$source" 2>/dev/null || true)"
+  [ -n "$block" ] || return 1
+  device_path="$(readlink -f "/sys/block/$block/device" 2>/dev/null || true)"
+  case "$device_path" in
+    *usb*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+node_data_parent_from_args() {
+  local node_args config_file data_parent
+  node_args="$(node_args_from_argv "$@" || true)"
+  config_file="$(node_arg_value configfile "$node_args" || true)"
+  data_parent="${BDAG_FASTSNAP_DATADIR:-$(node_arg_value datadir "$node_args" || true)}"
+  if [ -z "$data_parent" ] && [ -n "$config_file" ]; then
+    data_parent="$(read_config_value "$config_file" datadir || true)"
+  fi
+  printf '%s\n' "${data_parent:-/var/lib/bdagStack/node}"
+}
+
+should_disable_fastsync_serving() {
+  case "${BDAG_NO_FASTSYNC_SERVE:-auto}" in
+    1|true|yes|on) return 0 ;;
+    0|false|no|off) return 1 ;;
+  esac
+
+  case "${BDAG_STORAGE_PROFILE:-}" in
+    usb-chain-internal-runtime|single-usb-constrained) return 0 ;;
+  esac
+
+  local data_parent
+  data_parent="$(node_data_parent_from_args "$@")"
+  path_is_usb_backed "$data_parent"
+}
+
+apply_no_fastsync_serve_guard() {
+  if ! should_disable_fastsync_serving "$@"; then
+    return 0
+  fi
+
+  local node_args
+  node_args="$(node_args_from_argv "$@" || true)"
+  export BDAG_FASTARTIFACTSYNC_ENABLED=0
+  unset BDAG_FASTSYNC_ARTIFACT_DIRECTORY BDAG_FASTSYNC_ARTIFACT_MANIFEST
+  remove_node_arg_prefix "--fastartifactsync"
+  append_node_arg_once "--nofastsyncserve" "$node_args ${NODE_ARGS_APPEND:-}"
+  log "USB-backed or constrained chain profile detected; disabling bulk FastSync, snapshot, and artifact serving while keeping normal outbound sync and block relay."
+}
+
 apply_default_fastsync_flags() {
   if [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-1}" != "1" ]; then
     return 0
@@ -423,6 +517,10 @@ maybe_fastsnap_bootstrap() {
 }
 
 configure_directory_artifact_serving() {
+  if [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-1}" != "1" ]; then
+    log "Fast Artifact Sync V2 serving disabled for this node"
+    return 0
+  fi
   if [ -n "${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}" ] || [ -n "${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}" ]; then
     return 0
   fi
@@ -447,6 +545,7 @@ configure_directory_artifact_serving() {
 }
 
 apply_ordered_fastsync_peers "$@"
+apply_no_fastsync_serve_guard "$@"
 apply_default_fastsync_flags "$@"
 
 if [ -n "${NODE_ARGS_APPEND:-}" ]; then

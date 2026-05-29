@@ -39,6 +39,10 @@ PUBLIC_EVM_RPC_DEFAULTS = [
     ("bdagscan-rpc", "https://rpc.bdagscan.com"),
     ("blockdag-engineering-rpc", "https://rpc.blockdag.engineering"),
 ]
+LOW_IO_USB_STORAGE_PROFILES = {
+    "single-usb-constrained",
+    "usb-chain-internal-runtime",
+}
 
 
 def load_env() -> dict[str, str]:
@@ -341,6 +345,8 @@ def build_payload(full: bool) -> dict[str, Any]:
     tmp_dir = env_path(env, "BDAG_RAWDATADIR_TMPDIR", artifact_base / "tmp")
     mode = (env.get("BDAG_RAWDATADIR_SOURCE_MODE") or env.get("BDAG_FASTARTIFACT_SOURCE_MODE") or "auto").lower()
     node_mode = (env.get("BDAG_NODE_MODE") or "single").lower()
+    storage_profile = (env.get("BDAG_STORAGE_PROFILE") or "").strip().lower()
+    network_topology = (env.get("BDAG_DETECTED_NETWORK_TOPOLOGY") or env.get("BDAG_NETWORK_TOPOLOGY") or "").strip().lower()
 
     paths = [
         classify_path("active_node_datadir", data_dir),
@@ -353,6 +359,10 @@ def build_payload(full: bool) -> dict[str, Any]:
     reasons: list[str] = []
     if mode in {"0", "false", "no", "off", "disabled"}:
         reasons.append("source_mode_disabled")
+    if as_bool(env.get("BDAG_NO_FASTSYNC_SERVE"), False):
+        reasons.append("fastsync_serving_disabled")
+    if storage_profile in LOW_IO_USB_STORAGE_PROFILES:
+        reasons.append(f"storage_profile_usb_low_io:{storage_profile}")
     if os.name != "posix":
         reasons.append("unsupported_os")
     for item in paths:
@@ -400,6 +410,8 @@ def build_payload(full: bool) -> dict[str, Any]:
         "project_root": str(ROOT),
         "mode": mode,
         "node_mode": node_mode,
+        "storage_profile": storage_profile,
+        "network_topology": network_topology,
         "active_node_service": service,
         "network": network,
         "eligible": not reasons,

@@ -188,6 +188,7 @@ services:
       BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
       BDAG_FASTSYNC_ARTIFACT_DIRECTORY: ${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}
       BDAG_FASTSYNC_ARTIFACT_MANIFEST: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}
+      BDAG_STORAGE_PROFILE: ${BDAG_STORAGE_PROFILE:-auto}
       BDAG_NETWORK_TOPOLOGY: ${BDAG_NETWORK_TOPOLOGY:-auto}
       BDAG_DETECTED_NETWORK_TOPOLOGY: ${BDAG_DETECTED_NETWORK_TOPOLOGY:-}
       BDAG_ASIC_LAN_INTERFACE: ${BDAG_ASIC_LAN_INTERFACE:-eth0}
@@ -196,6 +197,7 @@ services:
       BDAG_P2P_INTERFACE: ${BDAG_P2P_INTERFACE:-}
       BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
+      BDAG_NO_FASTSYNC_SERVE: ${BDAG_NO_FASTSYNC_SERVE:-auto}
       BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
       BDAG_FASTSYNC_PEERS: ${BDAG_FASTSYNC_PEERS:-}
       BDAG_FASTSYNC_PREPROCESS_WORKERS: ${BDAG_FASTSYNC_PREPROCESS_WORKERS:-1}
@@ -279,6 +281,7 @@ services:
       BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
       BDAG_FASTSYNC_ARTIFACT_DIRECTORY: ${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}
       BDAG_FASTSYNC_ARTIFACT_MANIFEST: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}
+      BDAG_STORAGE_PROFILE: ${BDAG_STORAGE_PROFILE:-auto}
       BDAG_NETWORK_TOPOLOGY: ${BDAG_NETWORK_TOPOLOGY:-auto}
       BDAG_DETECTED_NETWORK_TOPOLOGY: ${BDAG_DETECTED_NETWORK_TOPOLOGY:-}
       BDAG_ASIC_LAN_INTERFACE: ${BDAG_ASIC_LAN_INTERFACE:-eth0}
@@ -287,6 +290,7 @@ services:
       BDAG_P2P_INTERFACE: ${BDAG_P2P_INTERFACE:-}
       BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
+      BDAG_NO_FASTSYNC_SERVE: ${BDAG_NO_FASTSYNC_SERVE:-auto}
       BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
       BDAG_FASTSYNC_PEERS: ${BDAG_FASTSYNC_PEERS:-}
       BDAG_FASTSYNC_PREPROCESS_WORKERS: ${BDAG_FASTSYNC_PREPROCESS_WORKERS:-1}
@@ -584,6 +588,7 @@ BDAG_FASTSYNC_ARTIFACT_DIRECTORY=
 BDAG_FASTSYNC_ARTIFACT_MANIFEST=
 BDAG_FASTSYNC_PEER_ORDERING=p2p-latency
 BDAG_FASTSYNC_APPEND_ADDPEERS=1
+BDAG_NO_FASTSYNC_SERVE=auto
 BDAG_FASTARTIFACTSYNC_ENABLED=1
 BDAG_FASTSYNC_PEERS=
 BDAG_FASTSYNC_PREPROCESS_WORKERS=1
@@ -788,6 +793,81 @@ append_node_arg_once() {
   export NODE_ARGS
 }
 
+remove_node_arg_prefix() {
+  prefix="$1"
+  filtered=""
+  for word in ${NODE_ARGS:-}; do
+    case "$word" in
+      "$prefix"|"$prefix"=*) continue ;;
+    esac
+    filtered="${filtered:+$filtered }$word"
+  done
+  NODE_ARGS="$filtered"
+  export NODE_ARGS
+}
+
+mount_source_for_path() {
+  path="$(readlink -m "$1" 2>/dev/null || printf '%s' "$1")"
+  awk -v path="$path" '
+    {
+      target=$2
+      gsub(/\\040/, " ", target)
+      if (path == target || index(path, target "/") == 1) {
+        if (length(target) > best_len) {
+          best_len = length(target)
+          best = $1
+        }
+      }
+    }
+    END { print best }
+  ' /proc/mounts
+}
+
+block_device_from_source() {
+  source="$1"
+  case "$source" in /dev/*) ;; *) return 1 ;; esac
+  base="$(basename "$source")"
+  case "$base" in
+    nvme*n*p*) printf '%s\n' "${base%p[0-9]*}" ;;
+    mmcblk*p*) printf '%s\n' "${base%p[0-9]*}" ;;
+    *) printf '%s\n' "${base%%[0-9]*}" ;;
+  esac
+}
+
+path_is_usb_backed() {
+  source="$(mount_source_for_path "$1")"
+  block="$(block_device_from_source "$source" 2>/dev/null || true)"
+  [ -n "$block" ] || return 1
+  device_path="$(readlink -f "/sys/block/$block/device" 2>/dev/null || true)"
+  case "$device_path" in *usb*) return 0 ;; *) return 1 ;; esac
+}
+
+node_data_parent() {
+  data_parent="${BDAG_FASTSNAP_DATADIR:-$(node_arg_value datadir || true)}"
+  printf '%s\n' "${data_parent:-/data}"
+}
+
+should_disable_fastsync_serving() {
+  case "${BDAG_NO_FASTSYNC_SERVE:-auto}" in
+    1|true|yes|on) return 0 ;;
+    0|false|no|off) return 1 ;;
+  esac
+  case "${BDAG_STORAGE_PROFILE:-}" in
+    usb-chain-internal-runtime|single-usb-constrained) return 0 ;;
+  esac
+  data_parent="$(node_data_parent)"
+  path_is_usb_backed "$data_parent"
+}
+
+apply_no_fastsync_serve_guard() {
+  should_disable_fastsync_serving || return 0
+  export BDAG_FASTARTIFACTSYNC_ENABLED=0
+  unset BDAG_FASTSYNC_ARTIFACT_DIRECTORY BDAG_FASTSYNC_ARTIFACT_MANIFEST
+  remove_node_arg_prefix "--fastartifactsync"
+  append_node_arg_once "--nofastsyncserve"
+  log "USB-backed or constrained chain profile detected; disabling bulk FastSync, snapshot, and artifact serving while keeping normal outbound sync and block relay."
+}
+
 apply_default_fastsync_flags() {
   [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-1}" = "1" ] || return 0
   append_node_arg_once "--fastartifactsync"
@@ -923,6 +1003,10 @@ maybe_fastsnap_bootstrap() {
 }
 
 configure_directory_artifact_serving() {
+  if [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-1}" != "1" ]; then
+    log "Fast Artifact Sync V2 serving disabled for this node"
+    return 0
+  fi
   if [ -n "${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}" ] || [ -n "${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}" ]; then
     return 0
   fi
@@ -942,6 +1026,7 @@ configure_directory_artifact_serving() {
 
 echo "Using node binary: $BIN"
 apply_ordered_fastsync_peers
+apply_no_fastsync_serve_guard
 apply_default_fastsync_flags
 maybe_fastsnap_bootstrap
 configure_directory_artifact_serving
