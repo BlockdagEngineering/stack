@@ -135,6 +135,16 @@ preserve_identity_path() {
     return 0
   fi
   mkdir -p "$(dirname "$dst")"
+  if [[ -e "$dst" ]]; then
+    if ! rm -rf "$dst" 2>/dev/null; then
+      if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        sudo rm -rf "$dst"
+      else
+        log "cannot replace staged identity path $rel; destination is not writable by $(id -un) and passwordless sudo is unavailable"
+        return 1
+      fi
+    fi
+  fi
   if ! cp -a "$src" "$dst" 2>/dev/null; then
     if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
       sudo cp -a "$src" "$dst"
