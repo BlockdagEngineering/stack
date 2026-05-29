@@ -74,6 +74,42 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.assertEqual(progress["chain_rpc_retry_limit"], 2)
         self.assertIn("after 2 attempt", progress["chain_rpc_error"])
 
+    def test_chain_snapshot_never_uses_eth_blocknumber_as_chain_count(self) -> None:
+        pool_ops.NODE_CHAIN_RPC_RETRIES = 1
+
+        def fake_mining_rpc(_url, method, _params, timeout):
+            if method == "getBlockCount":
+                raise RuntimeError("method not available")
+            raise AssertionError(method)
+
+        pool_ops.mining_rpc_call = fake_mining_rpc
+        pool_ops.json_rpc_call = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("eth_blockNumber is not chain height"))
+
+        snapshot = pool_ops.node_chain_rpc_snapshot("node1", "http://127.0.0.1:18545", timeout=8.0)
+
+        self.assertIsNone(snapshot["chain_block_count"])
+        self.assertEqual(snapshot["chain_rpc_source"], "unavailable")
+        self.assertIn("getBlockCount", snapshot["chain_rpc_error"])
+
+    def test_main_chain_height_is_diagnostic_not_block_count_fallback(self) -> None:
+        pool_ops.NODE_CHAIN_RPC_RETRIES = 1
+
+        def fake_mining_rpc(_url, method, _params, timeout):
+            if method == "getBlockCount":
+                raise RuntimeError("method not available")
+            if method == "getMainChainHeight":
+                return "7001831"
+            raise AssertionError(method)
+
+        pool_ops.mining_rpc_call = fake_mining_rpc
+
+        snapshot = pool_ops.node_chain_rpc_snapshot("node1", "http://127.0.0.1:38131", timeout=8.0)
+
+        self.assertIsNone(snapshot["chain_block_count"])
+        self.assertEqual(snapshot["chain_main_height"], 7001831)
+        self.assertEqual(snapshot["chain_main_height_source"], "getMainChainHeight")
+        self.assertEqual(snapshot["chain_rpc_source"], "unavailable")
+
     def test_node_sync_progress_reports_evm_lag_as_syncing(self) -> None:
         pool_ops.NODE_CHAIN_RPC_RETRIES = 1
 
