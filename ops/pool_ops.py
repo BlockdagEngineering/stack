@@ -33,6 +33,43 @@ def path_from_env(name: str, default: str | Path, base: Path | None = None) -> P
     return path.resolve()
 
 
+def bootstrap_stack_env() -> None:
+    """Load the stack env before module-level defaults are frozen."""
+    project_root = Path(os.environ.get("BDAG_PROJECT_ROOT") or Path(__file__).resolve().parents[1]).expanduser()
+    if not project_root.is_absolute():
+        project_root = (Path.cwd() / project_root).resolve()
+    else:
+        project_root = project_root.resolve()
+    pool_env = Path(os.environ["BDAG_POOL_ENV_FILE"]) if os.environ.get("BDAG_POOL_ENV_FILE") else None
+    if pool_env is not None and not pool_env.is_absolute():
+        pool_env = project_root / pool_env
+    runtime_dir = Path(os.environ.get("BDAG_RUNTIME_DIR") or project_root / "ops" / "runtime").expanduser()
+    if not runtime_dir.is_absolute():
+        runtime_dir = project_root / runtime_dir
+    ops_env = Path(os.environ["BDAG_OPS_ENV_FILE"]) if os.environ.get("BDAG_OPS_ENV_FILE") else runtime_dir / "ops.env"
+    if not ops_env.is_absolute():
+        ops_env = project_root / ops_env
+
+    for path in (ops_env, pool_env, project_root / ".env", project_root / "asic-pool" / ".env"):
+        if path is None or not path.exists():
+            continue
+        for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                continue
+            value = value.strip()
+            if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1]
+            os.environ.setdefault(key, value)
+
+
+bootstrap_stack_env()
+
+
 def split_env_list(name: str, default: str) -> list[str]:
     raw = os.environ[name] if name in os.environ else default
     return [item.strip() for item in re.split(r"[,;]", raw) if item.strip()]
