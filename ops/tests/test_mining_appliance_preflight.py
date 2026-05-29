@@ -99,6 +99,30 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         statuses = {check.name: check.status for check in checks}
         self.assertEqual(statuses["fastartifactsync"], "pass")
 
+    def test_constrained_mining_profile_rejects_fastartifact_append_override(self) -> None:
+        profile = preflight.HostProfile(
+            os_name="linux",
+            arch="aarch64",
+            cpu_count=4,
+            memory_bytes=8 * preflight.GIB,
+            profile="constrained",
+            kernel="test",
+        )
+        checks = []
+        preflight.check_env_defaults(
+            checks,
+            {
+                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
+                "BDAG_STORAGE_PROFILE": "single-usb-constrained",
+                "BDAG_DETECTED_NETWORK_TOPOLOGY": "single-node-asic-router",
+                "NODE_ARGS_APPEND": "--fastartifactsync",
+            },
+            profile,
+        )
+
+        found = {check.name: check for check in checks}
+        self.assertEqual(found["fastartifactsync"].status, "fail")
+
     def test_single_node_duplicate_data_detection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

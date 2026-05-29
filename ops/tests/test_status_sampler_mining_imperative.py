@@ -160,15 +160,23 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
     def test_disables_fastartifact_on_constrained_synced_mining_profile(self) -> None:
         commands = []
+        env_updates = {}
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
         os.environ["BDAG_DETECTED_NETWORK_TOPOLOGY"] = "single-node-asic-router"
         os.environ["BDAG_STORAGE_PROFILE"] = "usb-chain-internal-runtime"
         os.environ["BDAG_FASTARTIFACTSYNC_ENABLED"] = "1"
+        os.environ["NODE_ARGS_APPEND"] = "--fastartifactsync"
         os.environ["BDAG_NODE_SERVICES"] = "bdag-miner-node-1"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
         payload["containers"]["asic-pool"]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
-        status_sampler.set_runtime_env_value = lambda key, value: [f"/runtime/{key}={value}"]
+
+        def fake_set_runtime_env(key: str, value: str):
+            env_updates[key] = value
+            os.environ[key] = value
+            return [f"/runtime/{key}={value}"]
+
+        status_sampler.set_runtime_env_value = fake_set_runtime_env
 
         def fake_run(command: list[str], timeout: int = 20):
             commands.append(command)
@@ -179,6 +187,9 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         repair = status_sampler.mining_imperative_repair(payload)
 
         self.assertIn("disabled_constrained_fastartifact", repair["actions"])
+        self.assertEqual(env_updates["BDAG_FASTARTIFACTSYNC_ENABLED"], "0")
+        self.assertEqual(env_updates["NODE_ARGS_APPEND"], "")
+        self.assertEqual(env_updates["SNAPSHOT_NODE_ARGS_APPEND"], "")
         self.assertTrue(any("--force-recreate" in command for command in commands))
 
     def test_enables_node_mining_template_support_when_miner_is_present(self) -> None:

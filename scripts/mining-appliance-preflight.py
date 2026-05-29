@@ -108,6 +108,15 @@ def bool_enabled(value: str | None, default: bool = False) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def node_args_enable_fastartifact(value: str | None) -> bool:
+    for word in (value or "").split():
+        if word == "--fastartifactsync":
+            return True
+        if word.startswith("--fastartifactsync="):
+            return word.split("=", 1)[1].strip().lower() not in {"0", "false", "no", "off"}
+    return False
+
+
 def memory_total_bytes() -> int:
     try:
         for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
@@ -713,7 +722,11 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         storage_profile in {"usb-chain-internal-runtime", "single-usb-constrained"}
         or topology == "single-node-asic-router"
     )
-    if not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True) and constrained_mining_profile:
+    node_args_append_enables_fastartifact = node_args_enable_fastartifact(env.get("NODE_ARGS_APPEND"))
+    evidence["NODE_ARGS_APPEND"] = env.get("NODE_ARGS_APPEND")
+    if constrained_mining_profile and not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True) and node_args_append_enables_fastartifact:
+        add(checks, "fail", "fastartifactsync", "BDAG_FASTARTIFACTSYNC_ENABLED is disabled, but NODE_ARGS_APPEND still adds --fastartifactsync.", "Clear NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
+    elif not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True) and constrained_mining_profile:
         add(checks, "pass", "fastartifactsync", "Fast Artifact node startup flag is disabled for constrained mining profile", evidence=evidence)
     elif not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True):
         add(checks, "warn", "fastartifactsync", "BDAG_FASTARTIFACTSYNC_ENABLED is disabled.", "Enable Fast Artifact Sync V2 so nodes can advertise and use the fastest sync path.", evidence)
