@@ -8,6 +8,7 @@ from collections import Counter, deque
 import json
 import os
 import ipaddress
+import platform
 import re
 import shlex
 import shutil
@@ -21,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 def path_from_env(name: str, default: str | Path, base: Path | None = None) -> Path:
@@ -37,6 +38,33 @@ def split_env_list(name: str, default: str) -> list[str]:
     return [item.strip() for item in re.split(r"[,;]", raw) if item.strip()]
 
 
+def env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def env_int(name: str, default: int, minimum: int | None = None) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    return value
+
+
+def env_float(name: str, default: float, minimum: float | None = None) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    return value
+
+
 def unique_names(names: list[str]) -> list[str]:
     result: list[str] = []
     for name in names:
@@ -45,10 +73,114 @@ def unique_names(names: list[str]) -> list[str]:
     return result
 
 
+def normalize_os_name(raw: str | None = None) -> str:
+    value = (raw or platform.system() or "unknown").strip().lower()
+    if value in {"darwin", "mac", "macos"}:
+        return "darwin"
+    if value.startswith("win"):
+        return "windows"
+    if value.startswith("linux"):
+        return "linux"
+    return value or "unknown"
+
+
+def normalize_arch_name(raw: str | None = None) -> str:
+    value = (raw or platform.machine() or "unknown").strip().lower()
+    if value in {"x86_64", "amd64"}:
+        return "amd64"
+    if value in {"aarch64", "arm64"}:
+        return "arm64"
+    if value.startswith("armv7") or value.startswith("armv6"):
+        return "arm"
+    return value or "unknown"
+
+
+def detect_total_memory_bytes(os_name: str | None = None) -> int | None:
+    system = normalize_os_name(os_name)
+    if system == "linux":
+        try:
+            for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+                if line.startswith("MemTotal:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return int(parts[1]) * 1024
+        except (OSError, ValueError):
+            return None
+    if system == "darwin":
+        try:
+            raw = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True, timeout=1).strip()
+            return int(raw)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+    return None
+
+
+def detect_hardware_model(os_name: str | None = None) -> str:
+    system = normalize_os_name(os_name)
+    if system == "linux":
+        for path in (Path("/proc/device-tree/model"), Path("/sys/firmware/devicetree/base/model")):
+            try:
+                return path.read_text(encoding="utf-8").replace("\x00", "").strip()
+            except OSError:
+                continue
+    if system == "darwin":
+        try:
+            return subprocess.check_output(["sysctl", "-n", "hw.model"], text=True, timeout=1).strip()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+    return ""
+
+
+_HOST_RUNTIME_PROFILE_CACHE: dict[str, Any] | None = None
+
+
+def host_runtime_profile(force_refresh: bool = False) -> dict[str, Any]:
+    global _HOST_RUNTIME_PROFILE_CACHE
+    if _HOST_RUNTIME_PROFILE_CACHE is not None and not force_refresh:
+        return dict(_HOST_RUNTIME_PROFILE_CACHE)
+
+    os_name = normalize_os_name()
+    arch = normalize_arch_name()
+    cpu_count = max(1, os.cpu_count() or 1)
+    memory_bytes = detect_total_memory_bytes(os_name)
+    memory_gib = round(memory_bytes / (1024 ** 3), 2) if memory_bytes else None
+    hardware_model = detect_hardware_model(os_name)
+    model_lower = hardware_model.lower()
+    override = HOST_PROFILE_OVERRIDE
+    profile_source = "auto"
+    if override not in {"", "auto"}:
+        profile = override
+        profile_source = "env"
+    elif os_name == "linux" and "raspberry pi 5" in model_lower:
+        profile = "pi5"
+    elif cpu_count <= 4 or (memory_bytes is not None and memory_bytes <= 6 * 1024 ** 3):
+        profile = "constrained"
+    elif cpu_count <= 8 or (memory_bytes is not None and memory_bytes <= 16 * 1024 ** 3):
+        profile = "standard"
+    else:
+        profile = "large"
+
+    payload = {
+        "os": os_name,
+        "arch": arch,
+        "profile": profile,
+        "profile_source": profile_source,
+        "cpu_count": cpu_count,
+        "memory_bytes": memory_bytes,
+        "memory_gib": memory_gib,
+        "hardware_model": hardware_model,
+        "psi_available": os_name == "linux" and Path("/proc/pressure/io").exists(),
+    }
+    _HOST_RUNTIME_PROFILE_CACHE = dict(payload)
+    return payload
+
+
 DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = path_from_env("BDAG_PROJECT_ROOT", DEFAULT_PROJECT_ROOT, DEFAULT_PROJECT_ROOT)
 RUNTIME_DIR = path_from_env("BDAG_RUNTIME_DIR", PROJECT_ROOT / "ops" / "runtime", PROJECT_ROOT)
 LOG_DIR = RUNTIME_DIR / "logs"
+SHARED_STATUS_CACHE_FILE = RUNTIME_DIR / "shared-status-cache.json"
+STATUS_SAMPLER_FILE = RUNTIME_DIR / "status-sampler.json"
 SYNC_PROGRESS_HEALTH_STATE_FILE = RUNTIME_DIR / "sync-progress-health-state.json"
 SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS = int(os.environ.get("BDAG_SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS", "2700"))
 POOL_ENV_FILE = path_from_env("BDAG_POOL_ENV_FILE", PROJECT_ROOT / "asic-pool" / ".env", PROJECT_ROOT)
@@ -100,12 +232,12 @@ IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 NODE_LOG_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\|(\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?")
 
 MINER_BACKUP_DIR = RUNTIME_DIR / "miner-backups"
-MINER_HTTP_TIMEOUT = float(os.environ.get("BDAG_MINER_HTTP_TIMEOUT", "2.5"))
-MINER_HASHRATE_PROBE_TIMEOUT = float(os.environ.get("BDAG_MINER_HASHRATE_PROBE_TIMEOUT", "1.0"))
-MINER_HASHRATE_PROBE_WORKERS = int(os.environ.get("BDAG_MINER_HASHRATE_PROBE_WORKERS", "8"))
-MINER_SCAN_TIMEOUT = float(os.environ.get("BDAG_MINER_SCAN_TIMEOUT", "0.8"))
-MINER_SCAN_WORKERS = int(os.environ.get("BDAG_MINER_SCAN_WORKERS", "64"))
-MINER_SCAN_MAX_TARGETS = int(os.environ.get("BDAG_MINER_SCAN_MAX_TARGETS", "1024"))
+MINER_HTTP_TIMEOUT = env_float("BDAG_MINER_HTTP_TIMEOUT", 2.5, minimum=0.1)
+MINER_HASHRATE_PROBE_TIMEOUT = env_float("BDAG_MINER_HASHRATE_PROBE_TIMEOUT", 1.0, minimum=0.1)
+MINER_HASHRATE_PROBE_WORKERS = env_int("BDAG_MINER_HASHRATE_PROBE_WORKERS", 8, minimum=1)
+MINER_SCAN_TIMEOUT = env_float("BDAG_MINER_SCAN_TIMEOUT", 0.8, minimum=0.1)
+MINER_SCAN_WORKERS = env_int("BDAG_MINER_SCAN_WORKERS", 64, minimum=1)
+MINER_SCAN_MAX_TARGETS = env_int("BDAG_MINER_SCAN_MAX_TARGETS", 1024, minimum=1)
 MINER_LOGIN_KEY_HEX = "21" * 16
 MINER_ZERO_IV_HEX = "00" * 16
 MINER_REGISTRY_FILE = RUNTIME_DIR / "miners.json"
@@ -116,8 +248,10 @@ EARNINGS_ONCHAIN_CACHE_FILE = RUNTIME_DIR / "earnings-onchain-cache.json"
 PRICE_CACHE_FILE = RUNTIME_DIR / "price-cache.json"
 GLOBAL_CACHE_FILE = RUNTIME_DIR / "global-cache.json"
 GLOBAL_HISTORY_FILE = RUNTIME_DIR / "global-history.jsonl"
+GLOBAL_HISTORY_STATE_FILE = RUNTIME_DIR / "global-history-state.json"
 GLOBAL_POOL_LABEL_FILE = RUNTIME_DIR / "global-pool-labels.json"
 SYNC_COORDINATOR_STATE_FILE = RUNTIME_DIR / "sync-coordinator-state.json"
+HOST_PRESSURE_STATE_FILE = RUNTIME_DIR / "host-pressure-state.json"
 PEER_GEO_CACHE_FILE = RUNTIME_DIR / "peer-geo-cache.json"
 NODE_TEMPLATE_PROBE_CACHE_FILE = RUNTIME_DIR / "node-template-probe-cache.json"
 WEI_PER_BDAG = Decimal("1000000000000000000")
@@ -135,17 +269,21 @@ PRICE_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_PRICE_CACHE_TTL_SECONDS", "30
 PRICE_MIN_OK_SOURCES = int(os.environ.get("BDAG_PRICE_MIN_OK_SOURCES", "2"))
 GLOBAL_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_GLOBAL_CACHE_TTL_SECONDS", "300"))
 GLOBAL_BLOCK_WINDOW = int(os.environ.get("BDAG_GLOBAL_BLOCK_WINDOW", "2048"))
-GLOBAL_RPC_WORKERS = int(os.environ.get("BDAG_GLOBAL_RPC_WORKERS", "24"))
+GLOBAL_RPC_WORKERS = env_int("BDAG_GLOBAL_RPC_WORKERS", 24, minimum=1)
 GLOBAL_HISTORY_LIMIT = int(os.environ.get("BDAG_GLOBAL_HISTORY_LIMIT", "9000"))
+GLOBAL_HISTORY_COMPACT_MULTIPLIER = max(1, int(os.environ.get("BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER", "2")))
 NODE_EVM_RPC_PORT = int(os.environ.get("BDAG_NODE_EVM_RPC_PORT", "18545"))
 EARNINGS_HISTORY_RETENTION_SECONDS = int(os.environ.get("BDAG_EARNINGS_HISTORY_RETENTION_SECONDS", str(35 * 86400)))
 EARNINGS_DASHBOARD_HISTORY_SECONDS = int(os.environ.get("BDAG_EARNINGS_DASHBOARD_HISTORY_SECONDS", str(31 * 86400)))
 EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_EARNINGS_SNAPSHOT_INTERVAL_SECONDS", "120"))
 EARNINGS_ONCHAIN_CACHE_SECONDS = int(os.environ.get("BDAG_EARNINGS_ONCHAIN_CACHE_SECONDS", "120"))
+EARNINGS_DERIVED_HISTORY_ENABLED = env_bool("BDAG_EARNINGS_DERIVED_HISTORY_ENABLED", True)
+EARNINGS_DERIVED_HISTORY_BUCKET_SECONDS = env_int("BDAG_EARNINGS_DERIVED_HISTORY_BUCKET_SECONDS", 300, minimum=60)
 PEER_GEO_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_PEER_GEO_CACHE_TTL_SECONDS", "86400"))
 PEER_GEO_LOOKUP_TIMEOUT = float(os.environ.get("BDAG_PEER_GEO_LOOKUP_TIMEOUT", "8.0"))
 MINER_STALE_SECONDS = int(os.environ.get("BDAG_MINER_STALE_SECONDS", "120"))
 POOL_ACTIVITY_LOG_LINES = int(os.environ.get("BDAG_POOL_ACTIVITY_LOG_LINES", "2000"))
+POOL_ACTIVITY_BOOTSTRAP_LOG_LINES = int(os.environ.get("BDAG_POOL_ACTIVITY_BOOTSTRAP_LOG_LINES", "20000"))
 POOL_CONNECTED_STALE_SECONDS = int(os.environ.get("BDAG_POOL_CONNECTED_STALE_SECONDS", str(MINER_STALE_SECONDS)))
 MINER_REGISTRY_POOL_LOG_STALE_SECONDS = int(
     os.environ.get("BDAG_MINER_REGISTRY_POOL_LOG_STALE_SECONDS", str(max(POOL_CONNECTED_STALE_SECONDS * 2, 600)))
@@ -184,6 +322,7 @@ POOL_SUBMIT_RECOVERY_RECENT_SECONDS = int(os.environ.get("BDAG_POOL_SUBMIT_RECOV
 POOL_SUBMIT_RECOVERY_ACCEPTED_RESUME_SECONDS = int(
     os.environ.get("BDAG_POOL_SUBMIT_RECOVERY_ACCEPTED_RESUME_SECONDS", "90")
 )
+POOL_RPC_REFUSED_WARN_SECONDS = int(os.environ.get("BDAG_POOL_RPC_REFUSED_WARN_SECONDS", "120"))
 NODE_IMPORT_STALE_SECONDS = int(os.environ.get("BDAG_NODE_IMPORT_STALE_SECONDS", "180"))
 NODE_LAG_WARN_BLOCKS = int(os.environ.get("BDAG_NODE_LAG_WARN_BLOCKS", "5"))
 NODE_P2P_ERROR_WARN_COUNT = int(os.environ.get("BDAG_NODE_P2P_ERROR_WARN_COUNT", "10"))
@@ -191,10 +330,56 @@ NODE_ORPHAN_ERROR_STORM_COUNT = int(os.environ.get("BDAG_NODE_ORPHAN_ERROR_STORM
 NODE_MINING_RPC_PORT = int(os.environ.get("BDAG_NODE_MINING_RPC_PORT", "38131"))
 NODE_MINING_RPC_USER = os.environ.get("BDAG_NODE_MINING_RPC_USER", "test")
 NODE_MINING_RPC_PASS = os.environ.get("BDAG_NODE_MINING_RPC_PASS", "test")
+RPC_FAILOVER_ENABLED = env_bool("BDAG_RPC_FAILOVER_ENABLED", True)
 NODE_TEMPLATE_PROBE_CACHE_SECONDS = int(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_CACHE_SECONDS", "60"))
 NODE_TEMPLATE_PROBE_SAMPLES = max(1, int(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_SAMPLES", "1")))
 NODE_TEMPLATE_PROBE_TIMEOUT = float(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_TIMEOUT", "1.5"))
-HTTP_USER_AGENT = os.environ.get("BDAG_HTTP_USER_AGENT", "curl/8.5.0")
+NODE_CHAIN_RPC_TIMEOUT = float(os.environ.get("BDAG_NODE_CHAIN_RPC_TIMEOUT", "8.0"))
+NODE_CHAIN_RPC_RETRIES = max(1, int(os.environ.get("BDAG_NODE_CHAIN_RPC_RETRIES", "2")))
+HOST_PRESSURE_IOWAIT_WARN_PERCENT = env_float("BDAG_HOST_PRESSURE_IOWAIT_WARN_PERCENT", 25.0, minimum=0.0)
+HOST_PRESSURE_IOWAIT_WARN_SAMPLES = env_int("BDAG_HOST_PRESSURE_IOWAIT_WARN_SAMPLES", 3, minimum=2)
+HOST_PRESSURE_HISTORY_SAMPLES = max(
+    HOST_PRESSURE_IOWAIT_WARN_SAMPLES,
+    env_int("BDAG_HOST_PRESSURE_HISTORY_SAMPLES", 6, minimum=HOST_PRESSURE_IOWAIT_WARN_SAMPLES),
+)
+HTTP_USER_AGENT = os.environ.get("BDAG_HTTP_USER_AGENT", "blockdag-pool-dashboard/1.0")
+SHARED_STATUS_CACHE_ENABLED = env_bool("BDAG_SHARED_STATUS_CACHE_ENABLED", True)
+SHARED_STATUS_CACHE_SECONDS = env_float("BDAG_SHARED_STATUS_CACHE_SECONDS", 3.0, minimum=0.0)
+STATUS_SAMPLER_ENABLED = env_bool("BDAG_STATUS_SAMPLER_ENABLED", True)
+STATUS_SAMPLER_MAX_AGE_SECONDS = env_float("BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS", 12.0, minimum=0.0)
+STATUS_SAMPLER_BYPASS = env_bool("BDAG_STATUS_SAMPLER_BYPASS", False)
+HOST_PROFILE_OVERRIDE = os.environ.get("BDAG_HOST_PROFILE", "auto").strip().lower() or "auto"
+ADAPTIVE_CONCURRENCY_ENABLED = env_bool("BDAG_ADAPTIVE_CONCURRENCY_ENABLED", True)
+ADAPTIVE_IOWAIT_WARN_PERCENT = env_float(
+    "BDAG_ADAPTIVE_IOWAIT_WARN_PERCENT",
+    HOST_PRESSURE_IOWAIT_WARN_PERCENT,
+    minimum=0.0,
+)
+ADAPTIVE_IO_SOME_AVG10_WARN = env_float("BDAG_ADAPTIVE_IO_SOME_AVG10_WARN", 20.0, minimum=0.0)
+ADAPTIVE_CPU_SOME_AVG10_WARN = env_float("BDAG_ADAPTIVE_CPU_SOME_AVG10_WARN", 80.0, minimum=0.0)
+ADAPTIVE_CHAIN_RPC_WARN_MS = env_float("BDAG_ADAPTIVE_CHAIN_RPC_WARN_MS", 1000.0, minimum=0.0)
+BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = env_bool("BDAG_BACKGROUND_MAINTENANCE_BACKOFF_ENABLED", True)
+BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS = env_int("BDAG_BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS", 0, minimum=0)
+BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT = env_float(
+    "BDAG_BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT",
+    HOST_PRESSURE_IOWAIT_WARN_PERCENT,
+    minimum=0.0,
+)
+BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN = env_float(
+    "BDAG_BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN",
+    20.0,
+    minimum=0.0,
+)
+BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN = env_float(
+    "BDAG_BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN",
+    80.0,
+    minimum=0.0,
+)
+BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS = env_float(
+    "BDAG_BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS",
+    ADAPTIVE_CHAIN_RPC_WARN_MS,
+    minimum=0.0,
+)
 
 
 def is_transient_template_tx_error_text(text: str) -> bool:
@@ -207,24 +392,24 @@ def is_transient_template_tx_error_text(text: str) -> bool:
     )
 
 
-HOMERIC_MINER_NAMES = [
-    "Achilles",
-    "Hector",
-    "Odysseus",
-    "Penelope",
-    "Athena",
-    "Telemachus",
-    "Ajax",
-    "Nestor",
-    "Diomedes",
-    "Patroclus",
-    "Priam",
-    "Andromache",
-    "Helen",
-    "Menelaus",
-    "Agamemnon",
-    "Calypso",
-]
+def is_no_miner_sync_noise(item: Any) -> bool:
+    text = str(item)
+    return (
+        "live mining template probes" in text
+        or "pool recently saw RPC connection refused" in text
+        or text.startswith("pool is waiting for node sync to finish")
+    )
+
+
+def is_recent_mining_sync_noise(item: Any) -> bool:
+    text = str(item)
+    return (
+        "live mining template probes" in text
+        or "pool recently saw RPC connection refused" in text
+        or text.startswith("pool is waiting for node sync to finish")
+    )
+
+
 DEFAULT_GLOBAL_POOL_LABELS = {}
 
 
@@ -260,7 +445,9 @@ def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
-def strip_ansi(value: str) -> str:
+def strip_ansi(value: str | bytes) -> str:
+    if isinstance(value, bytes):
+        value = value.decode(errors="replace")
     return ANSI_RE.sub("", value)
 
 
@@ -384,6 +571,19 @@ def safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def effective_connected_miner_count(
+    miner_health: Mapping[str, Any],
+    pool_metrics: Mapping[str, Any],
+    source_job_health: Mapping[str, Any],
+) -> int:
+    return max(
+        safe_int(miner_health.get("connected_count"), 0),
+        safe_int(pool_metrics.get("active_connections"), 0),
+        safe_int(source_job_health.get("authorized_miners"), 0),
+        safe_int(source_job_health.get("ready_miners"), 0),
+    )
+
+
 def safe_float(value: Any, default: float | None = None) -> float | None:
     try:
         if value is None:
@@ -404,6 +604,264 @@ def seconds_since_epoch() -> int:
     return int(time.time())
 
 
+def parse_proc_pressure(text: str) -> dict[str, float]:
+    pressure: dict[str, float] = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        scope = parts[0]
+        if scope not in {"some", "full"}:
+            continue
+        for item in parts[1:]:
+            if "=" not in item:
+                continue
+            key, raw = item.split("=", 1)
+            if key in {"avg10", "avg60", "avg300", "total"}:
+                value = safe_float(raw)
+                if value is not None:
+                    pressure[f"{scope}_{key}"] = value
+    return pressure
+
+
+def parse_proc_stat_cpu(text: str) -> dict[str, int]:
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts or parts[0] != "cpu":
+            continue
+        values = []
+        for raw in parts[1:]:
+            try:
+                values.append(int(raw))
+            except ValueError:
+                values.append(0)
+        if len(values) < 5:
+            return {}
+        return {
+            "total": sum(values),
+            "idle": values[3],
+            "iowait": values[4],
+        }
+    return {}
+
+
+def host_pressure_iowait_sustained(samples: list[dict[str, Any]], threshold: float, sample_count: int) -> bool:
+    recent = samples[-sample_count:]
+    if len(recent) < sample_count:
+        return False
+    values = [safe_float(item.get("iowait_percent")) for item in recent]
+    return all(value is not None and value >= threshold for value in values)
+
+
+def host_pressure_warning_messages(pressure: dict[str, Any]) -> list[str]:
+    samples = pressure.get("samples") if isinstance(pressure.get("samples"), list) else []
+    if not pressure.get("iowait_warning_active"):
+        return []
+    values = [
+        safe_float(item.get("iowait_percent"))
+        for item in samples[-HOST_PRESSURE_IOWAIT_WARN_SAMPLES:]
+    ]
+    values = [value for value in values if value is not None]
+    if values:
+        avg = sum(values) / len(values)
+        current = safe_float(pressure.get("iowait_percent"), avg) or avg
+        detail = f"current={current:.2f}% avg={avg:.2f}%"
+    else:
+        detail = f"threshold={HOST_PRESSURE_IOWAIT_WARN_PERCENT:.2f}%"
+    return [
+        "host IO wait is sustained across recent dashboard samples "
+        f"({detail}, threshold={HOST_PRESSURE_IOWAIT_WARN_PERCENT:.2f}%)"
+    ]
+
+
+def collect_host_pressure() -> dict[str, Any]:
+    pressure: dict[str, Any] = {
+        "loadavg_1m": None,
+        "loadavg_5m": None,
+        "loadavg_15m": None,
+        "io_some_avg10": None,
+        "io_full_avg10": None,
+        "iowait_percent": None,
+        "cpu_busy_percent": None,
+        "iowait_warn_percent": HOST_PRESSURE_IOWAIT_WARN_PERCENT,
+        "iowait_warn_samples": HOST_PRESSURE_IOWAIT_WARN_SAMPLES,
+        "samples": [],
+        "iowait_warning_active": False,
+        "cpu_some_avg10": None,
+        "memory_some_avg10": None,
+    }
+    try:
+        load_parts = Path("/proc/loadavg").read_text(encoding="utf-8").split()
+        if len(load_parts) >= 3:
+            pressure["loadavg_1m"] = safe_float(load_parts[0])
+            pressure["loadavg_5m"] = safe_float(load_parts[1])
+            pressure["loadavg_15m"] = safe_float(load_parts[2])
+    except OSError:
+        pass
+
+    for name in ("io", "cpu", "memory"):
+        try:
+            parsed = parse_proc_pressure(Path(f"/proc/pressure/{name}").read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        pressure[f"{name}_some_avg10"] = parsed.get("some_avg10")
+        pressure[f"{name}_full_avg10"] = parsed.get("full_avg10")
+
+    try:
+        cpu = parse_proc_stat_cpu(Path("/proc/stat").read_text(encoding="utf-8"))
+    except OSError:
+        cpu = {}
+    previous = read_json_file(HOST_PRESSURE_STATE_FILE, {})
+    if cpu:
+        previous_cpu = previous.get("cpu") if isinstance(previous, dict) else {}
+        total_delta = int(cpu.get("total", 0)) - int((previous_cpu or {}).get("total", 0) or 0)
+        idle_delta = int(cpu.get("idle", 0)) - int((previous_cpu or {}).get("idle", 0) or 0)
+        iowait_delta = int(cpu.get("iowait", 0)) - int((previous_cpu or {}).get("iowait", 0) or 0)
+        if total_delta > 0 and previous_cpu:
+            pressure["iowait_percent"] = round(max(0.0, iowait_delta * 100.0 / total_delta), 2)
+            pressure["cpu_busy_percent"] = round(max(0.0, (total_delta - idle_delta) * 100.0 / total_delta), 2)
+        previous_samples = previous.get("samples") if isinstance(previous, dict) and isinstance(previous.get("samples"), list) else []
+        samples = [
+            item for item in previous_samples
+            if isinstance(item, dict) and item.get("iowait_percent") is not None
+        ]
+        if pressure["iowait_percent"] is not None:
+            samples.append(
+                {
+                    "epoch": time.time(),
+                    "generated_at": now_iso(),
+                    "iowait_percent": pressure["iowait_percent"],
+                    "cpu_busy_percent": pressure["cpu_busy_percent"],
+                }
+            )
+        samples = samples[-HOST_PRESSURE_HISTORY_SAMPLES:]
+        pressure["samples"] = samples
+        pressure["iowait_warning_active"] = host_pressure_iowait_sustained(
+            samples,
+            HOST_PRESSURE_IOWAIT_WARN_PERCENT,
+            HOST_PRESSURE_IOWAIT_WARN_SAMPLES,
+        )
+        write_json_file(HOST_PRESSURE_STATE_FILE, {"generated_at": now_iso(), "cpu": cpu, "samples": samples})
+    return pressure
+
+
+ADAPTIVE_WORKER_PROFILE_LIMITS: dict[str, dict[str, int]] = {
+    "pi5": {
+        "global_rpc": 6,
+        "miner_scan": 16,
+        "miner_hashrate": 2,
+        "peer_geo": 2,
+        "wallet_balance": 4,
+        "price_fetch": 2,
+    },
+    "constrained": {
+        "global_rpc": 8,
+        "miner_scan": 24,
+        "miner_hashrate": 4,
+        "peer_geo": 4,
+        "wallet_balance": 4,
+        "price_fetch": 2,
+    },
+    "standard": {
+        "global_rpc": 16,
+        "miner_scan": 48,
+        "miner_hashrate": 6,
+        "peer_geo": 6,
+        "wallet_balance": 8,
+        "price_fetch": 3,
+    },
+    "large": {
+        "global_rpc": 32,
+        "miner_scan": 96,
+        "miner_hashrate": 12,
+        "peer_geo": 8,
+        "wallet_balance": 12,
+        "price_fetch": 3,
+    },
+}
+ADAPTIVE_WORKER_MINIMUMS: dict[str, int] = {
+    "global_rpc": 1,
+    "miner_scan": 1,
+    "miner_hashrate": 1,
+    "peer_geo": 1,
+    "wallet_balance": 1,
+    "price_fetch": 1,
+}
+
+
+def adaptive_pressure_level(pressure: dict[str, Any] | None) -> str:
+    if not isinstance(pressure, dict):
+        return "unknown"
+    iowait = safe_float(pressure.get("iowait_percent"))
+    io_some = safe_float(pressure.get("io_some_avg10"))
+    cpu_some = safe_float(pressure.get("cpu_some_avg10"))
+    chain_rpc_latency = safe_float(pressure.get("chain_rpc_latency_ms"))
+    if (
+        bool(pressure.get("iowait_warning_active"))
+        or (iowait is not None and iowait >= ADAPTIVE_IOWAIT_WARN_PERCENT)
+        or (io_some is not None and io_some >= ADAPTIVE_IO_SOME_AVG10_WARN)
+        or (cpu_some is not None and cpu_some >= ADAPTIVE_CPU_SOME_AVG10_WARN)
+        or (chain_rpc_latency is not None and chain_rpc_latency >= ADAPTIVE_CHAIN_RPC_WARN_MS)
+    ):
+        return "high"
+    if (
+        (iowait is not None and iowait >= ADAPTIVE_IOWAIT_WARN_PERCENT / 2)
+        or (io_some is not None and io_some >= ADAPTIVE_IO_SOME_AVG10_WARN / 2)
+        or (cpu_some is not None and cpu_some >= ADAPTIVE_CPU_SOME_AVG10_WARN / 2)
+        or (chain_rpc_latency is not None and chain_rpc_latency >= ADAPTIVE_CHAIN_RPC_WARN_MS / 2)
+    ):
+        return "moderate"
+    return "low"
+
+
+def adaptive_worker_count(
+    kind: str,
+    configured_limit: int,
+    item_count: int,
+    pressure: dict[str, Any] | None = None,
+) -> int:
+    requested = max(1, min(max(1, configured_limit), max(1, item_count)))
+    if not ADAPTIVE_CONCURRENCY_ENABLED:
+        return requested
+
+    profile = host_runtime_profile()
+    profile_limits = ADAPTIVE_WORKER_PROFILE_LIMITS.get(
+        str(profile.get("profile") or ""),
+        ADAPTIVE_WORKER_PROFILE_LIMITS["standard"],
+    )
+    cpu_scaled_ceiling = max(1, int(profile.get("cpu_count") or 1) * 2)
+    ceiling = max(1, min(profile_limits.get(kind, cpu_scaled_ceiling), cpu_scaled_ceiling, configured_limit))
+    count = max(ADAPTIVE_WORKER_MINIMUMS.get(kind, 1), min(requested, ceiling))
+    level = adaptive_pressure_level(pressure)
+    if level == "high":
+        count = min(count, max(ADAPTIVE_WORKER_MINIMUMS.get(kind, 1), count // 4 or 1))
+    elif level == "moderate":
+        count = min(count, max(ADAPTIVE_WORKER_MINIMUMS.get(kind, 1), count // 2 or 1))
+    return max(1, min(count, requested))
+
+
+def adaptive_worker_budgets(pressure: dict[str, Any] | None = None) -> dict[str, Any]:
+    configured = {
+        "global_rpc": GLOBAL_RPC_WORKERS,
+        "miner_scan": MINER_SCAN_WORKERS,
+        "miner_hashrate": MINER_HASHRATE_PROBE_WORKERS,
+        "peer_geo": 8,
+        "wallet_balance": 8,
+        "price_fetch": 3,
+    }
+    workers = {
+        kind: adaptive_worker_count(kind, value, value, pressure)
+        for kind, value in configured.items()
+    }
+    return {
+        "enabled": ADAPTIVE_CONCURRENCY_ENABLED,
+        "pressure_level": adaptive_pressure_level(pressure),
+        "configured_caps": configured,
+        "workers": workers,
+        "host_profile": host_runtime_profile(),
+    }
+
+
 def read_json_file(path: Path, fallback: Any) -> Any:
     if not path.exists():
         return fallback
@@ -415,9 +873,65 @@ def read_json_file(path: Path, fallback: Any) -> Any:
 
 def write_json_file(path: Path, payload: Any, mode: int | None = None) -> None:
     ensure_runtime()
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     if mode is not None:
-        path.chmod(mode)
+        tmp.chmod(mode)
+    os.replace(tmp, path)
+
+
+def write_status_sampler_payload(payload: dict[str, Any], include_logs: bool = True) -> None:
+    write_json_file(
+        STATUS_SAMPLER_FILE,
+        {
+            "schema_version": 1,
+            "updated_at": now_iso(),
+            "epoch": time.time(),
+            "include_logs": include_logs,
+            "payload": payload,
+        },
+        mode=0o600,
+    )
+
+
+def read_status_sampler_payload(include_logs: bool, max_age_seconds: float | None = None) -> dict[str, Any] | None:
+    if not STATUS_SAMPLER_ENABLED or STATUS_SAMPLER_BYPASS or STATUS_SAMPLER_MAX_AGE_SECONDS <= 0:
+        return None
+    if max_age_seconds is not None and max_age_seconds <= 0:
+        return None
+    sampler_max_age = STATUS_SAMPLER_MAX_AGE_SECONDS
+    if max_age_seconds is not None:
+        sampler_max_age = min(sampler_max_age, max(0.0, float(max_age_seconds)))
+    if sampler_max_age <= 0:
+        return None
+
+    snapshot = read_json_file(STATUS_SAMPLER_FILE, {})
+    if not isinstance(snapshot, dict):
+        return None
+    payload = snapshot.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    sampled_at = safe_float(snapshot.get("epoch"), 0.0) or 0.0
+    age = max(0.0, time.time() - sampled_at)
+    if age > sampler_max_age:
+        return None
+
+    result = dict(payload)
+    result["age_seconds"] = round((safe_float(result.get("age_seconds"), 0.0) or 0.0) + age, 3)
+    stale_after = safe_float(result.get("stale_after_seconds"))
+    if stale_after is not None:
+        result["fresh"] = bool(result["age_seconds"] <= stale_after)
+    result["status_sampler"] = {
+        "enabled": True,
+        "hit": True,
+        "file": str(STATUS_SAMPLER_FILE),
+        "include_logs": bool(snapshot.get("include_logs")),
+        "requested_include_logs": include_logs,
+        "age_seconds": round(age, 3),
+        "max_age_seconds": sampler_max_age,
+    }
+    return result
 
 
 def read_sync_coordinator_state() -> dict[str, Any]:
@@ -475,6 +989,30 @@ def write_jsonl_file(path: Path, rows: list[dict[str, Any]], mode: int | None = 
     path.write_text("\n".join(json.dumps(row, separators=(",", ":")) for row in rows if isinstance(row, dict)) + ("\n" if rows else ""), encoding="utf-8")
     if mode is not None:
         path.chmod(mode)
+
+
+def append_jsonl_file(path: Path, row: dict[str, Any], mode: int | None = None) -> None:
+    ensure_runtime()
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+    if mode is not None:
+        path.chmod(mode)
+
+
+def count_text_lines(path: Path) -> int:
+    if not path.exists():
+        return 0
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return sum(1 for _line in handle)
+    except OSError:
+        return 0
+
+
+def compact_jsonl_file(path: Path, limit: int, mode: int | None = None) -> int:
+    rows = read_jsonl_file(path, limit=limit)
+    write_jsonl_file(path, rows[-limit:], mode=mode)
+    return len(rows[-limit:])
 
 
 def merge_unique_strings(*values: Any) -> list[str]:
@@ -618,6 +1156,10 @@ def merge_miner_records(existing: dict[str, Any], incoming: dict[str, Any]) -> d
     result["sources"] = merge_unique_strings(existing.get("sources"), incoming.get("sources"))
     result["last_workers"] = merge_unique_strings(existing.get("last_workers"), incoming.get("last_workers"))
     result["last_ports"] = merge_unique_strings(existing.get("last_ports"), incoming.get("last_ports"))
+    result["last_pool_job_extranonces"] = merge_unique_strings(
+        existing.get("last_pool_job_extranonces"),
+        incoming.get("last_pool_job_extranonces"),
+    )
     result["ip_history"] = merge_unique_strings(existing.get("ip_history"), old_ip, incoming.get("ip_history"), new_ip)
     result["managed"] = bool(existing.get("managed") or incoming.get("managed"))
     result["last_configured_ok"] = bool(existing.get("last_configured_ok") or incoming.get("last_configured_ok"))
@@ -641,53 +1183,54 @@ def miner_display_identity(item: dict[str, Any]) -> str:
     if mac:
         return f"mac:{mac}"
     device_id = str(item.get("device_id") or "").strip()
-    if device_id:
+    if device_id.startswith("mac:"):
         return device_id
-    ip = str(item.get("ip") or "").strip()
-    if ip:
-        return f"ip:{ip}"
     return ""
 
 
+def mac_suffix(value: Any, width: int = 3) -> str:
+    mac = normalize_mac(value)
+    if not mac:
+        return ""
+    compact = mac.replace(":", "")
+    return compact[-max(1, width) :]
+
+
+def miner_identity_key(item: dict[str, Any]) -> str:
+    mac = normalize_mac(item.get("mac"))
+    if not mac:
+        device_id = str(item.get("device_id") or "").strip().lower()
+        if device_id.startswith("mac:"):
+            mac = normalize_mac(device_id.removeprefix("mac:"))
+    return f"mac:{mac}" if mac else ""
+
+
+def miner_display_label(item: dict[str, Any]) -> str:
+    mac = normalize_mac(item.get("mac"))
+    if not mac:
+        device_id = str(item.get("device_id") or "").strip().lower()
+        if device_id.startswith("mac:"):
+            mac = normalize_mac(device_id.removeprefix("mac:"))
+    name = str(item.get("display_name") or item.get("name") or "").strip()
+    if name and mac:
+        return f"{name}-{mac_suffix(mac)}"
+    if name:
+        return f"{name}-unknown-mac"
+    if mac:
+        return mac
+    return "unknown-mac"
+
+
 def assign_miner_display_names(miners: list[dict[str, Any]]) -> None:
-    used = {str(item.get("display_name") or "") for item in miners if item.get("display_name")}
-    _retired_macs, _retired_ips, _retired_workers, retired_names = read_retired_miner_identities()
-    used.update(retired_names)
-    named_by_identity = {
-        miner_display_identity(item): str(item.get("display_name"))
-        for item in miners
-        if miner_display_identity(item) and item.get("display_name")
-    }
-    unnamed = [
-        item
-        for item in miners
-        if not item.get("display_name")
-        and (
-            normalize_mac(item.get("mac"))
-            or item.get("device_type") == "asic"
-            or item.get("managed")
-        )
-    ]
-    unnamed.sort(key=lambda item: miner_display_identity(item))
-    for item in unnamed:
-        identity = miner_display_identity(item)
-        if identity in named_by_identity:
-            item["display_name"] = named_by_identity[identity]
-            continue
-        for name in HOMERIC_MINER_NAMES:
-            if name not in used:
-                item["display_name"] = name
-                used.add(name)
-                if identity:
-                    named_by_identity[identity] = name
-                break
-        else:
-            suffix = len(used) + 1
-            name = f"Homeric Miner {suffix}"
-            item["display_name"] = name
-            used.add(name)
-            if identity:
-                named_by_identity[identity] = name
+    """Preserve explicit names only.
+
+    Fresh release installs must not invent site-specific ASIC names. The
+    dashboard defaults to the MAC address and appends a MAC suffix to any
+    explicit human name, so duplicate names cannot hide distinct devices.
+    """
+    for item in miners:
+        if item.get("display_name") is not None:
+            item["display_name"] = str(item.get("display_name") or "").strip()
 
 
 def is_pool_log_only_miner(item: dict[str, Any]) -> bool:
@@ -876,7 +1419,13 @@ def save_miner_registry(miners: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         item = dict(miner)
         mac = miner_mac_from_payload(item, ip, neighbors)
-        if is_retired_miner_identity(item, ip, mac):
+        retirement_decision = retired_miner_identity_decision(item, ip, mac)
+        if retirement_decision.get("retired"):
+            continue
+        if retirement_decision.get("conflict") and not mac:
+            # A no-MAC pool-log observation at a retired miner's last known IP
+            # is not a stable identity. Keep it out of the local managed
+            # registry until a MAC proves this is a different physical ASIC.
             continue
         if mac:
             item["mac"] = mac
@@ -885,15 +1434,14 @@ def save_miner_registry(miners: list[dict[str, Any]]) -> dict[str, Any]:
         key = f"mac:{mac}" if mac else f"ip:{ip}"
         by_identity[key] = merge_miner_records(by_identity[key], item) if key in by_identity else item
 
-    by_ip: dict[str, dict[str, Any]] = {}
-    for item in by_identity.values():
-        ip = str(item.get("ip", ""))
-        if not is_ipv4(ip):
-            continue
-        by_ip[ip] = merge_miner_records(by_ip[ip], item) if ip in by_ip else item
-
-    cleaned = prune_inactive_miner_records(list(by_ip.values()))
-    cleaned.sort(key=lambda item: int(ipaddress.ip_address(item["ip"])))
+    cleaned = prune_inactive_miner_records(list(by_identity.values()))
+    cleaned.sort(
+        key=lambda item: (
+            0 if normalize_mac(item.get("mac")) else 1,
+            normalize_mac(item.get("mac")) or "",
+            int(ipaddress.ip_address(item["ip"])),
+        )
+    )
     assign_miner_display_names(cleaned)
     registry = {"updated_at": now_iso(), "miners": cleaned}
     write_json_file(MINER_REGISTRY_FILE, registry)
@@ -1154,8 +1702,10 @@ def scan_miners(target_spec: str | None = None) -> dict[str, Any]:
     started = now_iso()
     targets = parse_scan_targets(target_spec)
     miners: list[dict[str, Any]] = []
+    pressure = collect_host_pressure()
+    worker_count = adaptive_worker_count("miner_scan", MINER_SCAN_WORKERS, len(targets), pressure)
 
-    with ThreadPoolExecutor(max_workers=min(MINER_SCAN_WORKERS, max(1, len(targets)))) as executor:
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = {executor.submit(discover_miner, target): target for target in targets}
         for future in as_completed(futures):
             miner = future.result()
@@ -1168,6 +1718,8 @@ def scan_miners(target_spec: str | None = None) -> dict[str, Any]:
         "finished_at": now_iso(),
         "target_spec": target_spec or default_miner_scan_target(),
         "target_count": len(targets),
+        "worker_count": worker_count,
+        "adaptive_concurrency": adaptive_worker_budgets(pressure),
         "miner_count": len(miners),
         "miners": miners,
     }
@@ -1355,6 +1907,24 @@ def configure_miners(
     results: list[dict[str, Any]] = []
     for ip in ips:
         try:
+            discovered_for_guard: dict[str, Any] = {}
+            try:
+                discovered_for_guard = discover_miner(ip, timeout=MINER_HTTP_TIMEOUT)
+            except Exception:
+                discovered_for_guard = {}
+            guard_mac = normalize_mac(discovered_for_guard.get("mac")) or mac_for_ip(ip)
+            guard_decision = retired_miner_identity_decision({**discovered_for_guard, "ip": ip, "mac": guard_mac}, ip, guard_mac)
+            if guard_decision.get("retired"):
+                results.append(
+                    {
+                        "ip": ip,
+                        "mac": guard_mac,
+                        "status": "skipped",
+                        "reason": "retired-miner-mac",
+                        "retired_name": guard_decision.get("retired_name") or "",
+                    }
+                )
+                continue
             results.append(
                 configure_miner(
                     ip=ip,
@@ -1370,7 +1940,16 @@ def configure_miners(
 
     failed = [item for item in results if item.get("status") == "failed"]
     partial = [item for item in results if item.get("status") == "partial"]
-    status = "failed" if len(failed) == len(results) and results else "partial" if failed or partial else "ok"
+    skipped = [item for item in results if item.get("status") == "skipped"]
+    status = (
+        "failed"
+        if len(failed) == len(results) and results
+        else "skipped"
+        if len(skipped) == len(results) and results
+        else "partial"
+        if failed or partial or skipped
+        else "ok"
+    )
     return {"status": status, "finished_at": now_iso(), "results": results}
 
 
@@ -1436,7 +2015,8 @@ def bdag_child_running_from_top(top: str) -> bool:
         else:
             command = line
         executable = command.split(None, 1)[0] if command.split(None, 1) else ""
-        if executable == "bdag" or executable.endswith("/bdag"):
+        executable_name = Path(executable).name
+        if executable_name in {"bdag", "blockdag-node"}:
             return True
     return False
 
@@ -1600,7 +2180,14 @@ def parse_pool_log(log: str) -> dict[str, Any]:
     recent = lines[-600:]
     text = "\n".join(recent)
     initial_download = "Client in initial download" in text
-    rpc_refused = "connect: connection refused" in text
+    rpc_refused_lines = [line for line in recent if "connect: connection refused" in line]
+    rpc_refused = bool(rpc_refused_lines)
+    last_rpc_refused_line = rpc_refused_lines[-1] if rpc_refused_lines else None
+    last_rpc_refused_age_seconds = _pool_log_age_seconds(last_rpc_refused_line)
+    rpc_refused_recent = bool(
+        last_rpc_refused_age_seconds is not None
+        and last_rpc_refused_age_seconds <= POOL_RPC_REFUSED_WARN_SECONDS
+    )
     gbt_errors = sum(1 for line in recent if "GBT ERROR" in line)
     valid_share_lines = [line for line in recent if VALID_SHARE_RE.search(line)]
     valid_share_count = sum(valid_share_line_weight(line) for line in valid_share_lines)
@@ -1717,6 +2304,9 @@ def parse_pool_log(log: str) -> dict[str, Any]:
     return {
         "initial_download": initial_download,
         "rpc_refused": rpc_refused,
+        "rpc_refused_recent": rpc_refused_recent,
+        "last_rpc_refused_age_seconds": last_rpc_refused_age_seconds,
+        "rpc_refused_warn_seconds": POOL_RPC_REFUSED_WARN_SECONDS,
         "gbt_errors": gbt_errors,
         "submit_count": observed_submit_count,
         "valid_share_count": valid_share_count,
@@ -1781,11 +2371,24 @@ def parse_pool_log(log: str) -> dict[str, Any]:
 LOG_TS_RE = re.compile(r"^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})")
 PUSHDIF_RE = re.compile(r"PUSHDIF\s+->\s+((?:\d{1,3}\.){3}\d{1,3}):([0-9]+)\s+mining\.set_difficulty\s+([0-9.]+)")
 AUTH_ACCEPT_RE = re.compile(r"\[((?:\d{1,3}\.){3}\d{1,3}):([0-9]+)\]\s+authorize accepted user=([^\s]+)")
+SUBSCRIBE_ACCEPT_RE = re.compile(
+    r"\[((?:\d{1,3}\.){3}\d{1,3}):([0-9]+)\]\s+subscribe accepted extranonce1=([0-9a-fA-F]{8})"
+)
 JOB_NOTIFY_RE = re.compile(r"Sending to ((?:\d{1,3}\.){3}\d{1,3}):\d+:\s+jobID=([^\s]+)")
 JOB_NOTIFY_DETAIL_RE = re.compile(r"Sending to ((?:\d{1,3}\.){3}\d{1,3}):([0-9]+):\s+jobID=([^\s]+)")
-SUBMIT_RE = re.compile(r"submit from worker=([^\s]+)\s+job=([^\s]+)")
+RECOVERY_JOB_TO_CLIENT_RE = re.compile(
+    r"resending current job to ((?:\d{1,3}\.){3}\d{1,3}):([0-9]+).*?\(job=([^\s)]+)"
+)
+CLIENT_ADDR_RE = re.compile(r"\bclient=((?:\d{1,3}\.){3}\d{1,3}):([0-9]+)")
+JOB_EXTRANONCE_RE = re.compile(r"_([0-9a-fA-F]{8})(?:\s|$)")
+SUBMIT_RE = re.compile(
+    r"submit from\s+(?:client=((?:\d{1,3}\.){3}\d{1,3}):([0-9]+)\s+)?worker=([^\s]+)\s+job=([^\s]+)"
+)
 SUBMIT_SUPPRESSED_RE = re.compile(r"\ssuppressed=([0-9]+)")
-VALID_SHARE_RE = re.compile(r"valid share accepted\s+([0-9.]+)\s+[^0-9]+([0-9]+)\s+worker=([^\s]+)\s+job=([^\s]+)")
+VALID_SHARE_RE = re.compile(
+    r"valid share accepted\s+([0-9.]+)\s+[^0-9]+([0-9]+)\s+"
+    r"(?:client=((?:\d{1,3}\.){3}\d{1,3}):([0-9]+)\s+)?worker=([^\s]+)\s+job=([^\s]+)"
+)
 VALID_SHARE_SUPPRESSED_DIFF_RE = re.compile(r"\ssuppressedDiff=([0-9.]+)")
 VALID_SHARE_SUPPRESSED_WORK_RE = re.compile(r"\ssuppressedWork=([0-9]+)")
 BLOCK_FOUND_RE = re.compile(r"BLOCK FOUND .*job=([^\s]+)")
@@ -1893,7 +2496,7 @@ def collect_template_probe_health() -> dict[str, Any]:
         payload["cache_age_seconds"] = now - cached_at
         return payload
 
-    endpoints = mining_rpc_urls(include_haproxy=True)
+    endpoints = mining_rpc_urls(include_haproxy=RPC_FAILOVER_ENABLED)
     probes = {name: probe_template_endpoint(name, url) for name, url in endpoints}
     node_probes = {name: probes[name] for name in NODES if name in probes}
     failing_nodes = [name for name, probe in node_probes.items() if probe.get("failing")]
@@ -1904,7 +2507,15 @@ def collect_template_probe_health() -> dict[str, Any]:
         "sample_count": NODE_TEMPLATE_PROBE_SAMPLES,
         "cache_ttl_seconds": NODE_TEMPLATE_PROBE_CACHE_SECONDS,
         "nodes": node_probes,
-        "rpc_failover": probes.get("rpc-failover"),
+        "rpc_failover": probes.get("rpc-failover") if RPC_FAILOVER_ENABLED else {
+            "name": "rpc-failover",
+            "enabled": False,
+            "suppressed": True,
+            "failing": False,
+            "error_count": 0,
+            "sample_count": 0,
+            "last_error": "",
+        },
         "failing_nodes": failing_nodes,
         "all_nodes_failing": bool(node_probes and len(failing_nodes) == len(node_probes)),
     }
@@ -2418,30 +3029,186 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
 
 def parse_pool_activity(log: str) -> dict[str, Any]:
     job_to_client: dict[str, dict[str, str]] = {}
+    extranonce_to_client: dict[str, dict[str, str]] = {}
     worker_to_client: dict[str, dict[str, str]] = {}
     worker_client_priority: dict[str, int] = {}
+    recent_worker_clients: dict[str, list[dict[str, str]]] = {}
+    ambiguous_worker_clients: set[str] = set()
     miners: dict[str, dict[str, Any]] = {}
+    legacy_authorized_client_count = 0
+    unattributed_valid_shares = 0
+    unattributed_blocks = 0
+    neighbors = read_neighbor_macs()
+    registered_by_ip: dict[str, dict[str, Any]] = {}
+    registered_by_mac: dict[str, dict[str, Any]] = {}
+
+    for row in read_miner_registry().get("miners", []):
+        if not isinstance(row, dict):
+            continue
+        registered = dict(row)
+        ip = str(registered.get("ip") or "")
+        mac = normalize_mac(registered.get("mac")) or mac_for_ip(ip, neighbors)
+        if mac:
+            registered["mac"] = mac
+            registered["device_id"] = f"mac:{mac}"
+            registered_by_mac[mac] = registered
+        if is_ipv4(ip):
+            registered_by_ip[ip] = registered
+
+    def registered_for_ip(ip: str) -> tuple[dict[str, Any], str]:
+        registered = registered_by_ip.get(ip, {})
+        mac = normalize_mac(registered.get("mac")) or mac_for_ip(ip, neighbors)
+        if mac and mac in registered_by_mac:
+            registered = registered_by_mac[mac]
+        return registered, mac
+
+    def identity_key_for_ip(ip: str) -> str:
+        _registered, mac = registered_for_ip(ip)
+        return f"mac:{mac}" if mac else f"ip:{ip}"
+
+    def client_identity_key(client: dict[str, str] | None) -> str:
+        if not client:
+            return ""
+        return str(client.get("identity_key") or identity_key_for_ip(str(client.get("ip") or "")))
+
+    def client_from_identity(ip: str, port: str = "") -> dict[str, str]:
+        return {"ip": ip, "port": port, "identity_key": identity_key_for_ip(ip)}
 
     def note_worker_client(worker: str, ip: str, port: str = "", priority: int = 1) -> None:
+        incoming = client_from_identity(ip, port)
+        current = worker_to_client.get(worker)
         current_priority = worker_client_priority.get(worker, -1)
+        if current and client_identity_key(current) != client_identity_key(incoming):
+            current_is_bridge = is_docker_bridge_pool_log_client(str(current.get("ip") or ""))
+            incoming_is_bridge = is_docker_bridge_pool_log_client(ip)
+            if incoming_is_bridge and not current_is_bridge and priority <= current_priority:
+                return
+            if current_is_bridge and not incoming_is_bridge:
+                ambiguous_worker_clients.discard(worker)
+                worker_to_client[worker] = incoming
+                worker_client_priority[worker] = max(priority, current_priority)
+                return
+            if priority < current_priority:
+                return
+            if priority == current_priority:
+                ambiguous_worker_clients.add(worker)
+            else:
+                ambiguous_worker_clients.discard(worker)
         if priority < current_priority:
             return
-        worker_to_client[worker] = {"ip": ip, "port": port}
+        worker_to_client[worker] = incoming
         worker_client_priority[worker] = priority
 
-    for registered in read_miner_registry().get("miners", []):
+    def client_for_worker(worker: str) -> dict[str, str] | None:
+        if worker in ambiguous_worker_clients:
+            return None
+        return worker_to_client.get(worker)
+
+    def job_extranonce(job_id: str) -> str:
+        match = JOB_EXTRANONCE_RE.search(str(job_id or ""))
+        return match.group(1).lower() if match else ""
+
+    def client_from_addr(ip: str | None, port: str | None = "") -> dict[str, str] | None:
+        if not ip or not is_ipv4(str(ip)):
+            return None
+        return client_from_identity(str(ip), str(port or ""))
+
+    def client_from_line(line: str) -> dict[str, str] | None:
+        match = CLIENT_ADDR_RE.search(line)
+        if not match:
+            return None
+        return client_from_addr(match.group(1), match.group(2))
+
+    def note_job_client(job_id: str, client: dict[str, str]) -> None:
+        if not job_id or not client:
+            return
+        job_to_client[job_id] = client
+        extranonce = job_extranonce(job_id)
+        if extranonce:
+            # The extranonce/job suffix is a volatile pool lane identifier. A
+            # fresh pool log line must override cached registry hints after a
+            # miner reconnects and receives a new lane suffix.
+            extranonce_to_client[extranonce] = client
+
+    def remember_recent_worker_client(worker: str, client: dict[str, str]) -> None:
+        if not worker or not client:
+            return
+        key = client_identity_key(client)
+        recent = [
+            item
+            for item in recent_worker_clients.get(worker, [])
+            if client_identity_key(item) != key or str(item.get("port") or "") != str(client.get("port") or "")
+        ]
+        recent.append(client)
+        recent_worker_clients[worker] = recent[-8:]
+
+    def recent_client_for_unknown_job(job_id: str, worker: str = "") -> dict[str, str] | None:
+        extranonce = job_extranonce(job_id)
+        if not worker or not extranonce or extranonce in extranonce_to_client:
+            return None
+        candidates = recent_worker_clients.get(worker) or []
+        if not candidates:
+            return None
+        # Legacy pool logs sometimes omit client= on submit/share lines after
+        # a miner reconnects. Use only the most recent authorize hint, and only
+        # for a previously unseen volatile job suffix. Once mapped, subsequent
+        # shares and blocks stay keyed by that MAC identity.
+        client = candidates[-1]
+        note_job_client(job_id, client)
+        return client
+
+    def note_legacy_extranonce_client(client: dict[str, str]) -> None:
+        nonlocal legacy_authorized_client_count
+        if not client:
+            return
+        legacy_authorized_client_count += 1
+        # Older pool images omit subscribe/job-notify client details but encode
+        # each connection's little-endian extranonce suffix in the job id.
+        extranonce = f"{legacy_authorized_client_count:02x}000000"
+        extranonce_to_client.setdefault(extranonce, client)
+
+    def note_item_extranonce(item: dict[str, Any], job_id: str) -> None:
+        extranonce = job_extranonce(job_id)
+        if not extranonce:
+            return
+        values = item.setdefault("job_extranonces", [])
+        if extranonce not in values:
+            values.append(extranonce)
+
+    def client_for_job_or_worker(job_id: str, worker: str = "") -> dict[str, str] | None:
+        return (
+            job_to_client.get(job_id)
+            or extranonce_to_client.get(job_extranonce(job_id))
+            or recent_client_for_unknown_job(job_id, worker)
+            or (client_for_worker(worker) if worker else None)
+        )
+
+    for registered in registered_by_ip.values():
         ip = str(registered.get("ip") or "")
         if not is_ipv4(ip):
             continue
         priority = 2 if normalize_mac(registered.get("mac")) or registered.get("display_name") else 1
         for worker in merge_unique_strings(registered.get("last_workers"), registered.get("expected_worker_user")):
             note_worker_client(worker, ip, priority=priority)
+        client = client_from_identity(ip)
+        for extranonce in merge_unique_strings(registered.get("last_pool_job_extranonces")):
+            if re.fullmatch(r"[0-9a-fA-F]{8}", str(extranonce or "")):
+                extranonce_to_client.setdefault(str(extranonce).lower(), client)
 
     def miner_for_ip(ip: str) -> dict[str, Any]:
+        registered, mac = registered_for_ip(ip)
+        identity_key = f"mac:{mac}" if mac else ""
+        storage_key = identity_key or f"ip:{ip}"
         item = miners.setdefault(
-            ip,
+            storage_key,
             {
                 "ip": ip,
+                "mac": mac,
+                "device_id": f"mac:{mac}" if mac else "",
+                "identity_key": identity_key,
+                "display_name": registered.get("display_name") or "",
+                "display_label": miner_display_label({**registered, "mac": mac}) if mac or registered else "",
+                "ip_history": merge_unique_strings(registered.get("ip_history"), ip),
                 "device_type": "stratum",
                 "source": "pool-log",
                 "jobs": 0,
@@ -2459,8 +3226,19 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
                 "last_block_at": None,
                 "last_difficulty": None,
                 "workers": [],
+                "job_extranonces": [],
             },
         )
+        item["ip"] = ip
+        item["ip_history"] = merge_unique_strings(item.get("ip_history"), registered.get("ip_history"), ip)
+        if mac:
+            item["mac"] = mac
+            item["device_id"] = f"mac:{mac}"
+            item["identity_key"] = identity_key
+        if registered.get("display_name") and not item.get("display_name"):
+            item["display_name"] = registered.get("display_name")
+        if mac or registered:
+            item["display_label"] = miner_display_label({**registered, **item, "mac": mac or item.get("mac")})
         return item
 
     def note_seen(item: dict[str, Any], line: str, field: str = "last_seen_at") -> None:
@@ -2499,16 +3277,31 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         if auth:
             ip, port, worker = auth.groups()
             note_worker_client(worker, ip, port=port, priority=1)
+            legacy_client = client_from_identity(ip, port)
+            if is_docker_bridge_pool_log_client(ip):
+                legacy_client = client_for_worker(worker) or legacy_client
+            remember_recent_worker_client(worker, legacy_client)
+            note_legacy_extranonce_client(legacy_client)
             item = miner_for_ip(ip)
             note_port(item, port)
             note_worker(item, worker)
             note_seen(item, line)
             continue
 
+        subscribe = SUBSCRIBE_ACCEPT_RE.search(line)
+        if subscribe:
+            ip, port, extranonce = subscribe.groups()
+            client = {"ip": ip, "port": port}
+            extranonce_to_client.setdefault(extranonce.lower(), client)
+            item = miner_for_ip(ip)
+            note_port(item, port)
+            note_seen(item, line)
+            continue
+
         notify = JOB_NOTIFY_DETAIL_RE.search(line)
         if notify:
             ip, port, job_id = notify.groups()
-            job_to_client[job_id] = {"ip": ip, "port": port}
+            note_job_client(job_id, {"ip": ip, "port": port})
             item = miner_for_ip(ip)
             note_port(item, port)
             item["jobs"] += 1
@@ -2518,19 +3311,34 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         legacy_notify = JOB_NOTIFY_RE.search(line)
         if legacy_notify:
             ip, job_id = legacy_notify.groups()
-            job_to_client[job_id] = {"ip": ip, "port": ""}
+            note_job_client(job_id, {"ip": ip, "port": ""})
             item = miner_for_ip(ip)
+            item["jobs"] += 1
+            note_seen(item, line, "last_job_at")
+            continue
+
+        recovery_resend = RECOVERY_JOB_TO_CLIENT_RE.search(line)
+        if recovery_resend:
+            ip, port, job_id = recovery_resend.groups()
+            client = {"ip": ip, "port": port}
+            note_job_client(job_id, client)
+            item = miner_for_ip(ip)
+            note_port(item, port)
+            note_item_extranonce(item, job_id)
             item["jobs"] += 1
             note_seen(item, line, "last_job_at")
             continue
 
         submit = SUBMIT_RE.search(line)
         if submit:
-            worker, job_id = submit.groups()
-            client = job_to_client.get(job_id) or worker_to_client.get(worker)
+            client_ip, client_port, worker, job_id = submit.groups()
+            direct_client = client_from_addr(client_ip, client_port)
+            if direct_client:
+                note_job_client(job_id, direct_client)
+            client = direct_client or client_for_job_or_worker(job_id, worker)
             if not client:
                 continue
-            job_to_client.setdefault(job_id, client)
+            note_job_client(job_id, client)
             item = miner_for_ip(client["ip"])
             note_port(item, client.get("port"))
             note_worker(item, worker)
@@ -2540,14 +3348,21 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
 
         share = VALID_SHARE_RE.search(line)
         if share:
-            job_id = share.group(4)
-            worker = share.group(3)
-            client = job_to_client.get(job_id) or worker_to_client.get(worker)
+            client_ip = share.group(3)
+            client_port = share.group(4)
+            worker = share.group(5)
+            job_id = share.group(6)
+            direct_client = client_from_addr(client_ip, client_port)
+            if direct_client:
+                note_job_client(job_id, direct_client)
+            client = direct_client or client_for_job_or_worker(job_id, worker)
             if not client:
+                unattributed_valid_shares += valid_share_line_weight(line)
                 continue
-            job_to_client.setdefault(job_id, client)
+            note_job_client(job_id, client)
             item = miner_for_ip(client["ip"])
             note_port(item, client.get("port"))
+            note_item_extranonce(item, job_id)
             item["shares"] += valid_share_line_weight(line)
             item["share_difficulty"] = round(
                 float(item["share_difficulty"]) + float(share.group(1)) + valid_share_line_suppressed_diff(line),
@@ -2561,11 +3376,17 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
 
         block = BLOCK_FOUND_RE.search(line)
         if block:
-            client = job_to_client.get(block.group(1))
+            job_id = block.group(1)
+            direct_client = client_from_line(line)
+            if direct_client:
+                note_job_client(job_id, direct_client)
+            client = direct_client or client_for_job_or_worker(job_id)
             if not client:
+                unattributed_blocks += 1
                 continue
             item = miner_for_ip(client["ip"])
             note_port(item, client.get("port"))
+            note_item_extranonce(item, job_id)
             item["blocks_found"] += 1
             note_seen(item, line, "last_block_at")
 
@@ -2576,7 +3397,16 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
 
     return {
         "generated_at": now_iso(),
-        "miners": sorted(miners.values(), key=lambda item: int(ipaddress.ip_address(item["ip"]))),
+        "miners": sorted(
+            miners.values(),
+            key=lambda item: (
+                0 if normalize_mac(item.get("mac")) else 1,
+                normalize_mac(item.get("mac")) or str(item.get("identity_key") or ""),
+                int(ipaddress.ip_address(item["ip"])),
+            ),
+        ),
+        "unattributed_valid_shares": unattributed_valid_shares,
+        "unattributed_blocks": unattributed_blocks,
     }
 
 
@@ -2611,7 +3441,16 @@ def valid_share_line_suppressed_work(line: str) -> int:
 
 def collect_pool_activity(lines: int = 2500) -> dict[str, Any]:
     log = docker_logs_many(POOL_CONTAINERS, lines=lines)
-    return parse_pool_activity(log)
+    activity = parse_pool_activity(log)
+    if (
+        lines < POOL_ACTIVITY_BOOTSTRAP_LOG_LINES
+        and (safe_int(activity.get("unattributed_valid_shares"), 0) > 0 or safe_int(activity.get("unattributed_blocks"), 0) > 0)
+    ):
+        has_work = any(int(item.get("share_work", 0) or 0) > 0 or int(item.get("blocks_found", 0) or 0) > 0 for item in activity.get("miners", []))
+        if not has_work:
+            activity = parse_pool_activity(docker_logs_many(POOL_CONTAINERS, lines=POOL_ACTIVITY_BOOTSTRAP_LOG_LINES))
+            activity["bootstrap_log_lines"] = POOL_ACTIVITY_BOOTSTRAP_LOG_LINES
+    return activity
 
 
 def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
@@ -2639,6 +3478,7 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
         item = dict(item or existing.get(ip, {"ip": ip}))
         workers = merge_unique_strings(item.get("last_workers"), miner.get("workers"))
         ports = merge_unique_strings(item.get("last_ports"), miner.get("ports"))
+        job_extranonces = merge_unique_strings(item.get("last_pool_job_extranonces"), miner.get("job_extranonces"))
         last_seen_log_at = str(miner.get("last_seen_at") or "")
         previous_seen_log_at = str(item.get("last_pool_seen_log_at") or "")
         last_submit_log_at = str(miner.get("last_submit_at") or "")
@@ -2674,6 +3514,7 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
                 "last_block_at": miner.get("last_block_at") or item.get("last_block_at"),
                 "last_workers": workers,
                 "last_ports": ports,
+                "last_pool_job_extranonces": job_extranonces,
                 "last_difficulty": miner.get("last_difficulty") or item.get("last_difficulty"),
                 "last_jobs_window": int(miner.get("jobs", 0) or 0),
                 "last_submits_window": int(miner.get("submits", 0) or 0),
@@ -2724,6 +3565,11 @@ def collect_miner_health() -> dict[str, Any]:
     registry = upsert_pool_activity_miners(activity)
     miners = registry.get("miners", [])
     activity_by_ip = {item["ip"]: item for item in activity["miners"]}
+    activity_by_identity = {
+        str(item.get("identity_key") or ""): item
+        for item in activity["miners"]
+        if item.get("identity_key")
+    }
     health: list[dict[str, Any]] = []
     failures: list[str] = []
     warnings: list[str] = []
@@ -2735,10 +3581,14 @@ def collect_miner_health() -> dict[str, Any]:
             continue
         expected_url = registered.get("expected_pool_url") or defaults["pool_url"]
         expected_user = registered.get("expected_worker_user") or defaults["worker_user"]
-        activity_item = activity_by_ip.get(ip, {})
+        registered_identity = miner_identity_key(registered)
+        activity_item = activity_by_identity.get(registered_identity, {}) if registered_identity else {}
+        if not activity_item:
+            activity_item = activity_by_ip.get(ip, {})
         device_type = str(registered.get("device_type") or ("asic" if registered.get("model") else "stratum"))
         discovered_by = str(registered.get("discovered_by") or "")
-        api_expected = device_type == "asic" and is_lan_ipv4(ip)
+        pool_log_lan_candidate = bool(activity_item or registered.get("auto_discovered") or discovered_by == "pool-log")
+        api_expected = is_lan_ipv4(ip) and (device_type == "asic" or pool_log_lan_candidate)
         api_error = ""
         debug_error = ""
         discovered = None
@@ -2748,6 +3598,9 @@ def collect_miner_health() -> dict[str, Any]:
         if api_expected:
             try:
                 discovered = discover_miner(ip, timeout=MINER_HTTP_TIMEOUT)
+                if discovered and discovered.get("model"):
+                    device_type = "asic"
+                    discovered_by = discovered_by if discovered_by and discovered_by != "pool-log" else "asic-api"
                 pools = discovered.get("pools", []) if discovered else []
                 configured = any(str(pool.get("url", "")) == expected_url and str(pool.get("user", "")) == expected_user for pool in pools)
                 pool_active = any(
@@ -2770,10 +3623,11 @@ def collect_miner_health() -> dict[str, Any]:
             continue
         retirement_decision = retired_miner_identity_decision({**registered, **activity_item}, ip, mac)
         if retirement_decision.get("conflict"):
-            label = registered.get("display_name") or ip
+            label = miner_display_label({**registered, "mac": mac})
             retired_name = retirement_decision.get("retired_name") or "retired miner"
             warnings.append(
-                f"{label} {ip} is active in pool logs but shares an observed retired-miner IP for {retired_name}; "
+                f"{label} mac={mac or 'unknown-mac'} observed_ip={ip} is active in pool logs but shares "
+                f"an observed retired-miner IP for {retired_name}; "
                 "keeping it active because only MAC address can retire an ASIC"
             )
         last_pool_seen_epoch = int(registered.get("last_pool_seen_epoch", 0) or 0)
@@ -2782,10 +3636,12 @@ def collect_miner_health() -> dict[str, Any]:
         workers = merge_unique_strings(activity_item.get("workers"), registered.get("last_workers"))
         ports = merge_unique_strings(activity_item.get("ports"), registered.get("last_ports"))
         connected = bool(activity_item) or bool(last_pool_seen_epoch and now_epoch - last_pool_seen_epoch <= POOL_CONNECTED_STALE_SECONDS)
-        if not api_expected and is_pool_log_only_miner(registered):
+        managed = bool(registered.get("managed"))
+        configured_record = bool(registered.get("configured") or registered.get("managed") or registered.get("last_configured_ok"))
+        if is_pool_log_only_miner(registered) or device_type == "stratum" or discovered_by == "pool-log":
             expected_worker_seen = str(expected_user).lower() in {str(worker).lower() for worker in workers}
             if connected and expected_url == defaults["pool_url"] and expected_worker_seen:
-                configured = True
+                configured = bool(configured or configured_record)
                 pool_active = True
         current_submits = int(activity_item.get("submits", 0) or 0)
         current_shares = int(activity_item.get("shares", 0) or 0)
@@ -2795,9 +3651,16 @@ def collect_miner_health() -> dict[str, Any]:
         pool_seen_age = now_epoch - last_pool_seen_epoch if last_pool_seen_epoch else None
         submit_age = now_epoch - last_submit_epoch if last_submit_epoch else None
         share_age = now_epoch - last_share_epoch if last_share_epoch else None
-        managed = bool(registered.get("managed"))
-        primary_pool_log = is_known_primary_pool_log_miner({**registered, "last_workers": workers})
-        relevant = managed or connected or has_recent_shares or has_recent_blocks or primary_pool_log
+        expected_worker_seen = str(expected_user).lower() in {str(worker).lower() for worker in workers}
+        current_pool_activity = bool(activity_item) and expected_url == defaults["pool_url"] and (
+            expected_worker_seen or current_submits > 0 or has_recent_shares or has_recent_blocks
+        )
+        work_pool_active = bool(
+            (managed or configured_record or current_pool_activity)
+            and (current_pool_activity or pool_active or has_recent_shares or has_recent_blocks)
+        )
+        primary_pool_log = configured_record and is_known_primary_pool_log_miner({**registered, "last_workers": workers})
+        relevant = managed or configured_record or work_pool_active or has_recent_shares or has_recent_blocks or primary_pool_log
         if not relevant and is_pool_log_only_miner(registered):
             continue
         shares = activity_item.get("shares", registered.get("last_shares_window", 0))
@@ -2823,9 +3686,10 @@ def collect_miner_health() -> dict[str, Any]:
         if managed:
             if (api_error or debug_error) and not has_recent_shares and not has_recent_blocks and not connected:
                 status = "down"
-                label = registered.get("display_name") or ip
+                label = miner_display_label({**registered, "mac": mac})
                 failures.append(
-                    f"{label} {ip} ASIC API/health check is unreachable or degraded and no recent pool submissions were seen"
+                    f"{label} mac={mac or 'unknown-mac'} observed_ip={ip} ASIC API/health check is unreachable or degraded "
+                    "and no recent pool submissions were seen"
                     + (f" (last pool seen {pool_seen_age}s ago)" if pool_seen_age is not None else "")
                     + f": {api_error or debug_error}"
                 )
@@ -2833,13 +3697,22 @@ def collect_miner_health() -> dict[str, Any]:
                 status = "ok"
             elif configured:
                 status = "degraded"
-                warnings.append(f"{ip} is configured but no recent accepted shares were seen")
+                warnings.append(
+                    f"{miner_display_label({**registered, 'mac': mac})} mac={mac or 'unknown-mac'} "
+                    f"observed_ip={ip} is configured but no recent accepted shares were seen"
+                )
             elif has_recent_shares or connected:
                 status = "degraded"
-                warnings.append(f"{ip} is submitting to the pool but ASIC API configuration could not be confirmed")
+                warnings.append(
+                    f"{miner_display_label({**registered, 'mac': mac})} mac={mac or 'unknown-mac'} "
+                    f"observed_ip={ip} is submitting to the pool but ASIC API configuration could not be confirmed"
+                )
             else:
                 status = "down"
-                failures.append(f"{ip} is not configured for the expected local pool")
+                failures.append(
+                    f"{miner_display_label({**registered, 'mac': mac})} mac={mac or 'unknown-mac'} "
+                    f"observed_ip={ip} is not configured for the expected local pool"
+                )
         elif configured or has_recent_shares or has_recent_blocks:
             status = "ok"
         elif connected:
@@ -2847,17 +3720,21 @@ def collect_miner_health() -> dict[str, Any]:
         elif primary_pool_log:
             status = "down"
             age = now_epoch - last_pool_seen_epoch if last_pool_seen_epoch else None
-            label = registered.get("display_name") or ip
+            label = miner_display_label({**registered, "mac": mac})
             failures.append(
-                f"{label} {ip} has not been seen by the pool"
+                f"{label} mac={mac or 'unknown-mac'} observed_ip={ip} has not been seen by the pool"
                 + (f" for {age}s" if age is not None else "")
             )
         elif device_type == "asic" and discovered_by != "pool-log" and not configured:
-            warnings.append(f"{ip} is discovered but not managed by the local pool")
+            warnings.append(
+                f"{miner_display_label({**registered, 'mac': mac})} mac={mac or 'unknown-mac'} "
+                f"observed_ip={ip} is discovered but not managed by the local pool"
+            )
         if low_difficulty_flood:
             status = "degraded" if status == "ok" else status
             warning = (
-                f"{ip} is submitting very low-difficulty work "
+                f"{miner_display_label({**registered, 'mac': mac})} mac={mac or 'unknown-mac'} observed_ip={ip} "
+                "is submitting very low-difficulty work "
                 f"(difficulty {last_difficulty}, submits {submits})"
             )
             if managed:
@@ -2873,7 +3750,9 @@ def collect_miner_health() -> dict[str, Any]:
                 "ip": ip,
                 "mac": mac,
                 "device_id": f"mac:{mac}" if mac else str(registered.get("device_id") or ""),
+                "identity_key": miner_identity_key({**registered, "mac": mac}),
                 "display_name": registered.get("display_name") or "",
+                "display_label": miner_display_label({**registered, "mac": mac}),
                 "managed": managed,
                 "device_type": device_type,
                 "discovered_by": discovered_by_value,
@@ -2882,6 +3761,7 @@ def collect_miner_health() -> dict[str, Any]:
                 "configured": configured,
                 "connected": connected,
                 "pool_active": pool_active,
+                "work_pool_active": work_pool_active,
                 "api_error": api_error,
                 "debug_error": debug_error,
                 "issue": issue,
@@ -2938,8 +3818,13 @@ def collect_miner_health() -> dict[str, Any]:
         item
         for item in health
         if item.get("relevant_for_work_share")
-        and (item.get("connected") or item.get("managed") or int(item.get("share_work", 0) or 0) > 0)
+        and item.get("work_pool_active")
+        and (item.get("configured") or item.get("managed"))
     ]
+    expected_lane_ids = {
+        str(item.get("identity_key") or item.get("device_id") or item.get("mac") or item.get("ip") or "")
+        for item in expected_lane_rows
+    }
     expected_lane_count = len(expected_lane_rows)
     expected_lane_percent = Decimal("100") / Decimal(expected_lane_count) if expected_lane_count > 0 else Decimal("0")
     imbalanced_lanes: list[str] = []
@@ -2947,10 +3832,13 @@ def collect_miner_health() -> dict[str, Any]:
         share_work_int = int(item.get("share_work", 0) or 0)
         if total_work > 0 and share_work_int > 0:
             item["work_percent"] = percent_to_str((Decimal(share_work_int) / Decimal(total_work)) * Decimal("100"))
-        item["expected_work_percent"] = percent_to_str(expected_lane_percent) if expected_lane_count > 0 and item.get("relevant_for_work_share") else "0.00"
+        lane_id = str(item.get("identity_key") or item.get("device_id") or item.get("mac") or item.get("ip") or "")
+        expected_lane = bool(lane_id and lane_id in expected_lane_ids)
+        item["expected_work_lane"] = expected_lane
+        item["expected_work_percent"] = percent_to_str(expected_lane_percent) if expected_lane_count > 0 and expected_lane else "0.00"
         item["work_ratio_to_expected"] = None
         item["lane_status"] = "not-tracked"
-        if expected_lane_count > 0 and item.get("relevant_for_work_share"):
+        if expected_lane_count > 0 and expected_lane:
             if total_work <= 0:
                 item["lane_status"] = "no-window-work"
                 continue
@@ -2966,7 +3854,7 @@ def collect_miner_health() -> dict[str, Any]:
             else:
                 item["lane_status"] = "balanced"
             if item["lane_status"] in {"no-work", "low", "high"} and item.get("connected"):
-                label = item.get("display_name") or item.get("mac") or item.get("ip")
+                label = item.get("display_label") or miner_display_label(item)
                 mac = item.get("mac") or "unknown-mac"
                 imbalanced_lanes.append(
                     f"{label} mac={mac} lane={item['lane_status']} actual={item['work_percent']}% expected={item['expected_work_percent']}%"
@@ -3057,6 +3945,9 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     else:
         pool_endpoint = f"127.0.0.1:{pool_port}"
     disk = run(["df", "-h", str(PROJECT_ROOT)], timeout=8).stdout.strip()
+    host_pressure = collect_host_pressure()
+    host_profile = host_runtime_profile()
+    adaptive_concurrency = adaptive_worker_budgets(host_pressure)
     latest_action = read_latest_action()
     if docker_error:
         containers = {
@@ -3180,7 +4071,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "can_accept_shares": False,
             "can_submit_blocks": False,
             "truth_sources": {
-                "chain_block_count": "getBlockCount",
+                "chain_block_count": "eth_blockNumber/getBlockCount fallback",
                 "chain_main_height": "getMainChainHeight diagnostic",
                 "template_height": "diagnostic_only",
                 "node_log_height": "diagnostic_only",
@@ -3252,6 +4143,9 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "pool_port": pool_port,
             "local_ips": local_ips,
             "pool_endpoint": pool_endpoint,
+            "host_pressure": host_pressure,
+            "host_profile": host_profile,
+            "adaptive_concurrency": adaptive_concurrency,
             "disk": disk,
             "docker_images": "",
             "docker_access_error": docker_error,
@@ -3279,6 +4173,9 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     def add_maintenance_warning(message: str) -> None:
         warnings.append(message)
         maintenance_warnings.append(message)
+
+    for message in host_pressure_warning_messages(host_pressure):
+        add_maintenance_warning(message)
 
     for service in services_for_status:
         info = inspected.get(service)
@@ -3371,12 +4268,85 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "sync_pause_leader": planned_pause_leader if node == planned_paused_follower else "",
         }
 
+    running_pool_containers = [name for name in POOL_CONTAINERS if containers.get(name, {}).get("running")]
+    pool_log = docker_logs_many(running_pool_containers, lines=180) if include_logs and running_pool_containers else ""
+    pool = parse_pool_log(pool_log)
+    pool_metrics = collect_pool_prometheus_metrics(containers) if include_logs else {
+        "generated_at": now_iso(),
+        "status": "skipped",
+        "error": "logs excluded from status collection",
+        "containers": {},
+        "active_connections": None,
+        "selected_backend": "",
+        "block_submit_outcomes": {},
+        "block_submit_backend_outcomes": {},
+        "blocks": {},
+        "blocks_rejected_by_node": {},
+        "shares_accepted_total": 0.0,
+        "shares_rejected_by_reason": {},
+        "share_processing": {},
+        "loss_ledger": {},
+        "submit_stall_recoveries": {},
+        "submit_stall_recoveries_total": 0.0,
+        "source_job_health": {},
+        "source_backend_health": {},
+        "selected_backend_source_health": {},
+        "template_conversion_stall": {},
+    }
+    pool["metrics"] = pool_metrics
+    pool["selected_backend"] = pool_metrics.get("selected_backend") or ""
+    pool["metrics_active_connections"] = pool_metrics.get("active_connections")
+    pool["metrics_submit_stall_recoveries_total"] = pool_metrics.get("submit_stall_recoveries_total")
+    source_job_health = (
+        pool_metrics.get("source_job_health")
+        if isinstance(pool_metrics.get("source_job_health"), dict)
+        else {}
+    )
+    source_backend_health = (
+        pool_metrics.get("source_backend_health")
+        if isinstance(pool_metrics.get("source_backend_health"), dict)
+        else {}
+    )
+    selected_source_health = (
+        pool_metrics.get("selected_backend_source_health")
+        if isinstance(pool_metrics.get("selected_backend_source_health"), dict)
+        else {}
+    )
+    pool["source_job_health"] = source_job_health
+    pool["source_backend_health"] = source_backend_health
+    pool["selected_backend_source_health"] = selected_source_health
+    pool["template_conversion_stall"] = (
+        pool_metrics.get("template_conversion_stall")
+        if isinstance(pool_metrics.get("template_conversion_stall"), dict)
+        else {}
+    )
+    pool_loss_ledger = (
+        pool_metrics.get("loss_ledger")
+        if isinstance(pool_metrics.get("loss_ledger"), dict)
+        else {}
+    )
+    pool["loss_ledger"] = pool_loss_ledger
+    if pool.get("rpc_refused_recent") and not any("bdag child" in item for item in stack_failures):
+        add_sync_warning("pool recently saw RPC connection refused")
+
+    miner_health = collect_miner_health() if include_logs else {"failures": [], "warnings": [], "miners": []}
+    scan_connected_miners = safe_int(miner_health.get("connected_count"), 0)
+    connected_miners = effective_connected_miner_count(miner_health, pool_metrics, source_job_health)
+    miner_health["connected_count_effective"] = connected_miners
+    miner_health["connected_count_source"] = (
+        "miner-health" if connected_miners == scan_connected_miners else "pool-metrics"
+    )
+    managed_miners = int(miner_health.get("managed_count", 0) or 0)
+    miner_demand_present = connected_miners > 0 or managed_miners > 0
+    template_probe_running_nodes = any(containers.get(node, {}).get("running") for node in NODES)
     template_probe_health = (
         collect_template_probe_health()
-        if include_logs and any(containers.get(node, {}).get("running") for node in NODES)
+        if include_logs and miner_demand_present and template_probe_running_nodes
         else {
             "generated_at": now_iso(),
             "cached": False,
+            "suppressed_for_no_miners": bool(include_logs and not miner_demand_present),
+            "suppressed_reason": "no managed or connected miners" if include_logs and not miner_demand_present else "",
             "nodes": {},
             "rpc_failover": None,
             "failing_nodes": [],
@@ -3454,71 +4424,6 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "planned_paused_follower": planned_paused_follower,
         "planned_pause_leader": planned_pause_leader,
     }
-
-    running_pool_containers = [name for name in POOL_CONTAINERS if containers.get(name, {}).get("running")]
-    pool_log = docker_logs_many(running_pool_containers, lines=180) if include_logs and running_pool_containers else ""
-    pool = parse_pool_log(pool_log)
-    pool_metrics = collect_pool_prometheus_metrics(containers) if include_logs else {
-        "generated_at": now_iso(),
-        "status": "skipped",
-        "error": "logs excluded from status collection",
-        "containers": {},
-        "active_connections": None,
-        "selected_backend": "",
-        "block_submit_outcomes": {},
-        "block_submit_backend_outcomes": {},
-        "blocks": {},
-        "blocks_rejected_by_node": {},
-        "shares_accepted_total": 0.0,
-        "shares_rejected_by_reason": {},
-        "share_processing": {},
-        "loss_ledger": {},
-        "submit_stall_recoveries": {},
-        "submit_stall_recoveries_total": 0.0,
-        "source_job_health": {},
-        "source_backend_health": {},
-        "selected_backend_source_health": {},
-        "template_conversion_stall": {},
-    }
-    pool["metrics"] = pool_metrics
-    pool["selected_backend"] = pool_metrics.get("selected_backend") or ""
-    pool["metrics_active_connections"] = pool_metrics.get("active_connections")
-    pool["metrics_submit_stall_recoveries_total"] = pool_metrics.get("submit_stall_recoveries_total")
-    source_job_health = (
-        pool_metrics.get("source_job_health")
-        if isinstance(pool_metrics.get("source_job_health"), dict)
-        else {}
-    )
-    source_backend_health = (
-        pool_metrics.get("source_backend_health")
-        if isinstance(pool_metrics.get("source_backend_health"), dict)
-        else {}
-    )
-    selected_source_health = (
-        pool_metrics.get("selected_backend_source_health")
-        if isinstance(pool_metrics.get("selected_backend_source_health"), dict)
-        else {}
-    )
-    pool["source_job_health"] = source_job_health
-    pool["source_backend_health"] = source_backend_health
-    pool["selected_backend_source_health"] = selected_source_health
-    pool["template_conversion_stall"] = (
-        pool_metrics.get("template_conversion_stall")
-        if isinstance(pool_metrics.get("template_conversion_stall"), dict)
-        else {}
-    )
-    pool_loss_ledger = (
-        pool_metrics.get("loss_ledger")
-        if isinstance(pool_metrics.get("loss_ledger"), dict)
-        else {}
-    )
-    pool["loss_ledger"] = pool_loss_ledger
-    if pool["rpc_refused"] and not any("bdag child" in item for item in stack_failures):
-        add_sync_warning("pool recently saw RPC connection refused")
-
-    miner_health = collect_miner_health() if include_logs else {"failures": [], "warnings": [], "miners": []}
-    connected_miners = int(miner_health.get("connected_count", 0) or 0)
-    managed_miners = int(miner_health.get("managed_count", 0) or 0)
     pool_has_recent_mining = any(
         pool.get(field) is not None and int(pool.get(field) or 0) <= max_age
         for field, max_age in (
@@ -3573,6 +4478,22 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     pool["initial_download_needs_repair"] = pool_initial_download_needs_repair
     sync_health["pool_initial_download_transient"] = pool_initial_download_transient
     sync_health["pool_has_recent_mining"] = pool_has_recent_mining
+    if connected_miners > 0 and pool_has_recent_mining and sync_warnings:
+        advisory_sync_warnings = [
+            item for item in sync_warnings
+            if is_recent_mining_sync_noise(item)
+        ]
+        if advisory_sync_warnings:
+            sync_warnings = [
+                item for item in sync_warnings
+                if not is_recent_mining_sync_noise(item)
+            ]
+            warnings = [
+                item for item in warnings
+                if not is_recent_mining_sync_noise(item)
+            ]
+            for item in advisory_sync_warnings:
+                add_maintenance_warning(f"{item}; accepted mining work remains fresh")
     readiness_contract = selected_backend_readiness_contract(
         str(pool.get("selected_backend") or ""),
         selected_source_health,
@@ -3679,6 +4600,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     maintenance_warnings.extend(miner_warnings)
     pool_health = {
         **pool,
+        "rpc_refused_raw": bool(pool.get("rpc_refused")),
+        "rpc_refused": bool(pool.get("rpc_refused_recent") and connected_miners > 0),
         "connected_miners": connected_miners,
         "managed_miners": managed_miners,
         "rpc_template_failing": bool(
@@ -3689,9 +4612,18 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "job_stall": effective_job_stall,
         "needs_fast_repair": bool(
             pool_initial_download_needs_repair
-            or pool.get("rpc_refused")
-            or (isinstance(rpc_failover_probe, dict) and rpc_failover_probe.get("failing") and connected_miners > 0)
-            or (template_probe_health.get("failing_nodes") and connected_miners > 0)
+            or (pool.get("rpc_refused_recent") and connected_miners > 0)
+            or (
+                isinstance(rpc_failover_probe, dict)
+                and rpc_failover_probe.get("failing")
+                and connected_miners > 0
+                and not pool_has_recent_mining
+            )
+            or (
+                template_probe_health.get("failing_nodes")
+                and connected_miners > 0
+                and not pool_has_recent_mining
+            )
             or (pool.get("pool_template_frozen") and connected_miners > 0)
             or (pool.get("duplicate_block_storm") and connected_miners > 0)
             or (pool.get("stale_job_candidate_storm") and connected_miners > 0)
@@ -3731,7 +4663,10 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         ["docker", "images", "--format", "{{.Repository}}:{{.Tag}} {{.Size}}"],
         timeout=docker_images_timeout,
     ).stdout.strip()
-    sync_progress = collect_sync_progress()
+    sync_progress = sync_progress_for_display_nodes(collect_sync_progress(), display_nodes)
+    adaptive_concurrency = adaptive_worker_budgets(
+        {**host_pressure, "chain_rpc_latency_ms": _sync_chain_rpc_latency_ms(sync_progress)}
+    )
     for node, progress in (sync_progress.get("nodes") or {}).items():
         if not isinstance(progress, dict):
             continue
@@ -3740,6 +4675,10 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         node_details[node]["chain_main_height"] = progress.get("chain_main_height")
         node_details[node]["chain_rpc_source"] = progress.get("chain_rpc_source")
         node_details[node]["chain_rpc_url"] = progress.get("chain_rpc_url")
+        node_details[node]["chain_rpc_latency_ms"] = progress.get("chain_rpc_latency_ms")
+        node_details[node]["chain_rpc_attempts"] = progress.get("chain_rpc_attempts")
+        node_details[node]["chain_rpc_timeout_seconds"] = progress.get("chain_rpc_timeout_seconds")
+        node_details[node]["chain_rpc_retry_limit"] = progress.get("chain_rpc_retry_limit")
         node_details[node]["chain_rpc_error"] = progress.get("chain_rpc_error") or progress.get("error") or ""
     no_miner_node_only = bool(
         connected_miners == 0
@@ -3748,20 +4687,13 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     )
     no_miner_sync_only = bool(no_miner_node_only and sync_progress.get("status") == "syncing")
     if no_miner_node_only:
-        def _is_no_miner_sync_noise(item: Any) -> bool:
-            text = str(item)
-            return (
-                "live mining template probes" in text
-                or text.startswith("pool is waiting for node sync to finish")
-            )
-
         warnings = [
             item for item in warnings
-            if not _is_no_miner_sync_noise(item)
+            if not is_no_miner_sync_noise(item)
         ]
         sync_warnings = [
             item for item in sync_warnings
-            if not _is_no_miner_sync_noise(item)
+            if not is_no_miner_sync_noise(item)
         ]
         pool["initial_download_needs_repair"] = False
         pool_health["rpc_template_failing"] = False
@@ -3789,24 +4721,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             int(sync_health.get("nodes_with_recent_imports") or 0),
             int(sync_progress_health.get("active_node_count") or 0),
         )
-        hard_pool_needs_repair = bool(
-            pool_health.get("rpc_refused")
-            or pool_health.get("rpc_template_failing")
-            or pool_health.get("node_template_probe_failing")
-            or pool_health.get("share_stall")
-            or pool_health.get("job_stall")
-            or pool_health.get("pool_template_frozen")
-            or pool_health.get("duplicate_block_storm")
-            or pool_health.get("stale_job_candidate_storm")
-            or pool_health.get("block_submit_error_storm")
-            or pool_health.get("accepted_job_expired_storm")
-            or pool_health.get("source_job_hard_degraded")
-            or pool_health.get("source_selected_backend_hard_degraded")
-            or (
-                pool_health.get("block_submit_zero_success_storm")
-                and not pool_health.get("submit_stall_recovery_recent")
-            )
-        )
+        hard_pool_needs_repair = bool(pool_health.get("needs_fast_repair"))
         if sync_progress.get("status") == "syncing" and pool_health.get("initial_download"):
             pool_health["initial_download_needs_repair"] = False
             pool_health["needs_fast_repair"] = hard_pool_needs_repair
@@ -3831,7 +4746,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     can_submit_blocks = bool(can_accept_shares and not pool_health.get("needs_fast_repair") and not sync_warnings)
     can_mine = bool(can_accept_shares and can_submit_blocks)
     truth_sources = {
-        "chain_block_count": "getBlockCount",
+        "chain_block_count": "eth_blockNumber/getBlockCount fallback",
         "chain_main_height": "getMainChainHeight diagnostic",
         "template_height": "diagnostic_only",
         "node_log_height": "diagnostic_only",
@@ -3853,16 +4768,16 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "blocking_failures": failures,
         "degraded_reasons": sync_warnings + maintenance_warnings,
         "repair_actions_recent": latest_action,
-            "project_root": str(PROJECT_ROOT),
-            "runtime_dir": str(RUNTIME_DIR),
-            "pool_env_file": str(POOL_ENV_FILE),
-            "stack_services": SERVICES,
-            "node_services": display_nodes,
-            "managed_node_services": NODES,
-            "observer_node_services": observer_nodes,
-            "pool_container": POOL_CONTAINER,
-            "pool_containers": POOL_CONTAINERS,
-            "pool_db_container": POOL_DB_CONTAINER,
+        "project_root": str(PROJECT_ROOT),
+        "runtime_dir": str(RUNTIME_DIR),
+        "pool_env_file": str(POOL_ENV_FILE),
+        "stack_services": SERVICES,
+        "node_services": display_nodes,
+        "managed_node_services": NODES,
+        "observer_node_services": observer_nodes,
+        "pool_container": POOL_CONTAINER,
+        "pool_containers": POOL_CONTAINERS,
+        "pool_db_container": POOL_DB_CONTAINER,
         "overall": overall,
         "status_reason": status_reason,
         "containers": containers,
@@ -3885,9 +4800,167 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "pool_port": pool_port,
         "local_ips": local_ips,
         "pool_endpoint": pool_endpoint,
+        "host_pressure": host_pressure,
+        "host_profile": host_profile,
+        "adaptive_concurrency": adaptive_concurrency,
         "disk": disk,
         "docker_images": docker_images,
         "latest_action": read_latest_action(),
+    }
+
+
+def collect_status_cached(include_logs: bool = True, max_age_seconds: float | None = None) -> dict[str, Any]:
+    max_age = SHARED_STATUS_CACHE_SECONDS if max_age_seconds is None else max(0.0, float(max_age_seconds))
+    if not SHARED_STATUS_CACHE_ENABLED or max_age <= 0:
+        payload = collect_status(include_logs=include_logs)
+        payload["shared_status_cache"] = {"enabled": False, "hit": False, "max_age_seconds": max_age}
+        return payload
+
+    sampler_payload = read_status_sampler_payload(include_logs=include_logs, max_age_seconds=max_age_seconds)
+    if sampler_payload is not None:
+        return sampler_payload
+
+    now = time.time()
+    cache = read_json_file(SHARED_STATUS_CACHE_FILE, {})
+    if not isinstance(cache, dict):
+        cache = {}
+    key = "with_logs" if include_logs else "no_logs"
+    row = cache.get(key) if isinstance(cache.get(key), dict) else {}
+    cached_at = safe_float(row.get("epoch"), 0.0) if isinstance(row, dict) else 0.0
+    payload = row.get("payload") if isinstance(row, dict) else None
+    if isinstance(payload, dict) and cached_at is not None and now - cached_at <= max_age:
+        cache_age = round(max(0.0, now - cached_at), 3)
+        result = dict(payload)
+        result["age_seconds"] = round((safe_float(result.get("age_seconds"), 0.0) or 0.0) + cache_age, 3)
+        stale_after = safe_float(result.get("stale_after_seconds"))
+        if stale_after is not None:
+            result["fresh"] = bool(result["age_seconds"] <= stale_after)
+        result["shared_status_cache"] = {
+            "enabled": True,
+            "hit": True,
+            "key": key,
+            "age_seconds": cache_age,
+            "max_age_seconds": max_age,
+        }
+        return result
+
+    result = collect_status(include_logs=include_logs)
+    result["shared_status_cache"] = {
+        "enabled": True,
+        "hit": False,
+        "key": key,
+        "age_seconds": 0.0,
+        "max_age_seconds": max_age,
+    }
+    result["status_sampler"] = {
+        "enabled": STATUS_SAMPLER_ENABLED,
+        "hit": False,
+        "file": str(STATUS_SAMPLER_FILE),
+        "max_age_seconds": STATUS_SAMPLER_MAX_AGE_SECONDS,
+    }
+    cache[key] = {
+        "epoch": now,
+        "generated_at": now_iso(),
+        "include_logs": include_logs,
+        "payload": result,
+    }
+    write_json_file(SHARED_STATUS_CACHE_FILE, cache, mode=0o600)
+    return result
+
+
+def _sync_remaining_blocks(sync_progress: dict[str, Any]) -> int:
+    remaining = safe_int(sync_progress.get("remaining_blocks"), -1)
+    if remaining >= 0:
+        return remaining
+    node_remaining = [
+        safe_int(item.get("remaining_blocks"), -1)
+        for item in (sync_progress.get("nodes") or {}).values()
+        if isinstance(item, dict)
+    ]
+    return max([value for value in node_remaining if value >= 0] or [-1])
+
+
+def _sync_chain_rpc_latency_ms(sync_progress: dict[str, Any]) -> float | None:
+    values = [
+        safe_float(item.get("chain_rpc_latency_ms"))
+        for item in (sync_progress.get("nodes") or {}).values()
+        if isinstance(item, dict)
+    ]
+    values = [value for value in values if value is not None]
+    return max(values) if values else None
+
+
+def background_maintenance_decision(task: str, status: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return whether optional background work should run on this tick."""
+    if not BACKGROUND_MAINTENANCE_BACKOFF_ENABLED:
+        return {
+            "allowed": True,
+            "task": task,
+            "reasons": [],
+            "backoff_enabled": False,
+            "host_profile": host_runtime_profile(),
+        }
+
+    payload = status if isinstance(status, dict) else collect_status_cached(include_logs=False)
+    sync_progress = payload.get("sync_progress") if isinstance(payload.get("sync_progress"), dict) else {}
+    host_pressure = payload.get("host_pressure") if isinstance(payload.get("host_pressure"), dict) else {}
+    reasons: list[str] = []
+    sync_status = str(sync_progress.get("status") or "unknown")
+    remaining_blocks = _sync_remaining_blocks(sync_progress)
+    chain_rpc_latency_ms = _sync_chain_rpc_latency_ms(sync_progress)
+    if sync_status == "syncing" and (
+        remaining_blocks < 0 or remaining_blocks > BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS
+    ):
+        remaining_text = "unknown" if remaining_blocks < 0 else str(remaining_blocks)
+        reasons.append(
+            "chain catch-up has priority "
+            f"status={sync_status} remaining={remaining_text} "
+            f"threshold={BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS}"
+        )
+
+    iowait = safe_float(host_pressure.get("iowait_percent"))
+    if bool(host_pressure.get("iowait_warning_active")):
+        reasons.append("host IO wait warning is active")
+    elif iowait is not None and iowait >= BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT:
+        reasons.append(
+            f"host iowait {iowait:.2f}% >= {BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT:.2f}%"
+        )
+
+    io_some = safe_float(host_pressure.get("io_some_avg10"))
+    if io_some is not None and io_some >= BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN:
+        reasons.append(
+            f"host io pressure avg10 {io_some:.2f} >= {BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN:.2f}"
+        )
+
+    cpu_some = safe_float(host_pressure.get("cpu_some_avg10"))
+    if cpu_some is not None and cpu_some >= BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN:
+        reasons.append(
+            f"host cpu pressure avg10 {cpu_some:.2f} >= {BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN:.2f}"
+        )
+    if chain_rpc_latency_ms is not None and chain_rpc_latency_ms >= BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS:
+        reasons.append(
+            f"chain RPC latency {chain_rpc_latency_ms:.1f}ms >= {BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS:.1f}ms"
+        )
+
+    return {
+        "allowed": not reasons,
+        "task": task,
+        "reasons": reasons,
+        "backoff_enabled": True,
+        "sync_status": sync_status,
+        "remaining_blocks": remaining_blocks,
+        "sync_backoff_blocks": BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS,
+        "iowait_percent": iowait,
+        "iowait_warn_percent": BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT,
+        "io_some_avg10": io_some,
+        "io_some_avg10_warn": BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN,
+        "cpu_some_avg10": cpu_some,
+        "cpu_some_avg10_warn": BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN,
+        "chain_rpc_latency_ms": chain_rpc_latency_ms,
+        "chain_rpc_latency_warn_ms": BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS,
+        "host_profile": host_runtime_profile(),
+        "adaptive_concurrency": adaptive_worker_budgets({**host_pressure, "chain_rpc_latency_ms": chain_rpc_latency_ms}),
+        "shared_status_cache": payload.get("shared_status_cache"),
     }
 
 
@@ -4138,28 +5211,120 @@ def parse_rpc_quantity(value: Any) -> int:
     raise ValueError(f"invalid RPC quantity: {value!r}")
 
 
-def node_chain_rpc_snapshot(source: str, url: str, timeout: float = 4.0) -> dict[str, Any]:
+def rpc_url_port(url: str) -> int | None:
+    try:
+        return urllib.parse.urlsplit(url).port
+    except ValueError:
+        return None
+
+
+def rpc_method_unavailable(error: str) -> bool:
+    text = str(error).lower()
+    return "-32601" in text or "method" in text and ("not exist" in text or "not available" in text)
+
+
+def eth_syncing_details(url: str, timeout: float) -> dict[str, Any]:
+    try:
+        result = json_rpc_call(url, "eth_syncing", [], timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - sync detail is diagnostic only.
+        return {"eth_syncing_error": str(exc)}
+    if result is False:
+        return {"eth_syncing": False, "chain_syncing": False}
+    if isinstance(result, dict):
+        current = result.get("currentBlock") or result.get("current_block")
+        highest = result.get("highestBlock") or result.get("highest_block")
+        details: dict[str, Any] = {"eth_syncing": result, "chain_syncing": True}
+        try:
+            details["sync_current_block"] = parse_rpc_quantity(current)
+        except Exception:
+            pass
+        try:
+            details["sync_highest_block"] = parse_rpc_quantity(highest)
+        except Exception:
+            pass
+        return details
+    return {"eth_syncing": result, "chain_syncing": bool(result)}
+
+
+def node_chain_rpc_snapshot(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TIMEOUT) -> dict[str, Any]:
     snapshot: dict[str, Any] = {
-        "chain_rpc_source": "getBlockCount",
+        "chain_rpc_source": "unavailable",
         "chain_rpc_url": url,
         "chain_rpc_error": "",
         "chain_block_count": None,
         "chain_main_height": None,
+        "chain_rpc_latency_ms": None,
+        "chain_rpc_attempts": 0,
+        "chain_rpc_timeout_seconds": timeout,
+        "chain_rpc_retry_limit": NODE_CHAIN_RPC_RETRIES,
     }
-    try:
-        snapshot["chain_block_count"] = parse_rpc_quantity(
-            mining_rpc_call(url, "getBlockCount", [], timeout=timeout)
-        )
-    except Exception as exc:
-        snapshot["chain_rpc_error"] = f"getBlockCount failed for {source}: {exc}"
+    errors: list[str] = []
+    port = rpc_url_port(url)
+    method_order = ["eth_blockNumber", "getBlockCount"] if port == NODE_EVM_RPC_PORT else ["getBlockCount"]
+    total_attempts = 0
+
+    for method in method_order:
+        method_errors: list[str] = []
+        for attempt in range(NODE_CHAIN_RPC_RETRIES):
+            start = time.monotonic()
+            total_attempts += 1
+            try:
+                if method == "eth_blockNumber":
+                    value = json_rpc_call(url, method, [], timeout=timeout)
+                else:
+                    value = mining_rpc_call(url, method, [], timeout=timeout)
+                snapshot["chain_block_count"] = parse_rpc_quantity(value)
+                snapshot["chain_rpc_source"] = method
+                snapshot["chain_rpc_latency_ms"] = round((time.monotonic() - start) * 1000, 1)
+                snapshot["chain_rpc_attempts"] = total_attempts
+                errors.extend(method_errors)
+                break
+            except Exception as exc:
+                snapshot["chain_rpc_latency_ms"] = round((time.monotonic() - start) * 1000, 1)
+                snapshot["chain_rpc_attempts"] = total_attempts
+                detail = str(exc)
+                method_errors.append(detail)
+                errors.append(f"{method}: {detail}")
+                if attempt + 1 < NODE_CHAIN_RPC_RETRIES:
+                    time.sleep(0.2)
+        if snapshot["chain_block_count"] is not None:
+            break
+        if method == "getBlockCount" and not all(rpc_method_unavailable(error) for error in method_errors):
+            break
+
+    if snapshot["chain_block_count"] is None and port != NODE_EVM_RPC_PORT and errors and rpc_method_unavailable(errors[-1]):
+        start = time.monotonic()
+        total_attempts += 1
+        try:
+            main_height = parse_rpc_quantity(mining_rpc_call(url, "getMainChainHeight", [], timeout=timeout))
+            snapshot["chain_block_count"] = main_height
+            snapshot["chain_main_height"] = main_height
+            snapshot["chain_rpc_source"] = "getMainChainHeight"
+            snapshot["chain_rpc_latency_ms"] = round((time.monotonic() - start) * 1000, 1)
+            snapshot["chain_rpc_attempts"] = total_attempts
+        except Exception as exc:
+            snapshot["chain_rpc_latency_ms"] = round((time.monotonic() - start) * 1000, 1)
+            snapshot["chain_rpc_attempts"] = total_attempts
+            errors.append(f"getMainChainHeight: {exc}")
+
+    if snapshot["chain_block_count"] is None:
+        detail = errors[-1] if errors else "unknown error"
+        primary = method_order[0] if method_order else "chain RPC"
+        if len(method_order) == 1:
+            snapshot["chain_rpc_error"] = f"{primary} failed for {source} after {NODE_CHAIN_RPC_RETRIES} attempt(s): {detail.split(': ', 1)[-1]}"
+        else:
+            snapshot["chain_rpc_error"] = f"chain RPC height methods failed for {source} after {total_attempts} attempt(s): {detail}"
         return snapshot
 
-    try:
-        snapshot["chain_main_height"] = parse_rpc_quantity(
-            mining_rpc_call(url, "getMainChainHeight", [], timeout=timeout)
-        )
-    except Exception as exc:
-        snapshot["chain_main_height_error"] = f"getMainChainHeight failed for {source}: {exc}"
+    if snapshot["chain_rpc_source"] == "eth_blockNumber":
+        snapshot.update(eth_syncing_details(url, timeout))
+    elif snapshot["chain_main_height"] is None:
+        try:
+            snapshot["chain_main_height"] = parse_rpc_quantity(
+                mining_rpc_call(url, "getMainChainHeight", [], timeout=timeout)
+            )
+        except Exception as exc:
+            snapshot["chain_main_height_error"] = f"getMainChainHeight failed for {source}: {exc}"
     return snapshot
 
 
@@ -4233,21 +5398,47 @@ def native_sync_progress(source: str) -> dict[str, Any] | None:
     }
 
 
-def node_sync_progress(source: str, url: str, timeout: float = 4.0) -> dict[str, Any]:
+def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TIMEOUT) -> dict[str, Any]:
     try:
         if not valid_url(url):
             raise RuntimeError("invalid node RPC URL")
         chain = node_chain_rpc_snapshot(source, url, timeout=timeout)
         current = safe_int(chain.get("chain_block_count"), None)
         if current is None:
-            raise RuntimeError(str(chain.get("chain_rpc_error") or "getBlockCount unavailable"))
+            return {
+                **unknown_sync_progress(source, str(chain.get("chain_rpc_error") or "getBlockCount unavailable")),
+                **chain,
+            }
+
+        sync_current = safe_int(chain.get("sync_current_block"), None)
+        sync_highest = safe_int(chain.get("sync_highest_block"), None)
+        if chain.get("chain_syncing") is True:
+            progress_current = sync_current if sync_current is not None else current
+            remaining = max(0, sync_highest - progress_current) if sync_highest is not None else None
+            percent = (
+                round(max(0.0, min(100.0, (progress_current / max(1, sync_highest)) * 100)), 2)
+                if sync_highest is not None
+                else None
+            )
+            return {
+                "status": "syncing",
+                "percent": percent,
+                "current_block": progress_current,
+                "highest_block": sync_highest,
+                "starting_block": None,
+                "remaining_blocks": remaining,
+                "source": source,
+                "error": "",
+                "current_block_source": chain.get("chain_rpc_source"),
+                **chain,
+            }
 
         native = native_sync_progress(source)
         if native:
             native.update(chain)
             native["current_block"] = current
             native["highest_block"] = None
-            native["current_block_source"] = "getBlockCount"
+            native["current_block_source"] = chain.get("chain_rpc_source")
             return native
 
         return {
@@ -4259,7 +5450,7 @@ def node_sync_progress(source: str, url: str, timeout: float = 4.0) -> dict[str,
             "remaining_blocks": 0,
             "source": source,
             "error": "",
-            "current_block_source": "getBlockCount",
+            "current_block_source": chain.get("chain_rpc_source"),
             **chain,
         }
     except Exception as exc:
@@ -4318,13 +5509,43 @@ def collect_sync_progress() -> dict[str, Any]:
             for item in known
             if item.get("chain_main_height") is not None
         ) if known and any(item.get("chain_main_height") is not None for item in known) else None,
-        "chain_rpc_source": "getBlockCount",
+        "chain_rpc_source": ",".join(
+            unique_names(
+                [
+                    str(item.get("chain_rpc_source") or "")
+                    for item in known
+                    if item.get("chain_rpc_source")
+                ]
+            )
+        ) or "unavailable",
         "starting_block": min(starting_values) if starting_values else None,
         "remaining_blocks": max(remaining_values) if remaining_values else (0 if status == "synced" else None),
         "source": "nodes",
         "error": error,
         "nodes": per_node,
     }
+
+
+def sync_progress_for_display_nodes(sync_progress: dict[str, Any], display_nodes: list[str]) -> dict[str, Any]:
+    progress_nodes = sync_progress.get("nodes") if isinstance(sync_progress.get("nodes"), dict) else {}
+    managed_display_nodes = [node for node in display_nodes if node in NODES]
+    if len(managed_display_nodes) != 1 or len(progress_nodes) != 1:
+        return sync_progress
+
+    display_node = managed_display_nodes[0]
+    source, progress = next(iter(progress_nodes.items()))
+    if source == display_node or not isinstance(progress, dict):
+        return sync_progress
+
+    aligned_progress = dict(progress)
+    aligned_progress["configured_source"] = source
+    aligned_progress["source"] = display_node
+    aligned = dict(sync_progress)
+    aligned["nodes"] = {display_node: aligned_progress}
+    if aligned.get("source") == source:
+        aligned["configured_source"] = source
+        aligned["source"] = display_node
+    return aligned
 
 
 def observe_sync_progress_health(sync_progress: dict[str, Any]) -> dict[str, Any]:
@@ -4448,10 +5669,15 @@ def annotate_global_pool_labels(payload: dict[str, Any]) -> dict[str, Any]:
 
     def annotate_cluster(cluster: dict[str, Any]) -> dict[str, Any]:
         address = str(cluster.get("address") or "")
+        existing_name = str(cluster.get("pool_name") or "").strip()
         label = labels.get(address.lower(), "")
-        if label:
+        if label and not (cluster.get("local_pool") and existing_name):
             cluster["pool_name"] = label
             cluster["pool_label"] = f"{label} ({short_eth_address(address)})"
+        elif existing_name and address:
+            cluster["pool_label"] = f"{existing_name} ({short_eth_address(address)})"
+        elif existing_name:
+            cluster["pool_label"] = existing_name
         elif address:
             cluster["pool_label"] = short_eth_address(address)
         return cluster
@@ -4650,7 +5876,8 @@ def collect_peer_location_guess() -> dict[str, Any]:
         if ip not in entries or now - int(entries.get(ip, {}).get("updated_at_epoch", 0) or 0) > PEER_GEO_CACHE_TTL_SECONDS
     ]
     if pending:
-        with ThreadPoolExecutor(max_workers=min(8, len(pending))) as executor:
+        worker_count = adaptive_worker_count("peer_geo", 8, len(pending))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = {executor.submit(fetch_peer_geo, ip): ip for ip in pending}
             for future in as_completed(futures):
                 result = future.result()
@@ -4832,9 +6059,26 @@ def read_global_history(limit: int | None = None) -> list[dict[str, Any]]:
 
 def record_global_snapshot(snapshot: dict[str, Any]) -> None:
     ensure_runtime()
-    history = read_global_history(limit=max(0, GLOBAL_HISTORY_LIMIT - 1))
-    history.append(snapshot)
-    write_jsonl_file(GLOBAL_HISTORY_FILE, history[-GLOBAL_HISTORY_LIMIT:], mode=0o600)
+    append_jsonl_file(GLOBAL_HISTORY_FILE, snapshot, mode=0o600)
+    state = read_json_file(GLOBAL_HISTORY_STATE_FILE, {})
+    previous_count = safe_int(state.get("row_count") if isinstance(state, dict) else None, 0)
+    row_count = previous_count + 1 if previous_count > 0 else count_text_lines(GLOBAL_HISTORY_FILE)
+    compact_threshold = max(GLOBAL_HISTORY_LIMIT + 1, GLOBAL_HISTORY_LIMIT * GLOBAL_HISTORY_COMPACT_MULTIPLIER)
+    compacted = False
+    if row_count > compact_threshold:
+        row_count = compact_jsonl_file(GLOBAL_HISTORY_FILE, GLOBAL_HISTORY_LIMIT, mode=0o600)
+        compacted = True
+    write_json_file(
+        GLOBAL_HISTORY_STATE_FILE,
+        {
+            "updated_at": now_iso(),
+            "row_count": row_count,
+            "limit": GLOBAL_HISTORY_LIMIT,
+            "compact_threshold": compact_threshold,
+            "compacted": compacted,
+        },
+        mode=0o600,
+    )
 
 
 def _pool_earning_rates_from_cluster(cluster: dict[str, Any], scan_window_hours: Decimal | None) -> tuple[str | None, str | None, str | None]:
@@ -4853,6 +6097,159 @@ def _pool_earning_rates_from_cluster(cluster: dict[str, Any], scan_window_hours:
         decimal_to_str(hourly_usd) if hourly_usd is not None else None,
         decimal_to_str(hourly_zar) if hourly_zar is not None else None,
     )
+
+
+def local_worker_identity_map() -> dict[str, dict[str, Any]]:
+    registry = read_miner_registry()
+    workers: dict[str, dict[str, Any]] = {}
+    for miner in registry.get("miners", []) or []:
+        if not isinstance(miner, dict):
+            continue
+        worker_values = merge_unique_strings(miner.get("last_workers"), miner.get("workers"))
+        label = miner_display_label(miner)
+        for worker in worker_values:
+            if not is_spendable_eth_address(worker):
+                continue
+            workers[str(worker).lower()] = {
+                "pool_name": label,
+                "display_name": miner.get("display_name") or miner.get("name") or "",
+                "display_label": label,
+                "device_type": miner.get("device_type") or "",
+                "ip": miner.get("ip") or "",
+                "mac": normalize_mac(miner.get("mac")),
+                "identity_key": miner_identity_key(miner),
+            }
+    return workers
+
+
+def collect_local_pool_global_clusters(
+    scan_window_seconds: int,
+    total_global_blocks: int,
+    scan_window_hours: Decimal | None,
+    price: dict[str, Any],
+) -> list[dict[str, Any]]:
+    seconds = max(1, int(scan_window_seconds or 1))
+    sql = f"""
+    SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json)
+    FROM (
+      SELECT c.miner_address,
+             count(*) AS credit_count,
+             count(DISTINCT c.block_hash) AS found_blocks,
+             COALESCE(sum(c.amount), 0)::text AS total_wei,
+             COALESCE(sum(c.amount) FILTER (WHERE b.status = 'PAID'), 0)::text AS paid_wei,
+             COALESCE(sum(c.amount) FILTER (WHERE b.status <> 'PAID' OR b.status IS NULL), 0)::text AS pending_wei,
+             min(c.created_at)::text AS first_credit_at,
+             max(c.created_at)::text AS last_credit_at,
+             to_char(min(c.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS first_seen_at,
+             to_char(max(c.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_seen_at
+      FROM credits c
+      LEFT JOIN blocks b ON b.hash = c.block_hash
+      WHERE c.created_at >= now() - ({seconds} * interval '1 second')
+      GROUP BY c.miner_address
+      ORDER BY count(DISTINCT c.block_hash) DESC, sum(c.amount) DESC
+    ) t;
+    """
+    try:
+        rows = pool_db_json(sql) or []
+    except Exception as exc:  # noqa: BLE001
+        return [{"source": "local-pool-db", "status": "failed", "error": str(exc), "local_pool": True}]
+    if not isinstance(rows, list):
+        return []
+
+    identities = local_worker_identity_map()
+    clusters: list[dict[str, Any]] = []
+    denominator = Decimal(max(1, int(total_global_blocks or 0)))
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        address = str(row.get("miner_address") or "").strip()
+        if not is_spendable_eth_address(address):
+            continue
+        credit_count = int(row.get("credit_count", 0) or 0)
+        found_blocks = int(row.get("found_blocks", 0) or 0)
+        total_bdag = wei_to_bdag(row.get("total_wei"))
+        hourly_bdag = total_bdag / scan_window_hours if scan_window_hours and scan_window_hours > 0 else None
+        identity = identities.get(address.lower(), {})
+        pool_name = str(identity.get("display_label") or identity.get("pool_name") or "Local pool")
+        share = Decimal(found_blocks) / denominator
+        clusters.append(
+            {
+                "rank": None,
+                "address": address,
+                "address_short": short_eth_address(address),
+                "pool_name": pool_name,
+                "pool_label": f"{pool_name} ({short_eth_address(address)})",
+                "source": "local-pool-db",
+                "local_pool": True,
+                "nodes": list(NODES),
+                "rpc_sources": ["local-pool-db"],
+                "workers": [address],
+                "shares": credit_count,
+                "blocks": found_blocks,
+                "credit_blocks": credit_count,
+                "found_blocks": found_blocks,
+                "share_percent": decimal_to_str(share * Decimal("100"), places=2),
+                "credited_bdag": decimal_to_str(total_bdag),
+                "estimated_bdag": decimal_to_str(total_bdag),
+                "estimated_usd": fiat_value(total_bdag, price, "usd"),
+                "estimated_zar": fiat_value(total_bdag, price, "zar"),
+                "estimated_wallet_bdag": decimal_to_str(total_bdag),
+                "estimated_bdag_avg_hour": decimal_to_str(hourly_bdag) if hourly_bdag is not None else None,
+                "estimated_usd_avg_hour": fiat_value(hourly_bdag, price, "usd") if hourly_bdag is not None else None,
+                "estimated_zar_avg_hour": fiat_value(hourly_bdag, price, "zar") if hourly_bdag is not None else None,
+                "estimated_bdag_recent_hour": decimal_to_str(hourly_bdag) if hourly_bdag is not None else None,
+                "estimated_usd_recent_hour": fiat_value(hourly_bdag, price, "usd") if hourly_bdag is not None else None,
+                "estimated_zar_recent_hour": fiat_value(hourly_bdag, price, "zar") if hourly_bdag is not None else None,
+                "first_seen_at": row.get("first_seen_at") or row.get("first_credit_at"),
+                "last_seen_at": row.get("last_seen_at") or row.get("last_credit_at"),
+                "location": "local pool",
+                "location_confidence": "pool-db",
+                "identity_key": identity.get("identity_key") or "",
+                "ip": identity.get("ip") or "",
+                "mac": identity.get("mac") or "",
+                "device_type": identity.get("device_type") or "",
+            }
+        )
+    return clusters
+
+
+def merge_global_local_pool_clusters(
+    chain_clusters: list[dict[str, Any]],
+    local_clusters: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged = [dict(cluster) for cluster in chain_clusters if isinstance(cluster, dict)]
+    by_address = {str(cluster.get("address") or "").lower(): cluster for cluster in merged}
+    for local in local_clusters:
+        if not isinstance(local, dict) or local.get("status") == "failed":
+            continue
+        address = str(local.get("address") or "").lower()
+        existing = by_address.get(address)
+        if existing is None:
+            merged.append(dict(local))
+            continue
+        existing["local_pool"] = True
+        existing["source"] = "on-chain+local-pool-db"
+        for key in (
+            "pool_name",
+            "pool_label",
+            "nodes",
+            "workers",
+            "shares",
+            "credit_blocks",
+            "credited_bdag",
+            "found_blocks",
+            "estimated_wallet_bdag",
+            "identity_key",
+            "ip",
+            "mac",
+            "device_type",
+        ):
+            if local.get(key) not in (None, "", []):
+                existing[key] = local[key]
+    merged.sort(key=lambda item: (int(item.get("blocks", 0) or 0), str(item.get("last_seen_at") or "")), reverse=True)
+    for rank, cluster in enumerate(merged, start=1):
+        cluster["rank"] = rank
+    return merged
 
 
 def collect_global_blockchain() -> dict[str, Any]:
@@ -4883,6 +6280,14 @@ def collect_global_blockchain() -> dict[str, Any]:
             "clusters": [],
             "history": history,
         }
+
+    maintenance_decision = background_maintenance_decision("global_blockchain_scan")
+    if not maintenance_decision.get("allowed", True):
+        reason = "; ".join(str(item) for item in maintenance_decision.get("reasons", []) if item)
+        result = stale_or_failed(f"global blockchain scan deferred: {reason}", [reason] if reason else [])
+        result["maintenance_deferred"] = True
+        result["maintenance_decision"] = maintenance_decision
+        return result
 
     rpc_sources = global_evm_rpc_urls() or [("local-chain", f"http://127.0.0.1:{NODE_EVM_RPC_PORT}")]
     latest_errors: list[str] = []
@@ -4918,7 +6323,14 @@ def collect_global_blockchain() -> dict[str, Any]:
 
     headers: list[dict[str, Any]] = []
     fetch_errors: list[str] = []
-    with ThreadPoolExecutor(max_workers=max(1, min(GLOBAL_RPC_WORKERS, len(block_numbers)))) as pool:
+    global_pressure = {
+        "iowait_percent": maintenance_decision.get("iowait_percent"),
+        "io_some_avg10": maintenance_decision.get("io_some_avg10"),
+        "cpu_some_avg10": maintenance_decision.get("cpu_some_avg10"),
+        "chain_rpc_latency_ms": maintenance_decision.get("chain_rpc_latency_ms"),
+    }
+    global_worker_count = adaptive_worker_count("global_rpc", GLOBAL_RPC_WORKERS, len(block_numbers), global_pressure)
+    with ThreadPoolExecutor(max_workers=global_worker_count) as pool:
         future_map = {pool.submit(load_block, number): number for number in block_numbers}
         for future in as_completed(future_map):
             number = future_map[future]
@@ -5026,6 +6438,14 @@ def collect_global_blockchain() -> dict[str, Any]:
             }
         )
 
+    local_pool_clusters = collect_local_pool_global_clusters(
+        window_seconds,
+        total_blocks,
+        scan_window_hours,
+        price,
+    )
+    display_clusters = merge_global_local_pool_clusters(enriched_clusters, local_pool_clusters)
+
     payload = {
         "status": "ok",
         "source": "on-chain",
@@ -5035,6 +6455,8 @@ def collect_global_blockchain() -> dict[str, Any]:
         "latest_block": latest_block,
         "requested_blocks": requested_count,
         "fetched_blocks": total_blocks,
+        "global_rpc_worker_count": global_worker_count,
+        "adaptive_concurrency": adaptive_worker_budgets(global_pressure),
         "scan_start_block": start_block,
         "scan_end_block": latest_block,
         "scan_window_seconds": window_seconds,
@@ -5044,8 +6466,11 @@ def collect_global_blockchain() -> dict[str, Any]:
         "estimated_total_reward_bdag": total_reward_estimate_bdag,
         "estimated_total_reward_usd": fiat_value(total_reward_estimate, price, "usd") if total_reward_estimate is not None else None,
         "estimated_total_reward_zar": fiat_value(total_reward_estimate, price, "zar") if total_reward_estimate is not None else None,
-        "unique_miners": unique_miners,
-        "clusters": enriched_clusters,
+        "unique_miners": len(display_clusters),
+        "chain_unique_miners": unique_miners,
+        "clusters": display_clusters,
+        "chain_clusters": enriched_clusters,
+        "local_pool_clusters": local_pool_clusters,
         "peer_location": peer_location,
         "fetch_errors": fetch_errors[:20],
     }
@@ -5062,19 +6487,25 @@ def collect_global_blockchain() -> dict[str, Any]:
                     "address_short": cluster["address_short"],
                     "pool_name": cluster.get("pool_name", ""),
                     "pool_label": cluster.get("pool_label", cluster["address_short"]),
-                    "estimated_bdag_avg_hour": cluster["estimated_bdag_avg_hour"],
-                    "estimated_usd_avg_hour": cluster["estimated_usd_avg_hour"],
-                    "estimated_zar_avg_hour": cluster["estimated_zar_avg_hour"],
-                    "estimated_bdag_recent_hour": cluster["estimated_bdag_recent_hour"],
-                    "estimated_usd_recent_hour": cluster["estimated_usd_recent_hour"],
-                    "estimated_zar_recent_hour": cluster["estimated_zar_recent_hour"],
-                    "blocks": cluster["blocks"],
-                    "share_percent": cluster["share_percent"],
-                    "estimated_bdag": cluster["estimated_bdag"],
-                    "estimated_usd": cluster["estimated_usd"],
-                    "estimated_zar": cluster["estimated_zar"],
+                    "source": cluster.get("source", "on-chain"),
+                    "local_pool": bool(cluster.get("local_pool")),
+                    "estimated_bdag_avg_hour": cluster.get("estimated_bdag_avg_hour"),
+                    "estimated_usd_avg_hour": cluster.get("estimated_usd_avg_hour"),
+                    "estimated_zar_avg_hour": cluster.get("estimated_zar_avg_hour"),
+                    "estimated_bdag_recent_hour": cluster.get("estimated_bdag_recent_hour"),
+                    "estimated_usd_recent_hour": cluster.get("estimated_usd_recent_hour"),
+                    "estimated_zar_recent_hour": cluster.get("estimated_zar_recent_hour"),
+                    "blocks": cluster.get("blocks"),
+                    "shares": cluster.get("shares", cluster.get("blocks")),
+                    "credit_blocks": cluster.get("credit_blocks", cluster.get("blocks")),
+                    "found_blocks": cluster.get("found_blocks", cluster.get("blocks")),
+                    "share_percent": cluster.get("share_percent"),
+                    "credited_bdag": cluster.get("credited_bdag", cluster.get("estimated_bdag")),
+                    "estimated_bdag": cluster.get("estimated_bdag"),
+                    "estimated_usd": cluster.get("estimated_usd"),
+                    "estimated_zar": cluster.get("estimated_zar"),
                 }
-                for cluster in enriched_clusters
+                for cluster in display_clusters
             ],
         }
     )
@@ -5090,7 +6521,7 @@ def collect_wallet_balances(address: str | None = None) -> dict[str, Any]:
         return {"address": None, "sources": []}
 
     sources: list[dict[str, Any]] = []
-    for name, url in node_rpc_urls():
+    for name, url in global_evm_rpc_urls():
         try:
             balance = json_rpc_balance(url, wallet)
             sources.append({"source": name, "type": "local-rpc", "status": "ok", **balance})
@@ -5198,7 +6629,7 @@ def collect_wallet_balances_for_addresses(addresses: list[str]) -> dict[str, Any
             "addresses": [],
         }
 
-    rpc_sources = [(source, url, "local-rpc") for source, url in node_rpc_urls()]
+    rpc_sources = [(source, url, "evm-rpc") for source, url in global_evm_rpc_urls()]
     rpc_sources.extend(
         (source, url, "public-rpc")
         for source, url in named_urls_from_env(
@@ -5233,7 +6664,8 @@ def collect_wallet_balances_for_addresses(addresses: list[str]) -> dict[str, Any
         }
 
     balances: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=min(8, len(unique_addresses))) as executor:
+    worker_count = adaptive_worker_count("wallet_balance", 8, len(unique_addresses))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = {executor.submit(balance_for_address, address): address for address in unique_addresses}
         for future in as_completed(futures):
             balances.append(future.result())
@@ -5255,6 +6687,7 @@ def collect_wallet_balances_for_addresses(addresses: list[str]) -> dict[str, Any
         "ok_address_count": ok_count,
         "total_wei": str(total_wei),
         "total_bdag": decimal_to_str(wei_to_bdag(total_wei)),
+        "worker_count": worker_count,
         "addresses": balances,
     }
 
@@ -5323,7 +6756,7 @@ def archive_rpc_urls() -> list[tuple[str, str]]:
                 ("blockdag-engineering-rpc", "https://rpc.blockdag.engineering"),
             ],
         ),
-        *node_rpc_urls(),
+        *global_evm_rpc_urls(),
     ]
 
 
@@ -5360,9 +6793,9 @@ def collect_onchain_wallet_window_earnings(address: str | None, hours: int = 24)
     if isinstance(cached, dict) and now_epoch - int(cached.get("generated_epoch", 0)) < EARNINGS_ONCHAIN_CACHE_SECONDS:
         return {**cached, "cache_hit": True}
 
-    local_sources = node_rpc_urls()
+    local_sources = global_evm_rpc_urls()
     if not local_sources:
-        return {"status": "failed", "hours": hours, "address": address, "error": "no local node RPC sources"}
+        return {"status": "failed", "hours": hours, "address": address, "error": "no local EVM RPC sources"}
     local_name, local_url = local_sources[0]
     try:
         latest_block = int(str(json_rpc_call(local_url, "eth_blockNumber", [], timeout=8.0)), 16)
@@ -5469,12 +6902,10 @@ def collect_onchain_wallet_window_earnings(address: str | None, hours: int = 24)
 
 
 def fetch_text_url(url: str, headers: dict[str, str], timeout: float = 12.0) -> str:
-    command = ["curl", "-fsSL", "--max-time", str(timeout)]
-    for key, value in headers.items():
-        command.extend(["-H", f"{key}: {value}"])
-    command.append(url)
-    result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout + 5)
-    return result.stdout
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        return response.read().decode(charset, errors="replace")
 
 
 def fetch_json_url(url: str, headers: dict[str, str] | None = None, timeout: float = 12.0) -> Any:
@@ -5574,7 +7005,8 @@ def fetch_cmc_price() -> dict[str, Any]:
         ("pionex", fetch_pionex_trade_price),
     ]
     sources: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=len(source_specs)) as pool:
+    worker_count = adaptive_worker_count("price_fetch", len(source_specs), len(source_specs))
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
         futures = {pool.submit(fetcher): name for name, fetcher in source_specs}
         for future in as_completed(futures):
             name = futures[future]
@@ -5620,6 +7052,7 @@ def fetch_cmc_price() -> dict[str, Any]:
         "usd": decimal_to_str(usd_price, places=6),
         "zar": decimal_to_str(zar_price, places=6),
         "usd_zar_rate": decimal_to_str(usd_zar_rate, places=6),
+        "worker_count": worker_count,
         "sources": sources,
     }
     if fx_warning:
@@ -5682,7 +7115,8 @@ def collect_miner_hashrate_debug(registry_miners: list[dict[str, Any]], activity
             "source": "asic-cgminer-devs",
         }
 
-    with ThreadPoolExecutor(max_workers=min(MINER_HASHRATE_PROBE_WORKERS, max(1, len(candidates)))) as pool:
+    worker_count = adaptive_worker_count("miner_hashrate", MINER_HASHRATE_PROBE_WORKERS, len(candidates))
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
         futures = {pool.submit(probe, ip): ip for ip in candidates}
         for future in as_completed(futures):
             ip, payload = future.result()
@@ -5694,12 +7128,25 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
     activity = collect_pool_activity(lines=POOL_ACTIVITY_LOG_LINES)
     registry = upsert_pool_activity_miners(activity)
     registry_by_ip = {str(item.get("ip")): item for item in registry.get("miners", []) if item.get("ip")}
+    registry_by_identity = {
+        miner_identity_key(item): item
+        for item in registry.get("miners", [])
+        if miner_identity_key(item)
+    }
+
+    def registered_for_activity(item: dict[str, Any]) -> dict[str, Any]:
+        identity = str(item.get("identity_key") or "")
+        if identity and identity in registry_by_identity:
+            return registry_by_identity[identity]
+        return registry_by_ip.get(str(item.get("ip") or ""), {})
+
     active_activity_miners = [
         item
         for item in activity.get("miners", [])
         if not is_retired_miner_identity(
-            {**item, **registry_by_ip.get(str(item.get("ip") or ""), {})},
+            {**item, **registered_for_activity(item)},
             str(item.get("ip") or ""),
+            normalize_mac((registered_for_activity(item) or {}).get("mac")) or normalize_mac(item.get("mac")),
         )
     ]
     hashrate_by_ip = collect_miner_hashrate_debug(registry.get("miners", []), active_activity_miners)
@@ -5708,29 +7155,31 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
         for item in credit_totals.get("by_address", [])
         if item.get("miner_address")
     }
-    worker_to_ips: dict[str, set[str]] = {}
+    worker_to_identities: dict[str, set[str]] = {}
     for item in active_activity_miners:
         activity_ip = str(item.get("ip") or "")
-        activity_mac = normalize_mac((registry_by_ip.get(activity_ip, {}) or {}).get("mac"))
+        registered = registered_for_activity(item)
+        activity_mac = normalize_mac((registered or {}).get("mac")) or normalize_mac(item.get("mac"))
         if is_docker_bridge_pool_log_client(activity_ip, activity_mac):
             continue
-        ip = str(item.get("ip") or "")
+        identity = str(item.get("identity_key") or miner_identity_key({**registered, **item}) or f"ip:{activity_ip}")
         for worker in item.get("workers", []):
-            worker_to_ips.setdefault(str(worker), set()).add(ip)
+            worker_to_identities.setdefault(str(worker), set()).add(identity)
     total_work = sum(int(item.get("share_work", 0) or 0) for item in active_activity_miners)
     total_bdag = wei_to_bdag(credit_totals.get("totals", {}).get("total_wei"))
     recent_bdag = wei_to_bdag(credit_totals.get("recent_1h", {}).get("total_wei"))
     estimates: list[dict[str, Any]] = []
     for item in active_activity_miners:
         activity_ip = str(item.get("ip") or "")
-        registered = registry_by_ip.get(activity_ip, {})
-        if is_docker_bridge_pool_log_client(activity_ip, normalize_mac(registered.get("mac"))):
+        registered = registered_for_activity(item)
+        registered_mac = normalize_mac(registered.get("mac")) or normalize_mac(item.get("mac"))
+        if is_docker_bridge_pool_log_client(activity_ip, registered_mac):
             continue
         work = int(item.get("share_work", 0) or 0)
-        hashrate = hashrate_by_ip.get(item["ip"], {})
+        hashrate = hashrate_by_ip.get(activity_ip, {})
         workers = merge_unique_strings(item.get("workers"), registered.get("last_workers"))
-        unique_workers = [worker for worker in workers if len(worker_to_ips.get(worker, set())) <= 1]
-        shared_workers = [worker for worker in workers if len(worker_to_ips.get(worker, set())) > 1]
+        unique_workers = [worker for worker in workers if len(worker_to_identities.get(worker, set())) <= 1]
+        shared_workers = [worker for worker in workers if len(worker_to_identities.get(worker, set())) > 1]
         credit_workers = [worker for worker in unique_workers if worker in credit_by_address]
         credit_rows = [credit_by_address[worker] for worker in credit_workers]
         credited_bdag = sum(((decimal_value(row.get("total_bdag")) or Decimal("0")) for row in credit_rows), Decimal("0"))
@@ -5744,10 +7193,12 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
         estimates.append(
             {
                 "ip": item["ip"],
-                "mac": normalize_mac(registered.get("mac")),
-                "device_id": registered.get("device_id") or (f"mac:{normalize_mac(registered.get('mac'))}" if normalize_mac(registered.get("mac")) else ""),
+                "mac": registered_mac,
+                "device_id": registered.get("device_id") or (f"mac:{registered_mac}" if registered_mac else ""),
+                "identity_key": miner_identity_key({**registered, "mac": registered_mac}),
                 "display_name": registered.get("display_name") or "",
-                "device_type": registered.get("device_type") or item.get("device_type") or "stratum",
+                "display_label": miner_display_label({**registered, "mac": registered_mac}),
+                "device_type": "asic" if hashrate.get("available") else registered.get("device_type") or item.get("device_type") or "stratum",
                 "workers": workers,
                 "credit_workers": credit_workers,
                 "shared_workers": shared_workers,
@@ -5826,7 +7277,9 @@ def compact_miner_estimate_for_history(miner: dict[str, Any]) -> dict[str, Any]:
         "ip",
         "mac",
         "device_id",
+        "identity_key",
         "display_name",
+        "display_label",
         "shares",
         "share_work",
         "work_percent",
@@ -6037,6 +7490,183 @@ def read_compact_earnings_history_for_dashboard() -> tuple[list[dict[str, Any]],
     return [compact_earnings_snapshot(snapshot) for _, snapshot in selected], sample_count
 
 
+def format_earnings_history_timestamp(value: Any) -> str | None:
+    if not value:
+        return None
+    text = str(value)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        parsed = parse_earnings_timestamp(text)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def miner_template_by_worker(miner_estimates: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    mapping: dict[str, dict[str, Any]] = {}
+    for miner in miner_estimates:
+        if not isinstance(miner, dict):
+            continue
+        workers = merge_unique_strings(miner.get("credit_workers"), miner.get("workers"))
+        for worker in workers:
+            if worker:
+                mapping[str(worker).lower()] = miner
+    return mapping
+
+
+def derived_credit_history_for_dashboard(
+    price: dict[str, Any],
+    miner_estimates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not EARNINGS_DERIVED_HISTORY_ENABLED:
+        return []
+    bucket_seconds = max(60, int(EARNINGS_DERIVED_HISTORY_BUCKET_SECONDS))
+    retention_seconds = max(3600, int(EARNINGS_DASHBOARD_HISTORY_SECONDS))
+    sql = f"""
+    WITH params AS (
+      SELECT
+        now() - interval '{retention_seconds} seconds' AS start_at,
+        interval '{bucket_seconds} seconds' AS bucket_width
+    ),
+    prior AS (
+      SELECT COALESCE(sum(amount), 0) AS total_wei
+      FROM credits, params
+      WHERE created_at < params.start_at
+    ),
+    bucketed AS (
+      SELECT
+        date_bin(params.bucket_width, created_at, timestamp '2000-01-01') AS bucket_at,
+        miner_address,
+        count(*) AS credit_count,
+        COALESCE(sum(amount), 0) AS total_wei
+      FROM credits, params
+      WHERE created_at >= params.start_at
+      GROUP BY bucket_at, miner_address
+    ),
+    bucket_totals AS (
+      SELECT bucket_at, COALESCE(sum(total_wei), 0) AS bucket_wei
+      FROM bucketed
+      GROUP BY bucket_at
+    ),
+    running AS (
+      SELECT
+        bucket_at,
+        (SELECT total_wei FROM prior)
+          + COALESCE(sum(bucket_wei) OVER (ORDER BY bucket_at ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 0)
+          AS cumulative_total_wei
+      FROM bucket_totals
+    )
+    SELECT COALESCE(json_agg(row_to_json(t) ORDER BY bucket_at, miner_address), '[]'::json)
+    FROM (
+      SELECT
+        b.bucket_at::text AS bucket_at,
+        b.miner_address,
+        b.credit_count,
+        b.total_wei::text AS total_wei,
+        r.cumulative_total_wei::text AS cumulative_total_wei
+      FROM bucketed b
+      JOIN running r USING (bucket_at)
+      ORDER BY b.bucket_at, b.miner_address
+    ) t;
+    """
+    try:
+        rows = pool_db_json(sql)
+    except Exception:
+        return []
+    if not isinstance(rows, list):
+        return []
+
+    by_worker = miner_template_by_worker(miner_estimates)
+    bucket_hours = Decimal(str(bucket_seconds)) / Decimal("3600")
+    grouped: dict[str, dict[str, Any]] = {}
+    bucket_totals: dict[str, Decimal] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        generated_at = format_earnings_history_timestamp(row.get("bucket_at"))
+        if not generated_at:
+            continue
+        amount_bdag = wei_to_bdag(row.get("total_wei"))
+        bucket_totals[generated_at] = bucket_totals.get(generated_at, Decimal("0")) + amount_bdag
+        snapshot = grouped.setdefault(
+            generated_at,
+            {
+                "generated_at": generated_at,
+                "total_bdag": decimal_to_str(wei_to_bdag(row.get("cumulative_total_wei"))),
+                "credit_balance_check": {"wallet_bdag": None},
+                "miner_estimates": [],
+                "history_source": "pool-db-derived-credits",
+                "bucket_seconds": bucket_seconds,
+            },
+        )
+        address = str(row.get("miner_address") or "")
+        template = by_worker.get(address.lower(), {})
+        rate_bdag = amount_bdag / bucket_hours if bucket_hours > 0 else Decimal("0")
+        miner = {
+            "ip": template.get("ip") or "",
+            "mac": template.get("mac") or "",
+            "device_id": template.get("device_id") or "",
+            "display_name": template.get("display_name") or "",
+            "device_type": template.get("device_type") or "chain-derived",
+            "workers": [address] if address else [],
+            "credit_workers": [address] if address else [],
+            "credit_scope": "pool-db-derived",
+            "shares": None,
+            "share_work": None,
+            "blocks_found": int(row.get("credit_count", 0) or 0),
+            "estimated_bdag_avg_hour": decimal_to_str(rate_bdag),
+            "estimated_bdag_1h": decimal_to_str(rate_bdag),
+            "estimated_usd_avg_hour": fiat_value(rate_bdag, price, "usd"),
+            "estimated_usd_1h": fiat_value(rate_bdag, price, "usd"),
+            "estimated_zar_avg_hour": fiat_value(rate_bdag, price, "zar"),
+            "estimated_zar_1h": fiat_value(rate_bdag, price, "zar"),
+            "history_source": "pool-db-derived-credits",
+        }
+        for key in ("hashrate", "av_hashrate", "hashrate_ghs", "av_hashrate_ghs", "hashrate_available", "hashrate_source"):
+            if key in template:
+                miner[key] = template.get(key)
+        snapshot["miner_estimates"].append(miner)
+
+    for generated_at, snapshot in grouped.items():
+        total = bucket_totals.get(generated_at, Decimal("0"))
+        if total <= 0:
+            continue
+        for miner in snapshot.get("miner_estimates", []):
+            address_total = Decimal("0")
+            try:
+                rate = Decimal(str(miner.get("estimated_bdag_avg_hour") or "0"))
+                address_total = rate * bucket_hours
+            except (InvalidOperation, ValueError):
+                pass
+            miner["work_percent"] = percent_to_str((address_total / total) * Decimal("100")) if address_total > 0 else "0.00"
+
+    return [grouped[key] for key in sorted(grouped)]
+
+
+def merge_earnings_history(actual: list[dict[str, Any]], derived: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not derived:
+        return actual
+    actual_epochs = [
+        parsed.timestamp()
+        for parsed in (parse_earnings_timestamp(item.get("generated_at")) for item in actual if isinstance(item, dict))
+        if parsed is not None
+    ]
+    skip_seconds = max(EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS * 2, EARNINGS_DERIVED_HISTORY_BUCKET_SECONDS // 2)
+    merged = list(actual)
+    for snapshot in derived:
+        parsed = parse_earnings_timestamp(snapshot.get("generated_at")) if isinstance(snapshot, dict) else None
+        if parsed is None:
+            continue
+        epoch = parsed.timestamp()
+        if any(abs(epoch - actual_epoch) <= skip_seconds for actual_epoch in actual_epochs):
+            continue
+        merged.append(snapshot)
+    return compact_earnings_history_for_dashboard(merged)
+
+
 def parse_earnings_timestamp(value: Any) -> datetime | None:
     if not value:
         return None
@@ -6098,7 +7728,8 @@ def collect_hourly_averages(
             timed_wallets.append((parsed_at, wallet_total, str(snapshot.get("generated_at"))))
         for miner in snapshot.get("miner_estimates") or []:
             key = str(
-                miner.get("device_id")
+                miner.get("identity_key")
+                or miner.get("device_id")
                 or (f"mac:{normalize_mac(miner.get('mac'))}" if normalize_mac(miner.get("mac")) else "")
                 or miner.get("ip")
                 or ""
@@ -6235,11 +7866,9 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
     onchain_24h = collect_onchain_wallet_window_earnings(primary_mining_address, hours=24)
     onchain_1h = collect_onchain_wallet_window_earnings(primary_mining_address, hours=1)
     recent_24h_bdag = decimal_value(onchain_24h.get("earned_bdag")) if onchain_24h.get("status") == "ok" else None
-    if recent_24h_bdag is None:
-        recent_24h_bdag = db_recent_24h_bdag
     recent_bdag = decimal_value(onchain_1h.get("earned_bdag")) if onchain_1h.get("status") == "ok" else None
     if recent_bdag is None:
-        recent_bdag = db_recent_bdag
+        recent_bdag = Decimal("0")
     payment_wallet_addresses = [primary_mining_address] if is_spendable_eth_address(primary_mining_address) else []
     payment_wallet_balance = collect_wallet_balances_for_addresses(payment_wallet_addresses)
     credit_wallet_balance = collect_wallet_balances_for_addresses(wallet_addresses_from_credits(credits)) if "error" not in credits else {
@@ -6266,6 +7895,9 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
         history, history_sample_count = read_compact_earnings_history_for_dashboard()
     else:
         history, history_sample_count = [], 0
+    derived_history = derived_credit_history_for_dashboard(price, miner_estimates) if include_history else []
+    if derived_history:
+        history = merge_earnings_history(history, derived_history)
     hourly_averages = collect_hourly_averages(
         history,
         total_bdag,
@@ -6274,13 +7906,14 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
         wallet_bdag,
         credits.get("totals", {}).get("first_credit_at"),
         current_earned_24h_bdag=recent_24h_bdag,
-        current_earned_24h_source=onchain_24h.get("source") if onchain_24h.get("status") == "ok" else "pool-db-credits-24h",
+        current_earned_24h_source=onchain_24h.get("source") if onchain_24h.get("status") == "ok" else None,
     )
     wallet_runtime_avg = decimal_value(hourly_averages.get("wallet_avg_bdag_hour_since_pool_start"))
     wallet_recent_avg = decimal_value(hourly_averages.get("wallet_recent_bdag_hour")) or wallet_runtime_avg
     for miner in miner_estimates:
         tracked_key = str(
-            miner.get("device_id")
+            miner.get("identity_key")
+            or miner.get("device_id")
             or (f"mac:{normalize_mac(miner.get('mac'))}" if normalize_mac(miner.get("mac")) else "")
             or miner.get("ip")
             or ""
@@ -6386,15 +8019,19 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
             "last_24h": onchain_24h,
         },
         "earnings_24h": {
-            "source": onchain_24h.get("source") if onchain_24h.get("status") == "ok" else "pool-db-credits-24h",
-            "bdag": decimal_to_str(recent_24h_bdag),
-            "usd": fiat_value(recent_24h_bdag, price, "usd"),
-            "zar": fiat_value(recent_24h_bdag, price, "zar"),
+            "status": onchain_24h.get("status"),
+            "source": onchain_24h.get("source") if onchain_24h.get("status") == "ok" else "on-chain-unavailable",
+            "source_truth": "on-chain balance window reconciled with native transfers",
+            "fallback_used": False,
+            "bdag": decimal_to_str(recent_24h_bdag) if recent_24h_bdag is not None else None,
+            "usd": fiat_value(recent_24h_bdag, price, "usd") if recent_24h_bdag is not None else None,
+            "zar": fiat_value(recent_24h_bdag, price, "zar") if recent_24h_bdag is not None else None,
             "credit_count": credits.get("recent_24h", {}).get("credit_count"),
             "first_credit_at": credits.get("recent_24h", {}).get("first_credit_at"),
             "last_credit_at": credits.get("recent_24h", {}).get("last_credit_at"),
             "onchain_reconciliation": onchain_24h,
             "db_credit_fallback_bdag": decimal_to_str(db_recent_24h_bdag),
+            "db_credit_diagnostic_bdag": decimal_to_str(db_recent_24h_bdag),
         },
         "credit_balance_check": credit_balance_check,
         "hourly_averages": hourly_averages,
@@ -6408,6 +8045,9 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
         "snapshot_log": str(EARNINGS_SNAPSHOT_FILE),
         "history": history if include_history else [],
         "history_sample_count": history_sample_count,
+        "history_derived_sample_count": len(derived_history),
+        "history_total_sample_count": len(history) if include_history else 0,
+        "history_derivation_source": "pool-db credits" if derived_history else "",
         "history_retention_days": decimal_to_str(Decimal(EARNINGS_DASHBOARD_HISTORY_SECONDS) / Decimal("86400"), places=1),
         "history_expected_interval_seconds": EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS,
         "history_stale_threshold_seconds": history_stale_threshold_seconds,
@@ -6421,9 +8061,9 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
 
 def record_earnings_snapshot() -> dict[str, Any]:
     ensure_runtime()
-    # The watchdog only appends a fresh point. Loading the full historical
-    # earnings plot here adds avoidable memory pressure to a mining-critical
-    # process.
+    # The status sampler/watchdog only appends a fresh point. Loading the full
+    # historical earnings plot here adds avoidable memory pressure to a
+    # mining-critical process.
     earnings = collect_earnings(include_history=False)
     snapshot = {
         "generated_at": earnings["generated_at"],

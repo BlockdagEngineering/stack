@@ -22,7 +22,9 @@ RESTORE_TIMEOUT_SECONDS="${BDAG_FASTSNAP_RESTORE_TIMEOUT_SECONDS:-180}"
 REQUIRE_BOTH_BACKENDS_FOR_VERIFY="${BDAG_FASTSNAP_REQUIRE_BOTH_BACKENDS_FOR_VERIFY:-1}"
 DOCKER_CPU_SHARES="${BDAG_FASTSNAP_DOCKER_CPU_SHARES:-128}"
 DOCKER_BLKIO_WEIGHT="${BDAG_FASTSNAP_DOCKER_BLKIO_WEIGHT:-10}"
-DOCKER_CPUS="${BDAG_FASTSNAP_DOCKER_CPUS:-}"
+# FastSnap export finalization and verify are CPU-heavy. Keep the default
+# bounded so maintenance cannot freely compete with the live mining backend.
+DOCKER_CPUS="${BDAG_FASTSNAP_DOCKER_CPUS:-1.5}"
 MAX_EXPORT_BACKEND_LAG="${BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG:-1000}"
 REQUIRE_EXPORT_BACKEND_FRESH="${BDAG_FASTSNAP_REQUIRE_EXPORT_BACKEND_FRESH:-1}"
 METRICS_TIMEOUT="${BDAG_FASTSNAP_METRICS_TIMEOUT:-3}"
@@ -45,9 +47,27 @@ log() {
   echo "[$(date -Is)] $*" | tee -a "$LOG_FILE"
 }
 
+maintenance_backoff_reason() {
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PROJECT_ROOT/ops" BDAG_PROJECT_ROOT="$PROJECT_ROOT" python3 - "$1" <<'PY'
+import sys
+
+from pool_ops import background_maintenance_decision, collect_status_cached
+
+decision = background_maintenance_decision(sys.argv[1], collect_status_cached(include_logs=False))
+if not decision.get("allowed", True):
+    print("; ".join(str(item) for item in decision.get("reasons", []) if item))
+PY
+}
+
 compose() {
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
 }
+
+pressure_reason="$(maintenance_backoff_reason fastsnap_seed 2>>"$LOG_FILE" || true)"
+if [[ -n "$pressure_reason" ]]; then
+  log "skipping FastSnap seed build: background maintenance backoff active: $pressure_reason"
+  exit 0
+fi
 
 resolve_node_image() {
   if [[ -n "$NODE_IMAGE" ]]; then

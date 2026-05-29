@@ -23,7 +23,7 @@ from pool_ops import (
     PROJECT_ROOT,
     RUNTIME_DIR,
     action_log_path,
-    collect_status,
+    collect_status_cached,
     configure_miner,
     default_miner_pool_settings,
     ensure_runtime,
@@ -207,7 +207,20 @@ def is_primary_pool_identity(row: dict[str, Any], mining_address: str) -> bool:
 
 
 def is_primary_pool_miner(row: dict[str, Any], mining_address: str) -> bool:
-    return bool(row.get("connected") and is_primary_pool_identity(row, mining_address))
+    if not is_primary_pool_identity(row, mining_address):
+        return False
+    if row.get("work_pool_active") is not None:
+        return bool(row.get("work_pool_active"))
+    return bool(
+        row.get("connected")
+        and (
+            row.get("managed")
+            or row.get("configured")
+            or int(row.get("submits") or 0) > 0
+            or int(row.get("shares") or 0) > 0
+            or int(row.get("blocks_found") or 0) > 0
+        )
+    )
 
 
 def int_or_none(value: Any) -> int | None:
@@ -247,6 +260,21 @@ def pool_initial_download_effective(status: dict[str, Any]) -> bool:
     if sync_progress.get("status") == "synced" and (remaining is None or remaining == 0) and fresh_mining:
         return False
     return True
+
+
+def pool_has_recent_mining_work(status: dict[str, Any], freshness_seconds: int = 60) -> bool:
+    sync_health = status.get("sync_health") if isinstance(status.get("sync_health"), dict) else {}
+    if sync_health.get("pool_has_recent_mining"):
+        return True
+    pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
+    share_age = int_or_none(pool_health.get("last_valid_share_age_seconds"))
+    block_age = int_or_none(pool_health.get("last_block_submit_age_seconds"))
+    valid_shares = int_or_none(pool_health.get("valid_share_count")) or 0
+    accepted_blocks = int_or_none(pool_health.get("block_submit_success_count")) or 0
+    return bool(
+        (valid_shares > 0 and share_age is not None and share_age <= freshness_seconds)
+        or (accepted_blocks > 0 and block_age is not None and block_age <= freshness_seconds)
+    )
 
 
 def miner_debug_hashrate_ghs(row: dict[str, Any]) -> float | None:
@@ -308,19 +336,32 @@ def degraded_primary_miners(status: dict[str, Any], stale_seconds: int) -> list[
     pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
     if pool_initial_download_effective(status) or int(pool_health.get("job_notify_count") or 0) <= 0:
         return []
+    miner_health = status.get("miner_health") if isinstance(status.get("miner_health"), dict) else {}
+    lane_balance = miner_health.get("lane_balance") if isinstance(miner_health.get("lane_balance"), dict) else {}
+    expected_lane_count = int_or_none(lane_balance.get("expected_lane_count"))
+    imbalanced_count = int_or_none(lane_balance.get("imbalanced_count"))
+    if expected_lane_count == 0 or imbalanced_count == 0:
+        return []
     now = int(time.time())
     mining_address = str(status.get("mining_address") or "")
-    miners = ((status.get("miner_health") or {}).get("miners") or [])
+    miners = miner_health.get("miners") or []
     degraded: list[dict[str, Any]] = []
     for row in miners:
         if not isinstance(row, dict) or not is_primary_pool_miner(row, mining_address):
             continue
         if not is_lan_ipv4(str(row.get("ip", ""))):
             continue
+        lane_status = str(row.get("lane_status") or "")
+        if lane_status in {"balanced", "high", "no-window-work", "not-tracked"}:
+            continue
+        if lane_status and lane_status not in {"low", "no-work"}:
+            continue
         submits = int(row.get("submits") or 0)
         shares = int(row.get("shares") or 0)
         blocks = int(row.get("blocks_found") or 0)
-        last_submit_epoch = int(row.get("last_submit_epoch") or row.get("last_pool_seen_epoch") or 0)
+        last_submit_epoch = int(row.get("last_submit_epoch") or 0)
+        if not last_submit_epoch and submits > 0:
+            last_submit_epoch = int(row.get("last_pool_seen_epoch") or 0)
         last_share_epoch = int(row.get("last_share_epoch") or 0)
         recently_submitted = bool(last_submit_epoch and now - last_submit_epoch <= stale_seconds * 2)
         share_age = now - last_share_epoch if last_share_epoch else None
@@ -1544,7 +1585,7 @@ def boot_repair(
         reason = str(marker.get("reason") or "dirty shutdown marker detected")
         log(f"boot-repair found dirty shutdown marker: {reason}")
         try:
-            collect_status(include_logs=True)
+            collect_status_cached(include_logs=True)
         except Exception as exc:  # noqa: BLE001 - boot repair should still attempt the conservative repair.
             log(f"boot-repair preflight status check failed: {exc}")
 
@@ -1583,7 +1624,7 @@ def boot_repair(
         return payload
 
     try:
-        boot_status = collect_status(include_logs=True)
+        boot_status = collect_status_cached(include_logs=True)
     except Exception as exc:  # noqa: BLE001 - boot repair should degrade gracefully on a bad status probe.
         log(f"boot-repair status check failed: {exc}")
         boot_status = {"stack_failures": [str(exc)], "failures": [str(exc)]}
@@ -1662,7 +1703,7 @@ def check_once(
     repair: bool = True,
 ) -> dict[str, Any]:
     state = read_state()
-    status = collect_status(include_logs=True)
+    status = collect_status_cached(include_logs=True)
     router_decision = None
     try:
         router_decision = write_rpc_router_state(status)
@@ -1678,7 +1719,7 @@ def check_once(
     down_miners = [
         item
         for item in miner_rows
-        if (item.get("managed") or is_primary_pool_identity(item, mining_address))
+        if (item.get("managed") or item.get("configured"))
         and item.get("device_type") in {"asic", "stratum"}
         and item.get("status") == "down"
         and is_lan_ipv4(str(item.get("ip", "")))
@@ -1854,6 +1895,7 @@ def check_once(
     elif active_rpc_template_failing(status) and int(miner_health.get("connected_count", 0) or 0) > 0:
         current_primary = current_rpc_primary()
         active_probe = ((status.get("rpc_template_health") or {}).get("rpc_failover") or {})
+        recent_mining_work = pool_has_recent_mining_work(status)
         reason = (
             "active RPC template path is refusing getBlockTemplate "
             f"({active_probe.get('error_count')}/{active_probe.get('sample_count')} failed)"
@@ -1861,7 +1903,10 @@ def check_once(
         if active_probe.get("last_error"):
             reason += f": {active_probe.get('last_error')}"
         state["consecutive_failures"] = 0
-        state["consecutive_syncing"] = int(state.get("consecutive_syncing", 0) or 0) + 1
+        if recent_mining_work:
+            state["consecutive_syncing"] = 0
+        else:
+            state["consecutive_syncing"] = int(state.get("consecutive_syncing", 0) or 0) + 1
         state["consecutive_share_stalls"] = 0
         state["last_status"] = "rpc_template_degraded"
         state["last_failures"] = []
@@ -1875,6 +1920,7 @@ def check_once(
                 "current_primary": current_primary,
                 "rpc_template_health": status.get("rpc_template_health"),
                 "connected_miners": miner_health.get("connected_count"),
+                "recent_mining_work": recent_mining_work,
             },
         )
         if repair:
@@ -1916,7 +1962,24 @@ def check_once(
                 node_cooldown_remaining = DEFAULT_NODE_TEMPLATE_RESTART_COOLDOWN - (
                     now - int(node_template_restart_by_node.get(repair_node, 0) or 0)
                 )
-                if state["consecutive_syncing"] >= 2 and node_cooldown_remaining <= 0:
+                if recent_mining_work:
+                    pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
+                    log(
+                        f"node template restart for {repair_node} suppressed because pool mining work is fresh "
+                        f"last_share_age={pool_health.get('last_valid_share_age_seconds')}s "
+                        f"last_block_submit_age={pool_health.get('last_block_submit_age_seconds')}s"
+                    )
+                    record_efficiency_event(
+                        "repair_suppressed",
+                        "warning",
+                        f"node template restart for {repair_node} suppressed because pool mining work is fresh",
+                        {
+                            "reason": reason,
+                            "last_valid_share_age_seconds": pool_health.get("last_valid_share_age_seconds"),
+                            "last_block_submit_age_seconds": pool_health.get("last_block_submit_age_seconds"),
+                        },
+                    )
+                elif state["consecutive_syncing"] >= 2 and node_cooldown_remaining <= 0:
                     ok = run_node_restart(repair_node, "active RPC template probe failure: " + reason)
                     node_template_restart_by_node[repair_node] = int(time.time())
                     state["last_node_template_restart_at_by_node"] = node_template_restart_by_node
@@ -2455,7 +2518,7 @@ def check_once(
         ]
         global_degradation = len(degraded_asics) >= max(2, (primary_miner_count + 1) // 2)
         reason = (
-            f"{len(degraded_asics)}/{primary_miner_count} primary ASIC miner(s) are connected/submitting "
+            f"{len(degraded_asics)}/{primary_miner_count} active miner source(s) are connected/submitting "
             f"but not receiving accepted shares"
         )
         if template_nodes:
@@ -2673,20 +2736,42 @@ def check_once(
                 state["consecutive_share_stalls"] = 0
     elif status.get("sync_health", {}).get("needs_fast_sync_repair"):
         sync_warnings = status.get("sync_warnings", status.get("warnings", []))
+        recent_mining_work = pool_has_recent_mining_work(status)
         state["consecutive_failures"] = 0
-        state["consecutive_syncing"] = int(state.get("consecutive_syncing", 0) or 0) + 1
+        if recent_mining_work:
+            state["consecutive_syncing"] = 0
+        else:
+            state["consecutive_syncing"] = int(state.get("consecutive_syncing", 0) or 0) + 1
         state["consecutive_share_stalls"] = 0
         state["last_status"] = "syncing"
         state["last_failures"] = []
         state["last_sync_warnings"] = sync_warnings
-        log(f"syncing consecutive={state['consecutive_syncing']} warnings={'; '.join(sync_warnings) or 'none'}")
+        log(
+            f"syncing consecutive={state['consecutive_syncing']} "
+            f"recent_mining_work={recent_mining_work} "
+            f"warnings={'; '.join(sync_warnings) or 'none'}"
+        )
         record_efficiency_event(
             "syncing",
             "warning",
             "; ".join(sync_warnings) or "sync repair needed",
-            {"consecutive_syncing": state["consecutive_syncing"]},
+            {
+                "consecutive_syncing": state["consecutive_syncing"],
+                "recent_mining_work": recent_mining_work,
+            },
         )
-        if repair and template_nodes:
+        if repair and recent_mining_work:
+            log("sync repair suppressed because pool mining work is fresh")
+            record_efficiency_event(
+                "repair_suppressed",
+                "warning",
+                "sync repair suppressed because pool mining work is fresh",
+                {
+                    "sync_warnings": sync_warnings,
+                    "freshness_seconds": 60,
+                },
+            )
+        elif repair and template_nodes:
             current_primary = current_rpc_primary()
             alternate_primary = (
                 healthy_rpc_alternate(status, template_nodes, current_primary)

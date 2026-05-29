@@ -90,18 +90,40 @@ media classification, and no entropy collection from block IO.
 
 Use a stable mount such as `/mnt/bdag-usb`, mount ext4 or F2FS with
 `noatime,lazytime`, and make Docker require that mount before container
-startup. Then point only active data directories at the USB, for example:
+startup. For any install where the active chain data is on USB,
+`BDAG_STORAGE_PROFILE=auto` now treats split IO as the preferred pattern. The
+default policy keeps the large, growing node datadirs on the USB capacity disk,
+then moves frequent small writes to internal or other non-USB storage when it
+has at least 4 GiB free:
 
 ```bash
-data/node1 -> /mnt/bdag-usb/blockdag-stack/data/node1
-data/node2 -> /mnt/bdag-usb/blockdag-stack/data/node2
-data/postgres -> /mnt/bdag-usb/blockdag-stack/data/postgres
-ops/runtime -> /mnt/bdag-usb/blockdag-stack/ops-runtime
+BDAG_CHAIN_DATA_DIR=/mnt/bdag-usb/blockdag-chain
+BDAG_NODE1_DATA_DIR=/mnt/bdag-usb/blockdag-chain/node1
+BDAG_NODE2_DATA_DIR=/mnt/bdag-usb/blockdag-chain/node2
+BDAG_POSTGRES_DATA_DIR=/opt/blockdag-pool/runtime-data/postgres
+BDAG_RUNTIME_DIR=/opt/blockdag-pool/runtime-data/ops-runtime
 ```
 
 Leave old parked chain snapshots on the SD card unless the USB has enough spare
-space. This keeps the USB focused on the hot node, pool DB, dashboard history,
-and guard-log write path while preserving rollback copies on the OS disk.
+space. This keeps the USB focused on the hot node chain and FastSnap artifacts
+while the OS disk absorbs Postgres WAL, dashboard history, guard state, and
+small log churn. If the internal disk is too small, the installer falls back to
+a single-device USB profile and the preflight reports that all hot writes share
+one device.
+
+Small scratch files that are safe to lose should not use the chain disk either.
+The release defaults create `/run/bdag-pool` through tmpfiles and set:
+
+```bash
+BDAG_EPHEMERAL_TMPFS_ENABLED=1
+BDAG_EPHEMERAL_DIR=/run/bdag-pool
+BDAG_HOST_TMPDIR=/run/bdag-pool/tmp
+BDAG_CONTAINER_TMPFS_SIZE=128m
+```
+
+Compose services that generate small temporary files get a bounded `/tmp`
+tmpfs. Do not put large FastSnap directory staging, chain snapshots, or import
+artifacts on this RAM-backed path unless the host has been sized for it.
 
 The installer disables common non-mining timers and services such as apt daily
 jobs, cron, Avahi, CUPS, NFS/rpcbind, and desktop disk/power helpers. It leaves

@@ -9,7 +9,7 @@ import time
 from typing import Any
 
 from incident_journal import append_incident
-from pool_ops import collect_status, now_iso
+from pool_ops import collect_status_cached, now_iso
 from rpc_router import recommend_rpc_primary, write_rpc_router_state
 
 
@@ -51,7 +51,7 @@ def wait_until_ready(timeout_seconds: int, interval_seconds: int) -> dict[str, A
     deadline = time.time() + timeout_seconds
     last_state: dict[str, Any] = {}
     while True:
-        status = collect_status(include_logs=True)
+        status = collect_status_cached(include_logs=True)
         last_state = guard_state(status)
         if last_state["ready"]:
             append_incident(
@@ -84,7 +84,7 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="print JSON output")
     args = parser.parse_args()
 
-    payload = wait_until_ready(args.timeout, args.interval) if args.wait else guard_state(collect_status(include_logs=True))
+    payload = wait_until_ready(args.timeout, args.interval) if args.wait else guard_state(collect_status_cached(include_logs=True))
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True, default=str))
     else:

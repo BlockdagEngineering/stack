@@ -1,0 +1,342 @@
+from __future__ import annotations
+
+import importlib.util
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts" / "mining-appliance-preflight.py"
+SPEC = importlib.util.spec_from_file_location("mining_appliance_preflight", SCRIPT)
+preflight = importlib.util.module_from_spec(SPEC)
+assert SPEC and SPEC.loader
+sys.modules[SPEC.name] = preflight
+SPEC.loader.exec_module(preflight)
+
+
+class MiningAppliancePreflightTest(unittest.TestCase):
+    def test_load_env_file_strips_quotes_and_comments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "# comment",
+                        "BDAG_NODE_MODE='single'",
+                        'BDAG_NODE_CACHE_MB="1024"',
+                        "EMPTY=",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            env = preflight.load_env_file(env_file)
+        self.assertEqual(env["BDAG_NODE_MODE"], "single")
+        self.assertEqual(env["BDAG_NODE_CACHE_MB"], "1024")
+        self.assertEqual(env["EMPTY"], "")
+
+    def test_constrained_env_warnings_for_double_node_and_large_cache(self) -> None:
+        profile = preflight.HostProfile(
+            os_name="linux",
+            arch="x86_64",
+            cpu_count=2,
+            memory_bytes=3 * preflight.GIB,
+            profile="constrained",
+            kernel="test",
+        )
+        checks = []
+        preflight.check_env_defaults(
+            checks,
+            {
+                "BDAG_NODE_MODE": "double",
+                "BDAG_NODE_CACHE_MB": "4096",
+                "NODE_MAX_PEERS": "512",
+                "BDAG_FASTSYNC_PREPROCESS_WORKERS": "4",
+                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
+                "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": "0",
+                "BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS": "3600",
+                "BDAG_STATUS_SAMPLER_ENABLED": "0",
+                "BDAG_ADAPTIVE_CONCURRENCY_ENABLED": "0",
+                "BDAG_ENTRYPOINT_CHOWN_MODE": "always",
+            },
+            profile,
+        )
+        warnings = {check.name for check in checks if check.status == "warn"}
+        self.assertIn("constrained_node_mode", warnings)
+        self.assertIn("node_cache_budget", warnings)
+        self.assertIn("peer_budget", warnings)
+        self.assertIn("fastsync_preprocess_workers", warnings)
+        self.assertIn("fastartifactsync", warnings)
+        self.assertIn("fastsync_acceleration", warnings)
+        self.assertIn("fastsync_restart_cooldown", warnings)
+        self.assertIn("status_sampler", warnings)
+        self.assertIn("adaptive_concurrency", warnings)
+        self.assertIn("entrypoint_chown_mode", warnings)
+
+    def test_single_node_duplicate_data_detection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "data" / "node1" / "mainnet" / "BdagChain").mkdir(parents=True)
+            (root / "data" / "node2" / "mainnet" / "BdagChain").mkdir(parents=True)
+            checks = []
+            preflight.check_node_data_layout(checks, root, {"BDAG_NODE_MODE": "single"})
+        found = {check.name: check.status for check in checks}
+        self.assertEqual(found["single_node_duplicate_data"], "warn")
+
+    def test_compose_bind_mount_overrides_default_data_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.override.yml").write_text(
+                "\n".join(
+                    [
+                        "services:",
+                        "  node:",
+                        "    volumes:",
+                        "      - /srv/bdag-chain-usb:/data:ro",
+                        "      - /srv/bdag-chain-usb/node-data:/var/lib/bdagStack/node",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            data_dir = preflight.env_data_dir(root, {})
+        self.assertEqual(data_dir, Path("/srv/bdag-chain-usb/node-data"))
+
+    def test_named_compose_volume_does_not_override_default_data_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                "\n".join(
+                    [
+                        "services:",
+                        "  snapshot-node:",
+                        "    volumes:",
+                        "      - snapshot-node-data:/var/lib/bdagStack/node",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            data_dir = preflight.env_data_dir(root, {"BDAG_CHAIN_DATA_DIR": "./data"})
+        self.assertEqual(data_dir, root / "data")
+
+    def test_live_node_child_passes_when_compose_node_is_absent(self) -> None:
+        old_run = preflight.run
+
+        def fake_run(command: list[str], timeout: float = 5.0, cwd: Path | None = None):
+            class Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return Result()
+
+        try:
+            preflight.run = fake_run
+            checks = []
+            preflight.check_live_node_child(checks, Path("/tmp"))
+        finally:
+            preflight.run = old_run
+
+        self.assertEqual(checks[0].status, "pass")
+
+    def test_live_node_child_fails_when_wrapper_has_no_child(self) -> None:
+        old_run = preflight.run
+
+        def fake_run(command: list[str], timeout: float = 5.0, cwd: Path | None = None):
+            class Result:
+                returncode = 0
+                stdout = "container-id\n"
+                stderr = ""
+
+            result = Result()
+            if "exec" in command:
+                result.returncode = 1
+                result.stdout = ""
+            return result
+
+        try:
+            preflight.run = fake_run
+            checks = []
+            preflight.check_live_node_child(checks, Path("/tmp"))
+        finally:
+            preflight.run = old_run
+
+        self.assertEqual(checks[0].status, "fail")
+
+    def test_storage_profile_passes_when_usb_chain_is_split_from_runtime(self) -> None:
+        old_mount_info = preflight.mount_info
+        old_is_usb_source = preflight.is_usb_source
+        old_docker_root_dir = preflight.docker_root_dir
+
+        def fake_mount_info(path: Path) -> dict[str, str]:
+            value = str(path)
+            if value.startswith("/mnt/usb"):
+                return {"target": "/mnt/usb", "source": "/dev/sda1", "fstype": "f2fs", "options": "rw,noatime,lazytime"}
+            return {"target": "/", "source": "/dev/mmcblk0p2", "fstype": "ext4", "options": "rw,relatime"}
+
+        try:
+            preflight.mount_info = fake_mount_info
+            preflight.is_usb_source = lambda source: source.startswith("/dev/sda")
+            preflight.docker_root_dir = lambda: "/var/lib/docker"
+            profile = preflight.HostProfile("linux", "aarch64", 4, 4 * preflight.GIB, "constrained", "test")
+            checks = []
+            preflight.check_storage_profile(
+                checks,
+                Path("/opt/blockdag-pool"),
+                {
+                    "BDAG_STORAGE_PROFILE": "auto",
+                    "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
+                    "BDAG_NODE2_DATA_DIR": "/mnt/usb/blockdag-chain/node2",
+                    "BDAG_POSTGRES_DATA_DIR": "/opt/blockdag-pool/runtime-data/postgres",
+                    "BDAG_RUNTIME_DIR": "/opt/blockdag-pool/runtime-data/ops-runtime",
+                },
+                profile,
+            )
+        finally:
+            preflight.mount_info = old_mount_info
+            preflight.is_usb_source = old_is_usb_source
+            preflight.docker_root_dir = old_docker_root_dir
+
+        found = {check.name: check for check in checks}
+        self.assertEqual(found["storage_io_split"].status, "pass")
+        self.assertEqual(found["storage_profile"].evidence["resolved_profile"], "usb-chain-internal-runtime")
+
+    def test_storage_profile_warns_when_runtime_shares_usb_chain_device(self) -> None:
+        old_mount_info = preflight.mount_info
+        old_is_usb_source = preflight.is_usb_source
+        old_docker_root_dir = preflight.docker_root_dir
+
+        def fake_mount_info(path: Path) -> dict[str, str]:
+            return {"target": "/mnt/usb", "source": "/dev/sda1", "fstype": "f2fs", "options": "rw,noatime,lazytime"}
+
+        try:
+            preflight.mount_info = fake_mount_info
+            preflight.is_usb_source = lambda source: source.startswith("/dev/sda")
+            preflight.docker_root_dir = lambda: "/mnt/usb/docker"
+            profile = preflight.HostProfile("linux", "aarch64", 4, 4 * preflight.GIB, "constrained", "test")
+            checks = []
+            preflight.check_storage_profile(
+                checks,
+                Path("/opt/blockdag-pool"),
+                {
+                    "BDAG_STORAGE_PROFILE": "usb-chain-internal-runtime",
+                    "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
+                    "BDAG_NODE2_DATA_DIR": "/mnt/usb/blockdag-chain/node2",
+                    "BDAG_POSTGRES_DATA_DIR": "/mnt/usb/blockdag-chain/runtime/postgres",
+                    "BDAG_RUNTIME_DIR": "/mnt/usb/blockdag-chain/runtime/ops-runtime",
+                },
+                profile,
+            )
+        finally:
+            preflight.mount_info = old_mount_info
+            preflight.is_usb_source = old_is_usb_source
+            preflight.docker_root_dir = old_docker_root_dir
+
+        found = {check.name: check.status for check in checks}
+        self.assertEqual(found["storage_io_split"], "warn")
+        self.assertEqual(found["explicit_storage_profile_mismatch"], "warn")
+        self.assertEqual(found["docker_chain_shared_device"], "warn")
+
+    def test_usb_chain_split_is_preferred_on_standard_hosts_too(self) -> None:
+        old_mount_info = preflight.mount_info
+        old_is_usb_source = preflight.is_usb_source
+        old_docker_root_dir = preflight.docker_root_dir
+
+        def fake_mount_info(path: Path) -> dict[str, str]:
+            value = str(path)
+            if value.startswith("/mnt/usb"):
+                return {"target": "/mnt/usb", "source": "/dev/sda1", "fstype": "f2fs", "options": "rw,noatime,lazytime"}
+            return {"target": "/", "source": "/dev/nvme0n1p2", "fstype": "ext4", "options": "rw,relatime"}
+
+        try:
+            preflight.mount_info = fake_mount_info
+            preflight.is_usb_source = lambda source: source.startswith("/dev/sda")
+            preflight.docker_root_dir = lambda: "/mnt/usb/docker"
+            profile = preflight.HostProfile("linux", "x86_64", 8, 16 * preflight.GIB, "standard", "test")
+            checks = []
+            preflight.check_storage_profile(
+                checks,
+                Path("/opt/blockdag-pool"),
+                {
+                    "BDAG_STORAGE_PROFILE": "auto",
+                    "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
+                    "BDAG_NODE2_DATA_DIR": "/mnt/usb/blockdag-chain/node2",
+                    "BDAG_POSTGRES_DATA_DIR": "/mnt/usb/runtime/postgres",
+                    "BDAG_RUNTIME_DIR": "/mnt/usb/runtime/ops-runtime",
+                },
+                profile,
+            )
+        finally:
+            preflight.mount_info = old_mount_info
+            preflight.is_usb_source = old_is_usb_source
+            preflight.docker_root_dir = old_docker_root_dir
+
+        found = {check.name: check.status for check in checks}
+        self.assertEqual(found["storage_io_split"], "warn")
+        self.assertEqual(found["docker_chain_shared_device"], "warn")
+
+    def test_ephemeral_tmpfs_passes_for_run_backed_paths(self) -> None:
+        old_mount_info = preflight.mount_info
+        old_is_usb_source = preflight.is_usb_source
+
+        def fake_mount_info(path: Path) -> dict[str, str]:
+            return {"target": "/run", "source": "tmpfs", "fstype": "tmpfs", "options": "rw,nosuid,nodev"}
+
+        try:
+            preflight.mount_info = fake_mount_info
+            preflight.is_usb_source = lambda source: False
+            checks = []
+            preflight.check_ephemeral_storage(checks, Path("/opt/blockdag-pool"), {"BDAG_EPHEMERAL_DIR": "/run/bdag-pool"})
+        finally:
+            preflight.mount_info = old_mount_info
+            preflight.is_usb_source = old_is_usb_source
+
+        found = {check.name: check.status for check in checks}
+        self.assertEqual(found["ephemeral_tmpfs"], "pass")
+
+    def test_ephemeral_tmpfs_warns_for_disk_backed_scratch(self) -> None:
+        old_mount_info = preflight.mount_info
+        old_is_usb_source = preflight.is_usb_source
+
+        def fake_mount_info(path: Path) -> dict[str, str]:
+            return {"target": "/", "source": "/dev/sda1", "fstype": "ext4", "options": "rw,relatime"}
+
+        try:
+            preflight.mount_info = fake_mount_info
+            preflight.is_usb_source = lambda source: source.startswith("/dev/sda")
+            checks = []
+            preflight.check_ephemeral_storage(checks, Path("/opt/blockdag-pool"), {"BDAG_EPHEMERAL_DIR": "/opt/blockdag-pool/tmp"})
+        finally:
+            preflight.mount_info = old_mount_info
+            preflight.is_usb_source = old_is_usb_source
+
+        found = {check.name: check.status for check in checks}
+        self.assertEqual(found["ephemeral_tmpfs"], "warn")
+
+    def test_fastsnap_large_staging_on_tmpfs_warns(self) -> None:
+        old_mount_info = preflight.mount_info
+        old_is_usb_source = preflight.is_usb_source
+
+        def fake_mount_info(path: Path) -> dict[str, str]:
+            return {"target": "/run", "source": "tmpfs", "fstype": "tmpfs", "options": "rw,nosuid,nodev"}
+
+        try:
+            preflight.mount_info = fake_mount_info
+            preflight.is_usb_source = lambda source: False
+            checks = []
+            preflight.check_ephemeral_storage(
+                checks,
+                Path("/opt/blockdag-pool"),
+                {"BDAG_EPHEMERAL_DIR": "/run/bdag-pool", "BDAG_FASTSNAP_DIRECTORY_STAGING": "/run/bdag-pool/staging"},
+            )
+        finally:
+            preflight.mount_info = old_mount_info
+            preflight.is_usb_source = old_is_usb_source
+
+        found = {check.name: check.status for check in checks}
+        self.assertEqual(found["ephemeral_tmpfs"], "pass")
+        self.assertEqual(found["fastsnap_staging_tmpfs"], "warn")
+
+
+if __name__ == "__main__":
+    unittest.main()
