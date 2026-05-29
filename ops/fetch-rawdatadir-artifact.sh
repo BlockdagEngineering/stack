@@ -40,10 +40,13 @@ if [[ -z "$EXISTING_DOWNLOAD_DIR" ]]; then
     exit 1
   fi
 fi
-FASTSNAP_HELP="$("$FASTSNAP_BIN" --help 2>&1 || true)"
-if ! grep -q -- "--dir-out" <<<"$FASTSNAP_HELP"; then
-  log "fastsnap binary does not support directory artifact downloads (--dir-out): $FASTSNAP_BIN"
-  exit 1
+FASTSNAP_HELP=""
+if [[ -z "$EXISTING_DOWNLOAD_DIR" ]]; then
+  FASTSNAP_HELP="$("$FASTSNAP_BIN" --help 2>&1 || true)"
+  if ! grep -q -- "--dir-out" <<<"$FASTSNAP_HELP"; then
+    log "fastsnap binary does not support directory artifact downloads (--dir-out): $FASTSNAP_BIN"
+    exit 1
+  fi
 fi
 
 STAMP="$(date +%Y%m%d-%H%M%S%Z)"
@@ -67,7 +70,7 @@ fastsnap_args=(
   --dir-out "$DOWNLOAD_DIR"
   --parallelism "$PARALLELISM"
 )
-if grep -q -- "--artifact-type" <<<"$FASTSNAP_HELP"; then
+if [[ -n "$FASTSNAP_HELP" ]] && grep -q -- "--artifact-type" <<<"$FASTSNAP_HELP"; then
   fastsnap_args=(--artifact-type raw_datadir_checkpoint "${fastsnap_args[@]}")
 fi
 
