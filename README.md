@@ -274,8 +274,8 @@ docker compose logs -f pool
 
 Once everything is running:
 
-- Operations dashboard: `http://localhost:8088`
-- Legacy lightweight chart: `http://localhost:9280`
+- Operations dashboard, authoritative interface: `http://localhost:8088`
+- Legacy lightweight chart, non-authoritative diagnostics only: `http://localhost:9280`
 - Mining pool Stratum endpoint: `stratum+tcp://localhost:3334`
 - RPC endpoint: `http://localhost:38131`
 

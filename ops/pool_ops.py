@@ -311,7 +311,7 @@ GLOBAL_RPC_WORKERS = env_int("BDAG_GLOBAL_RPC_WORKERS", 24, minimum=1)
 GLOBAL_HISTORY_LIMIT = int(os.environ.get("BDAG_GLOBAL_HISTORY_LIMIT", "9000"))
 GLOBAL_HISTORY_COMPACT_MULTIPLIER = max(1, int(os.environ.get("BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER", "2")))
 GLOBAL_CACHE_SCHEMA_VERSION = 2
-GLOBAL_STATS_SOURCE_TRUTH = "chain-rpc:getBlockCount/getBlockhashByRange/getBlockHeader/getCoinbaseAddress"
+GLOBAL_STATS_SOURCE_TRUTH = "chain-rpc:getBlockCount/getBlockByOrder/getBlockHeader/getCoinbaseAddress"
 GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS = env_int("BDAG_GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS", 30, minimum=0)
 NODE_EVM_RPC_PORT = int(os.environ.get("BDAG_NODE_EVM_RPC_PORT", "18545"))
 EVM_SYNC_LAG_THRESHOLD_BLOCKS = env_int("BDAG_EVM_SYNC_LAG_THRESHOLD_BLOCKS", 1000, minimum=0)
@@ -5361,7 +5361,7 @@ def node_chain_rpc_snapshot(source: str, url: str, timeout: float = NODE_CHAIN_R
     }
     errors: list[str] = []
     port = rpc_url_port(url)
-    method_order = ["eth_blockNumber", "getBlockCount"] if port == NODE_EVM_RPC_PORT else ["getBlockCount"]
+    method_order = ["getBlockCount"]
     total_attempts = 0
 
     for method in method_order:
@@ -5370,10 +5370,7 @@ def node_chain_rpc_snapshot(source: str, url: str, timeout: float = NODE_CHAIN_R
             start = time.monotonic()
             total_attempts += 1
             try:
-                if method == "eth_blockNumber":
-                    value = json_rpc_call(url, method, [], timeout=timeout)
-                else:
-                    value = mining_rpc_call(url, method, [], timeout=timeout)
+                value = mining_rpc_call(url, method, [], timeout=timeout)
                 snapshot["chain_block_count"] = parse_rpc_quantity(value)
                 snapshot["chain_rpc_source"] = method
                 snapshot["chain_rpc_latency_ms"] = round((time.monotonic() - start) * 1000, 1)
@@ -5398,9 +5395,8 @@ def node_chain_rpc_snapshot(source: str, url: str, timeout: float = NODE_CHAIN_R
         total_attempts += 1
         try:
             main_height = parse_rpc_quantity(mining_rpc_call(url, "getMainChainHeight", [], timeout=timeout))
-            snapshot["chain_block_count"] = main_height
             snapshot["chain_main_height"] = main_height
-            snapshot["chain_rpc_source"] = "getMainChainHeight"
+            snapshot["chain_main_height_source"] = "getMainChainHeight"
             snapshot["chain_rpc_latency_ms"] = round((time.monotonic() - start) * 1000, 1)
             snapshot["chain_rpc_attempts"] = total_attempts
         except Exception as exc:
@@ -5417,13 +5413,12 @@ def node_chain_rpc_snapshot(source: str, url: str, timeout: float = NODE_CHAIN_R
             snapshot["chain_rpc_error"] = f"chain RPC height methods failed for {source} after {total_attempts} attempt(s): {detail}"
         return snapshot
 
-    if snapshot["chain_rpc_source"] == "eth_blockNumber":
-        snapshot.update(eth_syncing_details(url, timeout))
-    elif snapshot["chain_main_height"] is None:
+    if snapshot["chain_main_height"] is None:
         try:
             snapshot["chain_main_height"] = parse_rpc_quantity(
                 mining_rpc_call(url, "getMainChainHeight", [], timeout=timeout)
             )
+            snapshot["chain_main_height_source"] = "getMainChainHeight"
         except Exception as exc:
             snapshot["chain_main_height_error"] = f"getMainChainHeight failed for {source}: {exc}"
     return snapshot
@@ -5786,27 +5781,37 @@ def parse_global_block_epoch(value: Any) -> int | None:
     return int(parsed.timestamp()) if parsed else None
 
 
-def fetch_chain_order_hashes(url: str, start_order: int, end_order: int, timeout: float = 8.0) -> list[tuple[int, str]]:
-    try:
-        result = mining_rpc_call(url, "getBlockhashByRange", [start_order, end_order], timeout=timeout)
-        if isinstance(result, list) and len(result) == max(0, end_order - start_order + 1):
-            return [(start_order + idx, str(block_hash)) for idx, block_hash in enumerate(result)]
-    except Exception:
-        pass
-    hashes: list[tuple[int, str]] = []
-    for order in range(start_order, end_order + 1):
-        block_hash = mining_rpc_call(url, "getBlockhash", [order], timeout=timeout)
-        hashes.append((order, str(block_hash)))
-    return hashes
+def chain_order_block_hash(block: Mapping[str, Any], order: int) -> str:
+    for key in ("hash", "Hash", "blockHash", "BlockHash", "block_hash", "blockhash"):
+        value = str(block.get(key) or "").strip()
+        if value:
+            return value
+    raise RuntimeError(f"missing block hash for order {order}")
+
+
+def fetch_chain_order_reference(url: str, order: int, timeout: float = 8.0) -> dict[str, Any]:
+    result = mining_rpc_call(url, "getBlockByOrder", [order, True, False, False], timeout=timeout)
+    if not isinstance(result, dict):
+        raise RuntimeError(f"getBlockByOrder response for order {order} was not a JSON object")
+    response_order = result.get("order", result.get("Order", result.get("mainOrder", result.get("MainOrder", result.get("main_order")))))
+    if response_order is not None and safe_int(response_order, order) != order:
+        raise RuntimeError(f"getBlockByOrder returned order {response_order!r} for requested order {order}")
+    return {
+        "order": order,
+        "hash": chain_order_block_hash(result, order),
+        "block": result,
+    }
 
 
 def fetch_chain_order_header(
     url: str,
     source_name: str,
     order: int,
-    block_hash: str,
     timeout: float = 8.0,
 ) -> dict[str, Any]:
+    reference = fetch_chain_order_reference(url, order, timeout=timeout)
+    block_hash = str(reference.get("hash") or "")
+    block = reference.get("block") if isinstance(reference.get("block"), dict) else {}
     if not block_hash:
         raise RuntimeError(f"empty block hash for order {order}")
     header: dict[str, Any] = {}
@@ -5825,11 +5830,12 @@ def fetch_chain_order_header(
 
     epoch = parse_global_block_epoch(header.get("time"))
     if epoch is None:
-        block = mining_rpc_call(url, "getBlockByOrder", [order, True, False, False], timeout=timeout)
-        if isinstance(block, dict):
-            epoch = parse_global_block_epoch(block.get("timestamp"))
-            if "reward" in block and "reward" not in header:
-                header["reward"] = block.get("reward")
+        epoch = parse_global_block_epoch(block.get("timestamp", block.get("Timestamp", block.get("time", block.get("Time")))))
+        if header.get("reward") is None:
+            for key in ("reward", "Reward"):
+                if key in block:
+                    header["reward"] = block.get(key)
+                    break
     if epoch is None:
         raise RuntimeError(f"missing block timestamp for order {order}")
 
@@ -6282,7 +6288,30 @@ def is_valid_global_chain_snapshot(snapshot: Mapping[str, Any] | None) -> bool:
         return False
     if safe_int(snapshot.get("schema_version"), 0) != GLOBAL_CACHE_SCHEMA_VERSION:
         return False
-    return str(snapshot.get("source_truth") or "") == GLOBAL_STATS_SOURCE_TRUTH
+    if str(snapshot.get("source_truth") or "") != GLOBAL_STATS_SOURCE_TRUTH:
+        return False
+    if str(snapshot.get("source_contract") or "") != "blockdag-mining-rpc-v1":
+        return False
+    if str(snapshot.get("height_method") or "") != "getBlockCount":
+        return False
+    latest_block = safe_int(snapshot.get("latest_block"), None)
+    chain_block_count = safe_int(snapshot.get("chain_block_count"), None)
+    latest_order = safe_int(snapshot.get("latest_order"), None)
+    if latest_block is None or chain_block_count != latest_block:
+        return False
+    if latest_block > 0 and latest_order != latest_block - 1:
+        return False
+    requested_blocks = safe_int(snapshot.get("requested_blocks"), None)
+    fetched_blocks = safe_int(snapshot.get("fetched_blocks"), None)
+    if requested_blocks is None or fetched_blocks is None or requested_blocks <= 0 or fetched_blocks != requested_blocks:
+        return False
+    if safe_int(snapshot.get("unknown_blocks"), 0) != 0:
+        return False
+    if bool(snapshot.get("partial_scan")) or bool(snapshot.get("head_only")) or bool(snapshot.get("maintenance_deferred")):
+        return False
+    if snapshot.get("fetch_errors"):
+        return False
+    return True
 
 
 def read_valid_global_history(limit: int | None = None) -> list[dict[str, Any]]:
@@ -6468,11 +6497,6 @@ def merge_global_local_pool_clusters(
             "pool_label",
             "nodes",
             "workers",
-            "shares",
-            "credit_blocks",
-            "credited_bdag",
-            "found_blocks",
-            "estimated_wallet_bdag",
             "identity_key",
             "ip",
             "mac",
@@ -6480,6 +6504,15 @@ def merge_global_local_pool_clusters(
         ):
             if local.get(key) not in (None, "", []):
                 existing[key] = local[key]
+        for local_key, display_key in (
+            ("shares", "local_shares"),
+            ("credit_blocks", "local_credit_blocks"),
+            ("credited_bdag", "local_credited_bdag"),
+            ("found_blocks", "local_found_blocks"),
+            ("estimated_wallet_bdag", "local_estimated_wallet_bdag"),
+        ):
+            if local.get(local_key) not in (None, "", []):
+                existing[display_key] = local[local_key]
     merged.sort(key=lambda item: (int(item.get("blocks", 0) or 0), str(item.get("last_seen_at") or "")), reverse=True)
     for rank, cluster in enumerate(merged, start=1):
         cluster["rank"] = rank
@@ -6632,7 +6665,7 @@ def collect_global_blockchain() -> dict[str, Any]:
                     f"live={live_count}; refreshing from chain RPC"
                 )
             cache_tip_lag = max(0, live_count - cached_count)
-            if cached_valid and cache_tip_lag <= GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS:
+            if cached_valid and cache_tip_lag == 0:
                 cache_meta = dict(cached.get("cache") or {}) if isinstance(cached.get("cache"), dict) else {}
                 cache_meta.update(
                     {
@@ -6656,7 +6689,7 @@ def collect_global_blockchain() -> dict[str, Any]:
             if cached_valid:
                 invalid_cache_error = (
                     f"global cache tip lag {cache_tip_lag} blocks exceeds "
-                    f"{GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS}; refreshing from chain RPC"
+                    "0 for authoritative display; refreshing from chain RPC"
                 )
         else:
             invalid_cache_error = "unable to validate global cache freshness from chain RPC; refusing ok cache"
@@ -6676,39 +6709,19 @@ def collect_global_blockchain() -> dict[str, Any]:
     if latest_block_count is None:
         return stale_or_failed("unable to fetch latest global block height from chain RPC getBlockCount", latest_errors)
 
-    order_hash_errors: list[str] = []
-    order_hashes: list[tuple[int, str]] = []
-    rpc_name = ""
-    rpc_url = ""
+    rpc_name = candidates[0][1]
+    rpc_url = candidates[0][2]
     latest_order = latest_block_count - 1
     requested_count = min(max(GLOBAL_BLOCK_WINDOW, 1), latest_block_count)
     start_order = max(0, latest_order - requested_count + 1)
-    for candidate_count, source_name, source_url in candidates:
-        candidate_latest_order = candidate_count - 1
-        candidate_requested_count = min(max(GLOBAL_BLOCK_WINDOW, 1), candidate_count)
-        candidate_start_order = max(0, candidate_latest_order - candidate_requested_count + 1)
-        try:
-            order_hashes = fetch_chain_order_hashes(source_url, candidate_start_order, candidate_latest_order, timeout=8.0)
-            latest_block_count = candidate_count
-            latest_order = candidate_latest_order
-            requested_count = candidate_requested_count
-            start_order = candidate_start_order
-            rpc_name = source_name
-            rpc_url = source_url
-            break
-        except Exception as exc:  # noqa: BLE001
-            order_hash_errors.append(f"{source_name}: {exc}")
-    if not order_hashes:
-        return stale_or_failed("unable to fetch chain block hashes by order", latest_errors + order_hash_errors)
-
+    requested_orders = list(range(start_order, latest_order + 1))
     primary_sources = [(rpc_name, rpc_url), *[(name, url) for _, name, url in candidates if url != rpc_url]]
 
-    def load_block(order_hash: tuple[int, str]) -> dict[str, Any]:
-        order, block_hash = order_hash
+    def load_block(order: int) -> dict[str, Any]:
         last_error: Exception | None = None
         for source_name, source_url in primary_sources:
             try:
-                return fetch_chain_order_header(source_url, source_name, order, block_hash, timeout=8.0)
+                return fetch_chain_order_header(source_url, source_name, order, timeout=8.0)
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
         raise RuntimeError(str(last_error or f"failed to fetch chain block order {order}"))
@@ -6721,9 +6734,9 @@ def collect_global_blockchain() -> dict[str, Any]:
         "cpu_some_avg10": maintenance_decision.get("cpu_some_avg10"),
         "chain_rpc_latency_ms": maintenance_decision.get("chain_rpc_latency_ms"),
     }
-    global_worker_count = adaptive_worker_count("global_rpc", GLOBAL_RPC_WORKERS, len(order_hashes), global_pressure)
+    global_worker_count = adaptive_worker_count("global_rpc", GLOBAL_RPC_WORKERS, len(requested_orders), global_pressure)
     with ThreadPoolExecutor(max_workers=global_worker_count) as pool:
-        future_map = {pool.submit(load_block, item): item[0] for item in order_hashes}
+        future_map = {pool.submit(load_block, order): order for order in requested_orders}
         for future in as_completed(future_map):
             order = future_map[future]
             try:
@@ -6733,9 +6746,16 @@ def collect_global_blockchain() -> dict[str, Any]:
 
     headers.sort(key=lambda item: safe_int(item.get("order"), 0))
     if not headers:
-        return stale_or_failed("unable to fetch chain block headers", latest_errors + order_hash_errors + fetch_errors)
+        return stale_or_failed("unable to fetch chain block headers by order", latest_errors + fetch_errors)
 
     total_blocks = len(headers)
+    unknown_blocks = max(0, requested_count - total_blocks)
+    partial_scan = unknown_blocks > 0
+    if partial_scan and cached_valid:
+        return stale_or_failed(
+            f"global chain scan partial: fetched {total_blocks}/{requested_count} requested blocks; keeping last trusted cache",
+            latest_errors + fetch_errors,
+        )
     reward_values = [item["reward_bdag"] for item in headers if isinstance(item.get("reward_bdag"), Decimal)]
     known_reward_count = len(reward_values)
     known_reward_total = sum(reward_values, Decimal("0"))
@@ -6800,13 +6820,15 @@ def collect_global_blockchain() -> dict[str, Any]:
     total_reward_estimate_bdag = decimal_to_str(total_reward_estimate, places=2) if total_reward_estimate is not None else None
     scan_window_hours = Decimal(str(window_seconds)) / Decimal("3600") if window_seconds > 0 else None
     enriched_clusters: list[dict[str, Any]] = []
+    share_denominator = max(1, requested_count)
     for rank, cluster in enumerate(clusters, start=1):
         blocks = int(cluster["blocks"])
-        share = Decimal(blocks) / Decimal(total_blocks) if total_blocks else Decimal("0")
+        share = Decimal(blocks) / Decimal(share_denominator)
         missing_cluster_rewards = max(0, blocks - int(cluster.get("reward_count", 0) or 0))
+        known_bdag = cluster["reward_bdag"]
         est_bdag = None
         if avg_reward_bdag is not None:
-            est_bdag = cluster["reward_bdag"] + (avg_reward_bdag * Decimal(missing_cluster_rewards))
+            est_bdag = known_bdag + (avg_reward_bdag * Decimal(missing_cluster_rewards))
         est_bdag_hour, est_usd_hour, est_zar_hour = _pool_earning_rates_from_cluster(
             {
                 "estimated_bdag": decimal_to_str(est_bdag, places=2) if est_bdag is not None else None,
@@ -6829,7 +6851,10 @@ def collect_global_blockchain() -> dict[str, Any]:
                 "credit_blocks": blocks,
                 "found_blocks": blocks,
                 "share_percent": decimal_to_str(share * Decimal("100"), places=2),
-                "credited_bdag": decimal_to_str(est_bdag, places=2) if est_bdag is not None else None,
+                "credited_bdag": decimal_to_str(known_bdag, places=2),
+                "known_reward_bdag": decimal_to_str(known_bdag, places=2),
+                "reward_missing_blocks": missing_cluster_rewards,
+                "reward_estimated": missing_cluster_rewards > 0,
                 "estimated_bdag": decimal_to_str(est_bdag, places=2) if est_bdag is not None else None,
                 "estimated_usd": fiat_value(est_bdag, price, "usd") if est_bdag is not None else None,
                 "estimated_zar": fiat_value(est_bdag, price, "zar") if est_bdag is not None else None,
@@ -6853,14 +6878,14 @@ def collect_global_blockchain() -> dict[str, Any]:
 
     local_pool_clusters = collect_local_pool_global_clusters(
         window_seconds,
-        total_blocks,
+        share_denominator,
         scan_window_hours,
         price,
     )
     display_clusters = merge_global_local_pool_clusters(enriched_clusters, local_pool_clusters)
 
     payload = {
-        "status": "ok",
+        "status": "degraded" if partial_scan else "ok",
         "source": "on-chain",
         "source_truth": GLOBAL_STATS_SOURCE_TRUTH,
         "source_contract": "blockdag-mining-rpc-v1",
@@ -6875,6 +6900,8 @@ def collect_global_blockchain() -> dict[str, Any]:
         "latest_order": latest_order,
         "requested_blocks": requested_count,
         "fetched_blocks": total_blocks,
+        "unknown_blocks": unknown_blocks,
+        "partial_scan": partial_scan,
         "global_rpc_worker_count": global_worker_count,
         "adaptive_concurrency": adaptive_worker_budgets(global_pressure),
         "scan_start_block": start_order,
@@ -6894,9 +6921,10 @@ def collect_global_blockchain() -> dict[str, Any]:
         "chain_clusters": enriched_clusters,
         "local_pool_clusters": local_pool_clusters,
         "peer_location": peer_location,
-        "fetch_errors": (latest_errors + order_hash_errors + fetch_errors)[:20],
+        "fetch_errors": fetch_errors[:20],
+        "rpc_probe_errors": latest_errors[:20],
         "zero_address_blocks": zero_address_blocks,
-        "attributed_blocks": max(0, total_blocks - zero_address_blocks),
+        "attributed_blocks": max(0, requested_count - zero_address_blocks - unknown_blocks),
         "unattributed_reward_bdag": decimal_to_str(zero_address_reward_bdag, places=2),
         "reward_source": "getBlockHeader.reward atomic units",
         "reward_known_blocks": known_reward_count,
@@ -6908,14 +6936,29 @@ def collect_global_blockchain() -> dict[str, Any]:
             "max_tip_lag_blocks": GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS,
         },
     }
+    if partial_scan:
+        payload["error"] = f"global chain scan partial: fetched {total_blocks}/{requested_count} requested blocks"
+        payload["history"] = read_valid_global_history(limit=GLOBAL_HISTORY_LIMIT)
+        payload = annotate_global_pool_labels(payload)
+        return payload
     record_global_snapshot(
         {
             "status": "ok",
             "schema_version": payload["schema_version"],
             "source_truth": payload["source_truth"],
+            "source_contract": payload["source_contract"],
+            "height_method": payload["height_method"],
             "generated_at": payload["updated_at"],
             "latest_block": payload["latest_block"],
+            "chain_block_count": payload["chain_block_count"],
             "latest_order": payload["latest_order"],
+            "requested_blocks": payload["requested_blocks"],
+            "fetched_blocks": payload["fetched_blocks"],
+            "unknown_blocks": payload["unknown_blocks"],
+            "partial_scan": False,
+            "head_only": False,
+            "maintenance_deferred": False,
+            "fetch_errors": [],
             "scan_window_hours": payload["scan_window_hours"],
             "clusters": [
                 {

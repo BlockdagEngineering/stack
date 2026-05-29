@@ -21,6 +21,7 @@ from urllib.request import Request, urlopen
 from incident_journal import read_recent_incidents
 from pool_ops import (
     EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS,
+    GLOBAL_STATS_SOURCE_TRUTH,
     PROJECT_ROOT,
     RUNTIME_DIR,
     collect_global_blockchain,
@@ -1160,10 +1161,10 @@ HTML = r"""<!doctype html>
     </div>
   </header>
   <nav class="tabs">
-    <button id="tabButton-status" class="tab-button active" onclick="showTab('status')">Pool Status</button>
-    <button id="tabButton-miners" class="tab-button" onclick="showTab('miners')">Miners</button>
-    <button id="tabButton-global" class="tab-button" onclick="showTab('global')">Global</button>
-    <button id="tabButton-earnings" class="tab-button" onclick="showTab('earnings')">Earnings</button>
+    <button id="tabButton-status" class="tab-button active" onclick="showTab('status')">Status: Stack</button>
+    <button id="tabButton-miners" class="tab-button" onclick="showTab('miners')">Miners: Local ASICs</button>
+    <button id="tabButton-global" class="tab-button" onclick="showTab('global')">Global: Chain Production</button>
+    <button id="tabButton-earnings" class="tab-button" onclick="showTab('earnings')">Earnings: Wallet</button>
   </nav>
   <main>
     <section id="tab-status" class="tab-page">
@@ -3114,6 +3115,11 @@ HTML = r"""<!doctype html>
       const tr = document.createElement("tr");
       tr.innerHTML = `<td colspan="13">${escapeHtml(String(error))}</td>`;
       table.appendChild(tr);
+      const sourceStatus = document.getElementById("globalSourceStatus");
+      if (sourceStatus) {
+        sourceStatus.textContent = `status=failed | dashboard-global | no trusted data | ${String(error)}`;
+        sourceStatus.className = "subtle down";
+      }
       } finally {
         globalLoaded = true;
       }
@@ -3215,7 +3221,9 @@ HTML = r"""<!doctype html>
     function renderGlobal(data) {
       lastGlobalData = data;
       text("globalLatestBlock", fmt(data.latest_block));
-      text("globalScannedBlocks", fmt(data.fetched_blocks || data.requested_blocks));
+      const fetchedBlocks = Number(data.fetched_blocks || 0);
+      const requestedBlocks = Number(data.requested_blocks || fetchedBlocks || 0);
+      text("globalScannedBlocks", requestedBlocks && fetchedBlocks !== requestedBlocks ? `${fmt(fetchedBlocks)} / ${fmt(requestedBlocks)}` : fmt(fetchedBlocks || requestedBlocks));
       text("globalUniqueMiners", fmt(data.unique_miners));
       text("globalScanWindow", data.scan_window_hours ? `${data.scan_window_hours}h` : "n/a");
       text("globalAvgBlockSec", data.avg_block_seconds ? `${data.avg_block_seconds}s` : "n/a");
@@ -3223,11 +3231,19 @@ HTML = r"""<!doctype html>
       let freshnessLabel = "no trusted data";
       if (data.status === "ok") freshnessLabel = data.cache_hit ? "validated cache" : "fresh chain scan";
       else if (data.status === "stale") freshnessLabel = "last-good stale cache";
+      else if (data.status === "degraded") freshnessLabel = "partial chain scan";
+      else if (data.status === "deferred") freshnessLabel = "head-only deferred";
       const sourceBits = [
         data.status ? `status=${data.status}` : "",
         data.source_truth || data.source || "",
         data.rpc_source ? `rpc=${data.rpc_source}` : "",
         data.latest_order !== undefined ? `order=${fmt(data.latest_order)}` : "",
+        requestedBlocks ? `fetched=${fmt(fetchedBlocks)}/${fmt(requestedBlocks)}` : "",
+        data.unknown_blocks ? `unknown=${fmt(data.unknown_blocks)}` : "",
+        data.cache_tip_lag_blocks !== undefined ? `cache-lag=${fmt(data.cache_tip_lag_blocks)}` : "",
+        data.head_only ? "head-only=no production table" : "",
+        data.maintenance_deferred ? "maintenance deferred" : "",
+        data.cache ? `cache=${data.cache.hit ? "hit" : "miss"}${data.cache.age_seconds !== undefined ? ` age=${fmt(data.cache.age_seconds)}s` : ""}${data.cache.ttl_seconds !== undefined ? ` ttl=${fmt(data.cache.ttl_seconds)}s` : ""}` : "",
         freshnessLabel,
         data.zero_address_blocks ? `zero-address blocks=${fmt(data.zero_address_blocks)}` : "",
       ].filter(Boolean);
@@ -3235,7 +3251,7 @@ HTML = r"""<!doctype html>
       if (sourceStatus) {
         const error = data.error ? ` | ${data.error}` : "";
         sourceStatus.textContent = `${sourceBits.join(" | ")}${error}`;
-        sourceStatus.className = data.status === "ok" && !data.zero_address_blocks ? "subtle ok" : data.status === "failed" ? "subtle down" : "subtle warn";
+        sourceStatus.className = data.status === "ok" && !data.zero_address_blocks && !data.partial_scan ? "subtle ok" : data.status === "failed" ? "subtle down" : "subtle warn";
       }
 
       const peerBody = document.getElementById("globalPeerIpsTable");
@@ -3263,15 +3279,15 @@ HTML = r"""<!doctype html>
         const poolAddress = row.address || row.address_short || "";
         const poolIdentity = globalPoolIdentity(row);
         const poolColor = globalPoolColor(poolIdentity);
-        const sourceBadge = row.invalid_payout ? ` <span class="down">invalid payout</span>` : (row.local_pool ? ` <span class="subtle">local pool</span>` : "");
+        const sourceBadge = row.invalid_payout ? ` <span class="down">invalid payout</span>` : (row.local_pool ? ` <span class="subtle">chain confirmed + local overlay</span>` : "");
         const poolCell = poolName
           ? `<span class="pool-dot"></span>${escapeHtml(poolName)} <span class="subtle">${escapeShortEth(poolAddress)}</span>${sourceBadge}`
           : `<span class="pool-dot"></span>${escapeShortEth(poolAddress)}`;
-        const shares = firstPresent(row.shares, row.blocks);
-        const creditBlocks = firstPresent(row.credit_blocks, row.blocks);
-        const creditedBdag = firstPresent(row.credited_bdag, row.estimated_bdag);
-        const foundBlocks = firstPresent(row.found_blocks, row.blocks);
-        const walletBdag = firstPresent(row.estimated_wallet_bdag, row.estimated_bdag);
+        const shares = row.blocks;
+        const creditBlocks = row.blocks;
+        const creditedBdag = row.credited_bdag;
+        const foundBlocks = row.blocks;
+        const walletBdag = row.estimated_bdag;
         const avgUsd = firstPresent(row.estimated_usd_avg_hour, row.estimated_usd_recent_hour);
         const avgBdag = firstPresent(row.estimated_bdag_avg_hour, row.estimated_bdag_recent_hour);
         tr.className = "pool-row";
@@ -3398,7 +3414,7 @@ class Handler(BaseHTTPRequestHandler):
                     {
                         "status": "failed",
                         "source": "dashboard-global",
-                        "source_truth": "chain-rpc:getBlockCount/getBlockhashByRange/getBlockHeader/getCoinbaseAddress",
+                        "source_truth": GLOBAL_STATS_SOURCE_TRUTH,
                         "schema_version": 2,
                         "error": str(exc),
                         "clusters": [],
