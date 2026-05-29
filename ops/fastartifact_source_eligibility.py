@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,10 @@ UNSAFE_FSTYPES = {
     "tmpfs",
     "ramfs",
 }
+PUBLIC_EVM_RPC_DEFAULTS = [
+    ("bdagscan-rpc", "https://rpc.bdagscan.com"),
+    ("blockdag-engineering-rpc", "https://rpc.blockdag.engineering"),
+]
 
 
 def load_env() -> dict[str, str]:
@@ -68,11 +73,102 @@ def as_float(value: str | None, default: float) -> float:
         return default
 
 
+def as_bool(value: str | None, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def resolve_path(raw: str | Path) -> Path:
     path = Path(raw)
     if not path.is_absolute():
         path = ROOT / path
     return path.resolve()
+
+
+def named_urls(raw: str, defaults: list[tuple[str, str]] | None = None) -> list[tuple[str, str]]:
+    values: list[tuple[str, str]] = []
+    for index, part in enumerate(split_csv(raw), start=1):
+        if "=" in part:
+            name, url = part.split("=", 1)
+        else:
+            name, url = f"rpc-{index}", part
+        name = name.strip() or f"rpc-{index}"
+        url = url.strip()
+        if url.startswith(("http://", "https://")):
+            values.append((name, url))
+    if values:
+        return values
+    return list(defaults or [])
+
+
+def evm_reference_urls(env: dict[str, str]) -> list[tuple[str, str]]:
+    for key in ("BDAG_RAWDATADIR_EVM_REFERENCE_RPC_URLS", "BDAG_EVM_REFERENCE_RPC_URLS", "BDAG_PUBLIC_RPC_URLS"):
+        urls = named_urls(env.get(key, ""))
+        if urls:
+            return urls
+    return list(PUBLIC_EVM_RPC_DEFAULTS)
+
+
+def json_rpc_quantity(url: str, method: str, timeout: float = 5.0) -> int:
+    payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": []}).encode()
+    request = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        decoded = json.loads(response.read().decode())
+    if decoded.get("error"):
+        raise RuntimeError(decoded["error"])
+    value = decoded.get("result")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        return int(value, 16) if value.lower().startswith("0x") else int(value)
+    raise ValueError(f"{method} returned no quantity")
+
+
+def source_evm_sync_sample(env: dict[str, str]) -> dict[str, Any]:
+    local_url = env.get("BDAG_RAWDATADIR_EVM_RPC_URL") or env.get("BDAG_EVM_RPC_URL") or "http://127.0.0.1:18545"
+    max_lag = as_int(env.get("BDAG_RAWDATADIR_MAX_EVM_REFERENCE_LAG") or env.get("BDAG_AUTOPUBLISH_EVM_LAG_LIMIT"), 1000)
+    timeout = as_float(env.get("BDAG_RAWDATADIR_EVM_REFERENCE_TIMEOUT_SECONDS"), 5.0)
+    payload: dict[str, Any] = {
+        "local_evm_rpc_url": local_url,
+        "local_evm_block": None,
+        "reference_source": "",
+        "reference_url": "",
+        "reference_evm_block": None,
+        "lag_to_reference": None,
+        "max_lag": max_lag,
+        "fresh": False,
+        "errors": [],
+    }
+    try:
+        local_block = json_rpc_quantity(local_url, "eth_blockNumber", timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - eligibility reports source failures.
+        payload["errors"].append(f"local-evm: {exc}")
+        return payload
+    payload["local_evm_block"] = local_block
+
+    best: tuple[str, str, int] | None = None
+    for source, url in evm_reference_urls(env):
+        if url == local_url:
+            continue
+        try:
+            block = json_rpc_quantity(url, "eth_blockNumber", timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - try every configured reference.
+            payload["errors"].append(f"{source}: {exc}")
+            continue
+        if best is None or block > best[2]:
+            best = (source, url, block)
+
+    if best is None:
+        payload["errors"].append("no usable external EVM reference RPC")
+        return payload
+    payload["reference_source"] = best[0]
+    payload["reference_url"] = best[1]
+    payload["reference_evm_block"] = best[2]
+    lag = max(0, best[2] - local_block)
+    payload["lag_to_reference"] = lag
+    payload["fresh"] = lag <= max_lag
+    return payload
 
 
 def nearest_existing(path: Path) -> Path:
@@ -184,19 +280,22 @@ def classify_path(name: str, path: Path) -> dict[str, Any]:
 
 
 def dir_size_bytes(path: Path) -> int | None:
-    if not path.exists():
-        return None
-    try:
-        result = subprocess.run(
-            ["du", "-sb", str(path)],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        return int(result.stdout.split()[0])
-    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
-        return None
+    commands = [["du", "-sb", str(path)]]
+    if os.name == "posix" and os.geteuid() != 0 and shutil.which("sudo"):
+        commands.append(["sudo", "-n", "du", "-sb", str(path)])
+    for command in commands:
+        try:
+            result = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            return int(result.stdout.split()[0])
+        except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+            continue
+    return None
 
 
 def total_memory_bytes() -> int | None:
@@ -276,10 +375,21 @@ def build_payload(full: bool) -> dict[str, Any]:
     required_free = int(min_free_gib * 1024**3)
     if source_size is not None:
         required_free = max(required_free, int(source_size * multiplier))
+    elif full:
+        reasons.append("source_size_unavailable")
     if usage.free < required_free:
         reasons.append(
             f"insufficient_disk:{usage.free / 1024**3:.1f}GiB<{required_free / 1024**3:.1f}GiB"
         )
+
+    evm_sync = source_evm_sync_sample(env)
+    if as_bool(env.get("BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH"), True):
+        if evm_sync["local_evm_block"] is None:
+            reasons.append("local_evm_unavailable")
+        elif evm_sync["reference_evm_block"] is None:
+            reasons.append("evm_reference_unavailable")
+        elif not evm_sync["fresh"]:
+            reasons.append(f"evm_lag_to_reference:{evm_sync['lag_to_reference']}>{evm_sync['max_lag']}")
 
     publish_mode = (env.get("BDAG_RAWDATADIR_PUBLISH_MODE") or "finalized-sidecar").lower()
     finalization = (env.get("BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE") or "0").lower() in {"1", "true", "yes", "on"}
@@ -297,6 +407,7 @@ def build_payload(full: bool) -> dict[str, Any]:
         "publish_allowed": not reasons and not publish_requires_finalization,
         "publish_requires_finalization": publish_requires_finalization,
         "paths": paths,
+        "evm_sync": evm_sync,
         "source_size_bytes": source_size,
         "artifact_free_bytes": usage.free,
         "artifact_required_free_bytes": required_free,

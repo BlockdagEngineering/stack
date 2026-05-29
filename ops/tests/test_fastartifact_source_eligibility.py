@@ -73,3 +73,48 @@ def test_path_classification_flags_removable_mount_path(monkeypatch) -> None:
 
     assert payload["unsafe"] is True
     assert "removable_mount_path" in payload["unsafe_reasons"]
+
+
+def test_evm_sync_sample_uses_reference_rpc_not_dag_height(monkeypatch) -> None:
+    values = {
+        ("http://local:18545", "eth_blockNumber"): 8_000,
+        ("http://reference:18545", "eth_blockNumber"): 8_750,
+    }
+
+    def fake_quantity(url: str, method: str, timeout: float = 5.0) -> int:
+        return values[(url, method)]
+
+    monkeypatch.setattr(eligibility, "json_rpc_quantity", fake_quantity)
+
+    payload = eligibility.source_evm_sync_sample(
+        {
+            "BDAG_RAWDATADIR_EVM_RPC_URL": "http://local:18545",
+            "BDAG_RAWDATADIR_EVM_REFERENCE_RPC_URLS": "reference=http://reference:18545",
+            "BDAG_RAWDATADIR_MAX_EVM_REFERENCE_LAG": "1000",
+        }
+    )
+
+    assert payload["local_evm_block"] == 8_000
+    assert payload["reference_evm_block"] == 8_750
+    assert payload["lag_to_reference"] == 750
+    assert payload["fresh"] is True
+
+
+def test_evm_sync_sample_rejects_stale_local_evm(monkeypatch) -> None:
+    values = {
+        ("http://local:18545", "eth_blockNumber"): 8_000,
+        ("http://reference:18545", "eth_blockNumber"): 9_500,
+    }
+
+    monkeypatch.setattr(eligibility, "json_rpc_quantity", lambda url, method, timeout=5.0: values[(url, method)])
+
+    payload = eligibility.source_evm_sync_sample(
+        {
+            "BDAG_RAWDATADIR_EVM_RPC_URL": "http://local:18545",
+            "BDAG_RAWDATADIR_EVM_REFERENCE_RPC_URLS": "reference=http://reference:18545",
+            "BDAG_RAWDATADIR_MAX_EVM_REFERENCE_LAG": "1000",
+        }
+    )
+
+    assert payload["lag_to_reference"] == 1500
+    assert payload["fresh"] is False
