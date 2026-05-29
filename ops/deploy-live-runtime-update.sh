@@ -61,6 +61,7 @@ FILES=(
   "ops/tests/test_no_miner_collect_status.py"
   "ops/tests/test_optimization_measurement.py"
   "ops/tests/test_compose_migrations.py"
+  "ops/tests/test_status_sampler_mining_imperative.py"
   "ops/tests/test_sync_coordinator_fast_catchup.py"
   "ops/tests/test_watchdog_miner_source_counts.py"
   "ops/update-local-peers.py"

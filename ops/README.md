@@ -116,6 +116,13 @@ watchdog, sync coordinator, P2P guard, and startup checks consume it through
 `collect_status_cached()` while it is fresh. Use `max_age_seconds=0` only for
 explicit live diagnostics or hard repair paths that must bypass cached state.
 
+The sampler is also the backstop for the mining imperative. If the user-systemd
+guard units drift disabled, it re-enables them. If `asic-pool` is stopped while
+miner demand is visible, an ASIC LAN neighbor is present, or the chain is synced
+and ready to mine, it starts the pool container without recreating dependencies.
+Set `BDAG_MINING_IMPERATIVE_REPAIR_ENABLED=0` only for an intentional maintenance
+window where mining must remain stopped.
+
 ## Watchdog
 
 Run one check:
