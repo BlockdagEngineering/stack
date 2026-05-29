@@ -139,7 +139,7 @@ configure_node_mining_env() {
   if [[ "$enabled" == "1" ]]; then
     set_env_value .env BDAG_ENABLE_NODE_MINING 1
     set_env_value .env BDAG_NODE_MODULES "Blockdag,miner"
-    set_env_value .env BDAG_NODE_MINING_ARGS "'--allowminingwhennearlysynced --miner --miningaddr=${mining_address}'"
+    set_env_value .env BDAG_NODE_MINING_ARGS "--allowminingwhennearlysynced --allowsubmitwhennotsynced --miner --miningaddr=${mining_address} --maxinbound=1"
   else
     set_env_value .env BDAG_ENABLE_NODE_MINING 0
     set_env_value .env BDAG_NODE_MODULES "Blockdag"
@@ -404,7 +404,7 @@ configure_env() {
     node_mining_enabled=1
   fi
 
-  local node_rpc_pass postgres_password postgres_user postgres_db
+  local node_rpc_pass postgres_password postgres_user postgres_db fastartifact_enabled
   node_rpc_pass="$(random_secret)"
   postgres_password="$(random_secret)"
   postgres_user="$(grep -E '^POSTGRES_USER=' .env | cut -d= -f2-)"
@@ -422,7 +422,15 @@ configure_env() {
   set_env_value .env BDAG_POOL_URL "stratum+tcp://$lan_ip:3334"
   set_env_value .env BDAG_MINER_SCAN_TARGET "$scan_target"
   set_env_value .env BDAG_FASTSYNC_PREPROCESS_WORKERS 1
-  set_env_value .env BDAG_FASTARTIFACTSYNC_ENABLED 1
+  fastartifact_enabled=1
+  if [[ "$node_mining_enabled" == "1" ]]; then
+    case "$(env_value BDAG_STORAGE_PROFILE auto)" in
+      usb-chain-internal-runtime|single-usb-constrained)
+        fastartifact_enabled=0
+        ;;
+    esac
+  fi
+  set_env_value .env BDAG_FASTARTIFACTSYNC_ENABLED "$fastartifact_enabled"
   set_env_value .env BDAG_FASTSNAP_SEED_TIMER_ENABLED 0
   set_env_value .env BDAG_RAWDATADIR_SOURCE_MODE auto
   set_env_value .env BDAG_RAWDATADIR_ARTIFACT_BASE "./data-restore/rawdatadir"

@@ -40,6 +40,16 @@ from pool_ops import (
     write_action_state,
 )
 from rpc_router import recommend_rpc_primary, write_rpc_router_state
+from status_sampler import (
+    constrained_fastartifact_should_repair,
+    fastsync_peer_quarantine_should_repair,
+    node_mining_template_support_should_repair,
+    repair_fastsync_orphan_peers,
+    repair_constrained_fastartifact,
+    repair_missing_tracked_miners,
+    repair_node_mining_template_support,
+    status_payload_has_tracking_gap,
+)
 
 
 STATE_FILE = RUNTIME_DIR / "watchdog-state.json"
@@ -257,29 +267,63 @@ def pool_initial_download_effective(status: dict[str, Any]) -> bool:
     sync_progress = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
     remaining = int_or_none(sync_progress.get("remaining_blocks"))
     connected = int_or_none(((status.get("miner_health") or {}).get("connected_count") if isinstance(status.get("miner_health"), dict) else 0)) or 0
-    share_age = int_or_none(pool_health.get("last_valid_share_age_seconds"))
-    job_age = int_or_none(pool_health.get("last_job_notify_age_seconds"))
-    fresh_mining = connected > 0 and (
-        (share_age is not None and share_age <= DEFAULT_ASIC_HASHRATE_STALE_SECONDS)
-        or (job_age is not None and job_age <= DEFAULT_ASIC_HASHRATE_STALE_SECONDS)
+    fresh_paid_work = connected > 0 and pool_has_recent_mining_work(
+        status,
+        DEFAULT_ASIC_HASHRATE_STALE_SECONDS,
     )
-    if sync_progress.get("status") == "synced" and (remaining is None or remaining == 0) and fresh_mining:
+    if sync_progress.get("status") == "synced" and (remaining is None or remaining == 0) and fresh_paid_work:
         return False
     return True
 
 
 def pool_has_recent_mining_work(status: dict[str, Any], freshness_seconds: int = 60) -> bool:
+    """Return true only for recent accepted block submissions, not accepted shares."""
     sync_health = status.get("sync_health") if isinstance(status.get("sync_health"), dict) else {}
-    if sync_health.get("pool_has_recent_mining"):
+    if sync_health.get("pool_has_recent_paid_work"):
         return True
     pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
-    share_age = int_or_none(pool_health.get("last_valid_share_age_seconds"))
     block_age = int_or_none(pool_health.get("last_block_submit_age_seconds"))
-    valid_shares = int_or_none(pool_health.get("valid_share_count")) or 0
     accepted_blocks = int_or_none(pool_health.get("block_submit_success_count")) or 0
+    return bool(accepted_blocks > 0 and block_age is not None and block_age <= freshness_seconds)
+
+
+def pool_has_unpaid_template_loss(status: dict[str, Any]) -> bool:
+    pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
+    miner_health = status.get("miner_health") if isinstance(status.get("miner_health"), dict) else {}
+    if int_or_none(miner_health.get("connected_count_effective") or miner_health.get("connected_count")) in (None, 0):
+        return False
+    if pool_has_recent_mining_work(status):
+        return False
+    backend_unready = any(
+        pool_health.get(key) is False
+        for key in (
+            "source_selected_backend_submit_ready",
+            "source_selected_backend_mineable",
+            "source_selected_backend_p2p_fresh",
+        )
+    )
+    loss_ledger = pool_health.get("loss_ledger") if isinstance(pool_health.get("loss_ledger"), dict) else {}
+    block_outcomes = (
+        loss_ledger.get("block_outcomes")
+        if isinstance(loss_ledger.get("block_outcomes"), dict)
+        else {}
+    )
+    block_total = int_or_none(block_outcomes.get("total")) or 0
+    block_accepted = int_or_none(block_outcomes.get("accepted")) or 0
+    share_outcomes = (
+        loss_ledger.get("share_outcomes")
+        if isinstance(loss_ledger.get("share_outcomes"), dict)
+        else {}
+    )
+    stale_rejects = int_or_none(share_outcomes.get("stale_job_rejects")) or 0
     return bool(
-        (valid_shares > 0 and share_age is not None and share_age <= freshness_seconds)
-        or (accepted_blocks > 0 and block_age is not None and block_age <= freshness_seconds)
+        backend_unready
+        and (
+            pool_health.get("initial_download")
+            or pool_health.get("block_submit_zero_success_storm")
+            or (block_total >= 5 and block_accepted == 0)
+            or stale_rejects >= 10
+        )
     )
 
 
@@ -1877,6 +1921,75 @@ def check_once(
         write_state(state)
         return {"status": status, "watchdog_state": state}
 
+    if status_payload_has_tracking_gap(status):
+        message = "tracked miner registry is empty while miner demand or ASIC LAN evidence is present"
+        log(message)
+        if repair and repair_missing_tracked_miners(status):
+            state["last_miner_tracking_repair_at"] = now_iso()
+            record_efficiency_event(
+                "watchdog_repaired_tracked_miners",
+                "critical",
+                message,
+                {"tracked_count_before": int(miner_health.get("tracked_count", 0) or 0)},
+            )
+        elif repair:
+            record_failed_repair(
+                "watchdog_repair_tracked_miners",
+                message,
+                {"tracked_count_before": int(miner_health.get("tracked_count", 0) or 0)},
+            )
+
+    if constrained_fastartifact_should_repair(status):
+        message = (
+            "constrained ASIC-router mining profile is synced with miner demand while "
+            "continuous FastArtifact mode is still active"
+        )
+        log(message)
+        if repair and repair_constrained_fastartifact(status):
+            state["last_constrained_fastartifact_repair_at"] = now_iso()
+            record_efficiency_event(
+                "watchdog_disabled_constrained_fastartifact",
+                "critical",
+                message,
+                {
+                    "mode": status.get("mode"),
+                    "overall": status.get("overall"),
+                    "sync_status": (status.get("sync_progress") or {}).get("status")
+                    if isinstance(status.get("sync_progress"), dict)
+                    else None,
+                },
+            )
+        elif repair:
+            record_failed_repair("watchdog_disable_constrained_fastartifact", message)
+
+    if node_mining_template_support_should_repair(status):
+        message = "miner demand exists but node miner/template support is disabled or missing miningaddr"
+        log(message)
+        if repair and repair_node_mining_template_support(status):
+            state["last_node_mining_template_support_repair_at"] = now_iso()
+            record_efficiency_event(
+                "watchdog_enabled_node_mining_template_support",
+                "critical",
+                message,
+                {"mode": status.get("mode"), "overall": status.get("overall")},
+            )
+        elif repair:
+            record_failed_repair("watchdog_enable_node_mining_template_support", message)
+
+    if fastsync_peer_quarantine_should_repair(status):
+        message = "FastSync peer returned only orphan blocks while constrained mining host is synced"
+        log(message)
+        if repair and repair_fastsync_orphan_peers(status):
+            state["last_fastsync_peer_quarantine_at"] = now_iso()
+            record_efficiency_event(
+                "watchdog_quarantined_fastsync_orphan_peer",
+                "critical",
+                message,
+                {"mode": status.get("mode"), "overall": status.get("overall")},
+            )
+        elif repair:
+            record_failed_repair("watchdog_quarantine_fastsync_orphan_peer", message)
+
     if stack_failures and snapshot_active:
         state["consecutive_failures"] = 0
         state["consecutive_syncing"] = 0
@@ -1990,14 +2103,14 @@ def check_once(
                 if recent_mining_work:
                     pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
                     log(
-                        f"node template restart for {repair_node} suppressed because pool mining work is fresh "
+                        f"node template restart for {repair_node} suppressed because paid block submission is fresh "
                         f"last_share_age={pool_health.get('last_valid_share_age_seconds')}s "
                         f"last_block_submit_age={pool_health.get('last_block_submit_age_seconds')}s"
                     )
                     record_efficiency_event(
                         "repair_suppressed",
                         "warning",
-                        f"node template restart for {repair_node} suppressed because pool mining work is fresh",
+                        f"node template restart for {repair_node} suppressed because paid block submission is fresh",
                         {
                             "reason": reason,
                             "last_valid_share_age_seconds": pool_health.get("last_valid_share_age_seconds"),
@@ -2005,9 +2118,22 @@ def check_once(
                         },
                     )
                 elif state["consecutive_syncing"] >= 2 and node_cooldown_remaining <= 0:
-                    ok = run_node_restart(repair_node, "active RPC template probe failure: " + reason)
-                    node_template_restart_by_node[repair_node] = int(time.time())
-                    state["last_node_template_restart_at_by_node"] = node_template_restart_by_node
+                    if suppress_sync_restart_for_active_import(status, state, reason, repair_node):
+                        if (
+                            pool_has_unpaid_template_loss(status)
+                            and not pool_in_startup_grace
+                            and now - int(state.get("last_submit_path_repair_at", 0) or 0)
+                            >= DEFAULT_SUBMIT_PATH_REPAIR_COOLDOWN
+                        ):
+                            ok = run_pool_restart(
+                                "clearing unpaid stale miner jobs while backend catches up: " + reason
+                            )
+                            state["last_submit_path_repair_at"] = int(time.time())
+                            state["last_share_repair_at"] = int(time.time())
+                    else:
+                        ok = run_node_restart(repair_node, "active RPC template probe failure: " + reason)
+                        node_template_restart_by_node[repair_node] = int(time.time())
+                        state["last_node_template_restart_at_by_node"] = node_template_restart_by_node
                 elif node_cooldown_remaining > 0:
                     log(
                         f"node template restart for {repair_node} suppressed by cooldown_remaining="
@@ -2786,11 +2912,11 @@ def check_once(
             },
         )
         if repair and recent_mining_work:
-            log("sync repair suppressed because pool mining work is fresh")
+            log("sync repair suppressed because paid block submission is fresh")
             record_efficiency_event(
                 "repair_suppressed",
                 "warning",
-                "sync repair suppressed because pool mining work is fresh",
+                "sync repair suppressed because paid block submission is fresh",
                 {
                     "sync_warnings": sync_warnings,
                     "freshness_seconds": 60,
