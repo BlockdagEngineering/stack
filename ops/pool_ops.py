@@ -306,7 +306,9 @@ USD_ZAR_RATE_URL = os.environ.get("BDAG_USD_ZAR_RATE_URL", "https://open.er-api.
 PRICE_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_PRICE_CACHE_TTL_SECONDS", "300"))
 PRICE_MIN_OK_SOURCES = int(os.environ.get("BDAG_PRICE_MIN_OK_SOURCES", "2"))
 GLOBAL_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_GLOBAL_CACHE_TTL_SECONDS", "300"))
-GLOBAL_BLOCK_WINDOW = int(os.environ.get("BDAG_GLOBAL_BLOCK_WINDOW", "2048"))
+GLOBAL_BLOCK_WINDOW = env_int("BDAG_GLOBAL_BLOCK_WINDOW", 256, minimum=1)
+GLOBAL_EVM_FALLBACK_BLOCK_WINDOW = env_int("BDAG_GLOBAL_EVM_FALLBACK_BLOCK_WINDOW", 64, minimum=1)
+GLOBAL_EVM_FALLBACK_RPC_WORKERS = env_int("BDAG_GLOBAL_EVM_FALLBACK_RPC_WORKERS", 4, minimum=1)
 GLOBAL_RPC_WORKERS = env_int("BDAG_GLOBAL_RPC_WORKERS", 24, minimum=1)
 GLOBAL_HISTORY_LIMIT = int(os.environ.get("BDAG_GLOBAL_HISTORY_LIMIT", "9000"))
 GLOBAL_HISTORY_COMPACT_MULTIPLIER = max(1, int(os.environ.get("BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER", "2")))
@@ -323,6 +325,10 @@ EARNINGS_DERIVED_HISTORY_ENABLED = env_bool("BDAG_EARNINGS_DERIVED_HISTORY_ENABL
 EARNINGS_DERIVED_HISTORY_BUCKET_SECONDS = env_int("BDAG_EARNINGS_DERIVED_HISTORY_BUCKET_SECONDS", 300, minimum=60)
 PEER_GEO_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_PEER_GEO_CACHE_TTL_SECONDS", "86400"))
 PEER_GEO_LOOKUP_TIMEOUT = float(os.environ.get("BDAG_PEER_GEO_LOOKUP_TIMEOUT", "8.0"))
+PUBLIC_EVM_RPC_DEFAULTS = [
+    ("bdagscan-rpc", "https://rpc.bdagscan.com"),
+    ("blockdag-engineering-rpc", "https://rpc.blockdag.engineering"),
+]
 MINER_STALE_SECONDS = int(os.environ.get("BDAG_MINER_STALE_SECONDS", "120"))
 POOL_ACTIVITY_LOG_LINES = int(os.environ.get("BDAG_POOL_ACTIVITY_LOG_LINES", "2000"))
 POOL_ACTIVITY_BOOTSTRAP_LOG_LINES = int(os.environ.get("BDAG_POOL_ACTIVITY_BOOTSTRAP_LOG_LINES", "20000"))
@@ -5252,6 +5258,30 @@ def global_chain_rpc_urls() -> list[tuple[str, str]]:
     return mining_rpc_urls(include_haproxy=True)
 
 
+def _dedupe_rpc_urls(sources: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    deduped: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for source, url in sources:
+        normalized = url.strip()
+        if not valid_url(normalized) or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append((source.strip() or f"rpc-{len(deduped) + 1}", normalized))
+    return deduped
+
+
+def public_evm_rpc_urls() -> list[tuple[str, str]]:
+    configured = named_urls_from_env("BDAG_PUBLIC_RPC_URLS", PUBLIC_EVM_RPC_DEFAULTS)
+    return _dedupe_rpc_urls([(source, url) for source, url in configured])
+
+
+def evm_reference_rpc_urls() -> list[tuple[str, str]]:
+    configured = named_urls_from_env("BDAG_EVM_REFERENCE_RPC_URLS", [])
+    if configured:
+        return _dedupe_rpc_urls([(source, url) for source, url in configured])
+    return public_evm_rpc_urls()
+
+
 def unknown_sync_progress(source: str = "node", error: str = "") -> dict[str, Any]:
     return {
         "status": "unknown",
@@ -5334,6 +5364,12 @@ def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int,
         "evm_rpc_url": evm_url,
         "evm_rpc_source": "eth_blockNumber",
         "evm_block_count": None,
+        "evm_gap_to_chain_count": None,
+        "evm_reference_source": "",
+        "evm_reference_url": "",
+        "evm_reference_block_count": None,
+        "evm_reference_errors": [],
+        "evm_lag_to_reference": None,
         "evm_lag_to_chain": None,
         "evm_rpc_error": "",
     }
@@ -5343,7 +5379,32 @@ def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int,
         snapshot["evm_rpc_error"] = f"eth_blockNumber failed for {source}: {exc}"
         return snapshot
     snapshot["evm_block_count"] = evm_block
-    snapshot["evm_lag_to_chain"] = max(0, int(chain_block_count) - int(evm_block))
+    snapshot["evm_gap_to_chain_count"] = max(0, int(chain_block_count) - int(evm_block))
+
+    best_source = source
+    best_url = evm_url
+    best_block = evm_block
+    reference_errors: list[str] = []
+    for ref_source, ref_url in evm_reference_rpc_urls():
+        if ref_url == evm_url:
+            continue
+        try:
+            ref_block = parse_rpc_quantity(json_rpc_call(ref_url, "eth_blockNumber", [], timeout=timeout))
+        except Exception as exc:  # noqa: BLE001 - reference sources are best-effort.
+            reference_errors.append(f"{ref_source}: {exc}")
+            continue
+        if ref_block > best_block:
+            best_source = ref_source
+            best_url = ref_url
+            best_block = ref_block
+    snapshot["evm_reference_source"] = best_source
+    snapshot["evm_reference_url"] = best_url
+    snapshot["evm_reference_block_count"] = best_block
+    snapshot["evm_reference_errors"] = reference_errors[:5]
+    snapshot["evm_lag_to_reference"] = max(0, int(best_block) - int(evm_block))
+    # Compatibility field for older dashboard consumers. The DAG/order gap is
+    # exposed as evm_gap_to_chain_count; readiness uses EVM-to-EVM reference lag.
+    snapshot["evm_lag_to_chain"] = snapshot["evm_lag_to_reference"]
     return snapshot
 
 
@@ -5532,13 +5593,14 @@ def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TI
             }
 
         evm_block = safe_int(evm_lag.get("evm_block_count"), None)
-        evm_remaining = safe_int(evm_lag.get("evm_lag_to_chain"), 0)
-        if evm_block is not None and evm_remaining > EVM_SYNC_LAG_THRESHOLD_BLOCKS:
+        evm_reference = safe_int(evm_lag.get("evm_reference_block_count"), None)
+        evm_remaining = safe_int(evm_lag.get("evm_lag_to_reference"), 0)
+        if evm_block is not None and evm_reference is not None and evm_remaining > EVM_SYNC_LAG_THRESHOLD_BLOCKS:
             return {
                 "status": "syncing",
-                "percent": round(max(0.0, min(100.0, (evm_block / max(1, current)) * 100)), 2),
+                "percent": round(max(0.0, min(100.0, (evm_block / max(1, evm_reference)) * 100)), 2),
                 "current_block": evm_block,
-                "highest_block": current,
+                "highest_block": evm_reference,
                 "starting_block": None,
                 "remaining_blocks": evm_remaining,
                 "source": f"{source}:evm-head-lag",
@@ -5760,6 +5822,26 @@ def fetch_block_header(url: str, block_number: int, timeout: float = 8.0) -> dic
     if not isinstance(result, dict):
         raise RuntimeError("block header response was not a JSON object")
     return result
+
+
+def freshest_evm_rpc_source(
+    rpc_sources: list[tuple[str, str]],
+    timeout: float = 6.0,
+) -> tuple[str, str, int, list[str]] | None:
+    best: tuple[str, str, int] | None = None
+    errors: list[str] = []
+    for source_name, source_url in rpc_sources:
+        try:
+            latest_hex = json_rpc_call(source_url, "eth_blockNumber", [], timeout=timeout)
+            latest_block = parse_rpc_quantity(latest_hex)
+        except Exception as exc:  # noqa: BLE001 - each source is independent.
+            errors.append(f"{source_name}: {exc}")
+            continue
+        if best is None or latest_block > best[2]:
+            best = (source_name, source_url, latest_block)
+    if best is None:
+        return None
+    return best[0], best[1], best[2], errors
 
 
 def parse_global_block_epoch(value: Any) -> int | None:
@@ -6314,13 +6396,30 @@ def is_valid_global_chain_snapshot(snapshot: Mapping[str, Any] | None) -> bool:
     return True
 
 
+def is_valid_global_evm_fallback_snapshot(snapshot: Mapping[str, Any] | None) -> bool:
+    if not isinstance(snapshot, Mapping):
+        return False
+    if snapshot.get("status") not in {"ok", "degraded"}:
+        return False
+    if str(snapshot.get("source_contract") or "") != "evm-rpc-fallback-v1":
+        return False
+    if bool(snapshot.get("head_only")):
+        return False
+    requested_blocks = safe_int(snapshot.get("requested_blocks"), 0)
+    fetched_blocks = safe_int(snapshot.get("fetched_blocks"), 0)
+    return requested_blocks > 1 and fetched_blocks > 0
+
+
 def read_valid_global_history(limit: int | None = None) -> list[dict[str, Any]]:
     return [row for row in read_global_history(limit=limit) if is_valid_global_chain_snapshot(row)]
 
 
 def record_global_snapshot(snapshot: dict[str, Any]) -> None:
     ensure_runtime()
-    append_jsonl_file(GLOBAL_HISTORY_FILE, snapshot, mode=0o600)
+    try:
+        append_jsonl_file(GLOBAL_HISTORY_FILE, snapshot, mode=0o600)
+    except OSError:
+        return
     state = read_json_file(GLOBAL_HISTORY_STATE_FILE, {})
     previous_count = safe_int(state.get("row_count") if isinstance(state, dict) else None, 0)
     row_count = previous_count + 1 if previous_count > 0 else count_text_lines(GLOBAL_HISTORY_FILE)
@@ -6340,6 +6439,13 @@ def record_global_snapshot(snapshot: dict[str, Any]) -> None:
         },
         mode=0o600,
     )
+
+
+def write_global_cache(payload: dict[str, Any]) -> None:
+    try:
+        write_json_file(GLOBAL_CACHE_FILE, payload, mode=0o600)
+    except OSError:
+        return
 
 
 def _pool_earning_rates_from_cluster(cluster: dict[str, Any], scan_window_hours: Decimal | None) -> tuple[str | None, str | None, str | None]:
@@ -6523,12 +6629,31 @@ def collect_global_blockchain() -> dict[str, Any]:
     cached = read_json_file(GLOBAL_CACHE_FILE, {})
     cached_at = int(cached.get("updated_at_epoch", 0) or 0) if isinstance(cached, dict) else 0
     cached_valid = is_valid_global_chain_snapshot(cached)
+    cached_evm_fallback_valid = is_valid_global_evm_fallback_snapshot(cached)
     invalid_cache_error = ""
     if isinstance(cached, dict) and cached.get("status") == "ok" and not cached_valid:
         invalid_cache_error = (
             "ignored stale global cache with unsupported source/schema "
             f"source_truth={cached.get('source_truth') or cached.get('source') or 'unknown'} "
             f"schema={cached.get('schema_version') or 'missing'}"
+        )
+
+    if cached_evm_fallback_valid and seconds_since_epoch() - cached_at <= GLOBAL_CACHE_TTL_SECONDS:
+        cache_meta = dict(cached.get("cache") or {}) if isinstance(cached.get("cache"), dict) else {}
+        cache_meta.update(
+            {
+                "hit": True,
+                "age_seconds": max(0, seconds_since_epoch() - cached_at),
+                "ttl_seconds": GLOBAL_CACHE_TTL_SECONDS,
+            }
+        )
+        return annotate_global_pool_labels(
+            {
+                **cached,
+                "cache_hit": True,
+                "cache": cache_meta,
+                "history": read_global_history(limit=GLOBAL_HISTORY_LIMIT),
+            }
         )
 
     def lightweight_global_head(
@@ -6590,10 +6715,160 @@ def collect_global_blockchain() -> dict[str, Any]:
             }
         )
 
+    def evm_fallback_global(
+        error: str,
+        errors: list[str],
+        history: list[dict[str, Any]],
+        chain_block_count: int | None = None,
+    ) -> dict[str, Any] | None:
+        freshest = freshest_evm_rpc_source(public_evm_rpc_urls(), timeout=6.0)
+        if freshest is None:
+            return None
+        rpc_name, rpc_url, evm_latest_block, latest_errors = freshest
+        requested_count = min(max(GLOBAL_EVM_FALLBACK_BLOCK_WINDOW, 1), evm_latest_block + 1)
+        start_block = max(0, evm_latest_block - requested_count + 1)
+        block_numbers = list(range(start_block, evm_latest_block + 1))
+        worker_count = min(GLOBAL_EVM_FALLBACK_RPC_WORKERS, len(block_numbers))
+        headers: list[dict[str, Any]] = []
+        fetch_errors = [*errors, *latest_errors]
+
+        def load_block(block_number: int) -> dict[str, Any]:
+            header = fetch_block_header(rpc_url, block_number, timeout=10.0)
+            header["_rpc_source"] = rpc_name
+            return header
+
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            future_map = {pool.submit(load_block, number): number for number in block_numbers}
+            for future in as_completed(future_map):
+                number = future_map[future]
+                try:
+                    headers.append(future.result())
+                except Exception as exc:  # noqa: BLE001
+                    fetch_errors.append(f"{number}: {exc}")
+        if not headers:
+            return None
+
+        headers.sort(key=lambda item: safe_int(str(item.get("number") or "0"), 0))
+        cluster_map: dict[str, dict[str, Any]] = {}
+        first_seen_epoch: int | None = None
+        last_seen_epoch: int | None = None
+        zero_address_blocks = 0
+        for header in headers:
+            miner = str(header.get("miner") or header.get("author") or header.get("coinbase") or "").lower()
+            if not miner:
+                continue
+            try:
+                epoch = int(str(header.get("timestamp") or "0"), 16)
+                height = int(str(header.get("number") or "0"), 16)
+            except (TypeError, ValueError):
+                continue
+            first_seen_epoch = epoch if first_seen_epoch is None else min(first_seen_epoch, epoch)
+            last_seen_epoch = epoch if last_seen_epoch is None else max(last_seen_epoch, epoch)
+            if not is_spendable_eth_address(miner):
+                zero_address_blocks += 1
+                continue
+            entry = cluster_map.setdefault(
+                miner,
+                {
+                    "address": miner,
+                    "blocks": 0,
+                    "first_height": height,
+                    "last_height": height,
+                    "first_seen_epoch": epoch,
+                    "last_seen_epoch": epoch,
+                    "rpc_sources": [],
+                },
+            )
+            entry["blocks"] += 1
+            entry["first_height"] = min(entry["first_height"], height)
+            entry["last_height"] = max(entry["last_height"], height)
+            entry["first_seen_epoch"] = min(entry["first_seen_epoch"], epoch)
+            entry["last_seen_epoch"] = max(entry["last_seen_epoch"], epoch)
+            entry["rpc_sources"].append(str(header.get("_rpc_source") or rpc_name))
+
+        total_blocks = len(headers)
+        window_seconds = max(1, (last_seen_epoch or 0) - (first_seen_epoch or 0))
+        scan_window_hours = Decimal(str(window_seconds)) / Decimal("3600") if window_seconds > 0 else None
+        avg_block_seconds = window_seconds / max(1, total_blocks - 1) if total_blocks > 1 else None
+        enriched_clusters: list[dict[str, Any]] = []
+        clusters = sorted(cluster_map.values(), key=lambda item: (item["blocks"], item["last_seen_epoch"]), reverse=True)
+        for rank, cluster in enumerate(clusters, start=1):
+            blocks = int(cluster["blocks"])
+            share = Decimal(blocks) / Decimal(max(1, total_blocks))
+            enriched_clusters.append(
+                {
+                    "rank": rank,
+                    "address": cluster["address"],
+                    "address_short": short_eth_address(cluster["address"]),
+                    "pool_name": "",
+                    "source": "evm-rpc-fallback",
+                    "local_pool": False,
+                    "blocks": blocks,
+                    "shares": blocks,
+                    "credit_blocks": blocks,
+                    "found_blocks": blocks,
+                    "share_percent": decimal_to_str(share * Decimal("100"), places=2),
+                    "first_height": cluster["first_height"],
+                    "last_height": cluster["last_height"],
+                    "first_seen_at": datetime.fromtimestamp(cluster["first_seen_epoch"], tz=timezone.utc).isoformat(),
+                    "last_seen_at": datetime.fromtimestamp(cluster["last_seen_epoch"], tz=timezone.utc).isoformat(),
+                    "avg_block_seconds": decimal_to_str(Decimal(str(avg_block_seconds)), places=1) if avg_block_seconds is not None and blocks > 1 else None,
+                    "rpc_sources": unique_names(cluster["rpc_sources"]),
+                }
+            )
+        local_pool_clusters = collect_local_pool_global_clusters(window_seconds, total_blocks, scan_window_hours, {})
+        display_clusters = merge_global_local_pool_clusters(enriched_clusters, local_pool_clusters)
+        latest_block = chain_block_count if chain_block_count is not None else evm_latest_block
+        payload: dict[str, Any] = {
+            "status": "degraded",
+            "source": "on-chain-evm-fallback",
+            "source_truth": "evm-rpc:eth_blockNumber/eth_getBlockByNumber fallback",
+            "source_contract": "evm-rpc-fallback-v1",
+            "schema_version": GLOBAL_CACHE_SCHEMA_VERSION,
+            "rpc_kind": "evm-json-rpc",
+            "height_method": "eth_blockNumber",
+            "updated_at": now_iso(),
+            "updated_at_epoch": seconds_since_epoch(),
+            "rpc_source": rpc_name,
+            "chain_block_count": chain_block_count,
+            "latest_block": latest_block,
+            "latest_order": max(0, latest_block - 1),
+            "evm_latest_block": evm_latest_block,
+            "requested_blocks": requested_count,
+            "fetched_blocks": total_blocks,
+            "unknown_blocks": 0,
+            "partial_scan": False,
+            "global_rpc_worker_count": worker_count,
+            "adaptive_concurrency": {},
+            "scan_start_block": start_block,
+            "scan_end_block": evm_latest_block,
+            "scan_start_order": None,
+            "scan_end_order": None,
+            "scan_window_seconds": window_seconds,
+            "scan_window_hours": decimal_to_str(Decimal(str(window_seconds)) / Decimal("3600"), places=2),
+            "avg_block_seconds": decimal_to_str(Decimal(str(avg_block_seconds)), places=1) if avg_block_seconds is not None else None,
+            "unique_miners": len(display_clusters),
+            "chain_unique_miners": len(enriched_clusters),
+            "clusters": display_clusters,
+            "chain_clusters": enriched_clusters,
+            "local_pool_clusters": local_pool_clusters,
+            "peer_location": {"observations": []},
+            "fetch_errors": fetch_errors[:20],
+            "zero_address_blocks": zero_address_blocks,
+            "history": history,
+            "cache_hit": False,
+            "cache": {"hit": False, "ttl_seconds": GLOBAL_CACHE_TTL_SECONDS},
+            "error": f"{error}; using EVM header fallback",
+        }
+        payload = annotate_global_pool_labels(payload)
+        write_global_cache(payload)
+        return payload
+
     def stale_or_failed(
         error: str,
         errors: list[str] | None = None,
         maintenance_decision: dict[str, Any] | None = None,
+        chain_block_count: int | None = None,
     ) -> dict[str, Any]:
         history = read_valid_global_history(limit=GLOBAL_HISTORY_LIMIT)
         fetch_errors = list(errors or [])
@@ -6625,6 +6900,9 @@ def collect_global_blockchain() -> dict[str, Any]:
             head = lightweight_global_head(error, errors or [], history, maintenance_decision)
             if head is not None:
                 return head
+        fallback = evm_fallback_global(error, fetch_errors, history, chain_block_count)
+        if fallback is not None:
+            return fallback
         return {
             "status": "failed",
             "source": "on-chain",
@@ -6714,7 +6992,17 @@ def collect_global_blockchain() -> dict[str, Any]:
     latest_order = latest_block_count - 1
     requested_count = min(max(GLOBAL_BLOCK_WINDOW, 1), latest_block_count)
     start_order = max(0, latest_order - requested_count + 1)
+    preflight_order = max(start_order, latest_order - min(10, requested_count - 1))
+    try:
+        preflight_header = fetch_chain_order_header(rpc_url, rpc_name, preflight_order, timeout=4.0)
+    except Exception as exc:  # noqa: BLE001
+        return stale_or_failed(
+            "unable to fetch chain block by order",
+            latest_errors + [f"{preflight_order}: {exc}"],
+            chain_block_count=latest_block_count,
+        )
     requested_orders = list(range(start_order, latest_order + 1))
+    requested_orders = [order for order in requested_orders if order != preflight_order]
     primary_sources = [(rpc_name, rpc_url), *[(name, url) for _, name, url in candidates if url != rpc_url]]
 
     def load_block(order: int) -> dict[str, Any]:
@@ -6726,7 +7014,7 @@ def collect_global_blockchain() -> dict[str, Any]:
                 last_error = exc
         raise RuntimeError(str(last_error or f"failed to fetch chain block order {order}"))
 
-    headers: list[dict[str, Any]] = []
+    headers: list[dict[str, Any]] = [preflight_header]
     fetch_errors: list[str] = []
     global_pressure = {
         "iowait_percent": maintenance_decision.get("iowait_percent"),
@@ -6746,7 +7034,7 @@ def collect_global_blockchain() -> dict[str, Any]:
 
     headers.sort(key=lambda item: safe_int(item.get("order"), 0))
     if not headers:
-        return stale_or_failed("unable to fetch chain block headers by order", latest_errors + fetch_errors)
+        return stale_or_failed("unable to fetch chain block headers by order", latest_errors + fetch_errors, chain_block_count=latest_block_count)
 
     total_blocks = len(headers)
     unknown_blocks = max(0, requested_count - total_blocks)
@@ -6990,7 +7278,7 @@ def collect_global_blockchain() -> dict[str, Any]:
     )
     payload["history"] = read_valid_global_history(limit=GLOBAL_HISTORY_LIMIT)
     payload = annotate_global_pool_labels(payload)
-    write_json_file(GLOBAL_CACHE_FILE, payload, mode=0o600)
+    write_global_cache(payload)
     return payload
 
 

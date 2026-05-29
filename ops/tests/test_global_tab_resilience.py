@@ -91,6 +91,7 @@ class GlobalTabFallbackTests(unittest.TestCase):
         self.old_read_global_history = pool_ops.read_global_history
         self.old_seconds_since_epoch = pool_ops.seconds_since_epoch
         self.old_global_chain_rpc_urls = pool_ops.global_chain_rpc_urls
+        self.old_public_evm_rpc_urls = pool_ops.public_evm_rpc_urls
         self.old_json_rpc_call = pool_ops.json_rpc_call
         self.old_mining_rpc_call = pool_ops.mining_rpc_call
         self.old_background_maintenance_decision = pool_ops.background_maintenance_decision
@@ -101,6 +102,7 @@ class GlobalTabFallbackTests(unittest.TestCase):
         pool_ops.read_global_history = self.old_read_global_history
         pool_ops.seconds_since_epoch = self.old_seconds_since_epoch
         pool_ops.global_chain_rpc_urls = self.old_global_chain_rpc_urls
+        pool_ops.public_evm_rpc_urls = self.old_public_evm_rpc_urls
         pool_ops.json_rpc_call = self.old_json_rpc_call
         pool_ops.mining_rpc_call = self.old_mining_rpc_call
         pool_ops.background_maintenance_decision = self.old_background_maintenance_decision
@@ -123,6 +125,7 @@ class GlobalTabFallbackTests(unittest.TestCase):
         pool_ops.read_global_history = lambda limit=None: [{"latest_block": 122, "clusters": []}]
         pool_ops.seconds_since_epoch = lambda: 999_999
         pool_ops.global_chain_rpc_urls = lambda: [("bad-node", "http://127.0.0.1:38131")]
+        pool_ops.public_evm_rpc_urls = lambda: []
         pool_ops.background_maintenance_decision = lambda task: {"allowed": True, "task": task, "reasons": []}
 
         def fail_rpc(*_args: object, **_kwargs: object) -> object:
@@ -176,6 +179,7 @@ class GlobalTabFallbackTests(unittest.TestCase):
         pool_ops.read_global_history = lambda limit=None: [cached]
         pool_ops.seconds_since_epoch = lambda: 120
         pool_ops.global_chain_rpc_urls = lambda: [("chain", "http://chain-rpc")]
+        pool_ops.public_evm_rpc_urls = lambda: []
         pool_ops.background_maintenance_decision = lambda task: {"allowed": True, "task": task, "reasons": []}
 
         def fake_mining_rpc(_url: str, method: str, _params: list[object], timeout: float = 0) -> object:

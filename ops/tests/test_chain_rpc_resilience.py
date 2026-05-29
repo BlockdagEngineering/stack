@@ -17,6 +17,7 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.old_pool_rpc_refused_warn_seconds = pool_ops.POOL_RPC_REFUSED_WARN_SECONDS
         self.old_mining_rpc_call = pool_ops.mining_rpc_call
         self.old_json_rpc_call = pool_ops.json_rpc_call
+        self.old_evm_reference_rpc_urls = pool_ops.evm_reference_rpc_urls
         self.old_sleep = pool_ops.time.sleep
         self.old_time = pool_ops.time.time
         self.addCleanup(self.restore_globals)
@@ -26,6 +27,7 @@ class ChainRpcResilienceTests(unittest.TestCase):
         pool_ops.POOL_RPC_REFUSED_WARN_SECONDS = self.old_pool_rpc_refused_warn_seconds
         pool_ops.mining_rpc_call = self.old_mining_rpc_call
         pool_ops.json_rpc_call = self.old_json_rpc_call
+        pool_ops.evm_reference_rpc_urls = self.old_evm_reference_rpc_urls
         pool_ops.time.sleep = self.old_sleep
         pool_ops.time.time = self.old_time
 
@@ -120,13 +122,16 @@ class ChainRpcResilienceTests(unittest.TestCase):
                 return "10000"
             raise AssertionError(method)
 
-        def fake_json_rpc(_url, method, _params, timeout):
+        def fake_json_rpc(url, method, _params, timeout):
             if method == "eth_blockNumber":
+                if url == "http://reference:18545":
+                    return "0x2710"
                 return "0x1f40"
             raise AssertionError(method)
 
         pool_ops.mining_rpc_call = fake_mining_rpc
         pool_ops.json_rpc_call = fake_json_rpc
+        pool_ops.evm_reference_rpc_urls = lambda: [("reference", "http://reference:18545")]
 
         progress = pool_ops.node_sync_progress("node1", "http://127.0.0.1:38131", timeout=8.0)
 
@@ -138,6 +143,8 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.assertEqual(progress["chain_block_count"], 10000)
         self.assertEqual(progress["evm_block_count"], 8000)
         self.assertEqual(progress["evm_lag_to_chain"], 2000)
+        self.assertEqual(progress["evm_lag_to_reference"], 2000)
+        self.assertEqual(progress["evm_gap_to_chain_count"], 2000)
         self.assertEqual(progress["current_block_source"], "eth_blockNumber")
 
     def test_rpc_refused_is_recent_only_inside_warning_window(self) -> None:
