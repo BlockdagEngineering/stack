@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import pathlib
 import sys
 import tempfile
@@ -104,6 +105,24 @@ class SyncCoordinatorFastCatchupTest(unittest.TestCase):
             True,
         )
         self.assertIn("--fastartifactsync", reason)
+
+    def test_disabled_fastartifact_env_suppresses_missing_flag_restart(self) -> None:
+        decision = sync_coordinator.build_decision(self.status(remaining=1500), {})
+        previous = os.environ.get("BDAG_FASTARTIFACTSYNC_ENABLED")
+        os.environ["BDAG_FASTARTIFACTSYNC_ENABLED"] = "0"
+        try:
+            reason = sync_coordinator.fast_sync_restart_reason(
+                decision,
+                {},
+                "/usr/local/bin/blockdag-node --configfile /etc/bdagStack/node.conf",
+                True,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("BDAG_FASTARTIFACTSYNC_ENABLED", None)
+            else:
+                os.environ["BDAG_FASTARTIFACTSYNC_ENABLED"] = previous
+        self.assertEqual(reason, "")
 
     def test_restart_cooldown_suppresses_restart_reason(self) -> None:
         decision = sync_coordinator.build_decision(self.status(remaining=1500), {})

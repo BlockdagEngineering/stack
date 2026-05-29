@@ -26,6 +26,17 @@ miners. If a node is behind tip and `miner_health.connected_count == 0` or
 `miner_health.managed_count == 0`, preserve sync-only behavior and prioritize
 chain catch-up over template generation.
 
+When actual ASIC demand is present, the opposite invariant applies: the selected
+node must be able to build templates and accept block candidates during brief
+false `Client in initial download` windows. Runtime repairs must enable
+`BDAG_ENABLE_NODE_MINING=1`, `BDAG_NODE_MODULES=Blockdag,miner`, and
+`BDAG_NODE_MINING_ARGS` containing `--allowminingwhennearlysynced`,
+`--allowsubmitwhennotsynced`, `--miner`, and a non-zero `--miningaddr=<wallet>`.
+For constrained USB/router appliances also keep `--maxinbound=1`, because
+inbound catch-up peers and artifact requests have caused rewind/sync churn that
+converted valid ASIC work into `node-syncing`, `tip-overdue`, and
+`invalidated_job` losses.
+
 Fresh installs assume zero miner sources. Do not hard-code one, four, five, or
 any other miner count into release defaults, installers, watchdog repairs,
 dashboard success criteria, or tests. Miner sources are configured after initial

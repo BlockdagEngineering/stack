@@ -115,6 +115,12 @@ def env_enabled(name: str, default: bool = True) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def env_value_enabled(raw: str | None, default: bool = True) -> bool:
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
 FAST_CATCHUP_RESTART_ON_MISSING_FASTARTIFACT = env_enabled(
     "BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT",
     True,
@@ -897,6 +903,19 @@ def fast_sync_restart_cooldown_remaining(state: dict[str, Any]) -> int:
     return max(0, FAST_CATCHUP_RESTART_COOLDOWN_SECONDS - int(time.time() - last_epoch))
 
 
+def fastartifact_process_flag_required() -> bool:
+    if not FAST_CATCHUP_RESTART_ON_MISSING_FASTARTIFACT:
+        return False
+    # The sync coordinator may stay resident after the live env files are edited
+    # by the mining imperative guard. Treat any explicit false value as a hard
+    # local opt-out so constrained USB/router mining profiles are not forced
+    # back into continuous FastArtifact mode after they become synced.
+    values = [os.environ.get("BDAG_FASTARTIFACTSYNC_ENABLED")]
+    for path in (PROJECT_ROOT / ".env", POOL_ENV_FILE):
+        values.append(read_env_file(path).get("BDAG_FASTARTIFACTSYNC_ENABLED"))
+    return not any(not env_value_enabled(value, True) for value in values if value is not None)
+
+
 def fast_sync_restart_reason(
     decision: dict[str, Any],
     state: dict[str, Any],
@@ -908,7 +927,7 @@ def fast_sync_restart_reason(
     if safe_int(decision.get("leader_remaining_blocks")) <= LEADER_NEAR_TIP_BLOCKS:
         return ""
     if (
-        FAST_CATCHUP_RESTART_ON_MISSING_FASTARTIFACT
+        fastartifact_process_flag_required()
         and command_ok
         and command_line.strip()
         and not node_command_has_fast_artifact_sync(command_line)

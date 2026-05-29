@@ -1012,10 +1012,24 @@ def planned_sync_paused_follower(state: dict[str, Any] | None = None) -> str:
     return ""
 
 
+def docker_compose_project_name() -> str:
+    configured = os.environ.get("BDAG_COMPOSE_PROJECT_NAME") or os.environ.get("COMPOSE_PROJECT_NAME")
+    if configured:
+        return configured
+    raw_project_root = os.environ.get("BDAG_PROJECT_ROOT")
+    if raw_project_root:
+        name = Path(raw_project_root).expanduser().name
+        if name:
+            return name
+    return PROJECT_ROOT.name
+
+
 def docker_compose_command(*args: str) -> list[str]:
     return [
         "docker",
         "compose",
+        "-p",
+        docker_compose_project_name(),
         "--env-file",
         str(POOL_ENV_FILE),
         "-f",
@@ -2987,7 +3001,7 @@ def selected_backend_readiness_contract(
     selected_backend: str,
     selected_source_health: dict[str, Any],
     source_job_health: dict[str, Any],
-    pool_has_recent_mining: bool,
+    pool_has_recent_paid_work: bool,
 ) -> dict[str, Any]:
     source = selected_source_health if isinstance(selected_source_health, dict) else {}
     job_health = source_job_health if isinstance(source_job_health, dict) else {}
@@ -3005,18 +3019,19 @@ def selected_backend_readiness_contract(
         for key in ("node_mineable", "node_submit_ready", "node_p2p_mining_fresh")
     ) or checks.get("node_last_template_build_error_blocking_clear") is False
     job_unready = job_ok is False
-    contradiction = bool(pool_has_recent_mining and (node_unready or job_unready))
-    hard_unready = bool((node_unready or job_unready) and not pool_has_recent_mining)
+    contradiction = bool(pool_has_recent_paid_work and (node_unready or job_unready))
+    hard_unready = bool((node_unready or job_unready) and not pool_has_recent_paid_work)
     return {
         "version": 1,
         "selected_backend": selected_backend,
-        "pool_has_recent_mining": pool_has_recent_mining,
+        "pool_has_recent_mining": pool_has_recent_paid_work,
+        "pool_has_recent_paid_work": pool_has_recent_paid_work,
         "job_health_ok": job_ok,
         "checks": checks,
         "contradiction": contradiction,
         "hard_unready": hard_unready,
         "advisory_degraded": bool(contradiction),
-        "truth_basis": "recent accepted pool work overrides stale readiness booleans for operator status; fix the metric/gate if they disagree",
+        "truth_basis": "only recent accepted block submission may override readiness; accepted shares alone are not paid mining",
     }
 
 
@@ -4560,6 +4575,20 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         else {}
     )
     pool["loss_ledger"] = pool_loss_ledger
+    block_outcomes = (
+        pool_loss_ledger.get("block_outcomes")
+        if isinstance(pool_loss_ledger.get("block_outcomes"), dict)
+        else {}
+    )
+    ledger_block_total = safe_int(block_outcomes.get("total"), 0)
+    ledger_block_accepted = safe_int(block_outcomes.get("accepted"), 0)
+    if ledger_block_total:
+        pool["block_submit_failure_count"] = max(
+            safe_int(pool.get("block_submit_failure_count"), 0),
+            max(0, ledger_block_total - ledger_block_accepted),
+        )
+    if ledger_block_total >= POOL_BLOCK_SUBMIT_ZERO_SUCCESS_ERROR_COUNT and ledger_block_accepted == 0:
+        pool["block_submit_zero_success_storm"] = True
     if pool.get("rpc_refused_recent") and not any("bdag child" in item for item in stack_failures):
         add_sync_warning("pool recently saw RPC connection refused")
 
@@ -4658,17 +4687,21 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "planned_paused_follower": planned_paused_follower,
         "planned_pause_leader": planned_pause_leader,
     }
-    pool_has_recent_mining = any(
+    pool_has_recent_share_activity = any(
         pool.get(field) is not None and int(pool.get(field) or 0) <= max_age
         for field, max_age in (
             ("last_submit_age_seconds", 30),
             ("last_valid_share_age_seconds", 60),
-            ("last_block_submit_age_seconds", 60),
         )
+    )
+    pool_has_recent_paid_work = bool(
+        safe_int(pool.get("block_submit_success_count"), 0) > 0
+        and pool.get("last_block_submit_age_seconds") is not None
+        and int(pool.get("last_block_submit_age_seconds") or 0) <= 60
     )
     pool_initial_download_transient = bool(
         pool.get("initial_download")
-        and pool_has_recent_mining
+        and pool_has_recent_paid_work
         and not pool.get("share_stall")
     )
     source_job_health_ok_raw = source_job_health.get("ok") if isinstance(source_job_health, dict) else None
@@ -4681,11 +4714,11 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         if selected_source_health.get("node_last_template_build_error_blocking") is True:
             selected_source_checks.append(False)
     selected_source_degraded = bool(selected_source_checks and not all(selected_source_checks))
-    source_job_hard_degraded = bool(source_job_health_ok is False and not pool_has_recent_mining)
-    source_selected_backend_hard_degraded = bool(selected_source_degraded and not pool_has_recent_mining)
+    source_job_hard_degraded = bool(source_job_health_ok is False and not pool_has_recent_paid_work)
+    source_selected_backend_hard_degraded = bool(selected_source_degraded and not pool_has_recent_paid_work)
     source_health_transient_degraded = bool(
         (source_job_health_ok is False or selected_source_degraded)
-        and pool_has_recent_mining
+        and pool_has_recent_paid_work
     )
     pool["source_job_health_ok"] = source_job_health_ok
     pool["source_job_hard_degraded"] = source_job_hard_degraded
@@ -4711,8 +4744,10 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     pool["initial_download_transient"] = pool_initial_download_transient
     pool["initial_download_needs_repair"] = pool_initial_download_needs_repair
     sync_health["pool_initial_download_transient"] = pool_initial_download_transient
-    sync_health["pool_has_recent_mining"] = pool_has_recent_mining
-    if connected_miners > 0 and pool_has_recent_mining and sync_warnings:
+    sync_health["pool_has_recent_share_activity"] = pool_has_recent_share_activity
+    sync_health["pool_has_recent_paid_work"] = pool_has_recent_paid_work
+    sync_health["pool_has_recent_mining"] = pool_has_recent_paid_work
+    if connected_miners > 0 and pool_has_recent_paid_work and sync_warnings:
         advisory_sync_warnings = [
             item for item in sync_warnings
             if is_recent_mining_sync_noise(item)
@@ -4727,19 +4762,19 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
                 if not is_recent_mining_sync_noise(item)
             ]
             for item in advisory_sync_warnings:
-                add_maintenance_warning(f"{item}; accepted mining work remains fresh")
+                add_maintenance_warning(f"{item}; accepted block submission remains fresh")
     readiness_contract = selected_backend_readiness_contract(
         str(pool.get("selected_backend") or ""),
         selected_source_health,
         source_job_health,
-        pool_has_recent_mining,
+        pool_has_recent_paid_work,
     )
     pool["selected_backend_readiness_contract"] = readiness_contract
     if pool_initial_download_needs_repair:
         add_sync_warning("pool is waiting for node sync to finish")
     elif pool_initial_download_transient:
         add_maintenance_warning(
-            "pool saw a transient initial-download template response while active mining stayed fresh"
+            "pool saw a transient initial-download template response while accepted block submission stayed fresh"
         )
     if connected_miners > 0 and pool_loss_ledger.get("warnings"):
         ledger_warnings = [str(item) for item in pool_loss_ledger.get("warnings", []) if item]
@@ -4751,18 +4786,18 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         add_maintenance_warning(
             f"selected backend readiness contradiction: {backend} reports "
             f"mineable={checks.get('node_mineable')} submit_ready={checks.get('node_submit_ready')} "
-            "while accepted mining work remains recent"
+            "while accepted block submission remains recent"
         )
     if connected_miners > 0 and source_job_hard_degraded:
-        add_sync_warning("pool source job health reports not-ok and accepted work is stale")
+        add_sync_warning("pool source job health reports not-ok and accepted block submission is stale")
     elif connected_miners > 0 and source_job_health_ok is False:
-        add_maintenance_warning("pool source job health is advisory-degraded while accepted work remains fresh")
+        add_maintenance_warning("pool source job health is advisory-degraded while accepted block submission remains fresh")
     if connected_miners > 0 and source_selected_backend_hard_degraded:
         backend = pool.get("selected_backend") or "selected backend"
-        add_sync_warning(f"pool source health says {backend} is not mineable/submit-ready and accepted work is stale")
+        add_sync_warning(f"pool source health says {backend} is not mineable/submit-ready and accepted block submission is stale")
     elif connected_miners > 0 and source_health_transient_degraded:
         backend = pool.get("selected_backend") or "selected backend"
-        add_maintenance_warning(f"pool source health says {backend} is degraded, but accepted work remains fresh")
+        add_maintenance_warning(f"pool source health says {backend} is degraded, but accepted block submission remains fresh")
     if connected_miners > 0 and pool.get("share_stall"):
         age = pool.get("last_valid_share_age_seconds")
         age_text = f"{age}s" if age is not None else "unknown"
@@ -4770,7 +4805,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             f"pool has not accepted a valid share for {age_text} "
             f"while {connected_miners} miner(s) are connected"
         )
-    effective_job_stall = bool(connected_miners > 0 and pool.get("job_stall") and not pool_has_recent_mining)
+    effective_job_stall = bool(connected_miners > 0 and pool.get("job_stall") and not pool_has_recent_paid_work)
     if effective_job_stall:
         age = pool.get("last_job_notify_age_seconds")
         age_text = f"{age}s" if age is not None else "unknown"
@@ -4851,12 +4886,12 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
                 isinstance(rpc_failover_probe, dict)
                 and rpc_failover_probe.get("failing")
                 and connected_miners > 0
-                and not pool_has_recent_mining
+                and not pool_has_recent_paid_work
             )
             or (
                 template_probe_health.get("failing_nodes")
                 and connected_miners > 0
-                and not pool_has_recent_mining
+                and not pool_has_recent_paid_work
             )
             or (pool.get("pool_template_frozen") and connected_miners > 0)
             or (pool.get("duplicate_block_storm") and connected_miners > 0)
@@ -9088,7 +9123,7 @@ def restore_clean(log_path: Path) -> bool:
     if clean_command:
         return run_logged(clean_command, log_path, timeout=1800).ok
 
-    steps = [configured_command("BDAG_STOP_COMMAND", ["make", "down-two"])]
+    steps = [configured_command("BDAG_STOP_COMMAND", docker_compose_command("stop"))]
     for step in steps:
         if not step:
             continue
@@ -9103,7 +9138,7 @@ def restore_clean(log_path: Path) -> bool:
     for step in (
         configured_command("BDAG_RESTORE_NODE1_COMMAND", ["make", "restore-node1-snapshot"]),
         configured_command("BDAG_RESTORE_NODE2_COMMAND", ["make", "restore-node2-snapshot"]),
-        configured_command("BDAG_START_COMMAND", ["make", "up-two"]),
+        configured_command("BDAG_START_COMMAND", docker_compose_command("up", "-d")),
     ):
         if not step:
             continue
@@ -9114,7 +9149,7 @@ def restore_clean(log_path: Path) -> bool:
 
 
 def start_stack(log_path: Path) -> bool:
-    command = configured_command("BDAG_START_COMMAND", ["make", "up-two"])
+    command = configured_command("BDAG_START_COMMAND", docker_compose_command("up", "-d"))
     if not command:
         return False
     ok = run_logged(command, log_path, timeout=180).ok
@@ -9122,8 +9157,8 @@ def start_stack(log_path: Path) -> bool:
 
 
 def restart_stack(log_path: Path) -> bool:
-    stop_command = configured_command("BDAG_STOP_COMMAND", ["make", "down-two"])
-    start_command = configured_command("BDAG_START_COMMAND", ["make", "up-two"])
+    stop_command = configured_command("BDAG_STOP_COMMAND", docker_compose_command("stop"))
+    start_command = configured_command("BDAG_START_COMMAND", docker_compose_command("up", "-d"))
     down = run_logged(stop_command, log_path, timeout=180) if stop_command else CommandResult(stop_command, 0, "", "", 0)
     up = run_logged(start_command, log_path, timeout=180) if start_command else CommandResult(start_command, 1, "", "", 0)
     return down.ok and up.ok and stop_planned_sync_paused_follower(log_path)

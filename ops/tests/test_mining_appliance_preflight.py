@@ -74,6 +74,31 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         self.assertIn("adaptive_concurrency", warnings)
         self.assertIn("entrypoint_chown_mode", warnings)
 
+    def test_constrained_mining_profile_accepts_disabled_fastartifact_startup_flag(self) -> None:
+        profile = preflight.HostProfile(
+            os_name="linux",
+            arch="aarch64",
+            cpu_count=4,
+            memory_bytes=8 * preflight.GIB,
+            profile="constrained",
+            kernel="test",
+        )
+        checks = []
+        preflight.check_env_defaults(
+            checks,
+            {
+                "BDAG_NODE_MODE": "single",
+                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
+                "BDAG_STORAGE_PROFILE": "usb-chain-internal-runtime",
+                "BDAG_DETECTED_NETWORK_TOPOLOGY": "single-node-asic-router",
+                "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": "1",
+            },
+            profile,
+        )
+
+        statuses = {check.name: check.status for check in checks}
+        self.assertEqual(statuses["fastartifactsync"], "pass")
+
     def test_single_node_duplicate_data_detection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
