@@ -38,7 +38,7 @@ PEER_LATENCY_TIMEOUT = float(os.environ.get("BDAG_LOCAL_PEER_LATENCY_TIMEOUT", "
 PEER_LATENCY_WORKERS = int(os.environ.get("BDAG_LOCAL_PEER_LATENCY_WORKERS", "16"))
 DASHBOARD_STATUS_URL = os.environ.get("BDAG_DASHBOARD_STATUS_URL", "http://127.0.0.1:8088/api/status")
 ACTIVE_MINING_RECENT_SECONDS = int(os.environ.get("BDAG_LOCAL_PEERS_ACTIVE_MINING_RECENT_SECONDS", "300"))
-DEFAULT_ASIC_LAN_CIDRS = "192.168.50.0/24"
+DEFAULT_ASIC_LAN_CIDRS = ""
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 AUTO_VALUES = {"", "auto", "detect"}
 # Migration input only. New releases must configure sync candidates through

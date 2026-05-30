@@ -491,7 +491,7 @@ need_grep 'BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER=2' "ops/build-pi5-arm64-releas
 need_grep 'BDAG_ENTRYPOINT_CHOWN_MODE=needed' "ops/build-pi5-arm64-release.sh"
 need_grep 'BDAG_FASTSYNC_PREPROCESS_WORKERS=1' "ops/build-pi5-arm64-release.sh"
 need_grep 'BDAG_NETWORK_TOPOLOGY=auto' ".env.example"
-need_grep 'BDAG_ASIC_LAN_CIDRS=192.168.50.0/24' ".env.example"
+need_grep 'BDAG_ASIC_LAN_CIDRS=' ".env.example"
 need_grep 'BDAG_FASTSYNC_PEER_ORDERING=p2p-latency' ".env.example"
 need_grep 'BDAG_FASTSYNC_PEER_ORDERING=p2p-latency' "ops/build-pi5-arm64-release.sh"
 need_grep 'P2P latency/usefulness FastSync candidates enabled' "ops/build-pi5-arm64-release.sh"
