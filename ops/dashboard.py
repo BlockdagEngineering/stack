@@ -1635,6 +1635,20 @@ HTML = r"""<!doctype html>
       }
       return parts.join(" ");
     }
+    function paidMiningStateStatusText(data) {
+      const state = data.paid_mining_state || data.pool_health?.paid_mining_state || {};
+      const evidence = data.pool_health?.paid_onchain_evidence || {};
+      const parts = [];
+      if (state.state) parts.push(`paid_state=${state.state}`);
+      if (hasValue(state.has_recent_share_activity)) parts.push(`shares=${state.has_recent_share_activity ? "fresh" : "stale"}`);
+      if (hasValue(state.has_recent_accepted_submit)) parts.push(`accepted_submit=${state.has_recent_accepted_submit ? "fresh" : "stale"}`);
+      if (hasValue(state.has_recent_confirmed_onchain_paid_block)) parts.push(`chain_paid=${state.has_recent_confirmed_onchain_paid_block ? "fresh" : "stale"}`);
+      if (hasValue(evidence.age_seconds)) parts.push(`chain_paid_age=${fmt(evidence.age_seconds)}s`);
+      if (Array.isArray(state.reasons) && state.reasons.length && state.state !== "mining_paid_ok") {
+        parts.push(`paid_reason=${state.reasons[0]}`);
+      }
+      return parts.join(" ");
+    }
     function statusClass(overall) { return overall === "ok" ? "ok" : overall === "syncing" ? "syncing" : "down"; }
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
@@ -1723,6 +1737,7 @@ HTML = r"""<!doctype html>
       const templateBackendStatus = templateBackendStatusText(data);
       const sourceHealthStatus = sourceHealthStatusText(data);
       const lossLedgerStatus = lossLedgerStatusText(data);
+      const paidMiningStateStatus = paidMiningStateStatusText(data);
       const hostPressureStatus = hostPressureText(data.host_pressure || {});
       const rpcRefusedStatus = data.pool?.rpc_refused_recent
         ? "recent"
@@ -1736,6 +1751,7 @@ HTML = r"""<!doctype html>
         + `duplicate_blocks=${fmt(poolHealth.duplicate_block_count)} `
         + `last_valid_share_age=${fmt(poolHealth.last_valid_share_age_seconds)}s share_stall=${poolHealth.share_stall ? "yes" : "no"} `
         + `selected_backend=${selectedBackend}${templateBackendStatus ? ` ${templateBackendStatus}` : ""}`
+        + `${paidMiningStateStatus ? ` ${paidMiningStateStatus}` : ""}`
         + `${sourceHealthStatus ? ` ${sourceHealthStatus}` : ""}`
         + `${lossLedgerStatus ? ` ${lossLedgerStatus}` : ""} ${submitRecovery}`
         + `${hostPressureStatus ? ` ${hostPressureStatus}` : ""}`
