@@ -21,7 +21,12 @@ class DashboardGlobalRenderingTests(unittest.TestCase):
         section = self.global_section()
 
         self.assertNotIn('<th class="right">Shares In Window</th>', section)
+        self.assertNotIn('<th class="nowrap">Nodes</th>', section)
         self.assertIn('<th class="right">Chain Blocks In Window</th>', section)
+        self.assertLess(
+            section.index('<th class="right">Chain Blocks In Window</th>'),
+            section.index('<th class="right">Work %</th>'),
+        )
         self.assertNotIn('<th class="right">Avg USD/h</th>', section)
         self.assertNotIn('<th class="right">Wallet Avg BDAG/h</th>', section)
         self.assertNotIn('<th class="right">Credit Blocks</th>', section)
@@ -43,9 +48,10 @@ class DashboardGlobalRenderingTests(unittest.TestCase):
         self.assertNotIn("const shares = firstPresent(row.shares, row.blocks);", html)
         self.assertNotIn("const avgUsd = firstPresent(row.estimated_usd_avg_hour, row.estimated_usd_recent_hour);", html)
         self.assertNotIn("const avgBdag = firstPresent(row.estimated_bdag_avg_hour, row.estimated_bdag_recent_hour);", html)
+        self.assertNotIn("const nodes = globalNodesLabel(row);", html)
         self.assertNotIn("const shares = row.blocks;", html)
-        self.assertIn('colspan="9"', html)
-        self.assertNotIn('colspan="12"', html)
+        self.assertIn('colspan="8"', html)
+        self.assertNotIn('colspan="9"', html)
 
     def test_miners_table_filters_stale_inactive_inventory_rows(self) -> None:
         html = dashboard.HTML
