@@ -25,7 +25,7 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
             if command == ["ip", "-br", "addr"]:
                 return "\n".join(
                     [
-                        "eth0 UP 192.168.50.1/24",
+                        "eth0 UP 192.168.77.1/24",
                         "wlan0 UP 192.168.68.60/22",
                         "ztcdcjczoy UNKNOWN 10.207.244.83/24",
                     ]
@@ -37,7 +37,7 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
             values = {
                 "BDAG_NETWORK_TOPOLOGY": "auto",
                 "BDAG_ASIC_LAN_INTERFACE": "eth0",
-                "BDAG_ASIC_LAN_CIDRS": "192.168.50.0/24",
+                "BDAG_ASIC_LAN_CIDRS": "192.168.77.0/24",
             }
             self.assertEqual("single-node-asic-router", update_local_peers.detect_network_topology(values))
             self.assertEqual("192.168.68.60", update_local_peers.choose_local_ip(values=values))
@@ -53,11 +53,11 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
                 "BDAG_P2P_VPN_PEERS": "/ip4/10.207.244.12/tcp/8152/p2p/peerVPN",
                 "BOOTSTRAP_PEER_ADDRESSES": ",".join(
                     [
-                        "/ip4/192.168.50.22/tcp/8152/p2p/peerASIC",
+                        "/ip4/192.168.77.22/tcp/8152/p2p/peerASIC",
                         "/ip4/13.245.135.249/tcp/18150/p2p/peerPUB",
                     ]
                 ),
-                "BDAG_ASIC_LAN_CIDRS": "192.168.50.0/24",
+                "BDAG_ASIC_LAN_CIDRS": "192.168.77.0/24",
             }
 
             tiers = update_local_peers.tiered_peer_addresses(values, "single-node-asic-router")
@@ -67,7 +67,7 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
         self.assertEqual(["/ip4/192.168.68.55/tcp/8152/p2p/peerLAN"], tiers.lan)
         self.assertEqual(["/ip4/10.207.244.12/tcp/8152/p2p/peerVPN"], tiers.vpn)
         self.assertEqual(["/ip4/13.245.135.249/tcp/18150/p2p/peerPUB"], tiers.public)
-        self.assertEqual(["/ip4/192.168.50.22/tcp/8152/p2p/peerASIC"], tiers.excluded_asic_lan)
+        self.assertEqual(["/ip4/192.168.77.22/tcp/8152/p2p/peerASIC"], tiers.excluded_asic_lan)
 
     def test_stale_private_lan_address_does_not_outrank_reachable_vpn(self) -> None:
         old_run = update_local_peers.run
@@ -77,7 +77,7 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
             if command == ["ip", "-br", "addr"]:
                 return "\n".join(
                     [
-                        "eth0 UP 192.168.50.1/24",
+                        "eth0 UP 192.168.77.1/24",
                         "wlan0 UP 192.168.68.60/22",
                         "ztcdcjczoy UNKNOWN 10.207.244.83/24",
                     ]
@@ -104,7 +104,7 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
                         "/ip4/10.207.244.12/tcp/8152/p2p/peerVPN",
                     ]
                 ),
-                "BDAG_ASIC_LAN_CIDRS": "192.168.50.0/24",
+                "BDAG_ASIC_LAN_CIDRS": "192.168.77.0/24",
             }
 
             tiers = update_local_peers.tiered_peer_addresses(values, "single-node-asic-router")

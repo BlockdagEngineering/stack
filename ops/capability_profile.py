@@ -308,7 +308,7 @@ def detect_network_topology(env: dict[str, str]) -> str:
     if configured and configured != "auto":
         return configured
     lan_iface = (env.get("BDAG_ASIC_LAN_INTERFACE") or "eth0").strip() or "eth0"
-    lan_cidrs = split_env_list(env.get("BDAG_ASIC_LAN_CIDRS") or "192.168.50.0/24")
+    lan_cidrs = split_env_list(env.get("BDAG_ASIC_LAN_CIDRS") or "")
     try:
         route = run(["ip", "-o", "-4", "route", "get", "1.1.1.1"], timeout=2).stdout
         addr = run(["ip", "-br", "-4", "addr", "show", "dev", lan_iface], timeout=2).stdout

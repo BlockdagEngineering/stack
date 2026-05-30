@@ -711,7 +711,7 @@ def check_asic_router_network(checks: list[Check], env: dict[str, str], default_
         return
 
     lan_iface = (env.get("BDAG_ASIC_LAN_INTERFACE") or "eth0").strip() or "eth0"
-    cidrs = parse_cidrs(env.get("BDAG_ASIC_LAN_CIDRS") or "192.168.50.0/24")
+    cidrs = parse_cidrs(env.get("BDAG_ASIC_LAN_CIDRS") or "")
     evidence: dict[str, Any] = {"topology": topology, "lan_interface": lan_iface, "cidrs": [str(item) for item in cidrs]}
 
     addr_proc = run(["ip", "-br", "-4", "addr", "show", "dev", lan_iface], timeout=3)

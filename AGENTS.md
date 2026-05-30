@@ -231,7 +231,7 @@ ordering:
 
 Peer candidates must be complete multiaddrs with peer IDs. On single-node
 ASIC-router hosts, the direct ASIC Ethernet subnet (`BDAG_ASIC_LAN_CIDRS`,
-default `192.168.50.0/24`) is not a blockchain P2P LAN unless
+configured ASIC-facing subnet is not a blockchain P2P LAN unless
 `BDAG_ALLOW_ASIC_LAN_P2P=1` is explicitly set. ASICs on that subnet are Stratum
 clients; adding them to FastSync or P2P peer lists wastes time and can hide the
 actual low-latency VPN/LAN node candidates. Do not replace this ordering with

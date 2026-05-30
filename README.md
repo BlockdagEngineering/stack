@@ -123,7 +123,7 @@ operator override; stale private subnets fall back to the private/VPN tier.
 
 Single-node ASIC-router hosts are detected when the default route is on one
 interface, usually WiFi, while the ASIC Ethernet interface owns
-`BDAG_ASIC_LAN_CIDRS` (`192.168.50.0/24` by default). That ASIC-facing subnet is
+`BDAG_ASIC_LAN_CIDRS` (empty by default). Any ASIC-facing subnet is
 not a blockchain P2P LAN by default, because directly attached ASICs are
 Stratum clients, not FastSync peers. Set `BDAG_ALLOW_ASIC_LAN_P2P=1` only if a
 real BlockDAG node is deliberately placed on that Ethernet segment.

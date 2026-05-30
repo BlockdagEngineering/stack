@@ -209,13 +209,13 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             if command == ["ip", "-o", "-4", "route", "get", "1.1.1.1"]:
                 result.stdout = "1.1.1.1 via 192.168.68.1 dev wlan0 src 192.168.68.60 uid 1000\n"
             elif command == ["ip", "-br", "-4", "addr", "show", "dev", "eth0"]:
-                result.stdout = "eth0 UP 192.168.50.1/24\n"
+                result.stdout = "eth0 UP 192.168.1.105/24\n"
             elif command == ["sysctl", "-n", "net.ipv4.ip_forward"]:
                 result.stdout = "1\n"
             elif command == ["nft", "list", "ruleset"]:
-                result.stdout = "ip saddr 192.168.50.0/24 ip daddr != 192.168.50.0/24 masquerade\n"
+                result.stdout = "ip saddr 192.168.1.0/24 ip daddr != 192.168.1.0/24 masquerade\n"
             elif command == ["ip", "neigh", "show", "dev", "eth0"]:
-                result.stdout = "192.168.50.177 lladdr 28:e2:97:1e:c0:b5 REACHABLE\n"
+                result.stdout = "192.168.1.107 lladdr 28:e2:97:1e:c0:b5 REACHABLE\n"
             elif command == ["ethtool", "-S", "eth0"]:
                 result.stdout = "rx_frame_check_sequence_errors: 0\ntx_late_collisions: 0\n"
             else:
@@ -230,7 +230,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 {
                     "BDAG_DETECTED_NETWORK_TOPOLOGY": "single-node-asic-router",
                     "BDAG_ASIC_LAN_INTERFACE": "eth0",
-                    "BDAG_ASIC_LAN_CIDRS": "192.168.50.0/24",
+                    "BDAG_ASIC_LAN_CIDRS": "192.168.1.0/24",
                 },
             )
         finally:
@@ -256,9 +256,9 @@ class MiningAppliancePreflightTest(unittest.TestCase):
 
             result = Result()
             if command == ["ip", "-o", "-4", "route", "get", "1.1.1.1"]:
-                result.stdout = "1.1.1.1 via 192.168.50.1 dev eth0 src 192.168.50.1 uid 1000\n"
+                result.stdout = "1.1.1.1 via 192.168.1.105 dev eth0 src 192.168.1.105 uid 1000\n"
             elif command == ["ip", "-br", "-4", "addr", "show", "dev", "eth0"]:
-                result.stdout = "eth0 UP 192.168.50.1/24\n"
+                result.stdout = "eth0 UP 192.168.1.105/24\n"
             elif command == ["sysctl", "-n", "net.ipv4.ip_forward"]:
                 result.stdout = "0\n"
             elif command == ["nft", "list", "ruleset"]:
@@ -287,7 +287,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 {
                     "BDAG_DETECTED_NETWORK_TOPOLOGY": "single-node-asic-router",
                     "BDAG_ASIC_LAN_INTERFACE": "eth0",
-                    "BDAG_ASIC_LAN_CIDRS": "192.168.50.0/24",
+                    "BDAG_ASIC_LAN_CIDRS": "192.168.1.0/24",
                 },
             )
         finally:

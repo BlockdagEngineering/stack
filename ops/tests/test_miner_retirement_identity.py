@@ -521,7 +521,7 @@ class PoolActivityAttributionTests(unittest.TestCase):
         pool_ops.read_miner_registry = lambda: {
             "miners": [
                 {
-                    "ip": "192.168.50.177",
+                    "ip": "192.168.1.107",
                     "mac": "28:e2:97:1e:c0:b5",
                     "expected_worker_user": worker,
                 }
@@ -539,16 +539,16 @@ class PoolActivityAttributionTests(unittest.TestCase):
 
         miners = {item["ip"]: item for item in pool_ops.parse_pool_activity(log)["miners"]}
 
-        self.assertEqual(miners["192.168.50.177"]["shares"], 1)
-        self.assertEqual(miners["192.168.50.177"]["share_work"], 500)
-        self.assertEqual(miners["192.168.50.177"]["blocks_found"], 1)
+        self.assertEqual(miners["192.168.1.107"]["shares"], 1)
+        self.assertEqual(miners["192.168.1.107"]["share_work"], 500)
+        self.assertEqual(miners["192.168.1.107"]["blocks_found"], 1)
 
     def test_docker_bridge_direct_client_lines_map_to_registered_asic(self) -> None:
         worker = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         pool_ops.read_miner_registry = lambda: {
             "miners": [
                 {
-                    "ip": "192.168.50.177",
+                    "ip": "192.168.1.107",
                     "mac": "28:e2:97:1e:c0:b5",
                     "expected_worker_user": worker,
                 }
@@ -565,10 +565,10 @@ class PoolActivityAttributionTests(unittest.TestCase):
 
         miners = {item["ip"]: item for item in pool_ops.parse_pool_activity(log)["miners"]}
 
-        self.assertEqual(miners["192.168.50.177"]["submits"], 2)
-        self.assertEqual(miners["192.168.50.177"]["shares"], 1)
-        self.assertEqual(miners["192.168.50.177"]["share_work"], 500)
-        self.assertEqual(miners["192.168.50.177"]["blocks_found"], 1)
+        self.assertEqual(miners["192.168.1.107"]["submits"], 2)
+        self.assertEqual(miners["192.168.1.107"]["shares"], 1)
+        self.assertEqual(miners["192.168.1.107"]["share_work"], 500)
+        self.assertEqual(miners["192.168.1.107"]["blocks_found"], 1)
 
 
 class MinerEarningsWorkPercentTests(unittest.TestCase):
@@ -588,7 +588,7 @@ class MinerEarningsWorkPercentTests(unittest.TestCase):
     def test_hidden_docker_bridge_work_is_excluded_from_visible_work_percent(self) -> None:
         worker = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         physical = {
-            "ip": "192.168.50.177",
+            "ip": "192.168.1.107",
             "mac": "28:e2:97:1e:c0:b5",
             "identity_key": "mac:28:e2:97:1e:c0:b5",
             "workers": [worker],
@@ -605,7 +605,7 @@ class MinerEarningsWorkPercentTests(unittest.TestCase):
             "blocks_found": 9,
         }
         registered = {
-            "ip": "192.168.50.177",
+            "ip": "192.168.1.107",
             "mac": "28:e2:97:1e:c0:b5",
             "expected_worker_user": worker,
             "last_workers": [worker],
@@ -622,7 +622,7 @@ class MinerEarningsWorkPercentTests(unittest.TestCase):
         )
 
         self.assertEqual(len(estimates), 1)
-        self.assertEqual(estimates[0]["ip"], "192.168.50.177")
+        self.assertEqual(estimates[0]["ip"], "192.168.1.107")
         self.assertEqual(estimates[0]["work_percent"], "100.00")
         self.assertEqual(estimates[0]["work_percent_source"], "visible-share-work")
 
@@ -632,7 +632,7 @@ class MinerEarningsWorkPercentTests(unittest.TestCase):
                 "generated_at": "2026-05-28T00:54:31+0200",
                 "miner_estimates": [
                     {
-                        "ip": "192.168.50.177",
+                        "ip": "192.168.1.107",
                         "mac": "28:e2:97:1e:c0:b5",
                         "display_label": "Achilles-0b5",
                         "share_work": 4426677747,

@@ -243,7 +243,7 @@ host_is_excluded_asic_lan() {
   [ "$topology" = "single-node-asic-router" ] || return 1
   old_ifs="$IFS"
   IFS=', '
-  for cidr in ${BDAG_ASIC_LAN_CIDRS:-192.168.50.0/24}; do
+  for cidr in ${BDAG_ASIC_LAN_CIDRS:-}; do
     [ -n "$cidr" ] || continue
     if host_matches_cidr_prefix "$host" "$cidr"; then
       IFS="$old_ifs"
