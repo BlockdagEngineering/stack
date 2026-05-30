@@ -27,8 +27,8 @@ AB_DIR = RUNTIME_DIR / "ab-harness"
 MARKERS_FILE = AB_DIR / "markers.jsonl"
 STACK_CONTAINERS = ["asic-pool", "pool-db", "rpc-failover", "bdag-miner-node-1", "bdag-miner-node-2"]
 DEFAULT_MIN_COMPARE_SAMPLES = 3
-DEFAULT_MIN_COMPARE_SECONDS = 30.0
-DEFAULT_MIN_COMPARE_MINER_HOURS = 0.01
+DEFAULT_MIN_COMPARE_SECONDS = 3600.0
+DEFAULT_MIN_COMPARE_MINER_HOURS = 1.0
 DEFAULT_MIN_COMPARE_OK_RATIO = 0.98
 
 PROM_LINE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([-+0-9.eE]+)\s*$")

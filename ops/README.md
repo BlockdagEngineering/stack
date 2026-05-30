@@ -147,6 +147,10 @@ submits, has dirty source repos, or lacks confirmed paid-chain block evidence.
 Use override flags only for explicitly labelled research or early observe-only
 runs, never for release promotion.
 
+The miner-normalized A/B harness also treats less than 3600 seconds or less than
+1 active miner-hour as ineligible for comparison by default. Shorter runs are
+allowed for debugging, but they are not release evidence.
+
 ## Watchdog
 
 Run one check:
