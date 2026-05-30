@@ -1379,9 +1379,9 @@ def merge_miner_records(existing: dict[str, Any], incoming: dict[str, Any]) -> d
     result["sources"] = merge_unique_strings(existing.get("sources"), incoming.get("sources"))
     result["last_workers"] = merge_unique_strings(existing.get("last_workers"), incoming.get("last_workers"))
     result["last_ports"] = merge_unique_strings(existing.get("last_ports"), incoming.get("last_ports"))
-    result["last_pool_job_extranonces"] = merge_unique_strings(
-        existing.get("last_pool_job_extranonces"),
-        incoming.get("last_pool_job_extranonces"),
+    incoming_extranonces = merge_unique_strings(incoming.get("last_pool_job_extranonces"))
+    result["last_pool_job_extranonces"] = (
+        incoming_extranonces if incoming_extranonces else merge_unique_strings(existing.get("last_pool_job_extranonces"))
     )
     result["ip_history"] = merge_unique_strings(existing.get("ip_history"), old_ip, incoming.get("ip_history"), new_ip)
     result["managed"] = bool(existing.get("managed") or incoming.get("managed"))
@@ -3404,8 +3404,10 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         legacy_authorized_client_count += 1
         # Older pool images omit subscribe/job-notify client details but encode
         # each connection's little-endian extranonce suffix in the job id.
+        # The suffix is reused after reconnects, so fresh authorize order must
+        # replace cached registry hints instead of preserving stale ownership.
         extranonce = f"{legacy_authorized_client_count:02x}000000"
-        extranonce_to_client.setdefault(extranonce, client)
+        extranonce_to_client[extranonce] = client
 
     def note_item_extranonce(item: dict[str, Any], job_id: str) -> None:
         extranonce = job_extranonce(job_id)
@@ -3423,6 +3425,9 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
             or (client_for_worker(worker) if worker else None)
         )
 
+    registry_extranonce_clients: dict[str, dict[str, str]] = {}
+    registry_extranonce_ambiguous: set[str] = set()
+
     for registered in registered_by_ip.values():
         ip = str(registered.get("ip") or "")
         if not is_ipv4(ip):
@@ -3433,7 +3438,18 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         client = client_from_identity(ip)
         for extranonce in merge_unique_strings(registered.get("last_pool_job_extranonces")):
             if re.fullmatch(r"[0-9a-fA-F]{8}", str(extranonce or "")):
-                extranonce_to_client.setdefault(str(extranonce).lower(), client)
+                suffix = str(extranonce).lower()
+                if suffix in registry_extranonce_ambiguous:
+                    continue
+                existing_client = registry_extranonce_clients.get(suffix)
+                if existing_client and client_identity_key(existing_client) != client_identity_key(client):
+                    registry_extranonce_ambiguous.add(suffix)
+                    registry_extranonce_clients.pop(suffix, None)
+                else:
+                    registry_extranonce_clients[suffix] = client
+
+    for suffix, client in registry_extranonce_clients.items():
+        extranonce_to_client.setdefault(suffix, client)
 
     def miner_for_ip(ip: str) -> dict[str, Any]:
         ip = canonical_client_ip(ip)
@@ -3532,8 +3548,8 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         subscribe = SUBSCRIBE_ACCEPT_RE.search(line)
         if subscribe:
             ip, port, extranonce = subscribe.groups()
-            client = {"ip": ip, "port": port}
-            extranonce_to_client.setdefault(extranonce.lower(), client)
+            client = client_from_identity(ip, port)
+            extranonce_to_client[extranonce.lower()] = client
             item = miner_for_ip(ip)
             note_port(item, port)
             note_seen(item, line)
@@ -3687,10 +3703,8 @@ def collect_pool_activity(lines: int = 2500) -> dict[str, Any]:
         lines < POOL_ACTIVITY_BOOTSTRAP_LOG_LINES
         and (safe_int(activity.get("unattributed_valid_shares"), 0) > 0 or safe_int(activity.get("unattributed_blocks"), 0) > 0)
     ):
-        has_work = any(int(item.get("share_work", 0) or 0) > 0 or int(item.get("blocks_found", 0) or 0) > 0 for item in activity.get("miners", []))
-        if not has_work:
-            activity = parse_pool_activity(docker_logs_many(POOL_CONTAINERS, lines=POOL_ACTIVITY_BOOTSTRAP_LOG_LINES))
-            activity["bootstrap_log_lines"] = POOL_ACTIVITY_BOOTSTRAP_LOG_LINES
+        activity = parse_pool_activity(docker_logs_many(POOL_CONTAINERS, lines=POOL_ACTIVITY_BOOTSTRAP_LOG_LINES))
+        activity["bootstrap_log_lines"] = POOL_ACTIVITY_BOOTSTRAP_LOG_LINES
     return activity
 
 
@@ -3727,7 +3741,12 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
         item = dict(item or existing.get(ip, {"ip": ip}))
         workers = merge_unique_strings(item.get("last_workers"), miner.get("workers"))
         ports = merge_unique_strings(item.get("last_ports"), miner.get("ports"))
-        job_extranonces = merge_unique_strings(item.get("last_pool_job_extranonces"), miner.get("job_extranonces"))
+        incoming_job_extranonces = merge_unique_strings(miner.get("job_extranonces"))
+        job_extranonces = (
+            incoming_job_extranonces
+            if incoming_job_extranonces
+            else merge_unique_strings(item.get("last_pool_job_extranonces"))
+        )
         last_seen_log_at = str(miner.get("last_seen_at") or "")
         previous_seen_log_at = str(item.get("last_pool_seen_log_at") or "")
         last_submit_log_at = str(miner.get("last_submit_at") or "")
@@ -3870,8 +3889,14 @@ def collect_miner_health() -> dict[str, Any]:
             # Docker bridge clients can appear in pool logs during local health/API calls.
             # They are not physical ASICs and should not affect miner counts or repairs.
             continue
+        last_pool_seen_epoch = int(registered.get("last_pool_seen_epoch", 0) or 0)
+        last_submit_epoch = int(registered.get("last_submit_epoch", 0) or 0)
+        last_share_epoch = int(registered.get("last_share_epoch", 0) or 0)
+        pool_log_recent = bool(
+            activity_item or (last_pool_seen_epoch and now_epoch - last_pool_seen_epoch <= POOL_CONNECTED_STALE_SECONDS)
+        )
         retirement_decision = retired_miner_identity_decision({**registered, **activity_item}, ip, mac)
-        if retirement_decision.get("conflict"):
+        if retirement_decision.get("conflict") and pool_log_recent:
             label = miner_display_label({**registered, "mac": mac})
             retired_name = retirement_decision.get("retired_name") or "retired miner"
             warnings.append(
@@ -3879,9 +3904,6 @@ def collect_miner_health() -> dict[str, Any]:
                 f"an observed retired-miner IP for {retired_name}; "
                 "keeping it active because only MAC address can retire an ASIC"
             )
-        last_pool_seen_epoch = int(registered.get("last_pool_seen_epoch", 0) or 0)
-        last_submit_epoch = int(registered.get("last_submit_epoch", 0) or 0)
-        last_share_epoch = int(registered.get("last_share_epoch", 0) or 0)
         workers = merge_unique_strings(activity_item.get("workers"), registered.get("last_workers"))
         ports = merge_unique_strings(activity_item.get("ports"), registered.get("last_ports"))
         connected = bool(activity_item) or bool(last_pool_seen_epoch and now_epoch - last_pool_seen_epoch <= POOL_CONNECTED_STALE_SECONDS)
@@ -4061,8 +4083,10 @@ def collect_miner_health() -> dict[str, Any]:
         )
 
     total_work = sum(item["share_work"] for item in health if item.get("relevant_for_work_share") and item.get("share_work", 0) > 0)
+    total_work_includes_all_rows = False
     if not total_work:
         total_work = sum(item["share_work"] for item in health if item.get("share_work", 0) > 0)
+        total_work_includes_all_rows = True
     expected_lane_rows = [
         item
         for item in health
@@ -4079,7 +4103,8 @@ def collect_miner_health() -> dict[str, Any]:
     imbalanced_lanes: list[str] = []
     for item in health:
         share_work_int = int(item.get("share_work", 0) or 0)
-        if total_work > 0 and share_work_int > 0:
+        include_in_work_percent = bool(item.get("relevant_for_work_share") or total_work_includes_all_rows)
+        if total_work > 0 and share_work_int > 0 and include_in_work_percent:
             item["work_percent"] = percent_to_str((Decimal(share_work_int) / Decimal(total_work)) * Decimal("100"))
         lane_id = str(item.get("identity_key") or item.get("device_id") or item.get("mac") or item.get("ip") or "")
         expected_lane = bool(lane_id and lane_id in expected_lane_ids)
