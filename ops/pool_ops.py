@@ -311,7 +311,7 @@ USD_ZAR_RATE_URL = os.environ.get("BDAG_USD_ZAR_RATE_URL", "https://open.er-api.
 PRICE_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_PRICE_CACHE_TTL_SECONDS", "300"))
 PRICE_MIN_OK_SOURCES = int(os.environ.get("BDAG_PRICE_MIN_OK_SOURCES", "2"))
 GLOBAL_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_GLOBAL_CACHE_TTL_SECONDS", "300"))
-GLOBAL_BLOCK_WINDOW = env_int("BDAG_GLOBAL_BLOCK_WINDOW", 256, minimum=1)
+GLOBAL_BLOCK_WINDOW = env_int("BDAG_GLOBAL_BLOCK_WINDOW", 2048, minimum=1)
 GLOBAL_EVM_FALLBACK_BLOCK_WINDOW = env_int("BDAG_GLOBAL_EVM_FALLBACK_BLOCK_WINDOW", 64, minimum=1)
 GLOBAL_EVM_FALLBACK_RPC_WORKERS = env_int("BDAG_GLOBAL_EVM_FALLBACK_RPC_WORKERS", 4, minimum=1)
 GLOBAL_RPC_WORKERS = env_int("BDAG_GLOBAL_RPC_WORKERS", 24, minimum=1)
@@ -320,6 +320,7 @@ GLOBAL_HISTORY_COMPACT_MULTIPLIER = max(1, int(os.environ.get("BDAG_GLOBAL_HISTO
 GLOBAL_CACHE_SCHEMA_VERSION = 2
 GLOBAL_STATS_SOURCE_TRUTH = "chain-rpc:getBlockCount/getBlockByOrder/getBlockHeader/getCoinbaseAddress"
 GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS = env_int("BDAG_GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS", 30, minimum=0)
+PAID_CONFIRMATION_MAX_AGE_SECONDS = env_int("BDAG_PAID_CONFIRMATION_MAX_AGE_SECONDS", 600, minimum=1)
 NODE_EVM_RPC_PORT = int(os.environ.get("BDAG_NODE_EVM_RPC_PORT", "18545"))
 EVM_SYNC_LAG_THRESHOLD_BLOCKS = env_int("BDAG_EVM_SYNC_LAG_THRESHOLD_BLOCKS", 1000, minimum=0)
 EARNINGS_HISTORY_RETENTION_SECONDS = int(os.environ.get("BDAG_EARNINGS_HISTORY_RETENTION_SECONDS", str(35 * 86400)))
@@ -3035,6 +3036,163 @@ def selected_backend_readiness_contract(
     }
 
 
+def configured_mining_payment_addresses() -> list[str]:
+    addresses: list[str] = []
+    seen: set[str] = set()
+    for name in ("POOL_COINBASE_ADDRESS", "MINING_POOL_ADDRESS", "MINING_ADDRESS", "BDAG_MINING_ADDRESS"):
+        address = read_env_value(name)
+        key = str(address or "").strip().lower()
+        if not is_spendable_eth_address(key) or key in seen:
+            continue
+        seen.add(key)
+        addresses.append(str(address).strip())
+    return addresses
+
+
+def _global_cluster_last_seen_epoch(cluster: Mapping[str, Any]) -> int | None:
+    direct = safe_int(cluster.get("last_seen_epoch"), None)
+    if direct is not None and direct > 0:
+        return direct
+    parsed = parse_earnings_timestamp(cluster.get("last_seen_at"))
+    if parsed is None:
+        return None
+    return int(parsed.timestamp())
+
+
+def recent_confirmed_onchain_paid_block_evidence(
+    addresses: list[str],
+    max_age_seconds: int = PAID_CONFIRMATION_MAX_AGE_SECONDS,
+) -> dict[str, Any]:
+    normalized = {
+        str(address).strip().lower()
+        for address in addresses
+        if is_spendable_eth_address(str(address).strip())
+    }
+    if not normalized:
+        return {
+            "recent": False,
+            "source": "global-chain-cache",
+            "reason": "no configured spendable mining payment address",
+            "max_age_seconds": max_age_seconds,
+        }
+
+    snapshots: list[Mapping[str, Any]] = []
+    cached = read_json_file(GLOBAL_CACHE_FILE, {})
+    if isinstance(cached, dict):
+        snapshots.append(cached)
+    for row in read_global_history(limit=GLOBAL_HISTORY_LIMIT):
+        if isinstance(row, dict):
+            snapshots.append(row)
+
+    now_epoch = seconds_since_epoch()
+    best: dict[str, Any] | None = None
+    for snapshot in snapshots:
+        clusters = snapshot.get("chain_clusters")
+        if not isinstance(clusters, list):
+            clusters = snapshot.get("clusters")
+        if not isinstance(clusters, list):
+            continue
+        for cluster in clusters:
+            if not isinstance(cluster, dict):
+                continue
+            if cluster.get("local_pool"):
+                continue
+            address = str(cluster.get("address") or "").strip().lower()
+            if address not in normalized or safe_int(cluster.get("blocks"), 0) <= 0:
+                continue
+            last_seen_epoch = _global_cluster_last_seen_epoch(cluster)
+            updated_epoch = safe_int(snapshot.get("updated_at_epoch"), None)
+            evidence_epoch = last_seen_epoch or updated_epoch
+            age_seconds = None if evidence_epoch is None else max(0, now_epoch - int(evidence_epoch))
+            evidence = {
+                "recent": age_seconds is not None and age_seconds <= max_age_seconds,
+                "source": "global-chain-cache",
+                "address": cluster.get("address"),
+                "blocks": safe_int(cluster.get("blocks"), 0),
+                "last_seen_at": cluster.get("last_seen_at"),
+                "age_seconds": age_seconds,
+                "max_age_seconds": max_age_seconds,
+                "snapshot_updated_at": snapshot.get("updated_at"),
+            }
+            if evidence["recent"]:
+                return evidence
+            if best is None or (
+                evidence.get("age_seconds") is not None
+                and (
+                    best.get("age_seconds") is None
+                    or int(evidence["age_seconds"]) < int(best["age_seconds"])
+                )
+            ):
+                best = evidence
+
+    if best:
+        best["reason"] = "matching on-chain block is older than paid confirmation freshness window"
+        return best
+    return {
+        "recent": False,
+        "source": "global-chain-cache",
+        "reason": "no matching chain-sourced paid block found in global cache/history",
+        "max_age_seconds": max_age_seconds,
+    }
+
+
+def derive_status_paid_mining_state(
+    *,
+    overall: str,
+    connected_miners: int,
+    sync_progress: dict[str, Any],
+    pool_health: dict[str, Any],
+    pool_has_recent_share_activity: bool,
+    pool_has_recent_paid_work: bool,
+    source_job_hard_degraded: bool,
+    source_selected_backend_hard_degraded: bool,
+) -> dict[str, Any]:
+    """First-class paid mining verdict for /api/status.
+
+    Shares prove ASIC connectivity. They do not prove paid mining. This verdict
+    is intentionally stricter than the dashboard's container/sync status.
+    """
+    reasons: list[str] = []
+    has_recent_block_candidate_activity = bool(
+        safe_int(pool_health.get("block_submit_success_count"), 0) > 0
+        or safe_int(pool_health.get("block_submit_failure_count"), 0) > 0
+        or safe_int(pool_health.get("stale_job_candidate_count"), 0) > 0
+        or safe_int(pool_health.get("duplicate_block_count"), 0) > 0
+    )
+    has_recent_accepted_submit = bool(pool_has_recent_paid_work)
+    has_recent_confirmed_onchain_paid_block = bool(pool_health.get("has_recent_confirmed_onchain_paid_block"))
+    truths = {
+        "has_recent_share_activity": bool(pool_has_recent_share_activity),
+        "has_recent_block_candidate_activity": has_recent_block_candidate_activity,
+        "has_recent_accepted_submit": has_recent_accepted_submit,
+        "has_recent_confirmed_onchain_paid_block": has_recent_confirmed_onchain_paid_block,
+    }
+
+    if overall == "down":
+        return {"state": "stack_down", "reasons": ["stack is down"], **truths}
+    if connected_miners <= 0:
+        state = "ready_no_miners" if sync_progress.get("status") == "synced" else "sync_only_no_miners"
+        return {"state": state, "reasons": ["no connected miners"], **truths}
+    if source_job_hard_degraded or source_selected_backend_hard_degraded:
+        if source_job_hard_degraded:
+            reasons.append("source job health is not ok")
+        if source_selected_backend_hard_degraded:
+            reasons.append("selected backend is not mineable or submit-ready")
+        return {"state": "template_source_unready", "reasons": reasons, **truths}
+    if has_recent_confirmed_onchain_paid_block:
+        return {"state": "mining_paid_ok", "reasons": ["confirmed on-chain paid block is recent"], **truths}
+    if has_recent_accepted_submit:
+        return {
+            "state": "mining_paid_degraded",
+            "reasons": ["accepted block submit is recent; waiting for confirmed on-chain paid block evidence"],
+            **truths,
+        }
+    if has_recent_block_candidate_activity or pool_has_recent_share_activity:
+        reasons.append("ASIC work is present but no recent accepted block submit is proven")
+        return {"state": "mining_unpaid", "reasons": reasons, **truths}
+    return {"state": "mining_paid_degraded", "reasons": ["miners connected but no recent useful paid-work evidence"], **truths}
+
+
 def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "generated_at": now_iso(),
@@ -4344,6 +4502,14 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "can_mine": False,
             "can_accept_shares": False,
             "can_submit_blocks": False,
+            "paid_mining_state": {
+                "state": "stack_down",
+                "reasons": [f"docker access unavailable: {docker_error}"],
+                "has_recent_share_activity": False,
+                "has_recent_block_candidate_activity": False,
+                "has_recent_accepted_submit": False,
+                "has_recent_confirmed_onchain_paid_block": False,
+            },
             "truth_sources": {
                 "chain_block_count": "getBlockCount chain RPC",
                 "chain_main_height": "getMainChainHeight diagnostic",
@@ -5022,23 +5188,54 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         if sync_progress.get("status") == "syncing" and not failures and not pool_health["needs_fast_repair"]:
             sync_health["needs_fast_sync_repair"] = False
     sync_health["sync_progress_health"] = sync_progress_health
+    paid_onchain_evidence = recent_confirmed_onchain_paid_block_evidence(configured_mining_payment_addresses())
+    pool_health["paid_onchain_evidence"] = paid_onchain_evidence
+    pool_health["has_recent_confirmed_onchain_paid_block"] = bool(paid_onchain_evidence.get("recent"))
 
     overall = "ok"
     if failures:
         overall = "down"
     elif sync_warnings:
         overall = "syncing"
+
+    mode = "mining" if connected_miners > 0 else ("sync_only_no_miners" if no_miner_sync_only else "ready_no_miners")
+    can_accept_shares = bool(connected_miners > 0 and containers.get(POOL_CONTAINER, {}).get("running") and not failures)
+    paid_mining_state = derive_status_paid_mining_state(
+        overall=overall,
+        connected_miners=connected_miners,
+        sync_progress=sync_progress,
+        pool_health=pool_health,
+        pool_has_recent_share_activity=pool_has_recent_share_activity,
+        pool_has_recent_paid_work=pool_has_recent_paid_work,
+        source_job_hard_degraded=source_job_hard_degraded,
+        source_selected_backend_hard_degraded=source_selected_backend_hard_degraded,
+    )
+    pool_health["paid_mining_state"] = paid_mining_state
+    sync_health["paid_mining_state"] = paid_mining_state["state"]
+    paid_state = str(paid_mining_state.get("state") or "unknown")
+    paid_reason = "; ".join(str(item) for item in paid_mining_state.get("reasons", []) if item)
+    if connected_miners > 0 and paid_state == "mining_unpaid":
+        add_sync_warning(f"paid mining state is mining_unpaid: {paid_reason or 'no accepted paid submit evidence'}")
+    elif connected_miners > 0 and paid_state == "mining_paid_degraded":
+        add_maintenance_warning(
+            f"paid mining state is mining_paid_degraded: {paid_reason or 'waiting for chain confirmation'}"
+        )
+    if failures:
+        overall = "down"
+    elif sync_warnings:
+        overall = "syncing"
+    else:
+        overall = "ok"
     status_reason = ""
     if overall != "ok":
         reason_items = failures or sync_warnings or warnings
         status_reason = "; ".join(str(item) for item in reason_items[:3])
         if len(reason_items) > 3:
             status_reason += f"; +{len(reason_items) - 3} more"
-
-    mode = "mining" if connected_miners > 0 else ("sync_only_no_miners" if no_miner_sync_only else "ready_no_miners")
-    can_accept_shares = bool(connected_miners > 0 and containers.get(POOL_CONTAINER, {}).get("running") and not failures)
     can_submit_blocks = bool(can_accept_shares and not pool_health.get("needs_fast_repair") and not sync_warnings)
-    can_mine = bool(can_accept_shares and can_submit_blocks)
+    if paid_mining_state["state"] in {"stack_down", "template_source_unready", "mining_unpaid"}:
+        can_submit_blocks = False
+    can_mine = bool(can_accept_shares and can_submit_blocks and paid_mining_state["state"] == "mining_paid_ok")
     truth_sources = {
         "chain_block_count": "getBlockCount chain RPC",
         "chain_main_height": "getMainChainHeight diagnostic",
@@ -5058,6 +5255,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "can_mine": can_mine,
         "can_accept_shares": can_accept_shares,
         "can_submit_blocks": can_submit_blocks,
+        "paid_mining_state": paid_mining_state,
         "truth_sources": truth_sources,
         "blocking_failures": failures,
         "degraded_reasons": sync_warnings + maintenance_warnings,

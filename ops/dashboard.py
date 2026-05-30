@@ -878,6 +878,16 @@ HTML = r"""<!doctype html>
       min-width: 100%;
       table-layout: auto;
     }
+    .equal-column-table {
+      width: 100%;
+      min-width: 100%;
+      table-layout: fixed;
+    }
+    .equal-column-table th,
+    .equal-column-table td,
+    .equal-column-table .nowrap {
+      white-space: normal;
+    }
     .chart-wrap {
       height: 280px;
       margin-top: 10px;
@@ -1336,12 +1346,12 @@ HTML = r"""<!doctype html>
       <section class="grid">
         <div class="panel span-12">
           <div class="kpi-label">Confirmed Chain Production By Pool</div>
-          <div class="subtle" style="margin-top: 8px;">Shares use the local pool credit count over the displayed Scan Window when available, falling back to chain block count for other pools.</div>
+          <div class="subtle" style="margin-top: 8px;">Pool rows use chain-confirmed production over the displayed Scan Window.</div>
           <div class="subtle" id="globalTableWindow" style="margin-top: 8px;">Table period: waiting for scan window.</div>
           <div class="subtle" id="globalSourceStatus" style="margin-top: 8px;">Waiting for chain RPC source details.</div>
           <div class="table-scroll" style="margin-top: 12px;">
-            <table class="wide-table">
-              <thead><tr><th class="nowrap">Pool</th><th class="nowrap">Nodes</th><th class="right">Shares In Window</th><th class="right">Work %</th><th class="right">Chain Blocks In Window</th><th class="right">Reward BDAG</th><th class="right">Est. Wallet BDAG</th><th class="right">Avg USD/h</th><th class="right">Wallet Avg BDAG/h</th><th class="right">USD Total</th><th class="right">ZAR Total</th><th>Last Seen</th></tr></thead>
+            <table class="wide-table equal-column-table">
+              <thead><tr><th class="nowrap">Pool</th><th class="right">Chain Blocks In Window</th><th class="right">Work %</th><th class="right">Reward BDAG</th><th class="right">Est. Wallet BDAG</th><th class="right">USD Total</th><th class="right">ZAR Total</th><th>Last Seen</th></tr></thead>
               <tbody id="globalPoolsTable"></tbody>
             </table>
           </div>
@@ -1635,6 +1645,20 @@ HTML = r"""<!doctype html>
       }
       return parts.join(" ");
     }
+    function paidMiningStateStatusText(data) {
+      const state = data.paid_mining_state || data.pool_health?.paid_mining_state || {};
+      const evidence = data.pool_health?.paid_onchain_evidence || {};
+      const parts = [];
+      if (state.state) parts.push(`paid_state=${state.state}`);
+      if (hasValue(state.has_recent_share_activity)) parts.push(`shares=${state.has_recent_share_activity ? "fresh" : "stale"}`);
+      if (hasValue(state.has_recent_accepted_submit)) parts.push(`accepted_submit=${state.has_recent_accepted_submit ? "fresh" : "stale"}`);
+      if (hasValue(state.has_recent_confirmed_onchain_paid_block)) parts.push(`chain_paid=${state.has_recent_confirmed_onchain_paid_block ? "fresh" : "stale"}`);
+      if (hasValue(evidence.age_seconds)) parts.push(`chain_paid_age=${fmt(evidence.age_seconds)}s`);
+      if (Array.isArray(state.reasons) && state.reasons.length && state.state !== "mining_paid_ok") {
+        parts.push(`paid_reason=${state.reasons[0]}`);
+      }
+      return parts.join(" ");
+    }
     function statusClass(overall) { return overall === "ok" ? "ok" : overall === "syncing" ? "syncing" : "down"; }
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
@@ -1723,6 +1747,7 @@ HTML = r"""<!doctype html>
       const templateBackendStatus = templateBackendStatusText(data);
       const sourceHealthStatus = sourceHealthStatusText(data);
       const lossLedgerStatus = lossLedgerStatusText(data);
+      const paidMiningStateStatus = paidMiningStateStatusText(data);
       const hostPressureStatus = hostPressureText(data.host_pressure || {});
       const rpcRefusedStatus = data.pool?.rpc_refused_recent
         ? "recent"
@@ -1736,6 +1761,7 @@ HTML = r"""<!doctype html>
         + `duplicate_blocks=${fmt(poolHealth.duplicate_block_count)} `
         + `last_valid_share_age=${fmt(poolHealth.last_valid_share_age_seconds)}s share_stall=${poolHealth.share_stall ? "yes" : "no"} `
         + `selected_backend=${selectedBackend}${templateBackendStatus ? ` ${templateBackendStatus}` : ""}`
+        + `${paidMiningStateStatus ? ` ${paidMiningStateStatus}` : ""}`
         + `${sourceHealthStatus ? ` ${sourceHealthStatus}` : ""}`
         + `${lossLedgerStatus ? ` ${lossLedgerStatus}` : ""} ${submitRecovery}`
         + `${hostPressureStatus ? ` ${hostPressureStatus}` : ""}`
@@ -3150,7 +3176,7 @@ HTML = r"""<!doctype html>
       const table = document.getElementById("globalPoolsTable");
       table.innerHTML = "";
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td colspan="12">${escapeHtml(String(error))}</td>`;
+      tr.innerHTML = `<td colspan="8">${escapeHtml(String(error))}</td>`;
       table.appendChild(tr);
       const sourceStatus = document.getElementById("globalSourceStatus");
       if (sourceStatus) {
@@ -3306,12 +3332,11 @@ HTML = r"""<!doctype html>
       if (!data.clusters || data.clusters.length === 0) {
         const tr = document.createElement("tr");
         const reason = data.error || "No chain-sourced mining clusters are available for this window.";
-        tr.innerHTML = `<td colspan="12">${escapeHtml(reason)}</td>`;
+        tr.innerHTML = `<td colspan="8">${escapeHtml(reason)}</td>`;
         body.appendChild(tr);
       }
       for (const row of data.clusters || []) {
         const tr = document.createElement("tr");
-        const nodes = globalNodesLabel(row);
         const share = row.share_percent ? `${escapeHtml(row.share_percent)}%` : "n/a";
         const poolName = row.pool_name || globalPoolName(row.address);
         const poolAddress = row.address || row.address_short || "";
@@ -3321,16 +3346,13 @@ HTML = r"""<!doctype html>
         const poolCell = poolName
           ? `<span class="pool-dot"></span>${escapeHtml(poolName)} <span class="subtle">${escapeShortEth(poolAddress)}</span>${sourceBadge}`
           : `<span class="pool-dot"></span>${escapeShortEth(poolAddress)}`;
-        const shares = firstPresent(row.shares, row.blocks);
         const chainBlocks = firstPresent(row.blocks, row.found_blocks);
         const creditedBdag = firstPresent(row.credited_bdag, row.estimated_bdag);
         const walletBdag = firstPresent(row.estimated_wallet_bdag, row.estimated_bdag);
-        const avgUsd = firstPresent(row.estimated_usd_avg_hour, row.estimated_usd_recent_hour);
-        const avgBdag = firstPresent(row.estimated_bdag_avg_hour, row.estimated_bdag_recent_hour);
         tr.className = "pool-row";
         tr.style.setProperty("--pool-row-color", transparentColor(poolColor, 0.08));
         tr.style.setProperty("--pool-color", poolColor);
-        tr.innerHTML = `<td class="nowrap pool-name" title="${escapeHtml(poolAddress)}">${poolCell}</td><td class="nowrap">${escapeHtml(nodes || "")}</td><td class="right">${fmt(shares)}</td><td class="right">${share}</td><td class="right">${fmt(chainBlocks)}</td><td class="right">${escapeHtml(creditedBdag || "")}</td><td class="right">${escapeHtml(walletBdag || "")}</td><td class="right">${currency(avgUsd, "$")}</td><td class="right">${currency(avgBdag, "")}</td><td class="right">${currency(row.estimated_usd, "$")}</td><td class="right">${currency(row.estimated_zar, "R")}</td><td class="nowrap">${escapeHtml(formatDisplayTime(row.last_seen_at))}</td>`;
+        tr.innerHTML = `<td class="nowrap pool-name" title="${escapeHtml(poolAddress)}">${poolCell}</td><td class="right">${fmt(chainBlocks)}</td><td class="right">${share}</td><td class="right">${escapeHtml(creditedBdag || "")}</td><td class="right">${escapeHtml(walletBdag || "")}</td><td class="right">${currency(row.estimated_usd, "$")}</td><td class="right">${currency(row.estimated_zar, "R")}</td><td class="nowrap">${escapeHtml(formatDisplayTime(row.last_seen_at))}</td>`;
         body.appendChild(tr);
       }
       drawGlobalChart(data);

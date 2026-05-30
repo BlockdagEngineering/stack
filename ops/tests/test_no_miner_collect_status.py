@@ -42,6 +42,7 @@ class NoMinerCollectStatusTests(unittest.TestCase):
                 "observe_sync_progress_health",
                 "read_sync_coordinator_state",
                 "collect_host_pressure",
+                "recent_confirmed_onchain_paid_block_evidence",
             )
         }
         self.old_time = pool_ops.time.time
@@ -327,6 +328,11 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             "lookback_seconds": 2700,
         }
         pool_ops.read_sync_coordinator_state = lambda: {}
+        pool_ops.recent_confirmed_onchain_paid_block_evidence = lambda _addresses: {
+            "recent": True,
+            "source": "test",
+            "age_seconds": 12,
+        }
 
         status = pool_ops.collect_status(include_logs=True)
 
@@ -334,6 +340,7 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertEqual(status["mode"], "mining")
         self.assertTrue(status["can_submit_blocks"])
         self.assertTrue(status["can_mine"])
+        self.assertEqual(status["paid_mining_state"]["state"], "mining_paid_ok")
         self.assertEqual(status["sync_warnings"], [])
         self.assertFalse(status["pool_health"]["needs_fast_repair"])
         self.assertFalse(status["sync_health"]["needs_fast_sync_repair"])

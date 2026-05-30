@@ -12,7 +12,7 @@ POST_DEPLOY_HEALTH_INTERVAL="${BDAG_DEPLOY_HEALTH_INTERVAL_SECONDS:-3}"
 POST_DEPLOY_DASHBOARD_URL="${BDAG_DEPLOY_DASHBOARD_URL:-http://127.0.0.1:8088/api/status}"
 POST_DEPLOY_ALLOWED_OVERALL="${BDAG_DEPLOY_ALLOWED_OVERALL:-ok syncing}"
 POST_DEPLOY_DEFAULT_CONTAINERS="${BDAG_DEPLOY_CRITICAL_CONTAINERS:-}"
-POST_DEPLOY_WATCHDOG_STATE="${BDAG_DEPLOY_WATCHDOG_STATE:-ops/runtime/watchdog-state.json}"
+POST_DEPLOY_WATCHDOG_STATE="${BDAG_DEPLOY_WATCHDOG_STATE:-}"
 DRY_RUN=0
 MARK_RUNTIME_COMPOSE=0
 ROLLBACK_DIR=""
@@ -328,6 +328,9 @@ migrate_runtime_compose() {
     POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT \
     POOL_SUBMIT_STALE_BLOCK_CANDIDATES \
     POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED \
+    POOL_SUBMIT_BLOCK_HEADER_V3_ENABLED \
+    POOL_TEMPLATE_VALIDITY_CONTRACT_ENABLED \
+    POOL_BLOCK_CANDIDATE_POLICY \
     POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD
   do
     if ! grep -q "${key}:" "$compose"; then
@@ -401,16 +404,24 @@ watchdog_state_fresh() {
     printf 'watchdog freshness skipped: bdag-watchdog.service not restarted\n'
     return 0
   fi
-  local state_path="$TARGET_ROOT/$POST_DEPLOY_WATCHDOG_STATE"
-  python3 - "$state_path" "$1" <<'PY'
+  local -a candidates
+  if [[ -n "$POST_DEPLOY_WATCHDOG_STATE" ]]; then
+    candidates=("$POST_DEPLOY_WATCHDOG_STATE")
+  else
+    candidates=("runtime-data/ops-runtime/watchdog-state.json" "ops/runtime/watchdog-state.json")
+  fi
+  python3 - "$TARGET_ROOT" "$1" "${candidates[@]}" <<'PY'
 from pathlib import Path
 import sys
 
-path = Path(sys.argv[1])
+root = Path(sys.argv[1])
 start_epoch = int(sys.argv[2])
-if not path.exists():
-    print(f"watchdog state missing: {path}")
+candidates = [root / rel for rel in sys.argv[3:]]
+existing = [path for path in candidates if path.exists()]
+if not existing:
+    print("watchdog state missing: " + ", ".join(str(path) for path in candidates))
     raise SystemExit(1)
+path = max(existing, key=lambda item: item.stat().st_mtime)
 mtime = int(path.stat().st_mtime)
 if mtime < start_epoch:
     print(f"watchdog state stale: mtime={mtime} start={start_epoch}")
