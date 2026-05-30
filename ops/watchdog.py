@@ -239,6 +239,50 @@ def is_primary_pool_miner(row: dict[str, Any], mining_address: str) -> bool:
     )
 
 
+def miner_stall_identity_key(row: dict[str, Any]) -> str:
+    device_id = str(row.get("device_id") or "").strip().lower()
+    if device_id.startswith("mac:"):
+        return device_id
+    mac = str(row.get("mac") or "").strip().lower()
+    if mac:
+        return f"mac:{mac}"
+    ip = str(row.get("ip") or "").strip()
+    if ip:
+        return f"ip:{ip}"
+    return ""
+
+
+def update_useful_work_stall_since(
+    state: dict[str, Any],
+    useful_work_stalled_asics: list[dict[str, Any]],
+    degraded_asics: list[dict[str, Any]],
+    now: int,
+) -> dict[str, int]:
+    previous = (
+        state.get("miner_useful_work_stall_since")
+        if isinstance(state.get("miner_useful_work_stall_since"), dict)
+        else {}
+    )
+    tracked_rows: dict[str, dict[str, Any]] = {}
+    for item in [*degraded_asics, *useful_work_stalled_asics]:
+        key = miner_stall_identity_key(item)
+        if key:
+            tracked_rows[key] = item
+
+    updated: dict[str, int] = {}
+    for key, item in tracked_rows.items():
+        old_value = previous.get(key)
+        ip_key = f"ip:{item.get('ip')}" if item.get("ip") else ""
+        if old_value is None and ip_key:
+            old_value = previous.get(ip_key) or previous.get(str(item.get("ip")))
+        try:
+            updated[key] = int(old_value if old_value is not None else now)
+        except (TypeError, ValueError):
+            updated[key] = now
+    state["miner_useful_work_stall_since"] = updated
+    return updated
+
+
 def int_or_none(value: Any) -> int | None:
     try:
         if value is None:
@@ -1856,18 +1900,12 @@ def check_once(
     snapshot_active = lock_is_held(HOURLY_SNAPSHOT_LOCK_FILE)
     autonomous_lab_active = lock_is_held(AUTONOMOUS_STACK_LAB_LOCK_FILE)
     refresh_maintenance_state(state, snapshot_active, autonomous_lab_active)
-    useful_work_stall_since = (
-        state.get("miner_useful_work_stall_since")
-        if isinstance(state.get("miner_useful_work_stall_since"), dict)
-        else {}
+    useful_work_stall_since = update_useful_work_stall_since(
+        state,
+        useful_work_stalled_asics,
+        degraded_asics,
+        now,
     )
-    useful_work_stall_ips = {str(item.get("ip")) for item in useful_work_stalled_asics if item.get("ip")}
-    for ip in list(useful_work_stall_since):
-        if ip not in useful_work_stall_ips:
-            useful_work_stall_since.pop(ip, None)
-    for ip in sorted(useful_work_stall_ips):
-        useful_work_stall_since.setdefault(ip, now)
-    state["miner_useful_work_stall_since"] = useful_work_stall_since
     asic_hashrate_issue_since = (
         state.get("asic_hashrate_issue_since")
         if isinstance(state.get("asic_hashrate_issue_since"), dict)
@@ -2242,7 +2280,9 @@ def check_once(
     elif useful_work_stalled_asics:
         affected = [
             {
+                "identity_key": miner_stall_identity_key(item),
                 "ip": item.get("ip"),
+                "mac": item.get("mac"),
                 "name": item.get("display_name"),
                 "status": item.get("status"),
                 "configured": item.get("configured"),
@@ -2263,7 +2303,8 @@ def check_once(
         waiting = []
         for item in useful_work_stalled_asics:
             ip = str(item.get("ip"))
-            stalled_for = now - int(useful_work_stall_since.get(ip, now) or now)
+            identity_key = miner_stall_identity_key(item)
+            stalled_for = now - int(useful_work_stall_since.get(identity_key, now) or now)
             cooldown_remaining = DEFAULT_MINER_USEFUL_WORK_STALL_REPAIR_COOLDOWN - (
                 now - int(miner_restart_by_ip.get(ip, 0) or 0)
             )
@@ -2271,13 +2312,13 @@ def check_once(
                 eligible_miners.append(item)
             else:
                 waiting.append(
-                    f"{ip} stalled_for={stalled_for}s "
+                    f"{identity_key or ip} ip={ip} stalled_for={stalled_for}s "
                     f"confirm={DEFAULT_MINER_USEFUL_WORK_STALL_CONFIRM_SECONDS}s "
                     f"cooldown_remaining={max(cooldown_remaining, 0)}s"
                 )
         reason = (
             f"{len(useful_work_stalled_asics)} primary ASIC miner(s) are connected/API-visible "
-            "but have stopped producing useful accepted work while peer miners are healthy"
+            "but have stopped producing useful accepted work or solved on-chain blocks while peer miners are healthy"
         )
         state["consecutive_failures"] = 0
         state["consecutive_syncing"] = 0
@@ -2314,7 +2355,7 @@ def check_once(
             state["last_miner_repair"] = result
             for item in repair_targets:
                 miner_restart_by_ip[str(item.get("ip"))] = now
-                useful_work_stall_since.pop(str(item.get("ip")), None)
+                useful_work_stall_since.pop(miner_stall_identity_key(item), None)
             state["last_miner_restart_at_by_ip"] = miner_restart_by_ip
             state["miner_useful_work_stall_since"] = useful_work_stall_since
     elif hashrate_issue_asics:
