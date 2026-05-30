@@ -1336,15 +1336,16 @@ HTML = r"""<!doctype html>
       <section class="grid">
         <div class="panel span-12">
           <div class="kpi-label">Confirmed Chain Production By Pool</div>
-          <div class="subtle" style="margin-top: 8px;">Pool addresses are clustered from BlockDAG chain RPC coinbase data; local pool credits are only shown as an overlay.</div>
+          <div class="subtle" style="margin-top: 8px;">Shares use the local pool credit count over the displayed Scan Window when available, falling back to chain block count for other pools.</div>
+          <div class="subtle" id="globalTableWindow" style="margin-top: 8px;">Table period: waiting for scan window.</div>
           <div class="subtle" id="globalSourceStatus" style="margin-top: 8px;">Waiting for chain RPC source details.</div>
           <div class="table-scroll" style="margin-top: 12px;">
             <table class="wide-table">
-              <thead><tr><th class="nowrap">Pool</th><th class="nowrap">Nodes</th><th class="right">Blocks</th><th class="right">Work %</th><th class="right">Chain Blocks</th><th class="right">Chain Reward BDAG</th><th class="right">Found Blocks</th><th class="right">Est. Wallet BDAG</th><th class="right">Avg USD/h</th><th class="right">Wallet Avg BDAG/h</th><th class="right">USD Total</th><th class="right">ZAR Total</th><th>Last Seen</th></tr></thead>
+              <thead><tr><th class="nowrap">Pool</th><th class="nowrap">Nodes</th><th class="right">Shares In Window</th><th class="right">Work %</th><th class="right">Chain Blocks In Window</th><th class="right">Reward BDAG</th><th class="right">Est. Wallet BDAG</th><th class="right">Avg USD/h</th><th class="right">Wallet Avg BDAG/h</th><th class="right">USD Total</th><th class="right">ZAR Total</th><th>Last Seen</th></tr></thead>
               <tbody id="globalPoolsTable"></tbody>
             </table>
           </div>
-          <div class="subtle" style="margin-top: 10px;">Per-pool earnings use recent chain rewards and current reward pricing; stale or untrusted sources are not rendered as current.</div>
+          <div class="subtle" style="margin-top: 10px;">Credit-block and found-block duplicates are intentionally hidden; chain blocks remain separate when local pool shares differ from chain-confirmed production.</div>
         </div>
       </section>
       <section class="grid">
@@ -2215,6 +2216,27 @@ HTML = r"""<!doctype html>
       const parsed = Date.parse(value);
       if (!Number.isFinite(parsed)) return value || "n/a";
       return new Date(parsed).toLocaleString(undefined, {month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit"});
+    }
+    function formatDuration(seconds) {
+      const total = Math.max(0, Math.round(Number(seconds) || 0));
+      if (!total) return "n/a";
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const secs = total % 60;
+      if (hours) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+      if (minutes) return `${minutes}m ${String(secs).padStart(2, "0")}s`;
+      return `${secs}s`;
+    }
+    function formatGlobalTableWindow(data) {
+      const seconds = Number(data.scan_window_seconds || 0);
+      const duration = formatDuration(seconds);
+      const start = data.scan_start_block !== undefined ? fmt(data.scan_start_block) : "n/a";
+      const end = data.scan_end_block !== undefined ? fmt(data.scan_end_block) : fmt(data.latest_block);
+      const fetched = Number(data.fetched_blocks || 0);
+      const requested = Number(data.requested_blocks || fetched || 0);
+      const blockText = requested && fetched !== requested ? `${fmt(fetched)} of ${fmt(requested)} scanned blocks` : `${fmt(fetched || requested)} scanned blocks`;
+      const updated = data.updated_at ? `, ending ${formatDisplayTime(data.updated_at)}` : "";
+      return `Table period: ${duration}, blocks ${start} to ${end}, ${blockText}${updated}.`;
     }
     let earningsChartRangeHours = 1;
     let earningsChartUnit = "usd";
@@ -3110,10 +3132,11 @@ HTML = r"""<!doctype html>
         text("globalScanWindow", "error");
         text("globalAvgBlockSec", "error");
         text("globalTopShare", "error");
+        text("globalTableWindow", `Table period: unavailable (${String(error)}).`);
       const table = document.getElementById("globalPoolsTable");
       table.innerHTML = "";
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td colspan="13">${escapeHtml(String(error))}</td>`;
+      tr.innerHTML = `<td colspan="12">${escapeHtml(String(error))}</td>`;
       table.appendChild(tr);
       const sourceStatus = document.getElementById("globalSourceStatus");
       if (sourceStatus) {
@@ -3228,6 +3251,7 @@ HTML = r"""<!doctype html>
       text("globalScanWindow", data.scan_window_hours ? `${data.scan_window_hours}h` : "n/a");
       text("globalAvgBlockSec", data.avg_block_seconds ? `${data.avg_block_seconds}s` : "n/a");
       text("globalTopShare", data.clusters?.[0]?.share_percent ? `${data.clusters[0].share_percent}%` : "n/a");
+      text("globalTableWindow", formatGlobalTableWindow(data));
       let freshnessLabel = "no trusted data";
       if (data.status === "ok") freshnessLabel = data.cache_hit ? "validated cache" : "fresh chain scan";
       else if (data.status === "stale") freshnessLabel = "last-good stale cache";
@@ -3268,7 +3292,7 @@ HTML = r"""<!doctype html>
       if (!data.clusters || data.clusters.length === 0) {
         const tr = document.createElement("tr");
         const reason = data.error || "No chain-sourced mining clusters are available for this window.";
-        tr.innerHTML = `<td colspan="13">${escapeHtml(reason)}</td>`;
+        tr.innerHTML = `<td colspan="12">${escapeHtml(reason)}</td>`;
         body.appendChild(tr);
       }
       for (const row of data.clusters || []) {
@@ -3279,21 +3303,20 @@ HTML = r"""<!doctype html>
         const poolAddress = row.address || row.address_short || "";
         const poolIdentity = globalPoolIdentity(row);
         const poolColor = globalPoolColor(poolIdentity);
-        const sourceBadge = row.invalid_payout ? ` <span class="down">invalid payout</span>` : (row.local_pool ? ` <span class="subtle">chain confirmed + local overlay</span>` : "");
+        const sourceBadge = row.invalid_payout ? ` <span class="down">invalid payout</span>` : (row.local_pool ? ` <span class="subtle">chain confirmed + local shares</span>` : "");
         const poolCell = poolName
           ? `<span class="pool-dot"></span>${escapeHtml(poolName)} <span class="subtle">${escapeShortEth(poolAddress)}</span>${sourceBadge}`
           : `<span class="pool-dot"></span>${escapeShortEth(poolAddress)}`;
-        const shares = row.blocks;
-        const creditBlocks = row.blocks;
-        const creditedBdag = row.credited_bdag;
-        const foundBlocks = row.blocks;
-        const walletBdag = row.estimated_bdag;
+        const shares = firstPresent(row.shares, row.blocks);
+        const chainBlocks = firstPresent(row.blocks, row.found_blocks);
+        const creditedBdag = firstPresent(row.credited_bdag, row.estimated_bdag);
+        const walletBdag = firstPresent(row.estimated_wallet_bdag, row.estimated_bdag);
         const avgUsd = firstPresent(row.estimated_usd_avg_hour, row.estimated_usd_recent_hour);
         const avgBdag = firstPresent(row.estimated_bdag_avg_hour, row.estimated_bdag_recent_hour);
         tr.className = "pool-row";
         tr.style.setProperty("--pool-row-color", transparentColor(poolColor, 0.08));
         tr.style.setProperty("--pool-color", poolColor);
-        tr.innerHTML = `<td class="nowrap pool-name" title="${escapeHtml(poolAddress)}">${poolCell}</td><td class="nowrap">${escapeHtml(nodes || "")}</td><td class="right">${fmt(shares)}</td><td class="right">${share}</td><td class="right">${fmt(creditBlocks)}</td><td class="right">${escapeHtml(creditedBdag || "")}</td><td class="right">${fmt(foundBlocks)}</td><td class="right">${escapeHtml(walletBdag || "")}</td><td class="right">${currency(avgUsd, "$")}</td><td class="right">${currency(avgBdag, "")}</td><td class="right">${currency(row.estimated_usd, "$")}</td><td class="right">${currency(row.estimated_zar, "R")}</td><td class="nowrap">${escapeHtml(formatDisplayTime(row.last_seen_at))}</td>`;
+        tr.innerHTML = `<td class="nowrap pool-name" title="${escapeHtml(poolAddress)}">${poolCell}</td><td class="nowrap">${escapeHtml(nodes || "")}</td><td class="right">${fmt(shares)}</td><td class="right">${share}</td><td class="right">${fmt(chainBlocks)}</td><td class="right">${escapeHtml(creditedBdag || "")}</td><td class="right">${escapeHtml(walletBdag || "")}</td><td class="right">${currency(avgUsd, "$")}</td><td class="right">${currency(avgBdag, "")}</td><td class="right">${currency(row.estimated_usd, "$")}</td><td class="right">${currency(row.estimated_zar, "R")}</td><td class="nowrap">${escapeHtml(formatDisplayTime(row.last_seen_at))}</td>`;
         body.appendChild(tr);
       }
       drawGlobalChart(data);
