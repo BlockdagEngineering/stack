@@ -43,6 +43,16 @@ class DashboardGlobalRenderingTests(unittest.TestCase):
         self.assertIn('colspan="12"', html)
         self.assertNotIn('colspan="13"', html)
 
+    def test_miners_table_filters_stale_inactive_inventory_rows(self) -> None:
+        html = dashboard.HTML
+
+        self.assertIn("Active Miner Lanes", html)
+        self.assertIn("function activeMinerLaneRow(miner)", html)
+        self.assertIn("const rows = allRows.filter(activeMinerLaneRow);", html)
+        self.assertIn("hidden-inactive=", html)
+        self.assertIn("No active miner lanes are currently present.", html)
+        self.assertNotIn("Tracked Miner Health", html)
+
 
 if __name__ == "__main__":
     unittest.main()
