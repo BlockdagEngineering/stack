@@ -3286,6 +3286,7 @@ HTML = r"""<!doctype html>
         data.source_truth || data.source || "",
         data.rpc_source ? `rpc=${data.rpc_source}` : "",
         data.latest_order !== undefined ? `order=${fmt(data.latest_order)}` : "",
+        data.latest_order_method ? `order-method=${data.latest_order_method}` : "",
         requestedBlocks ? `fetched=${fmt(fetchedBlocks)}/${fmt(requestedBlocks)}` : "",
         data.unknown_blocks ? `unknown=${fmt(data.unknown_blocks)}` : "",
         data.cache_tip_lag_blocks !== undefined ? `cache-lag=${fmt(data.cache_tip_lag_blocks)}` : "",

@@ -315,11 +315,15 @@ GLOBAL_BLOCK_WINDOW = env_int("BDAG_GLOBAL_BLOCK_WINDOW", 2048, minimum=1)
 GLOBAL_EVM_FALLBACK_BLOCK_WINDOW = env_int("BDAG_GLOBAL_EVM_FALLBACK_BLOCK_WINDOW", 64, minimum=1)
 GLOBAL_EVM_FALLBACK_RPC_WORKERS = env_int("BDAG_GLOBAL_EVM_FALLBACK_RPC_WORKERS", 4, minimum=1)
 GLOBAL_RPC_WORKERS = env_int("BDAG_GLOBAL_RPC_WORKERS", 24, minimum=1)
+GLOBAL_CHAIN_ORDER_RPC_TIMEOUT = env_float("BDAG_GLOBAL_CHAIN_ORDER_RPC_TIMEOUT", 3.0, minimum=0.5)
+GLOBAL_CHAIN_BLOCK_RPC_TIMEOUT = env_float("BDAG_GLOBAL_CHAIN_BLOCK_RPC_TIMEOUT", 3.0, minimum=0.5)
+GLOBAL_CHAIN_PREFLIGHT_SAMPLE_MIN_BLOCKS = env_int("BDAG_GLOBAL_CHAIN_PREFLIGHT_SAMPLE_MIN_BLOCKS", 64, minimum=1)
 GLOBAL_HISTORY_LIMIT = int(os.environ.get("BDAG_GLOBAL_HISTORY_LIMIT", "9000"))
 GLOBAL_HISTORY_COMPACT_MULTIPLIER = max(1, int(os.environ.get("BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER", "2")))
 GLOBAL_CACHE_SCHEMA_VERSION = 2
 GLOBAL_STATS_SOURCE_TRUTH = "chain-rpc:getBlockCount/getBlockByOrder/getBlockHeader/getCoinbaseAddress"
 GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS = env_int("BDAG_GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS", 30, minimum=0)
+GLOBAL_EVM_FALLBACK_ENABLED = env_bool("BDAG_GLOBAL_EVM_FALLBACK_ENABLED", False)
 NODE_EVM_RPC_PORT = int(os.environ.get("BDAG_NODE_EVM_RPC_PORT", "18545"))
 EVM_SYNC_LAG_THRESHOLD_BLOCKS = env_int("BDAG_EVM_SYNC_LAG_THRESHOLD_BLOCKS", 1000, minimum=0)
 EARNINGS_HISTORY_RETENTION_SECONDS = int(os.environ.get("BDAG_EARNINGS_HISTORY_RETENTION_SECONDS", str(35 * 86400)))
@@ -6111,17 +6115,41 @@ def chain_order_block_hash(block: Mapping[str, Any], order: int) -> str:
 
 
 def fetch_chain_order_reference(url: str, order: int, timeout: float = 8.0) -> dict[str, Any]:
-    result = mining_rpc_call(url, "getBlockByOrder", [order, True, False, False], timeout=timeout)
+    result = mining_rpc_call(url, "getBlockByOrder", [order, True, False], timeout=timeout)
     if not isinstance(result, dict):
         raise RuntimeError(f"getBlockByOrder response for order {order} was not a JSON object")
     response_order = result.get("order", result.get("Order", result.get("mainOrder", result.get("MainOrder", result.get("main_order")))))
-    if response_order is not None and safe_int(response_order, order) != order:
+    resolved_order = safe_int(response_order, order)
+    if order >= 0 and response_order is not None and resolved_order != order:
         raise RuntimeError(f"getBlockByOrder returned order {response_order!r} for requested order {order}")
+    if resolved_order < 0:
+        raise RuntimeError(f"getBlockByOrder returned invalid order {response_order!r} for requested order {order}")
     return {
-        "order": order,
-        "hash": chain_order_block_hash(result, order),
+        "order": resolved_order,
+        "hash": chain_order_block_hash(result, resolved_order),
         "block": result,
     }
+
+
+def fetch_chain_order_tip(url: str, timeout: float = 8.0) -> tuple[int, str]:
+    errors: list[str] = []
+    try:
+        reference = fetch_chain_order_reference(url, -1, timeout=timeout)
+        latest_order = safe_int(reference.get("order"), -1)
+        if latest_order >= 0:
+            return latest_order, "getBlockByOrder(-1)"
+        errors.append(f"getBlockByOrder(-1) returned invalid order {reference.get('order')!r}")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"getBlockByOrder(-1): {exc}")
+    try:
+        latest_order = parse_rpc_quantity(mining_rpc_call(url, "getBlockTotal", [], timeout=timeout))
+        if latest_order >= 0:
+            fetch_chain_order_reference(url, latest_order, timeout=timeout)
+            return latest_order, "getBlockTotal"
+        errors.append(f"getBlockTotal returned negative order tip {latest_order}")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"getBlockTotal: {exc}")
+    raise RuntimeError("; ".join(errors) or "unable to resolve latest chain order")
 
 
 def fetch_chain_order_header(
@@ -6620,7 +6648,9 @@ def is_valid_global_chain_snapshot(snapshot: Mapping[str, Any] | None) -> bool:
     latest_order = safe_int(snapshot.get("latest_order"), None)
     if latest_block is None or chain_block_count != latest_block:
         return False
-    if latest_block > 0 and latest_order != latest_block - 1:
+    if latest_order is None or latest_order < 0:
+        return False
+    if latest_block > 0 and latest_order > latest_block:
         return False
     requested_blocks = safe_int(snapshot.get("requested_blocks"), None)
     fetched_blocks = safe_int(snapshot.get("fetched_blocks"), None)
@@ -6868,31 +6898,12 @@ def collect_global_blockchain() -> dict[str, Any]:
     cached = read_json_file(GLOBAL_CACHE_FILE, {})
     cached_at = int(cached.get("updated_at_epoch", 0) or 0) if isinstance(cached, dict) else 0
     cached_valid = is_valid_global_chain_snapshot(cached)
-    cached_evm_fallback_valid = is_valid_global_evm_fallback_snapshot(cached)
     invalid_cache_error = ""
     if isinstance(cached, dict) and cached.get("status") == "ok" and not cached_valid:
         invalid_cache_error = (
             "ignored stale global cache with unsupported source/schema "
             f"source_truth={cached.get('source_truth') or cached.get('source') or 'unknown'} "
             f"schema={cached.get('schema_version') or 'missing'}"
-        )
-
-    if cached_evm_fallback_valid and seconds_since_epoch() - cached_at <= GLOBAL_CACHE_TTL_SECONDS:
-        cache_meta = dict(cached.get("cache") or {}) if isinstance(cached.get("cache"), dict) else {}
-        cache_meta.update(
-            {
-                "hit": True,
-                "age_seconds": max(0, seconds_since_epoch() - cached_at),
-                "ttl_seconds": GLOBAL_CACHE_TTL_SECONDS,
-            }
-        )
-        return annotate_global_pool_labels(
-            {
-                **cached,
-                "cache_hit": True,
-                "cache": cache_meta,
-                "history": read_global_history(limit=GLOBAL_HISTORY_LIMIT),
-            }
         )
 
     def lightweight_global_head(
@@ -7139,9 +7150,10 @@ def collect_global_blockchain() -> dict[str, Any]:
             head = lightweight_global_head(error, errors or [], history, maintenance_decision)
             if head is not None:
                 return head
-        fallback = evm_fallback_global(error, fetch_errors, history, chain_block_count)
-        if fallback is not None:
-            return fallback
+        if GLOBAL_EVM_FALLBACK_ENABLED:
+            fallback = evm_fallback_global(error, fetch_errors, history, chain_block_count)
+            if fallback is not None:
+                return fallback
         return {
             "status": "failed",
             "source": "on-chain",
@@ -7150,6 +7162,8 @@ def collect_global_blockchain() -> dict[str, Any]:
             "source_contract": "blockdag-mining-rpc-v1",
             "error": error,
             "fetch_errors": fetch_errors,
+            "chain_block_count": chain_block_count,
+            "latest_block": chain_block_count,
             "clusters": [],
             "history": history,
             "cache": {
@@ -7228,32 +7242,68 @@ def collect_global_blockchain() -> dict[str, Any]:
 
     rpc_name = candidates[0][1]
     rpc_url = candidates[0][2]
-    latest_order = latest_block_count - 1
-    requested_count = min(max(GLOBAL_BLOCK_WINDOW, 1), latest_block_count)
-    start_order = max(0, latest_order - requested_count + 1)
-    preflight_order = max(start_order, latest_order - min(10, requested_count - 1))
     try:
-        preflight_header = fetch_chain_order_header(rpc_url, rpc_name, preflight_order, timeout=4.0)
+        latest_order, latest_order_method = fetch_chain_order_tip(rpc_url, timeout=GLOBAL_CHAIN_ORDER_RPC_TIMEOUT)
     except Exception as exc:  # noqa: BLE001
         return stale_or_failed(
-            "unable to fetch chain block by order",
-            latest_errors + [f"{preflight_order}: {exc}"],
+            "unable to resolve latest global chain order from chain RPC",
+            latest_errors + [str(exc)],
             chain_block_count=latest_block_count,
         )
+    requested_count = min(max(GLOBAL_BLOCK_WINDOW, 1), latest_order + 1)
+    start_order = max(0, latest_order - requested_count + 1)
+    preflight_order = latest_order
+    try:
+        preflight_header = fetch_chain_order_header(rpc_url, rpc_name, preflight_order, timeout=GLOBAL_CHAIN_ORDER_RPC_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001
+        if latest_order > 0 and "Order is too big" in str(exc):
+            latest_order -= 1
+            requested_count = min(max(GLOBAL_BLOCK_WINDOW, 1), latest_order + 1)
+            start_order = max(0, latest_order - requested_count + 1)
+            preflight_order = latest_order
+            try:
+                preflight_header = fetch_chain_order_header(rpc_url, rpc_name, preflight_order, timeout=GLOBAL_CHAIN_ORDER_RPC_TIMEOUT)
+            except Exception as retry_exc:  # noqa: BLE001
+                return stale_or_failed(
+                    "unable to fetch chain block by order",
+                    latest_errors + [f"{preflight_order}: {retry_exc}"],
+                    chain_block_count=latest_block_count,
+                )
+        else:
+            return stale_or_failed(
+                "unable to fetch chain block by order",
+                latest_errors + [f"{preflight_order}: {exc}"],
+                chain_block_count=latest_block_count,
+            )
+    headers: list[dict[str, Any]] = [preflight_header]
+    preflight_orders = {preflight_order}
+    if requested_count >= GLOBAL_CHAIN_PREFLIGHT_SAMPLE_MIN_BLOCKS:
+        sample_offsets = (1, 2, 4, 8)
+        for sample_order in sorted({latest_order - offset for offset in sample_offsets if latest_order - offset >= start_order}, reverse=True):
+            if sample_order in preflight_orders:
+                continue
+            try:
+                headers.append(fetch_chain_order_header(rpc_url, rpc_name, sample_order, timeout=GLOBAL_CHAIN_ORDER_RPC_TIMEOUT))
+                preflight_orders.add(sample_order)
+            except Exception as exc:  # noqa: BLE001
+                return stale_or_failed(
+                    "unable to complete chain order preflight sample",
+                    latest_errors + [f"{sample_order}: {exc}"],
+                    chain_block_count=latest_block_count,
+                )
     requested_orders = list(range(start_order, latest_order + 1))
-    requested_orders = [order for order in requested_orders if order != preflight_order]
+    requested_orders = [order for order in requested_orders if order not in preflight_orders]
     primary_sources = [(rpc_name, rpc_url), *[(name, url) for _, name, url in candidates if url != rpc_url]]
 
     def load_block(order: int) -> dict[str, Any]:
         last_error: Exception | None = None
         for source_name, source_url in primary_sources:
             try:
-                return fetch_chain_order_header(source_url, source_name, order, timeout=8.0)
+                return fetch_chain_order_header(source_url, source_name, order, timeout=GLOBAL_CHAIN_BLOCK_RPC_TIMEOUT)
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
         raise RuntimeError(str(last_error or f"failed to fetch chain block order {order}"))
 
-    headers: list[dict[str, Any]] = [preflight_header]
     fetch_errors: list[str] = []
     global_pressure = {
         "iowait_percent": maintenance_decision.get("iowait_percent"),
@@ -7425,6 +7475,7 @@ def collect_global_blockchain() -> dict[str, Any]:
         "chain_block_count": latest_block_count,
         "latest_block": latest_block_count,
         "latest_order": latest_order,
+        "latest_order_method": latest_order_method,
         "requested_blocks": requested_count,
         "fetched_blocks": total_blocks,
         "unknown_blocks": unknown_blocks,
@@ -7479,6 +7530,7 @@ def collect_global_blockchain() -> dict[str, Any]:
             "latest_block": payload["latest_block"],
             "chain_block_count": payload["chain_block_count"],
             "latest_order": payload["latest_order"],
+            "latest_order_method": payload.get("latest_order_method"),
             "requested_blocks": payload["requested_blocks"],
             "fetched_blocks": payload["fetched_blocks"],
             "unknown_blocks": payload["unknown_blocks"],
