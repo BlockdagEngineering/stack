@@ -123,6 +123,30 @@ and ready to mine, it starts the pool container without recreating dependencies.
 Set `BDAG_MINING_IMPERATIVE_REPAIR_ENABLED=0` only for an intentional maintenance
 window where mining must remain stopped.
 
+## Paid Conversion Evidence
+
+Accepted shares prove that miners are connected and doing work; they do not
+prove the pool is earning. Release promotion must use accepted block submits and
+confirmed chain-paid evidence.
+
+Capture a read-only paid-conversion baseline:
+
+```bash
+python3 ops/paid_conversion_baseline.py --duration 3600 --write-report
+```
+
+Evaluate evidence before promotion:
+
+```bash
+python3 ops/paid_conversion_release_gate.py ops/runtime/reports/paid-conversion-baseline-YYYYMMDD-HHMMSS.json --write-report
+```
+
+The gate fails by default if the window is too short, has no active miner-hours,
+has an unready selected backend, has high local candidate drops, lacks accepted
+submits, has dirty source repos, or lacks confirmed paid-chain block evidence.
+Use override flags only for explicitly labelled research or early observe-only
+runs, never for release promotion.
+
 ## Watchdog
 
 Run one check:
