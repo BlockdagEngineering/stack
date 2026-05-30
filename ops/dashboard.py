@@ -1341,7 +1341,7 @@ HTML = r"""<!doctype html>
           <div class="subtle" id="globalSourceStatus" style="margin-top: 8px;">Waiting for chain RPC source details.</div>
           <div class="table-scroll" style="margin-top: 12px;">
             <table class="wide-table">
-              <thead><tr><th class="nowrap">Pool</th><th class="nowrap">Nodes</th><th class="right">Work %</th><th class="right">Chain Blocks In Window</th><th class="right">Reward BDAG</th><th class="right">Est. Wallet BDAG</th><th class="right">USD Total</th><th class="right">ZAR Total</th><th>Last Seen</th></tr></thead>
+              <thead><tr><th class="nowrap">Pool</th><th class="right">Chain Blocks In Window</th><th class="right">Work %</th><th class="right">Reward BDAG</th><th class="right">Est. Wallet BDAG</th><th class="right">USD Total</th><th class="right">ZAR Total</th><th>Last Seen</th></tr></thead>
               <tbody id="globalPoolsTable"></tbody>
             </table>
           </div>
@@ -3166,7 +3166,7 @@ HTML = r"""<!doctype html>
       const table = document.getElementById("globalPoolsTable");
       table.innerHTML = "";
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td colspan="9">${escapeHtml(String(error))}</td>`;
+      tr.innerHTML = `<td colspan="8">${escapeHtml(String(error))}</td>`;
       table.appendChild(tr);
       const sourceStatus = document.getElementById("globalSourceStatus");
       if (sourceStatus) {
@@ -3322,12 +3322,11 @@ HTML = r"""<!doctype html>
       if (!data.clusters || data.clusters.length === 0) {
         const tr = document.createElement("tr");
         const reason = data.error || "No chain-sourced mining clusters are available for this window.";
-        tr.innerHTML = `<td colspan="9">${escapeHtml(reason)}</td>`;
+        tr.innerHTML = `<td colspan="8">${escapeHtml(reason)}</td>`;
         body.appendChild(tr);
       }
       for (const row of data.clusters || []) {
         const tr = document.createElement("tr");
-        const nodes = globalNodesLabel(row);
         const share = row.share_percent ? `${escapeHtml(row.share_percent)}%` : "n/a";
         const poolName = row.pool_name || globalPoolName(row.address);
         const poolAddress = row.address || row.address_short || "";
@@ -3343,7 +3342,7 @@ HTML = r"""<!doctype html>
         tr.className = "pool-row";
         tr.style.setProperty("--pool-row-color", transparentColor(poolColor, 0.08));
         tr.style.setProperty("--pool-color", poolColor);
-        tr.innerHTML = `<td class="nowrap pool-name" title="${escapeHtml(poolAddress)}">${poolCell}</td><td class="nowrap">${escapeHtml(nodes || "")}</td><td class="right">${share}</td><td class="right">${fmt(chainBlocks)}</td><td class="right">${escapeHtml(creditedBdag || "")}</td><td class="right">${escapeHtml(walletBdag || "")}</td><td class="right">${currency(row.estimated_usd, "$")}</td><td class="right">${currency(row.estimated_zar, "R")}</td><td class="nowrap">${escapeHtml(formatDisplayTime(row.last_seen_at))}</td>`;
+        tr.innerHTML = `<td class="nowrap pool-name" title="${escapeHtml(poolAddress)}">${poolCell}</td><td class="right">${fmt(chainBlocks)}</td><td class="right">${share}</td><td class="right">${escapeHtml(creditedBdag || "")}</td><td class="right">${escapeHtml(walletBdag || "")}</td><td class="right">${currency(row.estimated_usd, "$")}</td><td class="right">${currency(row.estimated_zar, "R")}</td><td class="nowrap">${escapeHtml(formatDisplayTime(row.last_seen_at))}</td>`;
         body.appendChild(tr);
       }
       drawGlobalChart(data);
