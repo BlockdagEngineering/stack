@@ -22,6 +22,9 @@ class DashboardGlobalRenderingTests(unittest.TestCase):
 
         self.assertNotIn('<th class="right">Shares In Window</th>', section)
         self.assertNotIn('<th class="nowrap">Nodes</th>', section)
+        self.assertIn('<table class="wide-table equal-column-table">', section)
+        self.assertIn(".equal-column-table", dashboard.HTML)
+        self.assertIn("table-layout: fixed;", dashboard.HTML)
         self.assertIn('<th class="right">Chain Blocks In Window</th>', section)
         self.assertLess(
             section.index('<th class="right">Chain Blocks In Window</th>'),
