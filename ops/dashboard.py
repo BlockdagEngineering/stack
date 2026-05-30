@@ -1231,7 +1231,7 @@ HTML = r"""<!doctype html>
     <section id="tab-miners" class="tab-page hidden">
       <section class="grid">
         <div class="panel span-12">
-          <div class="kpi-label">Tracked Miner Health</div>
+          <div class="kpi-label">Active Miner Lanes</div>
           <div id="minerHealthSummary" class="subtle" style="margin-top: 8px;"></div>
           <div class="table-scroll">
           <table class="wide-table">
@@ -2005,16 +2005,30 @@ HTML = r"""<!doctype html>
     function selectAllMiners(checked) {
       for (const input of document.querySelectorAll(".miner-select")) input.checked = checked;
     }
+    function activeMinerLaneRow(miner) {
+      if (!miner) return false;
+      return Boolean(
+        miner.connected
+        || miner.pool_active
+        || miner.configured
+        || miner.managed
+        || miner.expected_work_lane
+        || miner.work_pool_active
+        || (miner.lane_status && miner.lane_status !== "not-tracked")
+      );
+    }
     function renderManagedMiners(health) {
       const tbody = document.getElementById("managedMinersTable");
       if (!tbody) return;
       tbody.innerHTML = "";
       const lane = health.lane_balance || {};
-      text("minerHealthSummary", `tracked=${fmt(health.tracked_count || 0)} connected=${fmt(health.connected_count || 0)} managed=${fmt(health.managed_count || 0)} ok=${fmt(health.ok_count || 0)} stratum=${fmt(health.stratum_count || 0)} lanes=${fmt(lane.expected_lane_count || 0)} expected=${escapeHtml(lane.expected_work_percent || "0.00")}% imbalanced=${fmt(lane.imbalanced_count || 0)}`);
-      const rows = health.miners || [];
+      const allRows = health.miners || [];
+      const rows = allRows.filter(activeMinerLaneRow);
+      const hiddenRows = Math.max(0, allRows.length - rows.length);
+      text("minerHealthSummary", `active=${fmt(rows.length)} hidden-inactive=${fmt(hiddenRows)} tracked=${fmt(health.tracked_count || 0)} connected=${fmt(health.connected_count || 0)} managed=${fmt(health.managed_count || 0)} ok=${fmt(health.ok_count || 0)} stratum=${fmt(health.stratum_count || 0)} lanes=${fmt(lane.expected_lane_count || 0)} expected=${escapeHtml(lane.expected_work_percent || "0.00")}% imbalanced=${fmt(lane.imbalanced_count || 0)}`);
       if (!rows.length) {
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td colspan="14" class="subtle">No tracked miners have been seen yet.</td>`;
+        tr.innerHTML = `<td colspan="14" class="subtle">No active miner lanes are currently present.</td>`;
         tbody.appendChild(tr);
         return;
       }
