@@ -878,6 +878,16 @@ HTML = r"""<!doctype html>
       min-width: 100%;
       table-layout: auto;
     }
+    .equal-column-table {
+      width: 100%;
+      min-width: 100%;
+      table-layout: fixed;
+    }
+    .equal-column-table th,
+    .equal-column-table td,
+    .equal-column-table .nowrap {
+      white-space: normal;
+    }
     .chart-wrap {
       height: 280px;
       margin-top: 10px;
@@ -1340,7 +1350,7 @@ HTML = r"""<!doctype html>
           <div class="subtle" id="globalTableWindow" style="margin-top: 8px;">Table period: waiting for scan window.</div>
           <div class="subtle" id="globalSourceStatus" style="margin-top: 8px;">Waiting for chain RPC source details.</div>
           <div class="table-scroll" style="margin-top: 12px;">
-            <table class="wide-table">
+            <table class="wide-table equal-column-table">
               <thead><tr><th class="nowrap">Pool</th><th class="right">Chain Blocks In Window</th><th class="right">Work %</th><th class="right">Reward BDAG</th><th class="right">Est. Wallet BDAG</th><th class="right">USD Total</th><th class="right">ZAR Total</th><th>Last Seen</th></tr></thead>
               <tbody id="globalPoolsTable"></tbody>
             </table>
