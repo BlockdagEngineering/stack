@@ -75,8 +75,8 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
     def test_starts_stopped_pool_when_asic_lan_neighbor_is_present(self) -> None:
         commands = []
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
-        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.50.0/24"
-        status_sampler.read_neighbor_macs = lambda: {"192.168.50.177": "28:e2:97:1e:c0:b5"}
+        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.1.0/24"
+        status_sampler.read_neighbor_macs = lambda: {"192.168.1.107": "28:e2:97:1e:c0:b5"}
 
         def fake_run(command: list[str], timeout: int = 20):
             commands.append(command)
@@ -100,7 +100,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
     def test_starts_stopped_idle_pool_when_chain_is_synced(self) -> None:
         commands = []
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
-        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.50.0/24"
+        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.1.0/24"
         status_sampler.read_neighbor_macs = lambda: {}
         status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
 
@@ -112,7 +112,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
     def test_does_not_start_pool_without_miner_demand_or_ready_chain(self) -> None:
         commands = []
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
-        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.50.0/24"
+        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.1.0/24"
         status_sampler.read_neighbor_macs = lambda: {}
         status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
 
@@ -150,7 +150,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         activity = {"miners": [{"ip": "172.18.0.1"}], "unattributed_valid_shares": 8, "unattributed_blocks": 1}
         status_sampler.collect_pool_activity = lambda lines=0: activity
         status_sampler.upsert_pool_activity_miners = lambda _activity: {
-            "miners": [{"ip": "192.168.50.177", "mac": "28:e2:97:1e:c0:b5"}]
+            "miners": [{"ip": "192.168.1.107", "mac": "28:e2:97:1e:c0:b5"}]
         }
         status_sampler.read_miner_registry = lambda: {"miners": []}
 

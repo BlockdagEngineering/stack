@@ -644,7 +644,7 @@ class GlobalLocalPoolOverlayTests(unittest.TestCase):
         pool_ops.read_miner_registry = lambda: {
             "miners": [
                 {
-                    "ip": "192.168.50.177",
+                    "ip": "192.168.1.107",
                     "mac": "28:e2:97:1e:c0:b5",
                     "display_name": "Achilles",
                     "device_type": "asic",
