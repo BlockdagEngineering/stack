@@ -46,6 +46,7 @@ FILES=(
   "ops/incident_journal.py"
   "ops/incident_reporter.py"
   "ops/install-dashboard.sh"
+  "ops/install-p2p-services.sh"
   "ops/ipfs_content_sidecar.py"
   "ops/latest_chain_candidate.py"
   "ops/node_child_guard.py"
