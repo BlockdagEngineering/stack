@@ -826,6 +826,59 @@ class MinerHealthConfiguredScopeTests(unittest.TestCase):
         self.assertEqual(health["miners"][0]["configured"], True)
         self.assertEqual(health["miners"][0]["status"], "ok")
 
+    def test_managed_pool_log_stratum_miner_remains_expected_lane_when_down(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.collect_pool_activity = lambda lines=0: {
+            "miners": [
+                {
+                    "ip": "192.168.1.14",
+                    "workers": [worker],
+                    "shares": 1,
+                    "share_work": 500,
+                    "last_seen_at": "2026/05/31 08:05:29",
+                }
+            ]
+        }
+        pool_ops.upsert_pool_activity_miners = lambda activity: {
+            "updated_at": "2026-05-31T10:00:00+0200",
+            "miners": [
+                {
+                    "ip": "192.168.1.14",
+                    "mac": "28:e2:97:3e:39:63",
+                    "device_id": "mac:28:e2:97:3e:39:63",
+                    "device_type": "stratum",
+                    "discovered_by": "pool-log",
+                    "expected_pool_url": pool_ops.default_miner_pool_settings()["pool_url"],
+                    "expected_worker_user": worker,
+                    "last_workers": [worker],
+                    "last_pool_seen_epoch": 100,
+                    "managed": True,
+                },
+                {
+                    "ip": "192.168.1.101",
+                    "mac": "2a:71:c7:f5:1f:1e",
+                    "device_id": "mac:2a:71:c7:f5:1f:1e",
+                    "device_type": "stratum",
+                    "discovered_by": "pool-log",
+                    "expected_pool_url": pool_ops.default_miner_pool_settings()["pool_url"],
+                    "expected_worker_user": worker,
+                    "last_workers": [worker],
+                    "last_pool_seen_epoch": 100,
+                    "managed": True,
+                    "last_configured_ok": True,
+                },
+            ],
+        }
+        pool_ops.seconds_since_epoch = lambda: 100 + pool_ops.POOL_CONNECTED_STALE_SECONDS + 10
+
+        health = pool_ops.collect_miner_health()
+        miners = {item["mac"]: item for item in health["miners"]}
+
+        self.assertEqual(health["lane_balance"]["expected_lane_count"], 2)
+        self.assertTrue(miners["2a:71:c7:f5:1f:1e"]["expected_work_lane"])
+        self.assertEqual(miners["2a:71:c7:f5:1f:1e"]["lane_status"], "low")
+        self.assertEqual(miners["2a:71:c7:f5:1f:1e"]["status"], "down")
+
     def test_inactive_stale_share_window_does_not_receive_active_work_percent(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
         pool_ops.collect_pool_activity = lambda lines=0: {
