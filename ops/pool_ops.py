@@ -4095,7 +4095,6 @@ def collect_miner_health() -> dict[str, Any]:
         item
         for item in health
         if item.get("relevant_for_work_share")
-        and item.get("work_pool_active")
         and (item.get("configured") or item.get("managed"))
     ]
     expected_lane_ids = {
