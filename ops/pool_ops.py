@@ -6716,6 +6716,30 @@ def write_global_cache(payload: dict[str, Any]) -> None:
         return
 
 
+def refresh_global_chain_head(payload: dict[str, Any]) -> dict[str, Any]:
+    """Add a live chain tip to dashboard payloads without changing scan-window data."""
+    try:
+        block_count, source_name, _source_url, errors = probe_global_chain_block_count()
+    except Exception as exc:  # noqa: BLE001 - live tip freshness is best-effort.
+        block_count = None
+        source_name = ""
+        errors = [str(exc)]
+    if block_count is None:
+        if errors:
+            existing_errors = list(payload.get("head_probe_errors") or [])
+            payload["head_probe_errors"] = [*existing_errors, *errors][:20]
+        return payload
+
+    scanned_tip = safe_int(payload.get("latest_block"), 0)
+    payload["chain_latest_block"] = block_count
+    payload["chain_latest_block_source"] = source_name or "getBlockCount"
+    payload["chain_latest_block_updated_at"] = now_iso()
+    payload["chain_tip_lag_blocks"] = max(0, block_count - scanned_tip)
+    if payload.get("chain_block_count") in (None, ""):
+        payload["chain_block_count"] = block_count
+    return payload
+
+
 def _pool_earning_rates_from_cluster(cluster: dict[str, Any], scan_window_hours: Decimal | None) -> tuple[str | None, str | None, str | None]:
     est_bdag = decimal_value(cluster.get("estimated_bdag"))
     if est_bdag is None or not scan_window_hours or scan_window_hours <= 0:
@@ -7134,7 +7158,7 @@ def collect_global_blockchain() -> dict[str, Any]:
                 }
             )
             return annotate_global_pool_labels(
-                {
+                refresh_global_chain_head({
                     **cached,
                     "status": "stale",
                     "stale": True,
@@ -7143,34 +7167,36 @@ def collect_global_blockchain() -> dict[str, Any]:
                     "error": error,
                     "fetch_errors": fetch_errors or cached.get("fetch_errors", []),
                     "history": history,
-                }
+                })
             )
         if maintenance_decision is not None:
             head = lightweight_global_head(error, errors or [], history, maintenance_decision)
             if head is not None:
-                return head
+                return refresh_global_chain_head(head)
         if GLOBAL_EVM_FALLBACK_ENABLED:
             fallback = evm_fallback_global(error, fetch_errors, history, chain_block_count)
             if fallback is not None:
-                return fallback
-        return {
-            "status": "failed",
-            "source": "on-chain",
-            "source_truth": GLOBAL_STATS_SOURCE_TRUTH,
-            "schema_version": GLOBAL_CACHE_SCHEMA_VERSION,
-            "source_contract": "blockdag-mining-rpc-v1",
-            "error": error,
-            "fetch_errors": fetch_errors,
-            "chain_block_count": chain_block_count,
-            "latest_block": chain_block_count,
-            "clusters": [],
-            "history": history,
-            "cache": {
-                "hit": False,
-                "ttl_seconds": GLOBAL_CACHE_TTL_SECONDS,
-                "max_tip_lag_blocks": GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS,
-            },
-        }
+                return refresh_global_chain_head(fallback)
+        return refresh_global_chain_head(
+            {
+                "status": "failed",
+                "source": "on-chain",
+                "source_truth": GLOBAL_STATS_SOURCE_TRUTH,
+                "schema_version": GLOBAL_CACHE_SCHEMA_VERSION,
+                "source_contract": "blockdag-mining-rpc-v1",
+                "error": error,
+                "fetch_errors": fetch_errors,
+                "chain_block_count": chain_block_count,
+                "latest_block": chain_block_count,
+                "clusters": [],
+                "history": history,
+                "cache": {
+                    "hit": False,
+                    "ttl_seconds": GLOBAL_CACHE_TTL_SECONDS,
+                    "max_tip_lag_blocks": GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS,
+                },
+            }
+        )
 
     maintenance_decision = background_maintenance_decision("global_blockchain_scan")
     if not maintenance_decision.get("allowed", True):
@@ -7207,14 +7233,14 @@ def collect_global_blockchain() -> dict[str, Any]:
                     }
                 )
                 return annotate_global_pool_labels(
-                    {
+                    refresh_global_chain_head({
                         **cached,
                         "cache_hit": True,
                         "cache": cache_meta,
                         "cache_tip_lag_blocks": cache_tip_lag,
                         "cache_validated_by": live_source,
                         "history": read_valid_global_history(limit=GLOBAL_HISTORY_LIMIT),
-                    }
+                    })
                 )
             if cached_valid:
                 invalid_cache_error = (
@@ -7516,6 +7542,7 @@ def collect_global_blockchain() -> dict[str, Any]:
     if partial_scan:
         payload["error"] = f"global chain scan partial: fetched {total_blocks}/{requested_count} requested blocks"
         payload["history"] = read_valid_global_history(limit=GLOBAL_HISTORY_LIMIT)
+        payload = refresh_global_chain_head(payload)
         payload = annotate_global_pool_labels(payload)
         return payload
     record_global_snapshot(
@@ -7567,6 +7594,7 @@ def collect_global_blockchain() -> dict[str, Any]:
         }
     )
     payload["history"] = read_valid_global_history(limit=GLOBAL_HISTORY_LIMIT)
+    payload = refresh_global_chain_head(payload)
     payload = annotate_global_pool_labels(payload)
     write_global_cache(payload)
     return payload

@@ -21,6 +21,8 @@ from urllib.request import Request, urlopen
 from incident_journal import read_recent_incidents
 from pool_ops import (
     EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS,
+    GLOBAL_CACHE_FILE,
+    GLOBAL_HISTORY_LIMIT,
     GLOBAL_STATS_SOURCE_TRUTH,
     PROJECT_ROOT,
     RUNTIME_DIR,
@@ -37,8 +39,10 @@ from pool_ops import (
     normalize_mac,
     now_iso,
     read_latest_earnings_snapshot_info,
+    read_valid_global_history,
     read_miner_registry,
     record_earnings_snapshot,
+    refresh_global_chain_head,
     save_miner_admin_password,
     scan_miners,
     upsert_miner_registry,
@@ -68,6 +72,12 @@ TEMPLATE_BACKEND_STATE_CACHE_SECONDS = float(
 SYNC_ESTIMATE_STATE_FILE = RUNTIME_DIR / "dashboard-sync-estimate-state.json"
 EARNINGS_SAMPLER_LOCK_FILE = RUNTIME_DIR / "dashboard-earnings-sampler.lock"
 EARNINGS_SAMPLER_STATE_FILE = RUNTIME_DIR / "dashboard-earnings-sampler-state.json"
+GLOBAL_SAMPLER_ENABLED = os.environ.get("BDAG_DASHBOARD_GLOBAL_SAMPLER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+GLOBAL_SAMPLER_INTERVAL_SECONDS = max(
+    15.0,
+    float(os.environ.get("BDAG_DASHBOARD_GLOBAL_SAMPLER_INTERVAL_SECONDS", "30")),
+)
+GLOBAL_SAMPLER_STATE_FILE = RUNTIME_DIR / "dashboard-global-sampler-state.json"
 PROMETHEUS_SAMPLE_RE = re.compile(
     r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|[-+]?Inf|NaN)$"
 )
@@ -75,6 +85,7 @@ PROMETHEUS_LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:\\.|[^"\\])*)"'
 PROCESSED_BLOCKS_RE = re.compile(r"Processed\s+([0-9,]+)\s+blocks\s+in\s+the\s+last\s+([0-9.]+)s")
 API_CACHE: dict[str, tuple[float, object]] = {}
 API_CACHE_LOCK = threading.Lock()
+GLOBAL_REFRESH_LOCK = threading.Lock()
 
 
 def cached_payload(key: str, ttl: float, factory):
@@ -162,6 +173,107 @@ def start_earnings_sampler() -> None:
         return
     thread = threading.Thread(target=earnings_sampler_loop, name="earnings-sampler", daemon=True)
     thread.start()
+
+
+def write_global_sampler_state(payload: dict[str, object]) -> None:
+    try:
+        write_json(GLOBAL_SAMPLER_STATE_FILE, payload)
+    except Exception:
+        pass
+
+
+def run_global_refresh(reason: str) -> None:
+    started = time.time()
+    try:
+        payload = collect_global_blockchain()
+        clear_api_cache("global", "sampler")
+        write_global_sampler_state(
+            {
+                "updated_at": now_iso(),
+                "status": payload.get("status", "unknown"),
+                "reason": reason,
+                "duration_seconds": round(time.time() - started, 3),
+                "latest_block": payload.get("latest_block"),
+                "chain_latest_block": payload.get("chain_latest_block"),
+                "requested_blocks": payload.get("requested_blocks"),
+                "fetched_blocks": payload.get("fetched_blocks"),
+                "error": payload.get("error", ""),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 - dashboard must keep serving from last good data.
+        write_global_sampler_state(
+            {
+                "updated_at": now_iso(),
+                "status": "failed",
+                "reason": reason,
+                "duration_seconds": round(time.time() - started, 3),
+                "error": str(exc),
+            }
+        )
+
+
+def trigger_global_refresh(reason: str) -> bool:
+    if not GLOBAL_REFRESH_LOCK.acquire(blocking=False):
+        return False
+
+    def worker() -> None:
+        try:
+            run_global_refresh(reason)
+        finally:
+            GLOBAL_REFRESH_LOCK.release()
+
+    thread = threading.Thread(target=worker, name="global-sampler", daemon=True)
+    thread.start()
+    return True
+
+
+def global_sampler_loop() -> None:
+    trigger_global_refresh("dashboard-global-sampler-start")
+    while True:
+        time.sleep(GLOBAL_SAMPLER_INTERVAL_SECONDS)
+        trigger_global_refresh("dashboard-global-background-sampler")
+
+
+def start_global_sampler() -> None:
+    if not GLOBAL_SAMPLER_ENABLED:
+        return
+    thread = threading.Thread(target=global_sampler_loop, name="global-sampler-loop", daemon=True)
+    thread.start()
+
+
+def collect_global_dashboard_payload(reason: str) -> dict[str, object]:
+    cached = read_json(GLOBAL_CACHE_FILE, {})
+    if isinstance(cached, dict) and cached:
+        payload: dict[str, object] = dict(cached)
+        payload["history"] = read_valid_global_history(limit=GLOBAL_HISTORY_LIMIT)
+        payload = refresh_global_chain_head(payload)
+        cache_meta = dict(payload.get("cache") or {}) if isinstance(payload.get("cache"), dict) else {}
+        updated_epoch = safe_float(payload.get("updated_at_epoch"), None)
+        if updated_epoch is not None:
+            cache_meta["age_seconds"] = max(0, round(time.time() - updated_epoch, 1))
+        cache_meta["hit"] = True
+        cache_meta["served_by"] = "dashboard-cache-live-head"
+        payload["cache"] = cache_meta
+        payload["cache_hit"] = True
+        if payload.get("chain_tip_lag_blocks"):
+            payload["scan_lagged"] = True
+        trigger_global_refresh(reason)
+        return payload
+
+    trigger_global_refresh(f"{reason}-no-cache")
+    return refresh_global_chain_head(
+        {
+            "status": "deferred",
+            "source": "dashboard-global-cache",
+            "source_truth": GLOBAL_STATS_SOURCE_TRUTH,
+            "schema_version": 2,
+            "error": "global cache is warming; refresh again shortly",
+            "clusters": [],
+            "history": [],
+            "cache": {"hit": False, "served_by": "dashboard-cache-live-head"},
+            "refresh_pending": True,
+        }
+    )
 
 
 def parse_prometheus_labels(label_text: str) -> dict[str, str]:
@@ -3267,7 +3379,8 @@ HTML = r"""<!doctype html>
     }
     function renderGlobal(data) {
       lastGlobalData = data;
-      text("globalLatestBlock", fmt(data.latest_block));
+      const liveLatestBlock = firstNumeric(data.chain_latest_block, data.latest_block);
+      text("globalLatestBlock", fmt(liveLatestBlock));
       const fetchedBlocks = Number(data.fetched_blocks || 0);
       const requestedBlocks = Number(data.requested_blocks || fetchedBlocks || 0);
       text("globalScannedBlocks", requestedBlocks && fetchedBlocks !== requestedBlocks ? `${fmt(fetchedBlocks)} / ${fmt(requestedBlocks)}` : fmt(fetchedBlocks || requestedBlocks));
@@ -3285,10 +3398,12 @@ HTML = r"""<!doctype html>
         data.status ? `status=${data.status}` : "",
         data.source_truth || data.source || "",
         data.rpc_source ? `rpc=${data.rpc_source}` : "",
+        data.chain_latest_block !== undefined ? `live-tip=${fmt(data.chain_latest_block)}` : "",
         data.latest_order !== undefined ? `order=${fmt(data.latest_order)}` : "",
         data.latest_order_method ? `order-method=${data.latest_order_method}` : "",
         requestedBlocks ? `fetched=${fmt(fetchedBlocks)}/${fmt(requestedBlocks)}` : "",
         data.unknown_blocks ? `unknown=${fmt(data.unknown_blocks)}` : "",
+        data.chain_tip_lag_blocks ? `scan-lag=${fmt(data.chain_tip_lag_blocks)} blocks` : "",
         data.cache_tip_lag_blocks !== undefined ? `cache-lag=${fmt(data.cache_tip_lag_blocks)}` : "",
         data.head_only ? "head-only=no production table" : "",
         data.maintenance_deferred ? "maintenance deferred" : "",
@@ -3452,7 +3567,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/global":
             try:
-                self.send_json(collect_global_blockchain())
+                self.send_json(collect_global_dashboard_payload("api-global"))
             except Exception as exc:  # noqa: BLE001
                 self.send_json(
                     {
@@ -3619,6 +3734,7 @@ def main() -> int:
         print(f"Action token file: {RUNTIME_DIR / 'dashboard-token.txt'}")
         print(f"Action token: {token}")
     start_earnings_sampler()
+    start_global_sampler()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"BlockDAG dashboard listening on http://{HOST}:{PORT}")
     httpd.serve_forever()
