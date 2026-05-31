@@ -142,6 +142,7 @@ install_rawdatadir_source_timer() {
   local user_systemd_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
   local user_config_dir="${XDG_CONFIG_HOME:-$HOME/.config}"
   local network active_service source_dir sidecar_dir artifact_base
+  local sidecar_content_base
 
   network="$(env_value BDAG_FASTSNAP_NETWORK mainnet)"
   active_service="$(env_value BDAG_NODE_SERVICES bdag-miner-node-1)"
@@ -153,6 +154,7 @@ install_rawdatadir_source_timer() {
   esac
   sidecar_dir="$(env_value BDAG_RAWDATADIR_SIDECAR_DIR ./data-restore/rawdatadir-sidecar/$network)"
   artifact_base="$(env_value BDAG_RAWDATADIR_ARTIFACT_BASE ./data-restore/rawdatadir)"
+  sidecar_content_base="$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE ./data-restore/rawdatadir-sidecar-content)"
 
   mkdir -p "$user_systemd_dir" "$user_config_dir"
   cat > "$user_config_dir/bdag-rawdatadir-sidecar.env" <<EOF
@@ -167,6 +169,11 @@ BDAG_RAWDATADIR_SINGLE_NODE_SERVICE=$active_service
 BDAG_RAWDATADIR_SIDECAR_SOURCE=$source_dir
 BDAG_RAWDATADIR_SIDECAR_DIR=$sidecar_dir
 BDAG_RAWDATADIR_ARTIFACT_BASE=$artifact_base
+BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE=$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE auto)
+BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE=$sidecar_content_base
+BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP=$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP 2)
+BDAG_RAWDATADIR_SIDECAR_CONTENT_CHUNK_SIZE=$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_CHUNK_SIZE 67108864)
+BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED=$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED 1)
 BDAG_RAWDATADIR_REQUIRE_SIGNED=$(env_value BDAG_RAWDATADIR_REQUIRE_SIGNED 1)
 BDAG_RAWDATADIR_MAX_EXPORT_BACKEND_LAG=$(env_value BDAG_RAWDATADIR_MAX_EXPORT_BACKEND_LAG 10000)
 BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH=$(env_value BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH 1)
@@ -240,6 +247,8 @@ BDAG_PROJECT_ROOT=$ROOT
 BDAG_ENV_FILE=$ROOT/.env
 BDAG_IPFS_CONTENT_SIDECAR_MODE=$mode
 BDAG_RAWDATADIR_ARTIFACT_BASE=$(env_value BDAG_RAWDATADIR_ARTIFACT_BASE ./data-restore/rawdatadir)
+BDAG_IPFS_CONTENT_ARTIFACT_DIR=$(env_value BDAG_IPFS_CONTENT_ARTIFACT_DIR "$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE ./data-restore/rawdatadir-sidecar-content)/current")
+BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST=$(env_value BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST "$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE ./data-restore/rawdatadir-sidecar-content)/current/manifest.json")
 BDAG_IPFS_CONTENT_STATUS_FILE=$ROOT/ops/runtime/ipfs-content-sidecar-status.json
 BDAG_IPFS_CONTENT_LATEST_INDEX_PATH=$ROOT/ops/runtime/ipfs-content/latest-index.json
 BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT=$(env_value BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT 0)

@@ -166,8 +166,11 @@ def source_eligibility(env: dict[str, str]) -> dict[str, Any]:
 
 
 def artifact_paths(env: dict[str, str]) -> tuple[Path, Path]:
-    artifact_base = resolve_path(env.get("BDAG_RAWDATADIR_ARTIFACT_BASE"), ROOT / "data-restore/rawdatadir")
-    artifact_dir = resolve_path(env.get("BDAG_IPFS_CONTENT_ARTIFACT_DIR"), artifact_base / "current")
+    sidecar_content_base = resolve_path(
+        env.get("BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE"),
+        ROOT / "data-restore/rawdatadir-sidecar-content",
+    )
+    artifact_dir = resolve_path(env.get("BDAG_IPFS_CONTENT_ARTIFACT_DIR"), sidecar_content_base / "current")
     manifest = resolve_path(env.get("BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST"), artifact_dir / "manifest.json")
     return artifact_dir, manifest
 

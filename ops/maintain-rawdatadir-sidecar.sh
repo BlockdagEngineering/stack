@@ -25,6 +25,8 @@ STATUS_FILE="${BDAG_RAWDATADIR_SOURCE_STATUS:-$PROJECT_ROOT/ops/runtime/rawdatad
 DELETE_MODE="${BDAG_RAWDATADIR_SIDECAR_DELETE:-1}"
 BWLIMIT="${BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT:-}"
 USE_SUDO="${BDAG_RAWDATADIR_SIDECAR_USE_SUDO:-auto}"
+CONTENT_MODE="${BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE:-auto}"
+CONTENT_SCRIPT="$PROJECT_ROOT/ops/seal_rawdatadir_sidecar_content.py"
 
 mkdir -p "$(dirname "$LOCK_FILE")" "$(dirname "$LOG_FILE")" "$SIDECAR_DIR"
 
@@ -103,12 +105,13 @@ rsync_args=(
   --partial
   --partial-dir=.rsync-partial
   --delay-updates
-  "--exclude=/network.key"
-  "--exclude=/bdageth/nodekey"
-  "--exclude=/keystore"
-  "--exclude=/bdageth/keystore"
-  "--exclude=/peerstore"
-  "--exclude=/nodes"
+  "--exclude=/network.key*"
+  "--exclude=/bdageth/nodekey*"
+  "--exclude=/keystore*"
+  "--exclude=/bdageth/keystore*"
+  "--exclude=/bdageth/nodes*"
+  "--exclude=/peerstore*"
+  "--exclude=/nodes*"
   "--exclude=/.rsync-partial"
   "--exclude=/snapshot.bdsnap"
   "--exclude=/artifact.manifest.json"
@@ -170,3 +173,35 @@ payload.update({
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
+
+case "${CONTENT_MODE,,}" in
+  0|false|no|off|disabled)
+    log "raw datadir sidecar content sealing disabled by BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE=$CONTENT_MODE"
+    ;;
+  *)
+    if [[ -x "$CONTENT_SCRIPT" ]]; then
+      log "sealing raw datadir sidecar content artifact"
+      seal_env=(
+        "BDAG_PROJECT_ROOT=$PROJECT_ROOT"
+        "BDAG_ENV_FILE=${BDAG_ENV_FILE:-$PROJECT_ROOT/.env}"
+        "BDAG_RAWDATADIR_NETWORK=$NETWORK"
+        "BDAG_RAWDATADIR_SIDECAR_DIR=$SIDECAR_DIR"
+        "BDAG_RAWDATADIR_SOURCE_STATUS=$STATUS_FILE"
+        "BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE=$CONTENT_MODE"
+        "BDAG_RAWDATADIR_SIDECAR_CONTENT_OWNER_UID=$(id -u)"
+        "BDAG_RAWDATADIR_SIDECAR_CONTENT_OWNER_GID=$(id -g)"
+      )
+      if [[ "${rsync_command[0]}" == "sudo" ]]; then
+        if ! run_low_priority sudo -n env "${seal_env[@]}" python3 "$CONTENT_SCRIPT" 2>&1 | tee -a "$LOG_FILE"; then
+          log "raw datadir sidecar content sealing failed; see status file"
+        fi
+      else
+        if ! run_low_priority env "${seal_env[@]}" python3 "$CONTENT_SCRIPT" 2>&1 | tee -a "$LOG_FILE"; then
+          log "raw datadir sidecar content sealing failed; see status file"
+        fi
+      fi
+    else
+      log "raw datadir sidecar content sealing skipped: missing $CONTENT_SCRIPT"
+    fi
+    ;;
+esac

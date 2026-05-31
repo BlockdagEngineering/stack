@@ -5,7 +5,7 @@
 Use the existing Fast Artifact Sync V2 libp2p protocol instead of a new rsync
 stream. Corechain serves a signed `raw_datadir_checkpoint` directory artifact;
 the payload is the same stopped-node datadir archive we copy to USB, with node
-identity and private material excluded.
+identity, private material, and backup variants of those paths excluded.
 
 This keeps the release candidate on the existing security model:
 
@@ -70,9 +70,19 @@ live datadir contains root-owned chain files and passwordless sudo is available.
 Set `BDAG_RAWDATADIR_SIDECAR_USE_SUDO=0` only on hosts where all chain files are
 readable by the installing user.
 
+After each successful rsync pass, the sidecar also seals the hot copy into
+`data-restore/rawdatadir-sidecar-content/current`: immutable SHA-256 chunks,
+file descriptors, a canonical manifest root, and an ed25519 signature when
+`BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX` is configured. Hot generations carry a
+`DO_NOT_PUBLISH` marker unless `BDAG_RAWDATADIR_SIDECAR_CONTENT_FINALIZED=1`
+or an explicit local hot-publish override is set. This gives the future IPFS
+path stable content-addressed data without pretending a live sidecar is a
+finalized checkpoint.
+
 2. When an operator approves a finalization window, let the publisher stop the
    single node, run one final sidecar sync, restart the node, and build the
-   signed artifact from the finalized sidecar:
+   signed artifact from the finalized sidecar. The final sidecar sync also
+   seals a publishable file/chunk content generation for IPFS transport:
 
 ```bash
 BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=1 \
@@ -162,7 +172,8 @@ datadir into place.
   content and manifest signature still have to verify before import.
 - Trust signer public keys, not peer IDs.
 - Do not import the sender's `network.key`, `bdageth/nodekey`, `keystore`,
-  `peerstore`, or IPC/socket files.
+  `peerstore`, `nodes`, `bdageth/nodes`, backup variants of those paths, or
+  IPC/socket files.
 - Keep at least one parked receiver datadir until the imported node has started,
   verified chain ID `1404`, and caught the normal FastSync tail.
 - Direct public internet serving still needs reachable libp2p TCP ports or a

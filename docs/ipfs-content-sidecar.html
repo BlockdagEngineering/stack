@@ -30,22 +30,24 @@
 <body>
 <main>
   <h1>BlockDAG IPFS Content Sidecar</h1>
-  <p class="callout">The IPFS content sidecar makes finalized BlockDAG FastArtifact generations easier to find and fetch. It must never create artifacts from a live mining node and must never decide chain trust from a CID alone.</p>
+  <p class="callout">The IPFS content sidecar makes finalized BlockDAG FastArtifact generations easier to find and fetch. The raw datadir sidecar now seals immutable file/chunk generations with signed manifest roots; IPFS still must never decide chain trust from a CID alone.</p>
 
   <h2>Design Rules</h2>
   <ul>
-    <li><code>ops/ipfs_content_sidecar.py</code> pins only an already-finalized signed artifact directory.</li>
-    <li>Raw datadir artifact generation remains owned by <code>ops/publish-rawdatadir-artifact.sh</code> and is gated separately.</li>
+    <li><code>ops/seal_rawdatadir_sidecar_content.py</code> turns each completed sidecar rsync into immutable SHA-256 chunks plus a signed canonical manifest root.</li>
+    <li><code>ops/ipfs_content_sidecar.py</code> pins only a signed artifact directory without a <code>DO_NOT_PUBLISH</code> marker.</li>
+    <li>Final publishability remains owned by <code>ops/publish-rawdatadir-artifact.sh</code> and is gated separately.</li>
     <li>Background work runs only after <code>background_maintenance_decision()</code> allows it.</li>
     <li>FastArtifact source eligibility must pass before IPFS pinning is attempted.</li>
     <li><code>DO_NOT_PUBLISH</code> markers and unsigned manifests fail closed by default.</li>
-    <li>The generated latest index records the artifact CID and manifest hash, but receivers must still verify the signed manifest, network, genesis, tip, state root, and then catch up through normal consensus.</li>
+    <li>The generated latest index records the artifact CID and manifest hash, but receivers must still verify the signed manifest root, chunk/file hashes, network, genesis, tip, state root, and then catch up through normal consensus.</li>
   </ul>
 
   <h2>Modes</h2>
   <ul>
     <li><code>BDAG_IPFS_CONTENT_SIDECAR_MODE=off</code>: disabled.</li>
     <li><code>BDAG_IPFS_CONTENT_SIDECAR_MODE=auto</code>: timer wakes lazily and pins only when all gates pass and a finalized artifact exists.</li>
+    <li><code>BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE=auto</code>: rawdatadir sidecar syncs also seal immutable file/chunk generations.</li>
   </ul>
 
   <h2>Release Safety</h2>

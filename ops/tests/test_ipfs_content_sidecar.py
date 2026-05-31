@@ -76,7 +76,9 @@ class IPFSContentSidecarTest(unittest.TestCase):
             env = {
                 "BDAG_PROJECT_ROOT": str(ROOT),
                 "BDAG_IPFS_CONTENT_SIDECAR_MODE": "auto",
-                "BDAG_RAWDATADIR_ARTIFACT_BASE": str(base),
+                "BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE": str(base.parent),
+                "BDAG_IPFS_CONTENT_ARTIFACT_DIR": str(artifact),
+                "BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST": str(manifest),
                 "BDAG_IPFS_CONTENT_STATUS_FILE": str(status),
                 "BDAG_IPFS_CONTENT_SKIP_MAINTENANCE_DECISION": "1",
             }
