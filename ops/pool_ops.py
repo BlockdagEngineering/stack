@@ -1042,6 +1042,46 @@ def docker_compose_command(*args: str) -> list[str]:
     ]
 
 
+def compose_service_name(name: str) -> str:
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", '{{ index .Config.Labels "com.docker.compose.service" }}', name],
+            cwd=PROJECT_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+        )
+        service = result.stdout.strip() if result.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        service = ""
+    if service and service != "<no value>":
+        return service
+    project = docker_compose_project_name()
+    for sep in ("-", "_"):
+        prefix = f"{project}{sep}"
+        suffix = f"{sep}1"
+        if name.startswith(prefix) and name.endswith(suffix):
+            candidate = name[len(prefix) : -len(suffix)]
+            if candidate:
+                return candidate
+    return name
+
+
+def stack_start_services() -> list[str]:
+    configured = split_env_list("BDAG_START_SERVICES", "")
+    services = configured or STACK_SERVICES or unique_names([POOL_DB_CONTAINER, *NODES, *POOL_CONTAINERS])
+    return unique_names([compose_service_name(service) for service in services])
+
+
+def docker_compose_start_command() -> list[str]:
+    services = stack_start_services()
+    if not services:
+        return docker_compose_command("up", "-d")
+    return docker_compose_command("up", "-d", *services)
+
+
 def read_jsonl_file(path: Path, limit: int | None = None) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -6759,11 +6799,16 @@ def refresh_global_chain_head(payload: dict[str, Any]) -> dict[str, Any]:
             payload["head_probe_errors"] = [*existing_errors, *errors][:20]
         return payload
 
-    scanned_tip = safe_int(payload.get("latest_block"), 0)
+    scanned_tip = safe_int(payload.get("scan_end_block"), None)
+    if scanned_tip is None:
+        scanned_tip = safe_int(payload.get("latest_block"), 0)
+        if scanned_tip is not None:
+            payload["scan_end_block"] = scanned_tip
     payload["chain_latest_block"] = block_count
     payload["chain_latest_block_source"] = source_name or "getBlockCount"
     payload["chain_latest_block_updated_at"] = now_iso()
-    payload["chain_tip_lag_blocks"] = max(0, block_count - scanned_tip)
+    payload["chain_tip_lag_blocks"] = max(0, block_count - (scanned_tip or 0))
+    payload["latest_block"] = block_count
     if payload.get("chain_block_count") in (None, ""):
         payload["chain_block_count"] = block_count
     return payload
@@ -9302,7 +9347,7 @@ def restore_clean(log_path: Path) -> bool:
     for step in (
         configured_command("BDAG_RESTORE_NODE1_COMMAND", ["make", "restore-node1-snapshot"]),
         configured_command("BDAG_RESTORE_NODE2_COMMAND", ["make", "restore-node2-snapshot"]),
-        configured_command("BDAG_START_COMMAND", docker_compose_command("up", "-d")),
+        configured_command("BDAG_START_COMMAND", docker_compose_start_command()),
     ):
         if not step:
             continue
@@ -9313,7 +9358,7 @@ def restore_clean(log_path: Path) -> bool:
 
 
 def start_stack(log_path: Path) -> bool:
-    command = configured_command("BDAG_START_COMMAND", docker_compose_command("up", "-d"))
+    command = configured_command("BDAG_START_COMMAND", docker_compose_start_command())
     if not command:
         return False
     ok = run_logged(command, log_path, timeout=180).ok
@@ -9322,7 +9367,7 @@ def start_stack(log_path: Path) -> bool:
 
 def restart_stack(log_path: Path) -> bool:
     stop_command = configured_command("BDAG_STOP_COMMAND", docker_compose_command("stop"))
-    start_command = configured_command("BDAG_START_COMMAND", docker_compose_command("up", "-d"))
+    start_command = configured_command("BDAG_START_COMMAND", docker_compose_start_command())
     down = run_logged(stop_command, log_path, timeout=180) if stop_command else CommandResult(stop_command, 0, "", "", 0)
     up = run_logged(start_command, log_path, timeout=180) if start_command else CommandResult(start_command, 1, "", "", 0)
     return down.ok and up.ok and stop_planned_sync_paused_follower(log_path)
