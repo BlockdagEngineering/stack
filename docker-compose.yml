@@ -46,6 +46,7 @@ services:
   postgres:
     <<: *pool-critical
     image: postgres:15-bookworm
+    container_name: postgres
     restart: unless-stopped
     logging: *mining-logging
     tmpfs:
@@ -69,6 +70,7 @@ services:
   node:
     <<: *node-critical
     platform: ${DOCKER_PLATFORM:-linux/amd64}
+    container_name: node
     build:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
@@ -149,6 +151,7 @@ services:
   # --------------------------------------------------------------------------
   snapshot-node:
     platform: ${DOCKER_PLATFORM:-linux/amd64}
+    container_name: snapshot-node
     build:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
@@ -203,6 +206,7 @@ services:
   # --------------------------------------------------------------------------
   hotsnap:
     image: docker:27-cli
+    container_name: hotsnap
     restart: unless-stopped
     logging: *mining-logging
     tmpfs:
@@ -228,6 +232,7 @@ services:
   pool:
     <<: *pool-critical
     platform: ${DOCKER_PLATFORM:-linux/amd64}
+    container_name: pool
     build:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
@@ -300,6 +305,7 @@ services:
   dashboard:
     <<: *dashboard-low
     platform: ${DOCKER_PLATFORM:-linux/amd64}
+    container_name: dashboard
     build:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
@@ -332,6 +338,7 @@ services:
       BDAG_NODE_SERVICES: node
       BDAG_STACK_SERVICES: postgres,node,pool
       BDAG_NODE_DATA_DIRS: node
+      BDAG_RPC_FAILOVER_ENABLED: ${BDAG_RPC_FAILOVER_ENABLED:-0}
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
       DASHBOARD_EVM_RPC_URL: http://node:18545
