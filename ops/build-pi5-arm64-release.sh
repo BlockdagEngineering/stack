@@ -865,13 +865,23 @@ should_disable_fastsync_serving() {
   path_is_usb_backed "$data_parent"
 }
 
+node_binary_supports_arg() {
+  flag="$1"
+  [ -n "${BIN:-}" ] || return 1
+  "$BIN" --help 2>&1 | grep -q -- "$flag"
+}
+
 apply_no_fastsync_serve_guard() {
   should_disable_fastsync_serving || return 0
   export BDAG_FASTARTIFACTSYNC_ENABLED=0
   unset BDAG_FASTSYNC_ARTIFACT_DIRECTORY BDAG_FASTSYNC_ARTIFACT_MANIFEST
   remove_node_arg_prefix "--fastartifactsync"
-  append_node_arg_once "--nofastsyncserve"
-  log "USB-backed or constrained chain profile detected; disabling bulk FastSync, snapshot, and artifact serving while keeping normal outbound sync and block relay."
+  if node_binary_supports_arg "--nofastsyncserve"; then
+    append_node_arg_once "--nofastsyncserve"
+    log "USB-backed or constrained chain profile detected; disabling bulk FastSync, snapshot, and artifact serving while keeping normal outbound sync and block relay."
+  else
+    log "USB-backed or constrained chain profile detected; removed --fastartifactsync, but the selected node binary does not support --nofastsyncserve."
+  fi
 }
 
 apply_default_fastsync_flags() {

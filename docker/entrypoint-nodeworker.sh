@@ -343,6 +343,39 @@ should_disable_fastsync_serving() {
   path_is_usb_backed "$data_parent"
 }
 
+node_binary_from_argv() {
+  local arg
+  if [ -n "${BDAG_NODE_BINARY:-}" ]; then
+    printf '%s\n' "$BDAG_NODE_BINARY"
+    return 0
+  fi
+  for arg in "$@"; do
+    case "$arg" in
+      --node-binary=*)
+        printf '%s\n' "${arg#*=}"
+        return 0
+        ;;
+    esac
+  done
+  if [ "$#" -gt 0 ]; then
+    printf '%s\n' "$1"
+    return 0
+  fi
+  return 1
+}
+
+node_binary_supports_arg() {
+  local flag="$1" binary
+  shift
+  binary="$(node_binary_from_argv "$@" || true)"
+  [ -n "$binary" ] || return 1
+  if [ ! -x "$binary" ]; then
+    binary="$(command -v "$binary" 2>/dev/null || true)"
+  fi
+  [ -n "$binary" ] || return 1
+  "$binary" --help 2>&1 | grep -q -- "$flag"
+}
+
 apply_no_fastsync_serve_guard() {
   if ! should_disable_fastsync_serving "$@"; then
     return 0
@@ -353,8 +386,12 @@ apply_no_fastsync_serve_guard() {
   export BDAG_FASTARTIFACTSYNC_ENABLED=0
   unset BDAG_FASTSYNC_ARTIFACT_DIRECTORY BDAG_FASTSYNC_ARTIFACT_MANIFEST
   remove_node_arg_prefix "--fastartifactsync"
-  append_node_arg_once "--nofastsyncserve" "$node_args ${NODE_ARGS_APPEND:-}"
-  log "USB-backed or constrained chain profile detected; disabling bulk FastSync, snapshot, and artifact serving while keeping normal outbound sync and block relay."
+  if node_binary_supports_arg "--nofastsyncserve" "$@"; then
+    append_node_arg_once "--nofastsyncserve" "$node_args ${NODE_ARGS_APPEND:-}"
+    log "USB-backed or constrained chain profile detected; disabling bulk FastSync, snapshot, and artifact serving while keeping normal outbound sync and block relay."
+  else
+    log "USB-backed or constrained chain profile detected; removed --fastartifactsync, but the selected node binary does not support --nofastsyncserve."
+  fi
 }
 
 apply_default_fastsync_flags() {
