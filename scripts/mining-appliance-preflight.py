@@ -108,6 +108,15 @@ def bool_enabled(value: str | None, default: bool = False) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def node_args_enable_fastartifact(value: str | None) -> bool:
+    for word in (value or "").split():
+        if word == "--fastartifactsync":
+            return True
+        if word.startswith("--fastartifactsync="):
+            return word.split("=", 1)[1].strip().lower() not in {"0", "false", "no", "off"}
+    return False
+
+
 def memory_total_bytes() -> int:
     try:
         for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
@@ -450,8 +459,27 @@ def check_storage(checks: list[Check], root: Path, env: dict[str, str], profile:
     elif not data_same_as_root:
         add(checks, "pass", "chain_data_placement", "chain data is separated from the project/root filesystem", evidence=evidence)
 
-    if is_usb_source(str(data_mount.get("source") or "")) and data_fstype not in {"f2fs", "ext4"}:
+    usb_chain_data = is_usb_source(str(data_mount.get("source") or ""))
+    if usb_chain_data and data_fstype not in {"f2fs", "ext4"}:
         add(checks, "warn", "usb_chain_filesystem", f"USB chain device uses {data_fstype or 'unknown'} filesystem.", "Use F2FS for USB flash or ext4 for USB SSD.", evidence)
+
+    mining_address = (env.get("MINING_ADDRESS") or env.get("MINING_POOL_ADDRESS") or "").strip()
+    topology = (env.get("BDAG_DETECTED_NETWORK_TOPOLOGY") or env.get("BDAG_NETWORK_TOPOLOGY") or "").strip().lower()
+    mining_appliance = (
+        mining_address and mining_address.lower() != ZERO_ETH_ADDRESS
+    ) or topology == "single-node-asic-router"
+    no_fastsync_serve = bool_enabled(env.get("BDAG_NO_FASTSYNC_SERVE", "auto"), True)
+    if usb_chain_data and mining_appliance and not no_fastsync_serve:
+        add(
+            checks,
+            "fail",
+            "usb_mining_fastsync_serving",
+            "USB-backed mining node is configured to serve bulk FastSync data.",
+            "Set BDAG_NO_FASTSYNC_SERVE=auto or 1 so the node can consume sync and relay blocks without serving range, snapshot, or artifact traffic from USB while mining.",
+            evidence,
+        )
+    elif usb_chain_data and mining_appliance:
+        add(checks, "pass", "usb_mining_fastsync_serving", "USB-backed mining node will not serve bulk FastSync data", evidence=evidence)
 
 
 def check_storage_profile(checks: list[Check], root: Path, env: dict[str, str], profile: HostProfile) -> None:
@@ -671,12 +699,18 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         "BDAG_NODE_CACHE_MB": env.get("BDAG_NODE_CACHE_MB"),
         "NODE_MAX_PEERS": env.get("NODE_MAX_PEERS"),
         "BDAG_FASTSYNC_PREPROCESS_WORKERS": env.get("BDAG_FASTSYNC_PREPROCESS_WORKERS"),
+        "BDAG_NO_FASTSYNC_SERVE": env.get("BDAG_NO_FASTSYNC_SERVE"),
         "BDAG_FASTARTIFACTSYNC_ENABLED": env.get("BDAG_FASTARTIFACTSYNC_ENABLED"),
+        "BDAG_STORAGE_PROFILE": env.get("BDAG_STORAGE_PROFILE"),
+        "BDAG_DETECTED_NETWORK_TOPOLOGY": env.get("BDAG_DETECTED_NETWORK_TOPOLOGY"),
         "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": env.get("BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC"),
         "BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS": env.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS"),
         "BDAG_STATUS_SAMPLER_ENABLED": env.get("BDAG_STATUS_SAMPLER_ENABLED"),
         "BDAG_ADAPTIVE_CONCURRENCY_ENABLED": env.get("BDAG_ADAPTIVE_CONCURRENCY_ENABLED"),
         "BDAG_ENTRYPOINT_CHOWN_MODE": env.get("BDAG_ENTRYPOINT_CHOWN_MODE"),
+        "BDAG_ENABLE_NODE_MINING": env.get("BDAG_ENABLE_NODE_MINING"),
+        "BDAG_NODE_MODULES": env.get("BDAG_NODE_MODULES"),
+        "BDAG_NODE_MINING_ARGS": env.get("BDAG_NODE_MINING_ARGS"),
     }
     node_mode = (env.get("BDAG_NODE_MODE") or "single").strip().lower()
     if profile.profile == "constrained" and node_mode not in {"single", "single-node", "one", "1"}:
@@ -702,10 +736,51 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     else:
         add(checks, "pass", "fastsync_preprocess_workers", f"BDAG_FASTSYNC_PREPROCESS_WORKERS={preprocess}", evidence=evidence)
 
-    if not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True):
+    storage_profile = (env.get("BDAG_STORAGE_PROFILE") or "").strip().lower()
+    topology = (env.get("BDAG_DETECTED_NETWORK_TOPOLOGY") or env.get("BDAG_NETWORK_TOPOLOGY") or "").strip().lower()
+    constrained_mining_profile = (
+        storage_profile in {"usb-chain-internal-runtime", "single-usb-constrained"}
+        or topology == "single-node-asic-router"
+    )
+    node_args_append_enables_fastartifact = node_args_enable_fastartifact(env.get("NODE_ARGS_APPEND"))
+    snapshot_args_append_enables_fastartifact = node_args_enable_fastartifact(env.get("SNAPSHOT_NODE_ARGS_APPEND"))
+    evidence["NODE_ARGS_APPEND"] = env.get("NODE_ARGS_APPEND")
+    evidence["SNAPSHOT_NODE_ARGS_APPEND"] = env.get("SNAPSHOT_NODE_ARGS_APPEND")
+    append_args_enable_fastartifact = node_args_append_enables_fastartifact or snapshot_args_append_enables_fastartifact
+    no_fastsync_serve = bool_enabled(env.get("BDAG_NO_FASTSYNC_SERVE", "auto"), True)
+    if constrained_mining_profile and no_fastsync_serve and append_args_enable_fastartifact:
+        add(checks, "fail", "fastartifactsync", "BDAG_NO_FASTSYNC_SERVE suppresses serving, but node args still add --fastartifactsync.", "Clear NODE_ARGS_APPEND and SNAPSHOT_NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
+    elif constrained_mining_profile and not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True) and append_args_enable_fastartifact:
+        add(checks, "fail", "fastartifactsync", "BDAG_FASTARTIFACTSYNC_ENABLED is disabled, but node args still add --fastartifactsync.", "Clear NODE_ARGS_APPEND and SNAPSHOT_NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
+    elif constrained_mining_profile and no_fastsync_serve:
+        add(checks, "pass", "fastartifactsync", "Bulk FastSync/FastArtifact serving is suppressed for constrained mining profile", evidence=evidence)
+    elif not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True) and constrained_mining_profile:
+        add(checks, "pass", "fastartifactsync", "Fast Artifact node startup flag is disabled for constrained mining profile", evidence=evidence)
+    elif not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True):
         add(checks, "warn", "fastartifactsync", "BDAG_FASTARTIFACTSYNC_ENABLED is disabled.", "Enable Fast Artifact Sync V2 so nodes can advertise and use the fastest sync path.", evidence)
+    elif constrained_mining_profile:
+        add(checks, "warn", "fastartifactsync", "Fast Artifact node startup flag is enabled on a constrained ASIC-router/storage profile.", "Disable continuous node FastArtifact mode while synced and mining; keep raw-datadir catch-up acceleration available through the sync coordinator.", evidence)
     else:
         add(checks, "pass", "fastartifactsync", "Fast Artifact Sync V2 startup flag is enabled", evidence=evidence)
+
+    node_mining_enabled = bool_enabled(env.get("BDAG_ENABLE_NODE_MINING"), False)
+    node_modules = {item.strip().lower() for item in (env.get("BDAG_NODE_MODULES") or "").split(",") if item.strip()}
+    node_mining_args = env.get("BDAG_NODE_MINING_ARGS") or ""
+    missing_mining_args = [
+        flag
+        for flag in ("--allowminingwhennearlysynced", "--allowsubmitwhennotsynced", "--miner", "--miningaddr=")
+        if flag not in node_mining_args
+    ]
+    if node_mining_enabled and "miner" not in node_modules:
+        add(checks, "fail", "node_mining_runtime", "node mining is enabled but the miner module is not exposed.", "Set BDAG_NODE_MODULES=Blockdag,miner so the pool can request fresh templates.", evidence)
+    elif node_mining_enabled and missing_mining_args:
+        add(checks, "fail", "node_mining_runtime", "node mining is enabled but required mining guard args are missing: " + ", ".join(missing_mining_args), "Set BDAG_NODE_MINING_ARGS with near-sync mining, submit override, miner mode, and the payout mining address.", evidence)
+    elif node_mining_enabled and constrained_mining_profile and "--maxinbound=1" not in node_mining_args:
+        add(checks, "warn", "node_mining_runtime", "constrained ASIC-router mining is enabled without --maxinbound=1.", "Add --maxinbound=1 so inbound catch-up peers cannot contend with paid block submission on USB/router hosts while P2P remains usable.", evidence)
+    elif node_mining_enabled:
+        add(checks, "pass", "node_mining_runtime", "node miner/template runtime guard args are configured", evidence=evidence)
+    else:
+        add(checks, "pass", "node_mining_runtime", "node mining stays disabled until miners are present", evidence=evidence)
 
     if not bool_enabled(env.get("BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC"), True):
         add(checks, "warn", "fastsync_acceleration", "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC is disabled.", "Enable coordinator acceleration so nodes more than 1000 blocks behind use fastest catch-up defaults.", evidence)

@@ -26,6 +26,12 @@ NODE_TO_HAPROXY_SERVER = {
 }
 HAPROXY_SERVER_TO_NODE = {server: node for node, server in NODE_TO_HAPROXY_SERVER.items()}
 
+RPC_FAILOVER_ENABLED = os.environ.get("BDAG_RPC_FAILOVER_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 MIN_SWITCH_SCORE = float(os.environ.get("BDAG_RPC_ROUTER_MIN_SWITCH_SCORE", "45"))
 MIN_SCORE_DELTA = float(os.environ.get("BDAG_RPC_ROUTER_MIN_SCORE_DELTA", "15"))
 IMPORT_STALE_SECONDS = int(os.environ.get("BDAG_RPC_ROUTER_IMPORT_STALE_SECONDS", "90"))
@@ -44,6 +50,8 @@ POOL_ZERO_SUCCESS_FAILURE_WARN = int(os.environ.get("BDAG_RPC_ROUTER_ZERO_SUCCES
 
 
 def current_rpc_primary() -> str | None:
+    if not RPC_FAILOVER_ENABLED:
+        return None
     try:
         lines = HAPROXY_CFG.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -54,7 +62,8 @@ def current_rpc_primary() -> str | None:
             continue
         options = match.group(3)
         if " backup" not in f" {options} ":
-            return match.group(2)
+            node = match.group(2)
+            return node if node in NODES else None
     return None
 
 

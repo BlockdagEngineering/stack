@@ -19,7 +19,7 @@ CHAIN_SOURCE="${BDAG_RELEASE_CHAIN_SOURCE:-$PROJECT_ROOT/data-restore/latest-hou
 POOL_REPO="${BDAG_POOL_REPO:-$SOURCE_ROOT/pool}"
 NODE_REPO="${BDAG_NODE_REPO:-$SOURCE_ROOT/blockdag-corechain}"
 POOL_COMMIT="${BDAG_POOL_COMMIT:-56fe111b46c0f5fe4e8f007078fcd69c1a53d588}"
-NODE_COMMIT="${BDAG_NODE_COMMIT:-c268d4b5f743b6cb1b6afd5115904221d528456a}"
+NODE_COMMIT="${BDAG_NODE_COMMIT:-c74f88b9c1b4fbf4213e15272d3bf1f63943e839}"
 
 say() { printf '\n==> %s\n' "$*"; }
 warn() { printf '\nWARNING: %s\n' "$*" >&2; }
@@ -43,13 +43,18 @@ base_package() {
 
 extract_peer_value() {
   local key="$1" value
+  local peer_env_file="${BDAG_PEER_ENV_FILE:-$PROJECT_ROOT/asic-pool/.env}"
+  if [[ ! -f "$peer_env_file" ]]; then
+    peer_env_file="$PROJECT_ROOT/.env.example"
+  fi
   value="$(
-    python3 "$PROJECT_ROOT/ops/multinode_peer_sets.py" --nodes 2 --print-values |
+    python3 "$PROJECT_ROOT/ops/multinode_peer_sets.py" --nodes 2 --env-file "$peer_env_file" --print-values 2>/dev/null |
       awk -v k="$key" 'index($0, k "=") == 1 {sub(k "=", ""); print; exit}'
   )"
   if [[ -z "$value" ]]; then
-    echo "Could not generate $key" >&2
-    exit 1
+    warn "Could not generate $key from $peer_env_file; installer will rely on BOOTSTRAP_PEER_ADDRESSES/BDAG_FASTSYNC_PEERS"
+    printf '\n'
+    return 0
   fi
   printf '%s\n' "$value"
 }
@@ -92,6 +97,7 @@ services:
       POOL_SUBMIT_RPC_URLS: ${POOL_SUBMIT_RPC_URLS:-}
       POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: ${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}
       POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}
+      POOL_TEMPLATE_TTL_REFRESH_MS: ${POOL_TEMPLATE_TTL_REFRESH_MS:-500}
       POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS: ${POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS:-800}
       POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}
       POOL_STALE_RACE_REJECT_WINDOW_SECONDS: ${POOL_STALE_RACE_REJECT_WINDOW_SECONDS:-10}
@@ -101,8 +107,8 @@ services:
       POOL_PREEMPTIVE_BLOCK_CANDIDATE_REFRESH_ENABLED: ${POOL_PREEMPTIVE_BLOCK_CANDIDATE_REFRESH_ENABLED:-true}
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
-      WALLET_RPC_URL: ${WALLET_RPC_URL:-http://bdag-miner-node-2:18545}
-      WALLET_RPC_URLS: ${WALLET_RPC_URLS:-http://bdag-miner-node-2:18545}
+      WALLET_RPC_URL: ${WALLET_RPC_URL:-http://bdag-miner-node-1:18545}
+      WALLET_RPC_URLS: ${WALLET_RPC_URLS:-http://bdag-miner-node-1:18545}
       PPLNS_N_WORK: ${PPLNS_N_WORK:-1000}
       POOL_BLOCK_MATURITY: ${POOL_BLOCK_MATURITY:-10}
       POOL_PAYOUT_MATURITY: ${POOL_PAYOUT_MATURITY:-9999999999}
@@ -143,12 +149,10 @@ services:
     volumes:
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     depends_on:
-      bdag-miner-node-2:
+      bdag-miner-node-1:
         condition: service_started
 
   bdag-miner-node-1:
-    profiles:
-      - dual-node
     image: ${BLOCKDAG_NODE_IMAGE:-bdag-release/node:local}
     container_name: bdag-miner-node-1
     restart: unless-stopped
@@ -163,6 +167,7 @@ services:
         hard: 1048576
     volumes:
       - ${BDAG_NODE1_DATA_DIR:-./data/node1}:/data
+      - ${BDAG_RAWDATADIR_ARTIFACT_BASE:-./data-restore/rawdatadir}:/fastartifact/rawdatadir:ro
     environment:
       ROLLOUT_WINDOW: 30m
       HEALTH_MIN_PEERS: 1
@@ -183,26 +188,17 @@ services:
       BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
       BDAG_FASTSYNC_ARTIFACT_DIRECTORY: ${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}
       BDAG_FASTSYNC_ARTIFACT_MANIFEST: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}
+      BDAG_STORAGE_PROFILE: ${BDAG_STORAGE_PROFILE:-auto}
       BDAG_NETWORK_TOPOLOGY: ${BDAG_NETWORK_TOPOLOGY:-auto}
       BDAG_DETECTED_NETWORK_TOPOLOGY: ${BDAG_DETECTED_NETWORK_TOPOLOGY:-}
-      BDAG_ASIC_LAN_INTERFACE: ${BDAG_ASIC_LAN_INTERFACE:-eth0}
-      BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-192.168.50.0/24}
-      BDAG_ALLOW_ASIC_LAN_P2P: ${BDAG_ALLOW_ASIC_LAN_P2P:-0}
+      BDAG_ASIC_LAN_INTERFACE: ${BDAG_ASIC_LAN_INTERFACE:-}
+      BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-}
       BDAG_P2P_ADVERTISE_IP: ${BDAG_P2P_ADVERTISE_IP:-}
       BDAG_P2P_INTERFACE: ${BDAG_P2P_INTERFACE:-}
-      BDAG_P2P_LAN_PEERS: ${BDAG_P2P_LAN_PEERS:-}
-      BDAG_P2P_VPN_PEERS: ${BDAG_P2P_VPN_PEERS:-}
-      BDAG_P2P_PUBLIC_PEERS: ${BDAG_P2P_PUBLIC_PEERS:-}
-      LAN_PEER_ADDRESSES: ${LAN_PEER_ADDRESSES:-}
-      VPN_PEER_ADDRESSES: ${VPN_PEER_ADDRESSES:-}
-      ZEROTIER_PEER_ADDRESSES: ${ZEROTIER_PEER_ADDRESSES:-}
-      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-tiered-latency}
+      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
+      BDAG_NO_FASTSYNC_SERVE: ${BDAG_NO_FASTSYNC_SERVE:-auto}
       BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
-      BDAG_FASTSYNC_LAN_PREFIXES: ${BDAG_FASTSYNC_LAN_PREFIXES:-}
-      BDAG_FASTSYNC_LAN_PEERS: ${BDAG_FASTSYNC_LAN_PEERS:-}
-      BDAG_FASTSYNC_VPN_PEERS: ${BDAG_FASTSYNC_VPN_PEERS:-}
-      BDAG_FASTSYNC_PUBLIC_PEERS: ${BDAG_FASTSYNC_PUBLIC_PEERS:-}
       BDAG_FASTSYNC_PEERS: ${BDAG_FASTSYNC_PEERS:-}
       BDAG_FASTSYNC_PREPROCESS_WORKERS: ${BDAG_FASTSYNC_PREPROCESS_WORKERS:-1}
       BDAG_ENTRYPOINT_CHOWN_MODE: ${BDAG_ENTRYPOINT_CHOWN_MODE:-needed}
@@ -219,6 +215,7 @@ services:
         --cache.snapshot=${BDAG_NODE_CACHE_SNAPSHOT_PERCENT:-35}
         --bdcachesize=${BDAG_NODE_BD_CACHE_SIZE:-8192}
         --dagcachesize=${BDAG_NODE_DAG_CACHE_SIZE:-8192}
+        --obsoleteheight=${BDAG_NODE_OBSOLETE_HEIGHT:-20}
         --debuglevel=${BDAG_NODE_DEBUG_LEVEL:-warn}
         --evmtrietimeout=${BDAG_EVM_TRIE_TIMEOUT_SECONDS:-7200}
         --nofilelogging
@@ -247,6 +244,8 @@ services:
       - "6061:6060"
 
   bdag-miner-node-2:
+    profiles:
+      - dual-node
     image: ${BLOCKDAG_NODE_IMAGE:-bdag-release/node:local}
     container_name: bdag-miner-node-2
     restart: unless-stopped
@@ -261,6 +260,7 @@ services:
         hard: 1048576
     volumes:
       - ${BDAG_NODE2_DATA_DIR:-./data/node2}:/data
+      - ${BDAG_RAWDATADIR_ARTIFACT_BASE:-./data-restore/rawdatadir}:/fastartifact/rawdatadir:ro
     environment:
       ROLLOUT_WINDOW: 30m
       HEALTH_MIN_PEERS: 1
@@ -281,26 +281,17 @@ services:
       BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
       BDAG_FASTSYNC_ARTIFACT_DIRECTORY: ${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}
       BDAG_FASTSYNC_ARTIFACT_MANIFEST: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}
+      BDAG_STORAGE_PROFILE: ${BDAG_STORAGE_PROFILE:-auto}
       BDAG_NETWORK_TOPOLOGY: ${BDAG_NETWORK_TOPOLOGY:-auto}
       BDAG_DETECTED_NETWORK_TOPOLOGY: ${BDAG_DETECTED_NETWORK_TOPOLOGY:-}
-      BDAG_ASIC_LAN_INTERFACE: ${BDAG_ASIC_LAN_INTERFACE:-eth0}
-      BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-192.168.50.0/24}
-      BDAG_ALLOW_ASIC_LAN_P2P: ${BDAG_ALLOW_ASIC_LAN_P2P:-0}
+      BDAG_ASIC_LAN_INTERFACE: ${BDAG_ASIC_LAN_INTERFACE:-}
+      BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-}
       BDAG_P2P_ADVERTISE_IP: ${BDAG_P2P_ADVERTISE_IP:-}
       BDAG_P2P_INTERFACE: ${BDAG_P2P_INTERFACE:-}
-      BDAG_P2P_LAN_PEERS: ${BDAG_P2P_LAN_PEERS:-}
-      BDAG_P2P_VPN_PEERS: ${BDAG_P2P_VPN_PEERS:-}
-      BDAG_P2P_PUBLIC_PEERS: ${BDAG_P2P_PUBLIC_PEERS:-}
-      LAN_PEER_ADDRESSES: ${LAN_PEER_ADDRESSES:-}
-      VPN_PEER_ADDRESSES: ${VPN_PEER_ADDRESSES:-}
-      ZEROTIER_PEER_ADDRESSES: ${ZEROTIER_PEER_ADDRESSES:-}
-      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-tiered-latency}
+      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}
       BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
+      BDAG_NO_FASTSYNC_SERVE: ${BDAG_NO_FASTSYNC_SERVE:-auto}
       BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
-      BDAG_FASTSYNC_LAN_PREFIXES: ${BDAG_FASTSYNC_LAN_PREFIXES:-}
-      BDAG_FASTSYNC_LAN_PEERS: ${BDAG_FASTSYNC_LAN_PEERS:-}
-      BDAG_FASTSYNC_VPN_PEERS: ${BDAG_FASTSYNC_VPN_PEERS:-}
-      BDAG_FASTSYNC_PUBLIC_PEERS: ${BDAG_FASTSYNC_PUBLIC_PEERS:-}
       BDAG_FASTSYNC_PEERS: ${BDAG_FASTSYNC_PEERS:-}
       BDAG_FASTSYNC_PREPROCESS_WORKERS: ${BDAG_FASTSYNC_PREPROCESS_WORKERS:-1}
       BDAG_ENTRYPOINT_CHOWN_MODE: ${BDAG_ENTRYPOINT_CHOWN_MODE:-needed}
@@ -317,6 +308,7 @@ services:
         --cache.snapshot=${BDAG_NODE_CACHE_SNAPSHOT_PERCENT:-35}
         --bdcachesize=${BDAG_NODE_BD_CACHE_SIZE:-8192}
         --dagcachesize=${BDAG_NODE_DAG_CACHE_SIZE:-8192}
+        --obsoleteheight=${BDAG_NODE_OBSOLETE_HEIGHT:-20}
         --debuglevel=${BDAG_NODE_DEBUG_LEVEL:-warn}
         --evmtrietimeout=${BDAG_EVM_TRIE_TIMEOUT_SECONDS:-7200}
         --nofilelogging
@@ -479,8 +471,8 @@ BDAG_CONTAINER_TMPFS_SIZE=128m
 # nodes. Nodes stay sync-only until BDAG_NODE_MINING_ARGS is explicitly set.
 BDAG_NODE_MODE=single
 COMPOSE_PROFILES=
-BDAG_NODE_SERVICES=bdag-miner-node-2
-BDAG_STACK_SERVICES=pool-db,bdag-miner-node-2,rpc-failover,asic-pool
+BDAG_NODE_SERVICES=bdag-miner-node-1
+BDAG_STACK_SERVICES=pool-db,bdag-miner-node-1,rpc-failover,asic-pool
 BDAG_ENABLE_NODE_MINING=0
 BDAG_NODE_MODULES=Blockdag
 BDAG_NODE_MINING_ARGS=
@@ -517,6 +509,7 @@ BDAG_NODE_CACHE_DATABASE_PERCENT=50
 BDAG_NODE_CACHE_SNAPSHOT_PERCENT=35
 BDAG_NODE_BD_CACHE_SIZE=8192
 BDAG_NODE_DAG_CACHE_SIZE=8192
+BDAG_NODE_OBSOLETE_HEIGHT=20
 BDAG_EVM_CACHE_MB=8192
 BDAG_EVM_CACHE_DATABASE_PERCENT=80
 BDAG_EVM_CACHE_SNAPSHOT_PERCENT=1
@@ -532,7 +525,7 @@ PG_URL=postgres://test:change-me-at-install@pool-db:5432/pool
 
 POOL_RPC_ROUTER_ENABLED=true
 POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true
-POOL_RPC_BACKENDS=node2=http://bdag-miner-node-2:38131
+POOL_RPC_BACKENDS=node1=http://bdag-miner-node-1:38131
 POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT=true
 POOL_TEMPLATE_FANIN_ENABLED=false
 POOL_TEMPLATE_FANIN_MAX_BACKENDS=2
@@ -557,17 +550,10 @@ NODE1_PEER_ADDRESSES=$node1_peers
 NODE2_PEER_ADDRESSES=$node2_peers
 BDAG_NETWORK_TOPOLOGY=auto
 BDAG_DETECTED_NETWORK_TOPOLOGY=
-BDAG_ASIC_LAN_INTERFACE=eth0
-BDAG_ASIC_LAN_CIDRS=192.168.50.0/24
-BDAG_ALLOW_ASIC_LAN_P2P=0
+BDAG_ASIC_LAN_INTERFACE=
+BDAG_ASIC_LAN_CIDRS=
 BDAG_P2P_ADVERTISE_IP=
 BDAG_P2P_INTERFACE=
-BDAG_P2P_LAN_PEERS=
-BDAG_P2P_VPN_PEERS=
-BDAG_P2P_PUBLIC_PEERS=
-LAN_PEER_ADDRESSES=
-VPN_PEER_ADDRESSES=
-ZEROTIER_PEER_ADDRESSES=
 BDAG_FASTSNAP_ENABLED=1
 BDAG_FASTSNAP_REQUIRED=0
 BDAG_FASTSNAP_PEERS=
@@ -581,24 +567,55 @@ BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING=1
 BDAG_FASTSNAP_ALLOW_UNSIGNED=0
 BDAG_FASTSNAP_PARALLELISM=4
 BDAG_FASTSNAP_LEDGER=
+BDAG_FASTSNAP_SEED_TIMER_ENABLED=0
+BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG=10000
+BDAG_RAWDATADIR_SOURCE_MODE=auto
+BDAG_RAWDATADIR_ARTIFACT_BASE=./data-restore/rawdatadir
+BDAG_RAWDATADIR_ARTIFACT_KEEP=3
+BDAG_RAWDATADIR_REQUIRE_SIGNED=1
+BDAG_RAWDATADIR_MAX_EXPORT_BACKEND_LAG=10000
+BDAG_RAWDATADIR_SIDECAR_SOURCE=
+BDAG_RAWDATADIR_SIDECAR_DIR=
+BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=0
+BDAG_RAWDATADIR_MIN_FREE_GIB=100
+BDAG_RAWDATADIR_FREE_SPACE_MULTIPLIER=2.5
+BDAG_RAWDATADIR_REQUIRE_STATE_ROOT=1
+BDAG_RAWDATADIR_SIDECAR_USE_SUDO=auto
+BDAG_RAWDATADIR_ARCHIVE_USE_SUDO=auto
+BDAG_RAWDATADIR_PEERS=
+BDAG_RAWDATADIR_TRUSTED_SIGNERS=
 BDAG_FASTSYNC_ARTIFACT_DIRECTORY=
 BDAG_FASTSYNC_ARTIFACT_MANIFEST=
-BDAG_FASTSYNC_PEER_ORDERING=tiered-latency
+BDAG_IPFS_CONTENT_SIDECAR_MODE=auto
+BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT=0
+BDAG_IPFS_CONTENT_PUBLISH_IPNS=0
+BDAG_IPFS_CONTENT_IPNS_KEY=
+BDAG_IPFS_CONTENT_STATUS_FILE=./ops/runtime/ipfs-content-sidecar-status.json
+BDAG_IPFS_CONTENT_LATEST_INDEX_PATH=./ops/runtime/ipfs-content/latest-index.json
+BDAG_FASTSYNC_PEER_ORDERING=p2p-latency
 BDAG_FASTSYNC_APPEND_ADDPEERS=1
+BDAG_NO_FASTSYNC_SERVE=auto
 BDAG_FASTARTIFACTSYNC_ENABLED=1
-BDAG_FASTSYNC_LAN_PREFIXES=
-BDAG_FASTSYNC_LAN_PEERS=
-BDAG_FASTSYNC_VPN_PEERS=
-BDAG_FASTSYNC_PUBLIC_PEERS=
 BDAG_FASTSYNC_PEERS=
 BDAG_FASTSYNC_PREPROCESS_WORKERS=1
+BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC=1
+BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS=900
+BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT=1
+BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT=1
+BDAG_FAST_CATCHUP_ARTIFACT_MODE=auto
+BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS=300
+BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS=1000
+BDAG_FAST_CATCHUP_ARTIFACT_MIN_GAIN_BLOCKS=1000
+BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED=1
+BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS=0
+BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT=21600s
 BDAG_ENTRYPOINT_CHOWN_MODE=needed
 
 NODE_RPC_URL=http://rpc-failover:38131
 NODE_RPC_URLS=http://rpc-failover:38131
 POOL_SUBMIT_RPC_URLS=
-WALLET_RPC_URL=http://bdag-miner-node-2:18545
-WALLET_RPC_URLS=http://bdag-miner-node-2:18545
+WALLET_RPC_URL=http://bdag-miner-node-1:18545
+WALLET_RPC_URLS=http://bdag-miner-node-1:18545
 PPLNS_N_WORK=1000
 POOL_BLOCK_MATURITY=10
 POOL_PAYOUT_MATURITY=9999999999
@@ -631,6 +648,7 @@ POOL_WS_UNSUPPORTED_BACKOFF_SECONDS=300
 POOL_GBT_MIN_INTERVAL_MS=100
 POOL_GBT_PRESSURE_INTERVAL_MS=100
 POOL_GBT_PRESSURE_WINDOW_SECONDS=30
+POOL_TEMPLATE_TTL_REFRESH_MS=500
 POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS=800
 POOL_ALLOW_MULTIPLE_BLOCK_CANDIDATES_PER_JOB=true
 POOL_PREEMPTIVE_BLOCK_CANDIDATE_REFRESH_ENABLED=true
@@ -706,99 +724,12 @@ csv_append_unique() {
   fi
 }
 
-peer_host() {
-  case "$1" in
-    /ip4/*) peer="${1#/ip4/}"; echo "${peer%%/*}" ;;
-    *) return 1 ;;
-  esac
-}
-
-host_matches_prefixes() {
-  host="$1"
-  prefixes="$2"
-  old_ifs="$IFS"
-  IFS=', '
-  for prefix in $prefixes; do
-    [ -n "$prefix" ] || continue
-    case "$host" in "$prefix"*) IFS="$old_ifs"; return 0 ;; esac
-  done
-  IFS="$old_ifs"
-  return 1
-}
-
-host_is_private_or_vpn() {
-  case "$1" in
-    10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*) return 0 ;;
-  esac
-  return 1
-}
-
-host_matches_cidr_prefix() {
-  host="$1"
-  cidr="$2"
-  case "$cidr" in
-    */*)
-      base="${cidr%/*}"
-      mask="${cidr#*/}"
-      ;;
-    *)
-      case "$host" in "$cidr"*) return 0 ;; esac
-      return 1
-      ;;
-  esac
-  case "$mask" in
-    8) prefix="${base%%.*}." ;;
-    16) prefix="$(printf '%s\n' "$base" | awk -F. '{print $1 "." $2 "."}')" ;;
-    24) prefix="$(printf '%s\n' "$base" | awk -F. '{print $1 "." $2 "." $3 "."}')" ;;
-    32) [ "$host" = "$base" ] && return 0; return 1 ;;
-    *) return 1 ;;
-  esac
-  case "$host" in "$prefix"*) return 0 ;; esac
-  return 1
-}
-
-host_is_excluded_asic_lan() {
-  host="$1"
-  topology="${BDAG_DETECTED_NETWORK_TOPOLOGY:-${BDAG_NETWORK_TOPOLOGY:-auto}}"
-  [ "${BDAG_ALLOW_ASIC_LAN_P2P:-0}" = "1" ] && return 1
-  [ "$topology" = "single-node-asic-router" ] || return 1
-  old_ifs="$IFS"
-  IFS=', '
-  for cidr in ${BDAG_ASIC_LAN_CIDRS:-192.168.50.0/24}; do
-    [ -n "$cidr" ] || continue
-    if host_matches_cidr_prefix "$host" "$cidr"; then
-      IFS="$old_ifs"
-      return 0
-    fi
-  done
-  IFS="$old_ifs"
-  return 1
-}
-
 peer_allowed_for_p2p() {
   peer="$1"
-  host="$(peer_host "$peer" || true)"
-  [ -n "$host" ] || return 0
-  ! host_is_excluded_asic_lan "$host"
-}
-
-classify_peer_csv() {
-  raw="$1"
-  old_ifs="$IFS"
-  IFS=', '
-  for peer in $raw; do
-    [ -n "$peer" ] || continue
-    peer_allowed_for_p2p "$peer" || continue
-    host="$(peer_host "$peer" || true)"
-    if [ -n "$host" ] && [ -n "${BDAG_FASTSYNC_LAN_PREFIXES:-}" ] && host_matches_prefixes "$host" "${BDAG_FASTSYNC_LAN_PREFIXES:-}"; then
-      csv_append_unique fastsync_lan_peers "$peer"
-    elif [ -n "$host" ] && host_is_private_or_vpn "$host"; then
-      csv_append_unique fastsync_vpn_peers "$peer"
-    else
-      csv_append_unique fastsync_public_peers "$peer"
-    fi
-  done
-  IFS="$old_ifs"
+  case "$peer" in
+    */p2p/*) return 0 ;;
+  esac
+  return 1
 }
 
 append_latency_peer_csv() {
@@ -807,7 +738,7 @@ append_latency_peer_csv() {
   IFS=', '
   for peer in $raw; do
     peer_allowed_for_p2p "$peer" || continue
-    csv_append_unique fastsync_public_peers "$peer"
+    csv_append_unique fastsync_p2p_peers "$peer"
   done
   IFS="$old_ifs"
 }
@@ -821,41 +752,27 @@ addpeer_values() {
 }
 
 apply_ordered_fastsync_peers() {
-  case "${BDAG_FASTSYNC_PEER_ORDERING:-tiered-latency}" in
+  case "${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}" in
     0|off|false|none) return 0 ;;
   esac
-  fastsync_lan_peers=""
-  fastsync_vpn_peers=""
-  fastsync_public_peers=""
+  fastsync_p2p_peers=""
 
-  ordering="${BDAG_FASTSYNC_PEER_ORDERING:-tiered-latency}"
-  if [ "$ordering" = "flat-latency" ] || [ "$ordering" = "flat" ]; then
-    append_latency_peer_csv "${BDAG_FASTSYNC_PEERS:-}"
-    append_latency_peer_csv "${BDAG_FASTSNAP_PEERS:-}"
-    append_latency_peer_csv "${BOOTSTRAP_PEER_ADDRESSES:-}"
-    append_latency_peer_csv "$(addpeer_values | paste -sd, - || true)"
-    append_latency_peer_csv "${BDAG_FASTSYNC_LAN_PEERS:-${BDAG_FASTSYNC_LOCAL_PEERS:-}}"
-    append_latency_peer_csv "${BDAG_FASTSYNC_VPN_PEERS:-${BDAG_FASTSYNC_PRIVATE_PEERS:-}}"
-    append_latency_peer_csv "${BDAG_FASTSYNC_PUBLIC_PEERS:-}"
-  else
-    classify_peer_csv "${BDAG_P2P_LAN_PEERS:-} ${LAN_PEER_ADDRESSES:-} ${BDAG_FASTSYNC_LAN_PEERS:-${BDAG_FASTSYNC_LOCAL_PEERS:-}}"
-    classify_peer_csv "${BDAG_P2P_VPN_PEERS:-} ${VPN_PEER_ADDRESSES:-} ${ZEROTIER_PEER_ADDRESSES:-} ${BDAG_FASTSYNC_VPN_PEERS:-${BDAG_FASTSYNC_PRIVATE_PEERS:-}}"
-    classify_peer_csv "${BDAG_P2P_PUBLIC_PEERS:-} ${BDAG_FASTSYNC_PUBLIC_PEERS:-}"
-    classify_peer_csv "${BDAG_FASTSYNC_PEERS:-} ${BDAG_FASTSNAP_PEERS:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $(addpeer_values | paste -sd, - || true)"
-  fi
+  ordering="${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}"
+  case "$ordering" in
+    p2p-latency|p2p|latency|flat-latency|flat|tiered-latency|legacy-buckets|buckets) ;;
+    *) log "unknown BDAG_FASTSYNC_PEER_ORDERING=$ordering; using p2p-latency" ;;
+  esac
+  append_latency_peer_csv "${BDAG_FASTSYNC_PEERS:-}"
+  append_latency_peer_csv "${BDAG_FASTSNAP_PEERS:-}"
+  append_latency_peer_csv "${BOOTSTRAP_PEER_ADDRESSES:-}"
+  append_latency_peer_csv "$(addpeer_values | paste -sd, - || true)"
 
-  ordered="$fastsync_lan_peers"
-  [ -n "$fastsync_vpn_peers" ] && ordered="${ordered:+$ordered,}$fastsync_vpn_peers"
-  [ -n "$fastsync_public_peers" ] && ordered="${ordered:+$ordered,}$fastsync_public_peers"
+  ordered="$fastsync_p2p_peers"
   [ -n "$ordered" ] || return 0
 
   export BDAG_FASTSNAP_PEERS="$ordered"
   count="$(printf '%s' "$ordered" | awk -F, '{print NF}')"
-  if [ "$ordering" = "flat-latency" ] || [ "$ordering" = "flat" ]; then
-    log "flat latency FastSync candidates enabled; total=$count"
-  else
-    log "tiered latency FastSync candidates enabled: LAN first, private/VPN second, public last; total=$count"
-  fi
+  log "P2P latency/usefulness FastSync candidates enabled; libp2p selects the fastest useful artifact source; total=$count"
   if [ "${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}" = "1" ]; then
     old_ifs="$IFS"
     IFS=,
@@ -880,6 +797,81 @@ append_node_arg_once() {
   node_args_contains_word "$flag" && return 0
   NODE_ARGS="${NODE_ARGS:-} $flag"
   export NODE_ARGS
+}
+
+remove_node_arg_prefix() {
+  prefix="$1"
+  filtered=""
+  for word in ${NODE_ARGS:-}; do
+    case "$word" in
+      "$prefix"|"$prefix"=*) continue ;;
+    esac
+    filtered="${filtered:+$filtered }$word"
+  done
+  NODE_ARGS="$filtered"
+  export NODE_ARGS
+}
+
+mount_source_for_path() {
+  path="$(readlink -m "$1" 2>/dev/null || printf '%s' "$1")"
+  awk -v path="$path" '
+    {
+      target=$2
+      gsub(/\\040/, " ", target)
+      if (path == target || index(path, target "/") == 1) {
+        if (length(target) > best_len) {
+          best_len = length(target)
+          best = $1
+        }
+      }
+    }
+    END { print best }
+  ' /proc/mounts
+}
+
+block_device_from_source() {
+  source="$1"
+  case "$source" in /dev/*) ;; *) return 1 ;; esac
+  base="$(basename "$source")"
+  case "$base" in
+    nvme*n*p*) printf '%s\n' "${base%p[0-9]*}" ;;
+    mmcblk*p*) printf '%s\n' "${base%p[0-9]*}" ;;
+    *) printf '%s\n' "${base%%[0-9]*}" ;;
+  esac
+}
+
+path_is_usb_backed() {
+  source="$(mount_source_for_path "$1")"
+  block="$(block_device_from_source "$source" 2>/dev/null || true)"
+  [ -n "$block" ] || return 1
+  device_path="$(readlink -f "/sys/block/$block/device" 2>/dev/null || true)"
+  case "$device_path" in *usb*) return 0 ;; *) return 1 ;; esac
+}
+
+node_data_parent() {
+  data_parent="${BDAG_FASTSNAP_DATADIR:-$(node_arg_value datadir || true)}"
+  printf '%s\n' "${data_parent:-/data}"
+}
+
+should_disable_fastsync_serving() {
+  case "${BDAG_NO_FASTSYNC_SERVE:-auto}" in
+    1|true|yes|on) return 0 ;;
+    0|false|no|off) return 1 ;;
+  esac
+  case "${BDAG_STORAGE_PROFILE:-}" in
+    usb-chain-internal-runtime|single-usb-constrained) return 0 ;;
+  esac
+  data_parent="$(node_data_parent)"
+  path_is_usb_backed "$data_parent"
+}
+
+apply_no_fastsync_serve_guard() {
+  should_disable_fastsync_serving || return 0
+  export BDAG_FASTARTIFACTSYNC_ENABLED=0
+  unset BDAG_FASTSYNC_ARTIFACT_DIRECTORY BDAG_FASTSYNC_ARTIFACT_MANIFEST
+  remove_node_arg_prefix "--fastartifactsync"
+  append_node_arg_once "--nofastsyncserve"
+  log "USB-backed or constrained chain profile detected; disabling bulk FastSync, snapshot, and artifact serving while keeping normal outbound sync and block relay."
 }
 
 apply_default_fastsync_flags() {
@@ -953,7 +945,7 @@ maybe_fastsnap_bootstrap() {
   timeout="${BDAG_FASTSNAP_TIMEOUT:-90s}"
   tmp_archive="$archive.download.$$"
   directory_mode="${BDAG_FASTSNAP_DIRECTORY_MODE:-1}"
-  if [ "$directory_mode" = "1" ] && ! fastsnap_supports_directory_mode "$fastsnap_bin"; then
+  if [ "$directory_mode" = "1" ] && ! fastsnap_supports_directory_mode "$FASTSNAP"; then
     log "fastsnap binary does not support directory install flags; using V2 archive fallback"
     directory_mode=0
   fi
@@ -1017,6 +1009,10 @@ maybe_fastsnap_bootstrap() {
 }
 
 configure_directory_artifact_serving() {
+  if [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-1}" != "1" ]; then
+    log "Fast Artifact Sync V2 serving disabled for this node"
+    return 0
+  fi
   if [ -n "${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}" ] || [ -n "${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}" ]; then
     return 0
   fi
@@ -1036,6 +1032,7 @@ configure_directory_artifact_serving() {
 
 echo "Using node binary: $BIN"
 apply_ordered_fastsync_peers
+apply_no_fastsync_serve_guard
 apply_default_fastsync_flags
 maybe_fastsnap_bootstrap
 configure_directory_artifact_serving
@@ -1479,20 +1476,20 @@ main() {
   say "Building ARM64 pool binaries"
   (
     cd "$BUILD_ROOT/pool-src"
-    env CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o "$bin_dir/pool" ./cmd/pool
-    env CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o "$bin_dir/dashboard-api" ./cmd/dashboard-api
+    env GOFLAGS=-buildvcs=false CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o "$bin_dir/pool" ./cmd/pool
+    env GOFLAGS=-buildvcs=false CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o "$bin_dir/dashboard-api" ./cmd/dashboard-api
   )
 
   say "Building ARM64 node binaries"
   (
     cd "$BUILD_ROOT/node-src"
-    env CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
+    env GOFLAGS=-buildvcs=false CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
       go build -trimpath -ldflags="-X github.com/BlockdagNetworkLabs/bdag/version.Build=release-${NODE_COMMIT:0:7}" \
       -o "$bin_dir/bdag" "github.com/BlockdagNetworkLabs/bdag/cmd/bdag"
-    env CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
+    env GOFLAGS=-buildvcs=false CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
       go build -trimpath -ldflags="-X github.com/BlockdagNetworkLabs/bdag/version.Build=release-${NODE_COMMIT:0:7}" \
       -o "$bin_dir/nodeworker" "github.com/BlockdagNetworkLabs/bdag/cmd/nodeworker"
-    env CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
+    env GOFLAGS=-buildvcs=false CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
       go build -trimpath -ldflags="-X github.com/BlockdagNetworkLabs/bdag/version.Build=release-${NODE_COMMIT:0:7}" \
       -o "$bin_dir/fastsnap" "github.com/BlockdagNetworkLabs/bdag/cmd/fastsnap"
   )

@@ -20,14 +20,23 @@ COMPOSE_BACKUP_BEFORE_MARK=""
 FILES=(
   "AGENTS.md"
   "asic-pool/schema.sql"
+  "docker-compose-miner.yml"
   "docker/entrypoint-nodeworker.sh"
   "docs/fastsnap-maintenance-resource-guard.html"
   "docs/five-asic-template-conversion-guard.html"
+  "docs/ipfs-content-sidecar.html"
   "docs/platform-adaptive-runtime.md"
+  "docs/rawdatadir-libp2p-sync.md"
+  "docs/v2-sync-source-backlog.md"
   "haproxy.cfg"
   "host/mining-appliance/bdag-runtime-priority.timer"
   "ops/README.md"
   "ops/build-fastsnap-seed.sh"
+  "ops/build-rawdatadir-artifact.sh"
+  "ops/fastartifact_source_eligibility.py"
+  "ops/fetch-rawdatadir-artifact.sh"
+  "ops/maintain-rawdatadir-sidecar.sh"
+  "ops/publish-rawdatadir-artifact.sh"
   "ops/pool_ops.py"
   "ops/status_sampler.py"
   "ops/dashboard.py"
@@ -37,6 +46,8 @@ FILES=(
   "ops/incident_journal.py"
   "ops/incident_reporter.py"
   "ops/install-dashboard.sh"
+  "ops/install-p2p-services.sh"
+  "ops/ipfs_content_sidecar.py"
   "ops/latest_chain_candidate.py"
   "ops/node_child_guard.py"
   "ops/optimization_measurement.py"
@@ -48,11 +59,13 @@ FILES=(
   "ops/tests/test_chain_rpc_resilience.py"
   "ops/tests/test_deployment_portability.py"
   "ops/tests/test_earnings_onchain_sources.py"
+  "ops/tests/test_ipfs_content_sidecar.py"
   "ops/tests/test_mining_appliance_preflight.py"
   "ops/tests/test_miner_retirement_identity.py"
   "ops/tests/test_no_miner_collect_status.py"
   "ops/tests/test_optimization_measurement.py"
   "ops/tests/test_compose_migrations.py"
+  "ops/tests/test_status_sampler_mining_imperative.py"
   "ops/tests/test_sync_coordinator_fast_catchup.py"
   "ops/tests/test_watchdog_miner_source_counts.py"
   "ops/update-local-peers.py"
@@ -62,10 +75,17 @@ FILES=(
   "ops/systemd/user-bdag-hourly-snapshot.timer"
   "ops/systemd/user-bdag-incident-reporter.timer"
   "ops/systemd/user-bdag-node-child-guard.timer"
+  "ops/systemd/user-bdag-rawdatadir-sidecar.service"
+  "ops/systemd/user-bdag-rawdatadir-sidecar.timer"
+  "ops/systemd/user-bdag-rawdatadir-source.service"
+  "ops/systemd/user-bdag-rawdatadir-source.timer"
+  "ops/systemd/user-bdag-ipfs-content-sidecar.service"
+  "ops/systemd/user-bdag-ipfs-content-sidecar.timer"
   "ops/systemd/user-bdag-stack-sentinel.timer"
   "ops/systemd/user-bdag-status-sampler.service"
   "ops/systemd/user-bdag-sync-coordinator.timer"
   "scripts/validate-rc-local.sh"
+  "scripts/install-mining-appliance-profile.sh"
   "scripts/mining-appliance-preflight.py"
   "scripts/validate-pi5-restart-hardening.sh"
   "scripts/verify-release-architecture.py"
@@ -200,7 +220,19 @@ ignored = {
     "scripts/release/installers/install-windows.ps1",
 }
 required = set()
-for match in re.finditer(r'need_file "([^"]+)"', validator.read_text(encoding="utf-8")):
+text = validator.read_text(encoding="utf-8")
+for match in re.finditer(r'need_file "([^"]+)"', text):
+    rel = match.group(1)
+    if rel in ignored or rel.startswith(".github/"):
+        continue
+    required.add(rel)
+for line in text.splitlines():
+    stripped = line.strip()
+    if not stripped.startswith(("need_grep ", "reject_grep ")):
+        continue
+    match = re.search(r'"([^"]+)"\s*$', stripped)
+    if not match:
+        continue
     rel = match.group(1)
     if rel in ignored or rel.startswith(".github/"):
         continue
@@ -296,12 +328,25 @@ backup_target_file_once() {
 migrate_runtime_compose() {
   local compose="$TARGET_ROOT/docker-compose.yml"
   [[ -f "$compose" ]] || die "missing target docker-compose.yml"
-  if grep -q 'POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:' "$compose"; then
+  local key
+  local missing=0
+  for key in \
+    POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT \
+    POOL_SUBMIT_STALE_BLOCK_CANDIDATES \
+    POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED \
+    POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD
+  do
+    if ! grep -q "${key}:" "$compose"; then
+      missing=1
+      break
+    fi
+  done
+  if [[ "$missing" -eq 0 ]]; then
     return 0
   fi
-  say "Migrating live runtime compose: POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT"
+  say "Migrating live runtime compose: pool submit hardening settings"
   backup_target_file_once "docker-compose.yml"
-  python3 "$SOURCE_ROOT/ops/compose_migrations.py" --ensure-duplicate-safe-submit "$compose"
+  python3 "$SOURCE_ROOT/ops/compose_migrations.py" --ensure-pool-submit-hardening "$compose"
 }
 
 post_deploy_critical_containers() {

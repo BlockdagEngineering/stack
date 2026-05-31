@@ -52,7 +52,7 @@
 <body>
   <main>
     <h1>BlockDAG P2P Interface Discovery Standard</h1>
-    <p class="lede">Pool releases should treat LAN and VPN interfaces as first-class P2P paths. The standard is interface-agnostic firewall allowance plus deterministic local peer lists for two-node deployments.</p>
+    <p class="lede">Pool releases must treat complete libp2p multiaddrs as the only sync candidates. Address class is not a sync option or priority signal.</p>
 
     <section class="grid">
       <article class="card">
@@ -63,17 +63,17 @@
       <article class="card">
         <p class="label">Local nodes</p>
         <p class="good">Cross-peer by default</p>
-        <p><code>update-local-peers.py</code> writes node-specific addpeer lists so node1 and node2 can dial each other through Docker DNS and host LAN/VPN addresses.</p>
+        <p><code>update-local-peers.py</code> writes node-specific addpeer lists so node1 and node2 can dial each other through complete P2P multiaddrs with peer IDs.</p>
       </article>
       <article class="card">
         <p class="label">Operator peers</p>
-        <p class="good">LAN/VPN pinning supported</p>
-        <p>Known peers can be supplied through <code>LAN_PEER_ADDRESSES</code>, <code>VPN_PEER_ADDRESSES</code>, <code>ZEROTIER_PEER_ADDRESSES</code>, or <code>EXTRA_PEER_ADDRESSES</code>.</p>
+        <p class="good">P2P multiaddrs only</p>
+        <p>Known sync peers must be supplied through <code>BDAG_FASTSYNC_PEERS</code> as complete P2P multiaddrs. Legacy address-bucket variables are migration input only and must be normalized away.</p>
       </article>
     </section>
 
     <h2>Firewall Contract</h2>
-    <p>The P2P firewall helper is intentionally broad over interfaces and narrow over ports. This lets a host add or remove VPN interfaces without editing firewall unit files, while still limiting the rule to configured P2P ports.</p>
+    <p>The P2P firewall helper is intentionally broad over interfaces and narrow over ports. This lets reachability change without editing firewall unit files, while sync peer selection remains based on measured P2P usefulness.</p>
     <pre>BDAG_P2P_PORTS=8151,8152
 BDAG_P2P_PROTOCOLS=tcp
 systemctl enable --now bdag-p2p-firewall.service</pre>
@@ -86,9 +86,9 @@ systemctl enable --now bdag-p2p-firewall.service</pre>
       </thead>
       <tbody>
         <tr><td><code>/dns4/bdag-miner-node-1</code>, <code>/dns4/bdag-miner-node-2</code></td><td>Stable same-compose node-to-node path that does not depend on host interface state.</td></tr>
-        <tr><td>Host LAN IPv4 addresses</td><td>Allow peers on the same physical LAN to connect when reachable.</td></tr>
-        <tr><td>Host VPN IPv4 addresses</td><td>Allow peers across ZeroTier, WireGuard, Tailscale, and similar VPN overlays to connect when reachable.</td></tr>
-        <tr><td>Configured extra peers</td><td>Operator-pinned peers from known LAN/VPN nodes.</td></tr>
+        <tr><td>Complete P2P multiaddrs</td><td>Only sync candidate format; every candidate must include a peer ID.</td></tr>
+        <tr><td><code>BDAG_FASTSYNC_PEERS</code></td><td>Operator-supplied sync candidates for FastArtifact probing.</td></tr>
+        <tr><td>Measured P2P usefulness</td><td>P2P ping, manifest response, chunk response, artifact availability, and sustained transfer determine source quality.</td></tr>
       </tbody>
     </table>
 

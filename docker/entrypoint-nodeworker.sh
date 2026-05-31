@@ -172,114 +172,12 @@ append_peer_list() {
   IFS="$old_ifs"
 }
 
-peer_host() {
-  local peer="$1"
-  case "$peer" in
-    /ip4/*/tcp/*)
-      peer="${peer#/ip4/}"
-      printf '%s\n' "${peer%%/tcp/*}"
-      ;;
-  esac
-}
-
-host_matches_prefixes() {
-  local host="$1"
-  local prefixes="${2:-192.168.}"
-  local old_ifs="$IFS"
-  local prefix
-  IFS=,
-  for prefix in $prefixes; do
-    prefix="${prefix#"${prefix%%[![:space:]]*}"}"
-    prefix="${prefix%"${prefix##*[![:space:]]}"}"
-    [ -n "$prefix" ] || continue
-    case "$host" in
-      "$prefix"*) IFS="$old_ifs"; return 0 ;;
-    esac
-  done
-  IFS="$old_ifs"
-  return 1
-}
-
-host_is_private_or_vpn() {
-  local host="$1"
-  case "$host" in
-    10.*|192.168.*) return 0 ;;
-    172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) return 0 ;;
-    100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*) return 0 ;;
-  esac
-  return 1
-}
-
-host_matches_cidr_prefix() {
-  local host="$1"
-  local cidr="$2"
-  local base mask prefix
-  case "$cidr" in
-    */*)
-      base="${cidr%/*}"
-      mask="${cidr#*/}"
-      ;;
-    *)
-      case "$host" in "$cidr"*) return 0 ;; esac
-      return 1
-      ;;
-  esac
-  case "$mask" in
-    8) prefix="${base%%.*}." ;;
-    16) prefix="$(printf '%s\n' "$base" | awk -F. '{print $1 "." $2 "."}')" ;;
-    24) prefix="$(printf '%s\n' "$base" | awk -F. '{print $1 "." $2 "." $3 "."}')" ;;
-    32) [ "$host" = "$base" ] && return 0; return 1 ;;
-    *) return 1 ;;
-  esac
-  case "$host" in "$prefix"*) return 0 ;; esac
-  return 1
-}
-
-host_is_excluded_asic_lan() {
-  local host="$1"
-  local topology="${BDAG_DETECTED_NETWORK_TOPOLOGY:-${BDAG_NETWORK_TOPOLOGY:-auto}}"
-  local cidr old_ifs
-  [ "${BDAG_ALLOW_ASIC_LAN_P2P:-0}" = "1" ] && return 1
-  [ "$topology" = "single-node-asic-router" ] || return 1
-  old_ifs="$IFS"
-  IFS=', '
-  for cidr in ${BDAG_ASIC_LAN_CIDRS:-192.168.50.0/24}; do
-    [ -n "$cidr" ] || continue
-    if host_matches_cidr_prefix "$host" "$cidr"; then
-      IFS="$old_ifs"
-      return 0
-    fi
-  done
-  IFS="$old_ifs"
-  return 1
-}
-
 peer_allowed_for_p2p() {
   local peer="$1"
-  local host
-  host="$(peer_host "$peer" || true)"
-  [ -n "$host" ] || return 0
-  ! host_is_excluded_asic_lan "$host"
-}
-
-append_classified_peer_list() {
-  local raw="$1"
-  local old_ifs="$IFS"
-  local peer host
-  IFS=', '
-  for peer in $raw; do
-    [ -n "$peer" ] || continue
-    peer_allowed_for_p2p "$peer" || continue
-    host="$(peer_host "$peer" || true)"
-    if [ -n "$host" ] && [ -n "${BDAG_FASTSYNC_LAN_PREFIXES:-}" ] && host_matches_prefixes "$host" "${BDAG_FASTSYNC_LAN_PREFIXES:-}"; then
-      append_unique_peer fastsync_lan_peers "$peer"
-    elif [ -n "$host" ] && host_is_private_or_vpn "$host"; then
-      append_unique_peer fastsync_vpn_peers "$peer"
-    else
-      append_unique_peer fastsync_public_peers "$peer"
-    fi
-  done
-  IFS="$old_ifs"
+  case "$peer" in
+    */p2p/*) return 0 ;;
+  esac
+  return 1
 }
 
 join_peer_array() {
@@ -293,29 +191,21 @@ join_peer_array() {
 
 ordered_fastsync_peers() {
   local node_args="$1"
-  local ordering="${BDAG_FASTSYNC_PEER_ORDERING:-tiered-latency}"
+  local ordering="${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}"
   local config_file config_peers generic_peers
   fastsync_peers=()
-  fastsync_lan_peers=()
-  fastsync_vpn_peers=()
-  fastsync_public_peers=()
   ORDERED_FASTSYNC_SEEN=
 
   config_file="$(node_arg_value configfile "$node_args" || true)"
   config_file="${config_file:-/etc/bdagStack/node.conf}"
   config_peers="$(config_addpeer_values "$config_file" | paste -sd, - || true)"
 
-  if [ "$ordering" = "flat-latency" ] || [ "$ordering" = "flat" ]; then
-    generic_peers="${BDAG_FASTSYNC_PEERS:-} ${BDAG_FASTSNAP_PEERS:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $config_peers $(addpeer_values "$node_args" | paste -sd, - || true) ${BDAG_FASTSYNC_LAN_PEERS:-${BDAG_FASTSYNC_LOCAL_PEERS:-}} ${BDAG_FASTSYNC_VPN_PEERS:-${BDAG_FASTSYNC_PRIVATE_PEERS:-}} ${BDAG_FASTSYNC_PUBLIC_PEERS:-}"
-    append_peer_list fastsync_peers "$generic_peers"
-  else
-    append_peer_list fastsync_lan_peers "${BDAG_P2P_LAN_PEERS:-} ${LAN_PEER_ADDRESSES:-} ${BDAG_FASTSYNC_LAN_PEERS:-${BDAG_FASTSYNC_LOCAL_PEERS:-}}"
-    append_peer_list fastsync_vpn_peers "${BDAG_P2P_VPN_PEERS:-} ${VPN_PEER_ADDRESSES:-} ${ZEROTIER_PEER_ADDRESSES:-} ${BDAG_FASTSYNC_VPN_PEERS:-${BDAG_FASTSYNC_PRIVATE_PEERS:-}}"
-    append_peer_list fastsync_public_peers "${BDAG_P2P_PUBLIC_PEERS:-} ${BDAG_FASTSYNC_PUBLIC_PEERS:-}"
-    generic_peers="${BDAG_FASTSYNC_PEERS:-} ${BDAG_FASTSNAP_PEERS:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $config_peers $(addpeer_values "$node_args" | paste -sd, - || true)"
-    append_classified_peer_list "$generic_peers"
-    fastsync_peers=("${fastsync_lan_peers[@]}" "${fastsync_vpn_peers[@]}" "${fastsync_public_peers[@]}")
-  fi
+  case "$ordering" in
+    p2p-latency|p2p|latency|flat-latency|flat|tiered-latency|legacy-buckets|buckets) ;;
+    *) log "unknown BDAG_FASTSYNC_PEER_ORDERING=$ordering; using p2p-latency" ;;
+  esac
+  generic_peers="${BDAG_FASTSYNC_PEERS:-} ${BDAG_FASTSNAP_PEERS:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $config_peers $(addpeer_values "$node_args" | paste -sd, - || true)"
+  append_peer_list fastsync_peers "$generic_peers"
 
   join_peer_array
 }
@@ -332,23 +222,19 @@ addpeer_args_from_csv() {
 }
 
 apply_ordered_fastsync_peers() {
-  case "${BDAG_FASTSYNC_PEER_ORDERING:-tiered-latency}" in
+  case "${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}" in
     0|off|false|none) return 0 ;;
   esac
 
   local node_args ordered addpeer_args total_count ordering
-  ordering="${BDAG_FASTSYNC_PEER_ORDERING:-tiered-latency}"
+  ordering="${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}"
   node_args="$(node_args_from_argv "$@" || true)"
   ordered="$(ordered_fastsync_peers "$node_args")"
   [ -n "$ordered" ] || return 0
 
   export BDAG_FASTSNAP_PEERS="$ordered"
   total_count="$(printf '%s' "$ordered" | awk -F, '{print NF}')"
-  if [ "$ordering" = "flat-latency" ] || [ "$ordering" = "flat" ]; then
-    log "flat latency FastSync candidates enabled; total=${total_count}"
-  else
-    log "tiered latency FastSync candidates enabled: LAN first, private/VPN second, public last; total=${total_count}"
-  fi
+  log "P2P latency/usefulness FastSync candidates enabled; libp2p selects the fastest useful artifact source; total=${total_count}"
 
   if [ "${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}" = "1" ]; then
     addpeer_args="$(addpeer_args_from_csv "$ordered")"
@@ -375,6 +261,100 @@ append_node_arg_once() {
   fi
   NODE_ARGS_APPEND="${NODE_ARGS_APPEND:+$NODE_ARGS_APPEND }$flag"
   export NODE_ARGS_APPEND
+}
+
+remove_node_arg_prefix() {
+  local prefix="$1"
+  local filtered="" word
+  for word in ${NODE_ARGS_APPEND:-}; do
+    case "$word" in
+      "$prefix"|"$prefix"=*) continue ;;
+    esac
+    filtered="${filtered:+$filtered }$word"
+  done
+  NODE_ARGS_APPEND="$filtered"
+  export NODE_ARGS_APPEND
+}
+
+mount_source_for_path() {
+  local path="$1" real best_src="" best_target="" src target fstype rest
+  real="$(readlink -m "$path" 2>/dev/null || printf '%s' "$path")"
+  while read -r src target fstype rest; do
+    target="${target//\\040/ }"
+    if [[ "$real" == "$target" || "$real" == "$target"/* ]]; then
+      if [ "${#target}" -gt "${#best_target}" ]; then
+        best_target="$target"
+        best_src="$src"
+      fi
+    fi
+  done < /proc/mounts
+  printf '%s\n' "$best_src"
+}
+
+block_device_from_source() {
+  local source="$1" base
+  case "$source" in
+    /dev/*) ;;
+    *) return 1 ;;
+  esac
+  base="$(basename "$source")"
+  case "$base" in
+    nvme*n*p*) printf '%s\n' "${base%p[0-9]*}" ;;
+    mmcblk*p*) printf '%s\n' "${base%p[0-9]*}" ;;
+    *) printf '%s\n' "${base%%[0-9]*}" ;;
+  esac
+}
+
+path_is_usb_backed() {
+  local path="$1" source block device_path
+  source="$(mount_source_for_path "$path")"
+  block="$(block_device_from_source "$source" 2>/dev/null || true)"
+  [ -n "$block" ] || return 1
+  device_path="$(readlink -f "/sys/block/$block/device" 2>/dev/null || true)"
+  case "$device_path" in
+    *usb*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+node_data_parent_from_args() {
+  local node_args config_file data_parent
+  node_args="$(node_args_from_argv "$@" || true)"
+  config_file="$(node_arg_value configfile "$node_args" || true)"
+  data_parent="${BDAG_FASTSNAP_DATADIR:-$(node_arg_value datadir "$node_args" || true)}"
+  if [ -z "$data_parent" ] && [ -n "$config_file" ]; then
+    data_parent="$(read_config_value "$config_file" datadir || true)"
+  fi
+  printf '%s\n' "${data_parent:-/var/lib/bdagStack/node}"
+}
+
+should_disable_fastsync_serving() {
+  case "${BDAG_NO_FASTSYNC_SERVE:-auto}" in
+    1|true|yes|on) return 0 ;;
+    0|false|no|off) return 1 ;;
+  esac
+
+  case "${BDAG_STORAGE_PROFILE:-}" in
+    usb-chain-internal-runtime|single-usb-constrained) return 0 ;;
+  esac
+
+  local data_parent
+  data_parent="$(node_data_parent_from_args "$@")"
+  path_is_usb_backed "$data_parent"
+}
+
+apply_no_fastsync_serve_guard() {
+  if ! should_disable_fastsync_serving "$@"; then
+    return 0
+  fi
+
+  local node_args
+  node_args="$(node_args_from_argv "$@" || true)"
+  export BDAG_FASTARTIFACTSYNC_ENABLED=0
+  unset BDAG_FASTSYNC_ARTIFACT_DIRECTORY BDAG_FASTSYNC_ARTIFACT_MANIFEST
+  remove_node_arg_prefix "--fastartifactsync"
+  append_node_arg_once "--nofastsyncserve" "$node_args ${NODE_ARGS_APPEND:-}"
+  log "USB-backed or constrained chain profile detected; disabling bulk FastSync, snapshot, and artifact serving while keeping normal outbound sync and block relay."
 }
 
 apply_default_fastsync_flags() {
@@ -537,6 +517,10 @@ maybe_fastsnap_bootstrap() {
 }
 
 configure_directory_artifact_serving() {
+  if [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-1}" != "1" ]; then
+    log "Fast Artifact Sync V2 serving disabled for this node"
+    return 0
+  fi
   if [ -n "${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}" ] || [ -n "${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}" ]; then
     return 0
   fi
@@ -561,6 +545,7 @@ configure_directory_artifact_serving() {
 }
 
 apply_ordered_fastsync_peers "$@"
+apply_no_fastsync_serve_guard "$@"
 apply_default_fastsync_flags "$@"
 
 if [ -n "${NODE_ARGS_APPEND:-}" ]; then

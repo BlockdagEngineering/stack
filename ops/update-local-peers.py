@@ -33,46 +33,47 @@ NODE_PEER_ID_ENV = {
 }
 PEER_RE = re.compile(r"Node started p2p server.*?/p2p/([A-Za-z0-9]+)")
 ADDR_RE = re.compile(r"/ip4/[^,\s]+/tcp/(\d+)/p2p/([A-Za-z0-9]+)")
-PEER_RE_FULL = re.compile(r"/ip4/([^/]+)/tcp/(\d+)/p2p/([^,\s]+)")
+PEER_RE_FULL = re.compile(r"/(?:ip4|ip6|dns|dns4|dns6)/([^/]+)/tcp/(\d+)/p2p/([^,\s]+)")
 PEER_LATENCY_TIMEOUT = float(os.environ.get("BDAG_LOCAL_PEER_LATENCY_TIMEOUT", "0.75"))
 PEER_LATENCY_WORKERS = int(os.environ.get("BDAG_LOCAL_PEER_LATENCY_WORKERS", "16"))
 DASHBOARD_STATUS_URL = os.environ.get("BDAG_DASHBOARD_STATUS_URL", "http://127.0.0.1:8088/api/status")
 ACTIVE_MINING_RECENT_SECONDS = int(os.environ.get("BDAG_LOCAL_PEERS_ACTIVE_MINING_RECENT_SECONDS", "300"))
-DEFAULT_ASIC_LAN_CIDRS = "192.168.50.0/24"
+DEFAULT_ASIC_LAN_CIDRS = ""
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 AUTO_VALUES = {"", "auto", "detect"}
-CGNAT_NETWORKS = [ipaddress.ip_network("100.64.0.0/10")]
-LAN_PEER_KEYS = (
+# Migration input only. New releases must configure sync candidates through
+# BDAG_FASTSYNC_PEERS as complete P2P multiaddrs.
+LEGACY_PEER_SOURCE_KEYS = (
     "BDAG_P2P_LAN_PEERS",
     "LAN_PEER_ADDRESSES",
-    "LOCAL_PEER_ADDRESSES",
     "BDAG_FASTSYNC_LAN_PEERS",
     "BDAG_FASTSYNC_LOCAL_PEERS",
-)
-VPN_PEER_KEYS = (
     "BDAG_P2P_VPN_PEERS",
     "VPN_PEER_ADDRESSES",
     "ZEROTIER_PEER_ADDRESSES",
+    "DISCOVERED_ZEROTIER_PEER_ADDRESSES",
+    "DISCOVERED_LAN_PEER_ADDRESSES",
     "BDAG_FASTSYNC_VPN_PEERS",
     "BDAG_FASTSYNC_PRIVATE_PEERS",
+    "BDAG_P2P_PUBLIC_PEERS",
+    "BDAG_FASTSYNC_PUBLIC_PEERS",
+    "EXTRA_PEER_ADDRESSES",
 )
-PUBLIC_PEER_KEYS = ("BDAG_P2P_PUBLIC_PEERS", "BDAG_FASTSYNC_PUBLIC_PEERS")
 GENERIC_PEER_KEYS = (
     "BOOTSTRAP_PEER_ADDRESSES",
     "PEER_ADDRESSES",
     "BDAG_FASTSYNC_PEERS",
     "BDAG_FASTSNAP_PEERS",
+    "LOCAL_PEER_ADDRESSES",
     "NODE1_PEER_ADDRESSES",
     "NODE2_PEER_ADDRESSES",
 )
 
 
-class PeerTiers:
-    def __init__(self, lan: list[str], vpn: list[str], public: list[str], excluded_asic_lan: list[str]) -> None:
-        self.lan = lan
-        self.vpn = vpn
-        self.public = public
-        self.excluded_asic_lan = excluded_asic_lan
+class PeerCandidates:
+    def __init__(self, peers: list[str], rejected_non_p2p: list[str]) -> None:
+        self.peers = peers
+        self.rejected_non_p2p = rejected_non_p2p
 
 
 def docker_top_has_bdag_child(output: str) -> bool:
@@ -212,19 +213,6 @@ def peer_parts(peer: str) -> tuple[str, int, str] | None:
     return host, port, peer_id
 
 
-def peer_ip(peer: str) -> ipaddress.IPv4Address | None:
-    parts = peer_parts(peer)
-    if not parts:
-        return None
-    try:
-        ip = ipaddress.ip_address(parts[0])
-    except ValueError:
-        return None
-    if ip.version != 4:
-        return None
-    return ip
-
-
 def parse_networks(raw: str, default: str = "") -> list[ipaddress.IPv4Network]:
     networks: list[ipaddress.IPv4Network] = []
     for item in re.split(r"[\s,]+", raw or default):
@@ -240,42 +228,26 @@ def parse_networks(raw: str, default: str = "") -> list[ipaddress.IPv4Network]:
     return networks
 
 
-def peer_in_networks(peer: str, networks: list[ipaddress.IPv4Network]) -> bool:
-    ip = peer_ip(peer)
-    return bool(ip and any(ip in network for network in networks))
-
-
-def host_matches_lan_prefixes(host: str, prefixes: str) -> bool:
-    return any(host.startswith(prefix.strip()) for prefix in prefixes.split(",") if prefix.strip())
-
-
-def peer_is_lan(peer: str, values: dict[str, str]) -> bool:
-    parts = peer_parts(peer)
-    if not parts:
-        return False
-    prefixes = env_value(values, "BDAG_FASTSYNC_LAN_PREFIXES")
-    if prefixes and host_matches_lan_prefixes(parts[0], prefixes):
-        return True
-    return peer_in_networks(peer, local_lan_networks(values))
-
-
-def peer_is_private_or_vpn(peer: str) -> bool:
-    ip = peer_ip(peer)
-    return bool(ip and (ip.is_private or any(ip in network for network in CGNAT_NETWORKS)))
-
-
 def normalize_peer_ordering(value: str) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"", "1", "true", "yes", "on", "enabled", "latency", "legacy-buckets", "buckets"}:
-        return "tiered-latency"
+    if normalized in {
+        "",
+        "1",
+        "true",
+        "yes",
+        "on",
+        "enabled",
+        "latency",
+        "p2p",
+        "p2p-latency",
+        "flat",
+        "flat-latency",
+        "legacy-buckets",
+        "buckets",
+        "tiered-latency",
+    }:
+        return "p2p-latency"
     return normalized
-
-
-def normalize_lan_prefixes(values: dict[str, str], topology: str) -> str:
-    prefixes = env_value(values, "BDAG_FASTSYNC_LAN_PREFIXES")
-    if topology == "single-node-asic-router" and prefixes.strip() == "192.168.":
-        return ""
-    return prefixes
 
 
 def asic_lan_networks(values: dict[str, str]) -> list[ipaddress.IPv4Network]:
@@ -391,14 +363,6 @@ def detect_network_topology(values: dict[str, str]) -> str:
     return "standard"
 
 
-def exclude_asic_lan_peer(peer: str, values: dict[str, str], topology: str) -> bool:
-    if truthy(env_value(values, "BDAG_ALLOW_ASIC_LAN_P2P")):
-        return False
-    if topology != "single-node-asic-router":
-        return False
-    return peer_in_networks(peer, asic_lan_networks(values))
-
-
 def sort_peers_by_latency(peers: list[str]) -> list[str]:
     indexed = list(enumerate(unique_csv(peers).split(","))) if peers else []
     scores: dict[int, tuple[bool, float]] = {}
@@ -410,38 +374,26 @@ def sort_peers_by_latency(peers: list[str]) -> list[str]:
     return [peer for _, peer in indexed]
 
 
-def tiered_peer_addresses(values: dict[str, str], topology: str) -> PeerTiers:
-    tiers = PeerTiers(lan=[], vpn=[], public=[], excluded_asic_lan=[])
+def p2p_peer_candidates(values: dict[str, str]) -> PeerCandidates:
     seen: set[str] = set()
+    peers: list[str] = []
+    rejected_non_p2p: list[str] = []
 
-    def add(peer: str, tier: str) -> None:
+    def add(peer: str) -> None:
         peer = peer.strip()
-        if not peer or peer in seen or not peer_parts(peer):
+        if not peer or peer in seen:
             return
         seen.add(peer)
-        if exclude_asic_lan_peer(peer, values, topology):
-            tiers.excluded_asic_lan.append(peer)
+        if not peer_parts(peer):
+            rejected_non_p2p.append(peer)
             return
-        getattr(tiers, tier).append(peer)
+        peers.append(peer)
 
-    for peer in peer_values(values, LAN_PEER_KEYS):
-        add(peer, "lan")
-    for peer in peer_values(values, VPN_PEER_KEYS):
-        add(peer, "vpn")
-    for peer in peer_values(values, PUBLIC_PEER_KEYS):
-        add(peer, "public")
-    for peer in peer_values(values, GENERIC_PEER_KEYS):
-        if peer_is_lan(peer, values):
-            add(peer, "lan")
-        elif peer_is_private_or_vpn(peer):
-            add(peer, "vpn")
-        else:
-            add(peer, "public")
+    for key_group in (GENERIC_PEER_KEYS, LEGACY_PEER_SOURCE_KEYS):
+        for peer in peer_values(values, key_group):
+            add(peer)
 
-    tiers.lan = sort_peers_by_latency(tiers.lan)
-    tiers.vpn = sort_peers_by_latency(tiers.vpn)
-    tiers.public = sort_peers_by_latency(tiers.public)
-    return tiers
+    return PeerCandidates(sort_peers_by_latency(peers), rejected_non_p2p)
 
 
 def write_deferred_apply(reason: str) -> None:
@@ -476,44 +428,22 @@ def fallback_peer_ids(values: dict[str, str]) -> dict[str, str]:
     return result
 
 
-def public_peer_addresses(values: dict[str, str]) -> list[str]:
-    peers: list[str] = []
-    for key in ("BOOTSTRAP_PEER_ADDRESSES", "PEER_ADDRESSES", "NODE1_PEER_ADDRESSES", "NODE2_PEER_ADDRESSES"):
-        for peer in values.get(key, "").split(","):
-            peer = peer.strip()
-            match = PEER_RE_FULL.search(peer)
-            if not match:
-                continue
-            ip = match.group(1)
-            if ip.startswith(("10.", "172.", "192.168.")):
-                continue
-            peers.append(peer)
-    return unique_csv(peers).split(",") if peers else []
-
-
 def peer_tcp_latency(peer: str) -> tuple[bool, float]:
     match = PEER_RE_FULL.search(peer)
     if not match:
         return False, float("inf")
-    ip, port_text, _ = match.groups()
+    host, port_text, _ = match.groups()
     try:
         port = int(port_text)
     except ValueError:
         return False, float("inf")
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(PEER_LATENCY_TIMEOUT)
     started = time.monotonic()
     try:
-        sock.connect((ip, port))
+        with socket.create_connection((host, port), timeout=PEER_LATENCY_TIMEOUT):
+            pass
         return True, (time.monotonic() - started) * 1000
     except OSError:
         return False, float("inf")
-    finally:
-        sock.close()
-
-
-def sort_public_peers_by_latency(peers: list[str]) -> list[str]:
-    return sort_peers_by_latency(peers)
 
 
 def latest_peer_id(container: str, fallback: str | None = None) -> str:
@@ -614,6 +544,26 @@ def without_peer_ids(peers: list[str], peer_ids: set[str]) -> list[str]:
     return result
 
 
+def without_inactive_local_node_peers(peers: list[str], active_nodes: list[str], host_ip: str) -> list[str]:
+    inactive_nodes = {node for node in NODE_SPECS if node not in active_nodes}
+    if not inactive_nodes:
+        return peers
+    local_hosts = set(local_ipv4_addresses()) | {host_ip, "127.0.0.1", "localhost"}
+    inactive_ports = {NODE_SPECS[node]["port"] for node in inactive_nodes}
+    inactive_dns_hosts = set(inactive_nodes)
+    result: list[str] = []
+    for peer in peers:
+        parts = peer_parts(peer)
+        if not parts:
+            result.append(peer)
+            continue
+        host, port, _peer_id = parts
+        if port in inactive_ports and (host in local_hosts or host in inactive_dns_hosts):
+            continue
+        result.append(peer)
+    return result
+
+
 def csv_set(value: str) -> set[str]:
     return {item.strip() for item in value.split(",") if item.strip()}
 
@@ -694,33 +644,9 @@ def configured_active_nodes(pool_values: dict[str, str]) -> list[str]:
     return active or list(NODE_SPECS)
 
 
-def split_public_peers(public_peers: list[str]) -> tuple[list[str], list[str]]:
-    node1_peers: list[str] = []
-    node2_peers: list[str] = []
-    for index, peer in enumerate(public_peers):
-        if index % 2 == 0:
-            node1_peers.append(peer)
-        else:
-            node2_peers.append(peer)
-    return node1_peers, node2_peers
-
-
-def public_peer_assignment(public_peers: list[str], paused: str, active_nodes: list[str]) -> tuple[list[str], list[str]]:
-    if len(active_nodes) == 1:
-        if active_nodes[0] == "bdag-miner-node-1":
-            return list(public_peers), []
-        if active_nodes[0] == "bdag-miner-node-2":
-            return [], list(public_peers)
-    if paused == "bdag-miner-node-1":
-        return [], list(public_peers)
-    if paused == "bdag-miner-node-2":
-        return list(public_peers), []
-    return split_public_peers(public_peers)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host-ip", help="Host/LAN IPv4 address reachable from both node containers")
+    parser.add_argument("--host-ip", help="host IPv4 address to advertise in local P2P multiaddrs")
     parser.add_argument("--env-file", type=Path, default=ENV_FILE, help="Pool stack .env file to update")
     parser.add_argument("--compose-file", type=Path, default=PROJECT_ROOT / "docker-compose.yml", help="Compose file used when --apply restarts node containers")
     parser.add_argument("--apply", action="store_true", help="Restart node containers sequentially if peer lists changed")
@@ -732,13 +658,9 @@ def main() -> int:
     lines, values = read_env(env_file)
     active_nodes = configured_active_nodes(values)
     topology = detect_network_topology(values)
-    peer_values_for_ranking = dict(values)
-    peer_values_for_ranking["BDAG_FASTSYNC_LAN_PREFIXES"] = normalize_lan_prefixes(values, topology)
-    peer_tiers = tiered_peer_addresses(peer_values_for_ranking, topology)
-    public_peers = peer_tiers.public
+    peer_candidates = p2p_peer_candidates(values)
+    candidate_peers = peer_candidates.peers
     paused = planned_paused_follower()
-    node1_public_peers, node2_public_peers = public_peer_assignment(public_peers, paused, active_nodes)
-    priority_peers = unique_csv(peer_tiers.lan + peer_tiers.vpn).split(",") if (peer_tiers.lan or peer_tiers.vpn) else []
     host_ip = choose_local_ip(args.host_ip, values)
 
     fallback_peers = fallback_peer_ids(values)
@@ -750,6 +672,12 @@ def main() -> int:
         for node, peer_id in fallback_peers.items()
         if node not in active_nodes and peer_id
     }
+    local_peer_ids = {peer_id for peer_id in peers.values() if peer_id} | inactive_local_peer_ids
+    remote_candidate_peers = without_inactive_local_node_peers(
+        without_peer_ids(candidate_peers, local_peer_ids),
+        active_nodes,
+        host_ip,
+    )
 
     local_addrs = {
         node: f"/ip4/{host_ip}/tcp/{spec['port']}/p2p/{peers[node]}"
@@ -758,34 +686,66 @@ def main() -> int:
     }
     updates: dict[str, str] = {}
     if "bdag-miner-node-1" in active_nodes:
-        node1_peers = without_peer_ids(
-            list(priority_peers) + list(node1_public_peers),
-            inactive_local_peer_ids | {peers.get("bdag-miner-node-1", "")},
+        node1_peers = without_inactive_local_node_peers(
+            without_peer_ids(
+                list(candidate_peers),
+                inactive_local_peer_ids | {peers.get("bdag-miner-node-1", "")},
+            ),
+            active_nodes,
+            host_ip,
         )
         if "bdag-miner-node-2" in active_nodes and paused != "bdag-miner-node-2" and "bdag-miner-node-2" in local_addrs:
             node1_peers.insert(0, local_addrs["bdag-miner-node-2"])
         updates["NODE1_PEER_ADDRESSES"] = unique_csv(node1_peers)
     if "bdag-miner-node-2" in active_nodes:
-        node2_peers = without_peer_ids(
-            list(priority_peers) + list(node2_public_peers),
-            inactive_local_peer_ids | {peers.get("bdag-miner-node-2", "")},
+        node2_peers = without_inactive_local_node_peers(
+            without_peer_ids(
+                list(candidate_peers),
+                inactive_local_peer_ids | {peers.get("bdag-miner-node-2", "")},
+            ),
+            active_nodes,
+            host_ip,
         )
         if "bdag-miner-node-1" in active_nodes and paused != "bdag-miner-node-1" and "bdag-miner-node-1" in local_addrs:
             node2_peers.insert(0, local_addrs["bdag-miner-node-1"])
         updates["NODE2_PEER_ADDRESSES"] = unique_csv(node2_peers)
+    elif "NODE2_PEER_ADDRESSES" in values:
+        updates["NODE2_PEER_ADDRESSES"] = ""
     if local_addrs:
         updates["LOCAL_PEER_ADDRESSES"] = unique_csv([local_addrs[node] for node in active_nodes if node in local_addrs])
     for node, peer_id in peers.items():
         peer_id_keys = NODE_PEER_ID_ENV.get(node, ())
         if peer_id_keys:
             updates[peer_id_keys[0]] = peer_id
+    for node in NODE_SPECS:
+        if node in active_nodes:
+            continue
+        for peer_id_key in NODE_PEER_ID_ENV.get(node, ()):
+            if peer_id_key in values:
+                updates[peer_id_key] = ""
     updates["BDAG_NETWORK_TOPOLOGY"] = env_value(values, "BDAG_NETWORK_TOPOLOGY", "auto") or "auto"
     updates["BDAG_DETECTED_NETWORK_TOPOLOGY"] = topology
-    updates["BDAG_FASTSYNC_PEER_ORDERING"] = normalize_peer_ordering(env_value(values, "BDAG_FASTSYNC_PEER_ORDERING", "tiered-latency"))
-    updates["BDAG_FASTSYNC_LAN_PREFIXES"] = peer_values_for_ranking.get("BDAG_FASTSYNC_LAN_PREFIXES", "")
-    updates["BDAG_FASTSYNC_LAN_PEERS"] = unique_csv(peer_tiers.lan)
-    updates["BDAG_FASTSYNC_VPN_PEERS"] = unique_csv(peer_tiers.vpn)
-    updates["BDAG_FASTSYNC_PUBLIC_PEERS"] = unique_csv(peer_tiers.public)
+    updates["BDAG_FASTSYNC_PEER_ORDERING"] = normalize_peer_ordering(env_value(values, "BDAG_FASTSYNC_PEER_ORDERING", "p2p-latency"))
+    updates["BDAG_FASTSYNC_PEERS"] = unique_csv(remote_candidate_peers)
+    for legacy_key in (
+        "BDAG_P2P_LAN_PEERS",
+        "LAN_PEER_ADDRESSES",
+        "BDAG_FASTSYNC_LOCAL_PEERS",
+        "BDAG_P2P_VPN_PEERS",
+        "VPN_PEER_ADDRESSES",
+        "ZEROTIER_PEER_ADDRESSES",
+        "DISCOVERED_ZEROTIER_PEER_ADDRESSES",
+        "DISCOVERED_LAN_PEER_ADDRESSES",
+        "BDAG_FASTSYNC_PRIVATE_PEERS",
+        "BDAG_P2P_PUBLIC_PEERS",
+        "EXTRA_PEER_ADDRESSES",
+        "BDAG_FASTSYNC_LAN_PREFIXES",
+        "BDAG_FASTSYNC_LAN_PEERS",
+        "BDAG_FASTSYNC_VPN_PEERS",
+        "BDAG_FASTSYNC_PUBLIC_PEERS",
+    ):
+        if legacy_key in values:
+            updates[legacy_key] = ""
 
     changed = any(update_value_changed(key, values.get(key), value) for key, value in updates.items())
     if changed:
@@ -796,7 +756,7 @@ def main() -> int:
     print(f"host_ip={host_ip}")
     print(f"network_topology={topology}")
     print(f"active_nodes={','.join(active_nodes)}")
-    print(f"lan_peers={len(peer_tiers.lan)} vpn_peers={len(peer_tiers.vpn)} public_peers={len(public_peers)} excluded_asic_lan_peers={len(peer_tiers.excluded_asic_lan)} node1_public_peers={len(node1_public_peers)} node2_public_peers={len(node2_public_peers)} paused_follower={paused or 'none'}")
+    print(f"p2p_candidates={len(candidate_peers)} remote_p2p_candidates={len(remote_candidate_peers)} rejected_non_p2p={len(peer_candidates.rejected_non_p2p)} paused_follower={paused or 'none'}")
     for node, addr in local_addrs.items():
         print(f"{node}={addr}")
 

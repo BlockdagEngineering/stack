@@ -57,17 +57,16 @@ def server_line(name: str, address: str) -> list[str]:
         tokens = line.split()
         if len(tokens) >= 3 and tokens[0] == "server" and tokens[1] == name and tokens[2] == address:
             return tokens
-    raise SystemExit(f"missing HAProxy server {name} {address}")
+    return []
 
-node2 = server_line("node2", "bdag-miner-node-2:38131")
 node1 = server_line("node1", "bdag-miner-node-1:38131")
-if "backup" in node2:
-    raise SystemExit("node2 must be the primary HAProxy backend")
-if "backup" not in node1:
-    raise SystemExit("node1 must be configured as the backup backend")
-if node1[-1] != "backup":
-    raise SystemExit("node1 backup token must be last to match stack-sentinel canonical form")
-for name, tokens in (("node2", node2), ("node1", node1)):
+node2 = server_line("node2", "bdag-miner-node-2:38131")
+if not node1:
+    raise SystemExit("missing HAProxy server node1 bdag-miner-node-1:38131")
+
+for name, tokens in (("node1", node1), ("node2", node2)):
+    if not tokens:
+        continue
     if "resolvers" not in tokens or "docker" not in tokens:
         raise SystemExit(f"{name} is missing docker resolver semantics")
     try:
@@ -76,6 +75,17 @@ for name, tokens in (("node2", node2), ("node1", node1)):
         raise SystemExit(f"{name} is missing init-addr") from exc
     if index + 1 >= len(tokens) or tokens[index + 1] != "libc,none":
         raise SystemExit(f"{name} init-addr must include libc,none")
+if node2:
+    primary = [name for name, tokens in (("node1", node1), ("node2", node2)) if "backup" not in tokens]
+    backup = [name for name, tokens in (("node1", node1), ("node2", node2)) if "backup" in tokens]
+    if len(primary) != 1 or len(backup) != 1:
+        raise SystemExit("dual-node HAProxy config must have exactly one primary and one backup server")
+    if node1[-1] == "backup" or node2[-1] == "backup":
+        pass
+    else:
+        raise SystemExit("HAProxy backup token must be last to match stack-sentinel canonical form")
+elif "backup" in node1:
+    raise SystemExit("single-node HAProxy config must not mark node1 as backup")
 PY
 }
 
@@ -117,6 +127,7 @@ need_file "docs/t430-single-node-appliance-hardening.md"
 need_file "docs/five-asic-template-conversion-guard.html"
 need_file "docs/fastsnap-maintenance-resource-guard.html"
 need_file "scripts/mining-appliance-preflight.py"
+need_file "scripts/install-mining-appliance-profile.sh"
 need_file "docker-compose.yml"
 need_file "ops/systemd/user-bdag-stack-sentinel.timer"
 need_file "ops/systemd/user-bdag-status-sampler.service"
@@ -125,7 +136,16 @@ need_file "ops/systemd/user-bdag-incident-reporter.timer"
 need_file "ops/systemd/user-bdag-hourly-snapshot.timer"
 need_file "ops/systemd/user-bdag-chain-restore-guard.timer"
 need_file "ops/systemd/user-bdag-fastsnap-seed.timer"
+need_file "ops/systemd/user-bdag-rawdatadir-sidecar.service"
+need_file "ops/systemd/user-bdag-rawdatadir-sidecar.timer"
+need_file "ops/systemd/user-bdag-rawdatadir-source.service"
+need_file "ops/systemd/user-bdag-rawdatadir-source.timer"
 need_file "ops/build-fastsnap-seed.sh"
+need_file "ops/build-rawdatadir-artifact.sh"
+need_file "ops/fastartifact_source_eligibility.py"
+need_file "ops/fetch-rawdatadir-artifact.sh"
+need_file "ops/maintain-rawdatadir-sidecar.sh"
+need_file "ops/publish-rawdatadir-artifact.sh"
 need_file "haproxy.cfg"
 need_file "asic-pool/schema.sql"
 validate_runtime_compose
@@ -211,6 +231,13 @@ need_grep 'FAST_CATCHUP_REQUIRED_NODE_FLAG = "--fastartifactsync"' "ops/sync_coo
 need_grep 'apply_leader_catchup_resources' "ops/sync_coordinator.py"
 need_grep 'action = "accelerate_leader_catchup"' "ops/sync_coordinator.py"
 need_grep 'maybe_restart_leader_for_fast_sync' "ops/sync_coordinator.py"
+need_grep 'BDAG_FAST_CATCHUP_ARTIFACT_MODE.*auto' "ops/sync_coordinator.py"
+need_grep 'maybe_apply_fast_artifact_catchup' "ops/sync_coordinator.py"
+need_grep 'raw_datadir_checkpoint' "ops/sync_coordinator.py"
+need_grep 'FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED' "ops/sync_coordinator.py"
+need_grep 'def addpeer_values' "ops/sync_coordinator.py"
+need_grep 'bootstrap_stack_env' "ops/sync_coordinator.py"
+need_grep 'leader_height_unknown' "ops/sync_coordinator.py"
 need_grep 'action = "clear_pause_state"' "ops/sync_coordinator.py"
 need_grep 'resume_allowed_now = safe_int\(decision.get\("target_remaining_blocks"\)' "ops/sync_coordinator.py"
 reject_grep 'network_highest = max\(current_network_highest, remembered_highest, highest_height\)' "ops/sync_coordinator.py"
@@ -219,10 +246,9 @@ need_grep 'prefer the newest chain data only after the manifest is restore-safe'
 need_grep 'reject unsafe warm copies' "ops/latest_chain_candidate.py"
 need_grep 'latest-chain-candidate-state.json' "ops/latest_chain_candidate.py"
 
-need_grep 'def sort_public_peers_by_latency' "ops/update-local-peers.py"
 need_grep 'def detect_network_topology' "ops/update-local-peers.py"
-need_grep 'def tiered_peer_addresses' "ops/update-local-peers.py"
-need_grep 'def public_peer_assignment' "ops/update-local-peers.py"
+need_grep 'def p2p_peer_candidates' "ops/update-local-peers.py"
+need_grep 'rejected_non_p2p' "ops/update-local-peers.py"
 need_grep 'paused_follower=' "ops/update-local-peers.py"
 need_grep 'def active_mining_recreate_guard_reason' "ops/update-local-peers.py"
 need_grep 'BDAG_LOCAL_PEERS_DEFER_NODE_RECREATE_WHILE_MINING' "ops/update-local-peers.py"
@@ -236,11 +262,20 @@ need_grep 'BDAG_FASTSYNC_PREPROCESS_WORKERS=1' ".env.example"
 need_grep 'BDAG_FASTSNAP_DIRECTORY_MODE=1' ".env.example"
 need_grep 'BDAG_FASTSYNC_ARTIFACT_DIRECTORY=' ".env.example"
 need_grep 'BDAG_FASTSYNC_ARTIFACT_MANIFEST=' ".env.example"
+need_grep 'BDAG_NO_FASTSYNC_SERVE=auto' ".env.example"
+need_grep '^SNAPSHOT_NODE_ARGS_APPEND=$' ".env.example"
+reject_grep '^SNAPSHOT_NODE_ARGS_APPEND=--fastartifactsync$' ".env.example"
 need_grep 'BDAG_FASTARTIFACTSYNC_ENABLED=1' ".env.example"
 need_grep 'BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC=1' ".env.example"
 need_grep 'BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS=900' ".env.example"
-need_grep 'BDAG_FASTSNAP_SEED_TIMER_ENABLED=1' ".env.example"
-need_grep 'BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG=1000' ".env.example"
+need_grep 'BDAG_FAST_CATCHUP_ARTIFACT_MODE=auto' ".env.example"
+need_grep 'BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS=300' ".env.example"
+need_grep 'BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED=1' ".env.example"
+need_grep 'BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS=0' ".env.example"
+need_grep 'BDAG_FASTSNAP_SEED_TIMER_ENABLED=0' ".env.example"
+need_grep 'BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG=10000' ".env.example"
+need_grep 'BDAG_RAWDATADIR_SOURCE_MODE=auto' ".env.example"
+need_grep 'BDAG_RAWDATADIR_MAX_EXPORT_BACKEND_LAG=10000' ".env.example"
 need_grep 'BDAG_NODE_CHAIN_RPC_TIMEOUT=8.0' ".env.example"
 need_grep 'BDAG_NODE_CHAIN_RPC_RETRIES=2' ".env.example"
 need_grep 'BDAG_POOL_RPC_REFUSED_WARN_SECONDS=120' ".env.example"
@@ -272,6 +307,7 @@ need_grep 'POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS=1' ".env.example"
 need_grep 'POOL_RPC_ROUTER_NODE_HEALTH_UNREADY_THRESHOLD=1' ".env.example"
 need_grep 'POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT=true' ".env.example"
 need_grep 'POOL_SUBMIT_STALE_BLOCK_CANDIDATES=false' ".env.example"
+need_grep 'POOL_TEMPLATE_TTL_REFRESH_MS=500' ".env.example"
 need_grep 'POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS=800' ".env.example"
 need_grep 'POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED=true' ".env.example"
 need_grep 'POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD=1' ".env.example"
@@ -281,11 +317,18 @@ need_grep 'POOL_PREEMPTIVE_BLOCK_CANDIDATE_REFRESH_ENABLED=true' ".env.example"
 need_grep 'NODE_RPC_URLS=http://node:38131' ".env.example"
 need_grep 'POOL_SUBMIT_RPC_URLS=' ".env.example"
 need_grep 'apply_default_fastsync_flags' "docker/entrypoint-nodeworker.sh"
+need_grep 'apply_no_fastsync_serve_guard' "docker/entrypoint-nodeworker.sh"
+need_grep 'remove_node_arg_prefix "--fastartifactsync"' "docker/entrypoint-nodeworker.sh"
+need_grep 'nofastsyncserve' "docker/entrypoint-nodeworker.sh"
 need_grep 'BDAG_FASTARTIFACTSYNC_ENABLED' "docker/entrypoint-nodeworker.sh"
 need_grep 'fastsnap_supports_directory_mode' "docker/entrypoint-nodeworker.sh"
 need_grep 'apply_default_fastsync_flags' "ops/build-pi5-arm64-release.sh"
+need_grep 'apply_no_fastsync_serve_guard' "ops/build-pi5-arm64-release.sh"
+need_grep 'remove_node_arg_prefix "--fastartifactsync"' "ops/build-pi5-arm64-release.sh"
+need_grep 'nofastsyncserve' "ops/build-pi5-arm64-release.sh"
 need_grep 'BDAG_FASTARTIFACTSYNC_ENABLED' "ops/build-pi5-arm64-release.sh"
 need_grep 'fastsnap_supports_directory_mode' "ops/build-pi5-arm64-release.sh"
+need_grep 'fastsnap_supports_directory_mode "\$FASTSNAP"' "ops/build-pi5-arm64-release.sh"
 if [[ "$mode" == "live-runtime" ]]; then
   need_grep 'NODE_RPC_URLS: .*http://(node|rpc-failover):38131' "docker-compose.yml"
 else
@@ -299,6 +342,7 @@ need_grep 'POOL_SUBMIT_STALE_BLOCK_CANDIDATES: .*POOL_SUBMIT_STALE_BLOCK_CANDIDA
 need_grep 'POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: .*POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED' "docker-compose.yml"
 need_grep 'POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD: .*POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD' "docker-compose.yml"
 need_grep 'POOL_SUBMIT_STALE_BLOCK_CANDIDATES=false' "ops/build-pi5-arm64-release.sh"
+need_grep 'POOL_TEMPLATE_TTL_REFRESH_MS=500' "ops/build-pi5-arm64-release.sh"
 need_grep 'POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS=800' "ops/build-pi5-arm64-release.sh"
 need_grep 'POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED=true' "ops/build-pi5-arm64-release.sh"
 need_grep 'POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD=1' "ops/build-pi5-arm64-release.sh"
@@ -307,7 +351,7 @@ need_grep 'POOL_ALLOW_MULTIPLE_BLOCK_CANDIDATES_PER_JOB=true' "ops/build-pi5-arm
 need_grep 'POOL_PREEMPTIVE_BLOCK_CANDIDATE_REFRESH_ENABLED=true' "ops/build-pi5-arm64-release.sh"
 need_grep 'METRICS_ADDR: .*0.0.0.0:9090' "ops/build-pi5-arm64-release.sh"
 need_grep 'METRICS_ADDR=0.0.0.0:9090' "ops/build-pi5-arm64-release.sh"
-need_grep 'BDAG_STACK_SERVICES=pool-db,bdag-miner-node-2,rpc-failover,asic-pool' ".env.example"
+need_grep 'BDAG_STACK_SERVICES=pool-db,bdag-miner-node-1,rpc-failover,asic-pool' ".env.example"
 need_grep 'OnCalendar=hourly' "ops/systemd/user-bdag-hourly-snapshot.timer"
 need_grep 'RandomizedDelaySec=10s' "ops/systemd/user-bdag-node-child-guard.timer"
 need_grep 'RandomizedDelaySec=20s' "ops/systemd/user-bdag-sync-coordinator.timer"
@@ -323,7 +367,9 @@ need_grep '"can_mine": can_mine' "ops/pool_ops.py"
 need_grep '"can_accept_shares": can_accept_shares' "ops/pool_ops.py"
 need_grep '"can_submit_blocks": can_submit_blocks' "ops/pool_ops.py"
 need_grep '"truth_sources": truth_sources' "ops/pool_ops.py"
-need_grep '"chain_block_count": "eth_blockNumber/getBlockCount fallback"' "ops/pool_ops.py"
+need_grep '"chain_block_count": "getBlockCount chain RPC"' "ops/pool_ops.py"
+need_grep 'GLOBAL_STATS_SOURCE_TRUTH = "chain-rpc:getBlockCount/getBlockByOrder/getBlockHeader/getCoinbaseAddress"' "ops/pool_ops.py"
+need_grep 'def global_chain_rpc_urls' "ops/pool_ops.py"
 need_grep 'MINER_RETIREMENTS_FILE' "ops/pool_ops.py"
 need_grep 'def retired_miner_identity_decision' "ops/pool_ops.py"
 need_grep 'MAC is the only permanent ASIC identity' "ops/pool_ops.py"
@@ -384,6 +430,18 @@ need_grep 'maintenance_deferred' "ops/pool_ops.py"
 need_grep 'global blockchain scan deferred' "ops/pool_ops.py"
 need_grep 'background maintenance backoff active' "ops/hourly-chain-snapshot.sh"
 need_grep 'background maintenance backoff active' "ops/build-fastsnap-seed.sh"
+need_file "ops/ipfs_content_sidecar.py"
+need_file "ops/systemd/user-bdag-ipfs-content-sidecar.service"
+need_file "ops/systemd/user-bdag-ipfs-content-sidecar.timer"
+need_grep 'ipfs_is_untrusted_transport_manifest_and_consensus_are_authoritative' "ops/ipfs_content_sidecar.py"
+need_grep 'BDAG_IPFS_CONTENT_SIDECAR_MODE=auto' ".env.example"
+need_grep 'install_ipfs_content_sidecar_timer' "ops/install-p2p-services.sh"
+need_grep 'publish_allowed' "ops/install-p2p-services.sh"
+need_grep 'raw_datadir_checkpoint' "ops/build-rawdatadir-artifact.sh"
+need_grep 'BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=1' "ops/publish-rawdatadir-artifact.sh"
+need_grep 'BDAG_FAST_CATCHUP_ARTIFACT_MODE auto' "ops/install-dashboard.sh"
+need_grep 'usb_or_removable' "ops/fastartifact_source_eligibility.py"
+need_grep 'BDAG_FASTSNAP_SEED_TIMER_ENABLED 0' "ops/install-dashboard.sh"
 need_grep 'iowait=' "ops/dashboard.py"
 need_grep 'dashboard_url' "ops/dashboard.py"
 need_grep 'getBlockCount' "ops/pool_ops.py"
@@ -440,17 +498,39 @@ need_grep 'BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER=2' "ops/build-pi5-arm64-releas
 need_grep 'BDAG_ENTRYPOINT_CHOWN_MODE=needed' "ops/build-pi5-arm64-release.sh"
 need_grep 'BDAG_FASTSYNC_PREPROCESS_WORKERS=1' "ops/build-pi5-arm64-release.sh"
 need_grep 'BDAG_NETWORK_TOPOLOGY=auto' ".env.example"
-need_grep 'BDAG_ASIC_LAN_CIDRS=192.168.50.0/24' ".env.example"
-need_grep 'BDAG_ALLOW_ASIC_LAN_P2P=0' ".env.example"
-need_grep 'BDAG_FASTSYNC_PEER_ORDERING=tiered-latency' ".env.example"
-need_grep 'BDAG_FASTSYNC_PEER_ORDERING=tiered-latency' "ops/build-pi5-arm64-release.sh"
-need_grep 'BDAG_FASTSYNC_LAN_PEERS' "ops/build-pi5-arm64-release.sh"
-need_grep 'tiered latency FastSync candidates enabled' "ops/build-pi5-arm64-release.sh"
-need_grep 'tiered latency FastSync candidates enabled' "docker/entrypoint-nodeworker.sh"
+need_grep 'BDAG_ASIC_LAN_CIDRS=' ".env.example"
+need_grep 'BDAG_FASTSYNC_PEER_ORDERING=p2p-latency' ".env.example"
+need_grep 'BDAG_FASTSYNC_PEER_ORDERING=p2p-latency' "ops/build-pi5-arm64-release.sh"
+need_grep 'P2P latency/usefulness FastSync candidates enabled' "ops/build-pi5-arm64-release.sh"
+need_grep 'P2P latency/usefulness FastSync candidates enabled' "docker/entrypoint-nodeworker.sh"
 need_grep 'single-node-asic-router' "ops/update-local-peers.py"
-need_grep 'BDAG_ALLOW_ASIC_LAN_P2P' "docker/entrypoint-nodeworker.sh"
+reject_grep 'BDAG_ALLOW_ASIC_LAN_P2P' ".env.example"
+reject_grep 'BDAG_P2P_LAN_PEERS=' ".env.example"
+reject_grep 'BDAG_P2P_VPN_PEERS=' ".env.example"
+reject_grep 'BDAG_FASTSYNC_LAN_PEERS=' ".env.example"
+reject_grep 'BDAG_FASTSYNC_VPN_PEERS=' ".env.example"
+reject_grep 'BDAG_ALLOW_ASIC_LAN_P2P' "docker-compose.yml"
+reject_grep 'BDAG_P2P_LAN_PEERS:' "docker-compose.yml"
+reject_grep 'BDAG_P2P_VPN_PEERS:' "docker-compose.yml"
+reject_grep 'BDAG_FASTSYNC_LAN_PEERS:' "docker-compose.yml"
+reject_grep 'BDAG_FASTSYNC_VPN_PEERS:' "docker-compose.yml"
+reject_grep 'BDAG_FASTSYNC_LAN_PEERS:' "docker-compose-miner.yml"
+reject_grep 'BDAG_FASTSYNC_VPN_PEERS:' "docker-compose-miner.yml"
+reject_grep 'BDAG_ALLOW_ASIC_LAN_P2P' "ops/build-pi5-arm64-release.sh"
+reject_grep 'BDAG_P2P_LAN_PEERS:' "ops/build-pi5-arm64-release.sh"
+reject_grep 'BDAG_P2P_VPN_PEERS:' "ops/build-pi5-arm64-release.sh"
+reject_grep 'BDAG_FASTSYNC_LAN_PEERS:' "ops/build-pi5-arm64-release.sh"
+reject_grep 'BDAG_FASTSYNC_VPN_PEERS:' "ops/build-pi5-arm64-release.sh"
+reject_grep 'REMOTE_ZT_IP' "ops/monitor-fastsync-peers.sh"
+reject_grep 'remote_zerotier_ip' "ops/monitor-fastsync-peers.sh"
+reject_grep 'zerotier_peers' "ops/monitor-fastsync-peers.sh"
 if [[ "$mode" == "source" ]]; then
-  need_grep 'BDAG_FASTSYNC_PEER_ORDERING=tiered-latency' ".env.cpu.example"
+  need_grep 'BDAG_FASTSYNC_PEER_ORDERING=p2p-latency' ".env.cpu.example"
+  reject_grep 'BDAG_ALLOW_ASIC_LAN_P2P' ".env.cpu.example"
+  reject_grep 'BDAG_P2P_LAN_PEERS=' ".env.cpu.example"
+  reject_grep 'BDAG_P2P_VPN_PEERS=' ".env.cpu.example"
+  reject_grep 'BDAG_FASTSYNC_LAN_PEERS=' ".env.cpu.example"
+  reject_grep 'BDAG_FASTSYNC_VPN_PEERS=' ".env.cpu.example"
 fi
 need_grep 'BDAG_FASTSNAP_DOCKER_CPUS:-1.5' "ops/build-fastsnap-seed.sh"
 need_grep 'five-asic-template-conversion-guard.html' "AGENTS.md"
@@ -486,7 +566,7 @@ if [[ "$mode" == "source" ]]; then
   need_grep 'check-release-archive.py' ".github/workflows/build-cpu.yml"
   need_grep 'GOFLAGS: "-buildvcs=false"' ".github/workflows/build.yml"
   need_grep 'GOFLAGS: "-buildvcs=false"' ".github/workflows/build-cpu.yml"
-  need_grep 'e10dd5d8fb57aefa73a682ff69c94eac5c2b50f4' ".github/workflows/build.yml"
+  need_grep 'c74f88b9c1b4fbf4213e15272d3bf1f63943e839' ".github/workflows/build.yml"
   need_grep '61b231c0501b32338f4ad47561a09e03e5933adc' ".github/workflows/build.yml"
   need_grep 'if ! command -v jq' "ops/monitor-fastsync-peers.sh"
 fi
@@ -501,7 +581,7 @@ need_grep 'stack-sentinel.timer' "ops/install-dashboard.sh"
 need_grep 'stack_sentinel.py' "ops/install-dashboard.sh"
 need_grep 'chain_restore_guard.py' "ops/install-dashboard.sh"
 need_grep 'update-local-peers.py --apply' "ops/install-dashboard.sh"
-need_grep 'pool-db,bdag-miner-node-2,rpc-failover,asic-pool' "ops/install-dashboard.sh"
+need_grep 'pool-db,bdag-miner-node-1,rpc-failover,asic-pool' "ops/install-dashboard.sh"
 
 validate_haproxy_semantics
 

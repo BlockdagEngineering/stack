@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import os
 import pathlib
 import sys
+import tempfile
 import time
+import types
 import unittest
+import unittest.mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -50,13 +54,54 @@ class SyncCoordinatorFastCatchupTest(unittest.TestCase):
     def test_single_node_within_policy_monitors(self) -> None:
         decision = sync_coordinator.build_decision(self.status(remaining=999), {})
         self.assertEqual(decision["action"], "monitor")
+        self.assertEqual(decision["reason"], "single-node sync is within policy")
         self.assertFalse(decision["far_behind"])
+
+    def test_running_node_with_unknown_height_accelerates_recovery(self) -> None:
+        status = {
+            "containers": {"node": {"running": True}},
+            "nodes": {"node": {"latest_block": 0, "last_import_age_seconds": 9999}},
+            "sync_progress": {"highest_block": 0, "nodes": {"node": {"current_block": 0}}},
+        }
+        decision = sync_coordinator.build_decision(status, {})
+        self.assertEqual(decision["action"], "accelerate_leader_catchup")
+        self.assertEqual(decision["leader"], "node")
+        self.assertTrue(decision["leader_height_unknown"])
+        self.assertTrue(decision["far_behind"])
+
+    def test_single_node_ignores_retired_paused_follower_state(self) -> None:
+        previous_state = {
+            "mode": "leader_catchup",
+            "paused_follower": "node2",
+            "paused_follower_remaining_blocks": 200_000,
+            "last_decision": {
+                "network_highest": 10_500,
+                "nodes": {
+                    "node": {"height": 9000, "remaining_blocks": 1500},
+                    "node2": {"height": 0, "remaining_blocks": 200_000},
+                },
+            },
+        }
+
+        decision = sync_coordinator.build_decision(self.status(remaining=1500), previous_state)
+
+        self.assertEqual(decision["action"], "accelerate_leader_catchup")
+        self.assertEqual(decision["leader"], "node")
+        self.assertEqual(decision["target"], "")
+        self.assertNotIn("node2", decision["nodes"])
 
     def test_command_line_fastartifact_flag_detection(self) -> None:
         self.assertTrue(sync_coordinator.node_command_has_fast_artifact_sync("/usr/local/bin/blockdag-node --fastartifactsync"))
         self.assertTrue(sync_coordinator.node_command_has_fast_artifact_sync("/usr/local/bin/blockdag-node --fastartifactsync=true"))
         self.assertFalse(sync_coordinator.node_command_has_fast_artifact_sync("/usr/local/bin/blockdag-node --fastartifactsync=false"))
         self.assertFalse(sync_coordinator.node_command_has_fast_artifact_sync("/usr/local/bin/blockdag-node"))
+
+    def test_command_line_no_fastsync_serve_detection(self) -> None:
+        self.assertTrue(sync_coordinator.node_command_disables_fastsync_serve("/usr/local/bin/blockdag-node --nofastsyncserve"))
+        self.assertTrue(sync_coordinator.node_command_disables_fastsync_serve("/usr/local/bin/blockdag-node --nofastsyncserve=true"))
+        self.assertFalse(sync_coordinator.node_command_disables_fastsync_serve("/usr/local/bin/blockdag-node --nofastsyncserve=false"))
+        with unittest.mock.patch.dict(sync_coordinator.os.environ, {"BDAG_NO_FASTSYNC_SERVE": "1"}, clear=False):
+            self.assertTrue(sync_coordinator.node_command_disables_fastsync_serve("/usr/local/bin/blockdag-node"))
 
     def test_missing_fastartifact_flag_requests_restart(self) -> None:
         decision = sync_coordinator.build_decision(self.status(remaining=1500), {})
@@ -67,6 +112,45 @@ class SyncCoordinatorFastCatchupTest(unittest.TestCase):
             True,
         )
         self.assertIn("--fastartifactsync", reason)
+
+    def test_no_fastsync_serve_flag_suppresses_missing_fastartifact_restart(self) -> None:
+        decision = sync_coordinator.build_decision(self.status(remaining=1500), {})
+        reason = sync_coordinator.fast_sync_restart_reason(
+            decision,
+            {},
+            "/usr/local/bin/blockdag-node --nofastsyncserve",
+            True,
+        )
+        self.assertEqual(reason, "")
+
+    def test_no_fastsync_serve_env_suppresses_missing_fastartifact_restart(self) -> None:
+        decision = sync_coordinator.build_decision(self.status(remaining=1500), {})
+        with unittest.mock.patch.dict(sync_coordinator.os.environ, {"BDAG_NO_FASTSYNC_SERVE": "1"}, clear=False):
+            reason = sync_coordinator.fast_sync_restart_reason(
+                decision,
+                {},
+                "/usr/local/bin/blockdag-node --configfile /etc/bdagStack/node.conf",
+                True,
+            )
+        self.assertEqual(reason, "")
+
+    def test_disabled_fastartifact_env_suppresses_missing_flag_restart(self) -> None:
+        decision = sync_coordinator.build_decision(self.status(remaining=1500), {})
+        previous = os.environ.get("BDAG_FASTARTIFACTSYNC_ENABLED")
+        os.environ["BDAG_FASTARTIFACTSYNC_ENABLED"] = "0"
+        try:
+            reason = sync_coordinator.fast_sync_restart_reason(
+                decision,
+                {},
+                "/usr/local/bin/blockdag-node --configfile /etc/bdagStack/node.conf",
+                True,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("BDAG_FASTARTIFACTSYNC_ENABLED", None)
+            else:
+                os.environ["BDAG_FASTARTIFACTSYNC_ENABLED"] = previous
+        self.assertEqual(reason, "")
 
     def test_restart_cooldown_suppresses_restart_reason(self) -> None:
         decision = sync_coordinator.build_decision(self.status(remaining=1500), {})
@@ -97,6 +181,89 @@ class SyncCoordinatorFastCatchupTest(unittest.TestCase):
             True,
         )
         self.assertIn("stale", reason)
+
+    def test_rawdatadir_peer_candidates_are_fastest_first_and_deduped(self) -> None:
+        env_values = {
+            "BDAG_RAWDATADIR_PEERS": "/ip4/10.0.0.2/tcp/8151/p2p/raw",
+            "BDAG_FASTSYNC_LAN_PEERS": "/ip4/192.168.1.2/tcp/8151/p2p/lan,/ip4/10.0.0.2/tcp/8151/p2p/raw",
+            "BDAG_FASTSYNC_VPN_PEERS": "/ip4/10.207.244.12/tcp/8151/p2p/vpn",
+            "BDAG_FASTSYNC_PUBLIC_PEERS": "/ip4/203.0.113.1/tcp/8151/p2p/public",
+            "NODE_ARGS_APPEND": "--addpeer=/ip4/198.51.100.1/tcp/8151/p2p/addpeer",
+        }
+        with unittest.mock.patch.dict(sync_coordinator.os.environ, {}, clear=True):
+            self.assertEqual(
+                sync_coordinator.fastest_artifact_peer_candidates(env_values),
+                [
+                    "/ip4/10.0.0.2/tcp/8151/p2p/raw",
+                    "/ip4/192.168.1.2/tcp/8151/p2p/lan",
+                    "/ip4/10.207.244.12/tcp/8151/p2p/vpn",
+                    "/ip4/203.0.113.1/tcp/8151/p2p/public",
+                    "/ip4/198.51.100.1/tcp/8151/p2p/addpeer",
+                ],
+            )
+
+    def test_rawdatadir_manifest_probe_uses_supported_fastsnap_options(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(command: list[str], timeout: int = 20):
+            calls.append(command)
+            if command == ["fastsnap", "--help"]:
+                return types.SimpleNamespace(ok=True, stdout="Usage:\n  -manifest-only\n  -artifact-v2\n", stderr="")
+            return types.SimpleNamespace(ok=True, stdout='{"block_total": 9100000}', stderr="")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with unittest.mock.patch.object(sync_coordinator, "run", fake_run):
+                sync_coordinator.FASTSNAP_HELP_CACHE.clear()
+                manifest = sync_coordinator.probe_rawdatadir_manifest(
+                    "/ip4/10.0.0.2/tcp/8151/p2p/raw",
+                    {"BDAG_RAWDATADIR_FASTSNAP_BINARY": "fastsnap"},
+                    pathlib.Path(tmpdir) / "probe.log",
+                )
+
+        probe_command = next(command for command in calls if "--manifest-only" in command)
+        self.assertEqual(manifest, {"block_total": 9100000})
+        self.assertIn("--artifact-v2=true", probe_command)
+        self.assertNotIn("--artifact-type", probe_command)
+
+    def test_signed_manifest_provides_trust_on_first_signed_spec(self) -> None:
+        manifest = {
+            "artifact_type": "raw_datadir_checkpoint",
+            "block_total": 9_100_000,
+            "signatures": [
+                {
+                    "key_id": "pool-abc",
+                    "public_key": "0123456789abcdef",
+                    "signature": "feedface",
+                }
+            ],
+        }
+        self.assertEqual(
+            sync_coordinator.collect_signature_specs(manifest),
+            ["pool-abc:0123456789abcdef"],
+        )
+        self.assertEqual(sync_coordinator.rawdatadir_manifest_progress(manifest)["best_height"], 9_100_000)
+
+    def test_unsigned_manifest_does_not_create_trust_spec(self) -> None:
+        manifest = {
+            "artifact_type": "raw_datadir_checkpoint",
+            "block_total": 9_100_000,
+            "key_id": "pool-abc",
+            "public_key": "0123456789abcdef",
+        }
+        self.assertEqual(sync_coordinator.collect_signature_specs(manifest), [])
+
+    def test_rawdatadir_retry_cooldown_suppresses_immediate_retry(self) -> None:
+        remaining = sync_coordinator.fast_artifact_retry_cooldown_remaining(
+            {"last_fast_artifact_attempt_epoch": int(time.time())}
+        )
+        self.assertGreater(remaining, 0)
+
+    def test_rawdatadir_peer_batch_keeps_pinned_fastest_peer(self) -> None:
+        state = {"fast_artifact_probe_cursor": 2}
+        peers = ["raw", "lan", "vpn", "public"]
+        batch = sync_coordinator.peer_probe_batch(peers, state, pinned_count=1)
+        self.assertEqual(batch[0], "raw")
+        self.assertIn("public", batch)
 
     def test_legacy_restart_lagging_follower_flag_remains_compatible(self) -> None:
         args = sync_coordinator.parse_args([
