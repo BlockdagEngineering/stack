@@ -150,7 +150,21 @@ case "${USE_SUDO,,}" in
 esac
 
 log "syncing raw datadir sidecar source=$SOURCE_DIR target=$SIDECAR_DIR"
+set +e
 run_low_priority "${rsync_command[@]}" "${rsync_args[@]}" "$SOURCE_DIR/" "$SIDECAR_DIR/" 2>&1 | tee -a "$LOG_FILE"
+rsync_status="${PIPESTATUS[0]}"
+set -e
+case "$rsync_status" in
+  0)
+    ;;
+  24)
+    log "raw datadir sidecar sync saw vanished hot-db files; continuing with best-effort hot sidecar seal"
+    ;;
+  *)
+    log "raw datadir sidecar sync failed rc=$rsync_status"
+    exit "$rsync_status"
+    ;;
+esac
 log "raw datadir sidecar sync complete"
 python3 - "$STATUS_FILE" "$SOURCE_DIR" "$SIDECAR_DIR" <<'PY'
 import json

@@ -254,8 +254,30 @@ class GlobalTabFallbackTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "stale")
         self.assertTrue(payload["cache_hit"])
-        self.assertEqual(payload["latest_block"], 100)
+        self.assertEqual(payload["latest_block"], 101)
+        self.assertEqual(payload["scan_end_block"], 100)
+        self.assertEqual(payload["chain_tip_lag_blocks"], 1)
         self.assertIn("tip lag 1", payload["fetch_errors"][0])
+
+    def test_global_live_head_promotes_latest_block_without_losing_scan_window(self) -> None:
+        old_probe = pool_ops.probe_global_chain_block_count
+        self.addCleanup(lambda: setattr(pool_ops, "probe_global_chain_block_count", old_probe))
+        pool_ops.probe_global_chain_block_count = lambda: (150, "chain", "http://chain-rpc", [])
+
+        payload = pool_ops.refresh_global_chain_head(
+            {
+                "status": "ok",
+                "latest_block": 100,
+                "chain_block_count": 100,
+                "scan_end_block": 99,
+                "clusters": [{"address": "0xabc", "blocks": 1}],
+            }
+        )
+
+        self.assertEqual(payload["latest_block"], 150)
+        self.assertEqual(payload["chain_latest_block"], 150)
+        self.assertEqual(payload["scan_end_block"], 99)
+        self.assertEqual(payload["chain_tip_lag_blocks"], 51)
 
 
 class GlobalHistoryWriteTests(unittest.TestCase):
