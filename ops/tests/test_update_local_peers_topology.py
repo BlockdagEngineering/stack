@@ -25,7 +25,7 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
             if command == ["ip", "-br", "addr"]:
                 return "\n".join(
                     [
-                        "eth0 UP 192.168.50.1/24",
+                        "eth0 UP 192.168.1.105/24",
                         "wlan0 UP 192.168.68.60/22",
                         "ztcdcjczoy UNKNOWN 10.207.244.83/24",
                     ]
@@ -37,39 +37,57 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
             values = {
                 "BDAG_NETWORK_TOPOLOGY": "auto",
                 "BDAG_ASIC_LAN_INTERFACE": "eth0",
-                "BDAG_ASIC_LAN_CIDRS": "192.168.50.0/24",
+                "BDAG_ASIC_LAN_CIDRS": "192.168.1.0/24",
             }
             self.assertEqual("single-node-asic-router", update_local_peers.detect_network_topology(values))
             self.assertEqual("192.168.68.60", update_local_peers.choose_local_ip(values=values))
         finally:
             update_local_peers.run = old_run
 
-    def test_tiered_peers_excludes_asic_lan_and_keeps_private_before_public(self) -> None:
+    def test_p2p_candidates_merge_all_complete_peer_sources_by_latency(self) -> None:
         old_latency = update_local_peers.peer_tcp_latency
-        update_local_peers.peer_tcp_latency = lambda peer: (True, 5.0)
+
+        def fake_latency(peer: str) -> tuple[bool, float]:
+            if "peerASIC" in peer:
+                return True, 1.0
+            if "peerVPN" in peer:
+                return True, 2.0
+            if "peerPUB" in peer:
+                return True, 3.0
+            if "peerLAN" in peer:
+                return True, 4.0
+            return False, float("inf")
+
+        update_local_peers.peer_tcp_latency = fake_latency
         try:
             values = {
                 "BDAG_P2P_LAN_PEERS": "/ip4/192.168.68.55/tcp/8152/p2p/peerLAN",
                 "BDAG_P2P_VPN_PEERS": "/ip4/10.207.244.12/tcp/8152/p2p/peerVPN",
                 "BOOTSTRAP_PEER_ADDRESSES": ",".join(
                     [
-                        "/ip4/192.168.50.22/tcp/8152/p2p/peerASIC",
+                        "/ip4/192.168.1.22/tcp/8152/p2p/peerASIC",
                         "/ip4/13.245.135.249/tcp/18150/p2p/peerPUB",
                     ]
                 ),
-                "BDAG_ASIC_LAN_CIDRS": "192.168.50.0/24",
+                "BDAG_ASIC_LAN_CIDRS": "192.168.1.0/24",
             }
 
-            tiers = update_local_peers.tiered_peer_addresses(values, "single-node-asic-router")
+            candidates = update_local_peers.p2p_peer_candidates(values)
         finally:
             update_local_peers.peer_tcp_latency = old_latency
 
-        self.assertEqual(["/ip4/192.168.68.55/tcp/8152/p2p/peerLAN"], tiers.lan)
-        self.assertEqual(["/ip4/10.207.244.12/tcp/8152/p2p/peerVPN"], tiers.vpn)
-        self.assertEqual(["/ip4/13.245.135.249/tcp/18150/p2p/peerPUB"], tiers.public)
-        self.assertEqual(["/ip4/192.168.50.22/tcp/8152/p2p/peerASIC"], tiers.excluded_asic_lan)
+        self.assertEqual(
+            [
+                "/ip4/192.168.1.22/tcp/8152/p2p/peerASIC",
+                "/ip4/10.207.244.12/tcp/8152/p2p/peerVPN",
+                "/ip4/13.245.135.249/tcp/18150/p2p/peerPUB",
+                "/ip4/192.168.68.55/tcp/8152/p2p/peerLAN",
+            ],
+            candidates.peers,
+        )
+        self.assertEqual([], candidates.rejected_non_p2p)
 
-    def test_stale_private_lan_address_does_not_outrank_reachable_vpn(self) -> None:
+    def test_address_class_does_not_outrank_measured_latency(self) -> None:
         old_run = update_local_peers.run
         old_latency = update_local_peers.peer_tcp_latency
 
@@ -77,7 +95,7 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
             if command == ["ip", "-br", "addr"]:
                 return "\n".join(
                     [
-                        "eth0 UP 192.168.50.1/24",
+                        "eth0 UP 192.168.1.105/24",
                         "wlan0 UP 192.168.68.60/22",
                         "ztcdcjczoy UNKNOWN 10.207.244.83/24",
                     ]
@@ -88,9 +106,11 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
 
         def fake_latency(peer: str) -> tuple[bool, float]:
             if "192.168.68.55" in peer:
-                return True, 0.002
+                return True, 4.0
             if "10.207.244.12" in peer:
-                return True, 0.003
+                return True, 2.0
+            if "192.168.1.120" in peer:
+                return True, 1.0
             return False, float("inf")
 
         try:
@@ -104,24 +124,24 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
                         "/ip4/10.207.244.12/tcp/8152/p2p/peerVPN",
                     ]
                 ),
-                "BDAG_ASIC_LAN_CIDRS": "192.168.50.0/24",
+                "BDAG_ASIC_LAN_CIDRS": "192.168.1.0/24",
             }
 
-            tiers = update_local_peers.tiered_peer_addresses(values, "single-node-asic-router")
+            candidates = update_local_peers.p2p_peer_candidates(values)
         finally:
             update_local_peers.run = old_run
             update_local_peers.peer_tcp_latency = old_latency
 
-        self.assertEqual(["/ip4/192.168.68.55/tcp/8152/p2p/peerLAN"], tiers.lan)
         self.assertEqual(
             [
-                "/ip4/10.207.244.12/tcp/8152/p2p/peerVPN",
                 "/ip4/192.168.1.120/tcp/8152/p2p/peerOLDLAN",
+                "/ip4/10.207.244.12/tcp/8152/p2p/peerVPN",
+                "/ip4/192.168.68.55/tcp/8152/p2p/peerLAN",
             ],
-            tiers.vpn,
+            candidates.peers,
         )
-        self.assertEqual("", update_local_peers.normalize_lan_prefixes({"BDAG_FASTSYNC_LAN_PREFIXES": "192.168."}, "single-node-asic-router"))
-        self.assertEqual("tiered-latency", update_local_peers.normalize_peer_ordering("1"))
+        self.assertEqual("p2p-latency", update_local_peers.normalize_peer_ordering("1"))
+        self.assertEqual("p2p-latency", update_local_peers.normalize_peer_ordering("tiered-latency"))
 
     def test_single_active_node_does_not_add_itself_as_a_peer(self) -> None:
         peers = [
@@ -137,6 +157,28 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
             ],
             update_local_peers.without_peer_ids(peers, {"localNode2"}),
         )
+
+    def test_single_active_node_drops_inactive_local_node_addrs(self) -> None:
+        old_local_ipv4_addresses = update_local_peers.local_ipv4_addresses
+        try:
+            update_local_peers.local_ipv4_addresses = lambda: ["192.168.1.120", "10.207.244.12"]
+            peers = [
+                "/ip4/192.168.1.120/tcp/8152/p2p/oldLocalNode2",
+                "/ip4/10.207.244.12/tcp/8152/p2p/oldLocalNode2Vpn",
+                "/dns4/bdag-miner-node-2/tcp/8152/p2p/oldLocalNode2Dns",
+                "/ip4/10.207.244.83/tcp/8152/p2p/remoteNode",
+            ]
+
+            self.assertEqual(
+                ["/ip4/10.207.244.83/tcp/8152/p2p/remoteNode"],
+                update_local_peers.without_inactive_local_node_peers(
+                    peers,
+                    ["bdag-miner-node-1"],
+                    "192.168.1.120",
+                ),
+            )
+        finally:
+            update_local_peers.local_ipv4_addresses = old_local_ipv4_addresses
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ from urllib.request import Request, urlopen
 from incident_journal import read_recent_incidents
 from pool_ops import (
     EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS,
+    GLOBAL_STATS_SOURCE_TRUTH,
     PROJECT_ROOT,
     RUNTIME_DIR,
     collect_global_blockchain,
@@ -54,7 +55,6 @@ P2P_GUARD_STATE = RUNTIME_DIR / "p2p-health-state.json"
 REPORTS_DIR = RUNTIME_DIR / "reports"
 STATUS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_STATUS_CACHE_SECONDS", "10"))
 EARNINGS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_EARNINGS_CACHE_SECONDS", "30"))
-GLOBAL_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_GLOBAL_CACHE_SECONDS", "60"))
 SAMPLER_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS", "10"))
 EARNINGS_SAMPLER_ENABLED = os.environ.get("BDAG_DASHBOARD_EARNINGS_SAMPLER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 EARNINGS_SAMPLER_INTERVAL_SECONDS = max(
@@ -878,6 +878,16 @@ HTML = r"""<!doctype html>
       min-width: 100%;
       table-layout: auto;
     }
+    .equal-column-table {
+      width: 100%;
+      min-width: 100%;
+      table-layout: fixed;
+    }
+    .equal-column-table th,
+    .equal-column-table td,
+    .equal-column-table .nowrap {
+      white-space: normal;
+    }
     .chart-wrap {
       height: 280px;
       margin-top: 10px;
@@ -1161,10 +1171,10 @@ HTML = r"""<!doctype html>
     </div>
   </header>
   <nav class="tabs">
-    <button id="tabButton-status" class="tab-button active" onclick="showTab('status')">Pool Status</button>
-    <button id="tabButton-miners" class="tab-button" onclick="showTab('miners')">Miners</button>
-    <button id="tabButton-global" class="tab-button" onclick="showTab('global')">Global</button>
-    <button id="tabButton-earnings" class="tab-button" onclick="showTab('earnings')">Earnings</button>
+    <button id="tabButton-status" class="tab-button active" onclick="showTab('status')">Status: Stack</button>
+    <button id="tabButton-miners" class="tab-button" onclick="showTab('miners')">Miners: Local ASICs</button>
+    <button id="tabButton-global" class="tab-button" onclick="showTab('global')">Global: Chain Production</button>
+    <button id="tabButton-earnings" class="tab-button" onclick="showTab('earnings')">Earnings: Wallet</button>
   </nav>
   <main>
     <section id="tab-status" class="tab-page">
@@ -1231,7 +1241,7 @@ HTML = r"""<!doctype html>
     <section id="tab-miners" class="tab-page hidden">
       <section class="grid">
         <div class="panel span-12">
-          <div class="kpi-label">Tracked Miner Health</div>
+          <div class="kpi-label">Active Miner Lanes</div>
           <div id="minerHealthSummary" class="subtle" style="margin-top: 8px;"></div>
           <div class="table-scroll">
           <table class="wide-table">
@@ -1335,15 +1345,17 @@ HTML = r"""<!doctype html>
       </section>
       <section class="grid">
         <div class="panel span-12">
-          <div class="kpi-label">Estimated Earnings By Pool</div>
-          <div class="subtle" style="margin-top: 8px;">Pool addresses are clustered from recent block headers and rendered like miner rows for consistency.</div>
+          <div class="kpi-label">Confirmed Chain Production By Pool</div>
+          <div class="subtle" style="margin-top: 8px;">Pool rows use chain-confirmed production over the displayed Scan Window.</div>
+          <div class="subtle" id="globalTableWindow" style="margin-top: 8px;">Table period: waiting for scan window.</div>
+          <div class="subtle" id="globalSourceStatus" style="margin-top: 8px;">Waiting for chain RPC source details.</div>
           <div class="table-scroll" style="margin-top: 12px;">
-            <table class="wide-table">
-              <thead><tr><th class="nowrap">Pool</th><th class="nowrap">Nodes</th><th class="right">Shares</th><th class="right">Work %</th><th class="right">Credit Blocks</th><th class="right">Credited BDAG</th><th class="right">Found Blocks</th><th class="right">Est. Wallet BDAG</th><th class="right">Avg USD/h</th><th class="right">Wallet Avg BDAG/h</th><th class="right">USD Total</th><th class="right">ZAR Total</th><th>Last Seen</th></tr></thead>
+            <table class="wide-table equal-column-table">
+              <thead><tr><th class="nowrap">Pool</th><th class="right">Chain Blocks In Window</th><th class="right">Work %</th><th class="right">Reward BDAG</th><th class="right">Est. Wallet BDAG</th><th class="right">USD Total</th><th class="right">ZAR Total</th><th>Last Seen</th></tr></thead>
               <tbody id="globalPoolsTable"></tbody>
             </table>
           </div>
-          <div class="subtle" style="margin-top: 10px;">Per-pool earnings are estimated from recent block production share and current reward pricing.</div>
+          <div class="subtle" style="margin-top: 10px;">Credit-block and found-block duplicates are intentionally hidden; chain blocks remain separate when local pool shares differ from chain-confirmed production.</div>
         </div>
       </section>
       <section class="grid">
@@ -2003,16 +2015,30 @@ HTML = r"""<!doctype html>
     function selectAllMiners(checked) {
       for (const input of document.querySelectorAll(".miner-select")) input.checked = checked;
     }
+    function activeMinerLaneRow(miner) {
+      if (!miner) return false;
+      return Boolean(
+        miner.connected
+        || miner.pool_active
+        || miner.configured
+        || miner.managed
+        || miner.expected_work_lane
+        || miner.work_pool_active
+        || (miner.lane_status && miner.lane_status !== "not-tracked")
+      );
+    }
     function renderManagedMiners(health) {
       const tbody = document.getElementById("managedMinersTable");
       if (!tbody) return;
       tbody.innerHTML = "";
       const lane = health.lane_balance || {};
-      text("minerHealthSummary", `tracked=${fmt(health.tracked_count || 0)} connected=${fmt(health.connected_count || 0)} managed=${fmt(health.managed_count || 0)} ok=${fmt(health.ok_count || 0)} stratum=${fmt(health.stratum_count || 0)} lanes=${fmt(lane.expected_lane_count || 0)} expected=${escapeHtml(lane.expected_work_percent || "0.00")}% imbalanced=${fmt(lane.imbalanced_count || 0)}`);
-      const rows = health.miners || [];
+      const allRows = health.miners || [];
+      const rows = allRows.filter(activeMinerLaneRow);
+      const hiddenRows = Math.max(0, allRows.length - rows.length);
+      text("minerHealthSummary", `active=${fmt(rows.length)} hidden-inactive=${fmt(hiddenRows)} tracked=${fmt(health.tracked_count || 0)} connected=${fmt(health.connected_count || 0)} managed=${fmt(health.managed_count || 0)} ok=${fmt(health.ok_count || 0)} stratum=${fmt(health.stratum_count || 0)} lanes=${fmt(lane.expected_lane_count || 0)} expected=${escapeHtml(lane.expected_work_percent || "0.00")}% imbalanced=${fmt(lane.imbalanced_count || 0)}`);
       if (!rows.length) {
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td colspan="14" class="subtle">No tracked miners have been seen yet.</td>`;
+        tr.innerHTML = `<td colspan="14" class="subtle">No active miner lanes are currently present.</td>`;
         tbody.appendChild(tr);
         return;
       }
@@ -2214,6 +2240,27 @@ HTML = r"""<!doctype html>
       const parsed = Date.parse(value);
       if (!Number.isFinite(parsed)) return value || "n/a";
       return new Date(parsed).toLocaleString(undefined, {month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit"});
+    }
+    function formatDuration(seconds) {
+      const total = Math.max(0, Math.round(Number(seconds) || 0));
+      if (!total) return "n/a";
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const secs = total % 60;
+      if (hours) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+      if (minutes) return `${minutes}m ${String(secs).padStart(2, "0")}s`;
+      return `${secs}s`;
+    }
+    function formatGlobalTableWindow(data) {
+      const seconds = Number(data.scan_window_seconds || 0);
+      const duration = formatDuration(seconds);
+      const start = data.scan_start_block !== undefined ? fmt(data.scan_start_block) : "n/a";
+      const end = data.scan_end_block !== undefined ? fmt(data.scan_end_block) : fmt(data.latest_block);
+      const fetched = Number(data.fetched_blocks || 0);
+      const requested = Number(data.requested_blocks || fetched || 0);
+      const blockText = requested && fetched !== requested ? `${fmt(fetched)} of ${fmt(requested)} scanned blocks` : `${fmt(fetched || requested)} scanned blocks`;
+      const updated = data.updated_at ? `, ending ${formatDisplayTime(data.updated_at)}` : "";
+      return `Table period: ${duration}, blocks ${start} to ${end}, ${blockText}${updated}.`;
     }
     let earningsChartRangeHours = 1;
     let earningsChartUnit = "usd";
@@ -3109,11 +3156,17 @@ HTML = r"""<!doctype html>
         text("globalScanWindow", "error");
         text("globalAvgBlockSec", "error");
         text("globalTopShare", "error");
+        text("globalTableWindow", `Table period: unavailable (${String(error)}).`);
       const table = document.getElementById("globalPoolsTable");
       table.innerHTML = "";
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td colspan="13">${escapeHtml(String(error))}</td>`;
+      tr.innerHTML = `<td colspan="8">${escapeHtml(String(error))}</td>`;
       table.appendChild(tr);
+      const sourceStatus = document.getElementById("globalSourceStatus");
+      if (sourceStatus) {
+        sourceStatus.textContent = `status=failed | dashboard-global | no trusted data | ${String(error)}`;
+        sourceStatus.className = "subtle down";
+      }
       } finally {
         globalLoaded = true;
       }
@@ -3215,11 +3268,40 @@ HTML = r"""<!doctype html>
     function renderGlobal(data) {
       lastGlobalData = data;
       text("globalLatestBlock", fmt(data.latest_block));
-      text("globalScannedBlocks", fmt(data.fetched_blocks || data.requested_blocks));
+      const fetchedBlocks = Number(data.fetched_blocks || 0);
+      const requestedBlocks = Number(data.requested_blocks || fetchedBlocks || 0);
+      text("globalScannedBlocks", requestedBlocks && fetchedBlocks !== requestedBlocks ? `${fmt(fetchedBlocks)} / ${fmt(requestedBlocks)}` : fmt(fetchedBlocks || requestedBlocks));
       text("globalUniqueMiners", fmt(data.unique_miners));
       text("globalScanWindow", data.scan_window_hours ? `${data.scan_window_hours}h` : "n/a");
       text("globalAvgBlockSec", data.avg_block_seconds ? `${data.avg_block_seconds}s` : "n/a");
       text("globalTopShare", data.clusters?.[0]?.share_percent ? `${data.clusters[0].share_percent}%` : "n/a");
+      text("globalTableWindow", formatGlobalTableWindow(data));
+      let freshnessLabel = "no trusted data";
+      if (data.status === "ok") freshnessLabel = data.cache_hit ? "validated cache" : "fresh chain scan";
+      else if (data.status === "stale") freshnessLabel = "last-good stale cache";
+      else if (data.status === "degraded") freshnessLabel = "partial chain scan";
+      else if (data.status === "deferred") freshnessLabel = "head-only deferred";
+      const sourceBits = [
+        data.status ? `status=${data.status}` : "",
+        data.source_truth || data.source || "",
+        data.rpc_source ? `rpc=${data.rpc_source}` : "",
+        data.latest_order !== undefined ? `order=${fmt(data.latest_order)}` : "",
+        data.latest_order_method ? `order-method=${data.latest_order_method}` : "",
+        requestedBlocks ? `fetched=${fmt(fetchedBlocks)}/${fmt(requestedBlocks)}` : "",
+        data.unknown_blocks ? `unknown=${fmt(data.unknown_blocks)}` : "",
+        data.cache_tip_lag_blocks !== undefined ? `cache-lag=${fmt(data.cache_tip_lag_blocks)}` : "",
+        data.head_only ? "head-only=no production table" : "",
+        data.maintenance_deferred ? "maintenance deferred" : "",
+        data.cache ? `cache=${data.cache.hit ? "hit" : "miss"}${data.cache.age_seconds !== undefined ? ` age=${fmt(data.cache.age_seconds)}s` : ""}${data.cache.ttl_seconds !== undefined ? ` ttl=${fmt(data.cache.ttl_seconds)}s` : ""}` : "",
+        freshnessLabel,
+        data.zero_address_blocks ? `zero-address blocks=${fmt(data.zero_address_blocks)}` : "",
+      ].filter(Boolean);
+      const sourceStatus = document.getElementById("globalSourceStatus");
+      if (sourceStatus) {
+        const error = data.error ? ` | ${data.error}` : "";
+        sourceStatus.textContent = `${sourceBits.join(" | ")}${error}`;
+        sourceStatus.className = data.status === "ok" && !data.zero_address_blocks && !data.partial_scan ? "subtle ok" : data.status === "failed" ? "subtle down" : "subtle warn";
+      }
 
       const peerBody = document.getElementById("globalPeerIpsTable");
       peerBody.innerHTML = "";
@@ -3232,29 +3314,30 @@ HTML = r"""<!doctype html>
 
       const body = document.getElementById("globalPoolsTable");
       body.innerHTML = "";
+      if (!data.clusters || data.clusters.length === 0) {
+        const tr = document.createElement("tr");
+        const reason = data.error || "No chain-sourced mining clusters are available for this window.";
+        tr.innerHTML = `<td colspan="8">${escapeHtml(reason)}</td>`;
+        body.appendChild(tr);
+      }
       for (const row of data.clusters || []) {
         const tr = document.createElement("tr");
-        const nodes = globalNodesLabel(row);
         const share = row.share_percent ? `${escapeHtml(row.share_percent)}%` : "n/a";
         const poolName = row.pool_name || globalPoolName(row.address);
         const poolAddress = row.address || row.address_short || "";
         const poolIdentity = globalPoolIdentity(row);
         const poolColor = globalPoolColor(poolIdentity);
-        const sourceBadge = row.local_pool ? ` <span class="subtle">local pool</span>` : "";
+        const sourceBadge = row.invalid_payout ? ` <span class="down">invalid payout</span>` : (row.local_pool ? ` <span class="subtle">chain confirmed + local shares</span>` : "");
         const poolCell = poolName
           ? `<span class="pool-dot"></span>${escapeHtml(poolName)} <span class="subtle">${escapeShortEth(poolAddress)}</span>${sourceBadge}`
           : `<span class="pool-dot"></span>${escapeShortEth(poolAddress)}`;
-        const shares = firstPresent(row.shares, row.blocks);
-        const creditBlocks = firstPresent(row.credit_blocks, row.blocks);
+        const chainBlocks = firstPresent(row.blocks, row.found_blocks);
         const creditedBdag = firstPresent(row.credited_bdag, row.estimated_bdag);
-        const foundBlocks = firstPresent(row.found_blocks, row.blocks);
         const walletBdag = firstPresent(row.estimated_wallet_bdag, row.estimated_bdag);
-        const avgUsd = firstPresent(row.estimated_usd_avg_hour, row.estimated_usd_recent_hour);
-        const avgBdag = firstPresent(row.estimated_bdag_avg_hour, row.estimated_bdag_recent_hour);
         tr.className = "pool-row";
         tr.style.setProperty("--pool-row-color", transparentColor(poolColor, 0.08));
         tr.style.setProperty("--pool-color", poolColor);
-        tr.innerHTML = `<td class="nowrap pool-name" title="${escapeHtml(poolAddress)}">${poolCell}</td><td class="nowrap">${escapeHtml(nodes || "")}</td><td class="right">${fmt(shares)}</td><td class="right">${share}</td><td class="right">${fmt(creditBlocks)}</td><td class="right">${escapeHtml(creditedBdag || "")}</td><td class="right">${fmt(foundBlocks)}</td><td class="right">${escapeHtml(walletBdag || "")}</td><td class="right">${currency(avgUsd, "$")}</td><td class="right">${currency(avgBdag, "")}</td><td class="right">${currency(row.estimated_usd, "$")}</td><td class="right">${currency(row.estimated_zar, "R")}</td><td class="nowrap">${escapeHtml(formatDisplayTime(row.last_seen_at))}</td>`;
+        tr.innerHTML = `<td class="nowrap pool-name" title="${escapeHtml(poolAddress)}">${poolCell}</td><td class="right">${fmt(chainBlocks)}</td><td class="right">${share}</td><td class="right">${escapeHtml(creditedBdag || "")}</td><td class="right">${escapeHtml(walletBdag || "")}</td><td class="right">${currency(row.estimated_usd, "$")}</td><td class="right">${currency(row.estimated_zar, "R")}</td><td class="nowrap">${escapeHtml(formatDisplayTime(row.last_seen_at))}</td>`;
         body.appendChild(tr);
       }
       drawGlobalChart(data);
@@ -3369,12 +3452,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/global":
             try:
-                self.send_json(cached_payload("global", GLOBAL_CACHE_SECONDS, collect_global_blockchain))
+                self.send_json(collect_global_blockchain())
             except Exception as exc:  # noqa: BLE001
                 self.send_json(
                     {
                         "status": "failed",
                         "source": "dashboard-global",
+                        "source_truth": GLOBAL_STATS_SOURCE_TRUTH,
+                        "schema_version": 2,
                         "error": str(exc),
                         "clusters": [],
                         "history": [],

@@ -27,6 +27,25 @@ miners. If a node is behind tip and `miner_health.connected_count == 0` or
 `miner_health.managed_count == 0`, preserve sync-only behavior and prioritize
 chain catch-up over template generation.
 
+When actual ASIC demand is present, the opposite invariant applies: the selected
+node must be able to build templates and accept block candidates during brief
+false `Client in initial download` windows. Runtime repairs must enable
+`BDAG_ENABLE_NODE_MINING=1`, `BDAG_NODE_MODULES=Blockdag,miner`, and
+`BDAG_NODE_MINING_ARGS` containing `--allowminingwhennearlysynced`,
+`--allowsubmitwhennotsynced`, `--miner`, and a non-zero `--miningaddr=<wallet>`.
+For constrained USB/router appliances also keep `--maxinbound=1`, because
+inbound catch-up peers and artifact requests have caused rewind/sync churn that
+converted valid ASIC work into `node-syncing`, `tip-overdue`, and
+`invalidated_job` losses.
+
+Any system with USB-backed blockchain data is a FastSync/FastArtifact consumer,
+not a source, by default. Keep `BDAG_NO_FASTSYNC_SERVE=auto` or set it to `1`;
+do not reintroduce `NODE_ARGS_APPEND=--fastartifactsync` or artifact serving on
+low-IO USB hosts. These nodes must still do normal outbound sync and block
+relay, but must not serve bulk range, snapshot, or artifact traffic from the USB
+chain path unless a human deliberately overrides the policy for a proven
+high-IO source host.
+
 Fresh installs assume zero miner sources. Do not hard-code one, four, five, or
 any other miner count into release defaults, installers, watchdog repairs,
 dashboard success criteria, or tests. Miner sources are configured after initial
@@ -188,27 +207,20 @@ healthy until `8088/api/status` points at the intended project root and returns
 
 ## FastSync Candidate Ordering
 
-New nodes must prefer nearby FastSync candidates before public internet seeds.
-The release default is `BDAG_FASTSYNC_PEER_ORDERING=tiered-latency`, with this
-ordering:
+New nodes must use P2P evidence, not address class, to choose FastSync sources.
+The release default is `BDAG_FASTSYNC_PEER_ORDERING=p2p-latency`.
 
-1. LAN candidates from `BDAG_FASTSYNC_LAN_PEERS`, addresses on a currently
-   connected non-VPN host subnet, or addresses matching an explicit
-   `BDAG_FASTSYNC_LAN_PREFIXES` override.
-2. Private/VPN candidates from `BDAG_FASTSYNC_VPN_PEERS` or private-address
-   multiaddrs.
-3. Public internet candidates from `BDAG_FASTSYNC_PUBLIC_PEERS` plus any
-   public entries discovered in generic `BDAG_FASTSYNC_PEERS`,
-   `BDAG_FASTSNAP_PEERS`, `BOOTSTRAP_PEER_ADDRESSES`, and `node.conf`
-   `addpeer` lines.
+Peer candidates must be complete P2P multiaddrs with peer IDs. Address class is
+not a sync mode, priority class, or eligibility signal. The downloader should
+receive the full deduplicated P2P candidate set and select useful sources by
+measured P2P ping/manifest/chunk response, artifact availability, and sustained
+transfer performance.
 
-Peer candidates must be complete multiaddrs with peer IDs. On single-node
-ASIC-router hosts, the direct ASIC Ethernet subnet (`BDAG_ASIC_LAN_CIDRS`,
-default `192.168.50.0/24`) is not a blockchain P2P LAN unless
-`BDAG_ALLOW_ASIC_LAN_P2P=1` is explicitly set. ASICs on that subnet are Stratum
-clients; adding them to FastSync or P2P peer lists wastes time and can hide the
-actual low-latency VPN/LAN node candidates. Do not replace this ordering with
-public-first bootstrapping in future RCs.
+Old installations may still contain legacy address-bucket variable names.
+Treat them only as migration input: normalize complete P2P multiaddrs into
+`BDAG_FASTSYNC_PEERS` and clear the bucket values. Do not add new LAN, VPN, or
+public sync options, and do not reintroduce LAN-first, VPN-second, public-last
+ordering.
 
 ## Fast Artifact Sync V2 Directory Mode
 
@@ -220,3 +232,12 @@ directory artifact is opt-in through `BDAG_FASTSYNC_ARTIFACT_DIRECTORY` and
 `BDAG_FASTSYNC_ARTIFACT_MANIFEST`; nodes bootstrapped from a directory artifact
 auto-serve that verified checkpoint from `artifact.manifest.json`. Do not make
 future changes that force archive assembly back into the default fast path.
+
+For single-node mining pools, raw datadir FastArtifact source serving is the
+preferred sync-source design. The live node datadir must never be served or
+exported directly. Use `ops/fastartifact_source_eligibility.py`,
+`ops/maintain-rawdatadir-sidecar.sh`, and `ops/publish-rawdatadir-artifact.sh`
+so source serving fails closed on USB/removable storage and publishes only a
+signed `raw_datadir_checkpoint` generation from a finalized sidecar. Keep
+`BDAG_FASTSNAP_SEED_TIMER_ENABLED=0` in single-node defaults; the old archive
+FastSnap seed timer is a dual-node compatibility path only.

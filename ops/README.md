@@ -116,6 +116,41 @@ watchdog, sync coordinator, P2P guard, and startup checks consume it through
 `collect_status_cached()` while it is fresh. Use `max_age_seconds=0` only for
 explicit live diagnostics or hard repair paths that must bypass cached state.
 
+The sampler is also the backstop for the mining imperative. If the user-systemd
+guard units drift disabled, it re-enables them. If `asic-pool` is stopped while
+miner demand is visible, an ASIC LAN neighbor is present, or the chain is synced
+and ready to mine, it starts the pool container without recreating dependencies.
+Set `BDAG_MINING_IMPERATIVE_REPAIR_ENABLED=0` only for an intentional maintenance
+window where mining must remain stopped.
+
+## Paid Conversion Evidence
+
+Accepted shares prove that miners are connected and doing work; they do not
+prove the pool is earning. Release promotion must use accepted block submits and
+confirmed chain-paid evidence.
+
+Capture a read-only paid-conversion baseline:
+
+```bash
+python3 ops/paid_conversion_baseline.py --duration 3600 --write-report
+```
+
+Evaluate evidence before promotion:
+
+```bash
+python3 ops/paid_conversion_release_gate.py ops/runtime/reports/paid-conversion-baseline-YYYYMMDD-HHMMSS.json --write-report
+```
+
+The gate fails by default if the window is too short, has no active miner-hours,
+has an unready selected backend, has high local candidate drops, lacks accepted
+submits, has dirty source repos, or lacks confirmed paid-chain block evidence.
+Use override flags only for explicitly labelled research or early observe-only
+runs, never for release promotion.
+
+The miner-normalized A/B harness also treats less than 3600 seconds or less than
+1 active miner-hour as ineligible for comparison by default. Shorter runs are
+allowed for debugging, but they are not release evidence.
+
 ## Watchdog
 
 Run one check:

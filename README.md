@@ -100,33 +100,20 @@ blocks per miner-hour, not maximum dashboard refresh rate or synthetic CPU use.
 
 ## FastSync Peer Selection
 
-New nodes use protocol 46 Fast Artifact Sync V2 by default and prefer nearby
-peers before public internet seeds. Configure complete multiaddrs with peer IDs
-in `.env`:
+New nodes use protocol 46 Fast Artifact Sync V2 by default. Configure complete
+P2P multiaddrs with peer IDs in `.env`:
 
 ```text
-BDAG_P2P_LAN_PEERS=/ip4/192.168.68.55/tcp/8151/p2p/...
-BDAG_P2P_VPN_PEERS=/ip4/10.207.244.12/tcp/8151/p2p/...
-BDAG_P2P_PUBLIC_PEERS=/ip4/203.0.113.10/tcp/8151/p2p/...
+BDAG_FASTSYNC_PEERS=/ip4/203.0.113.10/tcp/8151/p2p/...,/dns4/source.example/tcp/8151/p2p/...
 ```
 
-The node entrypoint and `ops/update-local-peers.py` fold those values together
-with `BDAG_FASTSYNC_PEERS`, `BDAG_FASTSNAP_PEERS`,
+The node entrypoint combines `BDAG_FASTSYNC_PEERS`, `BDAG_FASTSNAP_PEERS`,
 `BOOTSTRAP_PEER_ADDRESSES`, and `node.conf` `addpeer` lines. The release
-default is `BDAG_FASTSYNC_PEER_ORDERING=tiered-latency`: reachable LAN peers
-first, private/VPN peers second, and public internet peers last. Within each
-tier, the peer refresh helper sorts candidates by TCP latency so sub-10ms local
-or VPN seeds win before slower public routes.
-Generic private peers are treated as LAN only when they are on a currently
-connected non-VPN host subnet, or when `BDAG_FASTSYNC_LAN_PREFIXES` is set as an
-operator override; stale private subnets fall back to the private/VPN tier.
-
-Single-node ASIC-router hosts are detected when the default route is on one
-interface, usually WiFi, while the ASIC Ethernet interface owns
-`BDAG_ASIC_LAN_CIDRS` (`192.168.50.0/24` by default). That ASIC-facing subnet is
-not a blockchain P2P LAN by default, because directly attached ASICs are
-Stratum clients, not FastSync peers. Set `BDAG_ALLOW_ASIC_LAN_P2P=1` only if a
-real BlockDAG node is deliberately placed on that Ethernet segment.
+default is `BDAG_FASTSYNC_PEER_ORDERING=p2p-latency`: address class is not a
+sync mode, priority class, or eligibility signal. Fast Artifact Sync receives
+the full deduplicated P2P candidate set and should use P2P
+ping/manifest/chunk response, artifact availability, and sustained transfer
+performance to select the fastest useful download peers.
 
 Nodes also start with `--fastartifactsync` by default
 (`BDAG_FASTARTIFACTSYNC_ENABLED=1`) so they advertise and consume Fast Artifact
@@ -137,10 +124,10 @@ and IO weights, keeps duplicate sync work paused in dual-node mode, and restarts
 an unaccelerated or stale leader after the cooldown window so startup peer order
 and V2 artifact serving are active.
 
-`BDAG_FASTSYNC_LAN_PEERS`, `BDAG_FASTSYNC_VPN_PEERS`, and
-`BDAG_FASTSYNC_PUBLIC_PEERS` remain accepted as compatibility aliases. Set
-`BDAG_FASTSYNC_PEER_ORDERING=flat-latency` only to reproduce the older flat
-latency path during a rollback.
+Old installations may still contain legacy address-bucket variable names.
+`ops/update-local-peers.py` treats them only as migration input, normalizes
+complete P2P multiaddrs into `BDAG_FASTSYNC_PEERS`, and clears the bucket
+values. Do not add new LAN, VPN, or public sync options.
 
 ## Fast Artifact Sync V2 Directory Mode
 
@@ -166,9 +153,9 @@ that verified checkpoint from the node datadir by using
 
 The Pi5 ARM64 release builder (`ops/build-pi5-arm64-release.sh`) now generates a
 self-monitoring stack package. It defaults to `BDAG_NODE_MODE=single`, which
-runs `bdag-miner-node-2` only to reduce USB power pressure. Choose `double` in
+runs `bdag-miner-node-1` only to reduce USB power pressure. Choose `double` in
 the installer, or set `BDAG_NODE_MODE=double` with `COMPOSE_PROFILES=dual-node`,
-to add `bdag-miner-node-1`.
+to add `bdag-miner-node-2`.
 
 No-miner deployments are sync-only by default: `BDAG_ENABLE_NODE_MINING=0`,
 `BDAG_NODE_MODULES=Blockdag`, and an empty `BDAG_NODE_MINING_ARGS`. Enable node
@@ -227,15 +214,20 @@ image assembly so ARM64 packages cannot silently receive AMD64 binaries; the
 checker reads ELF/Mach-O/PE headers directly so it can be used from Linux,
 macOS, and Windows build hosts.
 
-When testing directly from a source checkout, keep the two dashboard surfaces
-separate. The Compose dashboard is the lightweight container UI on
-`DASHBOARD_HOST_PORT`/`9280`. The Python operations dashboard is the control
-plane normally exposed on `BDAG_DASHBOARD_PORT`/`8088`, and it must be started
-with environment that matches the actual container names for the stack it is
-watching. On Linux, that process also needs Docker API access; use a system
-service account with Docker socket access or an explicit `DOCKER_HOST`. On
-macOS and Windows Docker Desktop hosts, prefer the packaged installer or run the
-ops dashboard from a session where the Docker CLI already works instead of
+The Python operations dashboard is the canonical operator interface and source
+of truth, normally exposed on `BDAG_DASHBOARD_PORT`/`8088`. Its tabs separate
+pool status, miners, earnings, and global chain production, and each global
+production view must be sourced from native BlockDAG chain RPC
+`getBlockCount`/ordered block/coinbase calls. EVM RPC belongs to wallet balance
+views only. The Compose dashboard on `DASHBOARD_HOST_PORT`/`9280` is a legacy
+lightweight chart and must not be treated as the authoritative mining dashboard.
+
+When testing directly from a source checkout, start the Python operations
+dashboard with environment that matches the actual container names for the stack
+it is watching. On Linux, that process also needs Docker API access; use a
+system service account with Docker socket access or an explicit `DOCKER_HOST`.
+On macOS and Windows Docker Desktop hosts, prefer the packaged installer or run
+the ops dashboard from a session where the Docker CLI already works instead of
 installing Linux systemd units.
 
 The dashboard runtime collectors use Python's standard HTTP client for local
@@ -286,7 +278,8 @@ service; leave `COMPOSE_PROFILES` empty to disable it.
 
 Once everything is running:
 
-- Dashboard: `http://localhost:9280` ( Run in browser, or use the VSC/Cursor Simple Browser! )
+- Operations dashboard, authoritative interface: `http://localhost:8088`
+- Legacy lightweight chart, non-authoritative diagnostics only: `http://localhost:9280`
 - Mining pool Stratum endpoint: `stratum+tcp://localhost:3334`
 - RPC endpoint: `http://localhost:38131`
 
@@ -307,13 +300,46 @@ docker compose -p snapshot-node -f docker-compose.snapshot-node.yml --env-file .
 - Default host ports **`9150`** (P2P), **`48131`** (BDAG RPC), **`28545`** / **`28546`** (EVM), **`16060`** (metrics) avoid clashes with the mining compose defaults.
 - Point export automation at container **`snapshot-node-node-1`** (see `docker compose -p snapshot-node ps`).
 
-## Default dual-node FastSnap seeding
+## Default V2 Sync Source
 
-Dual-node mining hosts can serve a public P2P FastSnap archive without mining
-against a stopped node by using the pool router maintenance handoff. This is a
-default release behaviour: `bdag-fastsnap-seed.timer` refreshes the public seed
-every two hours at low CPU and I/O priority when
-`BDAG_FASTSNAP_SEED_TIMER_ENABLED=1`.
+New installs use Fast Artifact Sync V2 as the preferred bootstrap path. Client
+sync is enabled by default; source serving is gated by
+`BDAG_RAWDATADIR_SOURCE_MODE=auto` and only enables when the chain, sidecar,
+artifact, temporary, and Docker paths are not USB/removable/external and the
+host has enough CPU, RAM, and disk headroom.
+
+Eligible source hosts maintain a low-priority raw datadir sidecar and publish a
+signed `raw_datadir_checkpoint` artifact from a finalized sidecar generation.
+Single-node systems do not stop the live node automatically. Set
+`BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=1` only for an operator-approved
+finalization window.
+
+The old archive FastSnap seed timer is no longer a single-node release default.
+`BDAG_FASTSNAP_SEED_TIMER_ENABLED=0` keeps `bdag-fastsnap-seed.timer` disabled
+unless a dual-node host explicitly opts into the legacy standby-export workflow.
+The stale-seed threshold is `BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG=10000`.
+
+Check source eligibility and status with:
+
+```bash
+./ops/fastartifact_source_eligibility.py --full --json
+```
+
+Refresh/publish the raw datadir source path with:
+
+```bash
+./ops/publish-rawdatadir-artifact.sh
+```
+
+See `docs/rawdatadir-libp2p-sync.md` and
+`docs/v2-sync-source-backlog.md`.
+
+## Optional dual-node FastSnap archive seeding
+
+Dual-node mining hosts can still serve a P2P FastSnap archive without mining
+against a stopped node by using the pool router maintenance handoff. This is now
+an explicit compatibility path for older peers, not the preferred RC source
+design.
 
 Run an immediate refresh manually with:
 
@@ -332,7 +358,7 @@ keep separate per-node snapshot copies.
 
 The export path refuses to publish a stale public seed by default unless the
 standby/export backend is within `BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG`
-main-order units of the selected backend. The default is `1000`.
+main-order units of the selected backend. The default is `10000`.
 
 See `docs/fastsnap-maintenance-handoff.html`.
 

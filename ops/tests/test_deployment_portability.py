@@ -127,12 +127,8 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             r'  need_grep .if ! command -v jq. "ops/monitor-fastsync-peers.sh"\n'
             r'fi',
         )
-        self.assertRegex(
-            validator,
-            r'if \[\[ "\$mode" == "source" \]\]; then\n'
-            r'  need_grep .BDAG_FASTSYNC_PEER_ORDERING=tiered-latency. ".env.cpu.example"\n'
-            r'fi',
-        )
+        self.assertIn('need_grep \'BDAG_FASTSYNC_PEER_ORDERING=p2p-latency\' ".env.cpu.example"', validator)
+        self.assertIn('reject_grep \'BDAG_P2P_LAN_PEERS=\' ".env.cpu.example"', validator)
 
     def test_live_deploy_rollback_validates_manifest_not_new_rc_contract(self) -> None:
         deploy = (ROOT_DIR / "ops" / "deploy-live-runtime-update.sh").read_text(encoding="utf-8")

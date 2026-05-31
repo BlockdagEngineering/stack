@@ -108,6 +108,32 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         self.assertEqual(1, len(degraded))
         self.assertEqual("192.168.1.14", degraded[0]["ip"])
 
+    def test_useful_work_stall_timer_uses_mac_and_survives_transient_degraded_sample(self) -> None:
+        row = miner_row("192.168.1.16", lane_status="no-work", submits=1, last_submit_epoch=self.now - 200)
+        row["mac"] = "28:e2:97:4d:44:3a"
+        row["device_id"] = "mac:28:e2:97:4d:44:3a"
+        state = {"miner_useful_work_stall_since": {"mac:28:e2:97:4d:44:3a": self.now - 180}}
+
+        since = watchdog.update_useful_work_stall_since(state, [], [row], self.now)
+
+        self.assertEqual({"mac:28:e2:97:4d:44:3a": self.now - 180}, since)
+
+    def test_useful_work_stall_timer_migrates_legacy_ip_key_to_mac(self) -> None:
+        row = miner_row("192.168.1.16", lane_status="no-work", submits=1, last_submit_epoch=self.now - 200)
+        row["mac"] = "28:e2:97:4d:44:3a"
+        state = {"miner_useful_work_stall_since": {"192.168.1.16": self.now - 180}}
+
+        since = watchdog.update_useful_work_stall_since(state, [], [row], self.now)
+
+        self.assertEqual({"mac:28:e2:97:4d:44:3a": self.now - 180}, since)
+
+    def test_useful_work_stall_timer_clears_after_recovery(self) -> None:
+        state = {"miner_useful_work_stall_since": {"mac:28:e2:97:4d:44:3a": self.now - 180}}
+
+        since = watchdog.update_useful_work_stall_since(state, [], [], self.now)
+
+        self.assertEqual({}, since)
+
 
 if __name__ == "__main__":
     unittest.main()

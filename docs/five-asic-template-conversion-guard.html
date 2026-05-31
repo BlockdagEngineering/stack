@@ -29,7 +29,8 @@
     "scope": "BlockDAG pool stack RCs with zero to many ASIC or Stratum miner sources, with special attention to multiple local X100 ASICs",
     "failure_mode": "multiple miner sources can amplify stale/tip-overdue/duplicate conversion loss when template epochs, backend routing, and catch-up status are not atomic",
     "source_incident_report": "/home/jeremy/blockdag-asic-pool/ops/runtime/reports/five-asic-efficiency-regression-rca-20260525-010628.html",
-    "release_rule": "Do not call a multi-miner release mining-ready without a measured template-conversion SLO and catch-up routing guard; do not make five miners the default install assumption."
+    "release_rule": "Do not call a multi-miner release mining-ready without a measured template-conversion SLO and catch-up routing guard; do not make five miners the default install assumption.",
+    "latest_update": "2026-05-30: add volatile Stratum lane attribution guard and node template churn release gate after live three-X100 block-production instability investigation."
   }
   </script>
 </head>
@@ -57,7 +58,12 @@
       <tbody>
         <tr><td>Zero-miner install default</td><td>Installer and first boot must start sync-only with zero miner sources. LAN scanning and miner configuration are explicit opt-in steps after initial install and sync.</td></tr>
         <tr><td>Dynamic miner source count</td><td>Release readiness samples active miner windows using the observed/configured 0..N miner source count. A one-miner host is evaluated as one miner, and a five-miner host is evaluated as five miners.</td></tr>
+        <tr><td>Marginal lane-count proof</td><td>Do not infer the optimum miner count from the dashboard per-miner Blocks plot alone. That plot is derived from a bounded recent pool-log window and can redistribute when a miner joins. Use direct pool counters, miner-hours, and a controlled A/B window before deciding that adding or removing a miner improves accepted block conversion.</td></tr>
+        <tr><td>Dashboard-independent measurement</td><td>When the dashboard status API is slow or timing out, use direct Prometheus counter deltas such as <code>ops/lane_efficiency_snapshot.py</code>. The release evidence must include accepted blocks per miner-hour, rejected-per-accepted, local-rejected-per-accepted, share reject ratio, active miner count, and window duration.</td></tr>
+        <tr><td>Volatile lane attribution</td><td>Stratum job extranonce suffixes are current connection/lane state, not miner identity. Store only current-window suffixes, replace them on fresh authorize/subscribe evidence, and treat duplicate suffix ownership in the registry as ambiguous so the collector bootstraps from a larger log window instead of assigning work to the first MAC.</td></tr>
+        <tr><td>Inactive miner work isolation</td><td>Offline or unmanaged ASIC observations may remain visible for operator context, but stale share windows must not receive active <code>Work%</code> or configured-lane status. Active lane balance is computed only from current/relevant MAC identities.</td></tr>
         <tr><td>Template conversion SLO</td><td>Release readiness fails if miner-normalized accepted block submits, tip-overdue loss, duplicate-local loss, stale-job rejects, or average submit/share latency exceed configured thresholds during active mining windows.</td></tr>
+        <tr><td>Node reorg/template churn gate</td><td>When active miners are connected, repeated node <code>Zero state root hash</code>, <code>Rewinding blockchain</code>, <code>Client in initial download</code>, or recovered-template events must be counted as a mining-readiness risk even if block submission continues. A release gate must fail if this churn coincides with elevated <code>tip-overdue</code>, <code>non_current_job</code>, or template-conversion failure ratio.</td></tr>
         <tr><td>Atomic backend epoch</td><td>Changing selected backend also invalidates old backend jobs, pins submit route to the same backend, and broadcasts clean work. Template-fetch fallback cannot silently flip the mining lane.</td></tr>
         <tr><td>Catch-up maintenance semantics</td><td>When sync coordinator pauses a follower, the follower is marked maintenance standby. If the leader is near tip and accepting blocks, dashboard/router status must not present the paused follower as global mining unavailability.</td></tr>
         <tr><td>No active/active quick fix</td><td>Do not re-enable template fan-in to chase throughput unless a controlled A/B test proves miner-normalized accepted blocks improve for the target miner source count.</td></tr>
@@ -69,6 +75,13 @@
   <section>
     <h2>Backlog</h2>
     <p>Create or keep an SDLC backlog item for source-level prevention. The durable fix belongs in pool/router source and dashboard/sync-coordinator release gates, not only in watchdog repair scripts.</p>
+    <table>
+      <thead><tr><th>Item</th><th>Acceptance Criteria</th></tr></thead>
+      <tbody>
+        <tr><td>RC-P0 volatile Stratum lane attribution</td><td>Regression tests prove fresh authorize order overrides stale suffix registry state, ambiguous suffix ownership is not assigned to the first miner, mixed attributed/unattributed tails bootstrap from the larger log window, and inactive stale windows show <code>0.00</code> active <code>Work%</code>.</td></tr>
+        <tr><td>RC-P0 node churn to conversion-loss gate</td><td>Release readiness samples node logs and Prometheus together, then fails active-mining readiness when zero-state-root/rewind/template-initial-download churn appears with non-current share rejects, tip-overdue submits, or template-conversion failure above the configured SLO.</td></tr>
+      </tbody>
+    </table>
   </section>
 </main>
 </body>

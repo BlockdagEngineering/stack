@@ -8,6 +8,12 @@ from pathlib import Path
 
 DUPLICATE_SAFE_KEY = "POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT"
 DUPLICATE_SAFE_VALUE = "${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}"
+POOL_SUBMIT_HARDENING_FLAGS = (
+    (DUPLICATE_SAFE_KEY, DUPLICATE_SAFE_VALUE),
+    ("POOL_SUBMIT_STALE_BLOCK_CANDIDATES", "${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}"),
+    ("POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED", "${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}"),
+    ("POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD", "${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}"),
+)
 
 
 @dataclass(frozen=True)
@@ -49,37 +55,74 @@ def _pool_service(name: str) -> bool:
     return name == "pool" or name.startswith("asic-pool")
 
 
-def ensure_duplicate_safe_submit_flag(text: str) -> MigrationResult:
-    if f"{DUPLICATE_SAFE_KEY}:" in text:
+def _environment_range(lines: list[str], start: int, end: int) -> tuple[int, int] | None:
+    env_start: int | None = None
+    for index in range(start + 1, end):
+        line = lines[index]
+        stripped = line.strip()
+        if line.startswith("    ") and not line.startswith("      "):
+            if env_start is None:
+                if stripped == "environment:":
+                    env_start = index + 1
+                continue
+            return env_start, index
+    if env_start is None:
+        return None
+    return env_start, end
+
+
+def _line_has_key(line: str, key: str) -> bool:
+    return line.strip().startswith(f"{key}:")
+
+
+def ensure_pool_env_flags(text: str, flags: tuple[tuple[str, str], ...]) -> MigrationResult:
+    if not flags:
         return MigrationResult(text=text, changed=False, inserted_count=0)
 
     lines = text.splitlines()
     trailing_newline = text.endswith("\n")
     inserted_count = 0
+    flag_keys = tuple(key for key, _ in flags)
 
     for name, start, end in reversed(_service_ranges(lines)):
         if not _pool_service(name):
             continue
-        node_urls_index: int | None = None
-        in_environment = False
-        for index in range(start + 1, end):
-            line = lines[index]
-            stripped = line.strip()
-            if line.startswith("    ") and not line.startswith("      "):
-                in_environment = stripped == "environment:"
-                continue
-            if not in_environment:
-                continue
-            if stripped.startswith("NODE_RPC_URLS:"):
-                node_urls_index = index
-                break
-            if stripped and not line.startswith("      "):
-                break
-        if node_urls_index is None:
+        env_range = _environment_range(lines, start, end)
+        if env_range is None:
             continue
-        indent = lines[node_urls_index][: len(lines[node_urls_index]) - len(lines[node_urls_index].lstrip())]
-        lines.insert(node_urls_index + 1, f"{indent}{DUPLICATE_SAFE_KEY}: {DUPLICATE_SAFE_VALUE}")
-        inserted_count += 1
+        env_start, env_end = env_range
+        missing = [
+            (key, value)
+            for key, value in flags
+            if not any(_line_has_key(lines[index], key) for index in range(env_start, env_end))
+        ]
+        if not missing:
+            continue
+
+        insert_at = env_start
+        for index in range(env_start, env_end):
+            if any(_line_has_key(lines[index], key) for key in flag_keys):
+                insert_at = index + 1
+        if insert_at == env_start:
+            for index in range(env_start, env_end):
+                if _line_has_key(lines[index], "NODE_RPC_URLS"):
+                    insert_at = index + 1
+                    break
+        if insert_at == env_start:
+            for index in range(env_start, env_end):
+                if _line_has_key(lines[index], "NODE_RPC_URL"):
+                    insert_at = index + 1
+                    break
+
+        indent = "      "
+        if env_start < env_end:
+            anchor_index = min(max(insert_at - 1, env_start), env_end - 1)
+            anchor = lines[anchor_index]
+            if anchor.strip():
+                indent = anchor[: len(anchor) - len(anchor.lstrip())]
+        for key, value in reversed(missing):
+            lines.insert(insert_at, f"{indent}{key}: {value}")
+            inserted_count += 1
 
     migrated = "\n".join(lines)
     if trailing_newline:
@@ -87,24 +130,40 @@ def ensure_duplicate_safe_submit_flag(text: str) -> MigrationResult:
     return MigrationResult(text=migrated, changed=inserted_count > 0, inserted_count=inserted_count)
 
 
+def ensure_duplicate_safe_submit_flag(text: str) -> MigrationResult:
+    return ensure_pool_env_flags(text, ((DUPLICATE_SAFE_KEY, DUPLICATE_SAFE_VALUE),))
+
+
+def ensure_pool_submit_hardening_flags(text: str) -> MigrationResult:
+    return ensure_pool_env_flags(text, POOL_SUBMIT_HARDENING_FLAGS)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Apply idempotent live runtime compose migrations.")
     parser.add_argument("--ensure-duplicate-safe-submit", action="store_true")
+    parser.add_argument("--ensure-pool-submit-hardening", action="store_true")
     parser.add_argument("compose_file", type=Path)
     args = parser.parse_args()
 
-    if not args.ensure_duplicate_safe_submit:
+    if not args.ensure_duplicate_safe_submit and not args.ensure_pool_submit_hardening:
         parser.error("one migration flag is required")
 
     text = args.compose_file.read_text(encoding="utf-8")
-    result = ensure_duplicate_safe_submit_flag(text)
-    if not result.changed and f"{DUPLICATE_SAFE_KEY}:" not in result.text:
-        raise SystemExit(f"could not insert {DUPLICATE_SAFE_KEY}; no eligible pool service was found")
+    if args.ensure_pool_submit_hardening:
+        result = ensure_pool_submit_hardening_flags(text)
+        required_keys = tuple(key for key, _ in POOL_SUBMIT_HARDENING_FLAGS)
+    else:
+        result = ensure_duplicate_safe_submit_flag(text)
+        required_keys = (DUPLICATE_SAFE_KEY,)
+
+    missing_keys = [key for key in required_keys if f"{key}:" not in result.text]
+    if missing_keys:
+        raise SystemExit(f"could not insert {', '.join(missing_keys)}; no eligible pool service was found")
     if result.changed:
         args.compose_file.write_text(result.text, encoding="utf-8")
-        print(f"inserted {DUPLICATE_SAFE_KEY} into {result.inserted_count} pool service(s)")
+        print(f"inserted {result.inserted_count} pool submit hardening setting(s)")
     else:
-        print(f"{DUPLICATE_SAFE_KEY} already present")
+        print("pool submit hardening settings already present")
     return 0
 
 

@@ -8,7 +8,15 @@ import json
 from pathlib import Path
 from typing import Any
 
-from pool_ops import RUNTIME_DIR, collect_miner_health, default_miner_pool_settings, is_lan_ipv4, now_iso, read_miner_registry
+from pool_ops import (
+    POOL_CONNECTED_STALE_SECONDS,
+    RUNTIME_DIR,
+    collect_miner_health,
+    default_miner_pool_settings,
+    is_lan_ipv4,
+    now_iso,
+    read_miner_registry,
+)
 
 
 def worker_short(value: str | None) -> str:
@@ -16,6 +24,13 @@ def worker_short(value: str | None) -> str:
     if len(text) <= 14:
         return text
     return f"{text[:6]}...{text[-4:]}"
+
+
+def recent_activity_age(value: Any) -> bool:
+    try:
+        return int(value) <= POOL_CONNECTED_STALE_SECONDS
+    except (TypeError, ValueError):
+        return False
 
 
 def audit_miners() -> dict[str, Any]:
@@ -44,8 +59,21 @@ def audit_miners() -> dict[str, Any]:
             down.append(miner)
         expected_worker = str(miner.get("expected_worker_user") or "").lower()
         seen_workers = [str(worker).lower() for worker in miner.get("workers") or []]
-        pool_log_matches_expected_worker = bool(expected_worker and expected_worker in seen_workers)
-        config_verified = bool(miner.get("configured") or pool_log_matches_expected_worker)
+        pool_log_activity_is_recent = bool(
+            miner.get("connected")
+            or miner.get("pool_active")
+            or recent_activity_age(miner.get("last_share_age_seconds"))
+            or recent_activity_age(miner.get("last_submit_age_seconds"))
+        )
+        pool_log_matches_expected_worker = bool(
+            expected_worker and expected_worker in seen_workers and pool_log_activity_is_recent
+        )
+        pool_activity_verified = bool(
+            miner.get("connected")
+            and miner.get("status") in {"ok", "connected", "degraded"}
+            and (int(miner.get("shares") or 0) > 0 or int(miner.get("submits") or 0) > 0)
+        )
+        config_verified = bool(miner.get("configured") or pool_log_matches_expected_worker or pool_activity_verified)
         if not config_verified and miner.get("status") != "inactive":
             wrong_config.append(miner)
         rows.append(
@@ -58,6 +86,7 @@ def audit_miners() -> dict[str, Any]:
                 "configured": config_verified,
                 "config_verified_by_api": bool(miner.get("configured")),
                 "config_verified_by_pool_log": pool_log_matches_expected_worker,
+                "config_verified_by_pool_activity": pool_activity_verified,
                 "expected_pool_url": miner.get("expected_pool_url"),
                 "expected_worker_user": miner.get("expected_worker_user"),
                 "worker_short": worker_short(miner.get("expected_worker_user")),

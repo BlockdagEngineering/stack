@@ -16,6 +16,8 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.old_retries = pool_ops.NODE_CHAIN_RPC_RETRIES
         self.old_pool_rpc_refused_warn_seconds = pool_ops.POOL_RPC_REFUSED_WARN_SECONDS
         self.old_mining_rpc_call = pool_ops.mining_rpc_call
+        self.old_json_rpc_call = pool_ops.json_rpc_call
+        self.old_evm_reference_rpc_urls = pool_ops.evm_reference_rpc_urls
         self.old_sleep = pool_ops.time.sleep
         self.old_time = pool_ops.time.time
         self.addCleanup(self.restore_globals)
@@ -24,6 +26,8 @@ class ChainRpcResilienceTests(unittest.TestCase):
         pool_ops.NODE_CHAIN_RPC_RETRIES = self.old_retries
         pool_ops.POOL_RPC_REFUSED_WARN_SECONDS = self.old_pool_rpc_refused_warn_seconds
         pool_ops.mining_rpc_call = self.old_mining_rpc_call
+        pool_ops.json_rpc_call = self.old_json_rpc_call
+        pool_ops.evm_reference_rpc_urls = self.old_evm_reference_rpc_urls
         pool_ops.time.sleep = self.old_sleep
         pool_ops.time.time = self.old_time
 
@@ -71,6 +75,77 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.assertEqual(progress["chain_rpc_attempts"], 2)
         self.assertEqual(progress["chain_rpc_retry_limit"], 2)
         self.assertIn("after 2 attempt", progress["chain_rpc_error"])
+
+    def test_chain_snapshot_never_uses_eth_blocknumber_as_chain_count(self) -> None:
+        pool_ops.NODE_CHAIN_RPC_RETRIES = 1
+
+        def fake_mining_rpc(_url, method, _params, timeout):
+            if method == "getBlockCount":
+                raise RuntimeError("method not available")
+            raise AssertionError(method)
+
+        pool_ops.mining_rpc_call = fake_mining_rpc
+        pool_ops.json_rpc_call = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("eth_blockNumber is not chain height"))
+
+        snapshot = pool_ops.node_chain_rpc_snapshot("node1", "http://127.0.0.1:18545", timeout=8.0)
+
+        self.assertIsNone(snapshot["chain_block_count"])
+        self.assertEqual(snapshot["chain_rpc_source"], "unavailable")
+        self.assertIn("getBlockCount", snapshot["chain_rpc_error"])
+
+    def test_main_chain_height_is_diagnostic_not_block_count_fallback(self) -> None:
+        pool_ops.NODE_CHAIN_RPC_RETRIES = 1
+
+        def fake_mining_rpc(_url, method, _params, timeout):
+            if method == "getBlockCount":
+                raise RuntimeError("method not available")
+            if method == "getMainChainHeight":
+                return "7001831"
+            raise AssertionError(method)
+
+        pool_ops.mining_rpc_call = fake_mining_rpc
+
+        snapshot = pool_ops.node_chain_rpc_snapshot("node1", "http://127.0.0.1:38131", timeout=8.0)
+
+        self.assertIsNone(snapshot["chain_block_count"])
+        self.assertEqual(snapshot["chain_main_height"], 7001831)
+        self.assertEqual(snapshot["chain_main_height_source"], "getMainChainHeight")
+        self.assertEqual(snapshot["chain_rpc_source"], "unavailable")
+
+    def test_node_sync_progress_reports_evm_lag_as_syncing(self) -> None:
+        pool_ops.NODE_CHAIN_RPC_RETRIES = 1
+
+        def fake_mining_rpc(_url, method, _params, timeout):
+            if method == "getBlockCount":
+                return "10000"
+            if method == "getMainChainHeight":
+                return "10000"
+            raise AssertionError(method)
+
+        def fake_json_rpc(url, method, _params, timeout):
+            if method == "eth_blockNumber":
+                if url == "http://reference:18545":
+                    return "0x2710"
+                return "0x1f40"
+            raise AssertionError(method)
+
+        pool_ops.mining_rpc_call = fake_mining_rpc
+        pool_ops.json_rpc_call = fake_json_rpc
+        pool_ops.evm_reference_rpc_urls = lambda: [("reference", "http://reference:18545")]
+
+        progress = pool_ops.node_sync_progress("node1", "http://127.0.0.1:38131", timeout=8.0)
+
+        self.assertEqual(progress["status"], "syncing")
+        self.assertEqual(progress["source"], "node1:evm-head-lag")
+        self.assertEqual(progress["current_block"], 8000)
+        self.assertEqual(progress["highest_block"], 10000)
+        self.assertEqual(progress["remaining_blocks"], 2000)
+        self.assertEqual(progress["chain_block_count"], 10000)
+        self.assertEqual(progress["evm_block_count"], 8000)
+        self.assertEqual(progress["evm_lag_to_chain"], 2000)
+        self.assertEqual(progress["evm_lag_to_reference"], 2000)
+        self.assertEqual(progress["evm_gap_to_chain_count"], 2000)
+        self.assertEqual(progress["current_block_source"], "eth_blockNumber")
 
     def test_rpc_refused_is_recent_only_inside_warning_window(self) -> None:
         now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()

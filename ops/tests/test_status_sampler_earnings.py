@@ -34,7 +34,7 @@ class StatusSamplerEarningsSnapshotTests(unittest.TestCase):
         }
         status_sampler.record_earnings_snapshot = lambda: calls.append("recorded") or {
             "generated_at": "2026-05-27T00:00:00+0200",
-            "miner_estimates": [{"ip": "192.168.50.177"}],
+            "miner_estimates": [{"ip": "192.168.1.107"}],
         }
         status_sampler.log = lambda _message: None
 
