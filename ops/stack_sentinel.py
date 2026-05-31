@@ -192,9 +192,28 @@ def compose_command(*args: str) -> list[str]:
     ]
 
 
+def compose_service_name(name: str) -> str:
+    result = subprocess.run(
+        ["docker", "inspect", "-f", '{{ index .Config.Labels "com.docker.compose.service" }}', name],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    service = result.stdout.strip() if result.returncode == 0 else ""
+    if service and service != "<no value>":
+        return service
+    return name
+
+
 def start_container(service: str, reason: str, state: dict[str, Any], now: int) -> bool:
     log_path = LOG_DIR / f"sentinel-start-{service}-{now}.log"
-    result = run_logged(compose_command("start", service), log_path, timeout=120)
+    compose_target = compose_service_name(service)
+    result = run_logged(compose_command("start", compose_target), log_path, timeout=120)
+    if not result.ok:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{now_iso()}] compose start failed for {service}; using direct docker start fallback\n")
+        result = run_logged(["docker", "start", service], log_path, timeout=120)
     details = {"service": service, "reason": reason, "log_path": str(log_path), **result.as_dict()}
     if result.ok:
         append_incident(
@@ -219,11 +238,16 @@ def start_container(service: str, reason: str, state: dict[str, Any], now: int) 
 
 def recreate_container(service: str, reason: str, state: dict[str, Any], now: int) -> bool:
     log_path = LOG_DIR / f"sentinel-recreate-{service}-{now}.log"
+    compose_target = compose_service_name(service)
     result = run_logged(
-        compose_command("up", "-d", "--no-deps", "--force-recreate", "--no-build", "--pull", "never", service),
+        compose_command("up", "-d", "--no-deps", "--force-recreate", "--no-build", "--pull", "never", compose_target),
         log_path,
         timeout=180,
     )
+    if not result.ok:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{now_iso()}] compose recreate failed for {service}; using direct docker start fallback\n")
+        result = run_logged(["docker", "start", service], log_path, timeout=120)
     details = {"service": service, "reason": reason, "log_path": str(log_path), **result.as_dict()}
     if result.ok:
         append_incident(

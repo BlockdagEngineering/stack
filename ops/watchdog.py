@@ -8,6 +8,7 @@ import fcntl
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -829,10 +830,13 @@ def run_node_restart(node_service: str, reason: str) -> bool:
         "-f",
         str(PROJECT_ROOT / "docker-compose.yml"),
         "restart",
-        node_service,
+        compose_service_name(node_service),
     ]
     result = run_logged(command, log_path, timeout=180)
     ok = result.ok
+    if not ok:
+        fallback = run_logged(["docker", "restart", node_service], log_path, timeout=180)
+        ok = fallback.ok
 
     state_payload.update(
         {
@@ -1009,6 +1013,21 @@ def run_rpc_failover_switch(primary_node: str, reason: str) -> bool:
         )
     lock_handle.close()
     return ok
+
+
+def compose_service_name(name: str) -> str:
+    result = subprocess.run(
+        ["docker", "inspect", "-f", '{{ index .Config.Labels "com.docker.compose.service" }}', name],
+        cwd=PROJECT_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    service = result.stdout.strip() if result.returncode == 0 else ""
+    if service and service != "<no value>":
+        return service
+    return name
 
 
 def rpc_router_node_score(decision: dict[str, Any], node: str | None) -> float:
