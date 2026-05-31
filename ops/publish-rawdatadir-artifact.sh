@@ -116,7 +116,8 @@ trap start_active_node_after_final_sync EXIT INT TERM
 
 if [[ "$NODE_MODE" == "single" && "$FINALIZE_SINGLE_NODE" == "1" ]]; then
   log "running final sidecar sync while $ACTIVE_SERVICE is stopped"
-  "$PROJECT_ROOT/ops/maintain-rawdatadir-sidecar.sh" 2>&1 | tee -a "$LOG_FILE"
+  BDAG_RAWDATADIR_SIDECAR_CONTENT_FINALIZED=1 \
+    "$PROJECT_ROOT/ops/maintain-rawdatadir-sidecar.sh" 2>&1 | tee -a "$LOG_FILE"
   start_active_node_after_final_sync
   trap - EXIT INT TERM
 fi

@@ -439,11 +439,17 @@ configure_env() {
   set_env_value .env BDAG_FASTSNAP_SEED_TIMER_ENABLED 0
   set_env_value .env BDAG_RAWDATADIR_SOURCE_MODE auto
   set_env_value .env BDAG_RAWDATADIR_ARTIFACT_BASE "./data-restore/rawdatadir"
+  set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE auto
+  set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE "./data-restore/rawdatadir-sidecar-content"
+  set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP 2
+  set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED 1
   set_env_value .env BDAG_RAWDATADIR_MAX_EXPORT_BACKEND_LAG 10000
   set_env_value .env BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE 0
   set_env_value .env BDAG_RAWDATADIR_PEERS ""
   set_env_value .env BDAG_RAWDATADIR_TRUSTED_SIGNERS ""
   set_env_value .env BDAG_IPFS_CONTENT_SIDECAR_MODE auto
+  set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_DIR "./data-restore/rawdatadir-sidecar-content/current"
+  set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST "./data-restore/rawdatadir-sidecar-content/current/manifest.json"
   set_env_value .env BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT 0
   set_env_value .env BDAG_IPFS_CONTENT_PUBLISH_IPNS 0
   set_env_value .env BDAG_IPFS_CONTENT_IPNS_KEY ""

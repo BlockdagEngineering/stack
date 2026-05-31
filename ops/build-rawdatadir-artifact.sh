@@ -477,12 +477,13 @@ archive_source_datadir() {
     --zstd
     -cpf "$tmp"
     -C "$source_mainnet"
-    "--exclude=./network.key"
-    "--exclude=./bdageth/nodekey"
-    "--exclude=./keystore"
-    "--exclude=./bdageth/keystore"
-    "--exclude=./peerstore"
-    "--exclude=./nodes"
+    "--exclude=./network.key*"
+    "--exclude=./bdageth/nodekey*"
+    "--exclude=./keystore*"
+    "--exclude=./bdageth/keystore*"
+    "--exclude=./bdageth/nodes*"
+    "--exclude=./peerstore*"
+    "--exclude=./nodes*"
     "--exclude=./geth.ipc"
     "--exclude=./bdag.ipc"
     "--exclude=*.ipc"
@@ -679,10 +680,10 @@ Tip hash: $RAW_TIP_HASH
 State root: $RAW_STATE_ROOT
 
 Excluded identity/secret material:
-- network.key
-- bdageth/nodekey
-- keystore and bdageth/keystore
-- peerstore and nodes
+- network.key variants
+- bdageth/nodekey variants
+- keystore and bdageth/keystore variants
+- peerstore, nodes, and bdageth/nodes variants
 - IPC/socket files
 
 Fetch with ops/fetch-rawdatadir-artifact.sh or fastsnap --artifact-type raw_datadir_checkpoint.
