@@ -325,6 +325,17 @@ def compose_command(*args: str) -> list[str]:
     ]
 
 
+def compose_service_name(name: str) -> str:
+    proc = run(
+        ["docker", "inspect", "-f", '{{ index .Config.Labels "com.docker.compose.service" }}', name],
+        timeout=10,
+    )
+    service = proc.stdout.strip() if proc.ok else ""
+    if service and service != "<no value>":
+        return service
+    return name
+
+
 def safe_int(value: Any, default: int = 0) -> int:
     try:
         if value is None:
@@ -803,7 +814,8 @@ def docker_container_is_running(name: str) -> bool:
 
 
 def stop_node(node: str, log_path: Path) -> bool:
-    compose_ok = run_logged(compose_command("stop", node), log_path, timeout=180).ok
+    compose_target = compose_service_name(node)
+    compose_ok = run_logged(compose_command("stop", compose_target), log_path, timeout=180).ok
     if docker_container_is_running(node):
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"[{now_iso()}] compose stop left {node} running; using direct docker stop\n")
@@ -812,7 +824,8 @@ def stop_node(node: str, log_path: Path) -> bool:
 
 
 def start_node(node: str, log_path: Path) -> bool:
-    start_ok = run_logged(compose_command("start", node), log_path, timeout=180).ok
+    compose_target = compose_service_name(node)
+    start_ok = run_logged(compose_command("start", compose_target), log_path, timeout=180).ok
     if not start_ok and not docker_container_is_running(node):
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"[{now_iso()}] compose start failed for {node}; using direct docker start fallback\n")
@@ -820,7 +833,7 @@ def start_node(node: str, log_path: Path) -> bool:
     if not start_ok:
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"[{now_iso()}] compose start failed for {node}; using compose up -d fallback\n")
-        start_ok = run_logged(compose_command("up", "-d", node), log_path, timeout=240).ok
+        start_ok = run_logged(compose_command("up", "-d", compose_target), log_path, timeout=240).ok
     if not start_ok and not docker_container_is_running(node):
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"[{now_iso()}] compose up failed for {node}; retrying direct docker start fallback\n")
@@ -829,7 +842,7 @@ def start_node(node: str, log_path: Path) -> bool:
 
 
 def compose_service_container_ids(service: str) -> list[str]:
-    proc = run(compose_command("ps", "-q", service), timeout=20)
+    proc = run(compose_command("ps", "-q", compose_service_name(service)), timeout=20)
     ids = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
     return ids or [service]
 
@@ -979,10 +992,14 @@ def maybe_restart_leader_for_fast_sync(decision: dict[str, Any], state: dict[str
         return True
 
     restart_ok = run_logged(
-        compose_command("restart", leader),
+        compose_command("restart", compose_service_name(leader)),
         log_path,
         timeout=FAST_CATCHUP_NODE_RESTART_TIMEOUT_SECONDS,
     ).ok
+    if not restart_ok:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{now_iso()}] compose restart failed for {leader}; using direct docker restart fallback\n")
+        restart_ok = run_logged(["docker", "restart", leader], log_path, timeout=FAST_CATCHUP_NODE_RESTART_TIMEOUT_SECONDS).ok
     state["last_fast_sync_restart_epoch"] = int(time.time())
     state["last_fast_sync_restart_at"] = now_iso()
     state["last_fast_sync_restart_reason"] = reason
