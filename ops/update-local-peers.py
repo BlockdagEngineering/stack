@@ -18,7 +18,11 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-ENV_FILE = PROJECT_ROOT / "asic-pool" / ".env"
+ENV_FILE = Path(
+    os.environ.get("BDAG_LOCAL_PEERS_ENV_FILE")
+    or os.environ.get("BDAG_POOL_ENV_FILE")
+    or PROJECT_ROOT / "asic-pool" / ".env"
+)
 RUNTIME_DIR = Path(os.environ.get("BDAG_RUNTIME_DIR", PROJECT_ROOT / "ops" / "runtime"))
 RUNTIME_ENV_FILE = RUNTIME_DIR / "ops.env"
 SYNC_COORDINATOR_STATE_FILE = RUNTIME_DIR / "sync-coordinator-state.json"
@@ -631,7 +635,7 @@ def planned_paused_follower() -> str:
     return ""
 
 
-def configured_active_nodes(pool_values: dict[str, str]) -> list[str]:
+def configured_node_services(pool_values: dict[str, str]) -> list[str]:
     runtime_values = read_env_values(RUNTIME_ENV_FILE)
     raw = (
         os.environ.get("BDAG_NODE_SERVICES")
@@ -639,9 +643,15 @@ def configured_active_nodes(pool_values: dict[str, str]) -> list[str]:
         or pool_values.get("BDAG_NODE_SERVICES")
         or ""
     )
-    nodes = [item.strip() for item in raw.split(",") if item.strip()]
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def configured_active_nodes(pool_values: dict[str, str]) -> list[str]:
+    nodes = configured_node_services(pool_values)
+    if not nodes:
+        return list(NODE_SPECS)
     active = [node for node in nodes if node in NODE_SPECS]
-    return active or list(NODE_SPECS)
+    return active
 
 
 def main() -> int:
@@ -656,7 +666,9 @@ def main() -> int:
     env_file = args.env_file
     compose_file = args.compose_file
     lines, values = read_env(env_file)
+    configured_nodes = configured_node_services(values)
     active_nodes = configured_active_nodes(values)
+    unsupported_nodes = [node for node in configured_nodes if node not in NODE_SPECS]
     topology = detect_network_topology(values)
     peer_candidates = p2p_peer_candidates(values)
     candidate_peers = peer_candidates.peers
@@ -755,7 +767,9 @@ def main() -> int:
         print("local peer configuration already current")
     print(f"host_ip={host_ip}")
     print(f"network_topology={topology}")
-    print(f"active_nodes={','.join(active_nodes)}")
+    print(f"active_nodes={','.join(active_nodes) or 'none'}")
+    if unsupported_nodes:
+        print(f"unsupported_configured_nodes={','.join(unsupported_nodes)}")
     print(f"p2p_candidates={len(candidate_peers)} remote_p2p_candidates={len(remote_candidate_peers)} rejected_non_p2p={len(peer_candidates.rejected_non_p2p)} paused_follower={paused or 'none'}")
     for node, addr in local_addrs.items():
         print(f"{node}={addr}")
