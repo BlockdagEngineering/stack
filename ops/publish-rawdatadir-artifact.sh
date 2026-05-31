@@ -52,6 +52,18 @@ path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="
 PY
 }
 
+maintenance_backoff_reason() {
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PROJECT_ROOT/ops" BDAG_PROJECT_ROOT="$PROJECT_ROOT" python3 - "$1" <<'PY'
+import sys
+
+from pool_ops import background_maintenance_decision, collect_status_cached
+
+decision = background_maintenance_decision(sys.argv[1], collect_status_cached(include_logs=False))
+if not decision.get("allowed", True):
+    print("; ".join(str(item) for item in decision.get("reasons", []) if item))
+PY
+}
+
 run_eligibility() {
   if ! "$PROJECT_ROOT/ops/fastartifact_source_eligibility.py" --full --json --status-file "$STATUS_FILE" 2>&1 | tee -a "$LOG_FILE"; then
     log "raw datadir source eligibility denied; see $STATUS_FILE"
@@ -82,6 +94,17 @@ start_active_node_after_final_sync() {
     compose start "$ACTIVE_SERVICE" 2>&1 | tee -a "$LOG_FILE"
   fi
 }
+
+if ! pressure_reason="$(maintenance_backoff_reason rawdatadir_publish 2>>"$LOG_FILE")"; then
+  log "skipping raw datadir artifact publish: background maintenance gate unavailable"
+  write_status_note "publish skipped: background maintenance gate unavailable"
+  exit 0
+fi
+if [[ -n "$pressure_reason" ]]; then
+  log "skipping raw datadir artifact publish: background maintenance backoff active: $pressure_reason"
+  write_status_note "publish skipped: background maintenance backoff active: $pressure_reason"
+  exit 0
+fi
 
 run_eligibility
 

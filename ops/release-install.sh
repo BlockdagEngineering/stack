@@ -443,6 +443,12 @@ configure_env() {
   set_env_value .env BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE 0
   set_env_value .env BDAG_RAWDATADIR_PEERS ""
   set_env_value .env BDAG_RAWDATADIR_TRUSTED_SIGNERS ""
+  set_env_value .env BDAG_IPFS_CONTENT_SIDECAR_MODE auto
+  set_env_value .env BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT 0
+  set_env_value .env BDAG_IPFS_CONTENT_PUBLISH_IPNS 0
+  set_env_value .env BDAG_IPFS_CONTENT_IPNS_KEY ""
+  set_env_value .env BDAG_IPFS_CONTENT_STATUS_FILE "./ops/runtime/ipfs-content-sidecar-status.json"
+  set_env_value .env BDAG_IPFS_CONTENT_LATEST_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
   set_env_value .env BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC 1
   set_env_value .env BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS 900
   set_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT 1

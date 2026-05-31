@@ -8,7 +8,10 @@ FETCH = ROOT / "ops" / "fetch-rawdatadir-artifact.sh"
 SIDECAR = ROOT / "ops" / "maintain-rawdatadir-sidecar.sh"
 ELIGIBILITY = ROOT / "ops" / "fastartifact_source_eligibility.py"
 PUBLISH = ROOT / "ops" / "publish-rawdatadir-artifact.sh"
+INSTALL = ROOT / "ops" / "install-p2p-services.sh"
+IPFS = ROOT / "ops" / "ipfs_content_sidecar.py"
 DOC = ROOT / "docs" / "rawdatadir-libp2p-sync.md"
+IPFS_DOC = ROOT / "docs" / "ipfs-content-sidecar.html"
 
 
 def read(path: Path) -> str:
@@ -26,7 +29,10 @@ def main() -> None:
     sidecar = read(SIDECAR)
     eligibility = read(ELIGIBILITY)
     publish = read(PUBLISH)
+    install = read(INSTALL)
+    ipfs = read(IPFS)
     doc = read(DOC)
+    ipfs_doc = read(IPFS_DOC)
 
     for needle in (
         "raw_datadir_checkpoint",
@@ -76,8 +82,29 @@ def main() -> None:
         "single-node artifact publish requires",
         "BDAG_RAWDATADIR_SOURCE_DIR",
         "BDAG_NODE_SERVICES:-bdag-miner-node-1",
+        "background maintenance backoff active",
     ):
         assert_contains(publish, needle, PUBLISH)
+
+    for needle in (
+        "publish_allowed",
+        "BDAG_FASTSYNC_ARTIFACT_DIRECTORY \"\"",
+        "bdag-rawdatadir-source.timer",
+        "Raw datadir artifact publisher is not allowed",
+        "install_ipfs_content_sidecar_timer",
+        "bdag-ipfs-content-sidecar.timer",
+    ):
+        assert_contains(install, needle, INSTALL)
+
+    for needle in (
+        "ipfs_is_untrusted_transport_manifest_and_consensus_are_authoritative",
+        "BDAG_IPFS_CONTENT_SIDECAR_MODE",
+        "DO_NOT_PUBLISH",
+        "manifest_unsigned",
+        "background_maintenance_decision",
+        "ipfs add",
+    ):
+        assert_contains(ipfs, needle, IPFS)
 
     for needle in (
         "Use the existing Fast Artifact Sync V2 libp2p protocol",
@@ -85,6 +112,13 @@ def main() -> None:
         "No deltas",
     ):
         assert_contains(doc, needle, DOC)
+
+    for needle in (
+        "IPFS is untrusted byte transport",
+        "signed FastArtifact manifests",
+        "background_maintenance_decision",
+    ):
+        assert_contains(ipfs_doc, needle, IPFS_DOC)
 
 
 if __name__ == "__main__":
