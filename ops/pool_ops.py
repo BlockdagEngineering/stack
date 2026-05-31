@@ -1156,6 +1156,35 @@ def is_docker_bridge_pool_log_client(ip: str, mac: str = "") -> bool:
     return address.version == 4 and address in ipaddress.ip_network("172.16.0.0/12")
 
 
+def is_docker_bridge_pseudo_miner(item: dict[str, Any]) -> bool:
+    """Return true for Docker bridge Stratum clients that are not physical miners."""
+    ip = str(item.get("ip") or "")
+    if not is_docker_bridge_pool_log_client(ip):
+        return False
+    device_type = str(item.get("device_type") or "").lower()
+    discovered_by = str(item.get("discovered_by") or "").lower()
+    sources = {str(source).lower() for source in merge_unique_strings(item.get("sources"))}
+    return device_type != "asic" or discovered_by == "pool-log" or "pool-log" in sources
+
+
+def is_configured_miner_record(item: dict[str, Any]) -> bool:
+    """Return true only for miners explicitly managed/configured for this pool."""
+    return bool(item.get("managed") or item.get("configured") or item.get("last_configured_ok"))
+
+
+def is_earnings_wallet_miner(item: dict[str, Any]) -> bool:
+    """Return true for miner rows allowed to participate in wallet earnings."""
+    if is_docker_bridge_pseudo_miner(item):
+        return False
+    if str(item.get("credit_scope") or "") == "idle-registered-asic":
+        return False
+    if item.get("managed") or item.get("configured") or item.get("connected"):
+        return True
+    if item.get("credit_workers") and (safe_int(item.get("shares"), 0) > 0 or safe_int(item.get("credited_blocks"), 0) > 0):
+        return True
+    return False
+
+
 def is_ipv4(value: str) -> bool:
     try:
         address = ipaddress.ip_address(value)
@@ -8234,14 +8263,24 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
             normalize_mac((registered_for_activity(item) or {}).get("mac")) or normalize_mac(item.get("mac")),
         )
     ]
-    hashrate_by_ip = collect_miner_hashrate_debug(registry.get("miners", []), active_activity_miners)
+    earnings_activity_miners = [
+        item
+        for item in active_activity_miners
+        if is_configured_miner_record(registered_for_activity(item))
+    ]
+    configured_registry_miners = [
+        item
+        for item in registry.get("miners", [])
+        if is_configured_miner_record(item)
+    ]
+    hashrate_by_ip = collect_miner_hashrate_debug(configured_registry_miners, earnings_activity_miners)
     credit_by_address = {
         str(item.get("miner_address")): item
         for item in credit_totals.get("by_address", [])
         if item.get("miner_address")
     }
     worker_to_identities: dict[str, set[str]] = {}
-    for item in active_activity_miners:
+    for item in earnings_activity_miners:
         activity_ip = str(item.get("ip") or "")
         registered = registered_for_activity(item)
         activity_mac = normalize_mac((registered or {}).get("mac")) or normalize_mac(item.get("mac"))
@@ -8250,11 +8289,11 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
         identity = str(item.get("identity_key") or miner_identity_key({**registered, **item}) or f"ip:{activity_ip}")
         for worker in item.get("workers", []):
             worker_to_identities.setdefault(str(worker), set()).add(identity)
-    total_work = sum(int(item.get("share_work", 0) or 0) for item in active_activity_miners)
+    total_work = sum(int(item.get("share_work", 0) or 0) for item in earnings_activity_miners)
     total_bdag = wei_to_bdag(credit_totals.get("totals", {}).get("total_wei"))
     recent_bdag = wei_to_bdag(credit_totals.get("recent_1h", {}).get("total_wei"))
     estimates: list[dict[str, Any]] = []
-    for item in active_activity_miners:
+    for item in earnings_activity_miners:
         activity_ip = str(item.get("ip") or "")
         registered = registered_for_activity(item)
         registered_mac = normalize_mac(registered.get("mac")) or normalize_mac(item.get("mac"))
@@ -8275,6 +8314,7 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
         share = Decimal(work) / Decimal(total_work) if total_work else Decimal("0")
         estimated_total = total_bdag * share
         estimated_hour = recent_bdag * share
+        configured = is_configured_miner_record(registered)
         estimates.append(
             {
                 "ip": item["ip"],
@@ -8283,6 +8323,10 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
                 "identity_key": miner_identity_key({**registered, "mac": registered_mac}),
                 "display_name": registered.get("display_name") or "",
                 "display_label": miner_display_label({**registered, "mac": registered_mac}),
+                "managed": bool(registered.get("managed")),
+                "configured": configured,
+                "connected": True,
+                "earnings_scope": "configured-current-miners",
                 "device_type": "asic" if hashrate.get("available") else registered.get("device_type") or item.get("device_type") or "stratum",
                 "workers": workers,
                 "credit_workers": credit_workers,
@@ -8365,6 +8409,11 @@ def compact_miner_estimate_for_history(miner: dict[str, Any]) -> dict[str, Any]:
         "identity_key",
         "display_name",
         "display_label",
+        "managed",
+        "configured",
+        "connected",
+        "earnings_scope",
+        "credit_scope",
         "shares",
         "share_work",
         "work_percent",
@@ -8396,7 +8445,10 @@ def compact_miner_estimate_for_history(miner: dict[str, Any]) -> dict[str, Any]:
 
 def earnings_snapshot_has_plot_data(snapshot: dict[str, Any]) -> bool:
     miners = snapshot.get("miner_estimates")
-    return isinstance(miners, list) and any(isinstance(miner, dict) for miner in miners)
+    return isinstance(miners, list) and any(
+        isinstance(miner, dict) and is_earnings_wallet_miner(miner)
+        for miner in miners
+    )
 
 
 def read_latest_earnings_snapshot_info(max_tail_bytes: int = 2 * 1024 * 1024) -> dict[str, Any]:
@@ -8467,6 +8519,7 @@ def compact_earnings_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             compact_miner_estimate_for_history(miner)
             for miner in snapshot.get("miner_estimates") or []
             if isinstance(miner, dict)
+            and is_earnings_wallet_miner(miner)
         ],
     }
 
@@ -8812,6 +8865,8 @@ def collect_hourly_averages(
         if parsed_at is not None and wallet_total is not None:
             timed_wallets.append((parsed_at, wallet_total, str(snapshot.get("generated_at"))))
         for miner in snapshot.get("miner_estimates") or []:
+            if not isinstance(miner, dict) or not is_earnings_wallet_miner(miner):
+                continue
             key = str(
                 miner.get("identity_key")
                 or miner.get("device_id")
@@ -8941,7 +8996,11 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
     price = fetch_cmc_price()
     primary_mining_address = read_env_value("MINING_ADDRESS")
     wallet = collect_wallet_balances(primary_mining_address)
-    miner_estimates = collect_miner_earnings_estimates(credits, price) if "error" not in credits else []
+    miner_estimates = (
+        [miner for miner in collect_miner_earnings_estimates(credits, price) if is_earnings_wallet_miner(miner)]
+        if "error" not in credits
+        else []
+    )
     total_bdag = wei_to_bdag(credits.get("totals", {}).get("total_wei"))
     db_recent_bdag = wei_to_bdag(credits.get("recent_1h", {}).get("total_wei"))
     db_recent_24h_bdag = wei_to_bdag(
@@ -9158,6 +9217,7 @@ def record_earnings_snapshot() -> dict[str, Any]:
             compact_miner_estimate_for_history(miner)
             for miner in earnings.get("miner_estimates", [])
             if isinstance(miner, dict)
+            and is_earnings_wallet_miner(miner)
         ],
     }
     with EARNINGS_SNAPSHOT_FILE.open("a", encoding="utf-8") as handle:
