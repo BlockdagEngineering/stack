@@ -2348,6 +2348,25 @@ HTML = r"""<!doctype html>
       const parsed = Number(value);
       return Number.isFinite(parsed) ? parsed : null;
     }
+    function isDockerBridgePseudoMiner(row) {
+      const ip = String(row?.ip || "");
+      const parts = ip.split(".").map(part => Number(part));
+      const isDockerBridge = parts.length === 4 && parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31;
+      if (!isDockerBridge) return false;
+      const deviceType = String(row?.device_type || "").toLowerCase();
+      const sourceText = `${row?.discovered_by || ""} ${(row?.sources || []).join(" ")}`.toLowerCase();
+      return deviceType !== "asic" || sourceText.includes("pool-log");
+    }
+    function visibleMinerRows(rows) {
+      return (rows || []).filter(row => {
+        if (isDockerBridgePseudoMiner(row)) return false;
+        if (String(row?.credit_scope || "") === "idle-registered-asic") return false;
+        if (row?.managed || row?.configured || row?.connected) return true;
+        const shares = Number(row?.shares || 0);
+        const credits = Number(row?.credited_blocks || 0);
+        return Array.isArray(row?.credit_workers) && row.credit_workers.length > 0 && (shares > 0 || credits > 0);
+      });
+    }
     function formatDisplayTime(value) {
       const parsed = Date.parse(value);
       if (!Number.isFinite(parsed)) return value || "n/a";
@@ -3355,7 +3374,7 @@ HTML = r"""<!doctype html>
 
       const minerBody = document.getElementById("minerEarningsTable");
       minerBody.innerHTML = "";
-      for (const row of data.miner_estimates || []) {
+      for (const row of visibleMinerRows(data.miner_estimates)) {
         const tr = document.createElement("tr");
         const workers = (row.workers || []).join(", ");
         const creditWorkers = (row.credit_workers || []).join(", ");
