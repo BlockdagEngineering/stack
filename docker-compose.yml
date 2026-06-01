@@ -279,3 +279,4 @@ volumes:
   postgres-data:
   node-data:
   nodeworker-data:
+  dashboard-runtime:
