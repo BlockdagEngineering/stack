@@ -32,7 +32,7 @@ services:
   # PostgreSQL for the mining pool. Schema is applied automatically on first
   # boot via /docker-entrypoint-initdb.d.
   # --------------------------------------------------------------------------
-  postgres:
+  pool-db:
     <<: *pool-critical
     image: postgres:15-bookworm
     restart: unless-stopped
@@ -55,7 +55,7 @@ services:
   # --------------------------------------------------------------------------
   # BlockDAG node + nodeworker supervisor. Optional SNAPSHOT_PATH at build time.
   # --------------------------------------------------------------------------
-  node:
+  bdag-miner-node-1:
     <<: *node-critical
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
@@ -130,87 +130,9 @@ services:
       - ${BDAG_RAWDATADIR_ARTIFACT_BASE:-./data-restore/rawdatadir}:/fastartifact/rawdatadir:ro
 
   # --------------------------------------------------------------------------
-  # Dedicated hot-snapshot node. It syncs separately from the pool RPC node so
-  # the hotsnap refresher can stop it for consistent exports without pool RPC
-  # downtime.
-  # --------------------------------------------------------------------------
-  snapshot-node:
-    platform: ${DOCKER_PLATFORM:-linux/amd64}
-    build:
-      context: ${BUILD_CONTEXT:-.}
-      dockerfile: ${DOCKERFILE:-dockerfile}
-      target: node
-      args:
-        <<: *build-args
-    restart: unless-stopped
-    logging: *mining-logging
-    ports:
-      - "${SNAPSHOT_P2P_PORT:-9150}:8150"
-      - "${SNAPSHOT_BDAG_RPC_PORT:-48131}:38131"
-      - "${SNAPSHOT_EVM_HTTP_PORT:-28545}:18545"
-      - "${SNAPSHOT_EVM_WS_PORT:-28546}:18546"
-      - "${SNAPSHOT_NODE_METRICS_PORT:-16060}:6060"
-    environment:
-      NODE_ARGS_APPEND: ${SNAPSHOT_NODE_ARGS_APPEND:-}
-      BDAG_FASTSYNC_SNAPSHOT_PATH: ${SNAPSHOT_BDAG_FASTSYNC_SNAPSHOT_PATH:-}
-      BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID: ${BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID:-}
-      BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX: ${BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX:-}
-      BDAG_FASTSYNC_ARTIFACT_MANIFEST_TTL: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST_TTL:-24h}
-      BDAG_FASTSNAP_ENABLED: ${SNAPSHOT_BDAG_FASTSNAP_ENABLED:-1}
-      BDAG_FASTSNAP_REQUIRED: ${SNAPSHOT_BDAG_FASTSNAP_REQUIRED:-0}
-      BDAG_FASTSNAP_PEERS_FILE: ${SNAPSHOT_BDAG_FASTSNAP_PEERS_FILE:-/etc/bdagStack/node.conf}
-      BDAG_FASTSNAP_AUTO_MAX_PEERS: ${SNAPSHOT_BDAG_FASTSNAP_AUTO_MAX_PEERS:-3}
-      BDAG_FASTSNAP_LEGACY_FALLBACK: ${SNAPSHOT_BDAG_FASTSNAP_LEGACY_FALLBACK:-0}
-      BDAG_FASTSNAP_NETWORK: ${BDAG_FASTSNAP_NETWORK:-mainnet}
-      BDAG_FASTSNAP_PEERS: ${SNAPSHOT_BDAG_FASTSNAP_PEERS:-}
-      BDAG_FASTSNAP_MIN_TIP: ${SNAPSHOT_BDAG_FASTSNAP_MIN_TIP:-0}
-      BDAG_FASTSNAP_TIMEOUT: ${SNAPSHOT_BDAG_FASTSNAP_TIMEOUT:-300s}
-      BDAG_FASTSNAP_PARALLELISM: ${SNAPSHOT_BDAG_FASTSNAP_PARALLELISM:-8}
-      BDAG_FASTSNAP_RETRIES: ${SNAPSHOT_BDAG_FASTSNAP_RETRIES:-5}
-      BDAG_FASTSNAP_RETRY_DELAY: ${SNAPSHOT_BDAG_FASTSNAP_RETRY_DELAY:-10s}
-      BDAG_FASTSNAP_TRUSTED_SIGNERS: ${BDAG_FASTSNAP_TRUSTED_SIGNERS:-}
-      BDAG_FASTSNAP_ALLOW_UNSIGNED: ${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}
-      BDAG_FASTSNAP_KEEP_ARCHIVE: ${BDAG_FASTSNAP_KEEP_ARCHIVE:-0}
-      BDAG_STORAGE_PROFILE: ${BDAG_STORAGE_PROFILE:-auto}
-      BDAG_NETWORK_TOPOLOGY: ${BDAG_NETWORK_TOPOLOGY:-auto}
-      BDAG_DETECTED_NETWORK_TOPOLOGY: ${BDAG_DETECTED_NETWORK_TOPOLOGY:-}
-      BDAG_NO_FASTSYNC_SERVE: ${BDAG_NO_FASTSYNC_SERVE:-auto}
-      BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
-    volumes:
-      - snapshot-node-data:/var/lib/bdagStack/node
-      - snapshot-nodeworker-data:/var/lib/bdagStack/nodeworker
-      - ./node.conf:/etc/bdagStack/node.conf:ro
-
-  # --------------------------------------------------------------------------
-  # Hot staged snapshot refresher. Default-on unless BDAG_HOTSNAP_ENABLED=0.
-  # Uses Docker socket access to stop only snapshot-node, export a consistent
-  # snapshot.bdsnap into its datadir, then restart snapshot-node.
-  # --------------------------------------------------------------------------
-  hotsnap:
-    image: docker:27-cli
-    restart: unless-stopped
-    logging: *mining-logging
-    tmpfs:
-      - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
-    depends_on:
-      snapshot-node: { condition: service_started }
-    environment:
-      BDAG_HOTSNAP_ENABLED: ${BDAG_HOTSNAP_ENABLED:-1}
-      BDAG_HOTSNAP_INTERVAL: ${BDAG_HOTSNAP_INTERVAL:-1h}
-      BDAG_HOTSNAP_INITIAL_DELAY: ${BDAG_HOTSNAP_INITIAL_DELAY:-20m}
-      BDAG_HOTSNAP_STOP_TIMEOUT: ${BDAG_HOTSNAP_STOP_TIMEOUT:-60}
-      BDAG_HOTSNAP_DATADIR: ${BDAG_HOTSNAP_DATADIR:-/var/lib/bdagStack/node/mainnet}
-      BDAG_HOTSNAP_ARCHIVE: ${BDAG_HOTSNAP_ARCHIVE:-/var/lib/bdagStack/node/mainnet/snapshot.bdsnap}
-      BDAG_HOTSNAP_CHUNK_SIZE: ${BDAG_HOTSNAP_CHUNK_SIZE:-}
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./scripts/hotsnap-refresh.sh:/usr/local/bin/hotsnap-refresh.sh:ro
-    entrypoint: ["/bin/sh", "/usr/local/bin/hotsnap-refresh.sh", "loop"]
-
-  # --------------------------------------------------------------------------
   # Mining pool. Connects to node RPC and Postgres.
   # --------------------------------------------------------------------------
-  pool:
+  asic-pool:
     <<: *pool-critical
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
@@ -224,29 +146,16 @@ services:
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     depends_on:
-      postgres: { condition: service_healthy }
-      node:     { condition: service_started }
+      pool-db: { condition: service_healthy }
+      bdag-miner-node-1: { condition: service_started }
     environment:
       # Compose interpolates ${...} from the project root .env file.
-      NODE_RPC_URL: http://node:38131
-      NODE_RPC_URLS: ${NODE_RPC_URLS:-http://node:38131}
+      NODE_RPC_URL: http://bdag-miner-node-1:38131
+      NODE_RPC_URLS: ${NODE_RPC_URLS:-http://bdag-miner-node-1:38131}
       POOL_SUBMIT_RPC_URLS: ${POOL_SUBMIT_RPC_URLS:-}
       POOL_RPC_BACKENDS: ${POOL_RPC_BACKENDS:-}
-      POOL_RPC_ROUTER_ENABLED: ${POOL_RPC_ROUTER_ENABLED:-false}
-      POOL_RPC_ROUTER_NODE_HEALTH_ENABLED: ${POOL_RPC_ROUTER_NODE_HEALTH_ENABLED:-true}
-      POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: ${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}
-      POOL_RPC_ROUTER_TEMPLATE_LANE_MODE: ${POOL_RPC_ROUTER_TEMPLATE_LANE_MODE:-active-passive}
-      POOL_RPC_ROUTER_MIN_HEALTHY_SECONDS: ${POOL_RPC_ROUTER_MIN_HEALTHY_SECONDS:-10}
-      POOL_RPC_ROUTER_SWITCH_COOLDOWN_SECONDS: ${POOL_RPC_ROUTER_SWITCH_COOLDOWN_SECONDS:-20}
-      POOL_RPC_ROUTER_TEMPLATE_MAX_AGE_SECONDS: ${POOL_RPC_ROUTER_TEMPLATE_MAX_AGE_SECONDS:-5}
-      POOL_RPC_ROUTER_RECOVERY_PROBE_SECONDS: ${POOL_RPC_ROUTER_RECOVERY_PROBE_SECONDS:-15}
-      POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS: ${POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS:-1}
-      POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS: ${POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS:-3}
-      POOL_RPC_ROUTER_NODE_HEALTH_UNREADY_THRESHOLD: ${POOL_RPC_ROUTER_NODE_HEALTH_UNREADY_THRESHOLD:-1}
-      POOL_RPC_ROUTER_NODE_HEALTH_ERROR_THRESHOLD: ${POOL_RPC_ROUTER_NODE_HEALTH_ERROR_THRESHOLD:-2}
-      POOL_RPC_ROUTER_NODE_HEALTH_FRESH_TEMPLATE_GRACE_SECONDS: ${POOL_RPC_ROUTER_NODE_HEALTH_FRESH_TEMPLATE_GRACE_SECONDS:-5}
       POOL_RUNTIME_ADMIN_ENABLED: ${POOL_RUNTIME_ADMIN_ENABLED:-false}
-      PG_URL:       postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bdagpool}?sslmode=disable
+      PG_URL:       postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@pool-db:5432/${POSTGRES_DB:-bdagpool}?sslmode=disable
       # Stratum listen (inside container) — from root .env
       POOL_BIND_ADDR:     ${POOL_BIND_ADDR:-0.0.0.0:3334}
       NODE_RPC_USER:      ${NODE_RPC_USER:-test}
@@ -294,14 +203,14 @@ services:
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     depends_on:
-      node: { condition: service_started }
-      pool: { condition: service_started }
+      bdag-miner-node-1: { condition: service_started }
+      asic-pool: { condition: service_started }
     environment:
-      BDAG_RPC_URL: http://node:38131
+      BDAG_RPC_URL: http://bdag-miner-node-1:38131
       # Must match node.conf rpcuser / rpcpass (same as pool service).
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
-      DASHBOARD_EVM_RPC_URL: http://node:18545
+      DASHBOARD_EVM_RPC_URL: http://bdag-miner-node-1:18545
       DASHBOARD_LISTEN: 0.0.0.0:9280
       DASHBOARD_RPC_POLL_SECONDS: 5
       DASHBOARD_MAX_POINTS: 120
@@ -316,5 +225,3 @@ volumes:
   postgres-data:
   node-data:
   nodeworker-data:
-  snapshot-node-data:
-  snapshot-nodeworker-data:

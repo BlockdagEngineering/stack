@@ -53,35 +53,35 @@ class GlobalTabRpcSelectionTests(unittest.TestCase):
         pool_ops.docker_container_ip = self.old_docker_container_ip
 
     def test_global_chain_uses_mining_rpc_when_node_rpc_is_configured(self) -> None:
-        os.environ["BDAG_NODE_RPC_URLS"] = "node2=http://127.0.0.1:38131"
+        os.environ["BDAG_NODE_RPC_URLS"] = "node1=http://127.0.0.1:38131"
         for key in ("BDAG_GLOBAL_CHAIN_RPC_URLS",):
             os.environ.pop(key, None)
 
-        self.assertEqual(pool_ops.global_chain_rpc_urls(), [("node2", "http://127.0.0.1:38131")])
+        self.assertEqual(pool_ops.global_chain_rpc_urls(), [("node1", "http://127.0.0.1:38131")])
 
     def test_global_evm_rpc_stays_separate_for_wallet_reads(self) -> None:
         for key in ("BDAG_GLOBAL_RPC_URLS", "BDAG_EVM_RPC_URLS", "WALLET_RPC_URLS"):
             os.environ.pop(key, None)
-        pool_ops.NODES = ["bdag-miner-node-2"]
-        pool_ops.SERVICES = ["bdag-miner-node-2"]
+        pool_ops.NODES = ["bdag-miner-node-1"]
+        pool_ops.SERVICES = ["bdag-miner-node-1"]
         pool_ops.POOL_CONTAINERS = []
-        pool_ops.docker_container_ip = lambda name: "172.22.0.2" if name == "bdag-miner-node-2" else ""
+        pool_ops.docker_container_ip = lambda name: "172.22.0.2" if name == "bdag-miner-node-1" else ""
 
         self.assertEqual(
             pool_ops.global_evm_rpc_urls(),
-            [("bdag-miner-node-2", "http://172.22.0.2:18545")],
+            [("bdag-miner-node-1", "http://172.22.0.2:18545")],
         )
 
     def test_global_rewrites_compose_service_hostname_for_host_dashboard(self) -> None:
-        os.environ["BDAG_GLOBAL_CHAIN_RPC_URLS"] = "node2=http://bdag-miner-node-2:38131"
-        pool_ops.NODES = ["bdag-miner-node-2"]
-        pool_ops.SERVICES = ["bdag-miner-node-2"]
+        os.environ["BDAG_GLOBAL_CHAIN_RPC_URLS"] = "node1=http://bdag-miner-node-1:38131"
+        pool_ops.NODES = ["bdag-miner-node-1"]
+        pool_ops.SERVICES = ["bdag-miner-node-1"]
         pool_ops.POOL_CONTAINERS = []
-        pool_ops.docker_container_ip = lambda name: "172.22.0.2" if name == "bdag-miner-node-2" else ""
+        pool_ops.docker_container_ip = lambda name: "172.22.0.2" if name == "bdag-miner-node-1" else ""
 
         self.assertEqual(
             pool_ops.global_chain_rpc_urls(),
-            [("node2", "http://172.22.0.2:38131")],
+            [("node1", "http://172.22.0.2:38131")],
         )
 
 
@@ -618,8 +618,8 @@ class EarningsEvmRpcSourceTests(unittest.TestCase):
     def test_wallet_balances_use_evm_rpc_not_mining_rpc(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         called_urls: list[str] = []
-        pool_ops.global_evm_rpc_urls = lambda: [("node2-evm", "http://172.22.0.5:18545")]
-        pool_ops.node_rpc_urls = lambda: [("node2-mining", "http://127.0.0.1:38131")]
+        pool_ops.global_evm_rpc_urls = lambda: [("node1-evm", "http://172.22.0.5:18545")]
+        pool_ops.node_rpc_urls = lambda: [("node1-mining", "http://127.0.0.1:38131")]
         pool_ops.named_urls_from_env = lambda _name, _defaults: []
         pool_ops.adaptive_worker_count = lambda *_args, **_kwargs: 1
 
@@ -652,7 +652,7 @@ class GlobalLocalPoolOverlayTests(unittest.TestCase):
 
     def test_local_pool_credit_row_uses_asic_worker_identity(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
-        pool_ops.NODES = ["bdag-miner-node-2"]
+        pool_ops.NODES = ["bdag-miner-node-1"]
         pool_ops.pool_db_json = lambda _sql: [
             {
                 "miner_address": wallet,
@@ -685,7 +685,7 @@ class GlobalLocalPoolOverlayTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["address"], wallet)
         self.assertEqual(rows[0]["pool_name"], "Achilles-0b5")
-        self.assertEqual(rows[0]["nodes"], ["bdag-miner-node-2"])
+        self.assertEqual(rows[0]["nodes"], ["bdag-miner-node-1"])
         self.assertTrue(rows[0]["local_pool"])
         self.assertEqual(rows[0]["shares"], 7)
         self.assertEqual(rows[0]["credit_blocks"], 7)

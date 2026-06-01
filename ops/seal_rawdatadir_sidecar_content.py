@@ -288,6 +288,16 @@ def quantity(value: Any) -> int:
     raise ValueError(value)
 
 
+def env_quantity(env: dict[str, str], key: str, default: int = 0) -> int:
+    value = str(env.get(key) or "").strip()
+    if not value:
+        return default
+    try:
+        return quantity(value)
+    except ValueError:
+        return default
+
+
 def zero_hash(value: Any) -> bool:
     text = str(value or "").strip().lower()
     return not text or text in {ZERO_HASH, ZERO_HASH[2:]}
@@ -336,7 +346,7 @@ def evm_rpc(url: str, method: str, params: list[Any] | None = None) -> Any:
     return decoded.get("result")
 
 
-def collect_anchor(env: dict[str, str]) -> dict[str, Any]:
+def collect_anchor(env: dict[str, str], require_state_root: bool = True) -> dict[str, Any]:
     url = env.get("BDAG_RAWDATADIR_ANCHOR_RPC_URL") or env.get("NODE_RPC_URL") or "http://127.0.0.1:38131"
     evm_url = env.get("BDAG_RAWDATADIR_EVM_RPC_URL") or env.get("LOCAL_EVM_RPC_URL") or "http://127.0.0.1:18545"
     user = env.get("NODE_RPC_USER", "test")
@@ -344,31 +354,42 @@ def collect_anchor(env: dict[str, str]) -> dict[str, Any]:
     anchor: dict[str, Any] = {
         "chain_id": quantity(env.get("BDAG_RAWDATADIR_CHAIN_ID") or 1404),
         "network": env.get("BDAG_RAWDATADIR_NETWORK") or env.get("BDAG_FASTSNAP_NETWORK") or "mainnet",
-        "block_total": 0,
-        "tip_order": 0,
-        "tip_hash": "",
+        "block_total": env_quantity(env, "BDAG_RAWDATADIR_BLOCK_TOTAL"),
+        "tip_order": env_quantity(env, "BDAG_RAWDATADIR_TIP_ORDER"),
+        "tip_hash": env.get("BDAG_RAWDATADIR_TIP_HASH") or "",
         "state_root": env.get("BDAG_RAWDATADIR_STATE_ROOT") or ZERO_HASH,
         "genesis_hash": env.get("BDAG_RAWDATADIR_GENESIS_HASH") or "",
     }
+    if (
+        int(anchor.get("block_total") or 0) > 1
+        and int(anchor.get("tip_order") or 0) > 1
+        and not zero_hash(anchor.get("tip_hash"))
+        and (not require_state_root or not zero_hash(anchor.get("state_root")))
+        and not zero_hash(anchor.get("genesis_hash"))
+    ):
+        anchor["anchor_source"] = "configured_finalization_anchor"
+        return anchor
     try:
-        for method in ("getBlockTotal", "getBlockCount"):
+        if int(anchor.get("block_total") or 0) <= 1:
+            for method in ("getBlockTotal", "getBlockCount"):
+                try:
+                    anchor["block_total"] = quantity(rpc(url, user, password, method))
+                    break
+                except Exception:
+                    pass
+        if int(anchor.get("tip_order") or 0) <= 1:
             try:
-                anchor["block_total"] = quantity(rpc(url, user, password, method))
-                break
+                anchor["tip_order"] = quantity(rpc(url, user, password, "getMainChainHeight"))
             except Exception:
-                pass
-        try:
-            anchor["tip_order"] = quantity(rpc(url, user, password, "getMainChainHeight"))
-        except Exception:
-            anchor["tip_order"] = anchor["block_total"]
-        if anchor["tip_order"]:
+                anchor["tip_order"] = anchor["block_total"]
+        if anchor["tip_order"] and zero_hash(anchor.get("tip_hash")):
             for method, params in (("getBlockhash", [int(anchor["tip_order"])]), ("getBestBlockHash", [])):
                 try:
                     anchor["tip_hash"] = str(rpc(url, user, password, method, params))
                     break
                 except Exception:
                     pass
-        if not anchor["state_root"] or anchor["state_root"] == ZERO_HASH:
+        if require_state_root and (not anchor["state_root"] or anchor["state_root"] == ZERO_HASH):
             for method, params in (("getBlockHeader", [anchor["tip_hash"], True]), ("getStateRoot", [int(anchor["tip_order"]), False])):
                 try:
                     result = rpc(url, user, password, method, params)
@@ -380,7 +401,7 @@ def collect_anchor(env: dict[str, str]) -> dict[str, Any]:
                         break
                 except Exception:
                     pass
-        if not anchor["genesis_hash"]:
+        if zero_hash(anchor.get("genesis_hash")):
             try:
                 anchor["genesis_hash"] = str(rpc(url, user, password, "getBlockhash", [0]))
             except Exception:
@@ -392,12 +413,12 @@ def collect_anchor(env: dict[str, str]) -> dict[str, Any]:
             anchor["block_total"] = quantity(evm_rpc(evm_url, "eth_blockNumber"))
         if int(anchor.get("tip_order") or 0) <= 1:
             anchor["tip_order"] = int(anchor.get("block_total") or 0)
-        if zero_hash(anchor.get("tip_hash")) or zero_hash(anchor.get("state_root")):
+        if zero_hash(anchor.get("tip_hash")) or (require_state_root and zero_hash(anchor.get("state_root"))):
             block = evm_rpc(evm_url, "eth_getBlockByNumber", ["latest", False])
             if isinstance(block, dict):
                 if zero_hash(anchor.get("tip_hash")):
                     anchor["tip_hash"] = block.get("hash") or ""
-                if zero_hash(anchor.get("state_root")):
+                if require_state_root and zero_hash(anchor.get("state_root")):
                     anchor["state_root"] = block.get("stateRoot") or ZERO_HASH
                 try:
                     number = quantity(block.get("number"))
@@ -516,7 +537,7 @@ def seal_sidecar(env: dict[str, str]) -> dict[str, Any]:
             }
         )
 
-    anchor = collect_anchor(env)
+    anchor = collect_anchor(env, require_state_root=require_state_root)
     created_at = now_iso()
     manifest: dict[str, Any] = {
         "format_version": 2,

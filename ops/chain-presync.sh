@@ -10,7 +10,7 @@ PRESYNC_BACKOFF_BLOCKS="${BDAG_PRESYNC_BACKOFF_BLOCKS:-0}"
 PRESYNC_MAX_BLOCK_LAG="${BDAG_PRESYNC_MAX_BLOCK_LAG:-5}"
 PRESYNC_UNKNOWN_BACKOFF="${BDAG_PRESYNC_UNKNOWN_BACKOFF:-1}"
 PRESYNC_ONE_NODE="${BDAG_PRESYNC_ONE_NODE:-1}"
-PRESYNC_NODE_DIRS="${BDAG_PRESYNC_NODE_DIRS:-${BDAG_NODE_DATA_DIRS:-node1,node2}}"
+PRESYNC_NODE_DIRS="${BDAG_PRESYNC_NODE_DIRS:-${BDAG_NODE_DATA_DIRS:-node1}}"
 PRESYNC_STATE_FILE="${BDAG_PRESYNC_STATE_FILE:-$PROJECT_ROOT/ops/runtime/chain-presync-state}"
 
 source "$PROJECT_ROOT/ops/chain-snapshot-common.sh"
@@ -67,7 +67,7 @@ sync_node() {
 
 configured_node_dirs() {
   local raw="$PRESYNC_NODE_DIRS"
-  local item seen_node1=0 seen_node2=0 emitted=0
+  local item seen_node1=0 emitted=0
   raw="${raw//;/,}"
   IFS=',' read -ra items <<< "$raw"
   for item in "${items[@]}"; do
@@ -77,13 +77,6 @@ configured_node_dirs() {
         if [[ "$seen_node1" == "0" ]]; then
           printf '%s\n' node1
           seen_node1=1
-          emitted=1
-        fi
-        ;;
-      node2)
-        if [[ "$seen_node2" == "0" ]]; then
-          printf '%s\n' node2
-          seen_node2=1
           emitted=1
         fi
         ;;

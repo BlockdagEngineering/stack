@@ -29,9 +29,6 @@ from pool_ops import (
     seconds_since_epoch,
     write_jsonl_file,
 )
-from rpc_router import current_rpc_primary, recommend_rpc_primary
-
-
 STATE_FILE = Path(os.environ.get("BDAG_P2P_GUARD_STATE_FILE", RUNTIME_DIR / "p2p-health-state.json"))
 HISTORY_FILE = Path(os.environ.get("BDAG_P2P_GUARD_HISTORY_FILE", RUNTIME_DIR / "p2p-health-history.jsonl"))
 MARKER_DIR = Path(os.environ.get("BDAG_P2P_GUARD_MARKER_DIR", RUNTIME_DIR))
@@ -44,14 +41,12 @@ PING_TIMEOUT = int(os.environ.get("BDAG_P2P_GUARD_PING_TIMEOUT", "1"))
 MAX_PEER_PINGS = int(os.environ.get("BDAG_P2P_GUARD_MAX_PEER_PINGS", "6"))
 MAX_MINER_PINGS = int(os.environ.get("BDAG_P2P_GUARD_MAX_MINER_PINGS", "8"))
 MIN_NATIVE_PEERS = int(os.environ.get("BDAG_P2P_GUARD_MIN_NATIVE_PEERS", "4"))
-ACTIVE_PRIMARY_WARN_SCORE = float(os.environ.get("BDAG_P2P_GUARD_ACTIVE_WARN_SCORE", "80"))
-ACTIVE_PRIMARY_SWITCH_DELTA = float(os.environ.get("BDAG_P2P_GUARD_SWITCH_DELTA", "10"))
+ACTIVE_NODE_WARN_SCORE = float(os.environ.get("BDAG_P2P_GUARD_ACTIVE_WARN_SCORE", "80"))
 LAN_GATEWAY_WARN_MS = float(os.environ.get("BDAG_P2P_GUARD_GATEWAY_WARN_MS", "20"))
 INCIDENT_COOLDOWN_SECONDS = int(os.environ.get("BDAG_P2P_GUARD_INCIDENT_COOLDOWN", "600"))
 
 NODE_METRIC_PORTS = {
     "bdag-miner-node-1": int(os.environ.get("BDAG_NODE1_METRICS_PORT", "6061")),
-    "bdag-miner-node-2": int(os.environ.get("BDAG_NODE2_METRICS_PORT", "6062")),
 }
 
 NATIVE_METRICS = {
@@ -396,12 +391,8 @@ def build_snapshot(previous: dict[str, Any] | None = None) -> dict[str, Any]:
             "p2p_egress_delta": metric_delta("p2p_egress_", native, previous_node or {}),
         }
 
-    active = current_rpc_primary()
-    router = recommend_rpc_primary(status, current_primary=active)
+    active = NODES[0] if NODES else ""
     active_score = float(nodes.get(active or "", {}).get("score", 0.0))
-    alternate_nodes = [node for node in NODES if node != active]
-    best_alternate = max(alternate_nodes, key=lambda item: float(nodes.get(item, {}).get("score", 0.0)), default=None)
-    alternate_score = float(nodes.get(best_alternate or "", {}).get("score", 0.0))
 
     recommendations: list[str] = []
     if route.get("uses_wifi") or route.get("uses_zerotier") or not route.get("mining_interface_ok"):
@@ -409,40 +400,27 @@ def build_snapshot(previous: dict[str, Any] | None = None) -> dict[str, Any]:
     if not gateway_ping.get("up") or (gateway_ping.get("rtt_ms") is not None and float(gateway_ping["rtt_ms"]) > LAN_GATEWAY_WARN_MS):
         recommendations.append("lan-gateway-latency-or-loss")
     for node, row in nodes.items():
-        if float(row.get("score") or 0.0) < ACTIVE_PRIMARY_WARN_SCORE:
-            role = "active" if node == active else "standby"
-            recommendations.append(f"{role}-node-p2p-degraded-{node}")
-    if active and best_alternate and active_score < ACTIVE_PRIMARY_WARN_SCORE and alternate_score - active_score >= ACTIVE_PRIMARY_SWITCH_DELTA:
-        recommendations.append(f"rpc-primary-switch-candidate-{active}-to-{best_alternate}")
-    if router.get("should_switch"):
-        recommendations.append(f"router-switch-recommended-{router.get('recommended_primary')}")
+        if float(row.get("score") or 0.0) < ACTIVE_NODE_WARN_SCORE:
+            recommendations.append(f"node-p2p-degraded-{node}")
     if any(int(item.get("down_count") or 0) for item in (ping_summary(miner_pings),)):
         recommendations.append("lan-miner-ping-loss")
 
     guard_state = "ok"
     if recommendations:
         guard_state = "warning"
-    if router.get("should_switch") or (active and active_score < 70):
+    if active and active_score < 70:
         guard_state = "critical"
 
     payload = {
         "generated_at": now_iso(),
         "generated_epoch": seconds_since_epoch(),
         "guard_state": guard_state,
-        "active_primary": active,
-        "best_alternate": best_alternate,
-        "active_primary_score": active_score,
-        "best_alternate_score": alternate_score,
+        "active_node": active,
+        "active_node_score": active_score,
         "overall_score": round(min([float(row.get("score", 0.0)) for row in nodes.values()] or [0.0]), 3),
         "recommendations": recommendations,
         "nodes": nodes,
-        "router": {
-            "current_primary": router.get("current_primary"),
-            "recommended_primary": router.get("recommended_primary"),
-            "should_switch": router.get("should_switch"),
-            "reason": router.get("reason"),
-            "score_delta": router.get("score_delta"),
-        },
+        "rpc_health": {"active_node": active, "reason": "single backend mode"},
         "pool_quality": pool_quality(status),
         "network": {
             "default_route": route,
@@ -472,7 +450,7 @@ def maybe_record_incident(snapshot: dict[str, Any], previous: dict[str, Any] | N
     signature = json.dumps(
         {
             "guard_state": snapshot.get("guard_state"),
-            "active_primary": snapshot.get("active_primary"),
+            "active_node": snapshot.get("active_node"),
             "recommendations": snapshot.get("recommendations"),
         },
         sort_keys=True,
@@ -492,10 +470,8 @@ def maybe_record_incident(snapshot: dict[str, Any], previous: dict[str, Any] | N
         "p2p-guard",
         "P2P/network health guard detected degradation",
         {
-            "active_primary": snapshot.get("active_primary"),
-            "active_primary_score": snapshot.get("active_primary_score"),
-            "best_alternate": snapshot.get("best_alternate"),
-            "best_alternate_score": snapshot.get("best_alternate_score"),
+            "active_node": snapshot.get("active_node"),
+            "active_node_score": snapshot.get("active_node_score"),
             "recommendations": snapshot.get("recommendations"),
             "pool_quality": snapshot.get("pool_quality"),
             "network": snapshot.get("network"),
@@ -548,7 +524,7 @@ def summarize_window(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "critical_samples": critical,
         "warning_samples": warning,
         "avg_overall_score": avg(("overall_score",)),
-        "avg_active_primary_score": avg(("active_primary_score",)),
+        "avg_active_node_score": avg(("active_node_score",)),
         "avg_block_error_ratio": avg(("pool_quality", "block_error_ratio")),
         "avg_valid_share_ratio": avg(("pool_quality", "valid_share_ratio")),
         "avg_stale_job_ratio": avg(("pool_quality", "stale_job_ratio")),
@@ -594,8 +570,8 @@ def loop(interval: int) -> None:
             snapshot = sample_once()
             log(
                 "sample "
-                f"state={snapshot.get('guard_state')} active={snapshot.get('active_primary')} "
-                f"active_score={snapshot.get('active_primary_score')} recommendations={snapshot.get('recommendations')}"
+                f"state={snapshot.get('guard_state')} active={snapshot.get('active_node')} "
+                f"active_score={snapshot.get('active_node_score')} recommendations={snapshot.get('recommendations')}"
             )
         except Exception as exc:  # noqa: BLE001 - guard must keep monitoring.
             log(f"p2p guard sample failed: {exc}")

@@ -3,6 +3,7 @@ Description=Run BlockDAG lazy IPFS content sidecar
 
 [Timer]
 OnBootSec=20m
+OnActiveSec=30m
 OnUnitActiveSec=30m
 RandomizedDelaySec=10m
 Persistent=false

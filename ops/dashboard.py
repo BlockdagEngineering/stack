@@ -60,6 +60,9 @@ REPORTS_DIR = RUNTIME_DIR / "reports"
 STATUS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_STATUS_CACHE_SECONDS", "10"))
 EARNINGS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_EARNINGS_CACHE_SECONDS", "30"))
 SAMPLER_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS", "10"))
+DASHBOARD_DIRECT_STATUS_FALLBACK = os.environ.get(
+    "BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 EARNINGS_SAMPLER_ENABLED = os.environ.get("BDAG_DASHBOARD_EARNINGS_SAMPLER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 EARNINGS_SAMPLER_INTERVAL_SECONDS = max(
     30.0,
@@ -107,6 +110,166 @@ def clear_api_cache(*keys: str) -> None:
                 API_CACHE.pop(key, None)
         else:
             API_CACHE.clear()
+
+
+def read_dashboard_json(path: Path) -> object | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def dashboard_cache_age(epoch: object) -> float | None:
+    try:
+        return max(0.0, time.time() - float(epoch))
+    except (TypeError, ValueError):
+        return None
+
+
+def dashboard_float(value: object) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def attach_dashboard_endpoint(payload: dict[str, object]) -> dict[str, object]:
+    payload["dashboard_bind"] = HOST
+    payload["dashboard_port"] = PORT
+    display_host = "127.0.0.1" if HOST in {"0.0.0.0", "::", ""} else HOST
+    if ":" in display_host and not display_host.startswith("["):
+        display_host = f"[{display_host}]"
+    payload["dashboard_url"] = f"http://{display_host}:{PORT}"
+    return payload
+
+
+def cached_status_for_dashboard(include_logs: bool = True) -> tuple[dict[str, object] | None, dict[str, object]]:
+    sampler_path = RUNTIME_DIR / "status-sampler.json"
+    shared_cache_path = RUNTIME_DIR / "shared-status-cache.json"
+    diagnostics: dict[str, object] = {
+        "status_sampler": {
+            "hit": False,
+            "path": str(sampler_path),
+            "age_seconds": None,
+            "stale": False,
+        },
+        "shared_status_cache": {
+            "hit": False,
+            "path": str(shared_cache_path),
+            "age_seconds": None,
+            "stale": False,
+        },
+    }
+
+    sampler = read_dashboard_json(sampler_path)
+    if isinstance(sampler, dict):
+        sampler_age = dashboard_cache_age(sampler.get("epoch"))
+        sampler_diag = diagnostics["status_sampler"]
+        assert isinstance(sampler_diag, dict)
+        sampler_diag["age_seconds"] = round(sampler_age, 3) if sampler_age is not None else None
+        payload = sampler.get("payload")
+        if isinstance(payload, dict) and sampler_age is not None and sampler_age <= SAMPLER_CACHE_SECONDS:
+            result = dict(payload)
+            result_age = round((dashboard_float(result.get("age_seconds")) or 0.0) + sampler_age, 3)
+            stale_after = dashboard_float(result.get("stale_after_seconds"))
+            payload_fresh = result.get("fresh")
+            if payload_fresh is not False and (stale_after is None or result_age <= stale_after):
+                result["age_seconds"] = result_age
+                result["fresh"] = True
+                result["status_sampler"] = {
+                    "hit": True,
+                    "path": str(sampler_path),
+                    "age_seconds": round(sampler_age, 3),
+                    "max_age_seconds": SAMPLER_CACHE_SECONDS,
+                    "include_logs": bool(sampler.get("include_logs")),
+                    "requested_include_logs": include_logs,
+                }
+                return result, diagnostics
+        sampler_diag["stale"] = payload is not None
+
+    shared_cache = read_dashboard_json(shared_cache_path)
+    if isinstance(shared_cache, dict):
+        key = "with_logs" if include_logs else "no_logs"
+        row = shared_cache.get(key)
+        if isinstance(row, dict):
+            cache_age = dashboard_cache_age(row.get("epoch"))
+            shared_diag = diagnostics["shared_status_cache"]
+            assert isinstance(shared_diag, dict)
+            shared_diag["age_seconds"] = round(cache_age, 3) if cache_age is not None else None
+            payload = row.get("payload")
+            if isinstance(payload, dict) and cache_age is not None and cache_age <= STATUS_CACHE_SECONDS:
+                result = dict(payload)
+                result_age = round((dashboard_float(result.get("age_seconds")) or 0.0) + cache_age, 3)
+                stale_after = dashboard_float(result.get("stale_after_seconds"))
+                payload_fresh = result.get("fresh")
+                if payload_fresh is not False and (stale_after is None or result_age <= stale_after):
+                    result["age_seconds"] = result_age
+                    result["fresh"] = True
+                    result["shared_status_cache"] = {
+                        "hit": True,
+                        "path": str(shared_cache_path),
+                        "age_seconds": round(cache_age, 3),
+                        "max_age_seconds": STATUS_CACHE_SECONDS,
+                        "key": key,
+                    }
+                    return result, diagnostics
+            shared_diag["stale"] = payload is not None
+
+    return None, diagnostics
+
+
+def dashboard_status_fast_fallback(diagnostics: dict[str, object]) -> dict[str, object]:
+    failure_message = "dashboard status cache unavailable; direct collection skipped"
+    payload: dict[str, object] = {
+        "generated_at": now_iso(),
+        "overall": "degraded",
+        "status_reason": failure_message,
+        "mode": "status_cache_unavailable",
+        "can_mine": False,
+        "can_accept_shares": False,
+        "can_submit_blocks": False,
+        "fresh": False,
+        "age_seconds": 0.0,
+        "stale_after_seconds": STATUS_CACHE_SECONDS,
+        "project_root": str(PROJECT_ROOT),
+        "runtime_dir": str(RUNTIME_DIR),
+        "truth_sources": {
+            "status": "status_sampler or shared_status_cache",
+            "chain_block_count": "not_checked_budgeted_status_fallback",
+        },
+        "blocking_failures": [failure_message],
+        "degraded_reasons": [],
+        "failures": [failure_message],
+        "stack_failures": [failure_message],
+        "miner_failures": [],
+        "warnings": ["dashboard status returned bounded fallback because cached status was unavailable"],
+        "sync_warnings": [],
+        "maintenance_warnings": [],
+        "collector_budget_exceeded": True,
+        "collector_budget_failure": {
+            "component": "dashboard_status",
+            "class": "collector_budget_exceeded",
+            "detail": "No fresh status sampler or shared status cache was available; direct collection was skipped.",
+        },
+        "chain_rpc_error": "not_checked_budgeted_status_fallback",
+        "containers": {},
+        "nodes": {},
+        "node_services": [],
+        "stack_services": [],
+        "sync_progress": {"status": "unknown", "percent": None, "remaining_blocks": None},
+        "sync_health": {},
+        "pool": {},
+        "pool_metrics": {},
+        "pool_health": {},
+        "miner_health": {"miners": [], "failures": []},
+        "local_ips": [],
+        "pool_endpoint": "",
+        "pool_port": None,
+        "latest_action": None,
+        "status_sampler": diagnostics.get("status_sampler"),
+        "shared_status_cache": diagnostics.get("shared_status_cache"),
+    }
+    return attach_dashboard_endpoint(payload)
 
 
 def write_earnings_sampler_state(payload: dict[str, object]) -> None:
@@ -374,8 +537,7 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
     managed_nodes = payload.get("managed_node_services") if isinstance(payload.get("managed_node_services"), list) else []
     single_active_node = len(managed_nodes) == 1
     leader = choose_sync_leader(payload)
-    paused_follower = str(coordinator.get("paused_follower") or sync_health.get("planned_paused_follower") or "")
-    mode = str(coordinator.get("mode") or ("leader_catchup" if paused_follower else "normal"))
+    mode = str(coordinator.get("mode") or "single_node_catchup")
     threshold = safe_int(((coordinator.get("last_decision") or {}).get("thresholds") or {}).get("leader_near_tip_blocks"), 5) or 5
 
     state = read_json(SYNC_ESTIMATE_STATE_FILE, {})
@@ -433,7 +595,7 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
             "eta_at": eta_iso(now + eta_seconds) if eta_seconds is not None else "",
             "eta_to_seed_seconds": round(eta_to_seed_seconds) if eta_to_seed_seconds is not None else None,
             "eta_to_seed_at": eta_iso(now + eta_to_seed_seconds) if eta_to_seed_seconds is not None else "",
-            "planned_pause": bool(name == paused_follower),
+            "planned_pause": False,
             "leader": bool(name == leader),
         }
         if current is not None or remaining is not None:
@@ -450,18 +612,11 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
     stage = (
         "Synced"
         if sync_progress.get("status") == "synced"
-        else "Leader catch-up"
-        if mode == "leader_catchup"
         else "Single-node catch-up"
         if single_active_node
-        else "Dual-node sync"
+        else "Syncing"
     )
-    if mode == "leader_catchup" and leader and paused_follower:
-        narrative = (
-            f"{leader} is syncing alone while {paused_follower} is paused to save bandwidth. "
-            f"When the leader is within {threshold} block(s) of tip, the coordinator will copy the leader data to the follower and start both nodes."
-        )
-    elif sync_progress.get("status") == "synced":
+    if sync_progress.get("status") == "synced":
         narrative = "Managed nodes are synced to the current network tip."
     elif single_active_node and leader:
         narrative = f"{leader} is the only active production node. The pool will wait for this node to finish sync before mining jobs are sent."
@@ -473,7 +628,6 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
         "stage": stage,
         "mode": mode,
         "leader": leader,
-        "paused_follower": paused_follower,
         "seed_threshold_blocks": threshold,
         "remaining_blocks": remaining,
         "rate_blocks_per_second": rate,
@@ -490,10 +644,8 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
 
 
 def template_backend_state_from_metrics(text: str, source: str) -> dict[str, object]:
-    state: dict[str, object] = {"source": source, "fan_in": {}, "backends": {}}
-    fan_in = state["fan_in"]
+    state: dict[str, object] = {"source": source, "backends": {}}
     backends = state["backends"]
-    assert isinstance(fan_in, dict)
     assert isinstance(backends, dict)
 
     for line in text.splitlines():
@@ -509,47 +661,12 @@ def template_backend_state_from_metrics(text: str, source: str) -> dict[str, obj
         except ValueError:
             continue
         labels = parse_prometheus_labels(label_text or "")
-        if metric_name == "pool_template_fanin_enabled":
-            fan_in["enabled"] = value > 0
-            fan_in["enabled_value"] = value
-        elif metric_name == "pool_template_fanin_backends":
-            fan_in["backends"] = int(value) if value.is_integer() else value
-        elif metric_name == "pool_template_fanin_mode":
-            mode = labels.get("mode")
-            if mode:
-                modes = fan_in.setdefault("modes", {})
-                if isinstance(modes, dict):
-                    modes[mode] = value
-                if value > 0:
-                    fan_in["mode"] = mode
-        elif metric_name == "pool_template_fanin_config_info":
-            if value > 0:
-                for key in (
-                    "config_id",
-                    "effective_mode",
-                    "configured_mode",
-                    "configured_backends",
-                    "participant_backends",
-                    "max_backends",
-                    "reject_lag_blocks",
-                    "accept_same_height",
-                    "alt_takeover_min_age_ms",
-                    "alt_takeover_lead_blocks",
-                    "failover_template_max_age_ms",
-                ):
-                    if key in labels:
-                        fan_in[key] = labels[key]
-        elif metric_name in {
+        if metric_name in {
             "pool_rpc_backend_selected",
             "pool_rpc_backend_healthy",
             "pool_rpc_backend_score",
             "pool_rpc_backend_template_age_seconds",
             "pool_rpc_backend_ws_connected",
-            "pool_template_fanin_backend_participant",
-            "pool_template_fanin_backend_role",
-            "pool_template_fanin_winner",
-            "pool_template_fanin_best_height",
-            "pool_template_fanin_observed_height",
         }:
             backend = labels.get("backend")
             if not backend:
@@ -569,18 +686,6 @@ def template_backend_state_from_metrics(text: str, source: str) -> dict[str, obj
                 row["template_age_seconds"] = round(value, 3)
             elif metric_name == "pool_rpc_backend_ws_connected":
                 row["ws_connected"] = value > 0
-            elif metric_name == "pool_template_fanin_backend_participant":
-                row["fan_in_participant"] = value > 0
-            elif metric_name == "pool_template_fanin_backend_role":
-                role = labels.get("role")
-                if role and value > 0:
-                    row["fan_in_role"] = role
-            elif metric_name == "pool_template_fanin_winner":
-                row["fan_in_winner"] = value > 0
-            elif metric_name == "pool_template_fanin_best_height":
-                row["fan_in_best_height"] = int(value) if value.is_integer() else value
-            elif metric_name == "pool_template_fanin_observed_height":
-                row["fan_in_observed_height"] = int(value) if value.is_integer() else value
 
     if backends:
         state["backend_count"] = len(backends)
@@ -642,14 +747,14 @@ def enrich_status_with_template_backend_state(payload: dict[str, object]) -> dic
 
 
 def dashboard_status_payload() -> dict[str, object]:
+    if not DASHBOARD_DIRECT_STATUS_FALLBACK:
+        cached, diagnostics = cached_status_for_dashboard(include_logs=True)
+        if cached is not None:
+            return attach_dashboard_endpoint(cached)
+        return dashboard_status_fast_fallback(diagnostics)
+
     payload = enrich_status_with_template_backend_state(enrich_status_with_sync_estimate(collect_status_cached(include_logs=True)))
-    payload["dashboard_bind"] = HOST
-    payload["dashboard_port"] = PORT
-    display_host = "127.0.0.1" if HOST in {"0.0.0.0", "::", ""} else HOST
-    if ":" in display_host and not display_host.startswith("["):
-        display_host = f"[{display_host}]"
-    payload["dashboard_url"] = f"http://{display_host}:{PORT}"
-    return payload
+    return attach_dashboard_endpoint(payload)
 
 
 def token_required() -> bool:
@@ -1130,12 +1235,6 @@ HTML = r"""<!doctype html>
       color: var(--text);
       min-width: 0;
       overflow-wrap: anywhere;
-    }
-    .sync-paused-note {
-      color: var(--warn);
-      font-size: 12px;
-      font-weight: 700;
-      line-height: 1.35;
     }
     .sync-progress-node {
       margin-top: 10px;
@@ -1631,7 +1730,7 @@ HTML = r"""<!doctype html>
     let lastEarningsData = null;
     let globalLoaded = false;
     let lastGlobalData = null;
-    const defaultServiceOrder = ["pool-db", "bdag-miner-node-1", "bdag-miner-node-2", "rpc-failover", "asic-pool"];
+    const defaultServiceOrder = ["pool-db", "bdag-miner-node-1", "asic-pool"];
     function text(id, value) { document.getElementById(id).textContent = value ?? ""; }
     function currentTheme() {
       return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
@@ -1693,15 +1792,7 @@ HTML = r"""<!doctype html>
     function templateBackendStatusText(data) {
       const metrics = data.pool_metrics || {};
       const state = firstTemplateBackendState(data);
-      const fanIn = state.fan_in || {};
       const parts = [];
-      const fanEnabled = firstPresent(fanIn.enabled, state.template_fanin_enabled, metrics.template_fanin_enabled);
-      const fanBackends = firstPresent(fanIn.backends, state.template_fanin_backends, metrics.template_fanin_backends);
-      const fanMode = firstPresent(fanIn.effective_mode, fanIn.mode);
-      if (hasValue(fanEnabled) || hasValue(fanBackends)) {
-        const enabledText = hasValue(fanEnabled) ? (metricEnabled(fanEnabled) ? "on" : "off") : "unknown";
-        parts.push(`template_fanin=${enabledText}${hasValue(fanBackends) ? `(${fmt(fanBackends)})` : ""}${hasValue(fanMode) ? ` mode=${fanMode}` : ""}`);
-      }
 
       const backends = state.backends || {};
       const backendNames = Object.keys(backends).sort();
@@ -1938,12 +2029,7 @@ HTML = r"""<!doctype html>
       );
       text("syncRate", syncRateText(estimate));
       text("syncEta", etaText(estimate.eta_seconds, estimate.eta_at));
-      if (estimate.mode === "leader_catchup" && estimate.paused_follower) {
-        text(
-          "syncNextStep",
-          `copy ${leader || "leader"} data to ${estimate.paused_follower} when remaining is <= ${fmt(threshold)} block(s); seed ETA ${etaText(estimate.eta_to_seed_seconds, estimate.eta_to_seed_at)}`
-        );
-      } else if (progress.status === "synced") {
+      if (progress.status === "synced") {
         text("syncNextStep", "pool can mine normally once backend template checks are healthy");
       } else {
         text("syncNextStep", "wait for nodes to finish syncing; the pool is holding mining jobs until backend sync is complete");
@@ -1957,20 +2043,6 @@ HTML = r"""<!doctype html>
     }
     function nodeSyncProgressHtml(name, progress, data = {}, node = {}) {
       const estimate = data.sync_estimate || {};
-      if (node?.planned_sync_pause) {
-        const leader = node.sync_pause_leader || estimate.leader || "leader";
-        const leaderEstimate = estimate.nodes?.[leader] || {};
-        const seedThreshold = firstPresent(estimate.seed_threshold_blocks, 5);
-        return `
-          <div class="sync-paused-note">Paused by sync coordinator while ${escapeHtml(leader)} catches up.</div>
-          <div class="sync-progress-meta">
-            <span>copy from ${escapeHtml(leader)} after sync</span>
-            <span>seed at <= ${escapeHtml(fmt(seedThreshold))} remaining block(s)</span>
-          </div>
-          <div class="sync-progress-meta">
-            <span>${escapeHtml(etaText(leaderEstimate.eta_to_seed_seconds, leaderEstimate.eta_to_seed_at))}</span>
-          </div>`;
-      }
       const nodePercent = Number(progress.percent);
       const nodeBounded = Number.isFinite(nodePercent) ? Math.max(0, Math.min(100, nodePercent)) : 0;
       const nodeEstimate = estimate.nodes?.[name] || {};
@@ -2006,7 +2078,6 @@ HTML = r"""<!doctype html>
       return `child=${node.child_running}${chain}${rpcLatency}${rpcAttempts} main_height=${fmt(node.chain_main_height)} best_main_order=${fmt(node.best_main_order)} import_age=${fmt(node.last_import_age_seconds)}s peer_ahead=${fmt(node.peer_ahead_blocks)} bad_peers=${fmt(node.invalid_peer_errors)} p2p_resets=${fmt(node.p2p_stream_errors)}`;
     }
     function nodeBlockHeight(name, node, syncNode, data) {
-      if (node?.planned_sync_pause && !hasValue(node?.chain_block_count) && !hasValue(syncNode?.chain_block_count)) return "paused";
       return firstPresent(syncNode?.chain_block_count, node?.chain_block_count, null);
     }
     function renderNodeCards(nodeNames, nodes, syncProgress, data) {
@@ -2038,7 +2109,6 @@ HTML = r"""<!doctype html>
         const backend = backendInfoForNode(name, backendState) || {};
         const fanRole = backend.fan_in_role || (backend.selected ? "selected" : "");
         const roleHtml = `<span class="node-role">${escapeHtml(roleValue)}</span>`
-          + (node?.planned_sync_pause ? `<span class="node-role">paused</span>` : "")
           + (fanRole ? `<span class="node-role">${escapeHtml(fanRole)}</span>` : "");
         const wsText = hasValue(backend.ws_connected) ? ` ws=${metricEnabled(backend.ws_connected) ? "on" : "off"}` : "";
         const templateAge = hasValue(backend.template_age_seconds) ? ` template_age=${fmt(backend.template_age_seconds)}s` : "";
@@ -3573,7 +3643,7 @@ class Handler(BaseHTTPRequestHandler):
             self.serve_report(path)
             return
         if path == "/api/status":
-            self.send_json(cached_payload("status", STATUS_CACHE_SECONDS, dashboard_status_payload))
+            self.send_json(dashboard_status_payload())
             return
         if path == "/api/token-required":
             self.send_json({"required": token_required(), "token_file": str(RUNTIME_DIR / "dashboard-token.txt")})
@@ -3609,16 +3679,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/incidents":
             self.send_json({"generated_at": now_iso(), "incidents": read_recent_incidents(100)})
-            return
-        if path == "/api/router":
-            router_path = RUNTIME_DIR / "rpc-router-state.json"
-            if router_path.exists():
-                try:
-                    self.send_json(json.loads(router_path.read_text(encoding="utf-8")))
-                except json.JSONDecodeError as exc:
-                    self.send_json({"generated_at": now_iso(), "error": str(exc)}, status=500)
-            else:
-                self.send_json({"generated_at": now_iso(), "error": "router state not available"}, status=404)
             return
         if path == "/api/p2p":
             if P2P_GUARD_STATE.exists():

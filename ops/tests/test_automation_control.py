@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+import json
+import pathlib
+import sys
+import tempfile
+import unittest
+import unittest.mock
+
+
+OPS_DIR = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(OPS_DIR))
+
+import automation_control  # noqa: E402
+import stack_sentinel  # noqa: E402
+import watchdog  # noqa: E402
+
+
+class AutomationControlTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = pathlib.Path(self.tmp.name)
+        self.state_path = self.root / "automation-control.json"
+        self.lock_path = self.root / "automation-control.lock"
+        self.event_path = self.root / "automation-control-events.jsonl"
+        self.now = datetime(2026, 5, 31, 21, 0, tzinfo=timezone.utc)
+
+    def control_state(
+        self,
+        state: str,
+        *,
+        expires_at: datetime | None = None,
+        allowed_mutations: list[str] | None = None,
+    ) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "state": state,
+            "owner": "operator",
+            "owner_unit": "test",
+            "pid": 123,
+            "reason": "unit test",
+            "correlation_id": "test",
+            "created_at": self.now.isoformat(),
+            "updated_at": self.now.isoformat(),
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "allowed_mutations": allowed_mutations or [],
+            "suppressed_count": 0,
+            "last_transition": {"from": "normal", "to": state, "at": self.now.isoformat(), "by": "test"},
+        }
+
+    def write_state(self, state: dict[str, object]) -> None:
+        automation_control.write_control_state(
+            state,
+            state_path=self.state_path,
+            lock_path=self.lock_path,
+            now=self.now,
+        )
+
+    def check(self, action: str = automation_control.ACTION_ASIC_POOL_START):
+        return automation_control.check_mutation_allowed(
+            action,
+            actor="watchdog",
+            target="asic-pool",
+            reason="test mutation",
+            state_path=self.state_path,
+            event_path=self.event_path,
+            lock_path=self.lock_path,
+            now=self.now,
+        )
+
+    def event_lines(self) -> list[dict[str, object]]:
+        if not self.event_path.exists():
+            return []
+        return [json.loads(line) for line in self.event_path.read_text(encoding="utf-8").splitlines()]
+
+    def test_missing_control_denies_high_risk_mutation_and_logs(self) -> None:
+        decision = self.check()
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual("missing", decision.control_status)
+        events = self.event_lines()
+        self.assertEqual(1, len(events))
+        self.assertEqual("automation_control_denied", events[0]["event_type"])
+
+    def test_corrupt_control_denies_high_risk_mutation_and_logs(self) -> None:
+        self.state_path.write_text("{not-json", encoding="utf-8")
+
+        decision = self.check()
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual("corrupt", decision.control_status)
+        self.assertEqual(1, len(self.event_lines()))
+
+    def test_schema_invalid_control_denies_high_risk_mutation_and_logs(self) -> None:
+        self.state_path.write_text(json.dumps({"schema_version": 1, "state": "normal"}), encoding="utf-8")
+
+        decision = self.check()
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual("schema_invalid", decision.control_status)
+        self.assertEqual(1, len(self.event_lines()))
+
+    def test_expired_control_denies_high_risk_mutation_and_logs(self) -> None:
+        expired = self.control_state("normal", expires_at=self.now - timedelta(seconds=1))
+        self.state_path.write_text(json.dumps(expired), encoding="utf-8")
+
+        decision = self.check()
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual("expired", decision.control_status)
+        self.assertEqual(1, len(self.event_lines()))
+
+    def test_repair_hold_controlled_stop_and_chain_incident_deny_high_risk_mutations(self) -> None:
+        for state in ("repair_hold", "controlled_stop", "chain_incident"):
+            with self.subTest(state=state):
+                self.write_state(self.control_state(state))
+                self.event_path.unlink(missing_ok=True)
+
+                decision = self.check()
+
+                self.assertFalse(decision.allowed)
+                self.assertEqual(state, decision.control_state)
+                self.assertIn("denies high-risk", decision.reason)
+                self.assertEqual(1, len(self.event_lines()))
+
+    def test_normal_control_allows_high_risk_mutation(self) -> None:
+        self.write_state(self.control_state("normal"))
+
+        decision = self.check()
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual([], self.event_lines())
+
+    def test_transition_hold_requires_exact_allowlist_match(self) -> None:
+        self.write_state(self.control_state("transition_hold"))
+
+        denied = self.check()
+
+        self.assertFalse(denied.allowed)
+        self.write_state(self.control_state("transition_hold", allowed_mutations=["asic-pool"]))
+
+        target_only = self.check()
+
+        self.assertFalse(target_only.allowed)
+        self.write_state(
+            self.control_state(
+                "transition_hold",
+                allowed_mutations=[automation_control.ACTION_ASIC_POOL_START],
+            )
+        )
+
+        action_only_with_target = self.check()
+
+        self.assertFalse(action_only_with_target.allowed)
+        self.write_state(
+            self.control_state(
+                "transition_hold",
+                allowed_mutations=[f"{automation_control.ACTION_ASIC_POOL_START}:asic-pool"],
+            )
+        )
+
+        allowed = self.check()
+
+        self.assertTrue(allowed.allowed)
+
+    def patch_default_control_paths(self):
+        return unittest.mock.patch.multiple(
+            automation_control,
+            DEFAULT_STATE_PATH=self.state_path,
+            DEFAULT_LOCK_PATH=self.lock_path,
+            DEFAULT_EVENT_PATH=self.event_path,
+        )
+
+    def test_watchdog_suppresses_current_stack_rpc_and_pool_repairs_when_control_missing(self) -> None:
+        calls: list[str] = []
+        events: list[tuple[str, str, str]] = []
+
+        def fake_record(event_type: str, severity: str, message: str, details=None) -> None:
+            events.append((event_type, severity, message))
+
+        with self.patch_default_control_paths(), unittest.mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), unittest.mock.patch.object(
+            watchdog, "record_efficiency_event", fake_record
+        ), unittest.mock.patch.object(
+            watchdog, "acquire_lock", side_effect=AssertionError("lock should not be acquired")
+        ), unittest.mock.patch.object(
+            watchdog, "start_stack", side_effect=lambda _log_path: calls.append("start_stack") or True
+        ), unittest.mock.patch.object(
+            watchdog, "run_logged", side_effect=AssertionError("docker command should not run")
+        ):
+            self.assertFalse(
+                watchdog.run_repair("start", "asic-pool is not running")
+            )
+            self.assertFalse(watchdog.run_pool_restart("submit-path stall"))
+
+        self.assertEqual([], calls)
+        self.assertGreaterEqual(len(self.event_lines()), 2)
+        self.assertTrue(all(item[0] == "automation_control_suppressed" for item in events))
+
+    def test_watchdog_suppresses_asic_miner_restart_when_control_missing(self) -> None:
+        events: list[tuple[str, str, str]] = []
+
+        def fake_record(event_type: str, severity: str, message: str, details=None) -> None:
+            events.append((event_type, severity, message))
+
+        with self.patch_default_control_paths(), unittest.mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), unittest.mock.patch.object(
+            watchdog, "record_efficiency_event", fake_record
+        ), unittest.mock.patch.object(
+            watchdog, "read_miner_admin_password", side_effect=AssertionError("password should not be read")
+        ), unittest.mock.patch.object(
+            watchdog, "acquire_lock", side_effect=AssertionError("lock should not be acquired")
+        ):
+            result = watchdog.run_miner_restarts([{"ip": "192.168.68.10"}], "ASIC hashrate watchdog")
+
+        self.assertEqual("suppressed", result["status"])
+        self.assertEqual(1, len(self.event_lines()))
+        self.assertEqual("automation_control_suppressed", events[0][0])
+
+    def test_sentinel_suppresses_pool_starts_when_control_missing(self) -> None:
+        incidents: list[tuple[str, str, str, str]] = []
+
+        def fake_incident(event_type: str, severity: str, component: str, message: str, details=None) -> None:
+            incidents.append((event_type, severity, component, message))
+
+        state: dict[str, object] = {}
+        with self.patch_default_control_paths(), unittest.mock.patch.object(
+            stack_sentinel, "log", lambda _message: None
+        ), unittest.mock.patch.object(
+            stack_sentinel, "append_incident", fake_incident
+        ), unittest.mock.patch.object(
+            stack_sentinel, "run_logged", side_effect=AssertionError("docker command should not run")
+        ):
+            self.assertFalse(
+                stack_sentinel.start_container(
+                    stack_sentinel.POOL_CONTAINER,
+                    "ASIC pool container is stopped",
+                    state,
+                    100,
+                )
+            )
+            self.assertFalse(
+                stack_sentinel.recreate_container(
+                    stack_sentinel.POOL_CONTAINER,
+                    "ASIC pool container is restarting",
+                    state,
+                    101,
+                )
+            )
+            self.assertFalse(
+                stack_sentinel.start_container(
+                    stack_sentinel.POOL_CONTAINER,
+                    "ASIC pool container is stopped",
+                    state,
+                    102,
+                )
+            )
+
+        self.assertGreaterEqual(len(self.event_lines()), 3)
+        self.assertTrue(all(item[0] == "automation_control_suppressed" for item in incidents))
+
+    def test_sentinel_suppresses_systemd_start_when_control_missing(self) -> None:
+        incidents: list[tuple[str, str, str, str]] = []
+
+        def fake_incident(event_type: str, severity: str, component: str, message: str, details=None) -> None:
+            incidents.append((event_type, severity, component, message))
+
+        with self.patch_default_control_paths(), unittest.mock.patch.object(
+            stack_sentinel, "log", lambda _message: None
+        ), unittest.mock.patch.object(
+            stack_sentinel, "append_incident", fake_incident
+        ), unittest.mock.patch.object(
+            stack_sentinel, "unit_active", return_value=False
+        ), unittest.mock.patch.object(
+            stack_sentinel, "systemctl_user", side_effect=AssertionError("systemctl start should not run")
+        ):
+            stack_sentinel.start_unit("bdag-watchdog.service", {}, 200)
+
+        self.assertEqual(1, len(self.event_lines()))
+        self.assertEqual("automation_control_suppressed", incidents[0][0])
+
+
+if __name__ == "__main__":
+    unittest.main()

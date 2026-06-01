@@ -134,6 +134,35 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
         self.assertEqual(payload["lag_to_reference"], 1500)
         self.assertFalse(payload["fresh"])
 
+    def test_evm_sync_sample_falls_back_to_active_node_container_ip(self) -> None:
+        values = {
+            ("http://172.18.0.2:18545/", "eth_blockNumber"): 9_000,
+            ("http://reference:18545", "eth_blockNumber"): 9_100,
+        }
+
+        def fake_quantity(url: str, method: str, timeout: float = 5.0) -> int:
+            if url == "http://127.0.0.1:18545":
+                raise OSError("connection refused")
+            return values[(url, method)]
+
+        with (
+            unittest.mock.patch.object(eligibility, "json_rpc_quantity", fake_quantity),
+            unittest.mock.patch.object(eligibility, "docker_container_ip", lambda _service: "172.18.0.2"),
+        ):
+            payload = eligibility.source_evm_sync_sample(
+                {
+                    "BDAG_NODE_SERVICES": "bdag-miner-node-1",
+                    "BDAG_RAWDATADIR_EVM_RPC_URL": "http://127.0.0.1:18545",
+                    "BDAG_RAWDATADIR_EVM_REFERENCE_RPC_URLS": "reference=http://reference:18545",
+                    "BDAG_RAWDATADIR_MAX_EVM_REFERENCE_LAG": "1000",
+                }
+            )
+
+        self.assertEqual(payload["local_evm_rpc_url"], "http://172.18.0.2:18545/")
+        self.assertEqual(payload["local_evm_block"], 9_000)
+        self.assertEqual(payload["lag_to_reference"], 100)
+        self.assertTrue(payload["fresh"])
+
     def test_source_eligibility_rejects_low_io_usb_storage_profile_when_mount_detection_misses(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)

@@ -48,8 +48,8 @@ If that pool uses different container names, update:
 ```bash
 BDAG_POOL_CONTAINER=asic-pool
 BDAG_POOL_DB_CONTAINER=pool-db
-BDAG_NODE_SERVICES=bdag-miner-node-1,bdag-miner-node-2
-BDAG_STACK_SERVICES=pool-db,bdag-miner-node-1,bdag-miner-node-2,rpc-failover,asic-pool
+BDAG_NODE_SERVICES=bdag-miner-node-1
+BDAG_STACK_SERVICES=pool-db,bdag-miner-node-1,asic-pool
 ```
 
 Restart after edits:

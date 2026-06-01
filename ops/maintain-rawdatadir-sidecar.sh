@@ -14,7 +14,6 @@ ACTIVE_NODE_SERVICE="${BDAG_RAWDATADIR_SINGLE_NODE_SERVICE:-${NODE_SERVICES_CSV%
 ACTIVE_NODE_SERVICE="${ACTIVE_NODE_SERVICE:-bdag-miner-node-1}"
 case "$ACTIVE_NODE_SERVICE" in
   bdag-miner-node-1|node1) DEFAULT_NODE_DIR="${BDAG_NODE1_DATA_DIR:-$PROJECT_ROOT/data/node1}" ;;
-  bdag-miner-node-2|node2) DEFAULT_NODE_DIR="${BDAG_NODE2_DATA_DIR:-$PROJECT_ROOT/data/node2}" ;;
   *) DEFAULT_NODE_DIR="${BDAG_NODE_DATA_DIR:-$PROJECT_ROOT/data/node}" ;;
 esac
 SOURCE_DIR="${BDAG_RAWDATADIR_SIDECAR_SOURCE:-$DEFAULT_NODE_DIR/$NETWORK}"
@@ -22,9 +21,12 @@ SIDECAR_DIR="${BDAG_RAWDATADIR_SIDECAR_DIR:-$PROJECT_ROOT/data-restore/rawdatadi
 LOCK_FILE="${BDAG_RAWDATADIR_SIDECAR_LOCK:-$PROJECT_ROOT/ops/runtime/rawdatadir-sidecar.lock}"
 LOG_FILE="${BDAG_RAWDATADIR_SIDECAR_LOG:-$PROJECT_ROOT/ops/runtime/logs/rawdatadir-sidecar-$(date +%Y%m%d).log}"
 STATUS_FILE="${BDAG_RAWDATADIR_SOURCE_STATUS:-$PROJECT_ROOT/ops/runtime/rawdatadir-source-status.json}"
+SAFE_STATUS_FILE="${BDAG_RAWDATADIR_SIDECAR_SAFE_STATUS:-$PROJECT_ROOT/ops/runtime/rawdatadir-sidecar-safe-status.json}"
 DELETE_MODE="${BDAG_RAWDATADIR_SIDECAR_DELETE:-1}"
 BWLIMIT="${BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT:-}"
 USE_SUDO="${BDAG_RAWDATADIR_SIDECAR_USE_SUDO:-auto}"
+SIDECAR_MODE="${BDAG_RAWDATADIR_SIDECAR_MODE:-${BDAG_RAWDATADIR_SOURCE_MODE:-auto}}"
+FINAL_STOPPED_SYNC="${BDAG_RAWDATADIR_SIDECAR_FINAL_STOPPED_SYNC:-0}"
 CONTENT_MODE="${BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE:-auto}"
 CONTENT_SCRIPT="$PROJECT_ROOT/ops/seal_rawdatadir_sidecar_content.py"
 
@@ -84,17 +86,44 @@ if ! command -v rsync >/dev/null 2>&1; then
   log "rsync is required for raw datadir sidecar sync"
   exit 1
 fi
-if ! "$PROJECT_ROOT/ops/fastartifact_source_eligibility.py" --status-file "$STATUS_FILE" >/dev/null; then
-  log "raw datadir source sidecar disabled by eligibility policy; see $STATUS_FILE"
-  exit 0
-fi
+case "${SIDECAR_MODE,,}" in
+  0|false|no|off|disabled)
+    log "raw datadir sidecar sync disabled by BDAG_RAWDATADIR_SIDECAR_MODE/BDAG_RAWDATADIR_SOURCE_MODE=$SIDECAR_MODE"
+    exit 0
+    ;;
+esac
 
-if ! pressure_reason="$(maintenance_backoff_reason rawdatadir_sidecar 2>>"$LOG_FILE")"; then
-  log "skipping raw datadir sidecar sync: background maintenance gate unavailable"
-  exit 0
-fi
-if [[ -n "$pressure_reason" ]]; then
-  log "skipping raw datadir sidecar sync: background maintenance backoff active: $pressure_reason"
+case "${FINAL_STOPPED_SYNC,,}" in
+  1|true|yes|on)
+    log "final stopped sidecar sync: skipping live-status background maintenance gate"
+    ;;
+  *)
+    if ! pressure_reason="$(maintenance_backoff_reason rawdatadir_sidecar 2>>"$LOG_FILE")"; then
+      log "skipping raw datadir sidecar sync: background maintenance gate unavailable"
+      exit 0
+    fi
+    if [[ -n "$pressure_reason" ]]; then
+      log "skipping raw datadir sidecar sync: background maintenance backoff active: $pressure_reason"
+      exit 0
+    fi
+    ;;
+esac
+
+eligibility_require_evm_reference_fresh="${BDAG_RAWDATADIR_SIDECAR_REQUIRE_EVM_REFERENCE_FRESH:-0}"
+case "${FINAL_STOPPED_SYNC,,}" in
+  1|true|yes|on)
+    eligibility_require_evm_reference_fresh=0
+    log "final stopped sidecar sync: enforcing storage/path safety without live EVM freshness"
+    ;;
+esac
+
+# A sidecar refresh is not a public source/publish decision. Keep retrying the
+# low-priority copy after mining pressure clears, but still refuse unsafe
+# storage/topology conditions such as USB/removable paths or insufficient space.
+if ! BDAG_RAWDATADIR_SOURCE_MODE="$SIDECAR_MODE" \
+  BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH="$eligibility_require_evm_reference_fresh" \
+  "$PROJECT_ROOT/ops/fastartifact_source_eligibility.py" --status-file "$STATUS_FILE" >/dev/null; then
+  log "raw datadir sidecar safety check deferred sync; see $STATUS_FILE"
   exit 0
 fi
 
@@ -107,11 +136,14 @@ rsync_args=(
   --delay-updates
   "--exclude=/network.key*"
   "--exclude=/bdageth/nodekey*"
+  "--exclude=/bdageth/LOCK"
+  "--exclude=/bdageth/chaindata/LOCK"
+  "--exclude=/bdageth/nodes*"
   "--exclude=/keystore*"
   "--exclude=/bdageth/keystore*"
-  "--exclude=/bdageth/nodes*"
   "--exclude=/peerstore*"
   "--exclude=/nodes*"
+  "--exclude=/bdageth/transactions.rlp"
   "--exclude=/.rsync-partial"
   "--exclude=/snapshot.bdsnap"
   "--exclude=/artifact.manifest.json"
@@ -166,7 +198,17 @@ case "$rsync_status" in
     ;;
 esac
 log "raw datadir sidecar sync complete"
-python3 - "$STATUS_FILE" "$SOURCE_DIR" "$SIDECAR_DIR" <<'PY'
+if "$PROJECT_ROOT/ops/verify-rawdatadir-sidecar.py" \
+  --source-dir "$SOURCE_DIR" \
+  --sidecar-dir "$SIDECAR_DIR" \
+  --status-file "$SAFE_STATUS_FILE" \
+  --json >>"$LOG_FILE" 2>&1; then
+  log "raw datadir sidecar safe check passed; status=$SAFE_STATUS_FILE"
+else
+  log "raw datadir sidecar safe check failed; status=$SAFE_STATUS_FILE"
+  exit 1
+fi
+python3 - "$STATUS_FILE" "$SOURCE_DIR" "$SIDECAR_DIR" "$SAFE_STATUS_FILE" "$FINAL_STOPPED_SYNC" <<'PY'
 import json
 import sys
 import time
@@ -183,6 +225,8 @@ payload.update({
     "last_sidecar_sync_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     "last_sidecar_source": sys.argv[2],
     "last_sidecar_dir": sys.argv[3],
+    "last_sidecar_safe_status": sys.argv[4],
+    "last_sidecar_final_stopped_sync": sys.argv[5].strip().lower() in {"1", "true", "yes", "on"},
 })
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
