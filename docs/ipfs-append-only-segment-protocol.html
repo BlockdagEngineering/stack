@@ -83,7 +83,7 @@
     "current_segment_head_order": 9502504,
     "deprecated_fastsnap_root_cid": "bafybeidesnyknx4fojvtpu6hctxnlqbw372eqaqh64tl362lwiaih7bkoa",
     "deprecated_fastsnap_tip_order": 8639851,
-    "recommended_next_phase": "Backfill earlier history and implement signed multi-node publisher registry/election.",
+    "recommended_next_phase": "Backfill earlier history and implement multi-node publisher registry/election.",
     "safety_rule": "IPFS is never allowed to gate mining. Segment build and publish retries are low-priority background work and must defer under mining pressure."
   }
   </script>
@@ -139,7 +139,7 @@
         </tr>
         <tr>
           <td>IPNS is a mutable, self-certifying name that can point to an immutable <code>/ipfs/&lt;cid&gt;</code> path. It has sequence, validity, and TTL tradeoffs.</td>
-          <td>IPNS should point only to the latest index. It is a convenience pointer, not authority. The index chain and segment signatures carry truth.</td>
+          <td>IPNS should point only to the latest index. It is a convenience pointer, not authority. The index chain, CID links, hashes, and consensus validation carry truth.</td>
           <td><a href="https://docs.ipfs.tech/concepts/ipns/">IPNS docs</a> and <a href="https://specs.ipfs.tech/ipns/ipns-record/">IPNS record spec</a></td>
         </tr>
         <tr>
@@ -176,18 +176,18 @@
         <tr>
           <td><code>segment manifest</code></td>
           <td>Immutable CID</td>
-          <td>Network/genesis, segment id, start/end orders, start/end hashes, previous segment CID, payload CIDs, chunk hashes, state roots, build algorithm, election evidence, publisher key, signature.</td>
-          <td>Validate schema, signature, election eligibility, hash links, and payload CIDs before accepting.</td>
+          <td>Network/genesis, segment id, start/end orders, start/end hashes, previous segment CID, payload CIDs, chunk hashes, state roots, build algorithm, and election evidence.</td>
+          <td>Validate schema, election eligibility, hash links, payload CIDs, and consensus compatibility before accepting.</td>
         </tr>
         <tr>
           <td><code>segment index</code></td>
           <td>Immutable CID per version</td>
-          <td>Append-only ordered list of segment manifest CIDs plus index sequence, current head, deprecated content, and signatures.</td>
+          <td>Append-only ordered list of segment manifest CIDs plus index sequence, current head, and deprecated content.</td>
           <td>Only accept append-only transitions from the previous known index. Never delete or rewrite accepted segment history.</td>
         </tr>
         <tr>
           <td><code>IPNS latest pointer</code></td>
-          <td>Mutable signed record</td>
+          <td>Mutable IPNS record</td>
           <td>Pointer to the latest segment-index CID.</td>
           <td>Use as discovery only. A stale IPNS value is not a consensus failure; compare sequence/head and verify the index.</td>
         </tr>
@@ -211,7 +211,7 @@
       <li>All serialization is canonical: sorted keys for JSON test artifacts, DAG-CBOR for production manifests, fixed compression settings, fixed chunk size, and stable file order.</li>
     </ol>
     <div class="callout">
-      Contention is made harmless by determinism. If two honest nodes build the same segment from the same finalized range with the same encoder, they should produce the same payload CID and manifest CID except for publisher-specific signature fields. If signatures make manifest CIDs differ, validators still accept the same payload root and choose the deterministic highest-priority valid manifest.
+      Contention is made harmless by determinism. If two honest nodes build the same segment from the same finalized range with the same encoder, they should produce the same payload CID and manifest CID. Validators accept the same payload root and choose the deterministic highest-priority valid manifest.
     </div>
   </section>
 
@@ -244,15 +244,15 @@ rank eligible publishers by weighted rank_score, with win_count as bounded weigh
         <tr><td>Open recovery</td><td>After ranked slots expire.</td><td>Any registered node may publish, but only valid deterministic content is accepted.</td></tr>
       </tbody>
     </table>
-    <p>Gossipsub messages such as <code>segment_intent</code>, <code>segment_candidate</code>, and <code>segment_accepted</code> reduce duplicate work, but they do not decide authority. Nodes reject gossip that fails schema, signature, registry, rank, or segment validation.</p>
+    <p>Gossipsub messages such as <code>segment_intent</code>, <code>segment_candidate</code>, and <code>segment_accepted</code> reduce duplicate work, but they do not decide authority. Nodes reject gossip that fails schema, registry, rank, or segment validation.</p>
   </section>
 
   <section>
     <h2>Validation Pipeline</h2>
     <ol>
       <li>Resolve the latest IPNS pointer, preferably uncached for freshness-sensitive sync.</li>
-      <li>Fetch the index CID and validate index schema, signature, network, genesis, sequence, and append-only continuity.</li>
-      <li>For each new segment, fetch the manifest CID and verify publisher signature, registry binding, deterministic election rank, fallback-slot timing, and previous-segment hash link.</li>
+      <li>Fetch the index CID and validate index schema, network, genesis, sequence, and append-only continuity.</li>
+      <li>For each new segment, fetch the manifest CID and verify registry binding, deterministic election rank, fallback-slot timing, and previous-segment hash link.</li>
       <li>Fetch payload chunks by CID. Verify chunk hashes and payload root.</li>
       <li>Replay/import into a scratch verifier or deterministic importer. Confirm order continuity, parent links, state roots, EVM roots where available, and final segment head.</li>
       <li>Only after verification, mark the segment usable locally and update local sync state.</li>
@@ -265,7 +265,7 @@ rank eligible publishers by weighted rank_score, with win_count as bounded weigh
     <p>Before any node updates an index or announces a segment as usable, it must perform the same safe-copy check that a receiver will perform:</p>
     <ul>
       <li>Re-fetch or re-open the segment by CID through local IPFS, not only from the builder's temporary output path.</li>
-      <li>Verify manifest, chunks, chain range, previous link, state root, and publisher signature.</li>
+      <li>Verify manifest, chunks, chain range, previous link, state root, and consensus compatibility.</li>
       <li>Confirm the segment is pinned or otherwise locally protected before publishing the index update.</li>
       <li>Write an atomic local status file with <code>safe=true</code>, <code>usable=true</code>, the segment CID, and the verified order range.</li>
       <li>If any check fails, do not publish. Record the failure and retry later at low priority.</li>
@@ -319,9 +319,9 @@ rank eligible publishers by weighted rank_score, with win_count as bounded weigh
     <ul>
       <li>Pick exact finality signal: use current chain final block if exposed, otherwise a conservative order depth until finality is exposed directly for BlockDAG order.</li>
       <li>Pick payload representation: CAR for IPLD-native blocks, or a deterministic raw block range bundle if the current node storage format is not IPLD-friendly yet.</li>
-      <li>Pick registry location: signed append-only registry in phase 1, on-chain registry or chain-committed registry root for phase 3.</li>
+      <li>Pick registry location: append-only registry in phase 1, on-chain registry or chain-committed registry root for phase 3.</li>
       <li>Pick exact segment size cap after measuring current block payload density and import cost on this host and a constrained Pi.</li>
-      <li>Decide whether index publication remains a single pool-owned IPNS key, a threshold-signed index, or many publisher IPNS heads plus a deterministic merge rule.</li>
+      <li>Decide whether index publication remains a single pool-owned IPNS key or many publisher IPNS heads plus a deterministic merge rule.</li>
     </ul>
   </section>
 
