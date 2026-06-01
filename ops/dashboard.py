@@ -66,7 +66,7 @@ DASHBOARD_DIRECT_STATUS_FALLBACK = os.environ.get(
 EARNINGS_SAMPLER_ENABLED = os.environ.get("BDAG_DASHBOARD_EARNINGS_SAMPLER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 EARNINGS_SAMPLER_INTERVAL_SECONDS = max(
     30.0,
-    float(os.environ.get("BDAG_DASHBOARD_EARNINGS_SAMPLER_INTERVAL_SECONDS", str(EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS))),
+    float(os.environ.get("BDAG_DASHBOARD_EARNINGS_SAMPLER_INTERVAL_SECONDS", "60")),
 )
 DASHBOARD_POOL_METRICS_TIMEOUT = float(os.environ.get("BDAG_DASHBOARD_POOL_METRICS_TIMEOUT", "1.5"))
 TEMPLATE_BACKEND_STATE_CACHE_SECONDS = float(
@@ -78,7 +78,7 @@ EARNINGS_SAMPLER_STATE_FILE = RUNTIME_DIR / "dashboard-earnings-sampler-state.js
 GLOBAL_SAMPLER_ENABLED = os.environ.get("BDAG_DASHBOARD_GLOBAL_SAMPLER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 GLOBAL_SAMPLER_INTERVAL_SECONDS = max(
     15.0,
-    float(os.environ.get("BDAG_DASHBOARD_GLOBAL_SAMPLER_INTERVAL_SECONDS", "30")),
+    float(os.environ.get("BDAG_DASHBOARD_GLOBAL_SAMPLER_INTERVAL_SECONDS", "60")),
 )
 GLOBAL_SAMPLER_STATE_FILE = RUNTIME_DIR / "dashboard-global-sampler-state.json"
 PROMETHEUS_SAMPLE_RE = re.compile(
@@ -1728,8 +1728,10 @@ HTML = r"""<!doctype html>
     let minerDefaultsLoaded = false;
     let earningsLoaded = false;
     let lastEarningsData = null;
+    let earningsRefreshInFlight = false;
     let globalLoaded = false;
     let lastGlobalData = null;
+    let globalRefreshInFlight = false;
     const defaultServiceOrder = ["pool-db", "bdag-miner-node-1", "asic-pool"];
     function text(id, value) { document.getElementById(id).textContent = value ?? ""; }
     function currentTheme() {
@@ -3333,6 +3335,8 @@ HTML = r"""<!doctype html>
       }
     }
     async function refreshEarnings() {
+      if (earningsRefreshInFlight) return;
+      earningsRefreshInFlight = true;
       text("priceFeedOutput", "Loading earnings...");
       try {
         const response = await fetch("/api/earnings", {cache: "no-store"});
@@ -3342,9 +3346,13 @@ HTML = r"""<!doctype html>
         earningsLoaded = true;
       } catch (error) {
         text("priceFeedOutput", String(error));
+      } finally {
+        earningsRefreshInFlight = false;
       }
     }
     async function refreshGlobal() {
+      if (globalRefreshInFlight) return;
+      globalRefreshInFlight = true;
       try {
         const response = await fetch("/api/global", {cache: "no-store"});
         const data = await response.json();
@@ -3370,6 +3378,7 @@ HTML = r"""<!doctype html>
       }
       } finally {
         globalLoaded = true;
+        globalRefreshInFlight = false;
       }
     }
     function renderEarnings(data) {
@@ -3569,14 +3578,14 @@ HTML = r"""<!doctype html>
     }
     setTheme(currentTheme());
     refresh();
-    setInterval(refresh, 90000);
+    setInterval(refresh, 60000);
     setInterval(() => {
       if (earningsLoaded && (
         !document.getElementById("tab-earnings").classList.contains("hidden")
         || !document.getElementById("tab-miners").classList.contains("hidden")
       )) refreshEarnings();
-    }, 90000);
-    setInterval(() => { if (globalLoaded && !document.getElementById("tab-global").classList.contains("hidden")) refreshGlobal(); }, 300000);
+    }, 60000);
+    setInterval(() => { if (globalLoaded && !document.getElementById("tab-global").classList.contains("hidden")) refreshGlobal(); }, 60000);
     window.addEventListener("resize", () => {
       if (lastEarningsData && !document.getElementById("tab-earnings").classList.contains("hidden")) drawEarningsChart(lastEarningsData);
       if (lastEarningsData && !document.getElementById("tab-miners").classList.contains("hidden")) drawMinerWorkChart(lastEarningsData);

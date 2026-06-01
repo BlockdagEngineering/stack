@@ -66,6 +66,18 @@ class DashboardGlobalRenderingTests(unittest.TestCase):
         self.assertIn("No active miner lanes are currently present.", html)
         self.assertNotIn("Tracked Miner Health", html)
 
+    def test_plot_refresh_and_sampler_defaults_are_one_minute(self) -> None:
+        html = dashboard.HTML
+
+        self.assertEqual(dashboard.EARNINGS_SAMPLER_INTERVAL_SECONDS, 60.0)
+        self.assertEqual(dashboard.GLOBAL_SAMPLER_INTERVAL_SECONDS, 60.0)
+        self.assertIn("setInterval(refresh, 60000);", html)
+        self.assertIn(")) refreshEarnings();\n    }, 60000);", html)
+        self.assertIn("refreshGlobal(); }, 60000);", html)
+        self.assertIn("let earningsRefreshInFlight = false;", html)
+        self.assertIn("let globalRefreshInFlight = false;", html)
+        self.assertNotIn("refreshGlobal(); }, 300000);", html)
+
 
 if __name__ == "__main__":
     unittest.main()
