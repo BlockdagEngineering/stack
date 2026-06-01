@@ -39,11 +39,11 @@ converted valid ASIC work into `node-syncing`, `tip-overdue`, and
 `invalidated_job` losses.
 
 Any system with USB-backed blockchain data is a FastSync/FastArtifact consumer,
-not a source, by default. Keep `BDAG_NO_FASTSYNC_SERVE=auto` or set it to `1`;
-do not reintroduce `NODE_ARGS_APPEND=--fastartifactsync` or artifact serving on
-low-IO USB hosts. These nodes must still do normal outbound sync and block
-relay, but must not serve bulk range, snapshot, or artifact traffic from the USB
-chain path unless a human deliberately overrides the policy for a proven
+not a source, by default. Keep `SYNC_SOURCE_NODE=0`; do not reintroduce
+`NODE_ARGS_APPEND=--fastartifactsync` or artifact serving on low-IO USB hosts.
+These nodes must still do normal outbound sync and block relay, but must not
+serve bulk range, snapshot, or artifact traffic from the USB chain path unless a
+human deliberately overrides the policy for a proven
 high-IO source host.
 
 Fresh installs assume zero miner sources. Do not hard-code one, four, five, or

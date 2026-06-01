@@ -301,10 +301,10 @@ Once everything is running:
 ## Default V2 Sync Source
 
 New installs use Fast Artifact Sync V2 as the preferred bootstrap path. Client
-sync is enabled by default; source serving is gated by
-`BDAG_RAWDATADIR_SOURCE_MODE=auto` and only enables when the chain, sidecar,
-artifact, temporary, and Docker paths are not USB/removable/external and the
-host has enough CPU, RAM, and disk headroom.
+sync is enabled by default; source serving is disabled unless
+`SYNC_SOURCE_NODE=1` is set and the chain, sidecar, artifact, temporary, and
+Docker paths are not USB/removable/external and the host has enough CPU, RAM,
+and disk headroom.
 
 Eligible source hosts maintain a low-priority raw datadir sidecar and publish a
 signed `raw_datadir_checkpoint` artifact from a finalized sidecar generation.

@@ -84,6 +84,17 @@ def as_bool(value: str | None, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def bool_mode(value: str | None) -> bool | None:
+    if value is None or str(value).strip() == "":
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return None
+
+
 def resolve_path(raw: str | Path) -> Path:
     path = Path(raw)
     if not path.is_absolute():
@@ -386,7 +397,8 @@ def build_payload(full: bool) -> dict[str, Any]:
     )
     artifact_base = env_path(env, "BDAG_RAWDATADIR_ARTIFACT_BASE", ROOT / "data-restore" / "rawdatadir")
     tmp_dir = env_path(env, "BDAG_RAWDATADIR_TMPDIR", artifact_base / "tmp")
-    mode = (env.get("BDAG_RAWDATADIR_SOURCE_MODE") or env.get("BDAG_FASTARTIFACT_SOURCE_MODE") or "auto").lower()
+    source_node_enabled = bool_mode(env.get("SYNC_SOURCE_NODE")) is True
+    legacy_mode = (env.get("BDAG_RAWDATADIR_SOURCE_MODE") or env.get("BDAG_FASTARTIFACT_SOURCE_MODE") or "auto").lower()
     node_mode = (env.get("BDAG_NODE_MODE") or "single").lower()
     storage_profile = (env.get("BDAG_STORAGE_PROFILE") or "").strip().lower()
     network_topology = (env.get("BDAG_DETECTED_NETWORK_TOPOLOGY") or env.get("BDAG_NETWORK_TOPOLOGY") or "").strip().lower()
@@ -400,14 +412,10 @@ def build_payload(full: bool) -> dict[str, Any]:
         classify_path("docker_root", Path("/var/lib/docker")),
     ]
     reasons: list[str] = []
-    if mode in {"0", "false", "no", "off", "disabled"}:
+    if not source_node_enabled:
         reasons.append("source_mode_disabled")
-    if as_bool(env.get("BDAG_NO_FASTSYNC_SERVE"), False):
-        reasons.append("fastsync_serving_disabled")
     if storage_profile in LOW_IO_USB_STORAGE_PROFILES:
         reasons.append(f"storage_profile_usb_low_io:{storage_profile}")
-    if os.name != "posix":
-        reasons.append("unsupported_os")
     for item in paths:
         if item["unsafe"]:
             reasons.append(f"{item['name']}:{','.join(item['unsafe_reasons'])}")
@@ -451,7 +459,8 @@ def build_payload(full: bool) -> dict[str, Any]:
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "project_root": str(ROOT),
-        "mode": mode,
+        "mode": legacy_mode,
+        "sync_source_node": source_node_enabled,
         "node_mode": node_mode,
         "storage_profile": storage_profile,
         "network_topology": network_topology,

@@ -329,6 +329,11 @@ node_data_parent_from_args() {
 }
 
 should_disable_fastsync_serving() {
+  case "${SYNC_SOURCE_NODE:-}" in
+    1|true|yes|on|enabled) return 1 ;;
+    0|false|no|off|disabled) return 0 ;;
+  esac
+
   case "${BDAG_NO_FASTSYNC_SERVE:-auto}" in
     1|true|yes|on) return 0 ;;
     0|false|no|off) return 1 ;;
