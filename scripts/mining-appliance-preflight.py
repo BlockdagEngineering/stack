@@ -620,6 +620,8 @@ def check_ephemeral_storage(checks: list[Check], root: Path, env: dict[str, str]
         "BDAG_EPHEMERAL_DIR": str(ephemeral_dir),
         "TMPDIR": str(tmpdir),
         "BDAG_CONTAINER_TMPFS_SIZE": env.get("BDAG_CONTAINER_TMPFS_SIZE"),
+        "BDAG_NODE_TMPFS_SIZE": env.get("BDAG_NODE_TMPFS_SIZE"),
+        "BDAG_NODE_SHM_SIZE": env.get("BDAG_NODE_SHM_SIZE"),
         "ephemeral_device": ephemeral_device,
         "tmpdir_device": tmpdir_device,
         "BDAG_FASTSNAP_DIRECTORY_STAGING": str(staging_path) if staging_path else "",
