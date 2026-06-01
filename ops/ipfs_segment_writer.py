@@ -10,7 +10,6 @@ authoritative.
 from __future__ import annotations
 
 import argparse
-import copy
 import hashlib
 import json
 import os
@@ -86,17 +85,6 @@ def canonical_json_bytes(payload: Any) -> bytes:
     return (json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode("utf-8")
 
 
-def canonical_signed_bytes(payload: Mapping[str, Any], root_field: str) -> bytes:
-    signed_payload = copy.deepcopy(dict(payload))
-    signed_payload.pop(root_field, None)
-    signed_payload.pop("signatures", None)
-    return json.dumps(signed_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-
-
-def signed_root(payload: Mapping[str, Any], root_field: str) -> str:
-    return sha256_bytes(canonical_signed_bytes(payload, root_field))
-
-
 def atomic_write_bytes(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("wb", dir=str(path.parent), delete=False) as handle:
@@ -130,64 +118,6 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def signer_from_env(env: Mapping[str, str]) -> dict[str, Any] | None:
-    key_hex = (
-        env.get("BDAG_IPFS_SEGMENT_SIGNING_KEY_HEX")
-        or env.get("BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX")
-        or ""
-    ).strip()
-    if not key_hex:
-        return None
-    try:
-        key_bytes = bytes.fromhex(key_hex)
-    except ValueError as exc:
-        raise ValueError("segment signing key must be hex-encoded") from exc
-    if len(key_bytes) == 64:
-        seed = key_bytes[:32]
-    elif len(key_bytes) == 32:
-        seed = key_bytes
-    else:
-        raise ValueError("segment signing key must be a 32-byte seed or 64-byte ed25519 private key")
-
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-    private_key = Ed25519PrivateKey.from_private_bytes(seed)
-    public_key = private_key.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
-    )
-    return {
-        "key_id": env.get("BDAG_IPFS_SEGMENT_SIGNING_KEY_ID")
-        or env.get("BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID")
-        or "ipfs-segment-writer",
-        "public_key": public_key.hex(),
-        "private_key": private_key,
-    }
-
-
-def sign_document(payload: dict[str, Any], env: Mapping[str, str], root_field: str) -> str:
-    signer = signer_from_env(env)
-    if signer is None:
-        raise RuntimeError(
-            "segment publication requires BDAG_IPFS_SEGMENT_SIGNING_KEY_HEX "
-            "or BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX"
-        )
-    root = signed_root(payload, root_field)
-    signature = signer["private_key"].sign(bytes.fromhex(root))
-    payload[root_field] = root
-    payload["signatures"] = [
-        {
-            "key_id": str(signer["key_id"]),
-            "algorithm": "ed25519",
-            "public_key": str(signer["public_key"]),
-            "signature": signature.hex(),
-            "signed_at": now_iso(),
-        }
-    ]
-    return root
 
 
 def run_command(command: list[str], timeout: int, env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
@@ -623,10 +553,8 @@ def build_segment(
             "rule": "this local node writes until publisher registry and deterministic multi-node election are deployed",
             "fallback": "timer retries after maintenance pressure clears",
         },
-        "signature_status": "signed_ed25519",
         "trust_model": "CID and sha256 verify bytes; receivers must still verify chain consensus and segment continuity.",
     }
-    manifest_root = sign_document(manifest, env, "manifest_root")
     manifest_cid, manifest_sha, manifest_size = add_checked_json(manifest_path, manifest, env)
     return {
         "segment_id": seg_id,
@@ -642,10 +570,8 @@ def build_segment(
         "payload_size_bytes": payload_size,
         "manifest_cid": manifest_cid,
         "manifest_sha256": manifest_sha,
-        "manifest_root": manifest_root,
         "manifest_path": str(manifest_path),
         "payload_path": str(payload_path),
-        "manifest_signatures": manifest.get("signatures") or [],
         "writer_mode": "single_local_writer_until_multi_node_registry",
     }
 
@@ -700,7 +626,6 @@ def update_index(index: dict[str, Any], segment_record: dict[str, Any], env: Map
         }
     )
     index["segments"] = [*existing_segments, segment_record]
-    sign_document(index, env, "index_root")
     return index
 
 

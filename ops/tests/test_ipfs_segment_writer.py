@@ -6,8 +6,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "ops" / "ipfs_segment_writer.py"
@@ -15,12 +13,6 @@ SPEC = importlib.util.spec_from_file_location("ipfs_segment_writer", MODULE_PATH
 ipfs_segment_writer = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
 SPEC.loader.exec_module(ipfs_segment_writer)
-
-
-SIGNING_ENV = {
-    "BDAG_IPFS_SEGMENT_SIGNING_KEY_ID": "unit-segment",
-    "BDAG_IPFS_SEGMENT_SIGNING_KEY_HEX": "00" * 32,
-}
 
 
 class IPFSSegmentWriterTest(unittest.TestCase):
@@ -75,33 +67,16 @@ class IPFSSegmentWriterTest(unittest.TestCase):
             "payload_cid": "baf-payload",
         }
 
-        index = ipfs_segment_writer.update_index({}, record, {"BDAG_NETWORK": "mainnet", **SIGNING_ENV})
+        index = ipfs_segment_writer.update_index({}, record, {"BDAG_NETWORK": "mainnet"})
 
         self.assertEqual(index["current_head"]["end_order"], 399)
         self.assertEqual(index["history_completeness"]["complete_from_order"], 100)
         self.assertEqual(index["history_completeness"]["backfill_required_before_order"], 100)
         self.assertEqual(len(index["segments"]), 1)
-        self.assertEqual(index["signatures"][0]["key_id"], "unit-segment")
-        self.assertEqual(index["index_root"], ipfs_segment_writer.signed_root(index, "index_root"))
-        Ed25519PublicKey.from_public_bytes(bytes.fromhex(index["signatures"][0]["public_key"])).verify(
-            bytes.fromhex(index["signatures"][0]["signature"]),
-            bytes.fromhex(index["index_root"]),
-        )
+        self.assertNotIn("signatures", index)
+        self.assertNotIn("index_root", index)
 
-    def test_update_index_requires_signing_key(self) -> None:
-        record = {
-            "segment_id": 1,
-            "start_order": 100,
-            "end_order": 399,
-            "end_hash": "0xend",
-            "manifest_cid": "baf-manifest",
-            "payload_cid": "baf-payload",
-        }
-
-        with self.assertRaisesRegex(RuntimeError, "segment publication requires"):
-            ipfs_segment_writer.update_index({}, record, {"BDAG_NETWORK": "mainnet"})
-
-    def test_build_segment_signs_manifest_before_ipfs_add(self) -> None:
+    def test_build_segment_publishes_unsigned_manifest_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             captured: dict[str, dict] = {}
 
@@ -141,18 +116,16 @@ class IPFSSegmentWriterTest(unittest.TestCase):
                     1,
                     1,
                     {},
-                    {"BDAG_NETWORK": "mainnet", **SIGNING_ENV},
+                    {"BDAG_NETWORK": "mainnet"},
                 )
 
         manifest = captured["bdag_ipfs_segment_manifest_v1"]
         self.assertNotIn("manifest_cid", manifest)
-        self.assertEqual(manifest["signature_status"], "signed_ed25519")
-        self.assertEqual(manifest["manifest_root"], ipfs_segment_writer.signed_root(manifest, "manifest_root"))
-        self.assertEqual(record["manifest_root"], manifest["manifest_root"])
-        Ed25519PublicKey.from_public_bytes(bytes.fromhex(manifest["signatures"][0]["public_key"])).verify(
-            bytes.fromhex(manifest["signatures"][0]["signature"]),
-            bytes.fromhex(manifest["manifest_root"]),
-        )
+        self.assertNotIn("signature_status", manifest)
+        self.assertNotIn("manifest_root", manifest)
+        self.assertNotIn("signatures", manifest)
+        self.assertNotIn("manifest_root", record)
+        self.assertNotIn("manifest_signatures", record)
 
     def test_canonical_json_bytes_are_stable(self) -> None:
         left = ipfs_segment_writer.canonical_json_bytes({"b": 1, "a": [2, 3]})
@@ -291,7 +264,6 @@ class IPFSSegmentWriterTest(unittest.TestCase):
                 "BDAG_CHAIN_REFERENCE_RPC_URL": "http://reference:38131",
                 "BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS": "0",
                 "BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT": "2",
-                **SIGNING_ENV,
             }
             rejected = {
                 "state": "rejected_mismatch",
@@ -347,7 +319,6 @@ class IPFSSegmentWriterTest(unittest.TestCase):
                 "BDAG_CHAIN_REFERENCE_RPC_URL": "http://reference:38131",
                 "BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS": "0",
                 "BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT": "2",
-                **SIGNING_ENV,
             }
             trusted = {"state": "trusted", "trusted": True, "segment_preflight": {"block_count": 2}}
             record = {
@@ -413,7 +384,6 @@ class IPFSSegmentWriterTest(unittest.TestCase):
                 "BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT": "2",
                 "BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN": "2",
                 "BDAG_IPFS_SEGMENT_START_ORDER": "1",
-                **SIGNING_ENV,
             }
             call_order: list[str] = []
 

@@ -162,8 +162,8 @@ writes append-only live-tail chain-order segments from one local writer until th
 multi-node publisher registry/election is deployed. The durable protocol design
 is recorded in `docs/ipfs-append-only-segment-protocol.html`. IPFS and IPNS are
 not chain trust. Receivers must verify segment CIDs, payload hashes, order
-continuity, publisher signatures once enabled, network/genesis identity,
-tip/state roots, and normal consensus before using the data.
+continuity, network/genesis identity, tip/state roots, and normal consensus
+before using the data.
 
 ## Pi5 Release Candidate Stability Defaults
 
