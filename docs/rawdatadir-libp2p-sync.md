@@ -5,7 +5,7 @@
 Use the existing Fast Artifact Sync V2 libp2p protocol instead of a new rsync
 stream. Corechain serves a signed `raw_datadir_checkpoint` directory artifact;
 the payload is the same stopped-node datadir archive we copy to USB, with node
-identity and private material excluded.
+identity, private material, and backup variants of those paths excluded.
 
 This keeps the release candidate on the existing security model:
 
@@ -19,17 +19,17 @@ This keeps the release candidate on the existing security model:
 Source serving is automatic only after the local eligibility gate passes. The
 gate fails closed on USB/removable/external storage, low disk/RAM/CPU, and
 unsafe single-node checkpoint conditions. Do not serve a live mining datadir;
-publish only from a drained standby node or a finalized sidecar copy.
+publish only from a finalized sidecar copy.
 
 ## Producer Flow
 
-Dual-node mining host:
+Producer host:
 
-1. Confirm the pool has an active selected backend and fresh jobs.
-2. Pick the non-selected backend as the export source.
-3. Put that backend into router maintenance mode.
-4. Stop only that backend.
-5. Wait for DB lock files to be free.
+1. Confirm the active node is healthy enough to act as source truth.
+2. Maintain a low-priority sidecar copy.
+3. Finalize the sidecar only during an operator-approved window.
+4. Wait for DB lock files to be free.
+5. Publish only a signed manifest and immutable chunks that pass validation.
 6. Archive `$datadir/mainnet` while excluding identity/private material.
 7. Restart the backend and clear maintenance before heavy verification.
 8. Verify the archive, write `SHA256SUMS`, build a signed
@@ -70,9 +70,19 @@ live datadir contains root-owned chain files and passwordless sudo is available.
 Set `BDAG_RAWDATADIR_SIDECAR_USE_SUDO=0` only on hosts where all chain files are
 readable by the installing user.
 
+After each successful rsync pass, the sidecar also seals the hot copy into
+`data-restore/rawdatadir-sidecar-content/current`: immutable SHA-256 chunks,
+file descriptors, a canonical manifest root, and an ed25519 signature when
+`BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX` is configured. Hot generations carry a
+`DO_NOT_PUBLISH` marker unless `BDAG_RAWDATADIR_SIDECAR_CONTENT_FINALIZED=1`
+or an explicit local hot-publish override is set. This gives the future IPFS
+path stable content-addressed data without pretending a live sidecar is a
+finalized checkpoint.
+
 2. When an operator approves a finalization window, let the publisher stop the
    single node, run one final sidecar sync, restart the node, and build the
-   signed artifact from the finalized sidecar:
+   signed artifact from the finalized sidecar. The final sidecar sync also
+   seals a publishable file/chunk content generation for IPFS transport:
 
 ```bash
 BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=1 \
@@ -84,10 +94,12 @@ The publisher refuses to create a manifest unless live RPC returns a real
 uses `sudo -n tar` automatically when the finalized sidecar contains root-owned
 chain files.
 
-The optional `ops/systemd/user-bdag-rawdatadir-sidecar.timer` refreshes the
-sidecar every two hours, with jitter. `ops/install-p2p-services.sh` installs it
-only through the raw datadir source eligibility policy. USB-backed chain data is
-never a default source.
+The `ops/systemd/user-bdag-rawdatadir-sidecar.timer` refreshes the sidecar
+every two hours, with jitter, in low-priority retry mode. `auto` mode keeps the
+timer installed so a temporary mining-pressure or eligibility failure is retried
+on the next tick; the service self-defers when host pressure or unsafe storage
+would affect mining. USB-backed chain data is never a publishable default
+source.
 
 ## Receiver Flow
 
@@ -162,7 +174,8 @@ datadir into place.
   content and manifest signature still have to verify before import.
 - Trust signer public keys, not peer IDs.
 - Do not import the sender's `network.key`, `bdageth/nodekey`, `keystore`,
-  `peerstore`, or IPC/socket files.
+  `peerstore`, `nodes`, `bdageth/nodes`, backup variants of those paths, or
+  IPC/socket files.
 - Keep at least one parked receiver datadir until the imported node has started,
   verified chain ID `1404`, and caught the normal FastSync tail.
 - Direct public internet serving still needs reachable libp2p TCP ports or a
@@ -179,5 +192,7 @@ datadir into place.
 - Receiver import is automatic only for the local managed node during far-behind
   catch-up, and only after a signed/verified manifest is found. Manual fetch
   remains available for operator-directed recovery.
-- The sidecar timer is optional and must be disabled during IO-sensitive ASIC
-  test windows unless the operator asks for it.
+- The sidecar timer is low-priority and retrying by default. IO-sensitive ASIC
+  test windows should rely on the background maintenance backoff rather than
+  permanently disabling the timer, unless an operator explicitly requests a
+  full pause.

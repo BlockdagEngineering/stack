@@ -2,76 +2,28 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BlockDAG Sync Coordinator</title>
-  <style>
-    :root { color-scheme: dark; --bg:#101417; --panel:#171d21; --line:#334047; --text:#e9eef0; --muted:#a9b5bb; --blue:#5cc8ff; --green:#39d98a; --amber:#f0b35b; }
-    body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-    main { max-width:1040px; margin:0 auto; padding:28px; }
-    h1 { margin:0 0 8px; font-size:32px; }
-    h2 { margin-top:28px; font-size:21px; }
-    p, li, td { color:var(--muted); }
-    code, pre { background:#0b0e10; border:1px solid var(--line); border-radius:6px; color:#f5f7f8; }
-    code { padding:2px 5px; }
-    pre { padding:14px; overflow:auto; }
-    .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
-    .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; }
-    .card strong { display:block; margin-bottom:6px; color:var(--text); }
-    .blue { border-left:4px solid var(--blue); }
-    .green { border-left:4px solid var(--green); }
-    .amber { border-left:4px solid var(--amber); }
-    table { width:100%; border-collapse:collapse; }
-    th, td { border-bottom:1px solid var(--line); padding:8px; text-align:left; vertical-align:top; }
-    th { color:var(--text); background:var(--panel); }
-    @media (max-width:850px){ .grid{grid-template-columns:1fr} h1{font-size:26px} }
-  </style>
+  <title>BlockDAG Single-Node Sync Coordinator</title>
+  <script type="application/json" id="agent-metadata">
+  {
+    "document_type": "single_node_sync_coordinator",
+    "topology": "one direct backend",
+    "mutation_policy": "monitor only",
+    "state_file": "ops/runtime/sync-coordinator-state.json"
+  }
+  </script>
 </head>
 <body>
   <main>
-    <h1>BlockDAG Sync Coordinator</h1>
-    <p>The coordinator avoids wasting bandwidth and disk IO after a major restore. When backend nodes are more than 1000 blocks behind, it pauses the laggiest follower, gives the selected leader the strongest host CPU and IO weights, lets that leader catch up alone, then resumes or seeds the follower only inside the policy window.</p>
-
-    <section class="grid">
-      <div class="card blue"><strong>Normal mode</strong><p>Both nodes run independently and see different peers once they are near tip.</p></div>
-      <div class="card amber"><strong>Large catch-up</strong><p>One healthy leader imports while the follower is stopped to reduce duplicate download and write pressure.</p></div>
-      <div class="card green"><strong>Recovery</strong><p>When the leader is near tip, the follower can be resumed or safely seeded from the leader with a short final leader stop.</p></div>
-    </section>
-
-    <h2>Commands</h2>
-    <pre><code># Read-only decision
-python3 ops/sync_coordinator.py --once
-
-# Allow automatic pause/resume, but not data replacement
-python3 ops/sync_coordinator.py --once --repair --pause-follower --resume-follower
-
-# Seed the paused follower from the leader with a consistent final copy
-python3 ops/sync_coordinator.py --once --repair --pause-follower --seed-follower --resume-follower --allow-leader-stop</code></pre>
-
-    <h2>Safety Rules</h2>
-    <table>
-      <thead><tr><th>Rule</th><th>Reason</th></tr></thead>
-      <tbody>
-        <tr><td>Never seed from a leader unless it is near tip.</td><td>Copying stale leader data just moves the catch-up delay to the other node.</td></tr>
-        <tr><td>Pause the laggiest node whenever catch-up exceeds 1000 blocks.</td><td>One selected leader catches up faster than two nodes competing for duplicate download and disk writes.</td></tr>
-        <tr><td>Plain resume is only allowed when follower lag is within 1000 blocks.</td><td>A follower still beyond the large-catch-up window should stay paused or be seeded from the caught-up leader.</td></tr>
-        <tr><td>The selected catch-up leader gets the highest Docker CPU shares and block IO weight.</td><td>Catch-up should win host contention while the pool/router path stays alive.</td></tr>
-        <tr><td>Safe seeding requires <code>--allow-leader-stop</code>.</td><td>LevelDB chain data should have a stopped final rsync before it becomes the follower's database.</td></tr>
-      </tbody>
-    </table>
+    <h1>BlockDAG Single-Node Sync Coordinator</h1>
+    <p>The coordinator records active-node catch-up state for dashboards and guards. It does not stop nodes, copy chain data, or change pool routing.</p>
+    <h2>Run</h2>
+    <pre><code>python3 ops/sync_coordinator.py --once --repair --json</code></pre>
+    <h2>State Contract</h2>
+    <ul>
+      <li><code>mode</code> is <code>single_node_catchup</code>.</li>
+      <li><code>active_node</code> is the only production backend service.</li>
+      <li><code>repairable</code> is false; repair decisions remain in readiness gates, watchdogs, and operator-approved restore tools.</li>
+    </ul>
   </main>
-  <script type="application/json" id="agent-metadata">
-  {
-    "document_type": "ops_design",
-    "component": "sync_coordinator",
-    "script": "ops/sync_coordinator.py",
-    "state_file": "ops/runtime/sync-coordinator-state.json",
-    "default_far_behind_blocks": 1000,
-    "default_follower_lag_blocks": 1000,
-    "default_leader_near_tip_blocks": 1000,
-    "default_seed_near_tip_blocks": 5,
-    "leader_catchup_cpu_shares": 8192,
-    "leader_catchup_blkio_weight": 1000
-  }
-  </script>
 </body>
 </html>

@@ -320,7 +320,7 @@ def env_path(root: Path, env: dict[str, str], key: str, default: str | Path) -> 
 
 
 def env_node_data_dir(root: Path, env: dict[str, str], node_name: str) -> Path:
-    key = "BDAG_NODE1_DATA_DIR" if node_name == "node1" else "BDAG_NODE2_DATA_DIR"
+    key = "BDAG_NODE1_DATA_DIR"
     return env_path(root, env, key, env_data_dir(root, env) / node_name)
 
 
@@ -400,7 +400,7 @@ def check_host(checks: list[Check], profile: HostProfile) -> None:
             "warn",
             "cpu_budget",
             f"host has {profile.cpu_count} CPU cores.",
-            "Avoid dual-node catch-up and cap expensive dashboard/miner scans with adaptive workers.",
+            "Keep catch-up and expensive dashboard/miner scans capped with adaptive workers.",
         )
 
 
@@ -486,18 +486,18 @@ def check_storage_profile(checks: list[Check], root: Path, env: dict[str, str], 
     selected = (env.get("BDAG_STORAGE_PROFILE") or "auto").strip().lower() or "auto"
     known_profiles = {"auto", "single-device", "single-usb-constrained", "usb-chain-internal-runtime", "split-ssd", "dev"}
     chain_base = env_data_dir(root, env)
-    node2_dir = env_node_data_dir(root, env, "node2")
+    active_node_dir = env_node_data_dir(root, env, "node1")
     postgres_dir = env_postgres_dir(root, env)
     runtime_dir = env_runtime_dir(root, env)
 
-    chain_device = storage_device(node2_dir)
+    chain_device = storage_device(active_node_dir)
     postgres_device = storage_device(postgres_dir)
     runtime_device = storage_device(runtime_dir)
     project_device = storage_device(root)
 
-    postgres_same_as_chain = same_storage_device(node2_dir, chain_device, postgres_dir, postgres_device)
-    runtime_same_as_chain = same_storage_device(node2_dir, chain_device, runtime_dir, runtime_device)
-    project_same_as_chain = same_storage_device(node2_dir, chain_device, root, project_device)
+    postgres_same_as_chain = same_storage_device(active_node_dir, chain_device, postgres_dir, postgres_device)
+    runtime_same_as_chain = same_storage_device(active_node_dir, chain_device, runtime_dir, runtime_device)
+    project_same_as_chain = same_storage_device(active_node_dir, chain_device, root, project_device)
 
     docker_root = docker_root_dir()
     docker_same_as_chain = None
@@ -505,7 +505,7 @@ def check_storage_profile(checks: list[Check], root: Path, env: dict[str, str], 
     if docker_root:
         docker_path = Path(docker_root)
         docker_device = storage_device(docker_path)
-        docker_same_as_chain = same_storage_device(node2_dir, chain_device, docker_path, docker_device)
+        docker_same_as_chain = same_storage_device(active_node_dir, chain_device, docker_path, docker_device)
 
     if selected not in known_profiles:
         add(
@@ -535,7 +535,7 @@ def check_storage_profile(checks: list[Check], root: Path, env: dict[str, str], 
         "selected_profile": selected,
         "resolved_profile": resolved,
         "chain_base": str(chain_base),
-        "node2_data_dir": str(node2_dir),
+        "active_node_data_dir": str(active_node_dir),
         "postgres_dir": str(postgres_dir),
         "runtime_dir": str(runtime_dir),
         "chain_device": chain_device,
@@ -674,14 +674,9 @@ def check_node_data_layout(checks: list[Check], root: Path, env: dict[str, str])
     data_dir = env_data_dir(root, env)
     node_mode = (env.get("BDAG_NODE_MODE") or "single").strip().lower()
     node1 = data_dir / "node1"
-    node2 = data_dir / "node2"
     node1_has = chain_marker_exists(node1 / "mainnet") or chain_marker_exists(node1)
-    node2_has = chain_marker_exists(node2 / "mainnet") or chain_marker_exists(node2)
-    evidence = {"data_dir": str(data_dir), "node_mode": node_mode, "node1_has_chain_markers": node1_has, "node2_has_chain_markers": node2_has}
-    if node_mode in {"single", "single-node", "one", "1"} and node1_has and node2_has:
-        add(checks, "warn", "single_node_duplicate_data", "single-node mode has chain markers under both node1 and node2.", "Keep only the active node data after a verified backup; duplicate chain copies waste disk and slow maintenance.", evidence)
-    else:
-        add(checks, "pass", "single_node_duplicate_data", "node data layout matches configured node mode", evidence=evidence)
+    evidence = {"data_dir": str(data_dir), "node_mode": node_mode, "active_node_has_chain_markers": node1_has}
+    add(checks, "pass", "single_node_data_layout", "active node data layout is inspectable", evidence=evidence)
 
     backup_like = []
     if data_dir.exists():
@@ -743,15 +738,13 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         or topology == "single-node-asic-router"
     )
     node_args_append_enables_fastartifact = node_args_enable_fastartifact(env.get("NODE_ARGS_APPEND"))
-    snapshot_args_append_enables_fastartifact = node_args_enable_fastartifact(env.get("SNAPSHOT_NODE_ARGS_APPEND"))
     evidence["NODE_ARGS_APPEND"] = env.get("NODE_ARGS_APPEND")
-    evidence["SNAPSHOT_NODE_ARGS_APPEND"] = env.get("SNAPSHOT_NODE_ARGS_APPEND")
-    append_args_enable_fastartifact = node_args_append_enables_fastartifact or snapshot_args_append_enables_fastartifact
+    append_args_enable_fastartifact = node_args_append_enables_fastartifact
     no_fastsync_serve = bool_enabled(env.get("BDAG_NO_FASTSYNC_SERVE", "auto"), True)
     if constrained_mining_profile and no_fastsync_serve and append_args_enable_fastartifact:
-        add(checks, "fail", "fastartifactsync", "BDAG_NO_FASTSYNC_SERVE suppresses serving, but node args still add --fastartifactsync.", "Clear NODE_ARGS_APPEND and SNAPSHOT_NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
+        add(checks, "fail", "fastartifactsync", "BDAG_NO_FASTSYNC_SERVE suppresses serving, but node args still add --fastartifactsync.", "Clear NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
     elif constrained_mining_profile and not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True) and append_args_enable_fastartifact:
-        add(checks, "fail", "fastartifactsync", "BDAG_FASTARTIFACTSYNC_ENABLED is disabled, but node args still add --fastartifactsync.", "Clear NODE_ARGS_APPEND and SNAPSHOT_NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
+        add(checks, "fail", "fastartifactsync", "BDAG_FASTARTIFACTSYNC_ENABLED is disabled, but node args still add --fastartifactsync.", "Clear NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
     elif constrained_mining_profile and no_fastsync_serve:
         add(checks, "pass", "fastartifactsync", "Bulk FastSync/FastArtifact serving is suppressed for constrained mining profile", evidence=evidence)
     elif not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True) and constrained_mining_profile:

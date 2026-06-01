@@ -86,7 +86,7 @@ def public_peers(values: dict[str, str]) -> list[str]:
 def existing_local_peer_addrs(values: dict[str, str]) -> dict[int, str]:
     by_node: dict[int, str] = {}
     candidates: list[str] = []
-    for key in ("LOCAL_PEER_ADDRESSES", "NODE1_PEER_ADDRESSES", "NODE2_PEER_ADDRESSES"):
+    for key in ("LOCAL_PEER_ADDRESSES", "NODE1_PEER_ADDRESSES"):
         candidates.extend(item for item in values.get(key, "").split(",") if item.strip())
     for peer in candidates:
         match = PEER_ID_RE.search(peer)
@@ -169,7 +169,7 @@ def main() -> int:
         "--only-node",
         type=int,
         choices=(1, 2, 3, 4),
-        help="Only print or write the peer variable for one node. Useful for adding observer nodes without changing live node1/node2 settings.",
+        help="Only print or write the peer variable for one node.",
     )
     parser.add_argument("--print-values", action="store_true", help="Print KEY=value peer assignments after the summary")
     parser.add_argument("--include-known-local", action="store_true", help="Include known local peer addresses from the existing env file")

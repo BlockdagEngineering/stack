@@ -92,10 +92,9 @@ services:
       - ./asic-pool:/data/asic-pool:ro
     environment:
       POOL_PORT: ${POOL_PORT:-3334}
-      NODE_RPC_URL: http://rpc-failover:38131
-      NODE_RPC_URLS: ${NODE_RPC_URLS:-http://rpc-failover:38131}
+      NODE_RPC_URL: http://bdag-miner-node-1:38131
+      NODE_RPC_URLS: ${NODE_RPC_URLS:-http://bdag-miner-node-1:38131}
       POOL_SUBMIT_RPC_URLS: ${POOL_SUBMIT_RPC_URLS:-}
-      POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: ${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}
       POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}
       POOL_TEMPLATE_TTL_REFRESH_MS: ${POOL_TEMPLATE_TTL_REFRESH_MS:-500}
       POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS: ${POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS:-800}
@@ -124,34 +123,6 @@ services:
     depends_on:
       pool-db:
         condition: service_started
-      rpc-failover:
-        condition: service_started
-
-  rpc-failover:
-    image: haproxy:2.9-alpine
-    container_name: rpc-failover
-    restart: unless-stopped
-    logging: *mining-logging
-    tmpfs:
-      - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
-    cpu_shares: 2048
-    blkio_config:
-      weight: 800
-    oom_score_adj: -700
-    ulimits:
-      nofile:
-        soft: 262144
-        hard: 262144
-    networks:
-      - pool-net
-    ports:
-      - "38131:38131"
-    volumes:
-      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
-    depends_on:
-      bdag-miner-node-1:
-        condition: service_started
-
   bdag-miner-node-1:
     image: ${BLOCKDAG_NODE_IMAGE:-bdag-release/node:local}
     container_name: bdag-miner-node-1
@@ -243,99 +214,6 @@ services:
       - "8151:8151"
       - "6061:6060"
 
-  bdag-miner-node-2:
-    profiles:
-      - dual-node
-    image: ${BLOCKDAG_NODE_IMAGE:-bdag-release/node:local}
-    container_name: bdag-miner-node-2
-    restart: unless-stopped
-    logging: *mining-logging
-    cpu_shares: 4096
-    blkio_config:
-      weight: 1000
-    oom_score_adj: -900
-    ulimits:
-      nofile:
-        soft: 1048576
-        hard: 1048576
-    volumes:
-      - ${BDAG_NODE2_DATA_DIR:-./data/node2}:/data
-      - ${BDAG_RAWDATADIR_ARTIFACT_BASE:-./data-restore/rawdatadir}:/fastartifact/rawdatadir:ro
-    environment:
-      ROLLOUT_WINDOW: 30m
-      HEALTH_MIN_PEERS: 1
-      RPC_URL: "ws://127.0.0.1:18546"
-      BOOTSTRAP_PEER_ADDRESSES: ${BOOTSTRAP_PEER_ADDRESSES:-}
-      BDAG_FASTSNAP_ENABLED: ${BDAG_FASTSNAP_ENABLED:-1}
-      BDAG_FASTSNAP_REQUIRED: ${BDAG_FASTSNAP_REQUIRED:-0}
-      BDAG_FASTSNAP_PEERS: ${BDAG_FASTSNAP_PEERS:-}
-      BDAG_FASTSNAP_MIN_TIP: ${BDAG_FASTSNAP_MIN_TIP:-0}
-      BDAG_FASTSNAP_TIMEOUT: ${BDAG_FASTSNAP_TIMEOUT:-90s}
-      BDAG_FASTSNAP_ARTIFACT_V2: ${BDAG_FASTSNAP_ARTIFACT_V2:-1}
-      BDAG_FASTSNAP_DIRECTORY_MODE: ${BDAG_FASTSNAP_DIRECTORY_MODE:-1}
-      BDAG_FASTSNAP_DIRECTORY_STAGING: ${BDAG_FASTSNAP_DIRECTORY_STAGING:-}
-      BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING: ${BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING:-1}
-      BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING: ${BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING:-1}
-      BDAG_FASTSNAP_ALLOW_UNSIGNED: ${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}
-      BDAG_FASTSNAP_PARALLELISM: ${BDAG_FASTSNAP_PARALLELISM:-4}
-      BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
-      BDAG_FASTSYNC_ARTIFACT_DIRECTORY: ${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}
-      BDAG_FASTSYNC_ARTIFACT_MANIFEST: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}
-      BDAG_STORAGE_PROFILE: ${BDAG_STORAGE_PROFILE:-auto}
-      BDAG_NETWORK_TOPOLOGY: ${BDAG_NETWORK_TOPOLOGY:-auto}
-      BDAG_DETECTED_NETWORK_TOPOLOGY: ${BDAG_DETECTED_NETWORK_TOPOLOGY:-}
-      BDAG_ASIC_LAN_INTERFACE: ${BDAG_ASIC_LAN_INTERFACE:-}
-      BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-}
-      BDAG_P2P_ADVERTISE_IP: ${BDAG_P2P_ADVERTISE_IP:-}
-      BDAG_P2P_INTERFACE: ${BDAG_P2P_INTERFACE:-}
-      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}
-      BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
-      BDAG_NO_FASTSYNC_SERVE: ${BDAG_NO_FASTSYNC_SERVE:-auto}
-      BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
-      BDAG_FASTSYNC_PEERS: ${BDAG_FASTSYNC_PEERS:-}
-      BDAG_FASTSYNC_PREPROCESS_WORKERS: ${BDAG_FASTSYNC_PREPROCESS_WORKERS:-1}
-      BDAG_ENTRYPOINT_CHOWN_MODE: ${BDAG_ENTRYPOINT_CHOWN_MODE:-needed}
-      NODE_ARGS: >
-        --p2ptcpport=8152
-        --listen=0.0.0.0
-        --addpeer=${NODE2_PEER_ADDRESSES}
-        --rpclisten=0.0.0.0:38131
-        --evm.http.port=18545
-        --evm.http.addr=0.0.0.0
-        --datadir=/data
-        --cache=${BDAG_NODE_CACHE_MB:-4096}
-        --cache.database=${BDAG_NODE_CACHE_DATABASE_PERCENT:-50}
-        --cache.snapshot=${BDAG_NODE_CACHE_SNAPSHOT_PERCENT:-35}
-        --bdcachesize=${BDAG_NODE_BD_CACHE_SIZE:-8192}
-        --dagcachesize=${BDAG_NODE_DAG_CACHE_SIZE:-8192}
-        --obsoleteheight=${BDAG_NODE_OBSOLETE_HEIGHT:-20}
-        --debuglevel=${BDAG_NODE_DEBUG_LEVEL:-warn}
-        --evmtrietimeout=${BDAG_EVM_TRIE_TIMEOUT_SECONDS:-7200}
-        --nofilelogging
-        --notls
-        --rpcuser=${NODE_RPC_USER:-test}
-        --rpcpass=${NODE_RPC_PASS:-test}
-        --rpcmaxclients=100
-        --evm.http.api=eth,net,web3,txpool,debug
-        --http.writetimeout=45s
-        --http.idletimeout=45s
-        --acctmode
-        --modules=${BDAG_NODE_MODULES:-Blockdag}
-        --evmenv="--cache=${BDAG_EVM_CACHE_MB:-8192} --cache.database=${BDAG_EVM_CACHE_DATABASE_PERCENT:-80} --cache.snapshot=${BDAG_EVM_CACHE_SNAPSHOT_PERCENT:-1} --rpc.allow-unprotected-txs --metrics --metrics.addr 0.0.0.0 --metrics.port 6060"
-        --metrics
-        --rpcmaxconcurrentreqs=500
-        --maxpeers=${NODE_MAX_PEERS:-160}
-        --http.ratelimit=1800
-        --http.rateburst=3200
-        --evm.ws.port=18546
-        --evm.ws.addr=0.0.0.0
-        ${BDAG_NODE_MINING_ARGS:-}
-    networks:
-      - pool-net
-    ports:
-      - "8152:8152"
-      - "6062:6060"
-
   pool-db:
     image: postgres:15-alpine
     container_name: pool-db
@@ -424,7 +302,7 @@ PY
 }
 
 write_env_examples() {
-  local node1_peers="$1" node2_peers="$2"
+  local node1_peers="$1"
   cat > "$PACKAGE_DIR/.env.example" <<EOF
 # BlockDAG Pi5 ARM64 pool release configuration.
 # The installer copies this file to .env, asks for your LAN IP and wallet,
@@ -452,7 +330,6 @@ BDAG_STORAGE_PROFILE=auto
 BDAG_CHAIN_DATA_DIR=./data
 BDAG_DATA_DIR=./data
 BDAG_NODE1_DATA_DIR=./data/node1
-BDAG_NODE2_DATA_DIR=./data/node2
 BDAG_POSTGRES_DATA_DIR=./data/postgres
 BDAG_RUNTIME_DIR=./ops/runtime
 BDAG_STORAGE_MIN_CHAIN_FREE_GIB=50
@@ -466,13 +343,12 @@ BDAG_EPHEMERAL_DIR=/run/bdag-pool
 BDAG_HOST_TMPDIR=/run/bdag-pool/tmp
 BDAG_CONTAINER_TMPFS_SIZE=128m
 
-# Single-node is the safe default for Pi5 USB power and catch-up stability.
-# Set BDAG_NODE_MODE=double and COMPOSE_PROFILES=dual-node to run both backend
-# nodes. Nodes stay sync-only until BDAG_NODE_MINING_ARGS is explicitly set.
+# Single-node is the only supported topology. Nodes stay sync-only until
+# BDAG_NODE_MINING_ARGS is explicitly set.
 BDAG_NODE_MODE=single
 COMPOSE_PROFILES=
 BDAG_NODE_SERVICES=bdag-miner-node-1
-BDAG_STACK_SERVICES=pool-db,bdag-miner-node-1,rpc-failover,asic-pool
+BDAG_STACK_SERVICES=pool-db,bdag-miner-node-1,asic-pool
 BDAG_ENABLE_NODE_MINING=0
 BDAG_NODE_MODULES=Blockdag
 BDAG_NODE_MINING_ARGS=
@@ -493,7 +369,12 @@ BDAG_ADAPTIVE_CHAIN_RPC_WARN_MS=1000
 BDAG_STATUS_SAMPLER_ENABLED=1
 BDAG_STATUS_SAMPLER_INTERVAL_SECONDS=10
 BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS=12
+BDAG_WATCHDOG_EARNINGS_SNAPSHOT_INTERVAL_SECONDS=60
+BDAG_STATUS_SAMPLER_EARNINGS_SNAPSHOT_INTERVAL_SECONDS=60
+BDAG_DASHBOARD_EARNINGS_SAMPLER_INTERVAL_SECONDS=60
+BDAG_DASHBOARD_GLOBAL_SAMPLER_INTERVAL_SECONDS=60
 BDAG_GLOBAL_RPC_WORKERS=24
+BDAG_GLOBAL_BLOCK_WINDOW=128
 BDAG_MINER_SCAN_WORKERS=64
 BDAG_MINER_HASHRATE_PROBE_WORKERS=8
 BDAG_BACKGROUND_MAINTENANCE_BACKOFF_ENABLED=1
@@ -523,31 +404,8 @@ POSTGRES_PASSWORD=change-me-at-install
 POSTGRES_DB=pool
 PG_URL=postgres://test:change-me-at-install@pool-db:5432/pool
 
-POOL_RPC_ROUTER_ENABLED=true
-POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true
 POOL_RPC_BACKENDS=node1=http://bdag-miner-node-1:38131
-POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT=true
-POOL_TEMPLATE_FANIN_ENABLED=false
-POOL_TEMPLATE_FANIN_MAX_BACKENDS=2
-POOL_TEMPLATE_FANIN_REJECT_LAG_BLOCKS=0
-POOL_TEMPLATE_FANIN_ACCEPT_SAME_HEIGHT=false
-POOL_TEMPLATE_FANIN_ALT_TAKEOVER_MIN_AGE_MS=0
-POOL_TEMPLATE_FANIN_ALT_TAKEOVER_LEAD_BLOCKS=0
-POOL_RPC_ROUTER_MIN_HEALTHY_SECONDS=2
-POOL_RPC_ROUTER_SWITCH_COOLDOWN_SECONDS=10
-POOL_RPC_ROUTER_TEMPLATE_MAX_AGE_SECONDS=5
-POOL_RPC_ROUTER_FREEZE_FAILOVER_ENABLED=true
-POOL_RPC_ROUTER_FREEZE_FAILOVER_AFTER_SECONDS=45
-POOL_RPC_ROUTER_FREEZE_MAX_TEMPLATE_AGE_SECONDS=90
-POOL_RPC_ROUTER_RECOVERY_PROBE_SECONDS=15
-POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS=1
-POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS=3
-POOL_RPC_ROUTER_NODE_HEALTH_UNREADY_THRESHOLD=1
-POOL_RPC_ROUTER_NODE_HEALTH_ERROR_THRESHOLD=2
-POOL_RPC_ROUTER_NODE_HEALTH_FRESH_TEMPLATE_GRACE_SECONDS=5
-
 NODE1_PEER_ADDRESSES=$node1_peers
-NODE2_PEER_ADDRESSES=$node2_peers
 BDAG_NETWORK_TOPOLOGY=auto
 BDAG_DETECTED_NETWORK_TOPOLOGY=
 BDAG_ASIC_LAN_INTERFACE=
@@ -576,6 +434,12 @@ BDAG_RAWDATADIR_REQUIRE_SIGNED=1
 BDAG_RAWDATADIR_MAX_EXPORT_BACKEND_LAG=10000
 BDAG_RAWDATADIR_SIDECAR_SOURCE=
 BDAG_RAWDATADIR_SIDECAR_DIR=
+BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE=auto
+BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE=./data-restore/rawdatadir-sidecar-content
+BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP=2
+BDAG_RAWDATADIR_SIDECAR_CONTENT_CHUNK_SIZE=67108864
+BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED=1
+BDAG_RAWDATADIR_SIDECAR_CONTENT_ALLOW_HOT_PUBLISH=0
 BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=0
 BDAG_RAWDATADIR_MIN_FREE_GIB=100
 BDAG_RAWDATADIR_FREE_SPACE_MULTIPLIER=2.5
@@ -587,11 +451,34 @@ BDAG_RAWDATADIR_TRUSTED_SIGNERS=
 BDAG_FASTSYNC_ARTIFACT_DIRECTORY=
 BDAG_FASTSYNC_ARTIFACT_MANIFEST=
 BDAG_IPFS_CONTENT_SIDECAR_MODE=auto
+BDAG_IPFS_CONTENT_ARTIFACT_DIR=./data-restore/rawdatadir-sidecar-content/current
+BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST=./data-restore/rawdatadir-sidecar-content/current/manifest.json
 BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT=0
 BDAG_IPFS_CONTENT_PUBLISH_IPNS=0
 BDAG_IPFS_CONTENT_IPNS_KEY=
+BDAG_IPFS_CONTENT_REPUBLISH_IPNS_WHILE_WAITING=1
+BDAG_IPFS_CONTENT_IPNS_TTL=1m
+BDAG_IPFS_CONTENT_IPNS_LIFETIME=8760h
+BDAG_IPFS_CONTENT_DISCOVERY_FILE=./ops/ipfs-content-discovery.json
+BDAG_IPFS_CONTENT_LATEST_IPNS=/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk
+BDAG_IPFS_CONTENT_DEFAULT_INDEX_CID=bafkreia7jk2ljqi3raiohugp6nw3633njfp7jmnuvqh47po52et4kupu2a
+BDAG_IPFS_CONTENT_DEFAULT_ROOT_CID=
 BDAG_IPFS_CONTENT_STATUS_FILE=./ops/runtime/ipfs-content-sidecar-status.json
 BDAG_IPFS_CONTENT_LATEST_INDEX_PATH=./ops/runtime/ipfs-content/latest-index.json
+BDAG_IPFS_SEGMENT_WRITER_MODE=auto
+BDAG_IPFS_SEGMENT_START_POLICY=live_tail
+BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS=600
+BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT=300
+BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN=1
+BDAG_IPFS_SEGMENT_MAX_RPC_PER_SECOND=25
+BDAG_IPFS_SEGMENT_RPC_TIMEOUT=8
+BDAG_IPFS_SEGMENT_BLOCK_RPC_RETRIES=2
+BDAG_IPFS_SEGMENT_PUBLISH_IPNS=0
+BDAG_IPFS_SEGMENT_IPNS_KEY=
+BDAG_IPFS_SEGMENT_IPNS_TTL=1m
+BDAG_IPFS_SEGMENT_IPNS_LIFETIME=8760h
+BDAG_IPFS_SEGMENT_STATUS_FILE=./ops/runtime/ipfs-content/segment-writer-status.json
+BDAG_IPFS_SEGMENT_INDEX_PATH=./ops/runtime/ipfs-content/latest-index.json
 BDAG_FASTSYNC_PEER_ORDERING=p2p-latency
 BDAG_FASTSYNC_APPEND_ADDPEERS=1
 BDAG_NO_FASTSYNC_SERVE=auto
@@ -611,8 +498,8 @@ BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS=0
 BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT=21600s
 BDAG_ENTRYPOINT_CHOWN_MODE=needed
 
-NODE_RPC_URL=http://rpc-failover:38131
-NODE_RPC_URLS=http://rpc-failover:38131
+NODE_RPC_URL=http://bdag-miner-node-1:38131
+NODE_RPC_URLS=http://bdag-miner-node-1:38131
 POOL_SUBMIT_RPC_URLS=
 WALLET_RPC_URL=http://bdag-miner-node-1:18545
 WALLET_RPC_URLS=http://bdag-miner-node-1:18545
@@ -1241,7 +1128,7 @@ write_readmes() {
 <body>
 <main>
   <h1>BlockDAG Pi5 Pool Installer</h1>
-  <p>This is a Raspberry Pi 5 / linux-arm64 release package for a BlockDAG ASIC pool with selectable single-node or double-node backends, a beginner-friendly installer, and optional fast-sync chain seed.</p>
+  <p>This is a Raspberry Pi 5 / linux-arm64 release package for a BlockDAG ASIC pool with one direct backend node, a beginner-friendly installer, and optional fast-sync chain seed.</p>
   <p><span class="chip good">ARM64</span><span class="chip">Pi5</span><span class="chip">Single-node default</span><span class="chip">Double-node option</span><span class="chip">Dashboard + sentinel</span><span class="chip">Optional miner scan</span></p>
 
   <section class="grid">
@@ -1267,7 +1154,7 @@ cd $RELEASE_NAME
   <div class="grid">
     <div class="card"><strong>Pool LAN IP</strong><p>The IP your ASICs should connect to, for example <code>192.168.1.10</code>.</p></div>
     <div class="card"><strong>ASIC scan range</strong><p>Usually your subnet, for example <code>192.168.1.0/24</code>.</p></div>
-    <div class="card"><strong>Backend mode</strong><p><code>single</code> runs node2 only for lower USB power draw. <code>double</code> enables node1 with the <code>dual-node</code> Compose profile.</p></div>
+    <div class="card"><strong>Backend mode</strong><p>This release runs one direct backend node. Dynamic RPC backend routing is not supported.</p></div>
     <div class="card"><strong>Mining templates</strong><p>Disabled by default. Enable only when real miners will be attached; no-miner installs stay sync-only.</p></div>
     <div class="card"><strong>Reward wallet</strong><p>The BDAG/EVM address to mine to. The installer refuses the all-zero placeholder.</p></div>
     <div class="card"><strong>Dashboard exposure</strong><p>Default is local-only. Choose LAN exposure only on a trusted private network.</p></div>
@@ -1293,7 +1180,7 @@ docker compose ps</code></pre>
   "stack_archive": "$ARCHIVES_DIR/$stack_zip",
   "chain_data_archive": "$ARCHIVES_DIR/$data_zip",
   "image_archive_sha256": "$image_sha",
-  "safety": "This package is built from the live stable production configuration. It defaults to one sync-only backend node, can opt into a second backend node, and does not require restarting the source mining host."
+  "safety": "This package is built from the live stable production configuration. It defaults to one sync-only backend node and does not require restarting the source mining host."
 }
 </script>
 </body>
@@ -1309,13 +1196,13 @@ write_manifest() {
 {
   "package_name": "$RELEASE_NAME",
   "created_at_local": "$(date -Is)",
-  "purpose": "Raspberry Pi 5 / linux-arm64 BlockDAG ASIC pool installer with current stable stack, selectable single/double backend nodes, and optional fast-sync chain seed.",
+  "purpose": "Raspberry Pi 5 / linux-arm64 BlockDAG ASIC pool installer with current stable single-node stack and optional fast-sync chain seed.",
   "architecture": "linux-arm64",
   "runtime_topology": {
     "pool": "single Stratum pool by default",
-    "backend_nodes": "1 by default, 2 with COMPOSE_PROFILES=dual-node",
+    "backend_nodes": "1 direct backend node",
     "database": "postgres:15-alpine",
-    "rpc_failover": "haproxy:2.9-alpine",
+    "routing": "direct backend RPC only",
     "dashboard": "local Python dashboard/watchdog installed by ops/install-dashboard.sh"
   },
   "source_refs": {
@@ -1337,8 +1224,7 @@ write_manifest() {
         "bdag-release/node:bundle-arm64"
       ],
       "support_images_pulled_on_install": [
-        "postgres:15-alpine",
-        "haproxy:2.9-alpine"
+        "postgres:15-alpine"
       ]
     }
   },
@@ -1431,10 +1317,9 @@ main() {
 
   verify_stack_status
 
-  local base node1_peers node2_peers bin_dir image_dir image_archive image_sha stack_zip data_zip stack_sha data_sha chain_source_resolved
+  local base node1_peers bin_dir image_dir image_archive image_sha stack_zip data_zip stack_sha data_sha chain_source_resolved
   base="$(base_package)"
   node1_peers="$(extract_peer_value NODE1_PEER_ADDRESSES)"
-  node2_peers="$(extract_peer_value NODE2_PEER_ADDRESSES)"
   bin_dir="$PACKAGE_DIR/artifacts/binaries/linux-arm64"
   image_dir="$PACKAGE_DIR/artifacts/images/linux-arm64"
   image_archive="$image_dir/blockdag-stack-linux-arm64-images.tar.zst"
@@ -1464,7 +1349,6 @@ main() {
   say "Overlaying current production ops files"
   rsync -a --delete --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' "$PROJECT_ROOT/ops"/ "$PACKAGE_DIR/ops"/
   rsync -a "$PROJECT_ROOT/scripts"/ "$PACKAGE_DIR/scripts"/
-  rsync -a "$PROJECT_ROOT/haproxy.cfg" "$PACKAGE_DIR"/
   mkdir -p "$PACKAGE_DIR/asic-pool"
   rsync -a "$PROJECT_ROOT/asic-pool/schema.sql" "$PACKAGE_DIR/asic-pool/schema.sql"
   cp "$PROJECT_ROOT/ops/release-install.sh" "$PACKAGE_DIR/install.sh"
@@ -1474,7 +1358,7 @@ main() {
 
   rm -rf "$PACKAGE_DIR/artifacts/binaries" "$PACKAGE_DIR/artifacts/images"
   mkdir -p "$bin_dir" "$image_dir"
-  write_env_examples "$node1_peers" "$node2_peers"
+  write_env_examples "$node1_peers"
   write_image_build_files
   sanitize_release_tree
   guard_release_compose

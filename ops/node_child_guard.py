@@ -23,7 +23,7 @@ LOG_FILE = LOG_DIR / "node-child-guard.log"
 POOL_ENV_FILE = Path(os.environ.get("BDAG_POOL_ENV_FILE", PROJECT_ROOT / "asic-pool" / ".env"))
 NODES = [
     item.strip()
-    for item in os.environ.get("BDAG_NODE_CHILD_GUARD_NODES", "bdag-miner-node-2").split(",")
+    for item in os.environ.get("BDAG_NODE_CHILD_GUARD_NODES", "bdag-miner-node-1").split(",")
     if item.strip()
 ]
 COOLDOWN_SECONDS = int(os.environ.get("BDAG_NODE_CHILD_GUARD_RESTART_COOLDOWN_SECONDS", "180"))

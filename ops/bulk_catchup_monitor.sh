@@ -7,7 +7,7 @@ RUNTIME_DIR="$STACK_DIR/ops/runtime"
 STATE_FILE="$RUNTIME_DIR/bulk-catchup-mode.json"
 LOG_FILE="$RUNTIME_DIR/logs/bulk-catchup-monitor.log"
 THRESHOLD="${BDAG_BULK_CATCHUP_RESUME_BLOCKS:-50}"
-METRICS_URL="${BDAG_BULK_CATCHUP_METRICS_URL:-http://127.0.0.1:6062/debug/metrics/prometheus}"
+METRICS_URL="${BDAG_BULK_CATCHUP_METRICS_URL:-http://127.0.0.1:6061/debug/metrics/prometheus}"
 
 mkdir -p "$RUNTIME_DIR/logs"
 
@@ -44,7 +44,7 @@ if [[ "$sync_peer" -ge 1 && "$fresh_peer" -ge 1 && "$lead" -le "$THRESHOLD" ]]; 
   } >"$STATE_FILE"
   echo "$(date -Is) resume_pool lead=$lead metric_lead=$metric_lead threshold=$THRESHOLD main_order=$main_order best_peer=$best_peer" >>"$LOG_FILE"
   cd "$STACK_DIR"
-  docker compose --env-file asic-pool/.env up -d pool-db rpc-failover asic-pool
+  docker compose --env-file asic-pool/.env up -d pool-db asic-pool
   systemctl --user start \
     bdag-watchdog.service \
     bdag-mining-30min-check.timer \

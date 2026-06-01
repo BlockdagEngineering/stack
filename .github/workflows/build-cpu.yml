@@ -120,8 +120,9 @@ jobs:
           ROOT="${PACKAGE_NAME}-${VERSION}"
           rm -rf "${ROOT}"
           mkdir "${ROOT}"
-          cp docker-compose.yml dockerfile-cpu-release .env.cpu.example .env.pool.example node.conf.example  README.md SNAPSHOT-README.md checksums.txt "${ROOT}/"
-          cp -a sql netdata scripts bin docker "${ROOT}/"
+          cp docker-compose.yml dockerfile-cpu-release .dockerignore .env.cpu.example .env.pool.example node.conf.example README.md checksums.txt "${ROOT}/"
+          cp -a sql netdata scripts bin docker asic-pool tools "${ROOT}/"
+          rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
 
           tar -czf "${OUT}" "${ROOT}"
           python3 scripts/check-release-archive.py "${OUT}"

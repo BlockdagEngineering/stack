@@ -64,9 +64,9 @@
         <tr><td>Inactive miner work isolation</td><td>Offline or unmanaged ASIC observations may remain visible for operator context, but stale share windows must not receive active <code>Work%</code> or configured-lane status. Active lane balance is computed only from current/relevant MAC identities.</td></tr>
         <tr><td>Template conversion SLO</td><td>Release readiness fails if miner-normalized accepted block submits, tip-overdue loss, duplicate-local loss, stale-job rejects, or average submit/share latency exceed configured thresholds during active mining windows.</td></tr>
         <tr><td>Node reorg/template churn gate</td><td>When active miners are connected, repeated node <code>Zero state root hash</code>, <code>Rewinding blockchain</code>, <code>Client in initial download</code>, or recovered-template events must be counted as a mining-readiness risk even if block submission continues. A release gate must fail if this churn coincides with elevated <code>tip-overdue</code>, <code>non_current_job</code>, or template-conversion failure ratio.</td></tr>
-        <tr><td>Atomic backend epoch</td><td>Changing selected backend also invalidates old backend jobs, pins submit route to the same backend, and broadcasts clean work. Template-fetch fallback cannot silently flip the mining lane.</td></tr>
-        <tr><td>Catch-up maintenance semantics</td><td>When sync coordinator pauses a follower, the follower is marked maintenance standby. If the leader is near tip and accepting blocks, dashboard/router status must not present the paused follower as global mining unavailability.</td></tr>
-        <tr><td>No active/active quick fix</td><td>Do not re-enable template fan-in to chase throughput unless a controlled A/B test proves miner-normalized accepted blocks improve for the target miner source count.</td></tr>
+        <tr><td>Atomic template epoch</td><td>Changing template source state invalidates old jobs and broadcasts clean work. Template-fetch fallback cannot silently flip the mining lane.</td></tr>
+        <tr><td>Catch-up maintenance semantics</td><td>The pool remains unavailable for paid mining until the active node is synced, template-safe, and submit-ready.</td></tr>
+        <tr><td>No topology quick fix</td><td>Do not chase throughput by changing template-source topology unless a controlled A/B test proves miner-normalized accepted blocks improve for the target miner source count.</td></tr>
         <tr><td>MAC-based miner diagnostics</td><td>Per-ASIC stale and duplicate attribution must use the MAC-address registry. IPs, ports, and worker labels remain ephemeral observations.</td></tr>
       </tbody>
     </table>
@@ -74,7 +74,7 @@
 
   <section>
     <h2>Backlog</h2>
-    <p>Create or keep an SDLC backlog item for source-level prevention. The durable fix belongs in pool/router source and dashboard/sync-coordinator release gates, not only in watchdog repair scripts.</p>
+    <p>Create or keep an SDLC backlog item for source-level prevention. The durable fix belongs in pool source and dashboard/sync-coordinator release gates, not only in watchdog repair scripts.</p>
     <table>
       <thead><tr><th>Item</th><th>Acceptance Criteria</th></tr></thead>
       <tbody>

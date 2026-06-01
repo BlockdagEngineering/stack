@@ -2,9 +2,8 @@
 set -Eeuo pipefail
 
 # Build a signed raw-datadir FastArtifact V2 directory artifact from a stopped
-# source datadir. Dual-node hosts drain and stop only the standby backend; a
-# single-node host can point BDAG_RAWDATADIR_SOURCE_DIR at a pre-maintained
-# sidecar copy instead.
+# source datadir. Production use should point BDAG_RAWDATADIR_SOURCE_DIR at a
+# finalized sidecar copy, not at the live node datadir.
 
 PROJECT_ROOT="${BDAG_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 ENV_FILE="${BDAG_ENV_FILE:-$PROJECT_ROOT/.env}"
@@ -33,7 +32,7 @@ STATUS_FILE="${BDAG_RAWDATADIR_SOURCE_STATUS:-$PROJECT_ROOT/ops/runtime/rawdatad
 DOCKER_CPU_SHARES="${BDAG_RAWDATADIR_DOCKER_CPU_SHARES:-128}"
 DOCKER_BLKIO_WEIGHT="${BDAG_RAWDATADIR_DOCKER_BLKIO_WEIGHT:-10}"
 DOCKER_CPUS="${BDAG_RAWDATADIR_DOCKER_CPUS:-1.5}"
-NODE_METRICS_URLS="${BDAG_RAWDATADIR_NODE_METRICS_URLS:-node1=http://127.0.0.1:6061/debug/metrics/prometheus,node2=http://127.0.0.1:6062/debug/metrics/prometheus}"
+NODE_METRICS_URLS="${BDAG_RAWDATADIR_NODE_METRICS_URLS:-node1=http://127.0.0.1:6061/debug/metrics/prometheus}"
 ANCHOR_RPC_URL="${BDAG_RAWDATADIR_ANCHOR_RPC_URL:-${NODE_RPC_URL:-http://127.0.0.1:38131}}"
 RPC_USER="${NODE_RPC_USER:-test}"
 RPC_PASS="${NODE_RPC_PASS:-test}"
@@ -157,7 +156,6 @@ backend_order_metric() {
 service_for_backend() {
   case "$1" in
     node1) printf '%s\n' "${BDAG_RAWDATADIR_NODE1_SERVICE:-bdag-miner-node-1}" ;;
-    node2) printf '%s\n' "${BDAG_RAWDATADIR_NODE2_SERVICE:-bdag-miner-node-2}" ;;
     node) printf '%s\n' "${BDAG_RAWDATADIR_NODE_SERVICE:-node}" ;;
     *) return 1 ;;
   esac
@@ -166,7 +164,6 @@ service_for_backend() {
 datadir_for_backend() {
   case "$1" in
     node1) printf '%s\n' "${BDAG_RAWDATADIR_NODE1_DATADIR:-$PROJECT_ROOT/data/node1}" ;;
-    node2) printf '%s\n' "${BDAG_RAWDATADIR_NODE2_DATADIR:-$PROJECT_ROOT/data/node2}" ;;
     node) printf '%s\n' "${BDAG_RAWDATADIR_NODE_DATADIR:-$PROJECT_ROOT/data/node}" ;;
     *) return 1 ;;
   esac
@@ -179,8 +176,7 @@ choose_export_backend() {
     return
   fi
   case "$selected" in
-    node1) printf '%s\n' node2 ;;
-    node2) printf '%s\n' node1 ;;
+    node1) printf '%s\n' node1 ;;
     *) return 1 ;;
   esac
 }
@@ -295,7 +291,7 @@ assert_export_backend_fresh() {
   fi
   log "raw datadir freshness active=$active_backend order=$active_order export=$export_backend order=$export_order lag=$lag max=$MAX_EXPORT_BACKEND_LAG"
   if ((lag > MAX_EXPORT_BACKEND_LAG)); then
-    log "refusing raw datadir export: standby node lag=$lag max=$MAX_EXPORT_BACKEND_LAG"
+    log "refusing raw datadir export: source lag=$lag max=$MAX_EXPORT_BACKEND_LAG"
     return 1
   fi
 }
@@ -306,7 +302,7 @@ resolve_node_image() {
     return
   fi
   local image_id
-  image_id="$(compose images -q node 2>/dev/null | head -n1 || true)"
+  image_id="$(compose images -q bdag-miner-node-1 2>/dev/null | head -n1 || true)"
   if [[ -n "$image_id" ]]; then
     printf '%s\n' "$image_id"
     return
@@ -477,12 +473,18 @@ archive_source_datadir() {
     --zstd
     -cpf "$tmp"
     -C "$source_mainnet"
-    "--exclude=./network.key"
-    "--exclude=./bdageth/nodekey"
-    "--exclude=./keystore"
-    "--exclude=./bdageth/keystore"
-    "--exclude=./peerstore"
-    "--exclude=./nodes"
+    "--exclude=./network.key*"
+    "--exclude=./bdageth/nodekey*"
+    "--exclude=./bdageth/LOCK"
+    "--exclude=./bdageth/chaindata/LOCK"
+    "--exclude=./keystore*"
+    "--exclude=./bdageth/keystore*"
+    "--exclude=./bdageth/nodes*"
+    "--exclude=./peerstore*"
+    "--exclude=./nodes*"
+    "--exclude=./bdageth/transactions.rlp"
+    "--exclude=./LOCK"
+    "--exclude=./BdagChain/LOCK"
     "--exclude=./geth.ipc"
     "--exclude=./bdag.ipc"
     "--exclude=*.ipc"
@@ -513,7 +515,7 @@ archive_source_datadir() {
       ;;
   esac
 
-  if "${tar_command[@]}" "${tar_args[@]}" 2>>"$LOG_FILE"; then
+  if run_low_priority "${tar_command[@]}" "${tar_args[@]}" 2>>"$LOG_FILE"; then
     if [[ "${tar_command[0]}" == "sudo" ]]; then
       sudo chown "$(id -u):$(id -g)" "$tmp"
     fi
@@ -522,7 +524,7 @@ archive_source_datadir() {
   fi
   if [[ "${tar_command[0]}" != "sudo" ]] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
     log "retrying raw datadir archive with sudo because ordinary tar failed"
-    sudo -n tar "${tar_args[@]}" 2>>"$LOG_FILE"
+    run_low_priority sudo -n tar "${tar_args[@]}" 2>>"$LOG_FILE"
     sudo chown "$(id -u):$(id -g)" "$tmp"
     mv -f "$tmp" "$archive"
     return 0
@@ -590,9 +592,9 @@ if [[ -n "$SOURCE_DIR" ]]; then
     exit 1
   fi
   LIVE_NODE1_MAINNET="$(readlink -m "${BDAG_RAWDATADIR_NODE1_DATADIR:-$PROJECT_ROOT/data/node1}/$NETWORK")"
-  LIVE_NODE2_MAINNET="$(readlink -m "${BDAG_RAWDATADIR_NODE2_DATADIR:-$PROJECT_ROOT/data/node2}/$NETWORK")"
+  LIVE_NODE_MAINNET="$(readlink -m "${BDAG_RAWDATADIR_NODE_DATADIR:-$PROJECT_ROOT/data/node}/$NETWORK")"
   SOURCE_MAINNET_REAL="$(readlink -m "$SOURCE_MAINNET")"
-  if [[ "${BDAG_RAWDATADIR_ALLOW_LIVE_SOURCE:-0}" != "1" && ( "$SOURCE_MAINNET_REAL" == "$LIVE_NODE1_MAINNET" || "$SOURCE_MAINNET_REAL" == "$LIVE_NODE2_MAINNET" ) ]]; then
+  if [[ "${BDAG_RAWDATADIR_ALLOW_LIVE_SOURCE:-0}" != "1" && ( "$SOURCE_MAINNET_REAL" == "$LIVE_NODE1_MAINNET" || "$SOURCE_MAINNET_REAL" == "$LIVE_NODE_MAINNET" ) ]]; then
     log "refusing raw datadir artifact from live node datadir: $SOURCE_MAINNET_REAL"
     log "use ops/publish-rawdatadir-artifact.sh to refresh/finalize a sidecar first"
     exit 1
@@ -603,12 +605,12 @@ if [[ -n "$SOURCE_DIR" ]]; then
   }
 else
   if [[ "$NODE_MODE" == "single" ]]; then
-    log "refusing standby export in BDAG_NODE_MODE=single; set BDAG_RAWDATADIR_SOURCE_DIR to a finalized sidecar"
+    log "refusing live-node export in BDAG_NODE_MODE=single; set BDAG_RAWDATADIR_SOURCE_DIR to a finalized sidecar"
     exit 1
   fi
   ACTIVE_BACKEND="$(selected_backend || true)"
   if [[ -z "$ACTIVE_BACKEND" ]]; then
-    log "pool router has no selected backend; refusing to stop a node for raw datadir export"
+    log "pool has no selected backend; refusing to stop a node for raw datadir export"
     exit 1
   fi
   EXPORT_BACKEND="$(choose_export_backend "$ACTIVE_BACKEND")"
@@ -679,10 +681,10 @@ Tip hash: $RAW_TIP_HASH
 State root: $RAW_STATE_ROOT
 
 Excluded identity/secret material:
-- network.key
-- bdageth/nodekey
-- keystore and bdageth/keystore
-- peerstore and nodes
+- network.key variants
+- bdageth/nodekey variants
+- keystore and bdageth/keystore variants
+- peerstore, nodes, and bdageth/nodes variants
 - IPC/socket files
 
 Fetch with ops/fetch-rawdatadir-artifact.sh or fastsnap --artifact-type raw_datadir_checkpoint.

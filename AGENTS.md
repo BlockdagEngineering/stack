@@ -60,9 +60,9 @@ I/O on mining-template readiness work.
 
 When dashboard status or `sync_progress.status` is `syncing`, chain import is
 the priority. Nodes should receive the strongest CPU and IO priority until they
-are caught up. Hosts with active miners may keep the pool/router path alive, but
+are caught up. Hosts with active miners may keep the pool path alive, but
 node catch-up still wins scheduling priority. Hosts with no miners must idle or
-stop pool/router/database work and stay in sync-only mode.
+stop pool/database work and stay in sync-only mode.
 
 When any managed node is more than 1000 blocks behind the observed network tip,
 do not let multiple nodes compete for catch-up IO. The sync coordinator must
@@ -82,16 +82,8 @@ steady catch-up beat the small parallel precheck speedup.
 For five-X100 local mining hosts and other multi-miner deployments, connected
 miner count and raw hash activity are not enough. The release success metric is
 accepted block conversion per miner-hour. The pool must keep one canonical
-mining-template epoch at a time, and backend switches, catch-up maintenance,
-and clean-job broadcasts must be atomic from the miner point of view.
-
-Do not re-enable active/active template fan-in as a quick fix for low output.
-The 2026-05-25 regression showed that five ASICs can amplify stale-parent,
-tip-overdue, duplicate-block, invalidated-job, and non-current-job losses when
-template epochs or routing are unstable. During one-node catch-up, a paused
-follower is maintenance standby; if the leader is near tip and accepting blocks,
-the dashboard/router path must not treat the paused follower as global mining
-unavailability.
+mining-template epoch at a time. During one-node catch-up, the dashboard must
+keep mining unavailable until the active node is safe for templates and submits.
 
 Keep the RC guard in `docs/five-asic-template-conversion-guard.html` current.
 The guard is conditional on observed/configured miner sources; it must not make
@@ -110,23 +102,20 @@ only display configured names after an operator explicitly adds them.
 
 The Pi5 release candidate must install `bdag-stack-sentinel.timer` and the
 dashboard/watchdog/peer/chain guards by default. A stopped `pool-db`,
-`rpc-failover`, or `asic-pool` container is a stack failure even when there are
+node, or `asic-pool` container is a stack failure even when there are
 no miners. No-miner mode means no mining work is sent; it does not mean services
 are allowed to stay down.
 
 Dashboard block height must come from the node chain RPC `getBlockCount` only.
-`getMainChainHeight`, template height, log imports, fan-in metrics, and peer
+`getMainChainHeight`, template height, log imports, and peer
 lead values are diagnostics and must not be displayed as the node block count.
 Keep `scripts/validate-pi5-restart-hardening.sh` enforcing this so future drift
 cannot reintroduce mixed height sources.
 
-Pool block-candidate submit fanout must remain a candidate-only hot-path
-optimization. Current pool releases use the RPC router with
-`POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT=true`; `POOL_SUBMIT_RPC_URLS` remains
-configured for compatibility with older binaries. Normal shares must not fan
-out. Valid block candidates should return to the miner after the first accepted
-endpoint while slower endpoint outcomes are recorded asynchronously. Keep the
-default release value to one endpoint on single-node hosts.
+Pool block-candidate submission must use the single configured backend endpoint.
+Normal shares must not fan out, and valid block candidates should return to the
+miner as soon as the active endpoint accepts them. Keep release defaults pinned
+to one endpoint on single-node hosts.
 
 Keep Issue #26 final release mitigations in
 `docs/final-release-issue-26-checklist.md` current when changing source repo
@@ -239,5 +228,5 @@ exported directly. Use `ops/fastartifact_source_eligibility.py`,
 `ops/maintain-rawdatadir-sidecar.sh`, and `ops/publish-rawdatadir-artifact.sh`
 so source serving fails closed on USB/removable storage and publishes only a
 signed `raw_datadir_checkpoint` generation from a finalized sidecar. Keep
-`BDAG_FASTSNAP_SEED_TIMER_ENABLED=0` in single-node defaults; the old archive
-FastSnap seed timer is a dual-node compatibility path only.
+`BDAG_FASTSNAP_SEED_TIMER_ENABLED=0` in single-node defaults; IPFS segments and
+finalized raw-datadir sidecars own content publication.

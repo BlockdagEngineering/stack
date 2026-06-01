@@ -2,7 +2,7 @@
 """Lazy IPFS publisher for finalized BlockDAG FastArtifact content.
 
 This process is deliberately not a snapshot builder. It only advertises an
-already-finalized, signed FastArtifact generation after resource gates pass.
+already-finalized, signed FastArtifact generation after resource pressure clears.
 IPFS is treated as an untrusted byte distribution plane; the signed
 FastArtifact manifest and normal consensus validation remain authoritative.
 """
@@ -166,8 +166,11 @@ def source_eligibility(env: dict[str, str]) -> dict[str, Any]:
 
 
 def artifact_paths(env: dict[str, str]) -> tuple[Path, Path]:
-    artifact_base = resolve_path(env.get("BDAG_RAWDATADIR_ARTIFACT_BASE"), ROOT / "data-restore/rawdatadir")
-    artifact_dir = resolve_path(env.get("BDAG_IPFS_CONTENT_ARTIFACT_DIR"), artifact_base / "current")
+    sidecar_content_base = resolve_path(
+        env.get("BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE") or env.get("BDAG_RAWDATADIR_ARTIFACT_BASE"),
+        ROOT / "data-restore/rawdatadir-sidecar-content",
+    )
+    artifact_dir = resolve_path(env.get("BDAG_IPFS_CONTENT_ARTIFACT_DIR"), sidecar_content_base / "current")
     manifest = resolve_path(env.get("BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST"), artifact_dir / "manifest.json")
     return artifact_dir, manifest
 
@@ -189,6 +192,14 @@ def artifact_publish_blockers(artifact_dir: Path, manifest_path: Path, manifest:
     if artifact_type and artifact_type != "raw_datadir_checkpoint":
         blockers.append(f"unsupported_artifact_type:{artifact_type}")
     return blockers
+
+
+def waiting_state_for_blockers(blockers: list[str]) -> str:
+    if any(item.startswith("do_not_publish_marker:") for item in blockers):
+        return "waiting_for_safe_artifact"
+    if "manifest_unsigned" in blockers:
+        return "waiting_for_signed_artifact"
+    return "waiting_for_artifact"
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
@@ -278,6 +289,45 @@ def publish_ipns(index_cid: str, env: dict[str, str]) -> dict[str, Any] | None:
     }
 
 
+def load_existing_index(index_path: Path) -> dict[str, Any]:
+    if not index_path.exists():
+        return {}
+    try:
+        return json.loads(index_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def current_index_cid(existing: dict[str, Any], env: dict[str, str]) -> str:
+    for key in ("index_cid", "current_latest_index_cid"):
+        value = str(existing.get(key) or "").strip()
+        if value:
+            return value
+    discovery_path = resolve_path(env.get("BDAG_IPFS_CONTENT_DISCOVERY_FILE"), ROOT / "ops/ipfs-content-discovery.json")
+    if discovery_path.exists():
+        try:
+            discovery = json.loads(discovery_path.read_text(encoding="utf-8"))
+            value = str(discovery.get("current_latest_index_cid") or "").strip()
+            if value:
+                return value
+        except json.JSONDecodeError:
+            pass
+    return str(env.get("BDAG_IPFS_CONTENT_DEFAULT_INDEX_CID") or "").strip()
+
+
+def republish_current_ipns(existing: dict[str, Any], env: dict[str, str]) -> tuple[str, dict[str, Any] | None]:
+    index_cid = current_index_cid(existing, env)
+    if not index_cid or not env_bool(env, "BDAG_IPFS_CONTENT_PUBLISH_IPNS", False):
+        return index_cid, None
+    if not ipfs_pin_present(index_cid, env):
+        return index_cid, {
+            "ok": False,
+            "skipped": "index_cid_not_recursively_pinned",
+            "index_cid": index_cid,
+        }
+    return index_cid, publish_ipns(index_cid, env)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="evaluate gates without calling ipfs")
@@ -299,24 +349,36 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
 
+    source_eligibility_required = env_bool(env, "BDAG_IPFS_CONTENT_REQUIRE_SOURCE_ELIGIBILITY", False)
     eligibility = source_eligibility(env)
-    if not eligibility.get("eligible", False):
+    if source_eligibility_required and not eligibility.get("eligible", False):
         payload = write_status(env, "deferred", reasons=eligibility.get("reasons") or ["source_not_eligible"], eligibility=eligibility)
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
 
+    index_path = resolve_path(env.get("BDAG_IPFS_CONTENT_LATEST_INDEX_PATH"), ROOT / "ops/runtime/ipfs-content/latest-index.json")
+    existing = load_existing_index(index_path)
     artifact_dir, manifest_path = artifact_paths(env)
     manifest: dict[str, Any] = {}
     if manifest_path.exists():
         manifest = load_manifest(manifest_path)
     blockers = artifact_publish_blockers(artifact_dir, manifest_path, manifest, env)
     if blockers:
+        index_cid = ""
+        ipns = None
+        if env_bool(env, "BDAG_IPFS_CONTENT_REPUBLISH_IPNS_WHILE_WAITING", True):
+            index_cid, ipns = republish_current_ipns(existing, env)
         payload = write_status(
             env,
-            "deferred",
+            waiting_state_for_blockers(blockers),
             reasons=blockers,
+            action="waiting_republish_current_ipns" if ipns else "waiting",
+            index_cid=index_cid,
+            ipns=ipns,
             eligibility=eligibility,
+            source_eligibility_required=source_eligibility_required,
+            retry_policy="timer_will_retry_after_pressure_or_artifact_state_changes",
             artifact_dir=str(artifact_dir),
             artifact_manifest=str(manifest_path),
         )
@@ -325,25 +387,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     manifest_sha = sha256_file(manifest_path)
-    index_path = resolve_path(env.get("BDAG_IPFS_CONTENT_LATEST_INDEX_PATH"), ROOT / "ops/runtime/ipfs-content/latest-index.json")
-    existing = {}
-    if index_path.exists():
-        try:
-            existing = json.loads(index_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            existing = {}
     existing_cid = str(existing.get("artifact_cid") or "")
     if existing.get("artifact_manifest_sha256") == manifest_sha and existing_cid and ipfs_pin_present(existing_cid, env):
+        index_cid, ipns = republish_current_ipns(existing, env)
         payload = write_status(
             env,
             "published",
             action="already_pinned",
             artifact_cid=existing_cid,
-            index_cid=existing.get("index_cid"),
+            index_cid=index_cid,
+            ipns=ipns,
             artifact_manifest_sha256=manifest_sha,
             artifact_dir=str(artifact_dir),
             artifact_manifest=str(manifest_path),
             eligibility=eligibility,
+            source_eligibility_required=source_eligibility_required,
         )
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -358,6 +416,7 @@ def main(argv: list[str] | None = None) -> int:
             artifact_dir=str(artifact_dir),
             artifact_manifest=str(manifest_path),
             eligibility=eligibility,
+            source_eligibility_required=source_eligibility_required,
         )
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -382,6 +441,7 @@ def main(argv: list[str] | None = None) -> int:
             artifact_dir=str(artifact_dir),
             artifact_manifest=str(manifest_path),
             eligibility=eligibility,
+            source_eligibility_required=source_eligibility_required,
         )
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -399,6 +459,7 @@ def main(argv: list[str] | None = None) -> int:
         artifact_manifest=str(manifest_path),
         latest_index_path=str(index_path),
         eligibility=eligibility,
+        source_eligibility_required=source_eligibility_required,
     )
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))

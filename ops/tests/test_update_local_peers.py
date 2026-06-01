@@ -57,6 +57,20 @@ class UpdateLocalPeersActiveMiningGuardTest(unittest.TestCase):
             with self.patch_status(status):
                 self.assertEqual(update_local_peers.active_mining_recreate_guard_reason(), "")
 
+    def test_explicit_unknown_node_services_do_not_fallback_to_legacy_nodes(self) -> None:
+        with mock.patch.dict("os.environ", {}, clear=True):
+            with mock.patch.object(
+                update_local_peers,
+                "read_env_values",
+                return_value={"BDAG_NODE_SERVICES": "pool-stack-docker-node-1"},
+            ):
+                self.assertEqual(update_local_peers.configured_active_nodes({}), [])
+
+    def test_missing_node_services_keeps_legacy_default(self) -> None:
+        with mock.patch.dict("os.environ", {}, clear=True):
+            with mock.patch.object(update_local_peers, "read_env_values", return_value={}):
+                self.assertEqual(update_local_peers.configured_active_nodes({}), list(update_local_peers.NODE_SPECS))
+
 
 if __name__ == "__main__":
     unittest.main()

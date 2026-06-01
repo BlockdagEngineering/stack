@@ -6,10 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-DUPLICATE_SAFE_KEY = "POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT"
-DUPLICATE_SAFE_VALUE = "${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}"
 POOL_SUBMIT_HARDENING_FLAGS = (
-    (DUPLICATE_SAFE_KEY, DUPLICATE_SAFE_VALUE),
     ("POOL_SUBMIT_STALE_BLOCK_CANDIDATES", "${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}"),
     ("POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED", "${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}"),
     ("POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD", "${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}"),
@@ -130,31 +127,22 @@ def ensure_pool_env_flags(text: str, flags: tuple[tuple[str, str], ...]) -> Migr
     return MigrationResult(text=migrated, changed=inserted_count > 0, inserted_count=inserted_count)
 
 
-def ensure_duplicate_safe_submit_flag(text: str) -> MigrationResult:
-    return ensure_pool_env_flags(text, ((DUPLICATE_SAFE_KEY, DUPLICATE_SAFE_VALUE),))
-
-
 def ensure_pool_submit_hardening_flags(text: str) -> MigrationResult:
     return ensure_pool_env_flags(text, POOL_SUBMIT_HARDENING_FLAGS)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Apply idempotent live runtime compose migrations.")
-    parser.add_argument("--ensure-duplicate-safe-submit", action="store_true")
     parser.add_argument("--ensure-pool-submit-hardening", action="store_true")
     parser.add_argument("compose_file", type=Path)
     args = parser.parse_args()
 
-    if not args.ensure_duplicate_safe_submit and not args.ensure_pool_submit_hardening:
+    if not args.ensure_pool_submit_hardening:
         parser.error("one migration flag is required")
 
     text = args.compose_file.read_text(encoding="utf-8")
-    if args.ensure_pool_submit_hardening:
-        result = ensure_pool_submit_hardening_flags(text)
-        required_keys = tuple(key for key, _ in POOL_SUBMIT_HARDENING_FLAGS)
-    else:
-        result = ensure_duplicate_safe_submit_flag(text)
-        required_keys = (DUPLICATE_SAFE_KEY,)
+    result = ensure_pool_submit_hardening_flags(text)
+    required_keys = tuple(key for key, _ in POOL_SUBMIT_HARDENING_FLAGS)
 
     missing_keys = [key for key in required_keys if f"{key}:" not in result.text]
     if missing_keys:

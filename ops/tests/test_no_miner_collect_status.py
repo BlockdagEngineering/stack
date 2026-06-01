@@ -55,9 +55,9 @@ class NoMinerCollectStatusTests(unittest.TestCase):
     def test_no_miner_status_suppresses_template_and_rpc_noise(self) -> None:
         now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()
         pool_ops.time.time = lambda: now
-        pool_ops.NODES = ["bdag-miner-node-2"]
+        pool_ops.NODES = ["bdag-miner-node-1"]
         pool_ops.OBSERVER_NODES = []
-        pool_ops.STACK_SERVICES = ["pool-db", "bdag-miner-node-2", "rpc-failover", "asic-pool"]
+        pool_ops.STACK_SERVICES = ["pool-db", "bdag-miner-node-1", "asic-pool", "asic-pool"]
         pool_ops.SERVICES = list(pool_ops.STACK_SERVICES)
         pool_ops.POOL_CONTAINER = "asic-pool"
         pool_ops.POOL_CONTAINERS = ["asic-pool"]
@@ -110,7 +110,7 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             "generated_at": "2026-05-25T12:00:00+0000",
             "status": "ok",
             "active_connections": 0,
-            "selected_backend": "node2",
+            "selected_backend": "node1",
             "source_job_health": {},
             "source_backend_health": {},
             "selected_backend_source_health": {},
@@ -133,13 +133,13 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             "source": "nodes",
             "error": "",
             "nodes": {
-                "bdag-miner-node-2": {
+                "bdag-miner-node-1": {
                     "status": "synced",
                     "percent": 100.0,
                     "current_block": 8_658_598,
                     "highest_block": 8_658_598,
                     "remaining_blocks": 0,
-                    "source": "bdag-miner-node-2",
+                    "source": "bdag-miner-node-1",
                     "error": "",
                     "chain_block_count": 8_658_598,
                     "chain_main_height": 7_001_831,
@@ -168,8 +168,8 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertTrue(status["pool_health"]["rpc_refused_raw"])
         self.assertTrue(status["rpc_template_health"]["suppressed_for_no_miners"])
         self.assertEqual(status["rpc_template_health"]["suppressed_reason"], "no managed or connected miners")
-        self.assertEqual(status["nodes"]["bdag-miner-node-2"]["template_probe_sample_count"], 0)
-        self.assertFalse(status["nodes"]["bdag-miner-node-2"]["template_probe_failing"])
+        self.assertEqual(status["nodes"]["bdag-miner-node-1"]["template_probe_sample_count"], 0)
+        self.assertFalse(status["nodes"]["bdag-miner-node-1"]["template_probe_failing"])
         self.assertEqual(status["sync_warnings"], [])
         joined_warnings = "\n".join(status["warnings"])
         self.assertNotIn("live mining template probes", joined_warnings)
@@ -178,9 +178,9 @@ class NoMinerCollectStatusTests(unittest.TestCase):
     def test_recent_paid_work_keeps_template_probe_noise_advisory_during_sync_progress(self) -> None:
         now = datetime(2026, 5, 27, 8, 30, 0, tzinfo=timezone.utc).timestamp()
         pool_ops.time.time = lambda: now
-        pool_ops.NODES = ["bdag-miner-node-2"]
+        pool_ops.NODES = ["bdag-miner-node-1"]
         pool_ops.OBSERVER_NODES = []
-        pool_ops.STACK_SERVICES = ["pool-db", "bdag-miner-node-2", "rpc-failover", "asic-pool"]
+        pool_ops.STACK_SERVICES = ["pool-db", "bdag-miner-node-1", "asic-pool", "asic-pool"]
         pool_ops.SERVICES = list(pool_ops.STACK_SERVICES)
         pool_ops.POOL_CONTAINER = "asic-pool"
         pool_ops.POOL_CONTAINERS = ["asic-pool"]
@@ -249,7 +249,7 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             "generated_at": "2026-05-27T08:30:00+0000",
             "cached": False,
             "nodes": {
-                "bdag-miner-node-2": {
+                "bdag-miner-node-1": {
                     "sample_count": 1,
                     "ok_count": 0,
                     "error_count": 1,
@@ -259,21 +259,21 @@ class NoMinerCollectStatusTests(unittest.TestCase):
                     "benign_tx_throttle": False,
                 }
             },
-            "rpc_failover": {
+            "direct_rpc": {
                 "sample_count": 1,
                 "ok_count": 0,
                 "error_count": 1,
                 "failing": True,
                 "last_error": "timed out",
             },
-            "failing_nodes": ["bdag-miner-node-2"],
+            "failing_nodes": ["bdag-miner-node-1"],
             "all_nodes_failing": True,
         }
         pool_ops.collect_pool_prometheus_metrics = lambda _containers: {
             "generated_at": "2026-05-27T08:30:00+0000",
             "status": "ok",
             "active_connections": 1.0,
-            "selected_backend": "node2",
+            "selected_backend": "node1",
             "source_job_health": {"ok": True, "authorized_miners": 1, "ready_miners": 1},
             "source_backend_health": {},
             "selected_backend_source_health": {
@@ -302,13 +302,13 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             "source": "nodes",
             "error": "",
             "nodes": {
-                "bdag-miner-node-2": {
+                "bdag-miner-node-1": {
                     "status": "syncing",
                     "percent": 99.9,
                     "current_block": 8_658_580,
                     "highest_block": 8_658_598,
                     "remaining_blocks": 18,
-                    "source": "bdag-miner-node-2",
+                    "source": "bdag-miner-node-1",
                     "error": "",
                     "chain_block_count": 8_658_580,
                     "chain_main_height": 7_001_812,
@@ -321,9 +321,9 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             },
         }
         pool_ops.observe_sync_progress_health = lambda _sync_progress: {
-            "active_nodes": ["bdag-miner-node-2"],
+            "active_nodes": ["bdag-miner-node-1"],
             "active_node_count": 1,
-            "node_rates_blocks_per_second": {"bdag-miner-node-2": 2.0},
+            "node_rates_blocks_per_second": {"bdag-miner-node-1": 2.0},
             "lookback_seconds": 2700,
         }
         pool_ops.read_sync_coordinator_state = lambda: {}
@@ -573,7 +573,7 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
             "sync_progress": {
                 "status": "synced",
                 "remaining_blocks": 0,
-                "nodes": {"node2": {"chain_rpc_latency_ms": 1500.0}},
+                "nodes": {"node1": {"chain_rpc_latency_ms": 1500.0}},
             },
             "host_pressure": {"iowait_percent": 1.0, "io_some_avg10": 0.0, "cpu_some_avg10": 0.0},
         }

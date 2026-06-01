@@ -45,7 +45,7 @@
       "ops/update-local-peers.py",
       "ops/systemd/user-bdag-local-peers.timer"
     ],
-    "intent": "Make all routable host interfaces eligible for BlockDAG P2P and keep dual-node pool deployments cross-peered."
+    "intent": "Make all routable host interfaces eligible for BlockDAG P2P while keeping the pool topology single-backend."
   }
   </script>
 </head>
@@ -61,9 +61,9 @@
         <p><code>bdag-p2p-firewall.service</code> accepts configured BlockDAG P2P ports in host <code>INPUT</code> and Docker <code>DOCKER-USER</code> without an interface filter.</p>
       </article>
       <article class="card">
-        <p class="label">Local nodes</p>
-        <p class="good">Cross-peer by default</p>
-        <p><code>update-local-peers.py</code> writes node-specific addpeer lists so node1 and node2 can dial each other through complete P2P multiaddrs with peer IDs.</p>
+        <p class="label">Local node</p>
+        <p class="good">Direct peer list</p>
+        <p><code>update-local-peers.py</code> writes addpeer lists for the active local node through complete P2P multiaddrs with peer IDs.</p>
       </article>
       <article class="card">
         <p class="label">Operator peers</p>
@@ -85,7 +85,7 @@ systemctl enable --now bdag-p2p-firewall.service</pre>
         <tr><th>Source</th><th>Purpose</th></tr>
       </thead>
       <tbody>
-        <tr><td><code>/dns4/bdag-miner-node-1</code>, <code>/dns4/bdag-miner-node-2</code></td><td>Stable same-compose node-to-node path that does not depend on host interface state.</td></tr>
+        <tr><td><code>/dns4/bdag-miner-node-1</code></td><td>Stable same-compose node path that does not depend on host interface state.</td></tr>
         <tr><td>Complete P2P multiaddrs</td><td>Only sync candidate format; every candidate must include a peer ID.</td></tr>
         <tr><td><code>BDAG_FASTSYNC_PEERS</code></td><td>Operator-supplied sync candidates for FastArtifact probing.</td></tr>
         <tr><td>Measured P2P usefulness</td><td>P2P ping, manifest response, chunk response, artifact availability, and sustained transfer determine source quality.</td></tr>

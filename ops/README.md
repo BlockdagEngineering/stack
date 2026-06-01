@@ -20,11 +20,10 @@ The dashboard shows container state, latest imported block numbers, node sync st
 
 Sync health checks are intentionally conservative. The dashboard and watchdog warn when:
 
-- the two local nodes drift by more than `BDAG_NODE_LAG_WARN_BLOCKS` blocks, default `5`
-- a node has not imported a block for `BDAG_NODE_IMPORT_STALE_SECONDS`, default `180`
+- the active node has not imported a block for `BDAG_NODE_IMPORT_STALE_SECONDS`, default `180`
 - recent node logs contain repeated malformed peer or P2P stream-reset errors, controlled by `BDAG_NODE_P2P_ERROR_WARN_COUNT`, default `10`
 
-Only real catch-up problems put the dashboard into `syncing`: pool initial download, node import staleness, node-to-node lag, peer-ahead lag, or RPC refusal. Maintenance warnings such as malformed peer spam stay visible in the alert list, but they do not mark the pool as syncing when both nodes are importing current blocks.
+Only real catch-up problems put the dashboard into `syncing`: pool initial download, node import staleness, peer-ahead lag, or RPC refusal. Maintenance warnings such as malformed peer spam stay visible in the alert list, but they do not mark the pool as syncing when the active node is importing current blocks.
 
 The dashboard also watches for pool share stalls. If miners are connected but the pool stops accepting valid shares for several minutes, that is treated as a recovery condition and the watchdog will restart the stack after the configured threshold.
 
@@ -32,7 +31,7 @@ The watchdog also has a fast-sync recovery path. If real syncing warnings persis
 
 The persisted peer list in `asic-pool/.env` should contain only valid multiaddrs. Removing a bad peer from `.env` takes effect on the next controlled node restart; it does not interrupt currently running miners by itself.
 
-The pool is configured to use the local `rpc-failover` service as its primary DAG RPC endpoint on the next stack start. Direct node RPC URLs remain listed as fallbacks, and the dashboard still compares both node heights so TCP-level failover does not hide node drift.
+The pool is configured to use the local node service directly as its DAG RPC endpoint on the next stack start. The dashboard compares the local chain view against external references where configured.
 
 The Miners tab can scan the private LAN for ASIC web interfaces and configure selected miners to the current local pool endpoint. The scanner is limited to private IPv4 LAN targets, and every miner's existing pool list is backed up under:
 
@@ -179,13 +178,13 @@ The watchdog performs a staged repair:
 2. Restart if the node wrapper is up but the `bdag` child process is gone.
 3. Clean restore only after repeated hard failures, such as critical database startup errors.
 
-Clean restore stops the stack, moves existing `data/node1` and `data/node2` to timestamped backups, restores the newest snapshot from `data-restore/`, and starts the stack.
+Clean restore stops the stack, moves existing active chain data to a timestamped backup, restores the newest snapshot from `data-restore/`, and starts the stack.
 
 Boot-time recovery is handled by `bdag-boot-repair.service`, which waits for Docker, checks the dirty-shutdown marker, and preserves existing chain data by default. A dirty marker now triggers a conservative start/restart path; automatic clean restore is disabled unless `BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE=1` is set explicitly.
 
 ## P2P Guard
 
-The P2P guard is a passive network-health sampler. It does not restart nodes, pools, miners, or HAProxy. It records whether the active RPC primary and standby node are healthy enough for mining failover, and whether the local network path is still low-latency.
+The P2P guard is a passive network-health sampler. It does not restart nodes, pools, or miners. It records whether the active RPC path is healthy enough for mining and whether the local network path is still low-latency.
 
 Run one sample:
 
@@ -276,7 +275,7 @@ View logs:
 journalctl --user -u bdag-boot-repair.service -u bdag-dashboard.service -u bdag-watchdog.service -u bdag-stack-sentinel.service -f
 ```
 
-The watchdog writes `ops/runtime/dirty-shutdown.marker` while it is running and clears it on a clean stop. If the host loses power, the marker remains; the boot-repair unit preserves current node data, starts the stack, and keeps any sync-coordinator paused follower stopped so one node can continue catching up. Do not enable automatic clean restore unless the current snapshots are known safe and replacing live chain data is explicitly intended.
+The watchdog writes `ops/runtime/dirty-shutdown.marker` while it is running and clears it on a clean stop. If the host loses power, the marker remains; the boot-repair unit preserves current node data and starts the stack. Do not enable automatic clean restore unless the current snapshots are known safe and replacing live chain data is explicitly intended.
 
 ## Remote Access
 

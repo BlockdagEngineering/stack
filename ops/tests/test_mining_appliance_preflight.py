@@ -36,7 +36,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         self.assertEqual(env["BDAG_NODE_CACHE_MB"], "1024")
         self.assertEqual(env["EMPTY"], "")
 
-    def test_constrained_env_warnings_for_double_node_and_large_cache(self) -> None:
+    def test_constrained_env_warnings_for_unsupported_node_mode_and_large_cache(self) -> None:
         profile = preflight.HostProfile(
             os_name="linux",
             arch="x86_64",
@@ -49,7 +49,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         preflight.check_env_defaults(
             checks,
             {
-                "BDAG_NODE_MODE": "double",
+                "BDAG_NODE_MODE": "unsupported",
                 "BDAG_NODE_CACHE_MB": "4096",
                 "NODE_MAX_PEERS": "512",
                 "BDAG_FASTSYNC_PREPROCESS_WORKERS": "4",
@@ -123,30 +123,6 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         found = {check.name: check for check in checks}
         self.assertEqual(found["fastartifactsync"].status, "fail")
 
-    def test_constrained_mining_profile_rejects_snapshot_fastartifact_append_override(self) -> None:
-        profile = preflight.HostProfile(
-            os_name="linux",
-            arch="aarch64",
-            cpu_count=4,
-            memory_bytes=8 * preflight.GIB,
-            profile="constrained",
-            kernel="test",
-        )
-        checks = []
-        preflight.check_env_defaults(
-            checks,
-            {
-                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
-                "BDAG_STORAGE_PROFILE": "single-usb-constrained",
-                "BDAG_DETECTED_NETWORK_TOPOLOGY": "single-node-asic-router",
-                "SNAPSHOT_NODE_ARGS_APPEND": "--fastartifactsync",
-            },
-            profile,
-        )
-
-        found = {check.name: check for check in checks}
-        self.assertEqual(found["fastartifactsync"].status, "fail")
-
     def test_constrained_mining_profile_accepts_no_fastsync_serve_policy(self) -> None:
         profile = preflight.HostProfile(
             os_name="linux",
@@ -204,15 +180,14 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         found = {check.name: check for check in checks}
         self.assertEqual(found["usb_mining_fastsync_serving"].status, "fail")
 
-    def test_single_node_duplicate_data_detection(self) -> None:
+    def test_single_node_data_layout_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "data" / "node1" / "mainnet" / "BdagChain").mkdir(parents=True)
-            (root / "data" / "node2" / "mainnet" / "BdagChain").mkdir(parents=True)
             checks = []
             preflight.check_node_data_layout(checks, root, {"BDAG_NODE_MODE": "single"})
         found = {check.name: check.status for check in checks}
-        self.assertEqual(found["single_node_duplicate_data"], "warn")
+        self.assertEqual(found["single_node_data_layout"], "pass")
 
     def test_compose_bind_mount_overrides_default_data_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -239,9 +214,9 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 "\n".join(
                     [
                         "services:",
-                        "  snapshot-node:",
+                        "  node:",
                         "    volumes:",
-                        "      - snapshot-node-data:/var/lib/bdagStack/node",
+                        "      - node-data:/var/lib/bdagStack/node",
                     ]
                 ),
                 encoding="utf-8",
@@ -316,7 +291,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 {
                     "BDAG_STORAGE_PROFILE": "auto",
                     "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
-                    "BDAG_NODE2_DATA_DIR": "/mnt/usb/blockdag-chain/node2",
+                    "BDAG_NODE1_DATA_DIR": "/mnt/usb/blockdag-chain/node1",
                     "BDAG_POSTGRES_DATA_DIR": "/opt/blockdag-pool/runtime-data/postgres",
                     "BDAG_RUNTIME_DIR": "/opt/blockdag-pool/runtime-data/ops-runtime",
                 },
@@ -351,7 +326,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 {
                     "BDAG_STORAGE_PROFILE": "usb-chain-internal-runtime",
                     "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
-                    "BDAG_NODE2_DATA_DIR": "/mnt/usb/blockdag-chain/node2",
+                    "BDAG_NODE1_DATA_DIR": "/mnt/usb/blockdag-chain/node1",
                     "BDAG_POSTGRES_DATA_DIR": "/mnt/usb/blockdag-chain/runtime/postgres",
                     "BDAG_RUNTIME_DIR": "/mnt/usb/blockdag-chain/runtime/ops-runtime",
                 },
@@ -390,7 +365,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 {
                     "BDAG_STORAGE_PROFILE": "auto",
                     "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
-                    "BDAG_NODE2_DATA_DIR": "/mnt/usb/blockdag-chain/node2",
+                    "BDAG_NODE1_DATA_DIR": "/mnt/usb/blockdag-chain/node1",
                     "BDAG_POSTGRES_DATA_DIR": "/mnt/usb/runtime/postgres",
                     "BDAG_RUNTIME_DIR": "/mnt/usb/runtime/ops-runtime",
                 },
