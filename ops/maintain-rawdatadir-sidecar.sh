@@ -26,6 +26,7 @@ DELETE_MODE="${BDAG_RAWDATADIR_SIDECAR_DELETE:-1}"
 BWLIMIT="${BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT:-}"
 USE_SUDO="${BDAG_RAWDATADIR_SIDECAR_USE_SUDO:-auto}"
 SIDECAR_MODE="${BDAG_RAWDATADIR_SIDECAR_MODE:-${BDAG_RAWDATADIR_SOURCE_MODE:-auto}}"
+SYNC_SOURCE_NODE_MODE="${SYNC_SOURCE_NODE:-}"
 FINAL_STOPPED_SYNC="${BDAG_RAWDATADIR_SIDECAR_FINAL_STOPPED_SYNC:-0}"
 CONTENT_MODE="${BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE:-auto}"
 CONTENT_SCRIPT="$PROJECT_ROOT/ops/seal_rawdatadir_sidecar_content.py"
@@ -92,6 +93,12 @@ case "${SIDECAR_MODE,,}" in
     exit 0
     ;;
 esac
+case "${SYNC_SOURCE_NODE_MODE,,}" in
+  0|false|no|off|disabled)
+    log "raw datadir sidecar sync disabled by SYNC_SOURCE_NODE=$SYNC_SOURCE_NODE_MODE"
+    exit 0
+    ;;
+esac
 
 case "${FINAL_STOPPED_SYNC,,}" in
   1|true|yes|on)
@@ -120,7 +127,8 @@ esac
 # A sidecar refresh is not a public source/publish decision. Keep retrying the
 # low-priority copy after mining pressure clears, but still refuse unsafe
 # storage/topology conditions such as USB/removable paths or insufficient space.
-if ! BDAG_RAWDATADIR_SOURCE_MODE="$SIDECAR_MODE" \
+if ! SYNC_SOURCE_NODE="${SYNC_SOURCE_NODE_MODE:-0}" \
+  BDAG_RAWDATADIR_SOURCE_MODE="$SIDECAR_MODE" \
   BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH="$eligibility_require_evm_reference_fresh" \
   "$PROJECT_ROOT/ops/fastartifact_source_eligibility.py" --status-file "$STATUS_FILE" >/dev/null; then
   log "raw datadir sidecar safety check deferred sync; see $STATUS_FILE"

@@ -188,6 +188,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         self.assertIn("disabled_constrained_fastartifact", repair["actions"])
         self.assertEqual(env_updates["BDAG_FASTARTIFACTSYNC_ENABLED"], "0")
+        self.assertEqual(env_updates["SYNC_SOURCE_NODE"], "0")
         self.assertEqual(env_updates["BDAG_NO_FASTSYNC_SERVE"], "1")
         self.assertEqual(env_updates["NODE_ARGS_APPEND"], "")
         self.assertTrue(any("--force-recreate" in command for command in commands))

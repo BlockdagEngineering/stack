@@ -468,14 +468,15 @@ def check_storage(checks: list[Check], root: Path, env: dict[str, str], profile:
     mining_appliance = (
         mining_address and mining_address.lower() != ZERO_ETH_ADDRESS
     ) or topology == "single-node-asic-router"
-    no_fastsync_serve = bool_enabled(env.get("BDAG_NO_FASTSYNC_SERVE", "auto"), True)
-    if usb_chain_data and mining_appliance and not no_fastsync_serve:
+    sync_source_node = bool_enabled(env.get("SYNC_SOURCE_NODE"), False)
+    no_fastsync_serve = not sync_source_node
+    if usb_chain_data and mining_appliance and sync_source_node:
         add(
             checks,
             "fail",
             "usb_mining_fastsync_serving",
             "USB-backed mining node is configured to serve bulk FastSync data.",
-            "Set BDAG_NO_FASTSYNC_SERVE=auto or 1 so the node can consume sync and relay blocks without serving range, snapshot, or artifact traffic from USB while mining.",
+            "Set SYNC_SOURCE_NODE=0 so the node can consume sync and relay blocks without serving range, snapshot, or artifact traffic from USB while mining.",
             evidence,
         )
     elif usb_chain_data and mining_appliance:
@@ -694,6 +695,7 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         "BDAG_NODE_CACHE_MB": env.get("BDAG_NODE_CACHE_MB"),
         "NODE_MAX_PEERS": env.get("NODE_MAX_PEERS"),
         "BDAG_FASTSYNC_PREPROCESS_WORKERS": env.get("BDAG_FASTSYNC_PREPROCESS_WORKERS"),
+        "SYNC_SOURCE_NODE": env.get("SYNC_SOURCE_NODE"),
         "BDAG_NO_FASTSYNC_SERVE": env.get("BDAG_NO_FASTSYNC_SERVE"),
         "BDAG_FASTARTIFACTSYNC_ENABLED": env.get("BDAG_FASTARTIFACTSYNC_ENABLED"),
         "BDAG_STORAGE_PROFILE": env.get("BDAG_STORAGE_PROFILE"),
@@ -740,9 +742,10 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     node_args_append_enables_fastartifact = node_args_enable_fastartifact(env.get("NODE_ARGS_APPEND"))
     evidence["NODE_ARGS_APPEND"] = env.get("NODE_ARGS_APPEND")
     append_args_enable_fastartifact = node_args_append_enables_fastartifact
-    no_fastsync_serve = bool_enabled(env.get("BDAG_NO_FASTSYNC_SERVE", "auto"), True)
+    sync_source_node = bool_enabled(env.get("SYNC_SOURCE_NODE"), False)
+    no_fastsync_serve = not sync_source_node
     if constrained_mining_profile and no_fastsync_serve and append_args_enable_fastartifact:
-        add(checks, "fail", "fastartifactsync", "BDAG_NO_FASTSYNC_SERVE suppresses serving, but node args still add --fastartifactsync.", "Clear NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
+        add(checks, "fail", "fastartifactsync", "SYNC_SOURCE_NODE=0 suppresses serving, but node args still add --fastartifactsync.", "Clear NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
     elif constrained_mining_profile and not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True) and append_args_enable_fastartifact:
         add(checks, "fail", "fastartifactsync", "BDAG_FASTARTIFACTSYNC_ENABLED is disabled, but node args still add --fastartifactsync.", "Clear NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
     elif constrained_mining_profile and no_fastsync_serve:

@@ -136,7 +136,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         preflight.check_env_defaults(
             checks,
             {
-                "BDAG_NO_FASTSYNC_SERVE": "auto",
+                "SYNC_SOURCE_NODE": "0",
                 "BDAG_FASTARTIFACTSYNC_ENABLED": "1",
                 "BDAG_STORAGE_PROFILE": "single-usb-constrained",
                 "BDAG_DETECTED_NETWORK_TOPOLOGY": "single-node-asic-router",
@@ -147,7 +147,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         found = {check.name: check for check in checks}
         self.assertEqual(found["fastartifactsync"].status, "pass")
 
-    def test_usb_chain_mining_source_requires_no_fastsync_serve(self) -> None:
+    def test_usb_chain_mining_source_rejects_sync_source_node(self) -> None:
         old_mount_info = preflight.mount_info
         old_is_usb_source = preflight.is_usb_source
 
@@ -168,7 +168,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 {
                     "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
                     "BDAG_NETWORK_TOPOLOGY": "single-node-asic-router",
-                    "BDAG_NO_FASTSYNC_SERVE": "0",
+                    "SYNC_SOURCE_NODE": "1",
                     "MINING_ADDRESS": "0x1111111111111111111111111111111111111111",
                 },
                 profile,

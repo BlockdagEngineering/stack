@@ -625,6 +625,7 @@ def repair_fastsync_orphan_peers(payload: dict[str, Any]) -> bool:
 
 def repair_constrained_fastartifact(payload: dict[str, Any]) -> bool:
     changed_paths = set_runtime_env_value("BDAG_FASTARTIFACTSYNC_ENABLED", "0")
+    changed_paths.extend(set_runtime_env_value("SYNC_SOURCE_NODE", "0"))
     changed_paths.extend(set_runtime_env_value("BDAG_NO_FASTSYNC_SERVE", "1"))
     changed_paths.extend(set_runtime_env_value("NODE_ARGS_APPEND", ""))
     ok, node_results = recreate_node_services()

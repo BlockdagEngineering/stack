@@ -92,10 +92,11 @@ install_fastsnap_seed_timer() {
 }
 
 install_rawdatadir_source_timer() {
-  local mode
+  local source_node mode
+  source_node="$(env_value SYNC_SOURCE_NODE 0)"
   mode="$(env_value BDAG_RAWDATADIR_SOURCE_MODE auto)"
-  if [[ "$mode" =~ ^(0|false|no|off|disabled)$ ]]; then
-    warn "Raw datadir FastArtifact source disabled by BDAG_RAWDATADIR_SOURCE_MODE=$mode"
+  if [[ "$source_node" =~ ^(0|false|no|off|disabled)$ ]]; then
+    warn "Raw datadir FastArtifact source disabled by SYNC_SOURCE_NODE=$source_node"
     return 0
   fi
   if [[ ! -x "$ROOT/ops/fastartifact_source_eligibility.py" || ! -x "$ROOT/ops/maintain-rawdatadir-sidecar.sh" || ! -x "$ROOT/ops/verify-rawdatadir-sidecar.py" || ! -x "$ROOT/ops/publish-rawdatadir-artifact.sh" ]]; then
@@ -126,6 +127,7 @@ install_rawdatadir_source_timer() {
 BDAG_PROJECT_ROOT=$ROOT
 BDAG_ENV_FILE=$ROOT/.env
 BDAG_COMPOSE_FILE=$ROOT/docker-compose.yml
+SYNC_SOURCE_NODE=$source_node
 BDAG_RAWDATADIR_SOURCE_MODE=$mode
 BDAG_RAWDATADIR_NETWORK=$network
 BDAG_RAWDATADIR_SINGLE_NODE_SERVICE=$active_service
@@ -155,6 +157,7 @@ EOF
   current_manifest="$artifact_base/current/manifest.json"
 
   if [[ "$eligible" == "true" ]]; then
+    set_env_value "$ROOT/.env" SYNC_SOURCE_NODE "$source_node"
     set_env_value "$ROOT/.env" BDAG_RAWDATADIR_SOURCE_MODE "$mode"
     set_env_value "$ROOT/.env" BDAG_RAWDATADIR_ARTIFACT_BASE "$artifact_base"
     if [[ -f "$current_manifest" && ! -f "$artifact_base/current/DO_NOT_PUBLISH.txt" && ! -f "$artifact_base/current/DO_NOT_PUBLISH" ]]; then
