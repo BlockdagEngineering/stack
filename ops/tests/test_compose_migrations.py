@@ -10,63 +10,15 @@ import compose_migrations  # noqa: E402
 
 
 class RuntimeComposeMigrationTests(unittest.TestCase):
-    def test_inserts_duplicate_safe_flag_into_generated_pool_services(self) -> None:
-        compose = """# BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1
-services:
-  asic-pool:
-    image: pool
-    environment:
-      NODE_RPC_URL: http://rpc-failover:38131
-      NODE_RPC_URLS: http://rpc-failover:38131
-      NODE_RPC_USER: ${NODE_RPC_USER:-test}
-  asic-pool-hector:
-    image: pool
-    environment:
-      NODE_RPC_URL: http://rpc-failover:38131
-      NODE_RPC_URLS: http://rpc-failover:38131
-      NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
-  bdag-miner-node-1:
-    image: node
-    environment:
-      NODE_RPC_URLS: unused
-"""
-
-        result = compose_migrations.ensure_duplicate_safe_submit_flag(compose)
-
-        self.assertTrue(result.changed)
-        self.assertEqual(2, result.inserted_count)
-        self.assertIn(
-            "      NODE_RPC_URLS: http://rpc-failover:38131\n"
-            "      POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: ${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}\n"
-            "      NODE_RPC_USER:",
-            result.text,
-        )
-        self.assertNotIn("bdag-miner-node-1:\n    image: node\n    environment:\n      POOL_DUPLICATE", result.text)
-
-    def test_existing_duplicate_safe_flag_is_noop(self) -> None:
-        compose = """services:
-  asic-pool:
-    environment:
-      NODE_RPC_URLS: http://rpc-failover:38131
-      POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: ${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}
-"""
-
-        result = compose_migrations.ensure_duplicate_safe_submit_flag(compose)
-
-        self.assertFalse(result.changed)
-        self.assertEqual(0, result.inserted_count)
-        self.assertEqual(compose, result.text)
-
     def test_adds_submit_hardening_flags_to_each_existing_pool_service(self) -> None:
         compose = """services:
   asic-pool:
     environment:
-      NODE_RPC_URLS: http://rpc-failover:38131
-      POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: ${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}
+      NODE_RPC_URLS: http://bdag-miner-node-1:38131
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
   asic-pool-hector:
     environment:
-      NODE_RPC_URLS: http://rpc-failover:38131
+      NODE_RPC_URLS: http://bdag-miner-node-1:38131
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
   bdag-miner-node-1:
     environment:
@@ -76,9 +28,8 @@ services:
         result = compose_migrations.ensure_pool_submit_hardening_flags(compose)
 
         self.assertTrue(result.changed)
-        self.assertEqual(7, result.inserted_count)
+        self.assertEqual(6, result.inserted_count)
         self.assertIn(
-            "      POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: ${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}\n"
             "      POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}\n"
             "      POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}\n"
             "      POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD: ${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}\n"
@@ -88,8 +39,7 @@ services:
         self.assertIn(
             "  asic-pool-hector:\n"
             "    environment:\n"
-            "      NODE_RPC_URLS: http://rpc-failover:38131\n"
-            "      POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: ${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}\n"
+            "      NODE_RPC_URLS: http://bdag-miner-node-1:38131\n"
             "      POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}\n"
             "      POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}\n"
             "      POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD: ${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}\n"
@@ -107,8 +57,7 @@ services:
         compose = """services:
   asic-pool:
     environment:
-      NODE_RPC_URLS: http://rpc-failover:38131
-      POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT: ${POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT:-true}
+      NODE_RPC_URLS: http://bdag-miner-node-1:38131
       POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}
       POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}
       POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD: ${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}
@@ -127,11 +76,10 @@ services:
       NODE_RPC_URLS: unused
 """
 
-        result = compose_migrations.ensure_duplicate_safe_submit_flag(compose)
+        result = compose_migrations.ensure_pool_submit_hardening_flags(compose)
 
         self.assertFalse(result.changed)
         self.assertEqual(0, result.inserted_count)
-        self.assertNotIn("POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT", result.text)
 
 
 if __name__ == "__main__":

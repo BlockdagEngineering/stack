@@ -25,11 +25,9 @@ SYNC_COORDINATOR_STATE_FILE = RUNTIME_DIR / "sync-coordinator-state.json"
 DEFERRED_APPLY_FILE = RUNTIME_DIR / "local-peers-deferred-apply"
 NODE_SPECS = {
     "bdag-miner-node-1": {"port": 8151, "env": "NODE1_PEER_ADDRESSES"},
-    "bdag-miner-node-2": {"port": 8152, "env": "NODE2_PEER_ADDRESSES"},
 }
 NODE_PEER_ID_ENV = {
     "bdag-miner-node-1": ("BDAG_LOCAL_NODE1_PEER_ID", "BDAG_NODE1_PEER_ID"),
-    "bdag-miner-node-2": ("BDAG_LOCAL_NODE2_PEER_ID", "BDAG_NODE2_PEER_ID"),
 }
 PEER_RE = re.compile(r"Node started p2p server.*?/p2p/([A-Za-z0-9]+)")
 ADDR_RE = re.compile(r"/ip4/[^,\s]+/tcp/(\d+)/p2p/([A-Za-z0-9]+)")
@@ -66,7 +64,6 @@ GENERIC_PEER_KEYS = (
     "BDAG_FASTSNAP_PEERS",
     "LOCAL_PEER_ADDRESSES",
     "NODE1_PEER_ADDRESSES",
-    "NODE2_PEER_ADDRESSES",
 )
 
 
@@ -618,19 +615,6 @@ def active_mining_recreate_guard_reason() -> str:
     )
 
 
-def planned_paused_follower() -> str:
-    try:
-        state = json.loads(SYNC_COORDINATOR_STATE_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return ""
-    if not isinstance(state, dict):
-        return ""
-    paused = str(state.get("paused_follower") or "")
-    if state.get("mode") == "leader_catchup" and paused in NODE_SPECS:
-        return paused
-    return ""
-
-
 def configured_active_nodes(pool_values: dict[str, str]) -> list[str]:
     runtime_values = read_env_values(RUNTIME_ENV_FILE)
     raw = (
@@ -639,9 +623,10 @@ def configured_active_nodes(pool_values: dict[str, str]) -> list[str]:
         or pool_values.get("BDAG_NODE_SERVICES")
         or ""
     )
+    if not raw:
+        return list(NODE_SPECS)
     nodes = [item.strip() for item in raw.split(",") if item.strip()]
-    active = [node for node in nodes if node in NODE_SPECS]
-    return active or list(NODE_SPECS)
+    return [node for node in nodes if node in NODE_SPECS]
 
 
 def main() -> int:
@@ -660,7 +645,6 @@ def main() -> int:
     topology = detect_network_topology(values)
     peer_candidates = p2p_peer_candidates(values)
     candidate_peers = peer_candidates.peers
-    paused = planned_paused_follower()
     host_ip = choose_local_ip(args.host_ip, values)
 
     fallback_peers = fallback_peer_ids(values)
@@ -694,23 +678,7 @@ def main() -> int:
             active_nodes,
             host_ip,
         )
-        if "bdag-miner-node-2" in active_nodes and paused != "bdag-miner-node-2" and "bdag-miner-node-2" in local_addrs:
-            node1_peers.insert(0, local_addrs["bdag-miner-node-2"])
         updates["NODE1_PEER_ADDRESSES"] = unique_csv(node1_peers)
-    if "bdag-miner-node-2" in active_nodes:
-        node2_peers = without_inactive_local_node_peers(
-            without_peer_ids(
-                list(candidate_peers),
-                inactive_local_peer_ids | {peers.get("bdag-miner-node-2", "")},
-            ),
-            active_nodes,
-            host_ip,
-        )
-        if "bdag-miner-node-1" in active_nodes and paused != "bdag-miner-node-1" and "bdag-miner-node-1" in local_addrs:
-            node2_peers.insert(0, local_addrs["bdag-miner-node-1"])
-        updates["NODE2_PEER_ADDRESSES"] = unique_csv(node2_peers)
-    elif "NODE2_PEER_ADDRESSES" in values:
-        updates["NODE2_PEER_ADDRESSES"] = ""
     if local_addrs:
         updates["LOCAL_PEER_ADDRESSES"] = unique_csv([local_addrs[node] for node in active_nodes if node in local_addrs])
     for node, peer_id in peers.items():
@@ -756,14 +724,9 @@ def main() -> int:
     print(f"host_ip={host_ip}")
     print(f"network_topology={topology}")
     print(f"active_nodes={','.join(active_nodes)}")
-    print(f"p2p_candidates={len(candidate_peers)} remote_p2p_candidates={len(remote_candidate_peers)} rejected_non_p2p={len(peer_candidates.rejected_non_p2p)} paused_follower={paused or 'none'}")
+    print(f"p2p_candidates={len(candidate_peers)} remote_p2p_candidates={len(remote_candidate_peers)} rejected_non_p2p={len(peer_candidates.rejected_non_p2p)}")
     for node, addr in local_addrs.items():
         print(f"{node}={addr}")
-
-    if paused and args.apply and not args.force_apply:
-        write_deferred_apply(f"sync coordinator paused {paused}; apply local peers after leader catch-up")
-        print(f"deferring container recreation while {paused} is paused for leader catch-up")
-        return 0
 
     apply_needed = args.force_apply or (args.apply and (changed or DEFERRED_APPLY_FILE.exists()))
     if args.apply and not args.force_apply and apply_needed:
@@ -779,11 +742,7 @@ def main() -> int:
         print("not recreating active node automatically in single-node mode; use --force-apply for an explicit restart")
         return 0
     if apply_needed:
-        paused = planned_paused_follower()
         for node in active_nodes:
-            if node == paused:
-                print(f"skipping {node}; sync coordinator has it paused for leader catch-up")
-                continue
             print(f"recreating {node} to apply local peers")
             run([
                 "docker",

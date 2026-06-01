@@ -48,7 +48,7 @@ class ChainRpcResilienceTests(unittest.TestCase):
 
         pool_ops.mining_rpc_call = fake_rpc
 
-        snapshot = pool_ops.node_chain_rpc_snapshot("node2", "http://node2:38131", timeout=8.0)
+        snapshot = pool_ops.node_chain_rpc_snapshot("node1", "http://node1:38131", timeout=8.0)
 
         self.assertEqual(snapshot["chain_rpc_error"], "")
         self.assertEqual(snapshot["chain_block_count"], 8656586)
@@ -69,7 +69,7 @@ class ChainRpcResilienceTests(unittest.TestCase):
 
         pool_ops.mining_rpc_call = fake_rpc
 
-        progress = pool_ops.node_sync_progress("node2", "http://node2:38131", timeout=8.0)
+        progress = pool_ops.node_sync_progress("node1", "http://node1:38131", timeout=8.0)
 
         self.assertEqual(progress["status"], "unknown")
         self.assertEqual(progress["chain_rpc_attempts"], 2)
@@ -167,7 +167,7 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.assertEqual(stale["last_rpc_refused_age_seconds"], 300)
 
     def test_no_miner_sync_noise_includes_template_and_stale_rpc_noise(self) -> None:
-        self.assertTrue(pool_ops.is_no_miner_sync_noise("bdag-miner-node-2 is refusing live mining template probes"))
+        self.assertTrue(pool_ops.is_no_miner_sync_noise("bdag-miner-node-1 is refusing live mining template probes"))
         self.assertTrue(pool_ops.is_no_miner_sync_noise("pool recently saw RPC connection refused"))
         self.assertTrue(pool_ops.is_no_miner_sync_noise("pool is waiting for node sync to finish"))
         self.assertFalse(pool_ops.is_no_miner_sync_noise("pool has not accepted a valid share"))

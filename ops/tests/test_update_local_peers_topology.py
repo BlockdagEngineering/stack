@@ -145,7 +145,7 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
 
     def test_single_active_node_does_not_add_itself_as_a_peer(self) -> None:
         peers = [
-            "/ip4/192.168.68.60/tcp/8152/p2p/localNode2",
+            "/ip4/192.168.68.60/tcp/8151/p2p/localSelf",
             "/ip4/10.207.244.12/tcp/8152/p2p/remoteVpn",
             "/ip4/13.245.135.249/tcp/18150/p2p/publicSeed",
         ]
@@ -155,22 +155,22 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
                 "/ip4/10.207.244.12/tcp/8152/p2p/remoteVpn",
                 "/ip4/13.245.135.249/tcp/18150/p2p/publicSeed",
             ],
-            update_local_peers.without_peer_ids(peers, {"localNode2"}),
+            update_local_peers.without_peer_ids(peers, {"localSelf"}),
         )
 
-    def test_single_active_node_drops_inactive_local_node_addrs(self) -> None:
+    def test_single_active_node_keeps_configured_local_node_addrs(self) -> None:
         old_local_ipv4_addresses = update_local_peers.local_ipv4_addresses
         try:
             update_local_peers.local_ipv4_addresses = lambda: ["192.168.1.120", "10.207.244.12"]
             peers = [
-                "/ip4/192.168.1.120/tcp/8152/p2p/oldLocalNode2",
-                "/ip4/10.207.244.12/tcp/8152/p2p/oldLocalNode2Vpn",
-                "/dns4/bdag-miner-node-2/tcp/8152/p2p/oldLocalNode2Dns",
+                "/ip4/192.168.1.120/tcp/8151/p2p/oldLocalSelf",
+                "/ip4/10.207.244.12/tcp/8151/p2p/oldLocalVpn",
+                "/dns4/bdag-miner-node-1/tcp/8151/p2p/oldLocalDns",
                 "/ip4/10.207.244.83/tcp/8152/p2p/remoteNode",
             ]
 
             self.assertEqual(
-                ["/ip4/10.207.244.83/tcp/8152/p2p/remoteNode"],
+                peers,
                 update_local_peers.without_inactive_local_node_peers(
                     peers,
                     ["bdag-miner-node-1"],

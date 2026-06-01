@@ -193,7 +193,7 @@ no_miner_mode() {
 
 if sync_priority_mode; then
   say "sync-priority-mode: active"
-  for container in bdag-miner-node-1 bdag-miner-node-2 node; do
+  for container in bdag-miner-node-1 node; do
     boost_container "${container}" -15 0 8192 1000 -950
   done
 
@@ -207,9 +207,6 @@ if sync_priority_mode; then
       idle_container "${container}" 10 256 100 200
     done
 
-    for container in rpc-failover; do
-      idle_container "${container}" 10 256 100 200
-    done
   else
     for container in asic-pool pool; do
       boost_container "${container}" -5 1 2048 700 -700
@@ -219,12 +216,9 @@ if sync_priority_mode; then
       boost_container "${container}" -5 1 2048 700 -700
     done
 
-    for container in rpc-failover; do
-      boost_container "${container}" -5 1 2048 700 -700
-    done
   fi
 else
-  for container in bdag-miner-node-1 bdag-miner-node-2 node; do
+  for container in bdag-miner-node-1 node; do
     boost_container "${container}" -10 0 4096 1000 -900
   done
 
@@ -236,9 +230,6 @@ else
     boost_container "${container}" -8 0 3072 900 -800
   done
 
-  for container in rpc-failover; do
-    boost_container "${container}" -5 1 2048 800 -700
-  done
 fi
 
 critical_system_pids="$(

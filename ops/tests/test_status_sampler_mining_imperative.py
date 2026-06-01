@@ -190,7 +190,6 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertEqual(env_updates["BDAG_FASTARTIFACTSYNC_ENABLED"], "0")
         self.assertEqual(env_updates["BDAG_NO_FASTSYNC_SERVE"], "1")
         self.assertEqual(env_updates["NODE_ARGS_APPEND"], "")
-        self.assertEqual(env_updates["SNAPSHOT_NODE_ARGS_APPEND"], "")
         self.assertTrue(any("--force-recreate" in command for command in commands))
 
     def test_enables_node_mining_template_support_when_miner_is_present(self) -> None:

@@ -10,7 +10,7 @@
     "repo": "pool-stack-docker",
     "priority": "P0 production hardening",
     "goal": "Favor paid block production during CPU, RAM, and disk I/O contention without hard-capping useful idle capacity.",
-    "critical_services": ["selected mining node", "asic-pool", "postgres", "rpc-failover"],
+    "critical_services": ["mining node", "asic-pool", "postgres"],
     "deprioritized_services": ["observability", "dashboard", "release seeding", "browser/desktop background work", "snapshots", "presync"],
     "implementation_files": [
       "ops/apply-mining-host-tuning.sh",
@@ -36,26 +36,24 @@
 <body>
 <main>
   <h1>Mining Resource Priority Policy</h1>
-  <p>This policy makes the mining critical path win local contention while keeping the system work-conserving. Idle CPU and I/O can still be used by dashboards and maintenance jobs, but when the pool, selected node, database, or RPC router need resources, they take priority.</p>
+  <p>This policy makes the mining critical path win local contention while keeping the system work-conserving. Idle CPU and I/O can still be used by dashboards and maintenance jobs, but when the pool, active node, or database need resources, they take priority.</p>
 
   <div class="grid">
     <section class="card"><div class="label">Critical Path</div><div class="value ok">paid blocks</div></section>
-    <section class="card"><div class="label">Routing Model</div><div class="value">active/passive</div></section>
+    <section class="card"><div class="label">Backend Model</div><div class="value">single active node</div></section>
     <section class="card"><div class="label">Timer</div><div class="value">5 minutes</div></section>
     <section class="card"><div class="label">Avoided Risk</div><div class="value warn">stale work</div></section>
   </div>
 
   <h2>Why</h2>
   <p>BlockDAG mining runs on roughly one-second block cadence. Any avoidable local latency in template selection, Stratum job broadcast, submit handling, database writes, or peer propagation can turn solved work into stale, duplicate, overdue, or non-paying blocks.</p>
-  <p>Earlier live testing showed active/active template competition could reduce miner-normalized accepted block output by about 11-13%. The correct production shape is dual nodes for redundancy, one active canonical template lane, and fast failover only when the active lane degrades.</p>
+  <p>Earlier live testing showed active/active template competition could reduce miner-normalized accepted block output by about 11-13%. The correct production shape is one canonical template lane and aggressive validation before the pool resumes mining.</p>
 
   <h2>Policy</h2>
   <table>
     <tr><th>Class</th><th>Examples</th><th>Runtime Treatment</th></tr>
-    <tr><td>Active mining lane</td><td>Selected <code>bdag-miner-node-1</code> or <code>bdag-miner-node-2</code></td><td>Highest Docker CPU/blkio weight, highest process priority, best-effort I/O priority 0.</td></tr>
+    <tr><td>Active mining lane</td><td><code>bdag-miner-node-1</code></td><td>Highest Docker CPU/blkio weight, highest process priority, best-effort I/O priority 0.</td></tr>
     <tr><td>Pool and accounting</td><td><code>asic-pool</code>, <code>pool-db</code>, Postgres worker processes</td><td>High Docker CPU/blkio weight, elevated process priority, best-effort I/O priority 0.</td></tr>
-    <tr><td>RPC path</td><td><code>rpc-failover</code></td><td>Medium-high Docker CPU/blkio weight, elevated process priority.</td></tr>
-    <tr><td>Standby node</td><td>Healthy non-selected mining node</td><td>Protected but lower than active lane, preserving fast failover without competing for the active template path.</td></tr>
     <tr><td>Observability and support</td><td>Grafana, Prometheus, Loki, exporters, dashboard, release seeder, snapshots, browser</td><td>Low CPU/IO weights or idle I/O so they yield under contention.</td></tr>
   </table>
 

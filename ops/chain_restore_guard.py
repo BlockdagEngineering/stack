@@ -153,7 +153,8 @@ def published_snapshot_info(now: int) -> dict[str, Any]:
 def stage_info(now: int) -> dict[str, Any]:
     root = SNAPSHOT_ROOT / ".hourly-stage"
     result: dict[str, Any] = {}
-    for node in ("node1", "node2"):
+    nodes = [item.strip() for item in os.environ.get("BDAG_CHAIN_RESTORE_STAGE_NODES", "node1").split(",") if item.strip()]
+    for node in nodes:
         path = root / node
         mtime = newest_file_mtime(path)
         result[node] = {

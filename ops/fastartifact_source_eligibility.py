@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -129,12 +130,50 @@ def json_rpc_quantity(url: str, method: str, timeout: float = 5.0) -> int:
     raise ValueError(f"{method} returned no quantity")
 
 
+def docker_container_ip(service: str) -> str:
+    if not service or not shutil.which("docker"):
+        return ""
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}", service],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip().splitlines()[0].strip() if result.stdout.strip() else ""
+
+
+def local_evm_rpc_candidates(env: dict[str, str], local_url: str) -> list[str]:
+    candidates = [local_url]
+    parsed = urllib.parse.urlsplit(local_url)
+    if parsed.scheme not in {"http", "https"}:
+        return candidates
+    if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        return candidates
+    container_ip = docker_container_ip(active_node_service(env))
+    if not container_ip:
+        return candidates
+    netloc = container_ip
+    if parsed.port:
+        netloc = f"{container_ip}:{parsed.port}"
+    fallback = urllib.parse.urlunsplit((parsed.scheme, netloc, parsed.path or "/", parsed.query, parsed.fragment))
+    if fallback not in candidates:
+        candidates.append(fallback)
+    return candidates
+
+
 def source_evm_sync_sample(env: dict[str, str]) -> dict[str, Any]:
     local_url = env.get("BDAG_RAWDATADIR_EVM_RPC_URL") or env.get("BDAG_EVM_RPC_URL") or "http://127.0.0.1:18545"
     max_lag = as_int(env.get("BDAG_RAWDATADIR_MAX_EVM_REFERENCE_LAG") or env.get("BDAG_AUTOPUBLISH_EVM_LAG_LIMIT"), 1000)
     timeout = as_float(env.get("BDAG_RAWDATADIR_EVM_REFERENCE_TIMEOUT_SECONDS"), 5.0)
     payload: dict[str, Any] = {
         "local_evm_rpc_url": local_url,
+        "local_evm_rpc_candidates": [],
         "local_evm_block": None,
         "reference_source": "",
         "reference_url": "",
@@ -144,12 +183,18 @@ def source_evm_sync_sample(env: dict[str, str]) -> dict[str, Any]:
         "fresh": False,
         "errors": [],
     }
-    try:
-        local_block = json_rpc_quantity(local_url, "eth_blockNumber", timeout=timeout)
-    except Exception as exc:  # noqa: BLE001 - eligibility reports source failures.
-        payload["errors"].append(f"local-evm: {exc}")
+    for candidate_url in local_evm_rpc_candidates(env, local_url):
+        payload["local_evm_rpc_candidates"].append(candidate_url)
+        try:
+            local_block = json_rpc_quantity(candidate_url, "eth_blockNumber", timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - try each local candidate.
+            payload["errors"].append(f"local-evm:{candidate_url}: {exc}")
+            continue
+        payload["local_evm_rpc_url"] = candidate_url
+        payload["local_evm_block"] = local_block
+        break
+    else:
         return payload
-    payload["local_evm_block"] = local_block
 
     best: tuple[str, str, int] | None = None
     for source, url in evm_reference_urls(env):
@@ -327,8 +372,6 @@ def env_path(env: dict[str, str], key: str, default: str | Path) -> Path:
 def node_data_dir(env: dict[str, str], service: str) -> Path:
     if service.endswith("node-1") or service == "node1":
         return env_path(env, "BDAG_NODE1_DATA_DIR", "./data/node1")
-    if service.endswith("node-2") or service == "node2":
-        return env_path(env, "BDAG_NODE2_DATA_DIR", "./data/node2")
     return env_path(env, "BDAG_NODE_DATA_DIR", env.get("BDAG_DATA_DIR") or "./data/node")
 
 

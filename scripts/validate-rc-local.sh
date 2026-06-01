@@ -42,8 +42,10 @@ PY
 
 copy_source_tree
 cd "$TMP_SOURCE"
+python3 scripts/secret-scan-tracked-files.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m compileall -q ops scripts
 BDAG_RUNTIME_DIR="$TMP_RUNTIME/runtime" PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s ops/tests -p 'test_*.py'
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/release_readiness_check_test.py
 python3 scripts/check-doc-consistency.py
 find "$TMP_SOURCE/ops" "$TMP_SOURCE/scripts" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 find "$TMP_SOURCE/ops" "$TMP_SOURCE/scripts" -name '*.pyc' -delete 2>/dev/null || true

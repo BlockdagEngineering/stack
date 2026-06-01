@@ -1,7 +1,7 @@
 # Mining Appliance Optimization
 
 This repo ships defaults for dedicated BlockDAG mining hosts. They are intended
-for single-node and dual-node deployments; every node service should use the same
+for single-node deployments; every node service should use the same
 node resource profile and the same host profile.
 
 ## Docker Defaults
@@ -16,7 +16,7 @@ The Compose files use:
 - Node cache, BD cache, DAG cache, reduced log verbosity, and no file logging
   via `NODE_ARGS_APPEND`.
 
-For dual-node overlays, apply the same settings to every production node:
+For the production node, apply:
 
 ```yaml
 logging: *mining-logging
@@ -99,7 +99,6 @@ has at least 4 GiB free:
 ```bash
 BDAG_CHAIN_DATA_DIR=/mnt/bdag-usb/blockdag-chain
 BDAG_NODE1_DATA_DIR=/mnt/bdag-usb/blockdag-chain/node1
-BDAG_NODE2_DATA_DIR=/mnt/bdag-usb/blockdag-chain/node2
 BDAG_POSTGRES_DATA_DIR=/opt/blockdag-pool/runtime-data/postgres
 BDAG_RUNTIME_DIR=/opt/blockdag-pool/runtime-data/ops-runtime
 ```

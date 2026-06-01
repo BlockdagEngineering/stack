@@ -164,7 +164,7 @@
       <li>Feature-detect V3 submit support per backend. Keep legacy behavior as default for the first observe-only build.</li>
       <li>Store corechain validity fields with each job and emit metrics without changing local block-candidate decisions.</li>
       <li>Record what the new policy would have done for each local drop: would submit, would reject with source-invalid, would clean-refresh, or would pause work.</li>
-      <li>Split router states: transport healthy, template source eligible, submit eligible, paid-mining eligible. Do not let fresh template transport alone imply submit readiness.</li>
+      <li>Split source states: transport healthy, template source eligible, submit eligible, paid-mining eligible. Do not let fresh template transport alone imply submit readiness.</li>
       <li>Harden runtime admin: loopback-only by default or action-token required; every mutation writes an audit record and rollback values.</li>
     </ol>
     <p><strong>Exit criteria:</strong> observe-only data proves which current local drops are false drops under the corechain contract, without increasing risk on live mining.</p>
@@ -175,7 +175,7 @@
       <li>Reorder <code>mining.submit</code> for known old jobs: if the job is retained, reconstruct and hash before rejecting it as non-current. Cheap stale-share rejects remain allowed for non-block shares.</li>
       <li>For network-target candidates, submit when corechain says the template is submit-valid, even if local age/current-job/current-parent heuristics would have rejected it.</li>
       <li>Reject locally only for objective duplicates, malformed work, or source-authoritative invalidity.</li>
-      <li>Pin submit route to the backend/template that issued the job. Backend failover cannot submit backend A template to backend B unless B has the same template ID or accepts a full block path explicitly designed for that.</li>
+      <li>Pin submit validation to the backend/template that issued the job. Cross-source submission must require an explicit compatible template contract.</li>
       <li>Replace broad clean-refresh triggers with source-classified invalidations. Mempool churn must not force clean work unless corechain says old work is no longer submit-valid.</li>
       <li>Demote adaptive optimizer until paid evidence exists. It may tune load/latency knobs, not candidate-age truth.</li>
     </ol>

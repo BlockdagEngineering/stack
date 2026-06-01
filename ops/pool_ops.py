@@ -229,17 +229,16 @@ POOL_CONTAINERS = unique_names([POOL_CONTAINER, *split_env_list("BDAG_POOL_CONTA
 POOL_DB_CONTAINER = os.environ.get("BDAG_POOL_DB_CONTAINER", "pool-db")
 POOL_DB_USER = os.environ.get("BDAG_POOL_DB_USER", "test")
 POOL_DB_NAME = os.environ.get("BDAG_POOL_DB_NAME", "pool")
-NODES = split_env_list("BDAG_NODE_SERVICES", "bdag-miner-node-1,bdag-miner-node-2")
+NODES = split_env_list("BDAG_NODE_SERVICES", "bdag-miner-node-1")
 OBSERVER_NODES = unique_names(split_env_list("BDAG_OBSERVER_NODE_SERVICES", ""))
 STACK_SERVICES = split_env_list(
     "BDAG_STACK_SERVICES",
-    "pool-db,bdag-miner-node-1,bdag-miner-node-2,rpc-failover,asic-pool",
+    "pool-db,bdag-miner-node-1,asic-pool",
 )
 SERVICES = unique_names([*STACK_SERVICES, POOL_DB_CONTAINER, *NODES, *POOL_CONTAINERS])
-NODE_DATA_DIRS = split_env_list("BDAG_NODE_DATA_DIRS", "node1,node2")
+NODE_DATA_DIRS = split_env_list("BDAG_NODE_DATA_DIRS", "node1")
 NODE_METRIC_PORTS = {
     "bdag-miner-node-1": int(os.environ.get("BDAG_NODE1_METRICS_PORT", "6061")),
-    "bdag-miner-node-2": int(os.environ.get("BDAG_NODE2_METRICS_PORT", "6062")),
 }
 NATIVE_SYNC_LEAD_THRESHOLD = int(os.environ.get("BDAG_NATIVE_SYNC_LEAD_THRESHOLD_BLOCKS", "5"))
 
@@ -311,7 +310,7 @@ USD_ZAR_RATE_URL = os.environ.get("BDAG_USD_ZAR_RATE_URL", "https://open.er-api.
 PRICE_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_PRICE_CACHE_TTL_SECONDS", "300"))
 PRICE_MIN_OK_SOURCES = int(os.environ.get("BDAG_PRICE_MIN_OK_SOURCES", "2"))
 GLOBAL_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_GLOBAL_CACHE_TTL_SECONDS", "300"))
-GLOBAL_BLOCK_WINDOW = env_int("BDAG_GLOBAL_BLOCK_WINDOW", 2048, minimum=1)
+GLOBAL_BLOCK_WINDOW = env_int("BDAG_GLOBAL_BLOCK_WINDOW", 128, minimum=1)
 GLOBAL_EVM_FALLBACK_BLOCK_WINDOW = env_int("BDAG_GLOBAL_EVM_FALLBACK_BLOCK_WINDOW", 64, minimum=1)
 GLOBAL_EVM_FALLBACK_RPC_WORKERS = env_int("BDAG_GLOBAL_EVM_FALLBACK_RPC_WORKERS", 4, minimum=1)
 GLOBAL_RPC_WORKERS = env_int("BDAG_GLOBAL_RPC_WORKERS", 24, minimum=1)
@@ -328,7 +327,7 @@ NODE_EVM_RPC_PORT = int(os.environ.get("BDAG_NODE_EVM_RPC_PORT", "18545"))
 EVM_SYNC_LAG_THRESHOLD_BLOCKS = env_int("BDAG_EVM_SYNC_LAG_THRESHOLD_BLOCKS", 1000, minimum=0)
 EARNINGS_HISTORY_RETENTION_SECONDS = int(os.environ.get("BDAG_EARNINGS_HISTORY_RETENTION_SECONDS", str(35 * 86400)))
 EARNINGS_DASHBOARD_HISTORY_SECONDS = int(os.environ.get("BDAG_EARNINGS_DASHBOARD_HISTORY_SECONDS", str(31 * 86400)))
-EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_EARNINGS_SNAPSHOT_INTERVAL_SECONDS", "120"))
+EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_EARNINGS_SNAPSHOT_INTERVAL_SECONDS", "60"))
 EARNINGS_ONCHAIN_CACHE_SECONDS = int(os.environ.get("BDAG_EARNINGS_ONCHAIN_CACHE_SECONDS", "120"))
 EARNINGS_DERIVED_HISTORY_ENABLED = env_bool("BDAG_EARNINGS_DERIVED_HISTORY_ENABLED", True)
 EARNINGS_DERIVED_HISTORY_BUCKET_SECONDS = env_int("BDAG_EARNINGS_DERIVED_HISTORY_BUCKET_SECONDS", 300, minimum=60)
@@ -387,7 +386,6 @@ NODE_ORPHAN_ERROR_STORM_COUNT = int(os.environ.get("BDAG_NODE_ORPHAN_ERROR_STORM
 NODE_MINING_RPC_PORT = int(os.environ.get("BDAG_NODE_MINING_RPC_PORT", "38131"))
 NODE_MINING_RPC_USER = os.environ.get("BDAG_NODE_MINING_RPC_USER") or os.environ.get("NODE_RPC_USER", "test")
 NODE_MINING_RPC_PASS = os.environ.get("BDAG_NODE_MINING_RPC_PASS") or os.environ.get("NODE_RPC_PASS", "test")
-RPC_FAILOVER_ENABLED = env_bool("BDAG_RPC_FAILOVER_ENABLED", True)
 NODE_TEMPLATE_PROBE_CACHE_SECONDS = int(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_CACHE_SECONDS", "60"))
 NODE_TEMPLATE_PROBE_SAMPLES = max(1, int(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_SAMPLES", "1")))
 NODE_TEMPLATE_PROBE_TIMEOUT = float(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_TIMEOUT", "1.5"))
@@ -1003,16 +1001,7 @@ def read_sync_coordinator_state() -> dict[str, Any]:
     return state if isinstance(state, dict) else {}
 
 
-def planned_sync_paused_follower(state: dict[str, Any] | None = None) -> str:
-    sync_state = read_sync_coordinator_state() if state is None else state
-    paused = str(sync_state.get("paused_follower") or "")
-    leader = str(sync_state.get("leader") or "")
-    # A leader-catchup pause is only valid while both the leader and follower
-    # are managed production nodes. Runtime profiles can be narrowed during
-    # recovery, and stale coordinator state must not mark the only active node
-    # as intentionally paused.
-    if len(NODES) >= 2 and sync_state.get("mode") == "leader_catchup" and paused in NODES and leader in NODES:
-        return paused
+def planned_sync_service(state: dict[str, Any] | None = None) -> str:
     return ""
 
 
@@ -1040,6 +1029,47 @@ def docker_compose_command(*args: str) -> list[str]:
         str(PROJECT_ROOT / "docker-compose.yml"),
         *args,
     ]
+
+
+def compose_service_name(name: str) -> str:
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", '{{ index .Config.Labels "com.docker.compose.service" }}', name],
+            cwd=PROJECT_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+        )
+        service = result.stdout.strip() if result.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        service = ""
+    if service and service != "<no value>":
+        return service
+    project_names = unique_names([docker_compose_project_name(), "pool-stack-docker"])
+    for project in project_names:
+        for sep in ("-", "_"):
+            prefix = f"{project}{sep}"
+            suffix = f"{sep}1"
+            if name.startswith(prefix) and name.endswith(suffix):
+                candidate = name[len(prefix) : -len(suffix)]
+                if candidate:
+                    return candidate
+    return name
+
+
+def stack_start_services() -> list[str]:
+    configured = split_env_list("BDAG_START_SERVICES", "")
+    services = configured or STACK_SERVICES or unique_names([POOL_DB_CONTAINER, *NODES, *POOL_CONTAINERS])
+    return unique_names([compose_service_name(service) for service in services])
+
+
+def docker_compose_start_command() -> list[str]:
+    services = stack_start_services()
+    if not services:
+        return docker_compose_command("up", "-d")
+    return docker_compose_command("up", "-d", *services)
 
 
 def read_jsonl_file(path: Path, limit: int | None = None) -> list[dict[str, Any]]:
@@ -1154,6 +1184,35 @@ def is_docker_bridge_pool_log_client(ip: str, mac: str = "") -> bool:
     except ValueError:
         return False
     return address.version == 4 and address in ipaddress.ip_network("172.16.0.0/12")
+
+
+def is_docker_bridge_pseudo_miner(item: dict[str, Any]) -> bool:
+    """Return true for Docker bridge Stratum clients that are not physical miners."""
+    ip = str(item.get("ip") or "")
+    if not is_docker_bridge_pool_log_client(ip):
+        return False
+    device_type = str(item.get("device_type") or "").lower()
+    discovered_by = str(item.get("discovered_by") or "").lower()
+    sources = {str(source).lower() for source in merge_unique_strings(item.get("sources"))}
+    return device_type != "asic" or discovered_by == "pool-log" or "pool-log" in sources
+
+
+def is_configured_miner_record(item: dict[str, Any]) -> bool:
+    """Return true only for miners explicitly managed/configured for this pool."""
+    return bool(item.get("managed") or item.get("configured") or item.get("last_configured_ok"))
+
+
+def is_earnings_wallet_miner(item: dict[str, Any]) -> bool:
+    """Return true for miner rows allowed to participate in wallet earnings."""
+    if is_docker_bridge_pseudo_miner(item):
+        return False
+    if str(item.get("credit_scope") or "") == "idle-registered-asic":
+        return False
+    if item.get("managed") or item.get("configured") or item.get("connected"):
+        return True
+    if item.get("credit_workers") and (safe_int(item.get("shares"), 0) > 0 or safe_int(item.get("credited_blocks"), 0) > 0):
+        return True
+    return False
 
 
 def is_ipv4(value: str) -> bool:
@@ -2451,16 +2510,13 @@ def parse_pool_log(log: str) -> dict[str, Any]:
     submit_stall_event_lines = [
         line
         for line in recent
-        if (
-            "[SUBMIT-STALL]" in line
-            or ("[ROUTER]" in line and "after submit stall" in line)
-        )
+        if "[SUBMIT-STALL]" in line
     ]
     submit_stall_events = [_parse_submit_stall_event(line) for line in submit_stall_event_lines]
     submit_stall_recovery_events = [
         event
         for event in submit_stall_events
-        if event.get("action") in {"backend-fallback", "invalidated"}
+        if event.get("action") == "invalidated"
     ]
     block_submit_failure_count = len(block_submit_err_lines) + len(duplicate_block_lines) + len(stale_job_candidate_lines)
     accepted_job_expired_storm = bool(
@@ -2627,7 +2683,7 @@ PROMETHEUS_SAMPLE_RE = re.compile(
 PROMETHEUS_LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:\\.|[^"\\])*)"')
 
 
-def mining_rpc_urls(include_haproxy: bool = True) -> list[tuple[str, str]]:
+def mining_rpc_urls() -> list[tuple[str, str]]:
     urls: list[tuple[str, str]] = []
     for name in NODES:
         ip = run(
@@ -2636,8 +2692,6 @@ def mining_rpc_urls(include_haproxy: bool = True) -> list[tuple[str, str]]:
         ).stdout.strip()
         if valid_ipv4(ip):
             urls.append((name, f"http://{ip}:{NODE_MINING_RPC_PORT}"))
-    if include_haproxy:
-        urls.append(("rpc-failover", f"http://127.0.0.1:{NODE_MINING_RPC_PORT}"))
     return urls
 
 
@@ -2723,7 +2777,7 @@ def collect_template_probe_health() -> dict[str, Any]:
         payload["cache_age_seconds"] = now - cached_at
         return payload
 
-    endpoints = mining_rpc_urls(include_haproxy=RPC_FAILOVER_ENABLED)
+    endpoints = mining_rpc_urls()
     probes = {name: probe_template_endpoint(name, url) for name, url in endpoints}
     node_probes = {name: probes[name] for name in NODES if name in probes}
     failing_nodes = [name for name, probe in node_probes.items() if probe.get("failing")]
@@ -2734,15 +2788,6 @@ def collect_template_probe_health() -> dict[str, Any]:
         "sample_count": NODE_TEMPLATE_PROBE_SAMPLES,
         "cache_ttl_seconds": NODE_TEMPLATE_PROBE_CACHE_SECONDS,
         "nodes": node_probes,
-        "rpc_failover": probes.get("rpc-failover") if RPC_FAILOVER_ENABLED else {
-            "name": "rpc-failover",
-            "enabled": False,
-            "suppressed": True,
-            "failing": False,
-            "error_count": 0,
-            "sample_count": 0,
-            "last_error": "",
-        },
         "failing_nodes": failing_nodes,
         "all_nodes_failing": bool(node_probes and len(failing_nodes) == len(node_probes)),
     }
@@ -2793,32 +2838,14 @@ def _parse_submit_stall_event(line: str) -> dict[str, Any]:
     action = "event"
     if "recovery triggered" in line:
         action = "triggered"
-    elif "recovered by switching backend" in line:
-        action = "backend-fallback"
-    elif "[ROUTER]" in line and "after submit stall" in line:
-        action = "backend-fallback"
     elif "invalidated" in line:
         action = "invalidated"
-
-    backend_from = ""
-    backend_to = ""
-    switch_match = re.search(r"switched backend\s+([^\s]+)\s+->\s+([^\s]+)", line)
-    if switch_match:
-        backend_from = switch_match.group(1)
-        backend_to = switch_match.group(2)
-    else:
-        backend_from = _parse_key_value_from_log(line, "backend")
-        to_match = re.search(r"switching backend to\s+([^\s]+)", line)
-        if not to_match:
-            to_match = re.search(r"recovered by switching backend to\s+([^\s]+)", line)
-        backend_to = to_match.group(1) if to_match else ""
 
     epoch = _pool_log_epoch(line)
     return {
         "action": action,
         "reason": _parse_key_value_from_log(line, "reason"),
-        "backend_from": backend_from,
-        "backend_to": backend_to,
+        "backend": _parse_key_value_from_log(line, "backend"),
         "parent": _parse_key_value_from_log(line, "parent"),
         "old_parent": _parse_key_value_from_log(line, "old_parent"),
         "new_parent": _parse_key_value_from_log(line, "new_parent"),
@@ -4440,8 +4467,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     sync_warnings: list[str] = []
     maintenance_warnings: list[str] = []
     sync_coordinator = read_sync_coordinator_state()
-    planned_paused_follower = planned_sync_paused_follower(sync_coordinator)
-    planned_pause_leader = str(sync_coordinator.get("leader") or "")
+    planned_sync_service_name = planned_sync_service(sync_coordinator)
+    planned_pause_leader = str(sync_coordinator.get("active_node") or "")
 
     def add_sync_warning(message: str) -> None:
         warnings.append(message)
@@ -4469,12 +4496,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             }
         containers[service] = info
         if service in SERVICES and not info.get("running"):
-            if service == planned_paused_follower:
-                add_maintenance_warning(
-                    f"{service} is intentionally paused while {planned_pause_leader or 'the leader'} catches up"
-                )
-            else:
-                stack_failures.append(f"{service} is not running")
+            stack_failures.append(f"{service} is not running")
 
     for node in display_nodes:
         top = docker_top(node) if containers[node].get("running") else ""
@@ -4541,8 +4563,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "critical": parsed["critical"],
             "critical_lines": parsed["critical_lines"],
             "tail": parsed["tail"],
-            "planned_sync_pause": node == planned_paused_follower,
-            "sync_pause_leader": planned_pause_leader if node == planned_paused_follower else "",
+            "planned_sync_pause": node == planned_sync_service_name,
+            "sync_pause_leader": planned_pause_leader if node == planned_sync_service_name else "",
         }
 
     running_pool_containers = [name for name in POOL_CONTAINERS if containers.get(name, {}).get("running")]
@@ -4639,7 +4661,6 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "suppressed_for_no_miners": bool(include_logs and not miner_demand_present),
             "suppressed_reason": "no managed or connected miners" if include_logs and not miner_demand_present else "",
             "nodes": {},
-            "rpc_failover": None,
             "failing_nodes": [],
             "all_nodes_failing": False,
         }
@@ -4684,17 +4705,6 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
                 f"({probe.get('error_count')}/{probe.get('sample_count')} failed)"
             )
 
-    rpc_failover_probe = template_probe_health.get("rpc_failover") if isinstance(template_probe_health, dict) else None
-    if isinstance(rpc_failover_probe, dict) and rpc_failover_probe.get("failing"):
-        message = (
-            "rpc-failover is refusing live mining template probes "
-            f"({rpc_failover_probe.get('error_count')}/{rpc_failover_probe.get('sample_count')} failed"
-        )
-        if rpc_failover_probe.get("last_error"):
-            message += f": {rpc_failover_probe.get('last_error')}"
-        message += ")"
-        add_sync_warning(message)
-
     managed_node_details = {node: node_details.get(node, {}) for node in NODES}
     block_values = [item["latest_block"] for item in managed_node_details.values() if item.get("latest_block") is not None]
     main_order_values = [item["best_main_order"] for item in managed_node_details.values() if item.get("best_main_order") is not None]
@@ -4712,7 +4722,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "p2p_error_warn_count": NODE_P2P_ERROR_WARN_COUNT,
         "nodes_with_recent_imports": sum(1 for item in managed_node_details.values() if item.get("importing")),
         "needs_fast_sync_repair": False,
-        "planned_paused_follower": planned_paused_follower,
+        "planned_sync_service": planned_sync_service_name,
         "planned_pause_leader": planned_pause_leader,
     }
     pool_has_recent_share_activity = any(
@@ -4901,21 +4911,13 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "rpc_refused": bool(pool.get("rpc_refused_recent") and connected_miners > 0),
         "connected_miners": connected_miners,
         "managed_miners": managed_miners,
-        "rpc_template_failing": bool(
-            isinstance(rpc_failover_probe, dict) and rpc_failover_probe.get("failing")
-        ),
+        "rpc_template_failing": False,
         "node_template_probe_failing": bool(template_probe_health.get("failing_nodes")),
         "share_stall": bool(pool.get("share_stall") and connected_miners > 0),
         "job_stall": effective_job_stall,
         "needs_fast_repair": bool(
             pool_initial_download_needs_repair
             or (pool.get("rpc_refused_recent") and connected_miners > 0)
-            or (
-                isinstance(rpc_failover_probe, dict)
-                and rpc_failover_probe.get("failing")
-                and connected_miners > 0
-                and not pool_has_recent_paid_work
-            )
             or (
                 template_probe_health.get("failing_nodes")
                 and connected_miners > 0
@@ -5002,9 +5004,6 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             template_probe_health["suppressed_for_no_miners"] = True
             template_probe_health["failing_nodes"] = []
             template_probe_health["all_nodes_failing"] = False
-            rpc_probe = template_probe_health.get("rpc_failover")
-            if isinstance(rpc_probe, dict):
-                rpc_probe["failing"] = False
         for node in NODES:
             node_details.setdefault(node, {})["template_probe_failing"] = False
         if no_miner_sync_only:
@@ -5436,7 +5435,7 @@ def node_rpc_urls() -> list[tuple[str, str]]:
         if valid_configured:
             return valid_configured
 
-    return mining_rpc_urls(include_haproxy=False)
+    return mining_rpc_urls()
 
 
 def docker_container_ip(name: str) -> str:
@@ -5497,7 +5496,7 @@ def global_chain_rpc_urls() -> list[tuple[str, str]]:
             urls.append((source.strip() or "configured-chain", normalized))
     if urls:
         return urls
-    return mining_rpc_urls(include_haproxy=True)
+    return mining_rpc_urls()
 
 
 def _dedupe_rpc_urls(sources: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -6716,6 +6715,35 @@ def write_global_cache(payload: dict[str, Any]) -> None:
         return
 
 
+def refresh_global_chain_head(payload: dict[str, Any]) -> dict[str, Any]:
+    """Add a live chain tip to dashboard payloads without changing scan-window data."""
+    try:
+        block_count, source_name, _source_url, errors = probe_global_chain_block_count()
+    except Exception as exc:  # noqa: BLE001 - live tip freshness is best-effort.
+        block_count = None
+        source_name = ""
+        errors = [str(exc)]
+    if block_count is None:
+        if errors:
+            existing_errors = list(payload.get("head_probe_errors") or [])
+            payload["head_probe_errors"] = [*existing_errors, *errors][:20]
+        return payload
+
+    scanned_tip = safe_int(payload.get("scan_end_block"), None)
+    if scanned_tip is None:
+        scanned_tip = safe_int(payload.get("latest_block"), 0)
+        if scanned_tip is not None:
+            payload["scan_end_block"] = scanned_tip
+    payload["chain_latest_block"] = block_count
+    payload["chain_latest_block_source"] = source_name or "getBlockCount"
+    payload["chain_latest_block_updated_at"] = now_iso()
+    payload["chain_tip_lag_blocks"] = max(0, block_count - (scanned_tip or 0))
+    payload["latest_block"] = block_count
+    if payload.get("chain_block_count") in (None, ""):
+        payload["chain_block_count"] = block_count
+    return payload
+
+
 def _pool_earning_rates_from_cluster(cluster: dict[str, Any], scan_window_hours: Decimal | None) -> tuple[str | None, str | None, str | None]:
     est_bdag = decimal_value(cluster.get("estimated_bdag"))
     if est_bdag is None or not scan_window_hours or scan_window_hours <= 0:
@@ -7134,7 +7162,7 @@ def collect_global_blockchain() -> dict[str, Any]:
                 }
             )
             return annotate_global_pool_labels(
-                {
+                refresh_global_chain_head({
                     **cached,
                     "status": "stale",
                     "stale": True,
@@ -7143,34 +7171,36 @@ def collect_global_blockchain() -> dict[str, Any]:
                     "error": error,
                     "fetch_errors": fetch_errors or cached.get("fetch_errors", []),
                     "history": history,
-                }
+                })
             )
         if maintenance_decision is not None:
             head = lightweight_global_head(error, errors or [], history, maintenance_decision)
             if head is not None:
-                return head
+                return refresh_global_chain_head(head)
         if GLOBAL_EVM_FALLBACK_ENABLED:
             fallback = evm_fallback_global(error, fetch_errors, history, chain_block_count)
             if fallback is not None:
-                return fallback
-        return {
-            "status": "failed",
-            "source": "on-chain",
-            "source_truth": GLOBAL_STATS_SOURCE_TRUTH,
-            "schema_version": GLOBAL_CACHE_SCHEMA_VERSION,
-            "source_contract": "blockdag-mining-rpc-v1",
-            "error": error,
-            "fetch_errors": fetch_errors,
-            "chain_block_count": chain_block_count,
-            "latest_block": chain_block_count,
-            "clusters": [],
-            "history": history,
-            "cache": {
-                "hit": False,
-                "ttl_seconds": GLOBAL_CACHE_TTL_SECONDS,
-                "max_tip_lag_blocks": GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS,
-            },
-        }
+                return refresh_global_chain_head(fallback)
+        return refresh_global_chain_head(
+            {
+                "status": "failed",
+                "source": "on-chain",
+                "source_truth": GLOBAL_STATS_SOURCE_TRUTH,
+                "schema_version": GLOBAL_CACHE_SCHEMA_VERSION,
+                "source_contract": "blockdag-mining-rpc-v1",
+                "error": error,
+                "fetch_errors": fetch_errors,
+                "chain_block_count": chain_block_count,
+                "latest_block": chain_block_count,
+                "clusters": [],
+                "history": history,
+                "cache": {
+                    "hit": False,
+                    "ttl_seconds": GLOBAL_CACHE_TTL_SECONDS,
+                    "max_tip_lag_blocks": GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS,
+                },
+            }
+        )
 
     maintenance_decision = background_maintenance_decision("global_blockchain_scan")
     if not maintenance_decision.get("allowed", True):
@@ -8206,14 +8236,24 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
             normalize_mac((registered_for_activity(item) or {}).get("mac")) or normalize_mac(item.get("mac")),
         )
     ]
-    hashrate_by_ip = collect_miner_hashrate_debug(registry.get("miners", []), active_activity_miners)
+    earnings_activity_miners = [
+        item
+        for item in active_activity_miners
+        if is_configured_miner_record(registered_for_activity(item))
+    ]
+    configured_registry_miners = [
+        item
+        for item in registry.get("miners", [])
+        if is_configured_miner_record(item)
+    ]
+    hashrate_by_ip = collect_miner_hashrate_debug(configured_registry_miners, earnings_activity_miners)
     credit_by_address = {
         str(item.get("miner_address")): item
         for item in credit_totals.get("by_address", [])
         if item.get("miner_address")
     }
     worker_to_identities: dict[str, set[str]] = {}
-    for item in active_activity_miners:
+    for item in earnings_activity_miners:
         activity_ip = str(item.get("ip") or "")
         registered = registered_for_activity(item)
         activity_mac = normalize_mac((registered or {}).get("mac")) or normalize_mac(item.get("mac"))
@@ -8222,11 +8262,11 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
         identity = str(item.get("identity_key") or miner_identity_key({**registered, **item}) or f"ip:{activity_ip}")
         for worker in item.get("workers", []):
             worker_to_identities.setdefault(str(worker), set()).add(identity)
-    total_work = sum(int(item.get("share_work", 0) or 0) for item in active_activity_miners)
+    total_work = sum(int(item.get("share_work", 0) or 0) for item in earnings_activity_miners)
     total_bdag = wei_to_bdag(credit_totals.get("totals", {}).get("total_wei"))
     recent_bdag = wei_to_bdag(credit_totals.get("recent_1h", {}).get("total_wei"))
     estimates: list[dict[str, Any]] = []
-    for item in active_activity_miners:
+    for item in earnings_activity_miners:
         activity_ip = str(item.get("ip") or "")
         registered = registered_for_activity(item)
         registered_mac = normalize_mac(registered.get("mac")) or normalize_mac(item.get("mac"))
@@ -8247,6 +8287,7 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
         share = Decimal(work) / Decimal(total_work) if total_work else Decimal("0")
         estimated_total = total_bdag * share
         estimated_hour = recent_bdag * share
+        configured = is_configured_miner_record(registered)
         estimates.append(
             {
                 "ip": item["ip"],
@@ -8255,6 +8296,10 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
                 "identity_key": miner_identity_key({**registered, "mac": registered_mac}),
                 "display_name": registered.get("display_name") or "",
                 "display_label": miner_display_label({**registered, "mac": registered_mac}),
+                "managed": bool(registered.get("managed")),
+                "configured": configured,
+                "connected": True,
+                "earnings_scope": "configured-current-miners",
                 "device_type": "asic" if hashrate.get("available") else registered.get("device_type") or item.get("device_type") or "stratum",
                 "workers": workers,
                 "credit_workers": credit_workers,
@@ -8337,6 +8382,10 @@ def compact_miner_estimate_for_history(miner: dict[str, Any]) -> dict[str, Any]:
         "identity_key",
         "display_name",
         "display_label",
+        "managed",
+        "configured",
+        "connected",
+        "earnings_scope",
         "shares",
         "share_work",
         "work_percent",
@@ -8368,7 +8417,10 @@ def compact_miner_estimate_for_history(miner: dict[str, Any]) -> dict[str, Any]:
 
 def earnings_snapshot_has_plot_data(snapshot: dict[str, Any]) -> bool:
     miners = snapshot.get("miner_estimates")
-    return isinstance(miners, list) and any(isinstance(miner, dict) for miner in miners)
+    return isinstance(miners, list) and any(
+        isinstance(miner, dict) and is_earnings_wallet_miner(miner)
+        for miner in miners
+    )
 
 
 def read_latest_earnings_snapshot_info(max_tail_bytes: int = 2 * 1024 * 1024) -> dict[str, Any]:
@@ -8439,6 +8491,7 @@ def compact_earnings_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             compact_miner_estimate_for_history(miner)
             for miner in snapshot.get("miner_estimates") or []
             if isinstance(miner, dict)
+            and is_earnings_wallet_miner(miner)
         ],
     }
 
@@ -8913,7 +8966,11 @@ def collect_earnings(include_history: bool = True) -> dict[str, Any]:
     price = fetch_cmc_price()
     primary_mining_address = read_env_value("MINING_ADDRESS")
     wallet = collect_wallet_balances(primary_mining_address)
-    miner_estimates = collect_miner_earnings_estimates(credits, price) if "error" not in credits else []
+    miner_estimates = (
+        [miner for miner in collect_miner_earnings_estimates(credits, price) if is_earnings_wallet_miner(miner)]
+        if "error" not in credits
+        else []
+    )
     total_bdag = wei_to_bdag(credits.get("totals", {}).get("total_wei"))
     db_recent_bdag = wei_to_bdag(credits.get("recent_1h", {}).get("total_wei"))
     db_recent_24h_bdag = wei_to_bdag(
@@ -9130,6 +9187,7 @@ def record_earnings_snapshot() -> dict[str, Any]:
             compact_miner_estimate_for_history(miner)
             for miner in earnings.get("miner_estimates", [])
             if isinstance(miner, dict)
+            and is_earnings_wallet_miner(miner)
         ],
     }
     with EARNINGS_SNAPSHOT_FILE.open("a", encoding="utf-8") as handle:
@@ -9213,7 +9271,6 @@ def restore_clean(log_path: Path) -> bool:
 
     for step in (
         configured_command("BDAG_RESTORE_NODE1_COMMAND", ["make", "restore-node1-snapshot"]),
-        configured_command("BDAG_RESTORE_NODE2_COMMAND", ["make", "restore-node2-snapshot"]),
         configured_command("BDAG_START_COMMAND", docker_compose_command("up", "-d")),
     ):
         if not step:
@@ -9229,7 +9286,7 @@ def start_stack(log_path: Path) -> bool:
     if not command:
         return False
     ok = run_logged(command, log_path, timeout=180).ok
-    return ok and stop_planned_sync_paused_follower(log_path)
+    return ok and stop_planned_sync_service(log_path)
 
 
 def restart_stack(log_path: Path) -> bool:
@@ -9237,16 +9294,11 @@ def restart_stack(log_path: Path) -> bool:
     start_command = configured_command("BDAG_START_COMMAND", docker_compose_command("up", "-d"))
     down = run_logged(stop_command, log_path, timeout=180) if stop_command else CommandResult(stop_command, 0, "", "", 0)
     up = run_logged(start_command, log_path, timeout=180) if start_command else CommandResult(start_command, 1, "", "", 0)
-    return down.ok and up.ok and stop_planned_sync_paused_follower(log_path)
+    return down.ok and up.ok and stop_planned_sync_service(log_path)
 
 
-def stop_planned_sync_paused_follower(log_path: Path) -> bool:
-    paused = planned_sync_paused_follower()
-    if not paused:
-        return True
-    with log_path.open("a", encoding="utf-8") as handle:
-        handle.write(f"[{now_iso()}] preserving sync coordinator pause for {paused}\n")
-    return run_logged(docker_compose_command("stop", paused), log_path, timeout=180).ok
+def stop_planned_sync_service(log_path: Path) -> bool:
+    return True
 
 
 def _render_restart_checklist(status: dict[str, Any], handoff_path: Path) -> str:

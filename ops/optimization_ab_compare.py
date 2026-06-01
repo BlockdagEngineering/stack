@@ -10,8 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from pool_ops import RUNTIME_DIR, now_iso
-from rpc_router import current_rpc_primary
+from pool_ops import NODES, RUNTIME_DIR, now_iso
 from stack_ab_test import current_stack_name, scan_window
 
 
@@ -173,7 +172,7 @@ def main() -> int:
         "baseline_minutes": args.baseline_minutes,
         "observe_minutes": round((after_end - after_start) / 60, 3),
         "stack": current_stack_name(),
-        "rpc_primary": current_rpc_primary(),
+            "rpc_primary": NODES[0] if NODES else "",
         "before": before,
         "after": after,
         "comparison": comparison(before, after),

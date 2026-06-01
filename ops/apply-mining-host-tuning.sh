@@ -6,20 +6,15 @@ set -eu
 # without changing chain data, node topology, ASIC configuration, or service
 # state.
 #
-# Policy: paid block production wins local contention. The selected active
-# mining-template node, pool, PostgreSQL, and RPC router get high work-conserving
-# CPU/IO weights. The standby node remains protected, but lower than the active
-# lane so active/passive routing does not lose the 11-13% efficiency previously
-# observed from competing template lanes. Dashboard, observability, release
-# seeding, browser, and maintenance work must yield under load.
+# Policy: paid block production wins local contention. The active node, pool,
+# and PostgreSQL get high work-conserving CPU/IO weights. Dashboard,
+# observability, release seeding, browser, and maintenance work yield under load.
 
 ROOT="${BDAG_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 read_ahead_kb="${BDAG_BLOCK_READ_AHEAD_KB:-1024}"
 nr_requests="${BDAG_BLOCK_NR_REQUESTS:-256}"
 active_node_nice="${BDAG_MINING_ACTIVE_NODE_NICE:--8}"
 pool_nice="${BDAG_MINING_POOL_NICE:--7}"
-standby_node_nice="${BDAG_MINING_STANDBY_NODE_NICE:--2}"
-rpc_nice="${BDAG_MINING_RPC_NICE:--4}"
 observability_nice="${BDAG_OBSERVABILITY_NICE:-15}"
 desktop_nice="${BDAG_DESKTOP_BACKGROUND_NICE:-19}"
 pool_metrics_url="${BDAG_POOL_METRICS_URL:-http://127.0.0.1:9092/metrics}"
@@ -138,7 +133,6 @@ selected_backend() {
   fi
   case "$backend" in
     node1|bdag-miner-node-1) printf '%s\n' "node1" ;;
-    node2|bdag-miner-node-2) printf '%s\n' "node2" ;;
     node) printf '%s\n' "node" ;;
     *) printf '%s\n' "node1" ;;
   esac
@@ -147,7 +141,6 @@ selected_backend() {
 node_container_for_backend() {
   case "$1" in
     node1) printf '%s\n' "bdag-miner-node-1" ;;
-    node2) printf '%s\n' "bdag-miner-node-2" ;;
     node) printf '%s\n' "node" ;;
   esac
 }
@@ -164,15 +157,13 @@ try:
 except Exception:
     raise SystemExit(0)
 
-if state.get("mode") != "leader_catchup" or not state.get("paused_follower"):
+if state.get("mode") != "single_node_catchup":
     raise SystemExit(0)
 
-leader = str(state.get("leader") or "")
+leader = str(state.get("active_node") or "")
 mapping = {
     "node1": "bdag-miner-node-1",
-    "node2": "bdag-miner-node-2",
     "bdag-miner-node-1": "bdag-miner-node-1",
-    "bdag-miner-node-2": "bdag-miner-node-2",
     "node": "node",
 }
 if leader in mapping:
@@ -198,15 +189,10 @@ tune_processes() {
     [ -n "$pids" ] && tune_pids "$pool_nice" 2 0 -900 $pids
   done
 
-  for container in rpc-failover; do
-    pids="$(docker_container_pids "$container")"
-    [ -n "$pids" ] && tune_pids "$rpc_nice" 2 1 -750 $pids
-  done
-
-  for container in bdag-miner-node-1 bdag-miner-node-2; do
+  for container in bdag-miner-node-1; do
     [ "$container" = "$active_node" ] && continue
     pids="$(docker_container_pids "$container")"
-    [ -n "$pids" ] && tune_pids "$standby_node_nice" 2 2 -850 $pids
+    [ -n "$pids" ] && tune_pids "$active_node_nice" 2 0 -950 $pids
   done
 
   for container in \
@@ -243,9 +229,9 @@ tune_docker_weights() {
   else
     docker_update_one "$active_node" 6144 1000
   fi
-  for container in bdag-miner-node-1 bdag-miner-node-2; do
+  for container in bdag-miner-node-1; do
     [ "$container" = "$active_node" ] && continue
-    docker_update_one "$container" 3072 800
+    docker_update_one "$container" 6144 1000
   done
   docker_update_one node 6144 1000
 
@@ -253,8 +239,6 @@ tune_docker_weights() {
   docker_update_one pool 5120 950
   docker_update_one pool-db 4096 950
   docker_update_one postgres 4096 950
-  docker_update_one rpc-failover 3072 850
-
   for container in \
     dashboard bdag-dashboard bdag-prometheus bdag-grafana bdag-loki \
     bdag-alertmanager bdag-cadvisor bdag-alloy bdag-blackbox-exporter \

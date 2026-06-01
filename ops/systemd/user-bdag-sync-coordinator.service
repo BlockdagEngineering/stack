@@ -7,28 +7,10 @@ Type=oneshot
 WorkingDirectory=/home/jeremy/blockdag-asic-pool
 Environment=BDAG_PROJECT_ROOT=/home/jeremy/blockdag-asic-pool
 Environment=BDAG_RUNTIME_DIR=/home/jeremy/blockdag-asic-pool/ops/runtime
-Environment=BDAG_SYNC_COORDINATOR_FAR_BEHIND_BLOCKS=1000
-Environment=BDAG_SYNC_COORDINATOR_FOLLOWER_LAG_BLOCKS=1000
-Environment=BDAG_SYNC_COORDINATOR_LEADER_NEAR_TIP_BLOCKS=1000
-Environment=BDAG_SYNC_COORDINATOR_SEED_NEAR_TIP_BLOCKS=5
-Environment=BDAG_SYNC_COORDINATOR_LEADER_CPU_SHARES=8192
-Environment=BDAG_SYNC_COORDINATOR_LEADER_BLKIO_WEIGHT=1000
-Environment=BDAG_SYNC_COORDINATOR_FINAL_RSYNC_TIMEOUT_SECONDS=600
-Environment=BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC=1
-Environment=BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS=900
-Environment=BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT=1
-Environment=BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT=1
-Environment=BDAG_FAST_CATCHUP_ARTIFACT_MODE=auto
-Environment=BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS=300
-Environment=BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS=1000
-Environment=BDAG_FAST_CATCHUP_ARTIFACT_MIN_GAIN_BLOCKS=1000
-Environment=BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED=1
-Environment=BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS=0
-Environment=BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT=21600s
 EnvironmentFile=-/home/jeremy/blockdag-asic-pool/ops/runtime/ops.env
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 CPUWeight=40
 IOWeight=30
-ExecStart=/usr/bin/python3 /home/jeremy/blockdag-asic-pool/ops/sync_coordinator.py --once --repair --pause-follower --seed-follower --resume-follower --allow-leader-stop
+ExecStart=/usr/bin/python3 /home/jeremy/blockdag-asic-pool/ops/sync_coordinator.py --once --repair

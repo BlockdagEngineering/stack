@@ -111,7 +111,7 @@ jobs:
 
           rm -rf "${ROOT}" "${OUT}" "${LATEST_OUT}" "${LATEST_SHA256}"
           mkdir "${ROOT}"
-          cp docker-compose.yml dockerfile .dockerignore .env.example node.conf.example README.md checksums.txt haproxy.cfg "${ROOT}/"
+          cp docker-compose.yml dockerfile .dockerignore .env.example node.conf.example README.md checksums.txt "${ROOT}/"
           echo "${VERSION}" > "${ROOT}/version.txt"
           cp scripts/release/install.sh scripts/release/install.ps1 scripts/release/install.cmd "${ROOT}/"
           cp -a scripts/release/installers "${ROOT}/installers"

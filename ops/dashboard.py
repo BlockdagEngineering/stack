@@ -21,6 +21,8 @@ from urllib.request import Request, urlopen
 from incident_journal import read_recent_incidents
 from pool_ops import (
     EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS,
+    GLOBAL_CACHE_FILE,
+    GLOBAL_HISTORY_LIMIT,
     GLOBAL_STATS_SOURCE_TRUTH,
     PROJECT_ROOT,
     RUNTIME_DIR,
@@ -37,8 +39,10 @@ from pool_ops import (
     normalize_mac,
     now_iso,
     read_latest_earnings_snapshot_info,
+    read_valid_global_history,
     read_miner_registry,
     record_earnings_snapshot,
+    refresh_global_chain_head,
     save_miner_admin_password,
     scan_miners,
     upsert_miner_registry,
@@ -56,10 +60,13 @@ REPORTS_DIR = RUNTIME_DIR / "reports"
 STATUS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_STATUS_CACHE_SECONDS", "10"))
 EARNINGS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_EARNINGS_CACHE_SECONDS", "30"))
 SAMPLER_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS", "10"))
+DASHBOARD_DIRECT_STATUS_FALLBACK = os.environ.get(
+    "BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 EARNINGS_SAMPLER_ENABLED = os.environ.get("BDAG_DASHBOARD_EARNINGS_SAMPLER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 EARNINGS_SAMPLER_INTERVAL_SECONDS = max(
     30.0,
-    float(os.environ.get("BDAG_DASHBOARD_EARNINGS_SAMPLER_INTERVAL_SECONDS", str(EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS))),
+    float(os.environ.get("BDAG_DASHBOARD_EARNINGS_SAMPLER_INTERVAL_SECONDS", "60")),
 )
 DASHBOARD_POOL_METRICS_TIMEOUT = float(os.environ.get("BDAG_DASHBOARD_POOL_METRICS_TIMEOUT", "1.5"))
 TEMPLATE_BACKEND_STATE_CACHE_SECONDS = float(
@@ -68,6 +75,12 @@ TEMPLATE_BACKEND_STATE_CACHE_SECONDS = float(
 SYNC_ESTIMATE_STATE_FILE = RUNTIME_DIR / "dashboard-sync-estimate-state.json"
 EARNINGS_SAMPLER_LOCK_FILE = RUNTIME_DIR / "dashboard-earnings-sampler.lock"
 EARNINGS_SAMPLER_STATE_FILE = RUNTIME_DIR / "dashboard-earnings-sampler-state.json"
+GLOBAL_SAMPLER_ENABLED = os.environ.get("BDAG_DASHBOARD_GLOBAL_SAMPLER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+GLOBAL_SAMPLER_INTERVAL_SECONDS = max(
+    15.0,
+    float(os.environ.get("BDAG_DASHBOARD_GLOBAL_SAMPLER_INTERVAL_SECONDS", "60")),
+)
+GLOBAL_SAMPLER_STATE_FILE = RUNTIME_DIR / "dashboard-global-sampler-state.json"
 PROMETHEUS_SAMPLE_RE = re.compile(
     r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|[-+]?Inf|NaN)$"
 )
@@ -75,6 +88,7 @@ PROMETHEUS_LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:\\.|[^"\\])*)"'
 PROCESSED_BLOCKS_RE = re.compile(r"Processed\s+([0-9,]+)\s+blocks\s+in\s+the\s+last\s+([0-9.]+)s")
 API_CACHE: dict[str, tuple[float, object]] = {}
 API_CACHE_LOCK = threading.Lock()
+GLOBAL_REFRESH_LOCK = threading.Lock()
 
 
 def cached_payload(key: str, ttl: float, factory):
@@ -96,6 +110,166 @@ def clear_api_cache(*keys: str) -> None:
                 API_CACHE.pop(key, None)
         else:
             API_CACHE.clear()
+
+
+def read_dashboard_json(path: Path) -> object | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def dashboard_cache_age(epoch: object) -> float | None:
+    try:
+        return max(0.0, time.time() - float(epoch))
+    except (TypeError, ValueError):
+        return None
+
+
+def dashboard_float(value: object) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def attach_dashboard_endpoint(payload: dict[str, object]) -> dict[str, object]:
+    payload["dashboard_bind"] = HOST
+    payload["dashboard_port"] = PORT
+    display_host = "127.0.0.1" if HOST in {"0.0.0.0", "::", ""} else HOST
+    if ":" in display_host and not display_host.startswith("["):
+        display_host = f"[{display_host}]"
+    payload["dashboard_url"] = f"http://{display_host}:{PORT}"
+    return payload
+
+
+def cached_status_for_dashboard(include_logs: bool = True) -> tuple[dict[str, object] | None, dict[str, object]]:
+    sampler_path = RUNTIME_DIR / "status-sampler.json"
+    shared_cache_path = RUNTIME_DIR / "shared-status-cache.json"
+    diagnostics: dict[str, object] = {
+        "status_sampler": {
+            "hit": False,
+            "path": str(sampler_path),
+            "age_seconds": None,
+            "stale": False,
+        },
+        "shared_status_cache": {
+            "hit": False,
+            "path": str(shared_cache_path),
+            "age_seconds": None,
+            "stale": False,
+        },
+    }
+
+    sampler = read_dashboard_json(sampler_path)
+    if isinstance(sampler, dict):
+        sampler_age = dashboard_cache_age(sampler.get("epoch"))
+        sampler_diag = diagnostics["status_sampler"]
+        assert isinstance(sampler_diag, dict)
+        sampler_diag["age_seconds"] = round(sampler_age, 3) if sampler_age is not None else None
+        payload = sampler.get("payload")
+        if isinstance(payload, dict) and sampler_age is not None and sampler_age <= SAMPLER_CACHE_SECONDS:
+            result = dict(payload)
+            result_age = round((dashboard_float(result.get("age_seconds")) or 0.0) + sampler_age, 3)
+            stale_after = dashboard_float(result.get("stale_after_seconds"))
+            payload_fresh = result.get("fresh")
+            if payload_fresh is not False and (stale_after is None or result_age <= stale_after):
+                result["age_seconds"] = result_age
+                result["fresh"] = True
+                result["status_sampler"] = {
+                    "hit": True,
+                    "path": str(sampler_path),
+                    "age_seconds": round(sampler_age, 3),
+                    "max_age_seconds": SAMPLER_CACHE_SECONDS,
+                    "include_logs": bool(sampler.get("include_logs")),
+                    "requested_include_logs": include_logs,
+                }
+                return result, diagnostics
+        sampler_diag["stale"] = payload is not None
+
+    shared_cache = read_dashboard_json(shared_cache_path)
+    if isinstance(shared_cache, dict):
+        key = "with_logs" if include_logs else "no_logs"
+        row = shared_cache.get(key)
+        if isinstance(row, dict):
+            cache_age = dashboard_cache_age(row.get("epoch"))
+            shared_diag = diagnostics["shared_status_cache"]
+            assert isinstance(shared_diag, dict)
+            shared_diag["age_seconds"] = round(cache_age, 3) if cache_age is not None else None
+            payload = row.get("payload")
+            if isinstance(payload, dict) and cache_age is not None and cache_age <= STATUS_CACHE_SECONDS:
+                result = dict(payload)
+                result_age = round((dashboard_float(result.get("age_seconds")) or 0.0) + cache_age, 3)
+                stale_after = dashboard_float(result.get("stale_after_seconds"))
+                payload_fresh = result.get("fresh")
+                if payload_fresh is not False and (stale_after is None or result_age <= stale_after):
+                    result["age_seconds"] = result_age
+                    result["fresh"] = True
+                    result["shared_status_cache"] = {
+                        "hit": True,
+                        "path": str(shared_cache_path),
+                        "age_seconds": round(cache_age, 3),
+                        "max_age_seconds": STATUS_CACHE_SECONDS,
+                        "key": key,
+                    }
+                    return result, diagnostics
+            shared_diag["stale"] = payload is not None
+
+    return None, diagnostics
+
+
+def dashboard_status_fast_fallback(diagnostics: dict[str, object]) -> dict[str, object]:
+    failure_message = "dashboard status cache unavailable; direct collection skipped"
+    payload: dict[str, object] = {
+        "generated_at": now_iso(),
+        "overall": "degraded",
+        "status_reason": failure_message,
+        "mode": "status_cache_unavailable",
+        "can_mine": False,
+        "can_accept_shares": False,
+        "can_submit_blocks": False,
+        "fresh": False,
+        "age_seconds": 0.0,
+        "stale_after_seconds": STATUS_CACHE_SECONDS,
+        "project_root": str(PROJECT_ROOT),
+        "runtime_dir": str(RUNTIME_DIR),
+        "truth_sources": {
+            "status": "status_sampler or shared_status_cache",
+            "chain_block_count": "not_checked_budgeted_status_fallback",
+        },
+        "blocking_failures": [failure_message],
+        "degraded_reasons": [],
+        "failures": [failure_message],
+        "stack_failures": [failure_message],
+        "miner_failures": [],
+        "warnings": ["dashboard status returned bounded fallback because cached status was unavailable"],
+        "sync_warnings": [],
+        "maintenance_warnings": [],
+        "collector_budget_exceeded": True,
+        "collector_budget_failure": {
+            "component": "dashboard_status",
+            "class": "collector_budget_exceeded",
+            "detail": "No fresh status sampler or shared status cache was available; direct collection was skipped.",
+        },
+        "chain_rpc_error": "not_checked_budgeted_status_fallback",
+        "containers": {},
+        "nodes": {},
+        "node_services": [],
+        "stack_services": [],
+        "sync_progress": {"status": "unknown", "percent": None, "remaining_blocks": None},
+        "sync_health": {},
+        "pool": {},
+        "pool_metrics": {},
+        "pool_health": {},
+        "miner_health": {"miners": [], "failures": []},
+        "local_ips": [],
+        "pool_endpoint": "",
+        "pool_port": None,
+        "latest_action": None,
+        "status_sampler": diagnostics.get("status_sampler"),
+        "shared_status_cache": diagnostics.get("shared_status_cache"),
+    }
+    return attach_dashboard_endpoint(payload)
 
 
 def write_earnings_sampler_state(payload: dict[str, object]) -> None:
@@ -162,6 +336,107 @@ def start_earnings_sampler() -> None:
         return
     thread = threading.Thread(target=earnings_sampler_loop, name="earnings-sampler", daemon=True)
     thread.start()
+
+
+def write_global_sampler_state(payload: dict[str, object]) -> None:
+    try:
+        write_json(GLOBAL_SAMPLER_STATE_FILE, payload)
+    except Exception:
+        pass
+
+
+def run_global_refresh(reason: str) -> None:
+    started = time.time()
+    try:
+        payload = collect_global_blockchain()
+        clear_api_cache("global", "sampler")
+        write_global_sampler_state(
+            {
+                "updated_at": now_iso(),
+                "status": payload.get("status", "unknown"),
+                "reason": reason,
+                "duration_seconds": round(time.time() - started, 3),
+                "latest_block": payload.get("latest_block"),
+                "chain_latest_block": payload.get("chain_latest_block"),
+                "requested_blocks": payload.get("requested_blocks"),
+                "fetched_blocks": payload.get("fetched_blocks"),
+                "error": payload.get("error", ""),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 - dashboard must keep serving from last good data.
+        write_global_sampler_state(
+            {
+                "updated_at": now_iso(),
+                "status": "failed",
+                "reason": reason,
+                "duration_seconds": round(time.time() - started, 3),
+                "error": str(exc),
+            }
+        )
+
+
+def trigger_global_refresh(reason: str) -> bool:
+    if not GLOBAL_REFRESH_LOCK.acquire(blocking=False):
+        return False
+
+    def worker() -> None:
+        try:
+            run_global_refresh(reason)
+        finally:
+            GLOBAL_REFRESH_LOCK.release()
+
+    thread = threading.Thread(target=worker, name="global-sampler", daemon=True)
+    thread.start()
+    return True
+
+
+def global_sampler_loop() -> None:
+    trigger_global_refresh("dashboard-global-sampler-start")
+    while True:
+        time.sleep(GLOBAL_SAMPLER_INTERVAL_SECONDS)
+        trigger_global_refresh("dashboard-global-background-sampler")
+
+
+def start_global_sampler() -> None:
+    if not GLOBAL_SAMPLER_ENABLED:
+        return
+    thread = threading.Thread(target=global_sampler_loop, name="global-sampler-loop", daemon=True)
+    thread.start()
+
+
+def collect_global_dashboard_payload(reason: str) -> dict[str, object]:
+    cached = read_json(GLOBAL_CACHE_FILE, {})
+    if isinstance(cached, dict) and cached:
+        payload: dict[str, object] = dict(cached)
+        payload["history"] = read_valid_global_history(limit=GLOBAL_HISTORY_LIMIT)
+        payload = refresh_global_chain_head(payload)
+        cache_meta = dict(payload.get("cache") or {}) if isinstance(payload.get("cache"), dict) else {}
+        updated_epoch = safe_float(payload.get("updated_at_epoch"), None)
+        if updated_epoch is not None:
+            cache_meta["age_seconds"] = max(0, round(time.time() - updated_epoch, 1))
+        cache_meta["hit"] = True
+        cache_meta["served_by"] = "dashboard-cache-live-head"
+        payload["cache"] = cache_meta
+        payload["cache_hit"] = True
+        if payload.get("chain_tip_lag_blocks"):
+            payload["scan_lagged"] = True
+        trigger_global_refresh(reason)
+        return payload
+
+    trigger_global_refresh(f"{reason}-no-cache")
+    return refresh_global_chain_head(
+        {
+            "status": "deferred",
+            "source": "dashboard-global-cache",
+            "source_truth": GLOBAL_STATS_SOURCE_TRUTH,
+            "schema_version": 2,
+            "error": "global cache is warming; refresh again shortly",
+            "clusters": [],
+            "history": [],
+            "cache": {"hit": False, "served_by": "dashboard-cache-live-head"},
+            "refresh_pending": True,
+        }
+    )
 
 
 def parse_prometheus_labels(label_text: str) -> dict[str, str]:
@@ -262,8 +537,7 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
     managed_nodes = payload.get("managed_node_services") if isinstance(payload.get("managed_node_services"), list) else []
     single_active_node = len(managed_nodes) == 1
     leader = choose_sync_leader(payload)
-    paused_follower = str(coordinator.get("paused_follower") or sync_health.get("planned_paused_follower") or "")
-    mode = str(coordinator.get("mode") or ("leader_catchup" if paused_follower else "normal"))
+    mode = str(coordinator.get("mode") or "single_node_catchup")
     threshold = safe_int(((coordinator.get("last_decision") or {}).get("thresholds") or {}).get("leader_near_tip_blocks"), 5) or 5
 
     state = read_json(SYNC_ESTIMATE_STATE_FILE, {})
@@ -321,7 +595,7 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
             "eta_at": eta_iso(now + eta_seconds) if eta_seconds is not None else "",
             "eta_to_seed_seconds": round(eta_to_seed_seconds) if eta_to_seed_seconds is not None else None,
             "eta_to_seed_at": eta_iso(now + eta_to_seed_seconds) if eta_to_seed_seconds is not None else "",
-            "planned_pause": bool(name == paused_follower),
+            "planned_pause": False,
             "leader": bool(name == leader),
         }
         if current is not None or remaining is not None:
@@ -338,18 +612,11 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
     stage = (
         "Synced"
         if sync_progress.get("status") == "synced"
-        else "Leader catch-up"
-        if mode == "leader_catchup"
         else "Single-node catch-up"
         if single_active_node
-        else "Dual-node sync"
+        else "Syncing"
     )
-    if mode == "leader_catchup" and leader and paused_follower:
-        narrative = (
-            f"{leader} is syncing alone while {paused_follower} is paused to save bandwidth. "
-            f"When the leader is within {threshold} block(s) of tip, the coordinator will copy the leader data to the follower and start both nodes."
-        )
-    elif sync_progress.get("status") == "synced":
+    if sync_progress.get("status") == "synced":
         narrative = "Managed nodes are synced to the current network tip."
     elif single_active_node and leader:
         narrative = f"{leader} is the only active production node. The pool will wait for this node to finish sync before mining jobs are sent."
@@ -361,7 +628,6 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
         "stage": stage,
         "mode": mode,
         "leader": leader,
-        "paused_follower": paused_follower,
         "seed_threshold_blocks": threshold,
         "remaining_blocks": remaining,
         "rate_blocks_per_second": rate,
@@ -378,10 +644,8 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
 
 
 def template_backend_state_from_metrics(text: str, source: str) -> dict[str, object]:
-    state: dict[str, object] = {"source": source, "fan_in": {}, "backends": {}}
-    fan_in = state["fan_in"]
+    state: dict[str, object] = {"source": source, "backends": {}}
     backends = state["backends"]
-    assert isinstance(fan_in, dict)
     assert isinstance(backends, dict)
 
     for line in text.splitlines():
@@ -397,47 +661,12 @@ def template_backend_state_from_metrics(text: str, source: str) -> dict[str, obj
         except ValueError:
             continue
         labels = parse_prometheus_labels(label_text or "")
-        if metric_name == "pool_template_fanin_enabled":
-            fan_in["enabled"] = value > 0
-            fan_in["enabled_value"] = value
-        elif metric_name == "pool_template_fanin_backends":
-            fan_in["backends"] = int(value) if value.is_integer() else value
-        elif metric_name == "pool_template_fanin_mode":
-            mode = labels.get("mode")
-            if mode:
-                modes = fan_in.setdefault("modes", {})
-                if isinstance(modes, dict):
-                    modes[mode] = value
-                if value > 0:
-                    fan_in["mode"] = mode
-        elif metric_name == "pool_template_fanin_config_info":
-            if value > 0:
-                for key in (
-                    "config_id",
-                    "effective_mode",
-                    "configured_mode",
-                    "configured_backends",
-                    "participant_backends",
-                    "max_backends",
-                    "reject_lag_blocks",
-                    "accept_same_height",
-                    "alt_takeover_min_age_ms",
-                    "alt_takeover_lead_blocks",
-                    "failover_template_max_age_ms",
-                ):
-                    if key in labels:
-                        fan_in[key] = labels[key]
-        elif metric_name in {
+        if metric_name in {
             "pool_rpc_backend_selected",
             "pool_rpc_backend_healthy",
             "pool_rpc_backend_score",
             "pool_rpc_backend_template_age_seconds",
             "pool_rpc_backend_ws_connected",
-            "pool_template_fanin_backend_participant",
-            "pool_template_fanin_backend_role",
-            "pool_template_fanin_winner",
-            "pool_template_fanin_best_height",
-            "pool_template_fanin_observed_height",
         }:
             backend = labels.get("backend")
             if not backend:
@@ -457,18 +686,6 @@ def template_backend_state_from_metrics(text: str, source: str) -> dict[str, obj
                 row["template_age_seconds"] = round(value, 3)
             elif metric_name == "pool_rpc_backend_ws_connected":
                 row["ws_connected"] = value > 0
-            elif metric_name == "pool_template_fanin_backend_participant":
-                row["fan_in_participant"] = value > 0
-            elif metric_name == "pool_template_fanin_backend_role":
-                role = labels.get("role")
-                if role and value > 0:
-                    row["fan_in_role"] = role
-            elif metric_name == "pool_template_fanin_winner":
-                row["fan_in_winner"] = value > 0
-            elif metric_name == "pool_template_fanin_best_height":
-                row["fan_in_best_height"] = int(value) if value.is_integer() else value
-            elif metric_name == "pool_template_fanin_observed_height":
-                row["fan_in_observed_height"] = int(value) if value.is_integer() else value
 
     if backends:
         state["backend_count"] = len(backends)
@@ -530,14 +747,14 @@ def enrich_status_with_template_backend_state(payload: dict[str, object]) -> dic
 
 
 def dashboard_status_payload() -> dict[str, object]:
+    if not DASHBOARD_DIRECT_STATUS_FALLBACK:
+        cached, diagnostics = cached_status_for_dashboard(include_logs=True)
+        if cached is not None:
+            return attach_dashboard_endpoint(cached)
+        return dashboard_status_fast_fallback(diagnostics)
+
     payload = enrich_status_with_template_backend_state(enrich_status_with_sync_estimate(collect_status_cached(include_logs=True)))
-    payload["dashboard_bind"] = HOST
-    payload["dashboard_port"] = PORT
-    display_host = "127.0.0.1" if HOST in {"0.0.0.0", "::", ""} else HOST
-    if ":" in display_host and not display_host.startswith("["):
-        display_host = f"[{display_host}]"
-    payload["dashboard_url"] = f"http://{display_host}:{PORT}"
-    return payload
+    return attach_dashboard_endpoint(payload)
 
 
 def token_required() -> bool:
@@ -1018,12 +1235,6 @@ HTML = r"""<!doctype html>
       color: var(--text);
       min-width: 0;
       overflow-wrap: anywhere;
-    }
-    .sync-paused-note {
-      color: var(--warn);
-      font-size: 12px;
-      font-weight: 700;
-      line-height: 1.35;
     }
     .sync-progress-node {
       margin-top: 10px;
@@ -1517,9 +1728,11 @@ HTML = r"""<!doctype html>
     let minerDefaultsLoaded = false;
     let earningsLoaded = false;
     let lastEarningsData = null;
+    let earningsRefreshInFlight = false;
     let globalLoaded = false;
     let lastGlobalData = null;
-    const defaultServiceOrder = ["pool-db", "bdag-miner-node-1", "bdag-miner-node-2", "rpc-failover", "asic-pool"];
+    let globalRefreshInFlight = false;
+    const defaultServiceOrder = ["pool-db", "bdag-miner-node-1", "asic-pool"];
     function text(id, value) { document.getElementById(id).textContent = value ?? ""; }
     function currentTheme() {
       return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
@@ -1581,15 +1794,7 @@ HTML = r"""<!doctype html>
     function templateBackendStatusText(data) {
       const metrics = data.pool_metrics || {};
       const state = firstTemplateBackendState(data);
-      const fanIn = state.fan_in || {};
       const parts = [];
-      const fanEnabled = firstPresent(fanIn.enabled, state.template_fanin_enabled, metrics.template_fanin_enabled);
-      const fanBackends = firstPresent(fanIn.backends, state.template_fanin_backends, metrics.template_fanin_backends);
-      const fanMode = firstPresent(fanIn.effective_mode, fanIn.mode);
-      if (hasValue(fanEnabled) || hasValue(fanBackends)) {
-        const enabledText = hasValue(fanEnabled) ? (metricEnabled(fanEnabled) ? "on" : "off") : "unknown";
-        parts.push(`template_fanin=${enabledText}${hasValue(fanBackends) ? `(${fmt(fanBackends)})` : ""}${hasValue(fanMode) ? ` mode=${fanMode}` : ""}`);
-      }
 
       const backends = state.backends || {};
       const backendNames = Object.keys(backends).sort();
@@ -1826,12 +2031,7 @@ HTML = r"""<!doctype html>
       );
       text("syncRate", syncRateText(estimate));
       text("syncEta", etaText(estimate.eta_seconds, estimate.eta_at));
-      if (estimate.mode === "leader_catchup" && estimate.paused_follower) {
-        text(
-          "syncNextStep",
-          `copy ${leader || "leader"} data to ${estimate.paused_follower} when remaining is <= ${fmt(threshold)} block(s); seed ETA ${etaText(estimate.eta_to_seed_seconds, estimate.eta_to_seed_at)}`
-        );
-      } else if (progress.status === "synced") {
+      if (progress.status === "synced") {
         text("syncNextStep", "pool can mine normally once backend template checks are healthy");
       } else {
         text("syncNextStep", "wait for nodes to finish syncing; the pool is holding mining jobs until backend sync is complete");
@@ -1845,20 +2045,6 @@ HTML = r"""<!doctype html>
     }
     function nodeSyncProgressHtml(name, progress, data = {}, node = {}) {
       const estimate = data.sync_estimate || {};
-      if (node?.planned_sync_pause) {
-        const leader = node.sync_pause_leader || estimate.leader || "leader";
-        const leaderEstimate = estimate.nodes?.[leader] || {};
-        const seedThreshold = firstPresent(estimate.seed_threshold_blocks, 5);
-        return `
-          <div class="sync-paused-note">Paused by sync coordinator while ${escapeHtml(leader)} catches up.</div>
-          <div class="sync-progress-meta">
-            <span>copy from ${escapeHtml(leader)} after sync</span>
-            <span>seed at <= ${escapeHtml(fmt(seedThreshold))} remaining block(s)</span>
-          </div>
-          <div class="sync-progress-meta">
-            <span>${escapeHtml(etaText(leaderEstimate.eta_to_seed_seconds, leaderEstimate.eta_to_seed_at))}</span>
-          </div>`;
-      }
       const nodePercent = Number(progress.percent);
       const nodeBounded = Number.isFinite(nodePercent) ? Math.max(0, Math.min(100, nodePercent)) : 0;
       const nodeEstimate = estimate.nodes?.[name] || {};
@@ -1894,7 +2080,6 @@ HTML = r"""<!doctype html>
       return `child=${node.child_running}${chain}${rpcLatency}${rpcAttempts} main_height=${fmt(node.chain_main_height)} best_main_order=${fmt(node.best_main_order)} import_age=${fmt(node.last_import_age_seconds)}s peer_ahead=${fmt(node.peer_ahead_blocks)} bad_peers=${fmt(node.invalid_peer_errors)} p2p_resets=${fmt(node.p2p_stream_errors)}`;
     }
     function nodeBlockHeight(name, node, syncNode, data) {
-      if (node?.planned_sync_pause && !hasValue(node?.chain_block_count) && !hasValue(syncNode?.chain_block_count)) return "paused";
       return firstPresent(syncNode?.chain_block_count, node?.chain_block_count, null);
     }
     function renderNodeCards(nodeNames, nodes, syncProgress, data) {
@@ -1926,7 +2111,6 @@ HTML = r"""<!doctype html>
         const backend = backendInfoForNode(name, backendState) || {};
         const fanRole = backend.fan_in_role || (backend.selected ? "selected" : "");
         const roleHtml = `<span class="node-role">${escapeHtml(roleValue)}</span>`
-          + (node?.planned_sync_pause ? `<span class="node-role">paused</span>` : "")
           + (fanRole ? `<span class="node-role">${escapeHtml(fanRole)}</span>` : "");
         const wsText = hasValue(backend.ws_connected) ? ` ws=${metricEnabled(backend.ws_connected) ? "on" : "off"}` : "";
         const templateAge = hasValue(backend.template_age_seconds) ? ` template_age=${fmt(backend.template_age_seconds)}s` : "";
@@ -2235,6 +2419,25 @@ HTML = r"""<!doctype html>
     function numberValue(value) {
       const parsed = Number(value);
       return Number.isFinite(parsed) ? parsed : null;
+    }
+    function isDockerBridgePseudoMiner(row) {
+      const ip = String(row?.ip || "");
+      const parts = ip.split(".").map(part => Number(part));
+      const isDockerBridge = parts.length === 4 && parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31;
+      if (!isDockerBridge) return false;
+      const deviceType = String(row?.device_type || "").toLowerCase();
+      const sourceText = `${row?.discovered_by || ""} ${(row?.sources || []).join(" ")}`.toLowerCase();
+      return deviceType !== "asic" || sourceText.includes("pool-log");
+    }
+    function visibleMinerRows(rows) {
+      return (rows || []).filter(row => {
+        if (isDockerBridgePseudoMiner(row)) return false;
+        if (String(row?.credit_scope || "") === "idle-registered-asic") return false;
+        if (row?.managed || row?.configured || row?.connected) return true;
+        const shares = Number(row?.shares || 0);
+        const credits = Number(row?.credited_blocks || 0);
+        return Array.isArray(row?.credit_workers) && row.credit_workers.length > 0 && (shares > 0 || credits > 0);
+      });
     }
     function formatDisplayTime(value) {
       const parsed = Date.parse(value);
@@ -3132,6 +3335,8 @@ HTML = r"""<!doctype html>
       }
     }
     async function refreshEarnings() {
+      if (earningsRefreshInFlight) return;
+      earningsRefreshInFlight = true;
       text("priceFeedOutput", "Loading earnings...");
       try {
         const response = await fetch("/api/earnings", {cache: "no-store"});
@@ -3141,9 +3346,13 @@ HTML = r"""<!doctype html>
         earningsLoaded = true;
       } catch (error) {
         text("priceFeedOutput", String(error));
+      } finally {
+        earningsRefreshInFlight = false;
       }
     }
     async function refreshGlobal() {
+      if (globalRefreshInFlight) return;
+      globalRefreshInFlight = true;
       try {
         const response = await fetch("/api/global", {cache: "no-store"});
         const data = await response.json();
@@ -3169,6 +3378,7 @@ HTML = r"""<!doctype html>
       }
       } finally {
         globalLoaded = true;
+        globalRefreshInFlight = false;
       }
     }
     function renderEarnings(data) {
@@ -3243,7 +3453,7 @@ HTML = r"""<!doctype html>
 
       const minerBody = document.getElementById("minerEarningsTable");
       minerBody.innerHTML = "";
-      for (const row of data.miner_estimates || []) {
+      for (const row of visibleMinerRows(data.miner_estimates)) {
         const tr = document.createElement("tr");
         const workers = (row.workers || []).join(", ");
         const creditWorkers = (row.credit_workers || []).join(", ");
@@ -3267,7 +3477,8 @@ HTML = r"""<!doctype html>
     }
     function renderGlobal(data) {
       lastGlobalData = data;
-      text("globalLatestBlock", fmt(data.latest_block));
+      const liveLatestBlock = firstNumeric(data.chain_latest_block, data.latest_block);
+      text("globalLatestBlock", fmt(liveLatestBlock));
       const fetchedBlocks = Number(data.fetched_blocks || 0);
       const requestedBlocks = Number(data.requested_blocks || fetchedBlocks || 0);
       text("globalScannedBlocks", requestedBlocks && fetchedBlocks !== requestedBlocks ? `${fmt(fetchedBlocks)} / ${fmt(requestedBlocks)}` : fmt(fetchedBlocks || requestedBlocks));
@@ -3285,10 +3496,12 @@ HTML = r"""<!doctype html>
         data.status ? `status=${data.status}` : "",
         data.source_truth || data.source || "",
         data.rpc_source ? `rpc=${data.rpc_source}` : "",
+        data.chain_latest_block !== undefined ? `live-tip=${fmt(data.chain_latest_block)}` : "",
         data.latest_order !== undefined ? `order=${fmt(data.latest_order)}` : "",
         data.latest_order_method ? `order-method=${data.latest_order_method}` : "",
         requestedBlocks ? `fetched=${fmt(fetchedBlocks)}/${fmt(requestedBlocks)}` : "",
         data.unknown_blocks ? `unknown=${fmt(data.unknown_blocks)}` : "",
+        data.chain_tip_lag_blocks ? `scan-lag=${fmt(data.chain_tip_lag_blocks)} blocks` : "",
         data.cache_tip_lag_blocks !== undefined ? `cache-lag=${fmt(data.cache_tip_lag_blocks)}` : "",
         data.head_only ? "head-only=no production table" : "",
         data.maintenance_deferred ? "maintenance deferred" : "",
@@ -3365,14 +3578,14 @@ HTML = r"""<!doctype html>
     }
     setTheme(currentTheme());
     refresh();
-    setInterval(refresh, 90000);
+    setInterval(refresh, 60000);
     setInterval(() => {
       if (earningsLoaded && (
         !document.getElementById("tab-earnings").classList.contains("hidden")
         || !document.getElementById("tab-miners").classList.contains("hidden")
       )) refreshEarnings();
-    }, 90000);
-    setInterval(() => { if (globalLoaded && !document.getElementById("tab-global").classList.contains("hidden")) refreshGlobal(); }, 300000);
+    }, 60000);
+    setInterval(() => { if (globalLoaded && !document.getElementById("tab-global").classList.contains("hidden")) refreshGlobal(); }, 60000);
     window.addEventListener("resize", () => {
       if (lastEarningsData && !document.getElementById("tab-earnings").classList.contains("hidden")) drawEarningsChart(lastEarningsData);
       if (lastEarningsData && !document.getElementById("tab-miners").classList.contains("hidden")) drawMinerWorkChart(lastEarningsData);
@@ -3439,7 +3652,7 @@ class Handler(BaseHTTPRequestHandler):
             self.serve_report(path)
             return
         if path == "/api/status":
-            self.send_json(cached_payload("status", STATUS_CACHE_SECONDS, dashboard_status_payload))
+            self.send_json(dashboard_status_payload())
             return
         if path == "/api/token-required":
             self.send_json({"required": token_required(), "token_file": str(RUNTIME_DIR / "dashboard-token.txt")})
@@ -3452,7 +3665,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/global":
             try:
-                self.send_json(collect_global_blockchain())
+                self.send_json(collect_global_dashboard_payload("api-global"))
             except Exception as exc:  # noqa: BLE001
                 self.send_json(
                     {
@@ -3475,16 +3688,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/incidents":
             self.send_json({"generated_at": now_iso(), "incidents": read_recent_incidents(100)})
-            return
-        if path == "/api/router":
-            router_path = RUNTIME_DIR / "rpc-router-state.json"
-            if router_path.exists():
-                try:
-                    self.send_json(json.loads(router_path.read_text(encoding="utf-8")))
-                except json.JSONDecodeError as exc:
-                    self.send_json({"generated_at": now_iso(), "error": str(exc)}, status=500)
-            else:
-                self.send_json({"generated_at": now_iso(), "error": "router state not available"}, status=404)
             return
         if path == "/api/p2p":
             if P2P_GUARD_STATE.exists():
@@ -3619,6 +3822,7 @@ def main() -> int:
         print(f"Action token file: {RUNTIME_DIR / 'dashboard-token.txt'}")
         print(f"Action token: {token}")
     start_earnings_sampler()
+    start_global_sampler()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"BlockDAG dashboard listening on http://{HOST}:{PORT}")
     httpd.serve_forever()

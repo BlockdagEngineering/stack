@@ -1,6 +1,7 @@
 # Local environment
 .env
 .env.snapshot
+github
 release-downloads/*
 !release-downloads/
 !release-downloads/index.html
