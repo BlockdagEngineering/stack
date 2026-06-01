@@ -9,20 +9,17 @@ import time
 from typing import Any
 
 from incident_journal import append_incident
-from pool_ops import collect_status_cached, now_iso
-from rpc_router import recommend_rpc_primary, write_rpc_router_state
+from pool_ops import NODES, collect_status_cached, now_iso
 
 
 def guard_state(status: dict[str, Any]) -> dict[str, Any]:
-    decision = recommend_rpc_primary(status)
-    write_rpc_router_state(status, decision)
-    scores = decision.get("scores") or {}
+    nodes = status.get("nodes") if isinstance(status.get("nodes"), dict) else {}
     healthy_nodes = [
         node
-        for node, item in scores.items()
-        if float(item.get("score") or 0) >= 75
+        for node in NODES
+        for item in [nodes.get(node, {}) if isinstance(nodes.get(node), dict) else {}]
+        if item.get("child_running")
         and not item.get("mining_template_failing")
-        and item.get("child_running")
         and not item.get("critical")
     ]
     pool = status.get("pool_health") or status.get("pool") or {}
@@ -39,9 +36,8 @@ def guard_state(status: dict[str, Any]) -> dict[str, Any]:
         "overall": status.get("overall"),
         "status_reason": status.get("status_reason"),
         "healthy_nodes": healthy_nodes,
-        "current_primary": decision.get("current_primary"),
-        "recommended_primary": decision.get("recommended_primary"),
-        "router_decision": decision,
+        "active_node": NODES[0] if NODES else "",
+        "rpc_health": {"reason": "single backend mode"},
         "stack_failures": stack_failures,
         "pool_initial_download": pool.get("initial_download"),
     }
@@ -89,7 +85,7 @@ def main() -> int:
         print(json.dumps(payload, indent=2, sort_keys=True, default=str))
     else:
         print(f"ready={payload['ready']} overall={payload.get('overall')} healthy_nodes={','.join(payload.get('healthy_nodes') or [])}")
-        print(f"current={payload.get('current_primary')} recommended={payload.get('recommended_primary')}")
+        print(f"active={payload.get('active_node')}")
         if payload.get("status_reason"):
             print(f"reason={payload.get('status_reason')}")
     return 0 if payload["ready"] else 1

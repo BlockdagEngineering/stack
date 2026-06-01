@@ -127,7 +127,7 @@ BDAG_POOL_DB_USER=test
 BDAG_POOL_DB_NAME=pool
 BDAG_NODE_MODE=single
 BDAG_NODE_SERVICES=bdag-miner-node-1
-BDAG_STACK_SERVICES=pool-db,bdag-miner-node-1,rpc-failover,asic-pool
+BDAG_STACK_SERVICES=pool-db,bdag-miner-node-1,asic-pool
 BDAG_ENABLE_NODE_MINING=0
 BDAG_NO_FASTSYNC_SERVE=auto
 BDAG_FASTARTIFACTSYNC_ENABLED=1
@@ -192,7 +192,7 @@ ensure_env_value BDAG_RUNTIME_DIR "$RUNTIME_DIR"
 ensure_env_value BDAG_POOL_ENV_FILE "$PROJECT_ROOT/asic-pool/.env"
 ensure_env_value BDAG_NODE_MODE single
 ensure_env_value BDAG_NODE_SERVICES bdag-miner-node-1
-ensure_env_value BDAG_STACK_SERVICES "pool-db,bdag-miner-node-1,rpc-failover,asic-pool"
+ensure_env_value BDAG_STACK_SERVICES "pool-db,bdag-miner-node-1,asic-pool"
 ensure_env_value BDAG_ENABLE_NODE_MINING 0
 ensure_env_value BDAG_NO_FASTSYNC_SERVE auto
 ensure_env_value BDAG_FASTARTIFACTSYNC_ENABLED 1
@@ -214,8 +214,29 @@ ensure_env_value BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST "$PROJECT_ROOT/data-restore
 ensure_env_value BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT 0
 ensure_env_value BDAG_IPFS_CONTENT_PUBLISH_IPNS 0
 ensure_env_value BDAG_IPFS_CONTENT_IPNS_KEY ""
+ensure_env_value BDAG_IPFS_CONTENT_REPUBLISH_IPNS_WHILE_WAITING 1
+ensure_env_value BDAG_IPFS_CONTENT_IPNS_TTL "1m"
+ensure_env_value BDAG_IPFS_CONTENT_IPNS_LIFETIME "8760h"
+ensure_env_value BDAG_IPFS_CONTENT_DISCOVERY_FILE "$PROJECT_ROOT/ops/ipfs-content-discovery.json"
+ensure_env_value BDAG_IPFS_CONTENT_LATEST_IPNS "/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk"
+ensure_env_value BDAG_IPFS_CONTENT_DEFAULT_INDEX_CID "bafkreia7jk2ljqi3raiohugp6nw3633njfp7jmnuvqh47po52et4kupu2a"
+ensure_env_value BDAG_IPFS_CONTENT_DEFAULT_ROOT_CID ""
 ensure_env_value BDAG_IPFS_CONTENT_STATUS_FILE "$PROJECT_ROOT/ops/runtime/ipfs-content-sidecar-status.json"
 ensure_env_value BDAG_IPFS_CONTENT_LATEST_INDEX_PATH "$PROJECT_ROOT/ops/runtime/ipfs-content/latest-index.json"
+ensure_env_value BDAG_IPFS_SEGMENT_WRITER_MODE auto
+ensure_env_value BDAG_IPFS_SEGMENT_START_POLICY live_tail
+ensure_env_value BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS 600
+ensure_env_value BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT 300
+ensure_env_value BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN 1
+ensure_env_value BDAG_IPFS_SEGMENT_MAX_RPC_PER_SECOND 25
+ensure_env_value BDAG_IPFS_SEGMENT_RPC_TIMEOUT 8
+ensure_env_value BDAG_IPFS_SEGMENT_BLOCK_RPC_RETRIES 2
+ensure_env_value BDAG_IPFS_SEGMENT_PUBLISH_IPNS 0
+ensure_env_value BDAG_IPFS_SEGMENT_IPNS_KEY ""
+ensure_env_value BDAG_IPFS_SEGMENT_IPNS_TTL "1m"
+ensure_env_value BDAG_IPFS_SEGMENT_IPNS_LIFETIME "8760h"
+ensure_env_value BDAG_IPFS_SEGMENT_STATUS_FILE "$PROJECT_ROOT/ops/runtime/ipfs-content/segment-writer-status.json"
+ensure_env_value BDAG_IPFS_SEGMENT_INDEX_PATH "$PROJECT_ROOT/ops/runtime/ipfs-content/latest-index.json"
 ensure_env_value BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC 1
 ensure_env_value BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS 900
 ensure_env_value BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT 1
@@ -360,31 +381,13 @@ Type=oneshot
 WorkingDirectory=$PROJECT_ROOT
 Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
 Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
-Environment=BDAG_SYNC_COORDINATOR_FAR_BEHIND_BLOCKS=1000
-Environment=BDAG_SYNC_COORDINATOR_FOLLOWER_LAG_BLOCKS=1000
-Environment=BDAG_SYNC_COORDINATOR_LEADER_NEAR_TIP_BLOCKS=1000
-Environment=BDAG_SYNC_COORDINATOR_SEED_NEAR_TIP_BLOCKS=5
-Environment=BDAG_SYNC_COORDINATOR_LEADER_CPU_SHARES=8192
-Environment=BDAG_SYNC_COORDINATOR_LEADER_BLKIO_WEIGHT=1000
-Environment=BDAG_SYNC_COORDINATOR_FINAL_RSYNC_TIMEOUT_SECONDS=600
-Environment=BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC=1
-Environment=BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS=900
-Environment=BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT=1
-Environment=BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT=1
-Environment=BDAG_FAST_CATCHUP_ARTIFACT_MODE=auto
-Environment=BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS=300
-Environment=BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS=1000
-Environment=BDAG_FAST_CATCHUP_ARTIFACT_MIN_GAIN_BLOCKS=1000
-Environment=BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED=1
-Environment=BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS=0
-Environment=BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT=21600s
 EnvironmentFile=-$ENV_FILE
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 CPUWeight=40
 IOWeight=30
-ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/sync_coordinator.py --once --repair --pause-follower --seed-follower --resume-follower --allow-leader-stop
+ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/sync_coordinator.py --once --repair
 EOF
 
   cat > "$SYNC_COORDINATOR_TIMER" <<EOF

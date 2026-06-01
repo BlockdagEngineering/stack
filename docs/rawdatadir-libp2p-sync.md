@@ -19,17 +19,17 @@ This keeps the release candidate on the existing security model:
 Source serving is automatic only after the local eligibility gate passes. The
 gate fails closed on USB/removable/external storage, low disk/RAM/CPU, and
 unsafe single-node checkpoint conditions. Do not serve a live mining datadir;
-publish only from a drained standby node or a finalized sidecar copy.
+publish only from a finalized sidecar copy.
 
 ## Producer Flow
 
-Dual-node mining host:
+Producer host:
 
-1. Confirm the pool has an active selected backend and fresh jobs.
-2. Pick the non-selected backend as the export source.
-3. Put that backend into router maintenance mode.
-4. Stop only that backend.
-5. Wait for DB lock files to be free.
+1. Confirm the active node is healthy enough to act as source truth.
+2. Maintain a low-priority sidecar copy.
+3. Finalize the sidecar only during an operator-approved window.
+4. Wait for DB lock files to be free.
+5. Publish only a signed manifest and immutable chunks that pass validation.
 6. Archive `$datadir/mainnet` while excluding identity/private material.
 7. Restart the backend and clear maintenance before heavy verification.
 8. Verify the archive, write `SHA256SUMS`, build a signed
@@ -94,10 +94,12 @@ The publisher refuses to create a manifest unless live RPC returns a real
 uses `sudo -n tar` automatically when the finalized sidecar contains root-owned
 chain files.
 
-The optional `ops/systemd/user-bdag-rawdatadir-sidecar.timer` refreshes the
-sidecar every two hours, with jitter. `ops/install-p2p-services.sh` installs it
-only through the raw datadir source eligibility policy. USB-backed chain data is
-never a default source.
+The `ops/systemd/user-bdag-rawdatadir-sidecar.timer` refreshes the sidecar
+every two hours, with jitter, in low-priority retry mode. `auto` mode keeps the
+timer installed so a temporary mining-pressure or eligibility failure is retried
+on the next tick; the service self-defers when host pressure or unsafe storage
+would affect mining. USB-backed chain data is never a publishable default
+source.
 
 ## Receiver Flow
 
@@ -190,5 +192,7 @@ datadir into place.
 - Receiver import is automatic only for the local managed node during far-behind
   catch-up, and only after a signed/verified manifest is found. Manual fetch
   remains available for operator-directed recovery.
-- The sidecar timer is optional and must be disabled during IO-sensitive ASIC
-  test windows unless the operator asks for it.
+- The sidecar timer is low-priority and retrying by default. IO-sensitive ASIC
+  test windows should rely on the background maintenance backoff rather than
+  permanently disabling the timer, unless an operator explicitly requests a
+  full pause.

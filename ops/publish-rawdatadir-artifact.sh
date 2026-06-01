@@ -18,6 +18,11 @@ NODE_SERVICES_CSV="${BDAG_NODE_SERVICES:-bdag-miner-node-1}"
 ACTIVE_SERVICE="${BDAG_RAWDATADIR_SINGLE_NODE_SERVICE:-${NODE_SERVICES_CSV%%,*}}"
 ACTIVE_SERVICE="${ACTIVE_SERVICE:-bdag-miner-node-1}"
 SIDECAR_DIR="${BDAG_RAWDATADIR_SIDECAR_DIR:-$PROJECT_ROOT/data-restore/rawdatadir-sidecar/$NETWORK}"
+ANCHOR_RPC_URL="${BDAG_RAWDATADIR_ANCHOR_RPC_URL:-${NODE_RPC_URL:-http://127.0.0.1:38131}}"
+RPC_USER="${NODE_RPC_USER:-test}"
+RPC_PASS="${NODE_RPC_PASS:-test}"
+REQUIRE_STATE_ROOT="${BDAG_RAWDATADIR_REQUIRE_STATE_ROOT:-1}"
+FINALIZATION_ANCHOR_FILE="${BDAG_RAWDATADIR_FINALIZATION_ANCHOR_FILE:-$PROJECT_ROOT/ops/runtime/rawdatadir-finalization-anchor.env}"
 
 mkdir -p "$(dirname "$LOCK_FILE")" "$(dirname "$LOG_FILE")"
 
@@ -75,6 +80,134 @@ compose() {
   docker compose --env-file "${BDAG_ENV_FILE:-$PROJECT_ROOT/.env}" -f "${BDAG_COMPOSE_FILE:-$PROJECT_ROOT/docker-compose.yml}" "$@"
 }
 
+collect_finalization_anchor_env() {
+  PYTHONDONTWRITEBYTECODE=1 python3 - "$ANCHOR_RPC_URL" "$RPC_USER" "$RPC_PASS" "$REQUIRE_STATE_ROOT" <<'PY'
+import base64
+import json
+import os
+import shlex
+import sys
+import time
+import urllib.request
+
+url, user, password, require_state_root = sys.argv[1:5]
+require_state_root = require_state_root.lower() not in {"0", "false", "no", "off"}
+zero = "0x" + ("0" * 64)
+
+
+def rpc(method, params=None):
+    payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}).encode()
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    if user or password:
+        token = base64.b64encode(f"{user}:{password}".encode()).decode()
+        req.add_header("Authorization", f"Basic {token}")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        decoded = json.loads(resp.read().decode())
+    if decoded.get("error"):
+        raise RuntimeError(f"{method}: {decoded['error']}")
+    return decoded.get("result")
+
+
+def quantity(value):
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        return int(value, 16) if value.lower().startswith("0x") else int(value)
+    raise ValueError(value)
+
+
+def zero_hash(value):
+    text = str(value or "").strip().lower()
+    return not text or text in {zero, zero[2:]}
+
+
+def export_env(name, value):
+    print(f"export {name}={shlex.quote(str(value))}")
+
+
+configured_block_total = os.getenv("BDAG_RAWDATADIR_BLOCK_TOTAL")
+configured_tip_order = os.getenv("BDAG_RAWDATADIR_TIP_ORDER")
+configured_tip_hash = os.getenv("BDAG_RAWDATADIR_TIP_HASH")
+configured_state_root = os.getenv("BDAG_RAWDATADIR_STATE_ROOT")
+configured_genesis_hash = os.getenv("BDAG_RAWDATADIR_GENESIS_HASH")
+
+last_missing = []
+for attempt in range(12):
+    block_total = configured_block_total
+    tip_order = configured_tip_order
+    tip_hash = configured_tip_hash
+    state_root = configured_state_root
+    genesis_hash = configured_genesis_hash
+
+    if not block_total:
+        for method in ("getBlockTotal", "getBlockCount"):
+            try:
+                block_total = str(quantity(rpc(method)))
+                break
+            except Exception:
+                pass
+    if not tip_order:
+        try:
+            tip_order = str(quantity(rpc("getMainChainHeight")))
+        except Exception:
+            tip_order = block_total
+    if not tip_hash and tip_order:
+        for method, params in (("getBlockhash", [int(tip_order)]), ("getBestBlockHash", [])):
+            try:
+                tip_hash = str(rpc(method, params))
+                break
+            except Exception:
+                pass
+    if not state_root and tip_hash:
+        for method, params in (("getBlockHeader", [tip_hash, True]), ("getStateRoot", [int(tip_order or 0), False])):
+            try:
+                result = rpc(method, params)
+                if isinstance(result, dict):
+                    state_root = result.get("stateRoot") or result.get("stateroot") or result.get("StateRoot")
+                elif isinstance(result, str):
+                    state_root = result
+                if state_root:
+                    break
+            except Exception:
+                pass
+    if not genesis_hash:
+        try:
+            genesis_hash = str(rpc("getBlockhash", [0]))
+        except Exception:
+            pass
+
+    missing = []
+    try:
+        if not block_total or quantity(block_total) <= 1:
+            missing.append("block_total")
+    except Exception:
+        missing.append("block_total")
+    try:
+        if not tip_order or quantity(tip_order) <= 1:
+            missing.append("tip_order")
+    except Exception:
+        missing.append("tip_order")
+    if zero_hash(tip_hash):
+        missing.append("tip_hash")
+    if require_state_root and zero_hash(state_root):
+        missing.append("state_root")
+    if zero_hash(genesis_hash):
+        missing.append("genesis_hash")
+    if not missing:
+        break
+    last_missing = missing
+    time.sleep(5)
+else:
+    raise SystemExit("raw datadir finalization anchor unavailable from live RPC before node stop: " + ",".join(last_missing))
+
+export_env("BDAG_RAWDATADIR_BLOCK_TOTAL", quantity(block_total))
+export_env("BDAG_RAWDATADIR_TIP_ORDER", quantity(tip_order))
+export_env("BDAG_RAWDATADIR_TIP_HASH", tip_hash)
+export_env("BDAG_RAWDATADIR_STATE_ROOT", state_root or zero)
+export_env("BDAG_RAWDATADIR_GENESIS_HASH", genesis_hash)
+PY
+}
+
 stop_active_node_for_final_sync() {
   if [[ "$NODE_MODE" != "single" ]]; then
     return 0
@@ -84,6 +217,10 @@ stop_active_node_for_final_sync() {
     write_status_note "publish skipped: single-node finalization was not approved"
     exit 0
   fi
+  log "capturing raw datadir finalization anchor metadata before stopping $ACTIVE_SERVICE"
+  mkdir -p "$(dirname "$FINALIZATION_ANCHOR_FILE")"
+  collect_finalization_anchor_env >"$FINALIZATION_ANCHOR_FILE" 2>>"$LOG_FILE"
+  log "captured raw datadir finalization anchor metadata: $FINALIZATION_ANCHOR_FILE"
   log "operator-approved finalization: stopping $ACTIVE_SERVICE for final sidecar sync"
   compose stop "$ACTIVE_SERVICE" 2>&1 | tee -a "$LOG_FILE"
 }
@@ -106,16 +243,20 @@ if [[ -n "$pressure_reason" ]]; then
   exit 0
 fi
 
-run_eligibility
-
 log "refreshing raw datadir sidecar"
 "$PROJECT_ROOT/ops/maintain-rawdatadir-sidecar.sh" 2>&1 | tee -a "$LOG_FILE"
+
+run_eligibility
 
 stop_active_node_for_final_sync
 trap start_active_node_after_final_sync EXIT INT TERM
 
 if [[ "$NODE_MODE" == "single" && "$FINALIZE_SINGLE_NODE" == "1" ]]; then
   log "running final sidecar sync while $ACTIVE_SERVICE is stopped"
+  # shellcheck disable=SC1090
+  source "$FINALIZATION_ANCHOR_FILE"
+  BDAG_RAWDATADIR_SIDECAR_FINAL_STOPPED_SYNC=1 \
+  BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH=0 \
   BDAG_RAWDATADIR_SIDECAR_CONTENT_FINALIZED=1 \
     "$PROJECT_ROOT/ops/maintain-rawdatadir-sidecar.sh" 2>&1 | tee -a "$LOG_FILE"
   start_active_node_after_final_sync

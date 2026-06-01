@@ -9,7 +9,7 @@ LOCK_FILE="${BDAG_SNAPSHOT_LOCK:-$PROJECT_ROOT/ops/runtime/hourly-chain-snapshot
 STAGE_LOCK_FILE="${BDAG_SNAPSHOT_STAGE_LOCK:-$PROJECT_ROOT/ops/runtime/chain-snapshot-stage.lock}"
 LOG_FILE="${BDAG_SNAPSHOT_LOG:-$PROJECT_ROOT/ops/runtime/logs/hourly-chain-snapshot.log}"
 STATE_FILE="${BDAG_SNAPSHOT_STATE:-$PROJECT_ROOT/ops/runtime/hourly-chain-snapshot-state}"
-SNAPSHOT_STOP_STATE_FILE="${BDAG_SNAPSHOT_STOP_STATE_FILE:-$PROJECT_ROOT/ops/runtime/snapshot-node-stop-state.json}"
+SNAPSHOT_STOP_STATE_FILE="${BDAG_SNAPSHOT_STOP_STATE_FILE:-$PROJECT_ROOT/ops/runtime/snapshot-stop-state.json}"
 ENV_FILE="${BDAG_ENV_FILE:-$PROJECT_ROOT/asic-pool/.env}"
 COMPOSE_FILE="${BDAG_COMPOSE_FILE:-$PROJECT_ROOT/docker-compose.yml}"
 SNAPSHOT_BACKOFF_BLOCKS="${BDAG_SNAPSHOT_BACKOFF_BLOCKS:-0}"
@@ -21,7 +21,7 @@ SNAPSHOT_RPC_RECOVERY_SECONDS="${BDAG_SNAPSHOT_RPC_RECOVERY_SECONDS:-180}"
 SNAPSHOT_FINAL_STOP_SYNC="${BDAG_SNAPSHOT_FINAL_STOP_SYNC:-0}"
 SNAPSHOT_FINAL_STOP_TIMEOUT_SECONDS="${BDAG_SNAPSHOT_FINAL_STOP_TIMEOUT_SECONDS:-45}"
 SNAPSHOT_WARM_SYNC_TIMEOUT_SECONDS="${BDAG_SNAPSHOT_WARM_SYNC_TIMEOUT_SECONDS:-2700}"
-SNAPSHOT_NODE_DIRS="${BDAG_SNAPSHOT_NODE_DIRS:-${BDAG_NODE_DATA_DIRS:-node1,node2}}"
+SNAPSHOT_SOURCE_DIRS="${BDAG_SNAPSHOT_SOURCE_DIRS:-${BDAG_NODE_DATA_DIRS:-node1}}"
 
 source "$PROJECT_ROOT/ops/chain-snapshot-common.sh"
 
@@ -230,8 +230,8 @@ choose_node() {
 }
 
 configured_node_keys() {
-  local raw="$SNAPSHOT_NODE_DIRS"
-  local item seen_node1=0 seen_node2=0 emitted=0
+  local raw="$SNAPSHOT_SOURCE_DIRS"
+  local item seen_node1=0 emitted=0
   raw="${raw//;/,}"
   IFS=',' read -ra items <<< "$raw"
   for item in "${items[@]}"; do
@@ -241,13 +241,6 @@ configured_node_keys() {
         if [[ "$seen_node1" == "0" ]]; then
           printf '%s\n' node1
           seen_node1=1
-          emitted=1
-        fi
-        ;;
-      node2)
-        if [[ "$seen_node2" == "0" ]]; then
-          printf '%s\n' node2
-          seen_node2=1
           emitted=1
         fi
         ;;
@@ -261,7 +254,6 @@ configured_node_keys() {
 service_for_node_key() {
   case "$1" in
     node1) printf '%s\n' "bdag-miner-node-1" ;;
-    node2) printf '%s\n' "bdag-miner-node-2" ;;
     *) return 1 ;;
   esac
 }
@@ -269,65 +261,13 @@ service_for_node_key() {
 dir_for_node_key() {
   case "$1" in
     node1) printf '%s\n' "node1" ;;
-    node2) printf '%s\n' "node2" ;;
     *) return 1 ;;
   esac
-}
-
-alternate_node_key() {
-  local current="$1" candidate
-  while IFS= read -r candidate; do
-    if [[ "$candidate" != "$current" ]]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done < <(configured_node_keys)
-  return 1
-}
-
-current_rpc_primary() {
-  awk '
-    $1 == "server" && $3 ~ /^bdag-miner-node-[12]:38131$/ {
-      is_backup = 0
-      for (i = 4; i <= NF; i++) {
-        if ($i == "backup") {
-          is_backup = 1
-        }
-      }
-      if (!is_backup) {
-        sub(":38131", "", $3)
-        print $3
-        exit
-      }
-    }
-  ' "$PROJECT_ROOT/haproxy.cfg" 2>/dev/null || true
 }
 
 node_key="$(choose_node)"
 node_service="$(service_for_node_key "$node_key")"
 node_dir="$(dir_for_node_key "$node_key")"
-
-if [[ "$SNAPSHOT_AVOID_RPC_PRIMARY" == "1" ]]; then
-  rpc_primary="$(current_rpc_primary)"
-  if [[ -n "$rpc_primary" && "$node_service" == "$rpc_primary" ]]; then
-    alternate_key="$(alternate_node_key "$node_key" || true)"
-    if [[ -z "$alternate_key" ]]; then
-      log "skipping hourly snapshot: selected node is active RPC primary $node_service and no alternate source is configured"
-      exit 0
-    fi
-    alternate_service="$(service_for_node_key "$alternate_key")"
-    alternate_dir="$(dir_for_node_key "$alternate_key")"
-    if [[ -d "$PROJECT_ROOT/data/$alternate_dir" ]]; then
-      log "avoiding snapshot stop of active RPC primary $node_service; using $alternate_service instead"
-      node_key="$alternate_key"
-      node_service="$alternate_service"
-      node_dir="$alternate_dir"
-    else
-      log "skipping hourly snapshot: selected node is active RPC primary $node_service and alternate source is missing"
-      exit 0
-    fi
-  fi
-fi
 
 SNAPSHOT_SOURCE="$PROJECT_ROOT/data/$node_dir"
 SNAPSHOT_STAGE="$SNAPSHOT_STAGE_ROOT/$node_dir"

@@ -8,13 +8,13 @@ import fcntl
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import automation_control
 from incident_journal import append_incident
 from pool_ops import (
     LOG_DIR,
@@ -32,15 +32,14 @@ from pool_ops import (
     now_iso,
     record_earnings_snapshot,
     read_miner_admin_password,
-    restore_clean,
     restart_miner,
     restart_miner_open,
+    restore_clean,
     restart_stack,
     run_logged,
     start_stack,
     write_action_state,
 )
-from rpc_router import recommend_rpc_primary, write_rpc_router_state
 from status_sampler import (
     constrained_fastartifact_should_repair,
     fastsync_peer_quarantine_should_repair,
@@ -114,24 +113,7 @@ DEFAULT_NODE_TEMPLATE_RESTART_COOLDOWN = int(os.environ.get("BDAG_WATCHDOG_NODE_
 DEFAULT_NODE_ORPHAN_STORM_RESTART_COOLDOWN = int(
     os.environ.get("BDAG_WATCHDOG_NODE_ORPHAN_STORM_RESTART_COOLDOWN", "300")
 )
-DEFAULT_RPC_FAILOVER_SWITCH_COOLDOWN = int(os.environ.get("BDAG_WATCHDOG_RPC_FAILOVER_SWITCH_COOLDOWN", "180"))
-DEFAULT_RPC_FAILOVER_URGENT_SWITCH_COOLDOWN = int(
-    os.environ.get("BDAG_WATCHDOG_RPC_FAILOVER_URGENT_SWITCH_COOLDOWN", "60")
-)
 DEFAULT_OPTIMUM_STATE_EVENT_COOLDOWN = int(os.environ.get("BDAG_WATCHDOG_OPTIMUM_STATE_EVENT_COOLDOWN", "300"))
-RPC_FAILOVER_SERVICE = os.environ.get("BDAG_RPC_FAILOVER_SERVICE", "rpc-failover")
-RPC_FAILOVER_ENABLED = os.environ.get("BDAG_RPC_FAILOVER_ENABLED", "1").strip().lower() not in {
-    "0",
-    "false",
-    "no",
-    "off",
-}
-HAPROXY_CFG = PROJECT_ROOT / "haproxy.cfg"
-HAPROXY_RUNTIME_DNS_OPTIONS = "resolvers docker init-addr libc,none"
-NODE_TO_HAPROXY_SERVER = {
-    "bdag-miner-node-1": "node1",
-    "bdag-miner-node-2": "node2",
-}
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -183,6 +165,29 @@ def record_failed_repair(action: str, reason: str, details: dict[str, Any] | Non
         payload.update(details)
     record_efficiency_event("repair_failed", "critical", f"{action} failed", payload)
     append_incident("repair_failed", "critical", "repair", f"{action} failed", payload)
+
+
+def automation_mutation_allowed(action: str, target: str, reason: str) -> bool:
+    decision = automation_control.check_mutation_allowed(
+        action,
+        actor="watchdog",
+        target=target,
+        reason=reason,
+    )
+    if decision.allowed:
+        return True
+    message = (
+        f"automation control suppressed watchdog mutation action={action} "
+        f"target={target}: {decision.reason}"
+    )
+    log(message)
+    record_efficiency_event(
+        "automation_control_suppressed",
+        "critical",
+        message,
+        decision.as_dict(),
+    )
+    return False
 
 
 def miner_label(row: dict[str, Any]) -> str:
@@ -583,11 +588,10 @@ def orphan_storm_nodes(status: dict[str, Any]) -> list[str]:
 
 
 def active_rpc_template_failing(status: dict[str, Any]) -> bool:
-    probe = (status.get("rpc_template_health") or {}).get("rpc_failover")
-    return bool(isinstance(probe, dict) and probe.get("failing"))
+    return False
 
 
-def choose_template_probe_repair_node(status: dict[str, Any], current_primary: str | None) -> str | None:
+def choose_template_probe_repair_node(status: dict[str, Any], active_node: str | None) -> str | None:
     nodes = status.get("nodes", {}) or {}
     failing = [
         node
@@ -598,8 +602,8 @@ def choose_template_probe_repair_node(status: dict[str, Any], current_primary: s
         return None
 
     candidates = list(failing)
-    if current_primary in candidates and len(candidates) > 1:
-        candidates = [node for node in candidates if node != current_primary]
+    if active_node in candidates and len(candidates) > 1:
+        candidates = [node for node in candidates if node != active_node]
 
     def sort_key(node: str) -> tuple[float, int, str]:
         info = nodes.get(node, {}) or {}
@@ -623,11 +627,11 @@ def rpc_probe_failing_nodes(status: dict[str, Any]) -> list[str]:
     ]
 
 
-def choose_active_rpc_repair_node(status: dict[str, Any], current_primary: str | None) -> str | None:
+def choose_active_rpc_repair_node(status: dict[str, Any], active_node: str | None) -> str | None:
     failing = rpc_probe_failing_nodes(status)
-    if current_primary in failing:
-        return current_primary
-    return choose_template_probe_repair_node(status, current_primary)
+    if active_node in failing:
+        return active_node
+    return choose_template_probe_repair_node(status, active_node)
 
 
 def read_state() -> dict[str, Any]:
@@ -747,6 +751,14 @@ def refresh_maintenance_state(state: dict, snapshot_active: bool, autonomous_lab
 
 
 def run_repair(mode: str, reason: str) -> bool:
+    action = {
+        "start": automation_control.ACTION_STACK_START,
+        "restart": automation_control.ACTION_STACK_RESTART,
+        "clean": automation_control.ACTION_STACK_CLEAN_RESTORE,
+    }.get(mode, f"stack_{mode}")
+    if not automation_mutation_allowed(action, "stack", reason):
+        return False
+
     lock_handle = acquire_lock(blocking=False)
     if lock_handle is None:
         log(f"repair skipped because another repair is running; requested={mode} reason={reason}")
@@ -800,6 +812,8 @@ def run_node_restart(node_service: str, reason: str) -> bool:
     if node_service not in NODES:
         log(f"targeted node restart skipped for unknown node={node_service} reason={reason}")
         return False
+    if not automation_mutation_allowed(automation_control.ACTION_NODE_RESTART, node_service, reason):
+        return False
 
     lock_handle = acquire_lock(blocking=False)
     if lock_handle is None:
@@ -830,13 +844,10 @@ def run_node_restart(node_service: str, reason: str) -> bool:
         "-f",
         str(PROJECT_ROOT / "docker-compose.yml"),
         "restart",
-        compose_service_name(node_service),
+        node_service,
     ]
     result = run_logged(command, log_path, timeout=180)
     ok = result.ok
-    if not ok:
-        fallback = run_logged(["docker", "restart", node_service], log_path, timeout=180)
-        ok = fallback.ok
 
     state_payload.update(
         {
@@ -857,479 +868,10 @@ def run_node_restart(node_service: str, reason: str) -> bool:
     return ok
 
 
-def current_rpc_primary() -> str | None:
-    if not RPC_FAILOVER_ENABLED:
-        return None
-    try:
-        lines = HAPROXY_CFG.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return None
-    for line in lines:
-        match = re.match(r"\s*server\s+(node[12])\s+(bdag-miner-node-[12]):38131\b(.*)$", line)
-        if not match:
-            continue
-        options = match.group(3)
-        if " backup" not in f" {options} ":
-            node = match.group(2)
-            return node if node in NODES else None
-    return None
-
-
-def render_rpc_primary_config(primary_node: str) -> str:
-    server_name = NODE_TO_HAPROXY_SERVER.get(primary_node)
-    if not server_name:
-        raise ValueError(f"unknown rpc primary node: {primary_node}")
-
-    lines = HAPROXY_CFG.read_text(encoding="utf-8").splitlines()
-    rendered: list[str] = []
-    seen = set()
-    for line in lines:
-        match = re.match(r"(\s*)server\s+(node[12])\s+(bdag-miner-node-[12]):38131\b.*$", line)
-        if not match:
-            rendered.append(line)
-            continue
-        indent, haproxy_name, node_service = match.groups()
-        options = f"check inter 5s fall 3 rise 2 {HAPROXY_RUNTIME_DNS_OPTIONS}"
-        if node_service != primary_node:
-            options += " backup"
-        rendered.append(f"{indent}server {haproxy_name} {node_service}:38131 {options}")
-        seen.add(node_service)
-
-    if not set(NODES).issubset(seen):
-        raise ValueError("haproxy config does not contain all BlockDAG node backends")
-    return "\n".join(rendered) + "\n"
-
-
-def healthy_rpc_alternate(status: dict[str, Any], failing_nodes: list[str], current_primary: str | None) -> str | None:
-    decision = recommend_rpc_primary(status, current_primary=current_primary, failing_nodes=failing_nodes)
-    write_rpc_router_state(status, decision)
-    recommended = decision.get("recommended_primary")
-    if decision.get("should_switch") and recommended in NODES and recommended != current_primary:
-        return str(recommended)
-    return None
-
-
-def run_rpc_failover_switch(primary_node: str, reason: str) -> bool:
-    lock_handle = acquire_lock(blocking=False)
-    if lock_handle is None:
-        log(f"rpc failover switch skipped because another repair is running; primary={primary_node} reason={reason}")
+def run_pool_restart(reason: str) -> bool:
+    if not automation_mutation_allowed(automation_control.ACTION_ASIC_POOL_RESTART, POOL_CONTAINER, reason):
         return False
 
-    started = time.time()
-    action_name = f"switch-{RPC_FAILOVER_SERVICE}"
-    log_path = action_log_path(action_name)
-    previous_primary = current_rpc_primary()
-    state_payload = {
-        "name": action_name,
-        "mode": "switch-rpc-primary",
-        "service": RPC_FAILOVER_SERVICE,
-        "previous_primary": previous_primary,
-        "new_primary": primary_node,
-        "reason": reason,
-        "status": "running",
-        "started_at": now_iso(),
-        "finished_at": None,
-        "log_path": str(log_path),
-    }
-    write_action_state(state_payload)
-    log(
-        f"starting rpc primary switch {previous_primary or 'unknown'} -> {primary_node}: "
-        f"{reason}; log={log_path}"
-    )
-
-    old_text = HAPROXY_CFG.read_text(encoding="utf-8")
-    backup_path = RUNTIME_DIR / f"haproxy.cfg.{int(time.time())}.bak"
-    backup_path.write_text(old_text, encoding="utf-8")
-    ok = False
-    error = ""
-    try:
-        new_text = render_rpc_primary_config(primary_node)
-        HAPROXY_CFG.write_text(new_text, encoding="utf-8")
-        validate = run_logged(
-            [
-                "docker",
-                "exec",
-                RPC_FAILOVER_SERVICE,
-                "haproxy",
-                "-c",
-                "-f",
-                "/usr/local/etc/haproxy/haproxy.cfg",
-            ],
-            log_path,
-            timeout=60,
-        )
-        if not validate.ok:
-            raise RuntimeError("HAProxy config validation failed")
-        result = run_logged(
-            [
-                "docker",
-                "compose",
-                "--env-file",
-                str(POOL_ENV_FILE),
-                "-f",
-                str(PROJECT_ROOT / "docker-compose.yml"),
-                "restart",
-                RPC_FAILOVER_SERVICE,
-            ],
-            log_path,
-            timeout=120,
-        )
-        ok = result.ok
-        if not ok:
-            raise RuntimeError(f"{RPC_FAILOVER_SERVICE} restart failed")
-    except Exception as exc:  # noqa: BLE001 - restore previous routing on any failure.
-        error = str(exc)
-        HAPROXY_CFG.write_text(old_text, encoding="utf-8")
-
-    state_payload.update(
-        {
-            "status": "ok" if ok else "failed",
-            "finished_at": now_iso(),
-            "elapsed": round(time.time() - started, 3),
-            "backup_path": str(backup_path),
-        }
-    )
-    if error:
-        state_payload["error"] = error
-    write_action_state(state_payload)
-    log(
-        f"finished rpc primary switch status={state_payload['status']} "
-        f"primary={primary_node} elapsed={state_payload['elapsed']}s"
-    )
-    if not ok:
-        record_failed_repair("rpc primary switch", reason, {"service": RPC_FAILOVER_SERVICE, "error": error})
-    else:
-        append_incident(
-            "rpc_primary_switch",
-            "warning",
-            "rpc-failover",
-            f"rpc primary switched to {primary_node}",
-            {
-                "previous_primary": previous_primary,
-                "new_primary": primary_node,
-                "reason": reason,
-                "log_path": str(log_path),
-            },
-        )
-    lock_handle.close()
-    return ok
-
-
-def compose_service_name(name: str) -> str:
-    result = subprocess.run(
-        ["docker", "inspect", "-f", '{{ index .Config.Labels "com.docker.compose.service" }}', name],
-        cwd=PROJECT_ROOT,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    service = result.stdout.strip() if result.returncode == 0 else ""
-    if service and service != "<no value>":
-        return service
-    return name
-
-
-def rpc_router_node_score(decision: dict[str, Any], node: str | None) -> float:
-    if not node:
-        return 0.0
-    scores = decision.get("scores") if isinstance(decision.get("scores"), dict) else {}
-    node_score = scores.get(node) if isinstance(scores.get(node), dict) else {}
-    return float(node_score.get("score") or 0.0)
-
-
-def rpc_router_switch_cooldown(decision: dict[str, Any]) -> int:
-    pressure = decision.get("pool_pressure") if isinstance(decision.get("pool_pressure"), dict) else {}
-    current_score = rpc_router_node_score(decision, str(decision.get("current_primary") or ""))
-    urgent_pressure = any(
-        bool(pressure.get(key))
-        for key in (
-            "initial_download",
-            "rpc_refused",
-            "share_stall",
-            "job_stall",
-            "rpc_template_failing",
-            "node_template_probe_failing",
-            "pool_template_frozen",
-            "duplicate_block_storm",
-            "stale_job_candidate_storm",
-            "block_submit_error_storm",
-            "accepted_job_expired_storm",
-            "block_submit_zero_success_storm",
-        )
-    )
-    if float(decision.get("score_delta") or 0.0) >= 40.0 or current_score <= 30.0 or urgent_pressure:
-        return min(DEFAULT_RPC_FAILOVER_SWITCH_COOLDOWN, DEFAULT_RPC_FAILOVER_URGENT_SWITCH_COOLDOWN)
-    return DEFAULT_RPC_FAILOVER_SWITCH_COOLDOWN
-
-
-def record_optimum_state_observation(
-    status: dict[str, Any],
-    state: dict[str, Any],
-    decision: dict[str, Any] | None,
-    now: int,
-) -> None:
-    if not isinstance(decision, dict):
-        return
-
-    current_primary = str(decision.get("current_primary") or current_rpc_primary() or "")
-    if not current_primary:
-        return
-    scores = decision.get("scores") if isinstance(decision.get("scores"), dict) else {}
-    current_score = scores.get(current_primary) if isinstance(scores.get(current_primary), dict) else {}
-    pressure = decision.get("pool_pressure") if isinstance(decision.get("pool_pressure"), dict) else {}
-    current_state = str(current_score.get("state") or "unknown")
-    current_score_value = float(current_score.get("score") or 0.0)
-    quality_reasons = [str(item) for item in pressure.get("pool_quality_reasons") or [] if item]
-    router_reasons = [item.strip() for item in str(decision.get("reason") or "").split(",") if item.strip()]
-
-    watched = bool(
-        decision.get("should_switch")
-        or decision.get("current_primary_suboptimal")
-        or current_score_value < 95
-        or pressure.get("hard_pool_pressure")
-        or pressure.get("pool_quality_pressure")
-    )
-    if not watched:
-        return
-
-    signature = json.dumps(
-        {
-            "current_primary": current_primary,
-            "current_haproxy_primary": decision.get("current_haproxy_primary"),
-            "pool_selected_backend": decision.get("pool_selected_backend"),
-            "pool_selected_backend_node": decision.get("pool_selected_backend_node"),
-            "routing_alignment": decision.get("routing_alignment"),
-            "recommended_primary": decision.get("recommended_primary"),
-            "current_score": round(current_score_value, 1),
-            "current_state": current_state,
-            "router_reasons": router_reasons,
-            "quality_reasons": quality_reasons,
-            "should_switch": bool(decision.get("should_switch")),
-        },
-        sort_keys=True,
-    )
-    last_signature = str(state.get("last_optimum_state_signature") or "")
-    last_event_at = int(state.get("last_optimum_state_event_epoch", 0) or 0)
-    if signature == last_signature and now - last_event_at < DEFAULT_OPTIMUM_STATE_EVENT_COOLDOWN:
-        return
-
-    state["last_optimum_state_signature"] = signature
-    state["last_optimum_state_event_epoch"] = now
-    state["last_optimum_state_event_at"] = now_iso()
-    state["last_optimum_state"] = {
-        "current_primary": current_primary,
-        "current_haproxy_primary": decision.get("current_haproxy_primary"),
-        "pool_selected_backend": decision.get("pool_selected_backend"),
-        "pool_selected_backend_node": decision.get("pool_selected_backend_node"),
-        "routing_alignment": decision.get("routing_alignment"),
-        "recommended_primary": decision.get("recommended_primary"),
-        "current_score": current_score_value,
-        "current_state": current_state,
-        "router_reasons": router_reasons,
-        "quality_reasons": quality_reasons,
-        "should_switch": bool(decision.get("should_switch")),
-        "score_delta": decision.get("score_delta"),
-        "pool_pressure": pressure,
-    }
-    severity = "critical" if decision.get("should_switch") or pressure.get("hard_pool_pressure") else "warning"
-    if decision.get("should_switch"):
-        message = (
-            f"optimum-state repair needed: switch {current_primary} -> "
-            f"{decision.get('recommended_primary')} ({decision.get('reason')})"
-        )
-    else:
-        message = (
-            f"optimum-state watch: {current_primary} score={current_score_value:.1f} "
-            f"state={current_state}; {decision.get('reason')}"
-        )
-    log(message)
-    record_efficiency_event(
-        "optimum_state_watch",
-        severity,
-        message,
-        {
-            "current_primary": current_primary,
-            "current_haproxy_primary": decision.get("current_haproxy_primary"),
-            "pool_selected_backend": decision.get("pool_selected_backend"),
-            "pool_selected_backend_node": decision.get("pool_selected_backend_node"),
-            "routing_alignment": decision.get("routing_alignment"),
-            "recommended_primary": decision.get("recommended_primary"),
-            "current_score": current_score_value,
-            "current_state": current_state,
-            "score_delta": decision.get("score_delta"),
-            "router_reasons": router_reasons,
-            "quality_reasons": quality_reasons,
-            "pool_pressure": pressure,
-            "status_overall": status.get("overall"),
-        },
-    )
-
-
-def apply_watchdog_rpc_router_decision(
-    status: dict[str, Any],
-    state: dict[str, Any],
-    decision: dict[str, Any] | None,
-    now: int,
-    snapshot_active: bool,
-    autonomous_lab_active: bool,
-    pool_in_startup_grace: bool,
-    pool_started_age_seconds: int | None,
-    repair: bool,
-) -> tuple[bool, bool]:
-    if not isinstance(decision, dict):
-        return False, False
-    if not RPC_FAILOVER_ENABLED:
-        state["last_rpc_router_decision"] = {
-            "generated_at": decision.get("generated_at"),
-            "current_primary": decision.get("current_primary"),
-            "current_haproxy_primary": decision.get("current_haproxy_primary"),
-            "pool_selected_backend": decision.get("pool_selected_backend"),
-            "pool_selected_backend_node": decision.get("pool_selected_backend_node"),
-            "routing_alignment": decision.get("routing_alignment"),
-            "recommended_primary": decision.get("recommended_primary"),
-            "should_switch": False,
-            "reason": "rpc failover disabled",
-            "score_delta": decision.get("score_delta"),
-            "scores": decision.get("scores"),
-            "pool_pressure": decision.get("pool_pressure"),
-        }
-        return False, False
-
-    state["last_rpc_router_decision"] = {
-        "generated_at": decision.get("generated_at"),
-        "current_primary": decision.get("current_primary"),
-        "current_haproxy_primary": decision.get("current_haproxy_primary"),
-        "pool_selected_backend": decision.get("pool_selected_backend"),
-        "pool_selected_backend_node": decision.get("pool_selected_backend_node"),
-        "routing_alignment": decision.get("routing_alignment"),
-        "recommended_primary": decision.get("recommended_primary"),
-        "should_switch": bool(decision.get("should_switch")),
-        "reason": decision.get("reason"),
-        "score_delta": decision.get("score_delta"),
-        "scores": decision.get("scores"),
-        "pool_pressure": decision.get("pool_pressure"),
-    }
-    observed_primary = str(decision.get("current_primary") or current_rpc_primary() or "")
-    if observed_primary:
-        state["last_rpc_primary"] = observed_primary
-    if not decision.get("should_switch") or not repair:
-        return False, False
-
-    target = str(decision.get("recommended_primary") or "")
-    current_primary = observed_primary
-    if target not in NODES or target == current_primary:
-        return False, False
-
-    details = {
-        "current_primary": current_primary,
-        "current_haproxy_primary": decision.get("current_haproxy_primary"),
-        "pool_selected_backend": decision.get("pool_selected_backend"),
-        "pool_selected_backend_node": decision.get("pool_selected_backend_node"),
-        "routing_alignment": decision.get("routing_alignment"),
-        "recommended_primary": target,
-        "reason": decision.get("reason"),
-        "score_delta": decision.get("score_delta"),
-        "scores": decision.get("scores"),
-        "pool_pressure": decision.get("pool_pressure"),
-        "status_overall": status.get("overall"),
-    }
-    if autonomous_lab_active:
-        log(f"rpc router switch suppressed during autonomous stack lab current={current_primary} target={target}")
-        record_efficiency_event(
-            "repair_suppressed",
-            "warning",
-            "rpc router switch suppressed during autonomous stack lab",
-            details,
-        )
-        state["last_rpc_router_suppressed_at"] = now_iso()
-        state["last_rpc_router_suppressed_reason"] = "autonomous stack lab lock is held"
-        return False, True
-
-    if snapshot_active:
-        log(f"rpc router switch suppressed during hourly snapshot current={current_primary} target={target}")
-        record_efficiency_event(
-            "repair_suppressed",
-            "warning",
-            "rpc router switch suppressed during hourly snapshot",
-            details,
-        )
-        state["last_rpc_router_suppressed_at"] = now_iso()
-        state["last_rpc_router_suppressed_reason"] = "hourly snapshot lock is held"
-        return False, True
-
-    current_score_row = (
-        (decision.get("scores") or {}).get(current_primary)
-        if isinstance(decision.get("scores"), dict)
-        else {}
-    )
-    current_score_value = float((current_score_row or {}).get("score") or 0.0)
-    router_reason = str(decision.get("reason") or "")
-    hard_node_problem = bool(
-        "current-primary-hard-problem" in router_reason
-        or (current_score_row or {}).get("state") == "down"
-        or current_score_value <= 30.0
-    )
-    if pool_in_startup_grace and not hard_node_problem:
-        log(
-            "rpc router switch suppressed during pool startup grace "
-            f"age={pool_started_age_seconds}s current={current_primary} target={target} "
-            f"reason={decision.get('reason')}"
-        )
-        record_efficiency_event(
-            "repair_suppressed",
-            "warning",
-            "rpc router switch suppressed during pool startup grace",
-            {
-                **details,
-                "pool_started_age_seconds": pool_started_age_seconds,
-                "grace_seconds": DEFAULT_POOL_RESTART_GRACE_SECONDS,
-            },
-        )
-        state["last_rpc_router_suppressed_at"] = now_iso()
-        state["last_rpc_router_suppressed_reason"] = "pool startup grace"
-        return False, True
-
-    cooldown = rpc_router_switch_cooldown(decision)
-    cooldown_remaining = cooldown - (now - int(state.get("last_rpc_primary_switch_at", 0) or 0))
-    if cooldown_remaining > 0:
-        log(
-            f"rpc router switch suppressed by cooldown_remaining={cooldown_remaining}s "
-            f"current={current_primary} target={target} reason={decision.get('reason')}"
-        )
-        record_efficiency_event(
-            "repair_suppressed",
-            "warning",
-            "rpc router switch suppressed by cooldown",
-            {**details, "cooldown_remaining_seconds": cooldown_remaining, "cooldown_seconds": cooldown},
-        )
-        state["last_rpc_router_suppressed_at"] = now_iso()
-        state["last_rpc_router_suppressed_reason"] = "cooldown"
-        return False, True
-
-    reason = (
-        f"watchdog optimum-state RPC correction current={current_primary} target={target}; "
-        f"router={decision.get('reason')} score_delta={decision.get('score_delta')}"
-    )
-    ok = run_rpc_failover_switch(target, reason)
-    if ok:
-        switched_at = int(time.time())
-        state["last_rpc_primary_switch_at"] = switched_at
-        state["last_rpc_primary"] = target
-        state["last_repair_at"] = switched_at
-        state["last_rpc_router_applied_at"] = now_iso()
-        record_efficiency_event(
-            "rpc_router_switch",
-            "warning",
-            f"rpc primary switched to {target} for optimum runtime state",
-            details,
-        )
-    else:
-        state["last_rpc_router_failed_at"] = now_iso()
-    return ok, False
-
-
-def run_pool_restart(reason: str) -> bool:
     lock_handle = acquire_lock(blocking=False)
     if lock_handle is None:
         log(f"pool restart skipped because another repair is running; reason={reason}")
@@ -1380,6 +922,15 @@ def run_pool_restart(reason: str) -> bool:
 
 
 def run_miner_restarts(targets: list[dict[str, Any]], reason: str) -> dict[str, Any]:
+    target_label = ",".join(str(item.get("ip") or "") for item in targets) or "asic-miners"
+    if not automation_mutation_allowed(automation_control.ACTION_ASIC_MINER_RESTART, target_label, reason):
+        return {
+            "status": "suppressed",
+            "reason": "automation control denied ASIC miner restart",
+            "target_count": len(targets),
+            "results": [],
+        }
+
     password = read_miner_admin_password()
 
     lock_handle = acquire_lock(blocking=False)
@@ -1836,11 +1387,6 @@ def check_once(
 ) -> dict[str, Any]:
     state = read_state()
     status = collect_status_cached(include_logs=True)
-    router_decision = None
-    try:
-        router_decision = write_rpc_router_state(status)
-    except Exception as exc:  # noqa: BLE001 - router state must not block repair.
-        log(f"rpc router state update failed: {exc}")
     stack_failures = status.get("stack_failures", status["failures"])
     miner_failures = status.get("miner_failures", [])
     failures = stack_failures + miner_failures
@@ -1914,7 +1460,6 @@ def check_once(
         if isinstance(state.get("last_node_orphan_restart_at_by_node"), dict)
         else {}
     )
-    rpc_primary_switch_at = int(state.get("last_rpc_primary_switch_at", 0) or 0)
     docker_access_error = status.get("docker_access_error")
     snapshot_active = lock_is_held(HOURLY_SNAPSHOT_LOCK_FILE)
     autonomous_lab_active = lock_is_held(AUTONOMOUS_STACK_LAB_LOCK_FILE)
@@ -1937,22 +1482,6 @@ def check_once(
     for ip in sorted(asic_hashrate_issue_ips):
         asic_hashrate_issue_since.setdefault(ip, now)
     state["asic_hashrate_issue_since"] = asic_hashrate_issue_since
-    if not docker_access_error:
-        router_switched, router_suppressed = apply_watchdog_rpc_router_decision(
-            status,
-            state,
-            router_decision,
-            now,
-            snapshot_active,
-            autonomous_lab_active,
-            pool_in_startup_grace,
-            pool_started_age_seconds,
-            repair,
-        )
-        if router_switched:
-            rpc_primary_switch_at = int(state.get("last_rpc_primary_switch_at", 0) or 0)
-        elif not router_suppressed:
-            record_optimum_state_observation(status, state, router_decision, now)
 
     last_earnings_snapshot_epoch = int(state.get("last_earnings_snapshot_epoch", 0) or 0)
     if now - last_earnings_snapshot_epoch >= DEFAULT_EARNINGS_SNAPSHOT_INTERVAL_SECONDS:
@@ -2087,129 +1616,10 @@ def check_once(
                 state["last_repair_at"] = int(time.time())
                 if ok:
                     state["consecutive_failures"] = 0
-    elif active_rpc_template_failing(status) and int(miner_health.get("connected_count", 0) or 0) > 0:
-        current_primary = current_rpc_primary()
-        active_probe = ((status.get("rpc_template_health") or {}).get("rpc_failover") or {})
-        recent_mining_work = pool_has_recent_mining_work(status)
-        reason = (
-            "active RPC template path is refusing getBlockTemplate "
-            f"({active_probe.get('error_count')}/{active_probe.get('sample_count')} failed)"
-        )
-        if active_probe.get("last_error"):
-            reason += f": {active_probe.get('last_error')}"
-        state["consecutive_failures"] = 0
-        if recent_mining_work:
-            state["consecutive_syncing"] = 0
-        else:
-            state["consecutive_syncing"] = int(state.get("consecutive_syncing", 0) or 0) + 1
-        state["consecutive_share_stalls"] = 0
-        state["last_status"] = "rpc_template_degraded"
-        state["last_failures"] = []
-        state["last_sync_warnings"] = [reason]
-        log(f"rpc_template_degraded consecutive={state['consecutive_syncing']} primary={current_primary} reason={reason}")
-        record_efficiency_event(
-            "rpc_template_degraded",
-            "critical",
-            reason,
-            {
-                "current_primary": current_primary,
-                "rpc_template_health": status.get("rpc_template_health"),
-                "connected_miners": miner_health.get("connected_count"),
-                "recent_mining_work": recent_mining_work,
-            },
-        )
-        if repair:
-            ok = False
-            active_failing_nodes = rpc_probe_failing_nodes(status) or template_nodes
-            alternate_primary = (
-                healthy_rpc_alternate(status, active_failing_nodes, current_primary)
-                if current_primary in active_failing_nodes
-                else None
-            )
-            cooldown_remaining = DEFAULT_RPC_FAILOVER_URGENT_SWITCH_COOLDOWN - (now - rpc_primary_switch_at)
-            if alternate_primary and cooldown_remaining <= 0:
-                ok = run_rpc_failover_switch(
-                    alternate_primary,
-                    "active RPC template probe failure: " + reason,
-                )
-                if ok:
-                    state["last_rpc_primary_switch_at"] = int(time.time())
-                    state["last_rpc_primary"] = alternate_primary
-            elif alternate_primary:
-                log(
-                    f"rpc primary switch suppressed by urgent cooldown_remaining={cooldown_remaining}s "
-                    f"current_primary={current_primary} alternate={alternate_primary}"
-                )
-                record_efficiency_event(
-                    "repair_suppressed",
-                    "warning",
-                    "rpc primary switch suppressed by urgent cooldown",
-                    {
-                        "cooldown_remaining_seconds": cooldown_remaining,
-                        "current_primary": current_primary,
-                        "alternate_primary": alternate_primary,
-                        "reason": reason,
-                    },
-                )
-
-            repair_node = choose_active_rpc_repair_node(status, current_primary)
-            if not ok and repair_node:
-                node_cooldown_remaining = DEFAULT_NODE_TEMPLATE_RESTART_COOLDOWN - (
-                    now - int(node_template_restart_by_node.get(repair_node, 0) or 0)
-                )
-                if recent_mining_work:
-                    pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
-                    log(
-                        f"node template restart for {repair_node} suppressed because paid block submission is fresh "
-                        f"last_share_age={pool_health.get('last_valid_share_age_seconds')}s "
-                        f"last_block_submit_age={pool_health.get('last_block_submit_age_seconds')}s"
-                    )
-                    record_efficiency_event(
-                        "repair_suppressed",
-                        "warning",
-                        f"node template restart for {repair_node} suppressed because paid block submission is fresh",
-                        {
-                            "reason": reason,
-                            "last_valid_share_age_seconds": pool_health.get("last_valid_share_age_seconds"),
-                            "last_block_submit_age_seconds": pool_health.get("last_block_submit_age_seconds"),
-                        },
-                    )
-                elif state["consecutive_syncing"] >= 2 and node_cooldown_remaining <= 0:
-                    if suppress_sync_restart_for_active_import(status, state, reason, repair_node):
-                        if (
-                            pool_has_unpaid_template_loss(status)
-                            and not pool_in_startup_grace
-                            and now - int(state.get("last_submit_path_repair_at", 0) or 0)
-                            >= DEFAULT_SUBMIT_PATH_REPAIR_COOLDOWN
-                        ):
-                            ok = run_pool_restart(
-                                "clearing unpaid stale miner jobs while backend catches up: " + reason
-                            )
-                            state["last_submit_path_repair_at"] = int(time.time())
-                            state["last_share_repair_at"] = int(time.time())
-                    else:
-                        ok = run_node_restart(repair_node, "active RPC template probe failure: " + reason)
-                        node_template_restart_by_node[repair_node] = int(time.time())
-                        state["last_node_template_restart_at_by_node"] = node_template_restart_by_node
-                elif node_cooldown_remaining > 0:
-                    log(
-                        f"node template restart for {repair_node} suppressed by cooldown_remaining="
-                        f"{node_cooldown_remaining}s"
-                    )
-                    record_efficiency_event(
-                        "repair_suppressed",
-                        "warning",
-                        f"node template restart for {repair_node} suppressed by cooldown",
-                        {"cooldown_remaining_seconds": node_cooldown_remaining, "reason": reason},
-                    )
-            if ok:
-                state["last_repair_at"] = int(time.time())
-                state["last_sync_repair_at"] = int(time.time())
-                state["consecutive_syncing"] = 0
     elif orphan_nodes:
         nodes = status.get("nodes", {}) if isinstance(status.get("nodes"), dict) else {}
-        current_primary = current_rpc_primary()
-        target_nodes = [node for node in orphan_nodes if node != current_primary] or orphan_nodes
+        active_node = NODES[0] if NODES else ""
+        target_nodes = orphan_nodes
         target_node = target_nodes[0]
         target_info = nodes.get(target_node, {}) if isinstance(nodes.get(target_node), dict) else {}
         reason = (
@@ -2226,7 +1636,7 @@ def check_once(
         log(
             "node_orphan_error_storm "
             f"consecutive={state['consecutive_node_orphan_storm']} "
-            f"current_primary={current_primary or 'unknown'} affected={orphan_nodes} target={target_node}"
+            f"active_node={active_node or 'unknown'} affected={orphan_nodes} target={target_node}"
         )
         record_efficiency_event(
             "node_orphan_error_storm",
@@ -2235,7 +1645,7 @@ def check_once(
             {
                 "affected_nodes": orphan_nodes,
                 "target_node": target_node,
-                "current_primary": current_primary,
+                "active_node": active_node,
                 "target_node_status": target_info,
             },
         )
@@ -2259,15 +1669,15 @@ def check_once(
                     f"node orphan storm repair for {target_node} suppressed during autonomous stack lab",
                     {"reason": reason, "target_node": target_node},
                 )
-            elif pool_in_startup_grace and target_node == current_primary:
+            elif pool_in_startup_grace and target_node == active_node:
                 log(
-                    "node orphan storm repair suppressed during pool startup grace for active primary "
+                    "node orphan storm repair suppressed during pool startup grace for active node "
                     f"node={target_node} age={pool_started_age_seconds}s"
                 )
                 record_efficiency_event(
                     "repair_suppressed",
                     "warning",
-                    "node orphan storm repair suppressed during pool startup grace for active primary",
+                    "node orphan storm repair suppressed during pool startup grace for active node",
                     {
                         "reason": reason,
                         "target_node": target_node,
@@ -2794,38 +2204,6 @@ def check_once(
                 duplicate_block_storm = False
                 pool_template_frozen = False
                 global_degradation = False
-            current_primary = current_rpc_primary()
-            alternate_primary = (
-                healthy_rpc_alternate(status, template_nodes, current_primary)
-                if current_primary in template_nodes
-                else None
-            )
-            if alternate_primary:
-                cooldown_remaining = DEFAULT_RPC_FAILOVER_SWITCH_COOLDOWN - (now - rpc_primary_switch_at)
-                if cooldown_remaining <= 0:
-                    ok = run_rpc_failover_switch(
-                        alternate_primary,
-                        "ASIC mining degraded by current RPC primary template failure: " + reason,
-                    )
-                    if ok:
-                        state["last_rpc_primary_switch_at"] = int(time.time())
-                        state["last_rpc_primary"] = alternate_primary
-                else:
-                    log(
-                        f"rpc primary switch suppressed by cooldown_remaining={cooldown_remaining}s "
-                        f"current_primary={current_primary} alternate={alternate_primary}"
-                    )
-                    record_efficiency_event(
-                        "repair_suppressed",
-                        "warning",
-                        "rpc primary switch suppressed by cooldown",
-                        {
-                            "cooldown_remaining_seconds": cooldown_remaining,
-                            "current_primary": current_primary,
-                            "alternate_primary": alternate_primary,
-                            "reason": reason,
-                        },
-                    )
             if sync_repair_needed:
                 node = template_nodes[0] if template_nodes else choose_lagging_node(status) or NODES[0]
                 cooldown_remaining = DEFAULT_SYNCING_RESTART_COOLDOWN - (
@@ -2982,41 +2360,6 @@ def check_once(
                     "freshness_seconds": 60,
                 },
             )
-        elif repair and template_nodes:
-            current_primary = current_rpc_primary()
-            alternate_primary = (
-                healthy_rpc_alternate(status, template_nodes, current_primary)
-                if current_primary in template_nodes
-                else None
-            )
-            if alternate_primary:
-                cooldown_remaining = DEFAULT_RPC_FAILOVER_SWITCH_COOLDOWN - (now - rpc_primary_switch_at)
-                if cooldown_remaining <= 0:
-                    ok = run_rpc_failover_switch(
-                        alternate_primary,
-                        "sync warning from current RPC primary template failure: " + "; ".join(sync_warnings),
-                    )
-                    if ok:
-                        state["last_rpc_primary_switch_at"] = int(time.time())
-                        state["last_rpc_primary"] = alternate_primary
-                        state["last_repair_at"] = int(time.time())
-                        state["consecutive_syncing"] = 0
-                else:
-                    log(
-                        f"rpc primary switch suppressed during syncing by cooldown_remaining={cooldown_remaining}s "
-                        f"current_primary={current_primary} alternate={alternate_primary}"
-                    )
-                    record_efficiency_event(
-                        "repair_suppressed",
-                        "warning",
-                        "rpc primary switch suppressed during syncing by cooldown",
-                        {
-                            "cooldown_remaining_seconds": cooldown_remaining,
-                            "current_primary": current_primary,
-                            "alternate_primary": alternate_primary,
-                            "sync_warnings": sync_warnings,
-                        },
-                    )
         if repair and state["consecutive_syncing"] and should_restart_for_syncing(state, syncing_threshold, syncing_restart_cooldown):
             restart_node = template_nodes[0] if template_nodes else choose_lagging_node(status)
             if suppress_sync_restart_for_active_import(status, state, "; ".join(sync_warnings), restart_node):

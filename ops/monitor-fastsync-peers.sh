@@ -8,8 +8,8 @@ STATE_DIR="$STACK_DIR/ops/runtime"
 LOG_DIR="$STATE_DIR/logs"
 STATE_FILE="$STATE_DIR/fastsync-peer-monitor-state.json"
 MARKER_FILE="$STATE_DIR/fastsync-peer-visible"
-NODE_CONTAINER="${BDAG_FASTSYNC_MONITOR_NODE:-bdag-miner-node-2}"
-RPC_URL="${NODE2_RPC_URL:-${BDAG_NODE2_RPC_URL:-}}"
+NODE_CONTAINER="${BDAG_FASTSYNC_MONITOR_NODE:-bdag-miner-node-1}"
+RPC_URL="${BDAG_FASTSYNC_MONITOR_RPC_URL:-${BDAG_NODE_RPC_URL:-}}"
 
 mkdir -p "$LOG_DIR"
 
@@ -56,7 +56,7 @@ if ! raw_json="$(curl -fsS --max-time 10 \
     highest_peer_mainorder: null,
     connected_peer_count: 0,
     error: $error,
-    note: "RPC is not ready for peer inspection yet; this is expected while the node or rpc-failover is starting or refusing templates during sync."
+    note: "RPC is not ready for peer inspection yet; this is expected while the node is starting or refusing templates during sync."
   }')"
   tmp="$(mktemp "$STATE_FILE.XXXXXX")"
   printf '%s\n' "$state_json" >"$tmp"

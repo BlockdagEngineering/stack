@@ -120,7 +120,7 @@ Nodes also start with `--fastartifactsync` by default
 Sync V2 whenever the core binary supports it. The sync coordinator treats more
 than `BDAG_SYNC_COORDINATOR_FAR_BEHIND_BLOCKS=1000` remaining blocks as an
 automatic fastest-catch-up condition: it raises the selected leader's Docker CPU
-and IO weights, keeps duplicate sync work paused in dual-node mode, and restarts
+and IO weights, keeps duplicate sync work out of the production path, and restarts
 an unaccelerated or stale leader after the cooldown window so startup peer order
 and V2 artifact serving are active.
 
@@ -149,13 +149,28 @@ bootstrapped from a directory artifact, the entrypoint automatically exposes
 that verified checkpoint from the node datadir by using
 `artifact.manifest.json`.
 
+## IPFS Content Discovery
+
+Future systems should read `ops/ipfs-content-discovery.json` for the durable
+IPFS/IPNS discovery contract. The stable latest pointer is
+`/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk`; the current
+immutable latest-index CID is
+recorded in that discovery file. At the first live segment publish on
+2026-05-31 it was `bafkreifvqj7qhkoifykybbvlxxmq3jhydgzq2kjxuq5fznjizjjogzgthi`.
+The stale monolithic FastSnap seed has been deprecated. The current implementation
+writes append-only live-tail chain-order segments from one local writer until the
+multi-node publisher registry/election is deployed. The durable protocol design
+is recorded in `docs/ipfs-append-only-segment-protocol.html`. IPFS and IPNS are
+not chain trust. Receivers must verify segment CIDs, payload hashes, order
+continuity, publisher signatures once enabled, network/genesis identity,
+tip/state roots, and normal consensus before using the data.
+
 ## Pi5 Release Candidate Stability Defaults
 
 The Pi5 ARM64 release builder (`ops/build-pi5-arm64-release.sh`) now generates a
 self-monitoring stack package. It defaults to `BDAG_NODE_MODE=single`, which
-runs `bdag-miner-node-1` only to reduce USB power pressure. Choose `double` in
-the installer, or set `BDAG_NODE_MODE=double` with `COMPOSE_PROFILES=dual-node`,
-to add `bdag-miner-node-2`.
+runs `bdag-miner-node-1` only to reduce USB power pressure. The release no
+longer supports adding another local backend.
 
 No-miner deployments are sync-only by default: `BDAG_ENABLE_NODE_MINING=0`,
 `BDAG_NODE_MODULES=Blockdag`, and an empty `BDAG_NODE_MINING_ARGS`. Enable node
@@ -165,7 +180,7 @@ snapshot timers are installed by `ops/install-dashboard.sh` unless explicitly
 disabled.
 
 Dashboard block height is sourced from chain RPC `getBlockCount`; template
-height, logs, fan-in metrics, and main-order values are shown only as
+height, logs, and main-order values are shown only as
 diagnostics. Chain RPC checks retry slow storage-bound samples via
 `BDAG_NODE_CHAIN_RPC_TIMEOUT` and `BDAG_NODE_CHAIN_RPC_RETRIES`, and the status
 payload exposes the active dashboard URL, RPC latency, and Linux IO pressure
@@ -279,23 +294,6 @@ Once everything is running:
 - Mining pool Stratum endpoint: `stratum+tcp://localhost:3334`
 - RPC endpoint: `http://localhost:38131`
 
-## Dedicated snapshot node (mining stack unchanged)
-
-For hourly or on-demand **snap export**, run a **second** node with its own volumes and host ports so stopping it does not interrupt the pool’s RPC node.
-
-From this directory:
-
-```bash
-cp .env.snapshot.example .env.snapshot
-cp node.snapshot.conf.example node.snapshot.conf
-docker compose -p snapshot-node -f docker-compose.snapshot-node.yml --env-file .env.snapshot build
-docker compose -p snapshot-node -f docker-compose.snapshot-node.yml --env-file .env.snapshot up -d
-```
-
-- Named volumes **`bdag_snapshot_node_data`** / **`bdag_snapshot_nodeworker_data`** stay separate from the full stack’s `node-data`.
-- Default host ports **`9150`** (P2P), **`48131`** (BDAG RPC), **`28545`** / **`28546`** (EVM), **`16060`** (metrics) avoid clashes with the mining compose defaults.
-- Point export automation at container **`snapshot-node-node-1`** (see `docker compose -p snapshot-node ps`).
-
 ## Default V2 Sync Source
 
 New installs use Fast Artifact Sync V2 as the preferred bootstrap path. Client
@@ -310,10 +308,8 @@ Single-node systems do not stop the live node automatically. Set
 `BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=1` only for an operator-approved
 finalization window.
 
-The old archive FastSnap seed timer is no longer a single-node release default.
-`BDAG_FASTSNAP_SEED_TIMER_ENABLED=0` keeps `bdag-fastsnap-seed.timer` disabled
-unless a dual-node host explicitly opts into the legacy standby-export workflow.
-The stale-seed threshold is `BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG=10000`.
+The old archive seed timer has been removed because IPFS segments and finalized
+raw-datadir sidecars now own source publication.
 
 Check source eligibility and status with:
 
@@ -328,35 +324,11 @@ Refresh/publish the raw datadir source path with:
 ```
 
 See `docs/rawdatadir-libp2p-sync.md` and
-`docs/v2-sync-source-backlog.md`.
+`docs/ipfs-append-only-segment-protocol.html`.
 
-## Optional dual-node FastSnap archive seeding
-
-Dual-node mining hosts can still serve a P2P FastSnap archive without mining
-against a stopped node by using the pool router maintenance handoff. This is now
-an explicit compatibility path for older peers, not the preferred RC source
-design.
-
-Run an immediate refresh manually with:
-
-```bash
-./ops/build-fastsnap-seed.sh
-```
-
-The script requires a pool binary with `/admin/rpc-backend-maintenance`,
-`POOL_RUNTIME_ADMIN_ENABLED=true`, and `POOL_RPC_ROUTER_ENABLED=true`. It drains
-the export backend, proves the pool is still selected on the other backend,
-stops only the drained node, exports `snapshot.bdsnap`, restores the node before
-heavy verification, then verifies and installs the archive and manifest into
-both node datadirs. The installed files are hardlinks to a single archive under
-`data-restore/fastsnap`, so the host does not duplicate the node databases or
-keep separate per-node snapshot copies.
-
-The export path refuses to publish a stale public seed by default unless the
-standby/export backend is within `BDAG_FASTSNAP_MAX_EXPORT_BACKEND_LAG`
-main-order units of the selected backend. The default is `10000`.
-
-See `docs/fastsnap-maintenance-handoff.html`.
+The retired archive-seed script is no longer part of this stack. IPFS segments
+and finalized raw-datadir sidecars are the supported content-publication paths.
+Published files must be manifest-indexed and consensus-validated before use.
 
 ## Release readiness
 
@@ -381,9 +353,7 @@ miner-hour is the success metric for active multi-miner deployments, and
 tip-overdue, duplicate-local, invalidated-job, and non-current-job losses must
 not be hidden by connected miner count alone. The guard is conditional on the
 configured or observed miner source count; five miners are not an install-time
-default. FastSnap maintenance must keep the CPU cap guard in
-`docs/fastsnap-maintenance-resource-guard.html` and must not run archive
-finalization or verification without an explicit bounded CPU policy.
+default. Segment and sidecar maintenance must preserve bounded CPU/I/O policy.
 
 Issue #26 final-release mitigations are captured in
 `docs/final-release-issue-26-checklist.md`; keep that checklist current when

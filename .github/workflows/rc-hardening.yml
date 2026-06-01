@@ -21,8 +21,14 @@ jobs:
       - name: Python compile
         run: PYTHONDONTWRITEBYTECODE=1 python3 -m compileall -q ops scripts
 
+      - name: Tracked secret scan
+        run: python3 scripts/secret-scan-tracked-files.py
+
       - name: Unit tests
         run: BDAG_RUNTIME_DIR="$RUNNER_TEMP/bdag-runtime" PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s ops/tests -p 'test_*.py'
+
+      - name: Script tests
+        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/release_readiness_check_test.py
 
       - name: Shell syntax
         run: |

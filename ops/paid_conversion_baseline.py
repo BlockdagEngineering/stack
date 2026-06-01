@@ -247,7 +247,7 @@ def docker_container_state() -> dict[str, Any]:
         except json.JSONDecodeError:
             continue
         name = item.get("Names") or item.get("Name") or item.get("Container")
-        if name and str(name).startswith(("bdag-", "asic-pool", "rpc-failover", "pool-db")):
+        if name and str(name).startswith(("bdag-", "asic-pool", "pool-db")):
             rows[str(name)] = item
     return rows
 

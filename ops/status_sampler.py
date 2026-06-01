@@ -627,7 +627,6 @@ def repair_constrained_fastartifact(payload: dict[str, Any]) -> bool:
     changed_paths = set_runtime_env_value("BDAG_FASTARTIFACTSYNC_ENABLED", "0")
     changed_paths.extend(set_runtime_env_value("BDAG_NO_FASTSYNC_SERVE", "1"))
     changed_paths.extend(set_runtime_env_value("NODE_ARGS_APPEND", ""))
-    changed_paths.extend(set_runtime_env_value("SNAPSHOT_NODE_ARGS_APPEND", ""))
     ok, node_results = recreate_node_services()
     action = {
         "changed_env_paths": changed_paths,

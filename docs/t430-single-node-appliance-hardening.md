@@ -29,7 +29,7 @@ Field report from the `/home/hpool` mining host on 2026-05-26.
    and pool logs showed accepted blocks. Runtime truth had to come from node RPC,
    pool logs, and database rows.
 6. The host has only two cores and about 3 GiB RAM. Expensive dashboard scans,
-   duplicate node data, dual-node catch-up, and large caches can directly compete
+   duplicate chain data and large caches can directly compete
    with mining.
 7. Disk-backed swap and repeated ownership walks over chain data can turn memory
    pressure into disk write latency.

@@ -104,34 +104,21 @@ normalize_node_mode() {
   value="${value,,}"
   case "$value" in
     1|single|single-node|one|one-node) printf 'single\n' ;;
-    2|double|dual|dual-node|two|two-node) printf 'double\n' ;;
-    *) printf 'single\n' ;;
+    *) echo "unsupported_node_mode:$value" >&2; return 1 ;;
   esac
 }
 
 configure_node_mode_env() {
   local mode="$1"
-  if [[ "$mode" == "double" ]]; then
-    set_env_value .env BDAG_NODE_MODE double
-    set_env_value .env COMPOSE_PROFILES dual-node
-    set_env_value .env BDAG_NODE_SERVICES "bdag-miner-node-1,bdag-miner-node-2"
-    set_env_value .env BDAG_STACK_SERVICES "pool-db,bdag-miner-node-1,bdag-miner-node-2,rpc-failover,asic-pool"
-    set_env_value .env POOL_RPC_BACKENDS "node1=http://bdag-miner-node-1:38131,node2=http://bdag-miner-node-2:38131"
-    set_env_value .env POOL_SUBMIT_RPC_URLS "node1=http://bdag-miner-node-1:38131,node2=http://bdag-miner-node-2:38131"
-    set_env_value .env POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT true
-    set_env_value .env WALLET_RPC_URL "http://bdag-miner-node-2:18545"
-    set_env_value .env WALLET_RPC_URLS "http://bdag-miner-node-2:18545,http://bdag-miner-node-1:18545"
-  else
-    set_env_value .env BDAG_NODE_MODE single
-    set_env_value .env COMPOSE_PROFILES ""
-    set_env_value .env BDAG_NODE_SERVICES "bdag-miner-node-1"
-    set_env_value .env BDAG_STACK_SERVICES "pool-db,bdag-miner-node-1,rpc-failover,asic-pool"
-    set_env_value .env POOL_RPC_BACKENDS "node1=http://bdag-miner-node-1:38131"
-    set_env_value .env POOL_SUBMIT_RPC_URLS ""
-    set_env_value .env POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT true
-    set_env_value .env WALLET_RPC_URL "http://bdag-miner-node-1:18545"
-    set_env_value .env WALLET_RPC_URLS "http://bdag-miner-node-1:18545"
-  fi
+  mode="$(normalize_node_mode "$mode")"
+  set_env_value .env BDAG_NODE_MODE "$mode"
+  set_env_value .env COMPOSE_PROFILES ""
+  set_env_value .env BDAG_NODE_SERVICES "bdag-miner-node-1"
+  set_env_value .env BDAG_STACK_SERVICES "pool-db,bdag-miner-node-1,asic-pool"
+  set_env_value .env POOL_RPC_BACKENDS "node1=http://bdag-miner-node-1:38131"
+  set_env_value .env POOL_SUBMIT_RPC_URLS ""
+  set_env_value .env WALLET_RPC_URL "http://bdag-miner-node-1:18545"
+  set_env_value .env WALLET_RPC_URLS "http://bdag-miner-node-1:18545"
 }
 
 configure_node_mining_env() {
@@ -275,18 +262,16 @@ select_runtime_data_base() {
 }
 
 configure_storage_profile() {
-  local chain_base runtime_base node1_dir node2_dir postgres_dir runtime_dir profile existing_profile
+  local chain_base runtime_base node1_dir postgres_dir runtime_dir profile existing_profile
   chain_base="$(absolute_path "$(select_chain_data_base)")"
   runtime_base="$(absolute_path "$(select_runtime_data_base "$chain_base")")"
   existing_profile="$(env_value BDAG_STORAGE_PROFILE auto)"
   if [[ "$existing_profile" == "auto" || -z "$existing_profile" ]]; then
     node1_dir="$(env_path_value_for_auto_profile BDAG_NODE1_DATA_DIR "$chain_base/node1" "./data/node1")"
-    node2_dir="$(env_path_value_for_auto_profile BDAG_NODE2_DATA_DIR "$chain_base/node2" "./data/node2")"
     postgres_dir="$(env_path_value_for_auto_profile BDAG_POSTGRES_DATA_DIR "$runtime_base/postgres" "./data/postgres")"
     runtime_dir="$(env_path_value_for_auto_profile BDAG_RUNTIME_DIR "$runtime_base/ops-runtime" "./ops/runtime")"
   else
     node1_dir="$(env_path_value BDAG_NODE1_DATA_DIR "$chain_base/node1")"
-    node2_dir="$(env_path_value BDAG_NODE2_DATA_DIR "$chain_base/node2")"
     postgres_dir="$(env_path_value BDAG_POSTGRES_DATA_DIR "$runtime_base/postgres")"
     runtime_dir="$(env_path_value BDAG_RUNTIME_DIR "$runtime_base/ops-runtime")"
   fi
@@ -308,13 +293,12 @@ configure_storage_profile() {
   set_env_value .env BDAG_CHAIN_DATA_DIR "$chain_base"
   set_env_value .env BDAG_DATA_DIR "$chain_base"
   set_env_value .env BDAG_NODE1_DATA_DIR "$node1_dir"
-  set_env_value .env BDAG_NODE2_DATA_DIR "$node2_dir"
   set_env_value .env BDAG_POSTGRES_DATA_DIR "$postgres_dir"
   set_env_value .env BDAG_RUNTIME_DIR "$runtime_dir"
   set_env_value .env BDAG_STORAGE_MIN_CHAIN_FREE_GIB "$(env_value BDAG_STORAGE_MIN_CHAIN_FREE_GIB "${BDAG_STORAGE_MIN_CHAIN_FREE_GIB:-50}")"
   set_env_value .env BDAG_STORAGE_MIN_RUNTIME_FREE_GIB "$(env_value BDAG_STORAGE_MIN_RUNTIME_FREE_GIB "${BDAG_STORAGE_MIN_RUNTIME_FREE_GIB:-4}")"
 
-  mkdir -p asic-pool "$node1_dir" "$node2_dir" "$postgres_dir" "$runtime_dir/logs"
+  mkdir -p asic-pool "$node1_dir" "$postgres_dir" "$runtime_dir/logs"
   say "Storage profile: $profile"
   echo "Chain data: $chain_base"
   echo "Postgres data: $postgres_dir"
@@ -398,7 +382,7 @@ configure_env() {
     echo "A real reward wallet address is required." >&2
     exit 1
   fi
-  node_mode="$(normalize_node_mode "$(ask "Backend node mode: single or double" "$(grep -E '^BDAG_NODE_MODE=' .env | cut -d= -f2- || printf 'single')")")"
+  node_mode="$(normalize_node_mode "$(ask "Backend node mode" "$(grep -E '^BDAG_NODE_MODE=' .env | cut -d= -f2- || printf 'single')")")"
   node_mining_enabled=0
   if yes_no "Enable node mining/template support now? Choose yes only when miners are attached" "n"; then
     node_mining_enabled=1
@@ -433,9 +417,6 @@ configure_env() {
   set_env_value .env BDAG_FASTARTIFACTSYNC_ENABLED "$fastartifact_enabled"
   set_env_value .env BDAG_NO_FASTSYNC_SERVE "auto"
   set_env_value .env NODE_ARGS_APPEND ""
-  if [[ "$fastartifact_enabled" != "1" ]]; then
-    set_env_value .env SNAPSHOT_NODE_ARGS_APPEND ""
-  fi
   set_env_value .env BDAG_FASTSNAP_SEED_TIMER_ENABLED 0
   set_env_value .env BDAG_RAWDATADIR_SOURCE_MODE auto
   set_env_value .env BDAG_RAWDATADIR_ARTIFACT_BASE "./data-restore/rawdatadir"
@@ -453,8 +434,29 @@ configure_env() {
   set_env_value .env BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT 0
   set_env_value .env BDAG_IPFS_CONTENT_PUBLISH_IPNS 0
   set_env_value .env BDAG_IPFS_CONTENT_IPNS_KEY ""
+  set_env_value .env BDAG_IPFS_CONTENT_REPUBLISH_IPNS_WHILE_WAITING 1
+  set_env_value .env BDAG_IPFS_CONTENT_IPNS_TTL "1m"
+  set_env_value .env BDAG_IPFS_CONTENT_IPNS_LIFETIME "8760h"
+  set_env_value .env BDAG_IPFS_CONTENT_DISCOVERY_FILE "./ops/ipfs-content-discovery.json"
+  set_env_value .env BDAG_IPFS_CONTENT_LATEST_IPNS "/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk"
+  set_env_value .env BDAG_IPFS_CONTENT_DEFAULT_INDEX_CID "bafkreia7jk2ljqi3raiohugp6nw3633njfp7jmnuvqh47po52et4kupu2a"
+  set_env_value .env BDAG_IPFS_CONTENT_DEFAULT_ROOT_CID ""
   set_env_value .env BDAG_IPFS_CONTENT_STATUS_FILE "./ops/runtime/ipfs-content-sidecar-status.json"
   set_env_value .env BDAG_IPFS_CONTENT_LATEST_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
+  set_env_value .env BDAG_IPFS_SEGMENT_WRITER_MODE auto
+  set_env_value .env BDAG_IPFS_SEGMENT_START_POLICY live_tail
+  set_env_value .env BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS 600
+  set_env_value .env BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT 300
+  set_env_value .env BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN 1
+  set_env_value .env BDAG_IPFS_SEGMENT_MAX_RPC_PER_SECOND 25
+  set_env_value .env BDAG_IPFS_SEGMENT_RPC_TIMEOUT 8
+  set_env_value .env BDAG_IPFS_SEGMENT_BLOCK_RPC_RETRIES 2
+  set_env_value .env BDAG_IPFS_SEGMENT_PUBLISH_IPNS 0
+  set_env_value .env BDAG_IPFS_SEGMENT_IPNS_KEY ""
+  set_env_value .env BDAG_IPFS_SEGMENT_IPNS_TTL "1m"
+  set_env_value .env BDAG_IPFS_SEGMENT_IPNS_LIFETIME "8760h"
+  set_env_value .env BDAG_IPFS_SEGMENT_STATUS_FILE "./ops/runtime/ipfs-content/segment-writer-status.json"
+  set_env_value .env BDAG_IPFS_SEGMENT_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
   set_env_value .env BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC 1
   set_env_value .env BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS 900
   set_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT 1
@@ -560,16 +562,15 @@ find_or_extract_chain_seed() {
 }
 
 seed_chain_data() {
-  local seed chain_base node1_dir node2_dir template_dir node_mode
+  local seed chain_base node1_dir template_dir node_mode
   if ! seed="$(find_or_extract_chain_seed)"; then
-    warn "No separate chain-data seed found. Nodes will sync from configured P2P peers."
+    warn "No separate chain-data seed found. The node will sync from configured P2P peers."
     warn "If you received chain-data parts, reassemble them first, then rerun ./install.sh."
     return 0
   fi
 
   chain_base="$(env_path_value BDAG_CHAIN_DATA_DIR data)"
   node1_dir="$(env_path_value BDAG_NODE1_DATA_DIR "$chain_base/node1")"
-  node2_dir="$(env_path_value BDAG_NODE2_DATA_DIR "$chain_base/node2")"
   template_dir="$chain_base/chain-template"
   node_mode="$(env_value BDAG_NODE_MODE single)"
   if [[ -z "$template_dir" || "$template_dir" == "/" ]]; then
@@ -577,38 +578,30 @@ seed_chain_data() {
     exit 1
   fi
 
-  if [[ -d "$node1_dir/mainnet/BdagChain" || -d "$node2_dir/mainnet/BdagChain" ]]; then
+  if [[ -d "$node1_dir/mainnet/BdagChain" ]]; then
     if ! yes_no "Existing node chain data was found. Replace it from the chain seed?" "n"; then
       return 0
     fi
     mv "$node1_dir" "$node1_dir.backup.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
-    mv "$node2_dir" "$node2_dir.backup.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
-    mkdir -p "$node1_dir" "$node2_dir"
+    mkdir -p "$node1_dir"
   fi
 
-  say "Unpacking one chain seed and copying it to configured node datadirs"
+  say "Unpacking one chain seed for the configured node datadir"
   rm -rf "$template_dir"
-  mkdir -p "$template_dir" "$node1_dir" "$node2_dir"
+  mkdir -p "$template_dir" "$node1_dir"
   unzip -q "$seed" -d "$template_dir"
   if [[ -d "$template_dir/chain-data" ]]; then
     rsync -a "$template_dir/chain-data/" "$node1_dir/"
-    if [[ "$node_mode" == "double" ]]; then
-      rsync -a "$template_dir/chain-data/" "$node2_dir/"
-    fi
   else
     rsync -a "$template_dir/" "$node1_dir/"
-    if [[ "$node_mode" == "double" ]]; then
-      rsync -a "$template_dir/" "$node2_dir/"
-    fi
   fi
 }
 
 publish_p2p_snapshot_archive() {
   local arch="$1"
   local bdag_bin="artifacts/binaries/linux-$arch/bdag"
-  local node1_dir node2_dir source_datadir target_datadir
+  local node1_dir source_datadir target_datadir
   node1_dir="$(env_path_value BDAG_NODE1_DATA_DIR data/node1)"
-  node2_dir="$(env_path_value BDAG_NODE2_DATA_DIR data/node2)"
   source_datadir="$node1_dir/mainnet"
   target_datadir="$node1_dir/mainnet"
   local source_archive="$source_datadir/snapshot.bdsnap"
@@ -624,7 +617,7 @@ publish_p2p_snapshot_archive() {
     return 0
   fi
   if [[ ! -d "$source_datadir/BdagChain" ]]; then
-    warn "No seeded node1 chain DB found; nodes will sync first, then use raw-datadir FastArtifact source serving after a finalized sidecar publish."
+    warn "No seeded node1 chain DB found; the node will sync first, then use raw-datadir FastArtifact source serving after a finalized sidecar publish."
     return 0
   fi
 
@@ -640,26 +633,14 @@ publish_p2p_snapshot_archive() {
     say "Existing node1 P2P snapshot archive found: $source_archive"
   fi
 
-  target_datadir="$node2_dir/mainnet"
-  target_archive="$target_datadir/snapshot.bdsnap"
-  if [[ "$(env_value BDAG_NODE_MODE single)" == "double" && -d "$target_datadir/BdagChain" ]]; then
-    mkdir -p "$target_datadir"
-    rm -f "$target_archive" "$target_archive.manifest.json"
-    ln "$source_archive" "$target_archive" 2>/dev/null || cp -f "$source_archive" "$target_archive"
-    if [[ -f "$source_archive.manifest.json" ]]; then
-      ln "$source_archive.manifest.json" "$target_archive.manifest.json" 2>/dev/null || cp -f "$source_archive.manifest.json" "$target_archive.manifest.json"
-    fi
-    say "P2P snapshot archive available to node1 and node2"
-  else
-    warn "node2 is not enabled or has no chain DB; only node1 can serve a P2P snapshot."
-  fi
+  say "P2P snapshot archive available to node1"
 }
 
 start_stack() {
   say "Starting BlockDAG pool stack"
   guard_runtime_compose
   if [[ "${BDAG_RELEASE_PULL_BASE_IMAGES:-0}" == "1" ]]; then
-    compose_cmd pull pool-db rpc-failover || true
+    compose_cmd pull pool-db || true
   else
     warn "Skipping implicit image pulls. Set BDAG_RELEASE_PULL_BASE_IMAGES=1 for an explicit base-image refresh."
   fi

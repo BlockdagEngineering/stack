@@ -14,6 +14,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import automation_control
 from incident_journal import append_incident
 from pool_ops import (
     LOG_DIR,
@@ -22,7 +23,6 @@ from pool_ops import (
     POOL_DB_CONTAINER,
     POOL_ENV_FILE,
     PROJECT_ROOT,
-    RPC_FAILOVER_ENABLED,
     RUNTIME_DIR,
     SERVICES,
     docker_inspect,
@@ -43,9 +43,6 @@ SHARE_STALE_SECONDS = int(os.environ.get("BDAG_SENTINEL_SHARE_STALE_SECONDS", "1
 NODE_LOG_LOOKBACK_SECONDS = int(os.environ.get("BDAG_SENTINEL_NODE_LOG_LOOKBACK_SECONDS", "300"))
 ZERO_STATE_ROOT_WARN_COUNT = int(os.environ.get("BDAG_SENTINEL_ZERO_STATE_ROOT_WARN_COUNT", "3"))
 ZERO_STATE_ROOT_CRITICAL_COUNT = int(os.environ.get("BDAG_SENTINEL_ZERO_STATE_ROOT_CRITICAL_COUNT", "20"))
-RPC_FAILOVER_SERVICE = os.environ.get("BDAG_RPC_FAILOVER_SERVICE", "rpc-failover")
-HAPROXY_CFG = PROJECT_ROOT / "haproxy.cfg"
-HAPROXY_RUNTIME_DNS_OPTIONS = "resolvers docker init-addr libc,none"
 FAILURE_AGE_RE = re.compile(r"\bfor \d+s\b")
 DESKTOP_NOTIFY_ENABLED = os.environ.get("BDAG_SENTINEL_DESKTOP_NOTIFY", "false").strip().lower() in {
     "1",
@@ -108,19 +105,6 @@ def acquire_run_lock() -> Any | None:
     return handle
 
 
-def sync_coordinator_pause_state() -> tuple[str, dict[str, Any]]:
-    try:
-        state = json.loads(SYNC_COORDINATOR_STATE_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return "", {}
-    if not isinstance(state, dict):
-        return "", {}
-    paused = str(state.get("paused_follower") or "")
-    if state.get("mode") == "leader_catchup" and paused in NODES:
-        return paused, state
-    return "", state
-
-
 def should_emit(state: dict[str, Any], key: str, signature: str, now: int) -> bool:
     last_signature = str(state.get(f"{key}_signature") or "")
     last_epoch = int(state.get(f"{key}_epoch", 0) or 0)
@@ -130,6 +114,43 @@ def should_emit(state: dict[str, Any], key: str, signature: str, now: int) -> bo
     state[f"{key}_epoch"] = now
     state[f"{key}_at"] = now_iso()
     return True
+
+
+def automation_action_for_container(service: str, recreate: bool = False) -> str:
+    if service == POOL_CONTAINER:
+        return automation_control.ACTION_ASIC_POOL_RESTART if recreate else automation_control.ACTION_ASIC_POOL_START
+    return automation_control.ACTION_CONTAINER_RECREATE if recreate else automation_control.ACTION_CONTAINER_START
+
+
+def automation_mutation_allowed(
+    action: str,
+    target: str,
+    reason: str,
+    state: dict[str, Any],
+    now: int,
+) -> bool:
+    decision = automation_control.check_mutation_allowed(
+        action,
+        actor="sentinel",
+        target=target,
+        reason=reason,
+    )
+    if decision.allowed:
+        return True
+    message = (
+        f"Stack sentinel suppressed {action} for {target}: "
+        f"{decision.reason}"
+    )
+    if should_emit(state, f"automation_control_{action}_{target}", decision.reason, now):
+        append_incident(
+            "automation_control_suppressed",
+            "critical",
+            "stack-sentinel",
+            message,
+            decision.as_dict(),
+        )
+    log(message)
+    return False
 
 
 def stable_failure_signature(failures: list[Any]) -> str:
@@ -156,6 +177,14 @@ def unit_active(unit: str) -> bool:
 
 def start_unit(unit: str, state: dict[str, Any], now: int) -> None:
     if unit_active(unit):
+        return
+    if not automation_mutation_allowed(
+        automation_control.ACTION_SYSTEMD_START,
+        unit,
+        "Stack sentinel user unit start",
+        state,
+        now,
+    ):
         return
     result = systemctl_user("start", unit)
     details = {
@@ -207,6 +236,10 @@ def compose_service_name(name: str) -> str:
 
 
 def start_container(service: str, reason: str, state: dict[str, Any], now: int) -> bool:
+    action = automation_action_for_container(service, recreate=False)
+    if not automation_mutation_allowed(action, service, reason, state, now):
+        return False
+
     log_path = LOG_DIR / f"sentinel-start-{service}-{now}.log"
     compose_target = compose_service_name(service)
     result = run_logged(compose_command("start", compose_target), log_path, timeout=120)
@@ -237,6 +270,10 @@ def start_container(service: str, reason: str, state: dict[str, Any], now: int) 
 
 
 def recreate_container(service: str, reason: str, state: dict[str, Any], now: int) -> bool:
+    action = automation_action_for_container(service, recreate=True)
+    if not automation_mutation_allowed(action, service, reason, state, now):
+        return False
+
     log_path = LOG_DIR / f"sentinel-recreate-{service}-{now}.log"
     compose_target = compose_service_name(service)
     result = run_logged(
@@ -270,64 +307,6 @@ def recreate_container(service: str, reason: str, state: dict[str, Any], now: in
     return False
 
 
-def ensure_rpc_failover_config_boot_safe(state: dict[str, Any], now: int) -> bool:
-    try:
-        original = HAPROXY_CFG.read_text(encoding="utf-8")
-    except OSError as exc:
-        log(f"could not read {HAPROXY_CFG}: {exc}")
-        return False
-
-    text = original
-    if not re.search(r"(?m)^resolvers\s+docker\b", text):
-        resolver_block = (
-            "resolvers docker\n"
-            "  nameserver dns 127.0.0.11:53\n"
-            "  resolve_retries 3\n"
-            "  timeout retry 1s\n"
-            "  hold valid 10s\n\n"
-        )
-        if "\nbackend blockdag_rpc_nodes" in text:
-            text = text.replace("\nbackend blockdag_rpc_nodes", f"\n{resolver_block}backend blockdag_rpc_nodes", 1)
-        else:
-            text = f"{text.rstrip()}\n\n{resolver_block}"
-
-    rendered: list[str] = []
-    for line in text.splitlines():
-        match = re.match(r"(\s*server\s+node[12]\s+bdag-miner-node-[12]:38131\b)(.*)$", line)
-        if not match:
-            rendered.append(line)
-            continue
-        prefix, options = match.groups()
-        backup = " backup " in f" {options} "
-        new_line = f"{prefix} check inter 5s fall 3 rise 2 {HAPROXY_RUNTIME_DNS_OPTIONS}"
-        if backup:
-            new_line += " backup"
-        rendered.append(new_line)
-    text = "\n".join(rendered).rstrip() + "\n"
-
-    if text == original:
-        return False
-
-    backup_path = RUNTIME_DIR / f"haproxy.cfg.sentinel-{now}.bak"
-    try:
-        backup_path.write_text(original, encoding="utf-8")
-        HAPROXY_CFG.write_text(text, encoding="utf-8")
-    except OSError as exc:
-        log(f"could not write reboot-safe {HAPROXY_CFG}: {exc}")
-        return False
-
-    if should_emit(state, "haproxy_boot_safe_config", str(backup_path), now):
-        append_incident(
-            "sentinel_haproxy_boot_safe_config",
-            "warning",
-            "stack-sentinel",
-            "Stack sentinel repaired HAProxy Docker DNS startup safety",
-            {"config": str(HAPROXY_CFG), "backup_path": str(backup_path)},
-        )
-    log(f"repaired HAProxy boot-safe DNS config backup={backup_path}")
-    return True
-
-
 def notify_user(title: str, body: str) -> None:
     if not DESKTOP_NOTIFY_ENABLED:
         log(f"desktop notification suppressed title={title!r}")
@@ -341,9 +320,8 @@ def notify_user(title: str, body: str) -> None:
 
 def inspect_and_repair_containers(status: dict[str, Any] | None, state: dict[str, Any], now: int) -> None:
     inspected = docker_inspect(SERVICES)
-    paused_follower, pause_state = sync_coordinator_pause_state()
     critical_services = unique_names(
-        [POOL_DB_CONTAINER, *NODES, *([RPC_FAILOVER_SERVICE] if RPC_FAILOVER_ENABLED else []), POOL_CONTAINER]
+        [POOL_DB_CONTAINER, *NODES, POOL_CONTAINER]
     )
     stopped = [name for name in critical_services if not inspected.get(name, {}).get("running")]
     restarting = [
@@ -351,43 +329,27 @@ def inspect_and_repair_containers(status: dict[str, Any] | None, state: dict[str
         for name in critical_services
         if inspected.get(name, {}).get("status") == "restarting"
     ]
-    actionable_stopped = [name for name in stopped if name != paused_follower]
     state["stopped_containers"] = stopped
     state["restarting_containers"] = restarting
-    state["actionable_stopped_containers"] = actionable_stopped
-    state["sync_coordinator_paused_follower"] = paused_follower
-    if paused_follower in stopped:
-        log(
-            f"leaving {paused_follower} stopped by sync coordinator while "
-            f"{pause_state.get('leader') or 'leader'} catches up"
-        )
-    if actionable_stopped and should_emit(state, "stopped_containers", ",".join(actionable_stopped), now):
+    state["actionable_stopped_containers"] = stopped
+    if stopped and should_emit(state, "stopped_containers", ",".join(stopped), now):
         append_incident(
             "sentinel_stopped_containers",
             "critical",
             "stack-sentinel",
             "Critical BlockDAG container(s) are stopped",
             {
-                "stopped": actionable_stopped,
-                "planned_paused_follower": paused_follower,
+                "stopped": stopped,
                 "containers": inspected,
             },
         )
-        notify_user("BlockDAG mining stack needs attention", f"Stopped containers: {', '.join(actionable_stopped)}")
+        notify_user("BlockDAG mining stack needs attention", f"Stopped containers: {', '.join(stopped)}")
 
     if POOL_DB_CONTAINER in stopped:
         start_container(POOL_DB_CONTAINER, "database container is stopped", state, now)
     for node in NODES:
         if node in stopped:
-            if node == paused_follower:
-                continue
             start_container(node, "node container is stopped", state, now)
-    if RPC_FAILOVER_ENABLED and RPC_FAILOVER_SERVICE in stopped:
-        ensure_rpc_failover_config_boot_safe(state, now)
-        recreate_container(RPC_FAILOVER_SERVICE, "RPC failover container is stopped", state, now)
-    elif RPC_FAILOVER_ENABLED and RPC_FAILOVER_SERVICE in restarting:
-        ensure_rpc_failover_config_boot_safe(state, now)
-        recreate_container(RPC_FAILOVER_SERVICE, "RPC failover container is restarting", state, now)
     if POOL_CONTAINER in stopped:
         start_container(POOL_CONTAINER, "ASIC pool container is stopped", state, now)
 
@@ -411,10 +373,7 @@ def inspect_and_repair_containers(status: dict[str, Any] | None, state: dict[str
 
 
 def check_node_log_red_flags(state: dict[str, Any], now: int) -> None:
-    paused_follower, _ = sync_coordinator_pause_state()
     for node in NODES:
-        if node == paused_follower:
-            continue
         result = subprocess.run(
             ["docker", "logs", "--since", f"{NODE_LOG_LOOKBACK_SECONDS}s", node],
             text=True,
@@ -458,8 +417,6 @@ def main() -> int:
     try:
         for unit in [*USER_SERVICES, *USER_TIMERS]:
             start_unit(unit, state, now)
-
-        ensure_rpc_failover_config_boot_safe(state, now)
 
         status, error = status_api()
         state["dashboard_status_ok"] = status is not None

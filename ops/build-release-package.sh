@@ -109,7 +109,7 @@ write_share_readme() {
     <h1>BlockDAG Pool Release</h1>
     <p>This release is split into an independent stack installer and an optional chain-data seed. You can share the stack without the data, or share the data separately when the recipient wants a faster initial sync.</p>
     <section class="grid">
-      <div class="card stack"><strong>Stack installer</strong><p><code>$stack_zip</code> contains the pool, two-node runtime, dashboard, watchdog, tools, and image artifacts.</p></div>
+      <div class="card stack"><strong>Stack installer</strong><p><code>$stack_zip</code> contains the pool, single-node runtime, dashboard, watchdog, tools, and image artifacts.</p></div>
       <div class="card data"><strong>Chain data</strong><p><code>$data_zip.part-*</code> are 1.8GB chunks. Reassemble them into <code>$data_zip</code> before install if fast sync is wanted.</p></div>
     </section>
     <h2>Install With Chain Data</h2>
@@ -122,7 +122,7 @@ cd $RELEASE_NAME
     <pre><code>unzip $stack_zip
 cd $RELEASE_NAME
 ./install.sh</code></pre>
-    <div class="card warn"><strong>Note</strong><p>Without the data package, both nodes will sync from peers. With the data package, one seed is unpacked once and copied to both backend nodes.</p></div>
+    <div class="card warn"><strong>Note</strong><p>Without the data package, the node will sync from peers. With the data package, one seed is unpacked once for the backend node.</p></div>
   </main>
   <script type="application/json" id="agent-metadata">
   {
@@ -215,7 +215,7 @@ rsync -a --delete \
 say "Overlaying current production ops files"
 rsync -a --delete --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' \
   "$PROJECT_ROOT/ops"/ "$PACKAGE_DIR/ops"/
-rsync -a "$PROJECT_ROOT/docker-compose.yml" "$PROJECT_ROOT/haproxy.cfg" "$PACKAGE_DIR"/
+rsync -a "$PROJECT_ROOT/docker-compose.yml" "$PACKAGE_DIR"/
 mkdir -p "$PACKAGE_DIR/asic-pool"
 rsync -a "$PROJECT_ROOT/asic-pool/schema.sql" "$PACKAGE_DIR/asic-pool/schema.sql"
 cp "$PROJECT_ROOT/ops/release-install.sh" "$PACKAGE_DIR/install.sh"
@@ -227,7 +227,7 @@ cat > "$PACKAGE_DIR/README.html" <<EOF
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BlockDAG Pool Installer</title></head>
 <body>
   <h1>BlockDAG Pool Installer</h1>
-  <p>This stack package can be installed by itself. If a separate chain-data zip is present next to this folder, <code>install.sh</code> can use it to seed both backend nodes.</p>
+  <p>This stack package can be installed by itself. If a separate chain-data zip is present next to this folder, <code>install.sh</code> can use it to seed the backend node.</p>
   <pre><code>./install.sh</code></pre>
   <script type="application/json" id="agent-metadata">
   {"document_type":"installer_guide","release_name":"$RELEASE_NAME","chain_data_external":true}

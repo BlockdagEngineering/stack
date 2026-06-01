@@ -11,7 +11,7 @@ while removing local assumptions that caused install or sync drift.
   or newer, including directory V2 artifact support, latency-first artifact
   peer preference, and the zero-state-root `HasState` guard.
 - `pool`: `develop` at `61b231c0501b32338f4ad47561a09e03e5933adc` or newer,
-  using the RPC router plus duplicate-safe multi-backend submit fanout.
+  pinned to a single backend submit path.
 - `pool-dashboard`: `develop` at `c82978751f035afd0e9da2b3d5d1fac69eae6858`
   or newer.
 
@@ -28,9 +28,8 @@ while removing local assumptions that caused install or sync drift.
 - Installers preflight architecture, Docker Compose, disk, port occupancy, time
   sync, optional `jq`, and seed reachability. Old/orphan Compose cleanup is a
   dry-run unless `BDAG_CLEAN_ORPHAN_CONTAINERS=1` is set.
-- Dual-node installs configure both compatibility fanout
-  `POOL_SUBMIT_RPC_URLS` and the current pool path
-  `POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT=true`.
+- Installs configure one direct submit endpoint and do not enable endpoint
+  fanout by default.
 - Fast Artifact Sync V2 is default. When more than 1000 blocks behind, the sync
   coordinator accelerates the leader and restarts stale or non-V2 catch-up after
   the cooldown.

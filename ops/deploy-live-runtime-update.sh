@@ -22,21 +22,19 @@ FILES=(
   "asic-pool/schema.sql"
   "docker-compose-miner.yml"
   "docker/entrypoint-nodeworker.sh"
-  "docs/fastsnap-maintenance-resource-guard.html"
   "docs/five-asic-template-conversion-guard.html"
   "docs/ipfs-content-sidecar.html"
   "docs/platform-adaptive-runtime.md"
   "docs/rawdatadir-libp2p-sync.md"
-  "docs/v2-sync-source-backlog.md"
-  "haproxy.cfg"
+  "docs/ipfs-append-only-segment-protocol.html"
   "host/mining-appliance/bdag-runtime-priority.timer"
   "ops/README.md"
-  "ops/build-fastsnap-seed.sh"
   "ops/build-rawdatadir-artifact.sh"
   "ops/fastartifact_source_eligibility.py"
   "ops/fetch-rawdatadir-artifact.sh"
   "ops/maintain-rawdatadir-sidecar.sh"
   "ops/publish-rawdatadir-artifact.sh"
+  "ops/verify-rawdatadir-sidecar.py"
   "ops/pool_ops.py"
   "ops/status_sampler.py"
   "ops/dashboard.py"
@@ -49,6 +47,7 @@ FILES=(
   "ops/install-p2p-services.sh"
   "ops/ipfs_content_sidecar.py"
   "ops/seal_rawdatadir_sidecar_content.py"
+  "ops/ipfs-content-discovery.json"
   "ops/latest_chain_candidate.py"
   "ops/node_child_guard.py"
   "ops/optimization_measurement.py"
@@ -67,18 +66,20 @@ FILES=(
   "ops/tests/test_no_miner_collect_status.py"
   "ops/tests/test_optimization_measurement.py"
   "ops/tests/test_compose_migrations.py"
+  "ops/tests/test_rawdatadir_sidecar_verify.py"
   "ops/tests/test_status_sampler_mining_imperative.py"
   "ops/tests/test_sync_coordinator_fast_catchup.py"
   "ops/tests/test_watchdog_miner_source_counts.py"
   "ops/update-local-peers.py"
   "ops/watchdog.py"
   "ops/systemd/user-bdag-chain-restore-guard.timer"
-  "ops/systemd/user-bdag-fastsnap-seed.timer"
   "ops/systemd/user-bdag-hourly-snapshot.timer"
   "ops/systemd/user-bdag-incident-reporter.timer"
   "ops/systemd/user-bdag-node-child-guard.timer"
   "ops/systemd/user-bdag-rawdatadir-sidecar.service"
   "ops/systemd/user-bdag-rawdatadir-sidecar.timer"
+  "ops/systemd/user-bdag-rawdatadir-sidecar-verify.service"
+  "ops/systemd/user-bdag-rawdatadir-sidecar-verify.timer"
   "ops/systemd/user-bdag-rawdatadir-source.service"
   "ops/systemd/user-bdag-rawdatadir-source.timer"
   "ops/systemd/user-bdag-ipfs-content-sidecar.service"
@@ -333,7 +334,6 @@ migrate_runtime_compose() {
   local key
   local missing=0
   for key in \
-    POOL_DUPLICATE_SAFE_MULTI_BACKEND_SUBMIT \
     POOL_SUBMIT_STALE_BLOCK_CANDIDATES \
     POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED \
     POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD
@@ -362,7 +362,7 @@ post_deploy_critical_containers() {
     printf '%s\n' "$services" | tr ',' ' '
     return
   fi
-  printf '%s\n' "pool-db rpc-failover asic-pool"
+  printf '%s\n' "pool-db bdag-miner-node-1 asic-pool"
 }
 
 dashboard_api_ready() {
