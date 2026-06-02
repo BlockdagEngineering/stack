@@ -77,6 +77,17 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertEqual(captured["url"], "http://127.0.0.1:9090/metrics")
         self.assertEqual(captured["timeout"], 2.5)
 
+    def test_compose_dashboard_targets_stack_container_names(self) -> None:
+        compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+
+        self.assertIn("BDAG_NODE_SERVICES: node", compose)
+        self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool", compose)
+        self.assertIn("BDAG_POOL_CONTAINER: pool", compose)
+        self.assertIn("BDAG_POOL_DB_CONTAINER: postgres", compose)
+        self.assertIn("BDAG_NODE_RPC_URLS: node=http://node:38131", compose)
+        self.assertIn("DASHBOARD_EVM_RPC_URL: http://node:18545", compose)
+        self.assertNotIn("BDAG_RPC_URL: http://bdag-miner-node-1:38131", compose)
+
     def test_live_deploy_copy_contract_covers_live_validator_files(self) -> None:
         deploy = (ROOT_DIR / "ops" / "deploy-live-runtime-update.sh").read_text(encoding="utf-8")
         validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
