@@ -89,6 +89,12 @@ prefer `BDAG_FASTSYNC_PREPROCESS_WORKERS=1` on Pi catch-up hosts. The parallel
 preprocessor has previously panicked in `processFastBlockRange`; uptime and
 steady catch-up beat the small parallel precheck speedup.
 
+Startup seed freshness must have operational slack. If a sidecar, raw datadir
+artifact, or remote seed is within `BDAG_SYNC_ACCEPTABLE_STARTUP_LAG_BLOCKS`
+(default 4000 blocks), start the node and let P2P/FastSync catch the tail.
+Use the recorded copy duration allowance to avoid repeated full copies; do not
+recopy just to close an already-acceptable lag.
+
 ## Five ASIC Template Conversion Invariant
 
 For five-X100 local mining hosts and other multi-miner deployments, connected
