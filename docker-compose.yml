@@ -41,6 +41,8 @@ x-dashboard-low: &dashboard-low
   blkio_config:
     weight: 100
   oom_score_adj: 300
+  
+
 
 services:
 
@@ -72,7 +74,7 @@ services:
   # --------------------------------------------------------------------------
   # BlockDAG node + nodeworker supervisor. Optional SNAPSHOT_PATH at build time.
   # --------------------------------------------------------------------------
-  bdag-miner-node-1:
+  node:
     <<: *node-critical
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     container_name: node
@@ -157,7 +159,7 @@ services:
   # --------------------------------------------------------------------------
   # Mining pool. Connects to node RPC and Postgres.
   # --------------------------------------------------------------------------
-  asic-pool:
+  pool:
     <<: *pool-critical
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     container_name: pool
@@ -175,11 +177,10 @@ services:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     depends_on:
       pool-db: { condition: service_healthy }
-      bdag-miner-node-1: { condition: service_started }
     environment:
       # Compose interpolates ${...} from the project root .env file.
-      NODE_RPC_URL: http://bdag-miner-node-1:38131
-      NODE_RPC_URLS: ${NODE_RPC_URLS:-http://bdag-miner-node-1:38131}
+      NODE_RPC_URL: http://node:38131
+      NODE_RPC_URLS: ${NODE_RPC_URLS:-http://node:38131}
       POOL_SUBMIT_RPC_URLS: ${POOL_SUBMIT_RPC_URLS:-}
       POOL_RPC_BACKENDS: ${POOL_RPC_BACKENDS:-}
       POOL_RUNTIME_ADMIN_ENABLED: ${POOL_RUNTIME_ADMIN_ENABLED:-false}
@@ -239,8 +240,8 @@ services:
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     depends_on:
-      bdag-miner-node-1: { condition: service_started }
-      asic-pool: { condition: service_started }
+      node: { condition: service_started }
+      pool: { condition: service_started }
     environment:
       BDAG_RPC_URL: http://bdag-miner-node-1:38131
       # Must match node.conf rpcuser / rpcpass (same as pool service).
@@ -264,9 +265,10 @@ services:
   # Optional CPU miner (dockerfile-dev target only). Enable with:
   #   COMPOSE_PROFILES=miner
   # --------------------------------------------------------------------------
-  miner:
+  cpu-miner:
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     profiles: [miner]
+    container_name: cpu-miner
     build:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile-dev}
@@ -276,6 +278,7 @@ services:
       args:
         <<: *build-args
     restart: unless-stopped
+    logging: *mining-logging
     depends_on:
       pool: { condition: service_started }
     environment:
