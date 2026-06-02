@@ -1022,6 +1022,15 @@ HTML = r"""<!doctype html>
       justify-self: stretch;
       align-items: stretch;
     }
+    .status-overview.single-card {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .status-overview.single-card > .panel {
+      grid-column: 1 / -1;
+    }
+    .status-overview.single-card .node-card-grid {
+      display: none;
+    }
     .status-overview .panel,
     .status-overview .node-card-grid {
       grid-column: auto;
@@ -1054,6 +1063,29 @@ HTML = r"""<!doctype html>
     .span-8 { grid-column: span 8; }
     .span-12 { grid-column: span 12; }
     .kpi-label { color: var(--muted); font-size: 12px; text-transform: uppercase; font-weight: 700; }
+    .stack-summary-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      min-width: 0;
+    }
+    .stack-summary-main {
+      min-width: 0;
+    }
+    .height-summary {
+      min-width: 170px;
+      text-align: right;
+    }
+    .height-value {
+      margin-top: 6px;
+      color: var(--text);
+      font-size: 32px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      white-space: nowrap;
+    }
     .stack-endpoint {
       display: flex;
       align-items: baseline;
@@ -1405,6 +1437,9 @@ HTML = r"""<!doctype html>
       }
       .span-2, .span-3, .span-4, .span-6, .span-8, .node-card-grid { grid-column: span 12; }
       .field-span-2, .field-span-3, .field-span-4, .field-span-6 { grid-column: span 12; }
+      .stack-summary-row { align-items: stretch; }
+      .height-summary { min-width: 130px; }
+      .height-value { font-size: 26px; }
       main { padding: 14px; }
       .tabs { padding-left: 14px; padding-right: 14px; }
       input { min-width: 100%; }
@@ -1449,8 +1484,16 @@ HTML = r"""<!doctype html>
           <span>Pool Endpoint</span>
           <span class="stack-endpoint-value" id="poolEndpoint">...</span>
         </div>
-        <div class="kpi-label">Stack</div>
-        <div class="kpi-value" id="overall">...</div>
+        <div class="stack-summary-row">
+          <div class="stack-summary-main">
+            <div class="kpi-label">Stack</div>
+            <div class="kpi-value" id="overall">...</div>
+          </div>
+          <div class="height-summary">
+            <div class="kpi-label">Height</div>
+            <div class="height-value" id="syncHeight">...</div>
+          </div>
+        </div>
         <div class="status-reason" id="statusReason"></div>
         <div class="sync-progress">
           <div class="sync-progress-bar" title="Node EVM sync progress">
@@ -1464,7 +1507,7 @@ HTML = r"""<!doctype html>
         <div id="syncNarrative" class="sync-narrative"></div>
         <div class="sync-detail-list">
           <span class="label">Mode</span><span class="value" id="syncMode">...</span>
-          <span class="label">Active</span><span class="value" id="syncActiveNode">...</span>
+          <span class="label" id="syncActiveLabel">Active</span><span class="value" id="syncActiveNode">...</span>
           <span class="label">Rate</span><span class="value" id="syncRate">...</span>
           <span class="label">ETA</span><span class="value" id="syncEta">...</span>
           <span class="label">Next</span><span class="value" id="syncNextStep">...</span>
@@ -2069,20 +2112,55 @@ HTML = r"""<!doctype html>
     }
     function renderSyncEstimate(data, progress) {
       const estimate = data.sync_estimate || {};
+      if (data.mode === "status_cache_unavailable" || data.collector_budget_exceeded && !(data.sync_progress || {}).status) {
+        text("syncNarrative", "Status sampler is unavailable; waiting for a fresh stack sample.");
+        text("syncMode", "unknown");
+        const activeLabel = document.getElementById("syncActiveLabel");
+        const activeValue = document.getElementById("syncActiveNode");
+        if (activeLabel) activeLabel.classList.add("hidden");
+        if (activeValue) activeValue.classList.add("hidden");
+        text("syncHeight", "n/a");
+        text("syncRate", "estimating from the next sample");
+        text("syncEta", "estimating after the next progress sample");
+        text("syncNextStep", "restore status sampling so dashboard readiness can be evaluated");
+        return;
+      }
       const leader = estimate.leader || data.sync_health?.planned_pause_leader || "";
       const leaderNode = estimate.nodes?.[leader] || {};
+      const managedNodes = data.managed_node_services || [];
+      const singleManagedNode = managedNodes.length === 1;
       const remaining = firstPresent(leaderNode.remaining_blocks, estimate.remaining_blocks, progress.remaining_blocks);
       const current = firstPresent(leaderNode.current_block, progress.current_block);
       const highest = firstPresent(leaderNode.highest_block, progress.highest_block);
+      const singleNode = singleManagedNode ? (data.nodes || {})[managedNodes[0]] || {} : {};
+      const displayedHeight = firstPresent(current, singleNode.chain_block_count, null);
+      const heightText = hasValue(displayedHeight)
+        ? (hasValue(highest) && Number(highest) !== Number(displayedHeight)
+          ? `${fmt(displayedHeight)} / ${fmt(highest)}`
+          : fmt(displayedHeight))
+        : "n/a";
       const threshold = firstPresent(estimate.seed_threshold_blocks, data.sync_coordinator?.last_decision?.thresholds?.leader_near_tip_blocks, 5);
-      text("syncNarrative", estimate.narrative || (progress.status === "synced" ? "Managed nodes are synced." : "Managed nodes are syncing."));
+      const defaultNarrative = progress.status === "synced"
+        ? (singleManagedNode ? "Managed node is synced to the current network tip." : "Managed nodes are synced.")
+        : (singleManagedNode ? "Managed node is syncing." : "Managed nodes are syncing.");
+      text("syncNarrative", estimate.narrative || defaultNarrative);
       text("syncMode", estimate.stage || progress.status || "unknown");
-      text(
-        "syncActiveNode",
-        leader
-          ? `${leader} ${fmt(current)} / ${fmt(highest)}; ${fmt(remaining)} block(s) remaining`
-          : `${fmt(current)} / ${fmt(highest)}; ${fmt(remaining)} block(s) remaining`
-      );
+      text("syncHeight", heightText);
+      const activeLabel = document.getElementById("syncActiveLabel");
+      const activeValue = document.getElementById("syncActiveNode");
+      if (singleManagedNode) {
+        if (activeLabel) activeLabel.classList.add("hidden");
+        if (activeValue) activeValue.classList.add("hidden");
+      } else {
+        if (activeLabel) activeLabel.classList.remove("hidden");
+        if (activeValue) activeValue.classList.remove("hidden");
+        text(
+          "syncActiveNode",
+          leader
+            ? `${leader} ${fmt(current)} / ${fmt(highest)}; ${fmt(remaining)} block(s) remaining`
+            : `${fmt(current)} / ${fmt(highest)}; ${fmt(remaining)} block(s) remaining`
+        );
+      }
       text("syncRate", syncRateText(estimate));
       text("syncEta", etaText(estimate.eta_seconds, estimate.eta_at));
       if (estimate.next_step) {
@@ -2143,6 +2221,15 @@ HTML = r"""<!doctype html>
       container.innerHTML = "";
       const syncNodes = syncProgress.nodes || {};
       const backendState = firstTemplateBackendState(data).backends || {};
+      const managedNodeNames = data.managed_node_services || [];
+      const observerNodeNames = data.observer_node_services || [];
+      const singleManagedTopology = managedNodeNames.length === 1 && observerNodeNames.length === 0;
+      const fallbackOnly = data.mode === "status_cache_unavailable" || (data.collector_budget_exceeded && !nodeNames.length);
+      const overview = container.closest(".status-overview");
+      if (overview) overview.classList.toggle("single-card", singleManagedTopology || fallbackOnly);
+      if (singleManagedTopology || fallbackOnly) {
+        return;
+      }
       if (!nodeNames.length) {
         container.innerHTML = `<div class="node-card"><div class="kpi-label">Nodes</div><div class="kpi-value">n/a</div><div class="subtle">No node services reported.</div></div>`;
         return;
@@ -2190,7 +2277,7 @@ HTML = r"""<!doctype html>
         }
         container.appendChild(group);
       }
-      appendGroup("Managed production routing nodes", managed);
+      appendGroup(managed.length === 1 ? "Managed production routing node" : "Managed production routing nodes", managed);
       appendGroup("Observer nodes - advisory only", observers);
     }
     function renderNodeLogs(nodeNames, nodes, data) {

@@ -66,6 +66,21 @@ class DashboardGlobalRenderingTests(unittest.TestCase):
         self.assertIn("No active miner lanes are currently present.", html)
         self.assertNotIn("Tracked Miner Health", html)
 
+    def test_status_tab_keeps_single_backend_header_in_one_row(self) -> None:
+        html = dashboard.HTML
+        start = html.index('<section id="tab-status"')
+        end = html.index('<section class="grid">', start)
+        section = html[start:end]
+
+        self.assertIn("stack-summary-row", html)
+        self.assertIn("height-summary", html)
+        self.assertIn('id="syncHeight"', section)
+        self.assertIn('id="syncActiveLabel"', section)
+        self.assertIn(".status-overview.single-card", html)
+        self.assertIn('overview.classList.toggle("single-card"', html)
+        self.assertIn("singleManagedTopology || fallbackOnly", html)
+        self.assertIn("Managed node is synced to the current network tip.", html)
+
     def test_plot_refresh_and_sampler_defaults_are_one_minute(self) -> None:
         html = dashboard.HTML
 
