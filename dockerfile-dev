@@ -142,7 +142,7 @@ EXPOSE 3334 8080
 ENTRYPOINT ["/usr/local/bin/mining-pool"]
 
 # ----------------------------------------------------------------------------
-# Miner Runtime Stage (cpu-miner; matches dockerfile-cpu-release layout)
+# CPU Miner Runtime Stage 
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS miner
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
