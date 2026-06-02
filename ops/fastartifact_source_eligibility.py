@@ -399,7 +399,6 @@ def build_payload(full: bool) -> dict[str, Any]:
     tmp_dir = env_path(env, "BDAG_RAWDATADIR_TMPDIR", artifact_base / "tmp")
     source_node_enabled = bool_mode(env.get("SYNC_SOURCE_NODE")) is True
     legacy_mode = (env.get("BDAG_RAWDATADIR_SOURCE_MODE") or env.get("BDAG_FASTARTIFACT_SOURCE_MODE") or "auto").lower()
-    node_mode = (env.get("BDAG_NODE_MODE") or "single").lower()
     storage_profile = (env.get("BDAG_STORAGE_PROFILE") or "").strip().lower()
     network_topology = (env.get("BDAG_DETECTED_NETWORK_TOPOLOGY") or env.get("BDAG_NETWORK_TOPOLOGY") or "").strip().lower()
 
@@ -453,15 +452,14 @@ def build_payload(full: bool) -> dict[str, Any]:
             reasons.append(f"evm_lag_to_reference:{evm_sync['lag_to_reference']}>{evm_sync['max_lag']}")
 
     publish_mode = (env.get("BDAG_RAWDATADIR_PUBLISH_MODE") or "finalized-sidecar").lower()
-    finalization = (env.get("BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE") or "0").lower() in {"1", "true", "yes", "on"}
-    publish_requires_finalization = node_mode == "single" and publish_mode == "finalized-sidecar" and not finalization
+    finalization = (env.get("BDAG_RAWDATADIR_FINALIZE") or "0").lower() in {"1", "true", "yes", "on"}
+    publish_requires_finalization = publish_mode == "finalized-sidecar" and not finalization
 
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "project_root": str(ROOT),
         "mode": legacy_mode,
         "sync_source_node": source_node_enabled,
-        "node_mode": node_mode,
         "storage_profile": storage_profile,
         "network_topology": network_topology,
         "active_node_service": service,

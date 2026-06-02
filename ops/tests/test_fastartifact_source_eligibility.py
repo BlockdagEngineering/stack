@@ -173,7 +173,7 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
                 "BDAG_RAWDATADIR_SIDECAR_DIR": str(tmp_path / "sidecar"),
                 "BDAG_RAWDATADIR_ARTIFACT_BASE": str(tmp_path / "artifact"),
                 "BDAG_STORAGE_PROFILE": "single-usb-constrained",
-                "BDAG_DETECTED_NETWORK_TOPOLOGY": "single-node-asic-router",
+                "BDAG_DETECTED_NETWORK_TOPOLOGY": "asic-router",
                 "BDAG_RAWDATADIR_MIN_FREE_GIB": "0",
                 "BDAG_RAWDATADIR_MIN_RAM_GIB": "0",
                 "BDAG_RAWDATADIR_MIN_CPU_COUNT": "1",
@@ -184,7 +184,7 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
 
         self.assertFalse(payload["eligible"])
         self.assertEqual(payload["storage_profile"], "single-usb-constrained")
-        self.assertEqual(payload["network_topology"], "single-node-asic-router")
+        self.assertEqual(payload["network_topology"], "asic-router")
         self.assertIn("storage_profile_usb_low_io:single-usb-constrained", payload["reasons"])
 
     def test_sync_source_node_disabled_fails_closed(self) -> None:

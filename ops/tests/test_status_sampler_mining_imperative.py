@@ -162,7 +162,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         commands = []
         env_updates = {}
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
-        os.environ["BDAG_DETECTED_NETWORK_TOPOLOGY"] = "single-node-asic-router"
+        os.environ["BDAG_DETECTED_NETWORK_TOPOLOGY"] = "asic-router"
         os.environ["BDAG_STORAGE_PROFILE"] = "usb-chain-internal-runtime"
         os.environ["BDAG_FASTARTIFACTSYNC_ENABLED"] = "1"
         os.environ["NODE_ARGS_APPEND"] = "--fastartifactsync"
@@ -318,7 +318,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         env_updates = {}
         peer_id = "16Uiu2HAkvvmkRJXJAZAWq3bFDzBAFQwQJ88PQqMedULsrv4t3XCD"
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
-        os.environ["BDAG_DETECTED_NETWORK_TOPOLOGY"] = "single-node-asic-router"
+        os.environ["BDAG_DETECTED_NETWORK_TOPOLOGY"] = "asic-router"
         os.environ["BDAG_STORAGE_PROFILE"] = "usb-chain-internal-runtime"
         os.environ["BDAG_FASTARTIFACTSYNC_ENABLED"] = "0"
         os.environ["BDAG_ENABLE_NODE_MINING"] = "1"

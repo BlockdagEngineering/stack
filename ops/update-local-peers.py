@@ -345,7 +345,7 @@ def detect_network_topology(values: dict[str, str]) -> str:
     if explicit not in AUTO_VALUES:
         return explicit
     if truthy(env_value(values, "BDAG_ASIC_LAN_ENABLED")):
-        return "single-node-asic-router"
+        return "asic-router"
 
     default_iface = default_route_interface()
     asic_iface = env_value(values, "BDAG_ASIC_LAN_INTERFACE", "eth0")
@@ -356,7 +356,7 @@ def detect_network_topology(values: dict[str, str]) -> str:
         if asic_iface and iface != asic_iface:
             continue
         if any(ip_in_networks(address, networks) for address in addresses):
-            return "single-node-asic-router"
+            return "asic-router"
     return "standard"
 
 
@@ -738,8 +738,8 @@ def main() -> int:
     if args.apply or args.force_apply:
         stop_inactive_nodes(active_nodes)
     if len(active_nodes) == 1 and args.apply and not args.force_apply and apply_needed:
-        write_deferred_apply("single active node mode; peer config updated without recreating the only production node")
-        print("not recreating active node automatically in single-node mode; use --force-apply for an explicit restart")
+        write_deferred_apply("peer config updated without recreating the only production node")
+        print("not recreating the active production node automatically; use --force-apply for an explicit restart")
         return 0
     if apply_needed:
         for node in active_nodes:

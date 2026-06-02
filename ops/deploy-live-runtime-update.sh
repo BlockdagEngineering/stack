@@ -26,7 +26,7 @@ FILES=(
   "docs/ipfs-content-sidecar.html"
   "docs/platform-adaptive-runtime.md"
   "docs/rawdatadir-libp2p-sync.md"
-  "docs/t430-single-node-appliance-hardening.md"
+  "docs/t430-appliance-hardening.md"
   "docs/ipfs-append-only-segment-protocol.html"
   "ops/README.md"
   "ops/build-rawdatadir-artifact.sh"

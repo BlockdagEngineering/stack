@@ -16,7 +16,7 @@ SPEC.loader.exec_module(update_local_peers)
 
 
 class UpdateLocalPeersTopologyTests(unittest.TestCase):
-    def test_detects_single_node_asic_router_and_uses_default_route_ip(self) -> None:
+    def test_detects_asic_router_and_uses_default_route_ip(self) -> None:
         old_run = update_local_peers.run
 
         def fake_run(command: list[str], timeout: int = 20) -> str:
@@ -39,7 +39,7 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
                 "BDAG_ASIC_LAN_INTERFACE": "eth0",
                 "BDAG_ASIC_LAN_CIDRS": "192.168.1.0/24",
             }
-            self.assertEqual("single-node-asic-router", update_local_peers.detect_network_topology(values))
+            self.assertEqual("asic-router", update_local_peers.detect_network_topology(values))
             self.assertEqual("192.168.68.60", update_local_peers.choose_local_ip(values=values))
         finally:
             update_local_peers.run = old_run

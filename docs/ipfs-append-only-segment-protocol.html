@@ -83,7 +83,7 @@
     "current_segment_head_order": 9502504,
     "deprecated_fastsnap_root_cid": "bafybeidesnyknx4fojvtpu6hctxnlqbw372eqaqh64tl362lwiaih7bkoa",
     "deprecated_fastsnap_tip_order": 8639851,
-    "recommended_next_phase": "Backfill earlier history and implement multi-node publisher registry/election.",
+    "recommended_next_phase": "Backfill earlier history and keep local-writer publication deterministic.",
     "safety_rule": "IPFS is never allowed to gate mining. Segment build and publish retries are low-priority background work and must defer under mining pressure."
   }
   </script>
@@ -119,7 +119,7 @@
     </div>
     <p>The active discovery file is <code>ops/ipfs-content-discovery.json</code>. It records the stable IPNS name, the current immutable segment-index CID, the deprecated FastSnap CIDs, and the resolver-cache warning. Fresh consumers should verify the IPNS result against the discovery file and then verify the index and segments themselves.</p>
     <p>The stable IPNS name is permanent only if it is maintained. This host's <code>bdag-ipfs-segment-writer.timer</code> publishes new segment indexes at low priority and republishes the current pointer whenever a segment append succeeds. The content sidecar can still republish the discovery CID while waiting, because distributed IPNS records need periodic maintenance even when the pointed-to CID has not changed.</p>
-    <p>Phase 1 is deliberately single-writer: this pool's local node writes live-tail segments until the publisher registry and deterministic multi-node election are implemented. The current published head is order <code>9502504</code>; earlier history before order <code>9502145</code> still needs backfill before this is a full bootstrap source.</p>
+    <p>Phase 1 is deliberately local-writer: this pool's local node writes live-tail segments. The current published head is order <code>9502504</code>; earlier history before order <code>9502145</code> still needs backfill before this is a full bootstrap source.</p>
   </section>
 
   <section>
@@ -296,7 +296,7 @@ rank eligible publishers by weighted rank_score, with win_count as bounded weigh
           <td>Two independent local builds of the same range produce the same payload CID; importer verifies and catches up from the last segment head.</td>
         </tr>
         <tr>
-          <td>2. Multi-node proposals</td>
+          <td>2. Publisher durability proposals</td>
           <td>Add registry, gossipsub announcements, candidate manifest validation, and deterministic rank/fallback calculation.</td>
           <td>Simulated offline rank-0 publisher falls back to rank 1 without conflicting accepted data.</td>
         </tr>

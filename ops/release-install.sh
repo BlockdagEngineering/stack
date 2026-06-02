@@ -99,19 +99,7 @@ set_env_value() {
   fi
 }
 
-normalize_node_mode() {
-  local value="${1:-single}"
-  value="${value,,}"
-  case "$value" in
-    1|single|single-node|one|one-node) printf 'single\n' ;;
-    *) echo "unsupported_node_mode:$value" >&2; return 1 ;;
-  esac
-}
-
-configure_node_mode_env() {
-  local mode="$1"
-  mode="$(normalize_node_mode "$mode")"
-  set_env_value .env BDAG_NODE_MODE "$mode"
+configure_active_node_env() {
   set_env_value .env COMPOSE_PROFILES ""
   set_env_value .env BDAG_NODE_SERVICES "bdag-miner-node-1"
   set_env_value .env BDAG_STACK_SERVICES "pool-db,bdag-miner-node-1,asic-pool"
@@ -373,7 +361,7 @@ configure_env() {
   configure_storage_profile
   configure_ephemeral_storage
 
-  local lan_ip scan_target mining_address node_mode node_mining_enabled mem_kb mem_gb
+  local lan_ip scan_target mining_address node_mining_enabled mem_kb mem_gb
   lan_ip="$(detect_lan_ip)"
   lan_ip="$(ask "Pool LAN IP miners should connect to" "${lan_ip:-192.168.1.10}")"
   scan_target="$(ask "LAN scan range for ASIC discovery" "$(default_cidr "$lan_ip")")"
@@ -382,7 +370,6 @@ configure_env() {
     echo "A real reward wallet address is required." >&2
     exit 1
   fi
-  node_mode="$(normalize_node_mode "$(ask "Backend node mode" "$(grep -E '^BDAG_NODE_MODE=' .env | cut -d= -f2- || printf 'single')")")"
   node_mining_enabled=0
   if yes_no "Enable node mining/template support now? Choose yes only when miners are attached" "n"; then
     node_mining_enabled=1
@@ -425,8 +412,8 @@ configure_env() {
   set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE "./data-restore/rawdatadir-sidecar-content"
   set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP 2
   set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED 1
-  set_env_value .env BDAG_RAWDATADIR_MAX_EXPORT_BACKEND_LAG 10000
-  set_env_value .env BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE 0
+  set_env_value .env BDAG_RAWDATADIR_ACTIVE_SERVICE "bdag-miner-node-1"
+  set_env_value .env BDAG_RAWDATADIR_FINALIZE 0
   set_env_value .env BDAG_RAWDATADIR_PEERS ""
   set_env_value .env BDAG_RAWDATADIR_TRUSTED_SIGNERS ""
   set_env_value .env BDAG_IPFS_CONTENT_SIDECAR_MODE auto
@@ -469,7 +456,7 @@ configure_env() {
   set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED 1
   set_env_value .env BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS 0
   set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT 21600s
-  configure_node_mode_env "$node_mode"
+  configure_active_node_env
   configure_node_mining_env "$node_mining_enabled" "$mining_address"
 
   mem_kb="$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
@@ -563,7 +550,7 @@ find_or_extract_chain_seed() {
 }
 
 seed_chain_data() {
-  local seed chain_base node1_dir template_dir node_mode
+  local seed chain_base node1_dir template_dir
   if ! seed="$(find_or_extract_chain_seed)"; then
     warn "No separate chain-data seed found. The node will sync from configured P2P peers."
     warn "If you received chain-data parts, reassemble them first, then rerun ./install.sh."
@@ -573,7 +560,6 @@ seed_chain_data() {
   chain_base="$(env_path_value BDAG_CHAIN_DATA_DIR data)"
   node1_dir="$(env_path_value BDAG_NODE1_DATA_DIR "$chain_base/node1")"
   template_dir="$chain_base/chain-template"
-  node_mode="$(env_value BDAG_NODE_MODE single)"
   if [[ -z "$template_dir" || "$template_dir" == "/" ]]; then
     echo "Refusing unsafe chain template directory: $template_dir" >&2
     exit 1

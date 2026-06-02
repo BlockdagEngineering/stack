@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Low-priority append-only IPFS segment writer for BlockDAG chain-order data.
 
-This is the phase-1 writer: one local node writes verified finalized order-range
-segments until multi-node publisher registry and deterministic election are
-implemented. IPFS/IPNS are byte transport only; normal chain consensus remains
-authoritative.
+This local writer publishes verified finalized order-range segments. IPFS/IPNS
+are byte transport only; normal chain consensus remains authoritative.
 """
 
 from __future__ import annotations
@@ -544,13 +542,13 @@ def build_segment(
             "rpc_method": "getBlockByOrder",
         },
         "writer": {
-            "mode": "single_local_writer_until_multi_node_registry",
+            "mode": "local_writer",
             "kubo_peer_id": ipfs_peer_id(env),
             "ipns_name": env.get("BDAG_IPFS_CONTENT_LATEST_IPNS", ""),
         },
         "election": {
-            "phase": "phase_1_single_writer",
-            "rule": "this local node writes until publisher registry and deterministic multi-node election are deployed",
+            "phase": "local_writer",
+            "rule": "this deployment writes verified finalized segments from its local node",
             "fallback": "timer retries after maintenance pressure clears",
         },
         "trust_model": "CID and sha256 verify bytes; receivers must still verify chain consensus and segment continuity.",
@@ -572,7 +570,7 @@ def build_segment(
         "manifest_sha256": manifest_sha,
         "manifest_path": str(manifest_path),
         "payload_path": str(payload_path),
-        "writer_mode": "single_local_writer_until_multi_node_registry",
+        "writer_mode": "local_writer",
     }
 
 

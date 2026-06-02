@@ -18,7 +18,7 @@ This keeps the release candidate on the existing security model:
 
 Source serving is automatic only after the local eligibility gate passes. The
 gate fails closed on USB/removable/external storage, low disk/RAM/CPU, and
-unsafe single-node checkpoint conditions. Do not serve a live mining datadir;
+unsafe checkpoint conditions. Do not serve a live mining datadir;
 publish only from a finalized sidecar copy.
 
 `SYNC_SOURCE_NODE=0` is the raw-datadir publisher control. It does not by itself
@@ -61,7 +61,7 @@ artifact. A node restart may be required on the serving host to pick them up.
 Do not promote a new `current` artifact while a receiver is actively
 downloading; the RC server advertises one current artifact root at a time.
 
-Single-node host:
+Default host:
 
 1. Keep a local sidecar copy close to tip:
 
@@ -86,12 +86,12 @@ path stable content-addressed data without pretending a live sidecar is a
 finalized checkpoint.
 
 2. When an operator approves a finalization window, let the publisher stop the
-   single node, run one final sidecar sync, restart the node, and build the
+   production node, run one final sidecar sync, restart the node, and build the
    signed artifact from the finalized sidecar. The final sidecar sync also
    seals a publishable file/chunk content generation for IPFS transport:
 
 ```bash
-BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=1 \
+BDAG_RAWDATADIR_FINALIZE=1 \
 ./ops/publish-rawdatadir-artifact.sh
 ```
 
