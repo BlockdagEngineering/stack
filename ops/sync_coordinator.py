@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record single-node catch-up state without mutating the stack."""
+"""Record active-node catch-up state without mutating the stack."""
 
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def build_state() -> dict[str, Any]:
     remaining = safe_int(node_info.get("remaining_blocks"), safe_int(sync_progress.get("remaining_blocks") if isinstance(sync_progress, dict) else 0))
     state = {
         "updated_at": now_iso(),
-        "mode": "single_node_catchup",
+        "mode": "active_node_catchup",
         "action": "monitor",
         "repairable": False,
         "reason": "single-backend topology; coordinator does not stop or copy node data",
@@ -92,7 +92,7 @@ def run_once(json_output: bool = False) -> dict[str, Any]:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Record BlockDAG single-node sync state")
+    parser = argparse.ArgumentParser(description="Record BlockDAG active-node sync state")
     parser.add_argument("--once", action="store_true", help="run one check and write state")
     parser.add_argument("--loop", action="store_true", help="run continuously")
     parser.add_argument("--repair", action="store_true", help="accepted for compatibility; no mutation is performed")

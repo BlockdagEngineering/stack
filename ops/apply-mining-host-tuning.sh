@@ -157,7 +157,7 @@ try:
 except Exception:
     raise SystemExit(0)
 
-if state.get("mode") != "single_node_catchup":
+if state.get("mode") != "active_node_catchup":
     raise SystemExit(0)
 
 leader = str(state.get("active_node") or "")

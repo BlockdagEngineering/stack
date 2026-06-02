@@ -125,7 +125,6 @@ BDAG_POOL_CONTAINER=asic-pool
 BDAG_POOL_DB_CONTAINER=pool-db
 BDAG_POOL_DB_USER=test
 BDAG_POOL_DB_NAME=pool
-BDAG_NODE_MODE=single
 BDAG_NODE_SERVICES=bdag-miner-node-1
 BDAG_STACK_SERVICES=pool-db,bdag-miner-node-1,asic-pool
 BDAG_ENABLE_NODE_MINING=0
@@ -195,7 +194,6 @@ ensure_env_value() {
 ensure_env_value BDAG_PROJECT_ROOT "$PROJECT_ROOT"
 ensure_env_value BDAG_RUNTIME_DIR "$RUNTIME_DIR"
 ensure_env_value BDAG_POOL_ENV_FILE "$PROJECT_ROOT/asic-pool/.env"
-ensure_env_value BDAG_NODE_MODE single
 ensure_env_value BDAG_NODE_SERVICES bdag-miner-node-1
 ensure_env_value BDAG_STACK_SERVICES "pool-db,bdag-miner-node-1,asic-pool"
 ensure_env_value BDAG_ENABLE_NODE_MINING 0
@@ -210,8 +208,7 @@ ensure_env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE auto
 ensure_env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE "$PROJECT_ROOT/data-restore/rawdatadir-sidecar-content"
 ensure_env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP 2
 ensure_env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED 1
-ensure_env_value BDAG_RAWDATADIR_MAX_EXPORT_BACKEND_LAG 10000
-ensure_env_value BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE 0
+ensure_env_value BDAG_RAWDATADIR_FINALIZE 0
 ensure_env_value BDAG_RAWDATADIR_PEERS ""
 ensure_env_value BDAG_RAWDATADIR_TRUSTED_SIGNERS ""
 ensure_env_value BDAG_IPFS_CONTENT_SIDECAR_MODE auto

@@ -127,7 +127,7 @@ reintroduce mixed height sources.
 Pool block-candidate submission must use the single configured backend endpoint.
 Normal shares must not fan out, and valid block candidates should return to the
 miner as soon as the active endpoint accepts them. Keep release defaults pinned
-to one endpoint on single-node hosts.
+to one endpoint.
 
 Keep Issue #26 final release mitigations in
 `docs/final-release-issue-26-checklist.md` current when changing source repo
@@ -240,11 +240,11 @@ directory artifact is opt-in through `BDAG_FASTSYNC_ARTIFACT_DIRECTORY` and
 auto-serve that verified checkpoint from `artifact.manifest.json`. Do not make
 future changes that force archive assembly back into the default fast path.
 
-For single-node mining pools, raw datadir FastArtifact source serving is the
-preferred sync-source design. The live node datadir must never be served or
-exported directly. Use `ops/fastartifact_source_eligibility.py`,
+Raw datadir FastArtifact source serving is the preferred sync-source design.
+The live node datadir must never be served or exported directly. Use
+`ops/fastartifact_source_eligibility.py`,
 `ops/maintain-rawdatadir-sidecar.sh`, and `ops/publish-rawdatadir-artifact.sh`
 so source serving fails closed on USB/removable storage and publishes only a
 signed `raw_datadir_checkpoint` generation from a finalized sidecar. Keep
-`BDAG_FASTSNAP_SEED_TIMER_ENABLED=0` in single-node defaults; IPFS segments and
+`BDAG_FASTSNAP_SEED_TIMER_ENABLED=0` in release defaults; IPFS segments and
 finalized raw-datadir sidecars own content publication.

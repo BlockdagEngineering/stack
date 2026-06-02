@@ -89,7 +89,7 @@ CONSTRAINED_FASTARTIFACT_TOPOLOGIES = {
     item.lower()
     for item in split_env_list(
         "BDAG_CONSTRAINED_FASTARTIFACT_TOPOLOGIES",
-        "single-node-asic-router",
+        "asic-router",
     )
 }
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"

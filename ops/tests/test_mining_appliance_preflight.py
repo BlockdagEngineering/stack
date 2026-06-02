@@ -25,7 +25,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 "\n".join(
                     [
                         "# comment",
-                        "BDAG_NODE_MODE='single'",
+                        "QUOTED_VALUE='ready'",
                         'BDAG_NODE_CACHE_MB="1024"',
                         "EMPTY=",
                     ]
@@ -33,11 +33,11 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 encoding="utf-8",
             )
             env = preflight.load_env_file(env_file)
-        self.assertEqual(env["BDAG_NODE_MODE"], "single")
+        self.assertEqual(env["QUOTED_VALUE"], "ready")
         self.assertEqual(env["BDAG_NODE_CACHE_MB"], "1024")
         self.assertEqual(env["EMPTY"], "")
 
-    def test_constrained_env_warnings_for_unsupported_node_mode_and_large_cache(self) -> None:
+    def test_constrained_env_warnings_for_large_cache_and_expensive_defaults(self) -> None:
         profile = preflight.HostProfile(
             os_name="linux",
             arch="x86_64",
@@ -50,7 +50,6 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         preflight.check_env_defaults(
             checks,
             {
-                "BDAG_NODE_MODE": "unsupported",
                 "BDAG_NODE_CACHE_MB": "4096",
                 "NODE_MAX_PEERS": "512",
                 "BDAG_FASTSYNC_PREPROCESS_WORKERS": "4",
@@ -64,7 +63,8 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             profile,
         )
         warnings = {check.name for check in checks if check.status == "warn"}
-        self.assertIn("constrained_node_mode", warnings)
+        passes = {check.name for check in checks if check.status == "pass"}
+        self.assertIn("active_node_topology", passes)
         self.assertIn("node_cache_budget", warnings)
         self.assertIn("peer_budget", warnings)
         self.assertIn("fastsync_preprocess_workers", warnings)
@@ -88,10 +88,9 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         preflight.check_env_defaults(
             checks,
             {
-                "BDAG_NODE_MODE": "single",
                 "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
                 "BDAG_STORAGE_PROFILE": "usb-chain-internal-runtime",
-                "BDAG_DETECTED_NETWORK_TOPOLOGY": "single-node-asic-router",
+                "BDAG_DETECTED_NETWORK_TOPOLOGY": "asic-router",
                 "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": "1",
             },
             profile,
@@ -115,7 +114,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             {
                 "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
                 "BDAG_STORAGE_PROFILE": "single-usb-constrained",
-                "BDAG_DETECTED_NETWORK_TOPOLOGY": "single-node-asic-router",
+                "BDAG_DETECTED_NETWORK_TOPOLOGY": "asic-router",
                 "NODE_ARGS_APPEND": "--fastartifactsync",
             },
             profile,
@@ -140,7 +139,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 "SYNC_SOURCE_NODE": "0",
                 "BDAG_FASTARTIFACTSYNC_ENABLED": "1",
                 "BDAG_STORAGE_PROFILE": "single-usb-constrained",
-                "BDAG_DETECTED_NETWORK_TOPOLOGY": "single-node-asic-router",
+                "BDAG_DETECTED_NETWORK_TOPOLOGY": "asic-router",
             },
             profile,
         )
@@ -194,7 +193,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 Path("/opt/blockdag-pool"),
                 {
                     "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
-                    "BDAG_NETWORK_TOPOLOGY": "single-node-asic-router",
+                    "BDAG_NETWORK_TOPOLOGY": "asic-router",
                     "SYNC_SOURCE_NODE": "1",
                     "MINING_ADDRESS": "0x1111111111111111111111111111111111111111",
                 },
@@ -207,14 +206,14 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         found = {check.name: check for check in checks}
         self.assertEqual(found["usb_mining_fastsync_serving"].status, "fail")
 
-    def test_single_node_data_layout_is_reported(self) -> None:
+    def test_active_node_data_layout_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "data" / "node1" / "mainnet" / "BdagChain").mkdir(parents=True)
             checks = []
-            preflight.check_node_data_layout(checks, root, {"BDAG_NODE_MODE": "single"})
+            preflight.check_node_data_layout(checks, root, {})
         found = {check.name: check.status for check in checks}
-        self.assertEqual(found["single_node_data_layout"], "pass")
+        self.assertEqual(found["active_node_data_layout"], "pass")
 
     def test_compose_bind_mount_overrides_default_data_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

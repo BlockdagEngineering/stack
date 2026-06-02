@@ -278,9 +278,8 @@ class MiningReadinessGateTests(unittest.TestCase):
         self.assertIn("reference_height_lag_121_gt_120", failures)
         self.assertIn("reference_main_order_lag_121_gt_120", failures)
 
-    def test_single_node_topology_accepts_direct_backend(self) -> None:
+    def test_active_node_topology_accepts_direct_backend(self) -> None:
         topology = gate.validate_topology(
-            node_mode="single-node",
             node_services=["bdag-miner-node-1"],
             pool_rpc_backends=["node1"],
             running_containers=["bdag-miner-node-1"],
@@ -289,11 +288,10 @@ class MiningReadinessGateTests(unittest.TestCase):
 
         self.assertTrue(topology["ok"])
 
-    def test_single_node_topology_rejects_extra_runtime_backend(self) -> None:
+    def test_active_node_topology_rejects_extra_runtime_backend(self) -> None:
         extra_service = "bdag-miner-node-" + "2"
         extra_alias = "node" + "2"
         topology = gate.validate_topology(
-            node_mode="single-node",
             node_services=["bdag-miner-node-1", extra_service],
             pool_rpc_backends=["node1", extra_alias],
             running_containers=["bdag-miner-node-1", extra_service],
@@ -301,10 +299,10 @@ class MiningReadinessGateTests(unittest.TestCase):
         )
 
         self.assertFalse(topology["ok"])
-        self.assertIn(f"single_node_unexpected_service:{extra_alias}", topology["failures"])
-        self.assertIn(f"single_node_unexpected_pool_backend:{extra_alias}", topology["failures"])
-        self.assertIn(f"single_node_unexpected_running_container:{extra_alias}", topology["failures"])
-        self.assertIn(f"single_node_unexpected_eligible_backend:{extra_alias}", topology["failures"])
+        self.assertIn(f"unexpected_extra_service:{extra_alias}", topology["failures"])
+        self.assertIn(f"unexpected_extra_pool_backend:{extra_alias}", topology["failures"])
+        self.assertIn(f"unexpected_extra_running_container:{extra_alias}", topology["failures"])
+        self.assertIn(f"unexpected_extra_eligible_backend:{extra_alias}", topology["failures"])
 
 
 if __name__ == "__main__":

@@ -38,7 +38,7 @@ def main() -> None:
 
     for needle in (
         "raw_datadir_checkpoint",
-        "admin/rpc-backend-maintenance",
+        "BDAG_RAWDATADIR_SOURCE_DIR is required",
         "wait_db_lock_free",
         "BDAG_RAWDATADIR_REQUIRE_SIGNED",
         "--exclude=./network.key*",
@@ -46,7 +46,6 @@ def main() -> None:
         "--exclude=./keystore*",
         "--exclude=./bdageth/nodes*",
         "--exclude=./peerstore*",
-        "restore_export_backend",
     ):
         assert_contains(build, needle, BUILD)
 
@@ -85,8 +84,8 @@ def main() -> None:
         assert_contains(eligibility, needle, ELIGIBILITY)
 
     for needle in (
-        "BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=1",
-        "single-node artifact publish requires",
+        "BDAG_RAWDATADIR_FINALIZE=1",
+        "raw datadir artifact publish requires",
         "BDAG_RAWDATADIR_SOURCE_DIR",
         "BDAG_NODE_SERVICES:-bdag-miner-node-1",
         "background maintenance backoff active",

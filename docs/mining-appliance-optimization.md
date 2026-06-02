@@ -1,8 +1,8 @@
 # Mining Appliance Optimization
 
 This repo ships defaults for dedicated BlockDAG mining hosts. They are intended
-for single-node deployments; every node service should use the same
-node resource profile and the same host profile.
+for the default one-node deployment; every node service should use the same node
+resource profile and the same host profile.
 
 ## Docker Defaults
 

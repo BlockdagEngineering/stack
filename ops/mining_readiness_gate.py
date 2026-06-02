@@ -29,10 +29,10 @@ JSON_RPC_CONTENT_TYPE = "application/json"
 
 # Policy markers consumed by the governance suite:
 # direct BlockDAG node JSON-RPC endpoints
-# single_node_unexpected_service
-# single_node_unexpected_pool_backend
-# single_node_unexpected_running_container
-# single_node_unexpected_eligible_backend
+# unexpected_extra_service
+# unexpected_extra_pool_backend
+# unexpected_extra_running_container
+# unexpected_extra_eligible_backend
 
 HARD_TEMPLATE_ERROR_CODES = {
     "bdag_pool_syncing",
@@ -647,7 +647,6 @@ def evaluate_backend(
 
 def validate_topology(
     *,
-    node_mode: str | None = None,
     node_services: list[str] | None = None,
     pool_rpc_backends: list[str] | None = None,
     running_containers: list[str] | None = None,
@@ -662,24 +661,15 @@ def validate_topology(
     normalized_excluded = sorted({canonical_node_name(item) for item in (excluded_backends or []) if item})
     failures: list[str] = []
 
-    mode = (node_mode or "").strip().lower()
-    if mode in {"single", "single-node", "single_node", "1"}:
-        mode = "single"
-    elif mode:
-        failures.append(f"unknown_node_mode:{node_mode}")
-    else:
-        mode = "unspecified"
-
-    if mode == "single":
-        for label, values in (
-            ("service", normalized_services),
-            ("pool_backend", normalized_pool_backends),
-            ("running_container", normalized_running),
-            ("eligible_backend", normalized_eligible),
-        ):
-            for node in values:
-                if node != "node1" and node not in normalized_excluded:
-                    failures.append(f"single_node_unexpected_{label}:{node}")
+    for label, values in (
+        ("service", normalized_services),
+        ("pool_backend", normalized_pool_backends),
+        ("running_container", normalized_running),
+        ("eligible_backend", normalized_eligible),
+    ):
+        for node in values:
+            if node != "node1" and node not in normalized_excluded:
+                failures.append(f"unexpected_extra_{label}:{node}")
 
     if running_containers is not None:
         for node in normalized_running:
@@ -694,7 +684,7 @@ def validate_topology(
     return {
         "ok": not failures,
         "failures": failures,
-        "mode": mode,
+        "topology": "active_node",
         "node_services": normalized_services,
         "pool_rpc_backends": normalized_pool_backends,
         "running_containers": normalized_running,
@@ -793,7 +783,6 @@ def evaluate_gate(
     allow_reference_unavailable: bool = False,
     log_sources: list[str] | None = None,
     log_lookback_minutes: int = DEFAULT_LOG_LOOKBACK_MINUTES,
-    node_mode: str | None = None,
     node_services: list[str] | None = None,
     pool_rpc_backends: list[str] | None = None,
     running_containers: list[str] | None = None,
@@ -816,7 +805,6 @@ def evaluate_gate(
     eligible_backends = [name for name, result in backend_results.items() if result.get("ready")]
 
     topology = validate_topology(
-        node_mode=node_mode,
         node_services=node_services,
         pool_rpc_backends=pool_rpc_backends,
         running_containers=running_containers,
@@ -876,7 +864,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--log-source", action="append", default=[], help="file:/path, plain path, -, or docker:container")
     parser.add_argument("--log-lookback-minutes", type=int, default=DEFAULT_LOG_LOOKBACK_MINUTES)
-    parser.add_argument("--node-mode", default=os.environ.get("BDAG_NODE_MODE") or None)
     parser.add_argument("--node-services", default=os.environ.get("BDAG_NODE_SERVICES") or None)
     parser.add_argument("--pool-rpc-backends", default=os.environ.get("POOL_RPC_BACKENDS") or None)
     parser.add_argument("--running-container", action="append", default=[])
@@ -899,7 +886,6 @@ def main(argv: list[str] | None = None) -> int:
         allow_reference_unavailable=args.allow_reference_unavailable,
         log_sources=args.log_source,
         log_lookback_minutes=args.log_lookback_minutes,
-        node_mode=args.node_mode,
         node_services=parse_backend_list(args.node_services),
         pool_rpc_backends=parse_backend_list(args.pool_rpc_backends),
         running_containers=args.running_container,

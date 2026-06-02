@@ -1,38 +1,30 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Build a signed raw-datadir FastArtifact V2 directory artifact from a stopped
-# source datadir. Production use should point BDAG_RAWDATADIR_SOURCE_DIR at a
-# finalized sidecar copy, not at the live node datadir.
+# Build a signed raw-datadir FastArtifact V2 directory artifact from a finalized
+# sidecar copy. Production use must point BDAG_RAWDATADIR_SOURCE_DIR at the
+# sidecar after an operator-approved final sync window.
 
 PROJECT_ROOT="${BDAG_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 ENV_FILE="${BDAG_ENV_FILE:-$PROJECT_ROOT/.env}"
 COMPOSE_FILE="${BDAG_COMPOSE_FILE:-$PROJECT_ROOT/docker-compose.yml}"
-POOL_ADMIN_URL="${BDAG_POOL_ADMIN_URL:-http://127.0.0.1:${POOL_METRICS_PORT:-${POOL_API_PORT:-9092}}}"
 ARTIFACT_BASE="${BDAG_RAWDATADIR_ARTIFACT_BASE:-$PROJECT_ROOT/data-restore/rawdatadir}"
 ARTIFACT_KEEP="${BDAG_RAWDATADIR_ARTIFACT_KEEP:-3}"
 NETWORK="${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}"
 CHAIN_ID="${BDAG_RAWDATADIR_CHAIN_ID:-1404}"
 NODE_IMAGE="${BDAG_RAWDATADIR_NODE_IMAGE:-${BDAG_FASTSNAP_NODE_IMAGE:-${BLOCKDAG_NODE_IMAGE:-}}}"
 FASTSNAP_BIN="${BDAG_RAWDATADIR_FASTSNAP_BINARY:-}"
-EXPORT_BACKEND="${BDAG_RAWDATADIR_EXPORT_BACKEND:-}"
 SOURCE_DIR="${BDAG_RAWDATADIR_SOURCE_DIR:-}"
 SOURCE_LABEL="${BDAG_RAWDATADIR_SOURCE_LABEL:-}"
 LOCK_FILE="${BDAG_RAWDATADIR_LOCK:-$PROJECT_ROOT/ops/runtime/rawdatadir-artifact.lock}"
 LOG_FILE="${BDAG_RAWDATADIR_LOG:-$PROJECT_ROOT/ops/runtime/logs/rawdatadir-artifact-$(date +%Y%m%d).log}"
-MAINTENANCE_TTL="${BDAG_RAWDATADIR_MAINTENANCE_TTL:-45m}"
-RESTORE_TIMEOUT_SECONDS="${BDAG_RAWDATADIR_RESTORE_TIMEOUT_SECONDS:-180}"
-MAX_EXPORT_BACKEND_LAG="${BDAG_RAWDATADIR_MAX_EXPORT_BACKEND_LAG:-10000}"
-REQUIRE_EXPORT_BACKEND_FRESH="${BDAG_RAWDATADIR_REQUIRE_EXPORT_BACKEND_FRESH:-1}"
 REQUIRE_SIGNED="${BDAG_RAWDATADIR_REQUIRE_SIGNED:-1}"
 REQUIRE_STATE_ROOT="${BDAG_RAWDATADIR_REQUIRE_STATE_ROOT:-1}"
 ARCHIVE_USE_SUDO="${BDAG_RAWDATADIR_ARCHIVE_USE_SUDO:-auto}"
-NODE_MODE="${BDAG_NODE_MODE:-single}"
 STATUS_FILE="${BDAG_RAWDATADIR_SOURCE_STATUS:-$PROJECT_ROOT/ops/runtime/rawdatadir-source-status.json}"
 DOCKER_CPU_SHARES="${BDAG_RAWDATADIR_DOCKER_CPU_SHARES:-128}"
 DOCKER_BLKIO_WEIGHT="${BDAG_RAWDATADIR_DOCKER_BLKIO_WEIGHT:-10}"
 DOCKER_CPUS="${BDAG_RAWDATADIR_DOCKER_CPUS:-1.5}"
-NODE_METRICS_URLS="${BDAG_RAWDATADIR_NODE_METRICS_URLS:-node1=http://127.0.0.1:6061/debug/metrics/prometheus}"
 ANCHOR_RPC_URL="${BDAG_RAWDATADIR_ANCHOR_RPC_URL:-${NODE_RPC_URL:-http://127.0.0.1:38131}}"
 RPC_USER="${NODE_RPC_USER:-test}"
 RPC_PASS="${NODE_RPC_PASS:-test}"
@@ -44,11 +36,6 @@ flock -n 9 || {
   echo "[$(date -Is)] raw datadir artifact build already running" | tee -a "$LOG_FILE"
   exit 0
 }
-
-STOPPED_UNITS=()
-MAINTENANCE_BACKEND=""
-EXPORT_SERVICE=""
-CLEANUP_DONE=0
 
 log() {
   echo "[$(date -Is)] $*" | tee -a "$LOG_FILE"
@@ -78,186 +65,6 @@ docker_run_low_priority() {
   run_low_priority "${command[@]}"
 }
 
-selected_backend() {
-  curl -fsS "$POOL_ADMIN_URL/metrics" 2>/dev/null |
-    awk -F'[{},]' '
-      /^pool_rpc_backend_selected/ && $0 ~ /} 1$/ {
-        for (i = 1; i <= NF; i++) {
-          if ($i ~ /^backend=/) {
-            gsub(/backend=|"/, "", $i)
-            print $i
-            exit
-          }
-        }
-      }'
-}
-
-pool_metric_value() {
-  local metric="$1"
-  curl -fsS "$POOL_ADMIN_URL/metrics" 2>/dev/null |
-    awk -v metric="$metric" '$1 == metric || index($1, metric "{") == 1 { print $NF + 0; exit }'
-}
-
-maintenance_metric() {
-  local backend="$1"
-  curl -fsS "$POOL_ADMIN_URL/metrics" 2>/dev/null |
-    awk -v target="$backend" -F'[{},]' '
-      /^pool_rpc_backend_maintenance/ && $0 ~ /} 1$/ {
-        for (i = 1; i <= NF; i++) {
-          if ($i ~ /^backend=/) {
-            value=$i
-            gsub(/backend=|"/, "", value)
-            if (value == target) {
-              print 1
-              exit
-            }
-          }
-        }
-      }'
-}
-
-backend_healthy_metric() {
-  local backend="$1"
-  curl -fsS "$POOL_ADMIN_URL/metrics" 2>/dev/null |
-    awk -v target="$backend" -F'[{},]' '
-      /^pool_rpc_backend_healthy/ {
-        for (i = 1; i <= NF; i++) {
-          if ($i ~ /^backend=/) {
-            value=$i
-            gsub(/backend=|"/, "", value)
-            if (value == target) {
-              print $NF + 0
-              exit
-            }
-          }
-        }
-      }'
-}
-
-backend_metrics_url() {
-  local backend="$1"
-  printf '%s\n' "$NODE_METRICS_URLS" |
-    tr ',' '\n' |
-    awk -F= -v target="$backend" '$1 == target { sub(/^[^=]*=/, ""); print; exit }'
-}
-
-backend_order_metric() {
-  local backend="$1"
-  local url
-  url="$(backend_metrics_url "$backend")"
-  [[ -n "$url" ]] || return 1
-  curl -fsS --max-time 3 "$url" 2>/dev/null |
-    awk '
-      $1 == "Blockdag_mainorder" { print int($2); found=1; exit }
-      $1 == "chain_head_block" { fallback=int($2) }
-      END { if (!found && fallback != "") print fallback }'
-}
-
-service_for_backend() {
-  case "$1" in
-    node1) printf '%s\n' "${BDAG_RAWDATADIR_NODE1_SERVICE:-bdag-miner-node-1}" ;;
-    node) printf '%s\n' "${BDAG_RAWDATADIR_NODE_SERVICE:-node}" ;;
-    *) return 1 ;;
-  esac
-}
-
-datadir_for_backend() {
-  case "$1" in
-    node1) printf '%s\n' "${BDAG_RAWDATADIR_NODE1_DATADIR:-$PROJECT_ROOT/data/node1}" ;;
-    node) printf '%s\n' "${BDAG_RAWDATADIR_NODE_DATADIR:-$PROJECT_ROOT/data/node}" ;;
-    *) return 1 ;;
-  esac
-}
-
-choose_export_backend() {
-  local selected="$1"
-  if [[ -n "$EXPORT_BACKEND" ]]; then
-    printf '%s\n' "$EXPORT_BACKEND"
-    return
-  fi
-  case "$selected" in
-    node1) printf '%s\n' node1 ;;
-    *) return 1 ;;
-  esac
-}
-
-admin_maintenance() {
-  local backend="$1"
-  local enabled="$2"
-  local reason="$3"
-  curl -fsS -X POST \
-    "$POOL_ADMIN_URL/admin/rpc-backend-maintenance?backend=$backend&enabled=$enabled&ttl=$MAINTENANCE_TTL&reason=$reason"
-}
-
-wait_pool_selected_backend() {
-  local expected="$1"
-  local deadline=$((SECONDS + 30))
-  local selected=""
-  while ((SECONDS < deadline)); do
-    selected="$(selected_backend || true)"
-    if [[ "$selected" == "$expected" ]]; then
-      return 0
-    fi
-    sleep 1
-  done
-  log "pool selected backend is ${selected:-unknown}; expected $expected"
-  return 1
-}
-
-wait_backend_maintenance() {
-  local backend="$1"
-  local deadline=$((SECONDS + 15))
-  while ((SECONDS < deadline)); do
-    if [[ "$(maintenance_metric "$backend" || true)" == "1" ]]; then
-      return 0
-    fi
-    sleep 1
-  done
-  log "pool did not expose maintenance=1 for backend=$backend"
-  return 1
-}
-
-wait_container_stopped() {
-  local service="$1"
-  local deadline=$((SECONDS + 60))
-  while ((SECONDS < deadline)); do
-    if ! docker inspect -f '{{.State.Running}}' "$service" 2>/dev/null | grep -qx true; then
-      return 0
-    fi
-    sleep 1
-  done
-  return 1
-}
-
-wait_container_running() {
-  local service="$1"
-  local deadline=$((SECONDS + 60))
-  while ((SECONDS < deadline)); do
-    if docker inspect -f '{{.State.Running}}' "$service" 2>/dev/null | grep -qx true; then
-      return 0
-    fi
-    sleep 1
-  done
-  return 1
-}
-
-wait_pool_jobs_ready() {
-  local timeout="${1:-$RESTORE_TIMEOUT_SECONDS}"
-  local deadline=$((SECONDS + timeout))
-  local ok="" ready="" authorized=""
-  while ((SECONDS < deadline)); do
-    ok="$(pool_metric_value pool_job_health_ok || true)"
-    ready="$(pool_metric_value pool_job_health_ready_miners || true)"
-    authorized="$(pool_metric_value pool_job_health_authorized_miners || true)"
-    if [[ "${ok:-0}" == "1" && "${authorized:-0}" -gt 0 && "${ready:-0}" -eq "${authorized:-0}" ]]; then
-      return 0
-    fi
-    sleep 2
-  done
-  log "pool jobs did not become ready ok=${ok:-unknown} ready=${ready:-unknown} authorized=${authorized:-unknown}"
-  return 1
-}
-
 wait_db_lock_free() {
   local lock_path="$1"
   local deadline=$((SECONDS + 45))
@@ -269,31 +76,6 @@ wait_db_lock_free() {
     return 0
   done
   return 1
-}
-
-assert_export_backend_fresh() {
-  local active_backend="$1"
-  local export_backend="$2"
-  if [[ "$REQUIRE_EXPORT_BACKEND_FRESH" != "1" ]]; then
-    log "skipping freshness gate because BDAG_RAWDATADIR_REQUIRE_EXPORT_BACKEND_FRESH=$REQUIRE_EXPORT_BACKEND_FRESH"
-    return 0
-  fi
-  local active_order export_order lag
-  active_order="$(backend_order_metric "$active_backend" || true)"
-  export_order="$(backend_order_metric "$export_backend" || true)"
-  if [[ -z "$active_order" || -z "$export_order" ]]; then
-    log "refusing raw datadir export: could not read order metrics active=$active_backend($active_order) export=$export_backend($export_order)"
-    return 1
-  fi
-  lag=$((active_order - export_order))
-  if ((lag < 0)); then
-    lag=0
-  fi
-  log "raw datadir freshness active=$active_backend order=$active_order export=$export_backend order=$export_order lag=$lag max=$MAX_EXPORT_BACKEND_LAG"
-  if ((lag > MAX_EXPORT_BACKEND_LAG)); then
-    log "refusing raw datadir export: source lag=$lag max=$MAX_EXPORT_BACKEND_LAG"
-    return 1
-  fi
 }
 
 resolve_node_image() {
@@ -310,37 +92,6 @@ resolve_node_image() {
   log "set BDAG_RAWDATADIR_NODE_IMAGE, BDAG_FASTSNAP_NODE_IMAGE, or BLOCKDAG_NODE_IMAGE"
   return 1
 }
-
-restore_export_backend() {
-  local changed=0
-  if [[ -n "$EXPORT_SERVICE" ]]; then
-    log "starting exported backend service=$EXPORT_SERVICE"
-    compose start "$EXPORT_SERVICE" 2>&1 | tee -a "$LOG_FILE"
-    wait_container_running "$EXPORT_SERVICE"
-    EXPORT_SERVICE=""
-    changed=1
-  fi
-  if [[ -n "$MAINTENANCE_BACKEND" ]]; then
-    log "clearing pool maintenance backend=$MAINTENANCE_BACKEND"
-    admin_maintenance "$MAINTENANCE_BACKEND" false rawdatadir-restore | tee -a "$LOG_FILE" >/dev/null
-    MAINTENANCE_BACKEND=""
-    changed=1
-  fi
-  if [[ "$changed" == "1" ]]; then
-    wait_pool_jobs_ready "$RESTORE_TIMEOUT_SECONDS" || true
-  fi
-}
-
-cleanup() {
-  local rc=$?
-  if [[ "$CLEANUP_DONE" == "1" ]]; then
-    exit "$rc"
-  fi
-  CLEANUP_DONE=1
-  restore_export_backend >/dev/null 2>&1 || true
-  exit "$rc"
-}
-trap cleanup EXIT INT TERM
 
 collect_anchor_env() {
   PYTHONDONTWRITEBYTECODE=1 python3 - "$ANCHOR_RPC_URL" "$RPC_USER" "$RPC_PASS" "$REQUIRE_STATE_ROOT" <<'PY'
@@ -604,43 +355,8 @@ if [[ -n "$SOURCE_DIR" ]]; then
     exit 1
   }
 else
-  if [[ "$NODE_MODE" == "single" ]]; then
-    log "refusing live-node export in BDAG_NODE_MODE=single; set BDAG_RAWDATADIR_SOURCE_DIR to a finalized sidecar"
-    exit 1
-  fi
-  ACTIVE_BACKEND="$(selected_backend || true)"
-  if [[ -z "$ACTIVE_BACKEND" ]]; then
-    log "pool has no selected backend; refusing to stop a node for raw datadir export"
-    exit 1
-  fi
-  EXPORT_BACKEND="$(choose_export_backend "$ACTIVE_BACKEND")"
-  EXPORT_SERVICE="$(service_for_backend "$EXPORT_BACKEND")"
-  EXPORT_NODE_DIR="$(datadir_for_backend "$EXPORT_BACKEND")"
-  SOURCE_MAINNET="$EXPORT_NODE_DIR/$NETWORK"
-  SOURCE_LABEL="$EXPORT_BACKEND"
-  if [[ "$EXPORT_BACKEND" == "$ACTIVE_BACKEND" ]]; then
-    log "export backend equals active backend ($ACTIVE_BACKEND); refusing unsafe raw datadir export"
-    exit 1
-  fi
-  if [[ ! -d "$SOURCE_MAINNET/BdagChain" ]]; then
-    log "missing export datadir: $SOURCE_MAINNET/BdagChain"
-    exit 1
-  fi
-  wait_pool_jobs_ready "$RESTORE_TIMEOUT_SECONDS"
-  assert_export_backend_fresh "$ACTIVE_BACKEND" "$EXPORT_BACKEND"
-  log "requesting pool maintenance drain backend=$EXPORT_BACKEND active=$ACTIVE_BACKEND"
-  admin_maintenance "$EXPORT_BACKEND" true rawdatadir | tee -a "$LOG_FILE" >/dev/null
-  MAINTENANCE_BACKEND="$EXPORT_BACKEND"
-  wait_pool_selected_backend "$ACTIVE_BACKEND"
-  wait_backend_maintenance "$EXPORT_BACKEND"
-  log "stopping drained backend service=$EXPORT_SERVICE"
-  compose stop "$EXPORT_SERVICE" 2>&1 | tee -a "$LOG_FILE"
-  wait_container_stopped "$EXPORT_SERVICE"
-  wait_pool_selected_backend "$ACTIVE_BACKEND"
-  wait_db_lock_free "$SOURCE_MAINNET/BdagChain/LOCK" || {
-    log "source datadir lock is still held: $SOURCE_MAINNET/BdagChain/LOCK"
-    exit 1
-  }
+  log "BDAG_RAWDATADIR_SOURCE_DIR is required; run ops/publish-rawdatadir-artifact.sh to refresh and finalize the sidecar"
+  exit 1
 fi
 
 STAMP="$(date +%Y%m%d-%H%M%S%Z)"
@@ -655,8 +371,6 @@ source "$ANCHOR_FILE"
 
 log "archiving raw datadir source=$SOURCE_LABEL path=$SOURCE_MAINNET"
 archive_source_datadir "$SOURCE_MAINNET" "$ARCHIVE"
-
-restore_export_backend
 
 if [[ ! -s "$ARCHIVE" ]]; then
   log "raw datadir archive was not created: $ARCHIVE"

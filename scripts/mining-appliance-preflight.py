@@ -392,7 +392,7 @@ def check_host(checks: list[Check], profile: HostProfile) -> None:
             f"{profile.os_name}/{profile.arch} profile={profile.profile} "
             f"cpu={profile.cpu_count} memory={profile.memory_gib:.2f}GiB kernel={profile.kernel}"
         ),
-        "Use single-node mode and adaptive concurrency on constrained hosts.",
+        "Use the default one-node layout and adaptive concurrency on constrained hosts.",
         profile.as_dict(),
     )
     if profile.os_name != "linux":
@@ -478,7 +478,7 @@ def check_storage(checks: list[Check], root: Path, env: dict[str, str], profile:
     topology = (env.get("BDAG_DETECTED_NETWORK_TOPOLOGY") or env.get("BDAG_NETWORK_TOPOLOGY") or "").strip().lower()
     mining_appliance = (
         mining_address and mining_address.lower() != ZERO_ETH_ADDRESS
-    ) or topology == "single-node-asic-router"
+    ) or topology == "asic-router"
     sync_source_node = bool_enabled(env.get("SYNC_SOURCE_NODE"), False)
     no_fastsync_serve = not sync_source_node
     if usb_chain_data and mining_appliance and sync_source_node:
@@ -779,11 +779,10 @@ def chain_marker_exists(path: Path) -> bool:
 
 def check_node_data_layout(checks: list[Check], root: Path, env: dict[str, str]) -> None:
     data_dir = env_data_dir(root, env)
-    node_mode = (env.get("BDAG_NODE_MODE") or "single").strip().lower()
     node1 = data_dir / "node1"
     node1_has = chain_marker_exists(node1 / "mainnet") or chain_marker_exists(node1)
-    evidence = {"data_dir": str(data_dir), "node_mode": node_mode, "active_node_has_chain_markers": node1_has}
-    add(checks, "pass", "single_node_data_layout", "active node data layout is inspectable", evidence=evidence)
+    evidence = {"data_dir": str(data_dir), "active_node_has_chain_markers": node1_has}
+    add(checks, "pass", "active_node_data_layout", "active node data layout is inspectable", evidence=evidence)
 
     backup_like = []
     if data_dir.exists():
@@ -797,7 +796,6 @@ def check_node_data_layout(checks: list[Check], root: Path, env: dict[str, str])
 
 def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostProfile) -> None:
     evidence = {
-        "BDAG_NODE_MODE": env.get("BDAG_NODE_MODE"),
         "BDAG_NODE_CACHE_MB": env.get("BDAG_NODE_CACHE_MB"),
         "NODE_MAX_PEERS": env.get("NODE_MAX_PEERS"),
         "BDAG_FASTSYNC_PREPROCESS_WORKERS": env.get("BDAG_FASTSYNC_PREPROCESS_WORKERS"),
@@ -815,11 +813,7 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         "BDAG_NODE_MODULES": env.get("BDAG_NODE_MODULES"),
         "BDAG_NODE_MINING_ARGS": env.get("BDAG_NODE_MINING_ARGS"),
     }
-    node_mode = (env.get("BDAG_NODE_MODE") or "single").strip().lower()
-    if profile.profile == "constrained" and node_mode not in {"single", "single-node", "one", "1"}:
-        add(checks, "warn", "constrained_node_mode", f"constrained host is configured for BDAG_NODE_MODE={node_mode}.", "Use single-node mode unless the host has enough RAM, disk bandwidth, and power headroom for two nodes.", evidence)
-    else:
-        add(checks, "pass", "constrained_node_mode", f"BDAG_NODE_MODE={node_mode or 'single'}", evidence=evidence)
+    add(checks, "pass", "active_node_topology", "release topology uses one production node", evidence=evidence)
 
     cache_mb = safe_int(env.get("BDAG_NODE_CACHE_MB"), 1024)
     if profile.profile == "constrained" and cache_mb and cache_mb > 1536:
@@ -843,7 +837,7 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     topology = (env.get("BDAG_DETECTED_NETWORK_TOPOLOGY") or env.get("BDAG_NETWORK_TOPOLOGY") or "").strip().lower()
     constrained_mining_profile = (
         storage_profile in {"usb-chain-internal-runtime", "single-usb-constrained"}
-        or topology == "single-node-asic-router"
+        or topology == "asic-router"
     )
     node_args_append_enables_fastartifact = node_args_enable_fastartifact(env.get("NODE_ARGS_APPEND"))
     evidence["NODE_ARGS_APPEND"] = env.get("NODE_ARGS_APPEND")

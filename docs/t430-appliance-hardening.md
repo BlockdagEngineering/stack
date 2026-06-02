@@ -1,4 +1,4 @@
-# T430 Single-Node Appliance Hardening
+# T430 Appliance Hardening
 
 Field report from the `/home/hpool` mining host on 2026-05-26.
 
@@ -44,7 +44,7 @@ Field report from the `/home/hpool` mining host on 2026-05-26.
 1. Moved chain data off the internal eMMC and onto a dedicated F2FS USB
    filesystem, then split small frequent writes back to internal storage where
    there was enough free space.
-2. Used a single-node stack for the appliance.
+2. Used the default one-node stack for the appliance.
 3. Downloaded and verified the FastSnap V2 artifact before import.
 4. Parked old datadirs with timestamped names instead of deleting them, then
    imported the verified V2 snapshot into a clean datadir.
@@ -84,7 +84,7 @@ The preflight checks:
 - whether small ephemeral scratch resolves to RAM-backed storage rather than
   adding disk writes to the USB chain device.
 - USB chain filesystem suitability.
-- duplicate node datadirs in single-node mode.
+- duplicate node datadirs.
 - old parked chain backups that should be cleaned only after stable mining.
 - node mode, cache, peer count, FastSync preprocess workers, status sampler,
   adaptive concurrency, and chown policy.

@@ -591,7 +591,7 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
     managed_nodes = payload.get("managed_node_services") if isinstance(payload.get("managed_node_services"), list) else []
     single_active_node = len(managed_nodes) == 1
     leader = choose_sync_leader(payload)
-    mode = str(coordinator.get("mode") or "single_node_catchup")
+    mode = str(coordinator.get("mode") or "active_node_catchup")
     threshold = safe_int(((coordinator.get("last_decision") or {}).get("thresholds") or {}).get("leader_near_tip_blocks"), 5) or 5
 
     state = read_json(SYNC_ESTIMATE_STATE_FILE, {})
@@ -666,7 +666,7 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
     stage = (
         "Synced"
         if sync_progress.get("status") == "synced"
-        else "Single-node catch-up"
+        else "Active-node catch-up"
         if single_active_node
         else "Syncing"
     )

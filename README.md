@@ -185,9 +185,9 @@ immutable latest-index CID is
 recorded in that discovery file. At the first live segment publish on
 2026-05-31 it was `bafkreifvqj7qhkoifykybbvlxxmq3jhydgzq2kjxuq5fznjizjjogzgthi`.
 The stale monolithic FastSnap seed has been deprecated. The current implementation
-writes append-only live-tail chain-order segments from one local writer until the
-multi-node publisher registry/election is deployed. The durable protocol design
-is recorded in `docs/ipfs-append-only-segment-protocol.html`. IPFS and IPNS are
+writes append-only live-tail chain-order segments from the local node. The
+durable protocol design is recorded in
+`docs/ipfs-append-only-segment-protocol.html`. IPFS and IPNS are
 not chain trust. Receivers must verify segment CIDs, payload hashes, order
 continuity, network/genesis identity, tip/state roots, and normal consensus
 before using the data.
@@ -234,7 +234,7 @@ before cutting an RC, and use `--mode live-runtime` for an installed stack where
 Constrained mining appliances also run a read-only install preflight before
 chain seeding or stack start. `scripts/mining-appliance-preflight.py` checks the
 host profile, root and chain-data free space, filesystem and mount options,
-storage profile split, single-node duplicate data, swap sizing, Docker root
+storage profile split, duplicate node data, swap sizing, Docker root
 placement, network route, schema presence, and resource-sensitive `.env`
 defaults. The installer resolves `BDAG_STORAGE_PROFILE=auto` into concrete
 chain, Postgres, and runtime paths so capacity USB storage can carry the growing
@@ -249,7 +249,7 @@ deliberately overridden. The installer reports
 warnings and continues by default. Set `BDAG_APPLIANCE_PREFLIGHT_STRICT=1` to
 make hard failures stop the install, or `BDAG_APPLIANCE_PREFLIGHT=0` to skip it
 explicitly. The field report behind these checks is in
-`docs/t430-single-node-appliance-hardening.md`.
+`docs/t430-appliance-hardening.md`.
 
 The release builder also runs `scripts/verify-release-architecture.py` before
 image assembly so ARM64 packages cannot silently receive AMD64 binaries; the
@@ -347,8 +347,8 @@ and disk headroom.
 
 Eligible source hosts maintain a low-priority raw datadir sidecar and publish a
 signed `raw_datadir_checkpoint` artifact from a finalized sidecar generation.
-Single-node systems do not stop the live node automatically. Set
-`BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=1` only for an operator-approved
+The artifact publisher does not stop the live node automatically. Set
+`BDAG_RAWDATADIR_FINALIZE=1` only for an operator-approved
 finalization window.
 
 The old archive seed timer has been removed because IPFS segments and finalized
