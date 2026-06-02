@@ -735,6 +735,16 @@ WantedBy=timers.target
 EOF
 fi
 
+ensure_automation_control_file() {
+  python3 "$PROJECT_ROOT/ops/automation_control.py" ensure-normal \
+    --owner "${INSTANCE}-install" \
+    --owner-unit "ops/install-dashboard.sh" \
+    --reason "Provision default automation control state for watchdog and sentinel repairs" \
+    --correlation-id "${INSTANCE}-install-$(date -u +%Y%m%dT%H%M%SZ)"
+}
+
+ensure_automation_control_file
+
 systemctl --user daemon-reload
 if [[ "$START_SERVICES" -eq 1 ]]; then
   if [[ "$INSTALL_WATCHDOG" -eq 1 ]]; then

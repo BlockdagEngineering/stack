@@ -151,6 +151,15 @@ weights, keeps duplicate sync work out of the production path, and restarts an
 unaccelerated or stale leader after the cooldown window so startup peer order and
 V2 artifact serving are active.
 
+Seed and sidecar freshness checks use a bounded startup-lag policy instead of
+trying to land exactly on tip. The default acceptable lag is
+`BDAG_SYNC_ACCEPTABLE_STARTUP_LAG_BLOCKS=4000`; scripts may also widen that by
+recording the prior copy duration and applying
+`BDAG_SYNC_COPY_MINUTE_BLOCK_ALLOWANCE=4` block(s) per copy minute. Once a
+receiver or remote node is inside that window, start it and let normal P2P or
+Fast Artifact Sync catch the tail. Do not recopy solely to reduce an
+already-acceptable lag.
+
 Old installations may still contain legacy address-bucket variable names.
 `ops/update-local-peers.py` treats them only as migration input, normalizes
 complete P2P multiaddrs into `BDAG_FASTSYNC_PEERS`, and clears the bucket

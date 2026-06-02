@@ -29,6 +29,7 @@ FILES=(
   "docs/t430-appliance-hardening.md"
   "docs/ipfs-append-only-segment-protocol.html"
   "ops/README.md"
+  "ops/automation_control.py"
   "ops/build-rawdatadir-artifact.sh"
   "ops/fastartifact_source_eligibility.py"
   "ops/fetch-rawdatadir-artifact.sh"
@@ -243,6 +244,15 @@ run_target_validation() {
   [[ -f "$TARGET_ROOT/docker-compose.yml" ]] || die "missing target docker-compose.yml"
   [[ -f "$TARGET_ROOT/ops/dashboard.py" ]] || die "missing target ops/dashboard.py"
   [[ -f "$TARGET_ROOT/ops/watchdog.py" ]] || die "missing target ops/watchdog.py"
+}
+
+ensure_target_automation_control() {
+  say "Ensuring automation-control gate exists"
+  python3 "$TARGET_ROOT/ops/automation_control.py" ensure-normal \
+    --owner "deploy-live-runtime-update" \
+    --owner-unit "ops/deploy-live-runtime-update.sh" \
+    --reason "Provision default automation control state for watchdog and sentinel repairs" \
+    --correlation-id "live-runtime-update-${commit}-${stamp}"
 }
 
 target_env_value() {
@@ -517,6 +527,8 @@ if ! run_target_validation; then
   rollback_from_backup
   exit 1
 fi
+
+ensure_target_automation_control
 
 if [[ -n "$RESTART_SERVICES" ]]; then
   say "Restarting user services: $RESTART_SERVICES"
