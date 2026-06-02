@@ -252,23 +252,23 @@ services:
       TMP: /tmp
       TEMP: /tmp
       # The canonical pool-dashboard code defaults to the standalone
-      # two-node runtime names; this stack uses node/pool/postgres.
-      BDAG_NODE_SERVICES: node
-      BDAG_STACK_SERVICES: postgres,node,pool
-      BDAG_POOL_CONTAINER: pool
-      BDAG_POOL_CONTAINERS: pool
-      BDAG_POOL_DB_CONTAINER: postgres
+      # two-node runtime names; this stack uses node/pool/pool-db.
+      BDAG_NODE_SERVICES: ${BDAG_DASHBOARD_NODE_SERVICES:-node}
+      BDAG_STACK_SERVICES: ${BDAG_DASHBOARD_STACK_SERVICES:-pool-db,node,pool}
+      BDAG_POOL_CONTAINER: ${BDAG_DASHBOARD_POOL_CONTAINER:-pool}
+      BDAG_POOL_CONTAINERS: ${BDAG_DASHBOARD_POOL_CONTAINERS:-pool}
+      BDAG_POOL_DB_CONTAINER: ${BDAG_DASHBOARD_POOL_DB_CONTAINER:-pool-db}
       BDAG_POOL_DB_USER: ${POSTGRES_USER:-bdag_pool}
       BDAG_POOL_DB_NAME: ${POSTGRES_DB:-bdagpool}
-      BDAG_POOL_METRICS_PORT: 9090
-      BDAG_NODE_RPC_URLS: node=http://node:38131
-      BDAG_GLOBAL_CHAIN_RPC_URLS: node=http://node:38131
-      BDAG_RPC_URL: http://node:38131
+      BDAG_POOL_METRICS_PORT: ${BDAG_DASHBOARD_POOL_METRICS_PORT:-9090}
+      BDAG_NODE_RPC_URLS: ${BDAG_DASHBOARD_NODE_RPC_URLS:-node=http://node:38131}
+      BDAG_GLOBAL_CHAIN_RPC_URLS: ${BDAG_DASHBOARD_GLOBAL_CHAIN_RPC_URLS:-node=http://node:38131}
+      BDAG_RPC_URL: ${BDAG_DASHBOARD_RPC_URL:-http://node:38131}
       # Must match node.conf rpcuser / rpcpass (same as pool service).
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
-      DASHBOARD_EVM_RPC_URL: http://node:18545
-      DASHBOARD_LISTEN: 0.0.0.0:9280
+      DASHBOARD_EVM_RPC_URL: ${BDAG_DASHBOARD_EVM_RPC_URL:-http://node:18545}
+      DASHBOARD_LISTEN: ${DASHBOARD_LISTEN:-0.0.0.0:9280}
       DASHBOARD_RPC_POLL_SECONDS: 5
       DASHBOARD_MAX_POINTS: 120
       DASHBOARD_MINING_MAX_BARS: 48
