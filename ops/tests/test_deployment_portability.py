@@ -88,6 +88,14 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("DASHBOARD_EVM_RPC_URL: http://node:18545", compose)
         self.assertNotIn("BDAG_RPC_URL: http://bdag-miner-node-1:38131", compose)
 
+    def test_compose_protects_temp_paths_from_overlay_io(self) -> None:
+        compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+
+        self.assertGreaterEqual(compose.count("/var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777"), 4)
+        self.assertGreaterEqual(compose.count("TMPDIR: /tmp"), 5)
+        self.assertGreaterEqual(compose.count("TMP: /tmp"), 5)
+        self.assertGreaterEqual(compose.count("TEMP: /tmp"), 5)
+
     def test_live_deploy_copy_contract_covers_live_validator_files(self) -> None:
         deploy = (ROOT_DIR / "ops" / "deploy-live-runtime-update.sh").read_text(encoding="utf-8")
         validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
@@ -118,7 +126,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
 
         self.assertIn('if [[ "$mode" == "source" && -e "$root/ops/observability" ]]; then', validator)
         self.assertIn('need_grep \'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS\' "docker-compose.yml"', validator)
-        self.assertIn('need_grep \'NODE_RPC_URLS: .*http://bdag-miner-node-1:38131\' "docker-compose.yml"', validator)
+        self.assertIn('need_grep \'NODE_RPC_URLS: .*http://node:38131\' "docker-compose.yml"', validator)
         self.assertIn('need_grep \'BDAG_STACK_SERVICES=pool-db,bdag-miner-node-1,asic-pool\' ".env.example"', validator)
 
     def test_live_runtime_validator_keeps_release_packaging_source_only(self) -> None:

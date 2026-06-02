@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -441,6 +442,81 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         found = {check.name: check.status for check in checks}
         self.assertEqual(found["ephemeral_tmpfs"], "pass")
         self.assertEqual(found["fastsnap_staging_tmpfs"], "warn")
+
+    def test_disk_io_guard_warns_for_tmpfs_build_tmpdir_and_large_cache(self) -> None:
+        old_disk_usage = preflight.disk_usage
+        old_storage_device = preflight.storage_device
+        old_docker_system_df = preflight.docker_system_df
+
+        try:
+            preflight.disk_usage = lambda _path: {"free_bytes": 20 * preflight.GIB, "free_gib": 20.0}
+            preflight.storage_device = lambda path: {
+                "path": str(path),
+                "fstype": "tmpfs" if str(path).startswith("/run") else "ext4",
+            }
+            preflight.docker_system_df = lambda: [{"Type": "Build Cache", "Size": "5GB"}]
+            checks = []
+            preflight.check_disk_io_noise_guard(
+                checks,
+                Path("/opt/blockdag-pool"),
+                {
+                    "BDAG_BUILD_TMPDIR": "/run/bdag-pool/tmp",
+                    "BDAG_BUILD_CACHE_WARN_GIB": "4",
+                },
+                preflight.HostProfile("linux", "x86_64", 2, 3 * preflight.GIB, "constrained", "test"),
+            )
+        finally:
+            preflight.disk_usage = old_disk_usage
+            preflight.storage_device = old_storage_device
+            preflight.docker_system_df = old_docker_system_df
+
+        found = {check.name: check.status for check in checks}
+        self.assertEqual(found["disk_io_root_free_space_guard"], "pass")
+        self.assertEqual(found["build_tmpdir_not_tmpfs"], "warn")
+        self.assertEqual(found["docker_build_cache_budget"], "warn")
+
+    def test_docker_system_df_timeout_is_treated_as_unavailable(self) -> None:
+        old_run = preflight.run
+
+        try:
+            preflight.run = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                subprocess.TimeoutExpired(["docker", "system", "df"], timeout=15)
+            )
+            self.assertEqual(preflight.docker_system_df(), [])
+        finally:
+            preflight.run = old_run
+
+    def test_disk_io_guard_accepts_capacity_build_tmpdir_and_small_cache(self) -> None:
+        old_disk_usage = preflight.disk_usage
+        old_storage_device = preflight.storage_device
+        old_docker_system_df = preflight.docker_system_df
+        old_same_filesystem = preflight.same_filesystem
+
+        try:
+            preflight.disk_usage = lambda _path: {"free_bytes": 20 * preflight.GIB, "free_gib": 20.0}
+            preflight.storage_device = lambda path: {
+                "path": str(path),
+                "fstype": "ext4",
+            }
+            preflight.docker_system_df = lambda: [{"Type": "Build Cache", "Size": "512MB"}]
+            preflight.same_filesystem = lambda _left, _right: False
+            checks = []
+            preflight.check_disk_io_noise_guard(
+                checks,
+                Path("/opt/blockdag-pool"),
+                {"BDAG_BUILD_TMPDIR": "/srv/bdag-pool-storage/build-tmp"},
+                preflight.HostProfile("linux", "x86_64", 2, 3 * preflight.GIB, "constrained", "test"),
+            )
+        finally:
+            preflight.disk_usage = old_disk_usage
+            preflight.storage_device = old_storage_device
+            preflight.docker_system_df = old_docker_system_df
+            preflight.same_filesystem = old_same_filesystem
+
+        found = {check.name: check.status for check in checks}
+        self.assertEqual(found["disk_io_root_free_space_guard"], "pass")
+        self.assertEqual(found["build_tmpdir_not_tmpfs"], "pass")
+        self.assertEqual(found["docker_build_cache_budget"], "pass")
 
 
 if __name__ == "__main__":

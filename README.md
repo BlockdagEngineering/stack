@@ -181,7 +181,10 @@ disabled.
 
 Dashboard block height is sourced from chain RPC `getBlockCount`; template
 height, logs, and main-order values are shown only as
-diagnostics. Chain RPC checks retry slow storage-bound samples via
+diagnostics. Build and release flows should run through
+`scripts/bdag-low-io-build.sh`, which uses idle I/O priority, low CPU priority,
+and `BDAG_BUILD_TMPDIR` so image builds do not compete with chain sync or block
+submission. Chain RPC checks retry slow storage-bound samples via
 `BDAG_NODE_CHAIN_RPC_TIMEOUT` and `BDAG_NODE_CHAIN_RPC_RETRIES`, and the status
 payload exposes the active dashboard URL, RPC latency, and Linux IO pressure
 metrics. When PSI is unavailable, the dashboard falls back to `/proc/stat`
@@ -217,7 +220,9 @@ chain, Postgres, and runtime paths so capacity USB storage can carry the growing
 chain while internal or other non-USB storage absorbs small frequent writes when
 it has enough headroom. USB-backed chain data always prefers this split. Small
 ephemeral scratch is kept on bounded tmpfs through `BDAG_EPHEMERAL_DIR`,
-`BDAG_CONTAINER_TMPFS_SIZE`, and node-specific `BDAG_NODE_TMPFS_SIZE`; large
+`BDAG_CONTAINER_TMPFS_SIZE`, and node-specific `BDAG_NODE_TMPFS_SIZE`; service
+containers also mount `/var/tmp` as tmpfs and export `TMPDIR`, `TMP`, and
+`TEMP` to avoid accidental temp spillover into overlay layers. Large
 snapshot and chain-artifact staging stays on capacity storage unless
 deliberately overridden. The installer reports
 warnings and continues by default. Set `BDAG_APPLIANCE_PREFLIGHT_STRICT=1` to

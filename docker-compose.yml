@@ -58,7 +58,11 @@ services:
     logging: *mining-logging
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
+      - /var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     environment:
+      TMPDIR: /tmp
+      TMP: /tmp
+      TEMP: /tmp
       POSTGRES_USER:     ${POSTGRES_USER:-bdag_pool}
       POSTGRES_DB:       ${POSTGRES_DB:-bdagpool}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
@@ -175,9 +179,13 @@ services:
     logging: *mining-logging
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
+      - /var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     depends_on:
       pool-db: { condition: service_healthy }
     environment:
+      TMPDIR: /tmp
+      TMP: /tmp
+      TEMP: /tmp
       # Compose interpolates ${...} from the project root .env file.
       NODE_RPC_URL: http://node:38131
       NODE_RPC_URLS: ${NODE_RPC_URLS:-http://node:38131}
@@ -239,10 +247,14 @@ services:
     logging: *mining-logging
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
+      - /var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     depends_on:
       node: { condition: service_started }
       pool: { condition: service_started }
     environment:
+      TMPDIR: /tmp
+      TMP: /tmp
+      TEMP: /tmp
       # The canonical pool-dashboard code defaults to the standalone
       # two-node runtime names; this stack uses node/pool/postgres.
       BDAG_NODE_SERVICES: node
@@ -291,9 +303,15 @@ services:
         <<: *build-args
     restart: unless-stopped
     logging: *mining-logging
+    tmpfs:
+      - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
+      - /var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     depends_on:
       pool: { condition: service_started }
     environment:
+      TMPDIR: /tmp
+      TMP: /tmp
+      TEMP: /tmp
       POOL_URL: ${MINER_POOL_URL:-stratum+tcp://pool:3334}
       POOL_USER: ${MINING_POOL_ADDRESS:-0x0000000000000000000000000000000000000000}
       POOL_PASS: ${MINER_POOL_PASS:-x}
