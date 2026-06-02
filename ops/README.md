@@ -122,6 +122,36 @@ and ready to mine, it starts the pool container without recreating dependencies.
 Set `BDAG_MINING_IMPERATIVE_REPAIR_ENABLED=0` only for an intentional maintenance
 window where mining must remain stopped.
 
+## Thirty-Minute Mining Guard
+
+`ops/mining_guard_30min.py` is the periodic Codex-facing proof-of-health check
+for the mining path. Installed stacks run it through
+`bdag-mining-30min-guard.timer` every 30 minutes with low CPU and idle IO
+priority.
+
+The guard records each sample in:
+
+```text
+ops/runtime/mining-30min-guard-state.json
+ops/runtime/mining-30min-guard-history.jsonl
+ops/runtime/logs/mining-30min-guard.log
+```
+
+When the sample is not healthy, the guard writes an incident with the current
+mining symptoms and fetches source metadata from the configured stack
+repositories. This satisfies the first repair step: check current `develop`
+before deciding whether the fault is already fixed upstream. The background
+guard is intentionally fetch-only. It does not edit source, build images,
+commit, push, or restart the local stack; an active Codex repair session must
+own those steps with tests, deployment evidence, and rollback context.
+
+Configure source triage with:
+
+```text
+BDAG_MINING_GUARD_SOURCE_BRANCH=develop
+BDAG_MINING_GUARD_SOURCE_REPOS=/path/to/pool-stack-docker:/path/to/pool:/path/to/pool-dashboard
+```
+
 ## Paid Conversion Evidence
 
 Accepted shares prove that miners are connected and doing work; they do not
