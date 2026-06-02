@@ -251,6 +251,7 @@ def build_sample(status: dict[str, Any] | None, error: str, state: dict[str, Any
     miner_health = status.get("miner_health") if isinstance(status.get("miner_health"), dict) else {}
     miner = find_expected_miner(status)
     hashrate = miner_hashrate(miner)
+    expected_asic_required = bool(EXPECTED_ASIC_IP)
 
     current_block = as_int(sync.get("current_block"), -1)
     highest_block = as_int(sync.get("highest_block"), -1)
@@ -307,6 +308,7 @@ def build_sample(status: dict[str, Any] | None, error: str, state: dict[str, Any
             "pool_last_valid_share_age_seconds": last_valid_share_age,
             "mining_guard_enabled": MINING_GUARD_ENABLED,
             "asic_ip": EXPECTED_ASIC_IP,
+            "expected_asic_required": expected_asic_required,
             "asic_present": bool(miner),
             "asic_configured": bool(miner.get("configured")) if miner else False,
             "asic_connected": bool(miner.get("connected")) if miner else False,
@@ -330,10 +332,10 @@ def build_sample(status: dict[str, Any] | None, error: str, state: dict[str, Any
             problems.append("sync-not-importing")
 
     if MINING_GUARD_ENABLED:
-        if not miner:
+        if expected_asic_required and not miner:
             problems.append("expected-asic-missing")
             critical = True
-        else:
+        elif expected_asic_required:
             if not miner.get("configured"):
                 problems.append("expected-asic-not-configured")
                 critical = True
@@ -348,7 +350,7 @@ def build_sample(status: dict[str, Any] | None, error: str, state: dict[str, Any
             problems.append("pool-has-no-connected-miners")
             critical = True
 
-        if job_notify_count <= 0:
+        if job_notify_count <= 0 and not recent_valid_share:
             problems.append("pool-has-not-issued-jobs")
             if not effective_initial_download:
                 critical = True
@@ -423,6 +425,7 @@ def run_once() -> dict[str, Any]:
                 "pool_initial_download": sample.get("pool_initial_download"),
                 "pool_connected_miners": sample.get("pool_connected_miners"),
                 "pool_job_notify_count": sample.get("pool_job_notify_count"),
+                "expected_asic_required": sample.get("expected_asic_required"),
                 "asic_ip": sample.get("asic_ip"),
                 "asic_configured": sample.get("asic_configured"),
                 "asic_connected": sample.get("asic_connected"),
