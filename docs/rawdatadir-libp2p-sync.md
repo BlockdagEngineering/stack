@@ -122,6 +122,18 @@ node, and lets normal FastSync catch the remaining tail. If no source is
 available, it records the reason and retries instead of falling back
 permanently.
 
+Receiver startup uses an acceptance window, not exact-tip chasing. A seed or
+sidecar within `BDAG_SYNC_ACCEPTABLE_STARTUP_LAG_BLOCKS=4000` blocks is
+considered close enough to start, and the node should catch up the tail over
+normal P2P/FastSync. The shared policy can widen the window from the previous
+copy duration with `BDAG_SYNC_COPY_MINUTE_BLOCK_ALLOWANCE=4` block(s) per copy
+minute. For raw-datadir receiver fetches, set `BDAG_RAWDATADIR_TARGET_TIP` to
+the observed network or source tip; when `BDAG_RAWDATADIR_MIN_TIP` is not set,
+the fetcher requests `target_tip - acceptable_lag` so an otherwise good artifact
+is not rejected only because the copy took time. Once the receiver and source
+are within the acceptance window, fix peer connectivity if catch-up stalls; do
+not continuously redo the full copy just to close the last blocks.
+
 Relevant defaults:
 
 ```bash
@@ -129,6 +141,8 @@ BDAG_FAST_CATCHUP_ARTIFACT_MODE=auto
 BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS=300
 BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS=1000
 BDAG_FAST_CATCHUP_ARTIFACT_MIN_GAIN_BLOCKS=1000
+BDAG_SYNC_ACCEPTABLE_STARTUP_LAG_BLOCKS=4000
+BDAG_SYNC_COPY_MINUTE_BLOCK_ALLOWANCE=4
 BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED=1
 BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS=0
 BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT=21600s
