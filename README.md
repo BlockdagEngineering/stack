@@ -199,7 +199,10 @@ disabled.
 
 Dashboard block height is sourced from chain RPC `getBlockCount`; template
 height, logs, and main-order values are shown only as
-diagnostics. Chain RPC checks retry slow storage-bound samples via
+diagnostics. Build and release flows should run through
+`scripts/bdag-low-io-build.sh`, which uses idle I/O priority, low CPU priority,
+and `BDAG_BUILD_TMPDIR` so image builds do not compete with chain sync or block
+submission. Chain RPC checks retry slow storage-bound samples via
 `BDAG_NODE_CHAIN_RPC_TIMEOUT` and `BDAG_NODE_CHAIN_RPC_RETRIES`, and the status
 payload exposes the active dashboard URL, RPC latency, and Linux IO pressure
 metrics. When PSI is unavailable, the dashboard falls back to `/proc/stat`
@@ -216,8 +219,36 @@ share one cross-process status sample. `ops/status_sampler.py` writes
 through `collect_status_cached()` when it is fresh. Direct repair diagnostics
 can still force a live collection with `max_age_seconds=0`.
 
-The normal release workflow runs `scripts/verify-release-architecture.py` before
-package assembly so ARM64 packages cannot silently receive AMD64 binaries; the
+The Pi5 release builder marks generated runtime compose files with
+`BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1` and rejects `build:`/`dockerfile:`
+entries in runtime packages. Runtime starts use `--no-build --pull never` by
+default; set an explicit pull/build flag only when intentionally refreshing
+images. Keep `scripts/validate-pi5-restart-hardening.sh` in the release gate
+before cutting an RC, and use `--mode live-runtime` for an installed stack where
+`ops/runtime` and Python bytecode are expected service artifacts.
+
+Constrained mining appliances also run a read-only install preflight before
+chain seeding or stack start. `scripts/mining-appliance-preflight.py` checks the
+host profile, root and chain-data free space, filesystem and mount options,
+storage profile split, single-node duplicate data, swap sizing, Docker root
+placement, network route, schema presence, and resource-sensitive `.env`
+defaults. The installer resolves `BDAG_STORAGE_PROFILE=auto` into concrete
+chain, Postgres, and runtime paths so capacity USB storage can carry the growing
+chain while internal or other non-USB storage absorbs small frequent writes when
+it has enough headroom. USB-backed chain data always prefers this split. Small
+ephemeral scratch is kept on bounded tmpfs through `BDAG_EPHEMERAL_DIR`,
+`BDAG_CONTAINER_TMPFS_SIZE`, and node-specific `BDAG_NODE_TMPFS_SIZE`; service
+containers also mount `/var/tmp` as tmpfs and export `TMPDIR`, `TMP`, and
+`TEMP` to avoid accidental temp spillover into overlay layers. Large
+snapshot and chain-artifact staging stays on capacity storage unless
+deliberately overridden. The installer reports
+warnings and continues by default. Set `BDAG_APPLIANCE_PREFLIGHT_STRICT=1` to
+make hard failures stop the install, or `BDAG_APPLIANCE_PREFLIGHT=0` to skip it
+explicitly. The field report behind these checks is in
+`docs/t430-single-node-appliance-hardening.md`.
+
+The release builder also runs `scripts/verify-release-architecture.py` before
+image assembly so ARM64 packages cannot silently receive AMD64 binaries; the
 checker reads ELF/Mach-O/PE headers directly so it can be used from Linux,
 macOS, and Windows build hosts.
 
