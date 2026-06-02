@@ -30,8 +30,9 @@ Each payload zip contains `bin/` (pre-built `blockdag-node`, `nodeworker`,
 `dockerfile`, `.env.example`,
 `docker/`, and the cross-platform payload installers. **Node and pool release
 images** stage binaries from `./bin`; the `dashboard` image checks out
-`BlockdagEngineering/dashboard` at `DASHBOARD_REF`. Export `GITHUB_TOKEN` before
-`docker compose build` if that repository is private in your environment.
+the `develop` branch from `BlockdagEngineering/dashboard`. Export
+`GITHUB_TOKEN` before `docker compose build` if that repository is private in
+your environment.
 
 Run the bootstrap script from the GitHub release, or manually unpack the
 matching payload zip and run the payload installer from the extracted directory:

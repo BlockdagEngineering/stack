@@ -18,10 +18,8 @@ Multi-context repo with shared context in sibling `../codex-memory`; read that m
 
 
 The only dashboard repository for this release candidate is
-`BlockdagEngineering/dashboard`. Its `main` branch was replaced with the
-live Python operations dashboard captured from
-`/home/jeremy/blockdag-asic-pool/ops` at commit
-`6585347bfa78a1e6ed2a6178eaa38c7ccac9d022`.
+`BlockdagEngineering/dashboard`. Release builds must always use its `develop`
+branch.
 
 Do not reintroduce the retired standalone read-only dashboard, command-center
 prototype, or Grafana/Prometheus/Loki observability dashboard as RC dashboard

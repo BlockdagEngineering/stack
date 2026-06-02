@@ -12,8 +12,7 @@ while removing local assumptions that caused install or sync drift.
   peer preference, and the zero-state-root `HasState` guard.
 - `pool`: `develop` at `61b231c0501b32338f4ad47561a09e03e5933adc` or newer,
   pinned to a single backend submit path.
-- `dashboard`: `develop` at `c82978751f035afd0e9da2b3d5d1fac69eae6858`
-  or newer.
+- `dashboard`: `develop`; release builds always use this branch.
 
 ## Release Requirements
 
