@@ -16,12 +16,5 @@ architecture.
 ## Linux ARM64 Runtime
 
 The `linux-arm64` runtime payload used for native ARM64 Linux containers. Linux
-ARM64, macOS ARM64 Docker Desktop, Windows ARM64 Docker Desktop, and Pi5 ARM64
-hosts select this payload.
-
-## Pi5 ARM64 Appliance Package
-
-The separate Raspberry Pi 5 appliance/hardening package produced by
-`ops/build-pi5-arm64-release.sh`. It may include appliance-specific image
-archives, runtime compose generation, service hardening, and chain-data archive
-flows that are not part of the normal runtime payload zips.
+ARM64, macOS ARM64 Docker Desktop, and Windows ARM64 Docker Desktop hosts select
+this payload.

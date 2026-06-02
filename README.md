@@ -22,8 +22,8 @@ architecture:
 
 The bootstrap script is generated for one release tag. It detects the host OS
 and CPU architecture, selects `linux-amd64` or `linux-arm64`, and downloads only
-the matching payload zip from that same tag. Linux ARM64, macOS ARM64, Windows
-ARM64, and Pi5 ARM64 hosts use the `linux-arm64` runtime payload.
+the matching payload zip from that same tag. Linux ARM64, macOS ARM64, and
+Windows ARM64 hosts use the `linux-arm64` runtime payload.
 
 Each payload zip contains `bin/` (pre-built `blockdag-node`, `nodeworker`,
 `fastsnap`, `mining-pool`, and `dashboard-api`), `docker-compose.yml`,
@@ -188,14 +188,7 @@ not chain trust. Receivers must verify segment CIDs, payload hashes, order
 continuity, network/genesis identity, tip/state roots, and normal consensus
 before using the data.
 
-## Pi5 Release Candidate Stability Defaults
-
-The Pi5 ARM64 release builder (`ops/build-pi5-arm64-release.sh`) remains the
-separate appliance/hardening package path. Normal release payloads include
-native `linux-arm64` runtime binaries, but they do not include the Pi5 appliance
-image/archive flow. The Pi5 appliance package defaults to
-`BDAG_NODE_MODE=single`, which runs `bdag-miner-node-1` only to reduce USB power
-pressure. The appliance release no longer supports adding another local backend.
+## Runtime Stability Defaults
 
 No-miner deployments are sync-only by default: `BDAG_ENABLE_NODE_MINING=0`,
 `BDAG_NODE_MODULES=Blockdag`, and an empty `BDAG_NODE_MINING_ARGS`. Enable node
@@ -213,10 +206,9 @@ metrics. When PSI is unavailable, the dashboard falls back to `/proc/stat`
 `iowait` deltas and raises a maintenance warning after sustained high IO wait.
 The ops layer also detects a host profile with `BDAG_HOST_PROFILE=auto` and
 uses adaptive worker budgets for expensive dashboard/global/miner scans. The
-same release source is expected to behave conservatively on Pi5 or other
-constrained ARM64 hosts, while AMD64 and larger ARM64 hosts can use more
-parallelism when pressure is low. See
-`docs/platform-adaptive-runtime.md`.
+same release source is expected to behave conservatively on constrained ARM64
+hosts, while AMD64 and larger ARM64 hosts can use more parallelism when pressure
+is low. See `docs/platform-adaptive-runtime.md`.
 
 The dashboard, watchdog, sync coordinator, P2P guard, and startup checks also
 share one cross-process status sample. `ops/status_sampler.py` writes
@@ -224,37 +216,10 @@ share one cross-process status sample. `ops/status_sampler.py` writes
 through `collect_status_cached()` when it is fresh. Direct repair diagnostics
 can still force a live collection with `max_age_seconds=0`.
 
-The Pi5 release builder marks generated runtime compose files with
-`BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1` and rejects `build:`/`dockerfile:`
-entries in runtime packages. Runtime starts use `--no-build --pull never` by
-default; set an explicit pull/build flag only when intentionally refreshing
-images. Keep `scripts/validate-pi5-restart-hardening.sh` in the release gate
-before cutting an RC, and use `--mode live-runtime` for an installed stack where
-`ops/runtime` and Python bytecode are expected service artifacts.
-
-Constrained mining appliances also run a read-only install preflight before
-chain seeding or stack start. `scripts/mining-appliance-preflight.py` checks the
-host profile, root and chain-data free space, filesystem and mount options,
-storage profile split, single-node duplicate data, swap sizing, Docker root
-placement, network route, schema presence, and resource-sensitive `.env`
-defaults. The installer resolves `BDAG_STORAGE_PROFILE=auto` into concrete
-chain, Postgres, and runtime paths so capacity USB storage can carry the growing
-chain while internal or other non-USB storage absorbs small frequent writes when
-it has enough headroom. USB-backed chain data always prefers this split. Small
-ephemeral scratch is kept on bounded tmpfs through `BDAG_EPHEMERAL_DIR`,
-`BDAG_CONTAINER_TMPFS_SIZE`, and node-specific `BDAG_NODE_TMPFS_SIZE`; large
-snapshot and chain-artifact staging stays on capacity storage unless
-deliberately overridden. The installer reports
-warnings and continues by default. Set `BDAG_APPLIANCE_PREFLIGHT_STRICT=1` to
-make hard failures stop the install, or `BDAG_APPLIANCE_PREFLIGHT=0` to skip it
-explicitly. The field report behind these checks is in
-`docs/t430-single-node-appliance-hardening.md`.
-
-The normal release workflow and the Pi5 appliance builder run
-`scripts/verify-release-architecture.py` before package or image assembly so
-ARM64 packages cannot silently receive AMD64 binaries; the checker reads
-ELF/Mach-O/PE headers directly so it can be used from Linux, macOS, and Windows
-build hosts.
+The normal release workflow runs `scripts/verify-release-architecture.py` before
+package assembly so ARM64 packages cannot silently receive AMD64 binaries; the
+checker reads ELF/Mach-O/PE headers directly so it can be used from Linux,
+macOS, and Windows build hosts.
 
 The Python operations dashboard is the canonical operator interface and source
 of truth, normally exposed on `BDAG_DASHBOARD_PORT`/`8088`. Its tabs separate
@@ -285,8 +250,8 @@ Agents should verify it with `python3 -m pytest --version` before running
 
 The dashboard runtime collectors use Python's standard HTTP client for local
 pool metrics and public enrichment calls. Do not make live status depend on
-host utilities such as `curl`; release packages should behave the same on Pi5
-ARM64, Linux AMD64, macOS Docker Desktop, and Windows Docker Desktop once Docker
+host utilities such as `curl`; release packages should behave the same on Linux
+AMD64, Linux ARM64, macOS Docker Desktop, and Windows Docker Desktop once Docker
 and Python are available.
 
 For live dashboard/watchdog-only updates, use:

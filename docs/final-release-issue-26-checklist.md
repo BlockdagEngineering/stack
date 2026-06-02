@@ -47,5 +47,4 @@ while removing local assumptions that caused install or sync drift.
 - Live data scans must avoid mutable Postgres/node paths; release packaging uses
   tracked source plus explicit runtime/data exclusions.
 
-Run `scripts/validate-pi5-restart-hardening.sh --mode source .` before tagging
-the release candidate.
+Run `scripts/validate-release-build.sh .` before tagging the release candidate.
