@@ -86,6 +86,44 @@ class MiningGuard30MinTests(unittest.TestCase):
         self.assertEqual("ok", sample["guard_state"])
         self.assertNotIn("source_freshness", sample)
 
+    def test_multiple_miners_without_expected_ip_accepts_recent_valid_shares(self) -> None:
+        status = {
+            "overall": "ok",
+            "sync_progress": {"status": "synced", "remaining_blocks": 0},
+            "sync_health": {"nodes_with_recent_imports": 1},
+            "pool_health": {
+                "initial_download": True,
+                "connected_miners": 3,
+                "job_notify_count": 0,
+                "last_valid_share_age_seconds": 25,
+            },
+            "miner_health": {
+                "connected_count": 3,
+                "miners": [
+                    {"ip": "192.168.1.14", "configured": True, "connected": True},
+                    {"ip": "192.168.1.16", "configured": True, "connected": True},
+                    {"ip": "192.168.1.101", "configured": True, "connected": True},
+                ],
+            },
+        }
+
+        with self.patch_runtime_files(), unittest.mock.patch.object(
+            mining_guard_30min, "MINING_GUARD_ENABLED", True
+        ), unittest.mock.patch.object(
+            mining_guard_30min, "EXPECTED_ASIC_IP", ""
+        ), unittest.mock.patch.object(
+            mining_guard_30min, "fallback_status", return_value=(status, "")
+        ), unittest.mock.patch.object(
+            mining_guard_30min,
+            "source_freshness_triage",
+            side_effect=AssertionError("fresh shares should keep the guard healthy"),
+        ):
+            sample = mining_guard_30min.run_once()
+
+        self.assertEqual("ok", sample["guard_state"])
+        self.assertFalse(sample["expected_asic_required"])
+        self.assertEqual([], sample["problems"])
+
     def test_source_repo_triage_handles_missing_path(self) -> None:
         missing = self.root / "missing-repo"
 
