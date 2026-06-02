@@ -13,10 +13,9 @@ that behaved like a universal package while bundling Linux AMD64 service
 binaries. ARM hosts had to rely on Docker `linux/amd64` emulation even when the
 runtime should have been able to run native Linux ARM64 containers.
 
-The release also needs to keep the Pi5 appliance package separate from the
-normal pool payload. The Pi5 builder owns appliance hardening, image archive,
-and chain-data flows; normal releases should remain a binaries-plus-local-Docker
-build package.
+The release should have one supported distribution path: bootstrap scripts that
+download runtime-architecture payload zips. Appliance-specific image/archive
+builders are outside the repo's active release path.
 
 ## Decision
 
@@ -37,10 +36,6 @@ Each payload includes `release-payload.env`, and payload installers write
 `DOCKER_PLATFORM` from that payload metadata. The installer no longer tells ARM
 hosts to use AMD64 emulation.
 
-The Pi5 ARM64 appliance package remains owned by
-`ops/build-pi5-arm64-release.sh` and is not merged into the normal payload zip
-model.
-
 ## Consequences
 
 CI must build and package both Linux runtime architectures and run
@@ -51,5 +46,4 @@ Operators can start from a small host-specific bootstrap asset while still
 receiving a pinned, reproducible payload for the release tag.
 
 ARM64 Docker hosts get native `linux/arm64` service binaries in the normal pool
-release path, while the Pi5 appliance path keeps its additional hardening and
-archive behavior.
+release path without a separate appliance builder.

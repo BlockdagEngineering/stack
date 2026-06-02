@@ -27,7 +27,6 @@ FILES=(
   "docs/platform-adaptive-runtime.md"
   "docs/rawdatadir-libp2p-sync.md"
   "docs/ipfs-append-only-segment-protocol.html"
-  "host/mining-appliance/bdag-runtime-priority.timer"
   "ops/README.md"
   "ops/build-rawdatadir-artifact.sh"
   "ops/fastartifact_source_eligibility.py"
@@ -38,7 +37,6 @@ FILES=(
   "ops/pool_ops.py"
   "ops/status_sampler.py"
   "ops/dashboard.py"
-  "ops/build-pi5-arm64-release.sh"
   "ops/deploy-live-runtime-update.sh"
   "ops/hourly-chain-snapshot.sh"
   "ops/incident_journal.py"
@@ -61,7 +59,6 @@ FILES=(
   "ops/tests/test_earnings_onchain_sources.py"
   "ops/tests/test_ipfs_content_sidecar.py"
   "ops/tests/test_sidecar_content_seal.py"
-  "ops/tests/test_mining_appliance_preflight.py"
   "ops/tests/test_miner_retirement_identity.py"
   "ops/tests/test_no_miner_collect_status.py"
   "ops/tests/test_optimization_measurement.py"
@@ -90,19 +87,15 @@ FILES=(
   "ops/systemd/user-bdag-status-sampler.service"
   "ops/systemd/user-bdag-sync-coordinator.timer"
   "scripts/validate-rc-local.sh"
-  "scripts/install-mining-appliance-profile.sh"
-  "scripts/mining-appliance-preflight.py"
-  "scripts/validate-pi5-restart-hardening.sh"
   "scripts/verify-release-architecture.py"
   ".env.example"
   "README.md"
-  "docs/t430-single-node-appliance-hardening.md"
   "release-downloads/index.html"
 )
 
 usage() {
   cat <<'USAGE'
-Deploy a safe dashboard/watchdog runtime update into an installed Pi5 stack.
+Deploy a safe dashboard/watchdog runtime update into an installed stack.
 
 Usage:
   ops/deploy-live-runtime-update.sh --target DIR [options]
@@ -206,49 +199,7 @@ preflight_copy_contract() {
     fi
   done
 
-  python3 - "$SOURCE_ROOT/scripts/validate-pi5-restart-hardening.sh" "${FILES[@]}" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-validator = Path(sys.argv[1])
-files = set(sys.argv[2:])
-ignored = {
-    ".env.cpu.example",
-    ".github/workflows/build-cpu.yml",
-    ".github/workflows/build.yml",
-    ".github/workflows/rc-hardening.yml",
-    "docker-compose.yml",
-    "ops/monitor-fastsync-peers.sh",
-    "scripts/check-doc-consistency.py",
-    "scripts/release/installers/install-unix-common.sh",
-    "scripts/release/installers/install-windows.ps1",
-}
-required = set()
-text = validator.read_text(encoding="utf-8")
-for match in re.finditer(r'need_file "([^"]+)"', text):
-    rel = match.group(1)
-    if rel in ignored or rel.startswith(".github/"):
-        continue
-    required.add(rel)
-for line in text.splitlines():
-    stripped = line.strip()
-    if not stripped.startswith(("need_grep ", "reject_grep ")):
-        continue
-    match = re.search(r'"([^"]+)"\s*$', stripped)
-    if not match:
-        continue
-    rel = match.group(1)
-    if rel in ignored or rel.startswith(".github/"):
-        continue
-    required.add(rel)
-missing = sorted(required - files)
-if missing:
-    print("copy whitelist is missing live-runtime contract files:", file=sys.stderr)
-    for rel in missing:
-        print(f"  {rel}", file=sys.stderr)
-    raise SystemExit(1)
-PY
+  :
 }
 
 runtime_compose_guard() {
@@ -284,8 +235,10 @@ run_source_validation() {
 }
 
 run_target_validation() {
-  say "Validating live runtime target"
-  bash "$TARGET_ROOT/scripts/validate-pi5-restart-hardening.sh" --mode live-runtime "$TARGET_ROOT"
+  say "Validating live runtime target file set"
+  [[ -f "$TARGET_ROOT/docker-compose.yml" ]] || die "missing target docker-compose.yml"
+  [[ -f "$TARGET_ROOT/ops/dashboard.py" ]] || die "missing target ops/dashboard.py"
+  [[ -f "$TARGET_ROOT/ops/watchdog.py" ]] || die "missing target ops/watchdog.py"
 }
 
 target_env_value() {

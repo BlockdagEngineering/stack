@@ -148,7 +148,7 @@ jobs:
           test -f .env.example
           docker compose --env-file .env.example config | grep -q 'dockerfile: dockerfile' || \
             { echo "::error::Compose must resolve dockerfile for pool tarball env"; exit 1; }
-          scripts/validate-pi5-restart-hardening.sh .
+          scripts/validate-release-build.sh .
 
       - name: Create runtime payload zip
         id: package

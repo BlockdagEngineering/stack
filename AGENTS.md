@@ -28,7 +28,7 @@ prototype, or Grafana/Prometheus/Loki observability dashboard as RC dashboard
 sources. The stack repository still owns full-node, pool, Docker, installer,
 and chain-sync packaging. The dashboard repository owns the dashboard/control
 plane source, and any dashboard code imported into this RC must preserve the
-hardening gates in `scripts/validate-pi5-restart-hardening.sh`.
+release build gates in `scripts/validate-release-build.sh`.
 
 ## No-Miner Sync-Only Invariant
 
@@ -123,8 +123,8 @@ are allowed to stay down.
 Dashboard block height must come from the node chain RPC `getBlockCount` only.
 `getMainChainHeight`, template height, log imports, and peer
 lead values are diagnostics and must not be displayed as the node block count.
-Keep `scripts/validate-pi5-restart-hardening.sh` enforcing this so future drift
-cannot reintroduce mixed height sources.
+Keep source and release validation enforcing this so future drift cannot
+reintroduce mixed height sources.
 
 Pool block-candidate submission must use the single configured backend endpoint.
 Normal shares must not fan out, and valid block candidates should return to the
@@ -192,10 +192,9 @@ Windows build hosts.
 
 Normal pool GitHub releases use pinned bootstrap scripts plus Runtime Payload
 Zips, not one universal zip. Use the glossary terms in `docs/glossary.md`:
-Bootstrap Script, Runtime Payload Zip, Linux ARM64 Runtime, and Pi5 ARM64
-Appliance Package. The normal payload zips are split by Linux Docker runtime
-architecture (`linux-amd64` and `linux-arm64`); the Pi5 ARM64 Appliance Package
-stays on the separate `ops/build-pi5-arm64-release.sh` path.
+Bootstrap Script, Runtime Payload Zip, and Linux ARM64 Runtime. The normal
+payload zips are split by Linux Docker runtime architecture (`linux-amd64` and
+`linux-arm64`); do not reintroduce a separate appliance package path.
 
 Source-checkout validation must never delete an active local runtime. If a live
 machine runs the RC directly from the source checkout, `ops/runtime` can hold
