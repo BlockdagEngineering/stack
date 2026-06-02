@@ -10,6 +10,14 @@ import compose_migrations  # noqa: E402
 
 
 class RuntimeComposeMigrationTests(unittest.TestCase):
+    def test_release_env_defaults_keep_sync_source_and_reconnect_guards(self) -> None:
+        env_example = (OPS_DIR.parent / ".env.example").read_text()
+
+        self.assertIn("SYNC_SOURCE_NODE=0\n", env_example)
+        self.assertIn("POOL_EXPIRED_JOB_CLIENT_RECONNECT_THRESHOLD=3\n", env_example)
+        self.assertIn("POOL_EXPIRED_JOB_CLIENT_RECONNECT_WINDOW_SECONDS=120\n", env_example)
+        self.assertIn("POOL_EXPIRED_JOB_CLIENT_RECONNECT_COOLDOWN_SECONDS=60\n", env_example)
+
     def test_adds_submit_hardening_flags_to_each_existing_pool_service(self) -> None:
         compose = """services:
   asic-pool:
