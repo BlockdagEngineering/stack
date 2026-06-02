@@ -21,6 +21,12 @@ gate fails closed on USB/removable/external storage, low disk/RAM/CPU, and
 unsafe single-node checkpoint conditions. Do not serve a live mining datadir;
 publish only from a finalized sidecar copy.
 
+`SYNC_SOURCE_NODE=0` is the raw-datadir publisher control. It does not by itself
+turn a receiver into a USB/constrained host, and it does not disable the node's
+normal `--fastartifactsync` startup flag. Bulk serving is suppressed by
+`BDAG_NO_FASTSYNC_SERVE=1` or by `auto` detection of a real USB/low-IO chain
+profile.
+
 ## Producer Flow
 
 Producer host:

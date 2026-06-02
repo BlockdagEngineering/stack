@@ -148,6 +148,32 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         found = {check.name: check for check in checks}
         self.assertEqual(found["fastartifactsync"].status, "pass")
 
+    def test_sync_source_zero_does_not_make_single_device_receiver_constrained(self) -> None:
+        profile = preflight.HostProfile(
+            os_name="linux",
+            arch="x86_64",
+            cpu_count=8,
+            memory_bytes=16 * preflight.GIB,
+            profile="standard",
+            kernel="test",
+        )
+        checks = []
+        preflight.check_env_defaults(
+            checks,
+            {
+                "SYNC_SOURCE_NODE": "0",
+                "BDAG_NO_FASTSYNC_SERVE": "auto",
+                "BDAG_FASTARTIFACTSYNC_ENABLED": "1",
+                "BDAG_STORAGE_PROFILE": "single-device",
+                "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": "1",
+            },
+            profile,
+        )
+
+        found = {check.name: check for check in checks}
+        self.assertEqual(found["fastartifactsync"].status, "pass")
+        self.assertEqual(found["fastartifactsync"].detail, "Fast Artifact Sync V2 startup flag is enabled")
+
     def test_usb_chain_mining_source_rejects_sync_source_node(self) -> None:
         old_mount_info = preflight.mount_info
         old_is_usb_source = preflight.is_usb_source

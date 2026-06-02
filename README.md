@@ -141,12 +141,15 @@ performance to select the fastest useful download peers.
 
 Nodes also start with `--fastartifactsync` by default
 (`BDAG_FASTARTIFACTSYNC_ENABLED=1`) so they advertise and consume Fast Artifact
-Sync V2 whenever the core binary supports it. The sync coordinator treats more
-than `BDAG_SYNC_COORDINATOR_FAR_BEHIND_BLOCKS=1000` remaining blocks as an
-automatic fastest-catch-up condition: it raises the selected leader's Docker CPU
-and IO weights, keeps duplicate sync work out of the production path, and restarts
-an unaccelerated or stale leader after the cooldown window so startup peer order
-and V2 artifact serving are active.
+Sync V2 whenever the core binary supports it. `SYNC_SOURCE_NODE=0` disables raw
+datadir source publication, not normal Fast Artifact startup. The no-serve guard
+removes the startup flag only when `BDAG_NO_FASTSYNC_SERVE` is explicitly true
+or `auto` detects USB/low-IO chain storage. The sync coordinator treats more than
+`BDAG_SYNC_COORDINATOR_FAR_BEHIND_BLOCKS=1000` remaining blocks as an automatic
+fastest-catch-up condition: it raises the selected leader's Docker CPU and IO
+weights, keeps duplicate sync work out of the production path, and restarts an
+unaccelerated or stale leader after the cooldown window so startup peer order and
+V2 artifact serving are active.
 
 Old installations may still contain legacy address-bucket variable names.
 `ops/update-local-peers.py` treats them only as migration input, normalizes
