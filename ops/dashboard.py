@@ -60,6 +60,15 @@ REPORTS_DIR = RUNTIME_DIR / "reports"
 STATUS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_STATUS_CACHE_SECONDS", "10"))
 EARNINGS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_EARNINGS_CACHE_SECONDS", "30"))
 SAMPLER_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS", "10"))
+DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS = max(
+    5.0,
+    float(
+        os.environ.get(
+            "BDAG_DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS",
+            os.environ.get("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS", str(max(SAMPLER_CACHE_SECONDS, STATUS_CACHE_SECONDS))),
+        )
+    ),
+)
 DASHBOARD_DIRECT_STATUS_FALLBACK = os.environ.get(
     "BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -218,13 +227,50 @@ def cached_status_for_dashboard(include_logs: bool = True) -> tuple[dict[str, ob
     return None, diagnostics
 
 
+def rounded_wait_seconds(seconds: float) -> int:
+    if seconds <= 15:
+        return max(1, int(round(seconds)))
+    return max(5, int(((seconds + 4.999) // 5) * 5))
+
+
+def dashboard_status_wait_context(diagnostics: dict[str, object]) -> tuple[str, int, float | None]:
+    ages: list[float] = []
+    for key in ("status_sampler", "shared_status_cache"):
+        info = diagnostics.get(key)
+        if not isinstance(info, dict):
+            continue
+        age = dashboard_float(info.get("age_seconds"))
+        if age is not None:
+            ages.append(age)
+
+    newest_age = min(ages) if ages else None
+    if newest_age is None:
+        wait_seconds = rounded_wait_seconds(DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS)
+        return (
+            "Dashboard status is warming up. Waiting for the next sampler update; "
+            f"it usually arrives within about {wait_seconds}s.",
+            wait_seconds,
+            None,
+        )
+
+    remaining = DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS - newest_age
+    wait_seconds = rounded_wait_seconds(remaining if remaining > 1 else DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS)
+    return (
+        "Dashboard status is waiting for the next sampler update. "
+        f"The newest cached sample is about {rounded_wait_seconds(newest_age)}s old; "
+        f"the next dashboard refresh should have current data in about {wait_seconds}s.",
+        wait_seconds,
+        newest_age,
+    )
+
+
 def dashboard_status_fast_fallback(diagnostics: dict[str, object]) -> dict[str, object]:
-    failure_message = "dashboard status cache unavailable; direct collection skipped"
+    failure_message, wait_seconds, newest_age = dashboard_status_wait_context(diagnostics)
     payload: dict[str, object] = {
         "generated_at": now_iso(),
         "overall": "degraded",
         "status_reason": failure_message,
-        "mode": "status_cache_unavailable",
+        "mode": "waiting_for_status_sample",
         "can_mine": False,
         "can_accept_shares": False,
         "can_submit_blocks": False,
@@ -248,15 +294,23 @@ def dashboard_status_fast_fallback(diagnostics: dict[str, object]) -> dict[str, 
         "collector_budget_exceeded": True,
         "collector_budget_failure": {
             "component": "dashboard_status",
-            "class": "collector_budget_exceeded",
-            "detail": "No fresh status sampler or shared status cache was available; direct collection was skipped.",
+            "class": "waiting_for_status_sample",
+            "detail": failure_message,
+            "estimated_wait_seconds": wait_seconds,
+            "newest_cache_age_seconds": newest_age,
         },
         "chain_rpc_error": "not_checked_budgeted_status_fallback",
         "containers": {},
         "nodes": {},
         "node_services": [],
         "stack_services": [],
-        "sync_progress": {"status": "unknown", "percent": None, "remaining_blocks": None},
+        "sync_progress": {"status": "waiting_for_status_sample", "percent": None, "remaining_blocks": None},
+        "sync_estimate": {
+            "stage": "Waiting for status sample",
+            "narrative": failure_message,
+            "next_step": f"wait about {wait_seconds}s for the next dashboard status sample; mining may still be running",
+            "eta_seconds": wait_seconds,
+        },
         "sync_health": {},
         "pool": {},
         "pool_metrics": {},
@@ -2031,7 +2085,9 @@ HTML = r"""<!doctype html>
       );
       text("syncRate", syncRateText(estimate));
       text("syncEta", etaText(estimate.eta_seconds, estimate.eta_at));
-      if (progress.status === "synced") {
+      if (estimate.next_step) {
+        text("syncNextStep", estimate.next_step);
+      } else if (progress.status === "synced") {
         text("syncNextStep", "pool can mine normally once backend template checks are healthy");
       } else {
         text("syncNextStep", "wait for nodes to finish syncing; the pool is holding mining jobs until backend sync is complete");
