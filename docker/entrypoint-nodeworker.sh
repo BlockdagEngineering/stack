@@ -317,6 +317,20 @@ path_is_usb_backed() {
   esac
 }
 
+env_value_true() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON|enabled|ENABLED) return 0 ;;
+  esac
+  return 1
+}
+
+env_value_false() {
+  case "${1:-}" in
+    0|false|FALSE|no|NO|off|OFF|disabled|DISABLED) return 0 ;;
+  esac
+  return 1
+}
+
 node_data_parent_from_args() {
   local node_args config_file data_parent
   node_args="$(node_args_from_argv "$@" || true)"
@@ -328,24 +342,33 @@ node_data_parent_from_args() {
   printf '%s\n' "${data_parent:-/var/lib/bdagStack/node}"
 }
 
-should_disable_fastsync_serving() {
-  case "${SYNC_SOURCE_NODE:-}" in
-    1|true|yes|on|enabled) return 1 ;;
-    0|false|no|off|disabled) return 0 ;;
-  esac
+fastsync_serving_disable_reason() {
+  local no_serve="${BDAG_NO_FASTSYNC_SERVE:-auto}"
+  if env_value_true "$no_serve"; then
+    printf 'BDAG_NO_FASTSYNC_SERVE=%s\n' "$no_serve"
+    return 0
+  fi
+  if env_value_false "$no_serve"; then
+    return 1
+  fi
 
-  case "${BDAG_NO_FASTSYNC_SERVE:-auto}" in
-    1|true|yes|on) return 0 ;;
-    0|false|no|off) return 1 ;;
-  esac
-
-  case "${BDAG_STORAGE_PROFILE:-}" in
-    usb-chain-internal-runtime|single-usb-constrained) return 0 ;;
+  local storage_profile="${BDAG_STORAGE_PROFILE:-}"
+  storage_profile="${storage_profile,,}"
+  case "$storage_profile" in
+    usb-chain-internal-runtime|single-usb-constrained)
+      printf 'BDAG_STORAGE_PROFILE=%s\n' "$storage_profile"
+      return 0
+      ;;
   esac
 
   local data_parent
   data_parent="$(node_data_parent_from_args "$@")"
-  path_is_usb_backed "$data_parent"
+  if path_is_usb_backed "$data_parent"; then
+    printf 'usb_backed_datadir=%s\n' "$data_parent"
+    return 0
+  fi
+
+  return 1
 }
 
 node_binary_from_argv() {
@@ -382,7 +405,12 @@ node_binary_supports_arg() {
 }
 
 apply_no_fastsync_serve_guard() {
-  if ! should_disable_fastsync_serving "$@"; then
+  local disable_reason
+  disable_reason="$(fastsync_serving_disable_reason "$@" || true)"
+  if [ -z "$disable_reason" ]; then
+    if env_value_false "${SYNC_SOURCE_NODE:-}"; then
+      log "SYNC_SOURCE_NODE=${SYNC_SOURCE_NODE} disables raw datadir source publishing only; Fast Artifact startup stays enabled unless storage/profile detection requires no-serve."
+    fi
     return 0
   fi
 
@@ -393,9 +421,9 @@ apply_no_fastsync_serve_guard() {
   remove_node_arg_prefix "--fastartifactsync"
   if node_binary_supports_arg "--nofastsyncserve" "$@"; then
     append_node_arg_once "--nofastsyncserve" "$node_args ${NODE_ARGS_APPEND:-}"
-    log "USB-backed or constrained chain profile detected; disabling bulk FastSync, snapshot, and artifact serving while keeping normal outbound sync and block relay."
+    log "FastSync serving guard active ($disable_reason); disabling bulk FastSync, snapshot, and artifact serving while keeping normal outbound sync and block relay."
   else
-    log "USB-backed or constrained chain profile detected; removed --fastartifactsync, but the selected node binary does not support --nofastsyncserve."
+    log "FastSync serving guard active ($disable_reason); removed --fastartifactsync, but the selected node binary does not support --nofastsyncserve."
   fi
 }
 
@@ -608,6 +636,12 @@ fi
 
 if [ "${BDAG_FASTSYNC_PRINT_ORDERED_PEERS:-0}" = "1" ]; then
   printf '%s\n' "${BDAG_FASTSNAP_PEERS:-}"
+  exit 0
+fi
+
+if [ "${BDAG_ENTRYPOINT_PRINT_NODE_FLAGS:-0}" = "1" ]; then
+  printf 'BDAG_FASTARTIFACTSYNC_ENABLED=%s\n' "${BDAG_FASTARTIFACTSYNC_ENABLED:-}"
+  printf 'NODE_ARGS_APPEND=%s\n' "${NODE_ARGS_APPEND:-}"
   exit 0
 fi
 

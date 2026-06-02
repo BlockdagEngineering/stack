@@ -848,10 +848,12 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     node_args_append_enables_fastartifact = node_args_enable_fastartifact(env.get("NODE_ARGS_APPEND"))
     evidence["NODE_ARGS_APPEND"] = env.get("NODE_ARGS_APPEND")
     append_args_enable_fastartifact = node_args_append_enables_fastartifact
-    sync_source_node = bool_enabled(env.get("SYNC_SOURCE_NODE"), False)
-    no_fastsync_serve = not sync_source_node
+    no_fastsync_serve_value = (env.get("BDAG_NO_FASTSYNC_SERVE") or "auto").strip().lower()
+    explicit_no_fastsync_serve = bool_enabled(no_fastsync_serve_value, False) and no_fastsync_serve_value != "auto"
+    auto_no_fastsync_serve = constrained_mining_profile and no_fastsync_serve_value in {"", "auto"}
+    no_fastsync_serve = explicit_no_fastsync_serve or auto_no_fastsync_serve
     if constrained_mining_profile and no_fastsync_serve and append_args_enable_fastartifact:
-        add(checks, "fail", "fastartifactsync", "SYNC_SOURCE_NODE=0 suppresses serving, but node args still add --fastartifactsync.", "Clear NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
+        add(checks, "fail", "fastartifactsync", "FastSync serving is suppressed, but node args still add --fastartifactsync.", "Clear NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
     elif constrained_mining_profile and not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True) and append_args_enable_fastartifact:
         add(checks, "fail", "fastartifactsync", "BDAG_FASTARTIFACTSYNC_ENABLED is disabled, but node args still add --fastartifactsync.", "Clear NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
     elif constrained_mining_profile and no_fastsync_serve:
