@@ -56,11 +56,11 @@ RUN set -eu; mkdir -p /out; \
 # ----------------------------------------------------------------------------
 FROM alpine:3.20 AS dashboard-source
 ARG DASHBOARD_REPO
-ARG DASHBOARD_REF
+ARG DASHBOARD_REF=develop
 RUN apk add --no-cache ca-certificates git
 RUN --mount=type=secret,id=github_token,required=false set -eu; \
     repo="${DASHBOARD_REPO:-https://github.com/BlockdagEngineering/dashboard.git}"; \
-    ref="${DASHBOARD_REF:-6585347bfa78a1e6ed2a6178eaa38c7ccac9d022}"; \
+    ref="develop"; \
     token="$(cat /run/secrets/github_token 2>/dev/null || true)"; \
     if [ -n "$token" ]; then \
       auth="$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"; \

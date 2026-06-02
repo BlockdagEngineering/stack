@@ -6,11 +6,11 @@ x-mining-logging: &mining-logging
     max-file: "2"
 
 x-build-args: &build-args
-  SNAPSHOT_PATH: ${SNAPSHOT_PATH:-./latest.bdsnap}
+  SNAPSHOT_PATH: ${SNAPSHOT_PATH:-docker/no-snapshot.marker}
 
 x-dashboard-build-args: &dashboard-build-args
   DASHBOARD_REPO: ${DASHBOARD_REPO:-https://github.com/BlockdagEngineering/dashboard.git}
-  DASHBOARD_REF: ${DASHBOARD_REF:-6585347bfa78a1e6ed2a6178eaa38c7ccac9d022}
+  DASHBOARD_REF: develop
 
 x-dev-source-contexts: &dev-source-contexts
   stack_src: ${STACK_SRC_CONTEXT:-.}
@@ -81,7 +81,6 @@ services:
   node:
     <<: *node-critical
     platform: ${DOCKER_PLATFORM:-linux/amd64}
-    container_name: node
     build:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
@@ -166,7 +165,6 @@ services:
   pool:
     <<: *pool-critical
     platform: ${DOCKER_PLATFORM:-linux/amd64}
-    container_name: pool
     build:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
@@ -232,7 +230,6 @@ services:
   dashboard:
     <<: *dashboard-low
     platform: ${DOCKER_PLATFORM:-linux/amd64}
-    container_name: dashboard
     build:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
@@ -292,7 +289,6 @@ services:
   cpu-miner:
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     profiles: [miner]
-    container_name: cpu-miner
     build:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile-dev}
