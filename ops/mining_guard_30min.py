@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -46,6 +47,21 @@ MINING_GUARD_ENABLED = os.environ.get(
 INCIDENT_COOLDOWN_SECONDS = int(os.environ.get("BDAG_MINING_GUARD_INCIDENT_COOLDOWN_SECONDS", "1800"))
 SHARE_STALE_SECONDS = int(os.environ.get("BDAG_MINING_GUARD_SHARE_STALE_SECONDS", "900"))
 SYNC_PROGRESS_LOOKBACK_SECONDS = int(os.environ.get("BDAG_MINING_GUARD_SYNC_PROGRESS_LOOKBACK_SECONDS", "2700"))
+SOURCE_BRANCH = os.environ.get("BDAG_MINING_GUARD_SOURCE_BRANCH", "develop").strip() or "develop"
+SOURCE_REPOS = [
+    Path(item).expanduser()
+    for item in os.environ.get(
+        "BDAG_MINING_GUARD_SOURCE_REPOS",
+        os.pathsep.join(
+            [
+                "/home/jeremy/blockdag-source/pool-stack-docker",
+                "/home/jeremy/blockdag-source/pool",
+                "/home/jeremy/blockdag-source/pool-dashboard",
+            ]
+        ),
+    ).split(os.pathsep)
+    if item.strip()
+]
 
 STATE_FILE = RUNTIME_DIR / "mining-30min-guard-state.json"
 HISTORY_FILE = RUNTIME_DIR / "mining-30min-guard-history.jsonl"
@@ -74,6 +90,76 @@ def append_history(payload: dict[str, Any]) -> None:
     ensure_runtime()
     with HISTORY_FILE.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, sort_keys=True, default=str) + "\n")
+
+
+def run_command(args: list[str], *, timeout: int = 30) -> dict[str, Any]:
+    try:
+        result = subprocess.run(
+            args,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+        )
+        return {
+            "returncode": result.returncode,
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+        }
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"returncode": -1, "stdout": "", "stderr": str(exc)}
+
+
+def git_value(repo: Path, *args: str, timeout: int = 15) -> str:
+    result = run_command(["git", "-C", str(repo), *args], timeout=timeout)
+    return str(result.get("stdout") or "").strip()
+
+
+def source_repo_triage(repo: Path) -> dict[str, Any]:
+    payload: dict[str, Any] = {"path": str(repo), "branch_target": SOURCE_BRANCH}
+    if not repo.exists():
+        payload.update({"available": False, "error": "path-missing"})
+        return payload
+    inside = git_value(repo, "rev-parse", "--is-inside-work-tree")
+    if inside != "true":
+        payload.update({"available": False, "error": "not-a-git-worktree"})
+        return payload
+
+    fetch = run_command(["git", "-C", str(repo), "fetch", "--quiet", "origin", SOURCE_BRANCH], timeout=45)
+    head = git_value(repo, "rev-parse", "--short=12", "HEAD")
+    remote_ref = f"origin/{SOURCE_BRANCH}"
+    remote = git_value(repo, "rev-parse", "--short=12", remote_ref)
+    behind = git_value(repo, "rev-list", "--count", f"HEAD..{remote_ref}")
+    ahead = git_value(repo, "rev-list", "--count", f"{remote_ref}..HEAD")
+    status = git_value(repo, "status", "--short")
+    branch = git_value(repo, "branch", "--show-current")
+    upstream_commits = git_value(repo, "log", "--oneline", "--decorate", "-8", f"HEAD..{remote_ref}")
+    payload.update(
+        {
+            "available": True,
+            "fetch_returncode": fetch.get("returncode"),
+            "fetch_error": fetch.get("stderr"),
+            "branch": branch or "(detached)",
+            "head": head,
+            "remote_ref": remote_ref,
+            "remote_head": remote,
+            "behind_count": as_int(behind, -1),
+            "ahead_count": as_int(ahead, -1),
+            "dirty": bool(status),
+            "status_short": status.splitlines()[:20],
+            "recent_upstream_commits": upstream_commits.splitlines()[:8],
+        }
+    )
+    return payload
+
+
+def source_freshness_triage() -> dict[str, Any]:
+    return {
+        "generated_at": now_iso(),
+        "policy": "fetch-only; background guard records upstream state but does not edit, build, commit, push, or restart",
+        "repos": [source_repo_triage(repo) for repo in SOURCE_REPOS],
+    }
 
 
 def as_int(value: Any, default: int = 0) -> int:
@@ -316,6 +402,10 @@ def run_once() -> dict[str, Any]:
     state = read_json(STATE_FILE)
     status, error = fallback_status()
     sample = build_sample(status, error, state)
+    source_triage: dict[str, Any] = {}
+    if sample.get("guard_state") != "ok":
+        source_triage = source_freshness_triage()
+        sample["source_freshness"] = source_triage
     if should_emit(state, sample):
         append_incident(
             "mining_30min_guard",
@@ -339,6 +429,12 @@ def run_once() -> dict[str, Any]:
                 "asic_pool_active": sample.get("asic_pool_active"),
                 "asic_hashrate": sample.get("asic_hashrate"),
                 "wallet_seen_for_asic": sample.get("wallet_seen_for_asic"),
+                "source_freshness": source_triage,
+                "repair_policy": (
+                    "Active Codex sessions must inspect the fetched source state, "
+                    "use an existing upstream fix when present, otherwise implement "
+                    "a tested source fix before deploy/restart/commit/push."
+                ),
             },
             status=status,
         )
