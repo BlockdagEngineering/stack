@@ -118,7 +118,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
 
         self.assertIn('if [[ "$mode" == "source" && -e "$root/ops/observability" ]]; then', validator)
         self.assertIn('need_grep \'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS\' "docker-compose.yml"', validator)
-        self.assertIn('need_grep \'NODE_RPC_URLS: .*http://bdag-miner-node-1:38131\' "docker-compose.yml"', validator)
+        self.assertIn('need_grep \'NODE_RPC_URLS: .*http://node:38131\' "docker-compose.yml"', validator)
         self.assertIn('need_grep \'BDAG_STACK_SERVICES=pool-db,bdag-miner-node-1,asic-pool\' ".env.example"', validator)
 
     def test_live_runtime_validator_keeps_release_packaging_source_only(self) -> None:

@@ -9,15 +9,15 @@ x-build-args: &build-args
   SNAPSHOT_PATH: ${SNAPSHOT_PATH:-./latest.bdsnap}
 
 x-dashboard-build-args: &dashboard-build-args
-  POOL_DASHBOARD_REPO: ${POOL_DASHBOARD_REPO:-https://github.com/BlockdagEngineering/pool-dashboard.git}
-  POOL_DASHBOARD_REF: ${POOL_DASHBOARD_REF:-6585347bfa78a1e6ed2a6178eaa38c7ccac9d022}
+  DASHBOARD_REPO: ${DASHBOARD_REPO:-https://github.com/BlockdagEngineering/dashboard.git}
+  DASHBOARD_REF: ${DASHBOARD_REF:-6585347bfa78a1e6ed2a6178eaa38c7ccac9d022}
 
 x-dev-source-contexts: &dev-source-contexts
   stack_src: ${STACK_SRC_CONTEXT:-.}
   blockdag_corechain: ${BLOCKDAG_CORECHAIN_CONTEXT:-.}
   pool_src: ${POOL_SRC_CONTEXT:-.}
   cpu_miner_src: ${CPU_MINER_SRC_CONTEXT:-.}
-  pool_dashboard_src: ${POOL_DASHBOARD_SRC_CONTEXT:-.}
+  dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../dashboard}
 
 x-node-critical: &node-critical
   tmpfs:
@@ -218,7 +218,7 @@ services:
 
 
   # --------------------------------------------------------------------------
-  # Canonical operations dashboard/control plane from BlockdagEngineering/pool-dashboard.
+  # Canonical operations dashboard/control plane from BlockdagEngineering/dashboard.
   # --------------------------------------------------------------------------
 
   dashboard:
@@ -243,7 +243,7 @@ services:
       node: { condition: service_started }
       pool: { condition: service_started }
     environment:
-      # The canonical pool-dashboard code defaults to the standalone
+      # The canonical dashboard code defaults to the standalone
       # two-node runtime names; this stack uses node/pool/postgres.
       BDAG_NODE_SERVICES: node
       BDAG_STACK_SERVICES: postgres,node,pool

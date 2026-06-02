@@ -1,10 +1,24 @@
 # Pool Stack Agent Notes
 
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked in GitHub Issues for `BlockdagEngineering/stack` using the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five canonical triage labels exactly as named. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Multi-context repo with shared context in sibling `../codex-memory`; read that memory repo before repo-local context docs when present. See `docs/agents/domain.md`.
+
 ## Release Candidate Dashboard Source
 
 
 The only dashboard repository for this release candidate is
-`BlockdagEngineering/pool-dashboard`. Its `main` branch was replaced with the
+`BlockdagEngineering/dashboard`. Its `main` branch was replaced with the
 live Python operations dashboard captured from
 `/home/jeremy/blockdag-asic-pool/ops` at commit
 `6585347bfa78a1e6ed2a6178eaa38c7ccac9d022`.
@@ -175,6 +189,13 @@ and run it before image assembly so an AMD64 binary cannot be copied into an
 ARM64 Pi package or container by accident. Prefer header-based verification
 over host-specific `file` output so the same gate works from Linux, macOS, and
 Windows build hosts.
+
+Normal pool GitHub releases use pinned bootstrap scripts plus Runtime Payload
+Zips, not one universal zip. Use the glossary terms in `docs/glossary.md`:
+Bootstrap Script, Runtime Payload Zip, Linux ARM64 Runtime, and Pi5 ARM64
+Appliance Package. The normal payload zips are split by Linux Docker runtime
+architecture (`linux-amd64` and `linux-arm64`); the Pi5 ARM64 Appliance Package
+stays on the separate `ops/build-pi5-arm64-release.sh` path.
 
 Source-checkout validation must never delete an active local runtime. If a live
 machine runs the RC directly from the source checkout, `ops/runtime` can hold

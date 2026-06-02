@@ -9,7 +9,7 @@
 #   blockdag_corechain -> local clone of blockdag node source
 #   pool_src           -> local clone of mining pool source
 #   cpu_miner_src      -> local clone of cpu miner source
-#   pool_dashboard_src -> local clone of dashboard/control-plane source
+#   dashboard_src      -> local clone of dashboard/control-plane source
 #
 # Optional snapshot import: SNAPSHOT_PATH copies a .bdsnap from the build context
 # (see compose / Makefile). No URL download. Datadir matches node.conf.
@@ -56,11 +56,11 @@ COPY --from=cpu_miner_src . .
 RUN CGO_ENABLED=1 CGO_CFLAGS='-O2' go build -o /out/scrypt-miner ./cmd/miner
 
 # ----------------------------------------------------------------------------
-# Dashboard Source Stage (canonical pool-dashboard local clone)
+# Dashboard Source Stage (canonical dashboard local clone)
 # ----------------------------------------------------------------------------
 FROM alpine:3.20 AS dashboard-source
-COPY --from=pool_dashboard_src . /src/pool-dashboard
-RUN rm -rf /src/pool-dashboard/.git
+COPY --from=dashboard_src . /src/dashboard
+RUN rm -rf /src/dashboard/.git
 
 # ----------------------------------------------------------------------------
 # Node Runtime Stage (with optional snapshot import)
@@ -184,12 +184,12 @@ RUN apk add --no-cache \
     shadow \
     tzdata
 
-COPY --from=dashboard-source /src/pool-dashboard /opt/pool-dashboard
+COPY --from=dashboard-source /src/dashboard /opt/dashboard
 COPY --from=stack_src docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
 RUN chmod +x /usr/local/bin/entrypoint-dashboard.sh \
  && mkdir -p /var/lib/bdag-dashboard/runtime /workspace \
- && if [ -f /opt/pool-dashboard/requirements.txt ]; then \
-      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/pool-dashboard/requirements.txt; \
+ && if [ -f /opt/dashboard/requirements.txt ]; then \
+      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/dashboard/requirements.txt; \
     fi
 
 ENV PYTHONUNBUFFERED=1 \
@@ -200,6 +200,6 @@ ENV PYTHONUNBUFFERED=1 \
     BDAG_DASHBOARD_PORT=9280 \
     BDAG_DASHBOARD_REQUIRE_TOKEN=auto
 
-WORKDIR /opt/pool-dashboard
+WORKDIR /opt/dashboard
 EXPOSE 9280
 ENTRYPOINT ["/usr/local/bin/entrypoint-dashboard.sh"]

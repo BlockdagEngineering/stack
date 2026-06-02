@@ -35,6 +35,7 @@ need_grep() {
 reject_grep() {
   local pattern="$1"
   local file="$2"
+  [[ -f "$root/$file" ]] || return 0
   if grep -Eq "$pattern" "$root/$file"; then
     fail "$file still matches rejected pattern: $pattern"
   fi
@@ -94,7 +95,7 @@ need_file "ops/fastartifact_source_eligibility.py"
 need_file "ops/fetch-rawdatadir-artifact.sh"
 need_file "ops/maintain-rawdatadir-sidecar.sh"
 need_file "ops/publish-rawdatadir-artifact.sh"
-need_file "asic-pool/schema.sql"
+need_file "sql/pool-schema.sql"
 validate_runtime_compose
 
 if [[ "$mode" == "source" ]]; then
@@ -253,7 +254,7 @@ need_grep 'nofastsyncserve' "ops/build-pi5-arm64-release.sh"
 need_grep 'BDAG_FASTARTIFACTSYNC_ENABLED' "ops/build-pi5-arm64-release.sh"
 need_grep 'fastsnap_supports_directory_mode' "ops/build-pi5-arm64-release.sh"
 need_grep 'fastsnap_supports_directory_mode "\$FASTSNAP"' "ops/build-pi5-arm64-release.sh"
-need_grep 'NODE_RPC_URLS: .*http://bdag-miner-node-1:38131' "docker-compose.yml"
+need_grep 'NODE_RPC_URLS: .*http://node:38131' "docker-compose.yml"
 need_grep 'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS' "docker-compose.yml"
 need_grep 'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS' "ops/build-pi5-arm64-release.sh"
 need_grep 'POOL_SUBMIT_STALE_BLOCK_CANDIDATES: .*POOL_SUBMIT_STALE_BLOCK_CANDIDATES' "docker-compose.yml"

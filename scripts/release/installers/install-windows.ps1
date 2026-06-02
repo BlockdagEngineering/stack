@@ -7,6 +7,29 @@ $installerDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $packageRoot = Split-Path -Parent $installerDir
 Set-Location -Path $packageRoot
 
+function Normalize-Arch([string]$Value) {
+    switch ($Value.ToLowerInvariant()) {
+        'x86_64'  { return 'amd64' }
+        'amd64'   { return 'amd64' }
+        'arm64'   { return 'arm64' }
+        'aarch64' { return 'arm64' }
+        default { throw "Unsupported CPU architecture: $Value" }
+    }
+}
+
+function Read-PayloadMetadata([string]$Path) {
+    $metadata = @{}
+    if (-not (Test-Path $Path)) { return $metadata }
+    foreach ($line in [System.IO.File]::ReadLines((Get-Item $Path).FullName)) {
+        if (-not $line -or $line.StartsWith('#') -or -not $line.Contains('=')) {
+            continue
+        }
+        $idx = $line.IndexOf('=')
+        $metadata[$line.Substring(0, $idx)] = $line.Substring($idx + 1)
+    }
+    return $metadata
+}
+
 $arch = if ($env:BDAG_INSTALL_ARCH) { $env:BDAG_INSTALL_ARCH } else {
     switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()) {
         'X64'   { 'amd64' }
@@ -14,7 +37,23 @@ $arch = if ($env:BDAG_INSTALL_ARCH) { $env:BDAG_INSTALL_ARCH } else {
         default { throw "Unsupported CPU architecture: $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" }
     }
 }
-$dockerPlatform = 'linux/amd64'
+$arch = Normalize-Arch $arch
+$payloadMetadata = Read-PayloadMetadata (Join-Path $packageRoot 'release-payload.env')
+$payloadArch = $payloadMetadata['BDAG_RELEASE_PAYLOAD_ARCH']
+if (-not $payloadArch) {
+    switch ($payloadMetadata['BDAG_RELEASE_PAYLOAD_TARGET']) {
+        'linux-amd64' { $payloadArch = 'amd64' }
+        'linux-arm64' { $payloadArch = 'arm64' }
+    }
+}
+if (-not $payloadArch) {
+    $payloadArch = $arch
+}
+$payloadArch = Normalize-Arch $payloadArch
+$dockerPlatform = "linux/$payloadArch"
+if ($payloadMetadata['DOCKER_PLATFORM'] -and $payloadMetadata['DOCKER_PLATFORM'] -ne $dockerPlatform) {
+    throw "release-payload.env has inconsistent DOCKER_PLATFORM=$($payloadMetadata['DOCKER_PLATFORM']); expected $dockerPlatform."
+}
 $snapshotUrl = if ($env:BDAG_SNAPSHOT_URL) { $env:BDAG_SNAPSHOT_URL } else { 'https://bdagstack.bdagdev.xyz/latest.bdsnap' }
 $snapshotMinBytes = if ($env:BDAG_SNAPSHOT_MIN_BYTES) { [int64]$env:BDAG_SNAPSHOT_MIN_BYTES } else { [int64]1048576 }
 $requireSnapshot = $env:BDAG_REQUIRE_SNAPSHOT -ne '0'
@@ -31,9 +70,8 @@ $cleanOrphanContainers = $env:BDAG_CLEAN_ORPHAN_CONTAINERS -eq '1'
 Write-Host "=== BlockDAG Pool Stack Installer (windows/$arch) ===" -ForegroundColor Cyan
 Write-Host ""
 
-if ($arch -eq 'arm64') {
-    Write-Host "This release contains linux/amd64 service binaries."
-    Write-Host "Docker will run the stack with platform $dockerPlatform; amd64 emulation must be enabled."
+if ($payloadMetadata['BDAG_RELEASE_PAYLOAD_TARGET']) {
+    Write-Host "Runtime payload: $($payloadMetadata['BDAG_RELEASE_PAYLOAD_TARGET']) ($dockerPlatform)"
     Write-Host ""
 }
 
@@ -113,6 +151,12 @@ function Set-EnvValue([string]$Path, [string]$Key, [string]$Value) {
     }
     $text = $text -replace "`r`n", "`n"
     [System.IO.File]::WriteAllText((Join-Path (Get-Location) $Path), $text, [System.Text.Encoding]::UTF8)
+}
+
+if ($env:BDAG_INSTALL_TEST_WRITE_ENV_ONLY -eq '1') {
+    Copy-Item .env.example .env -Force
+    Set-EnvValue .env DOCKER_PLATFORM $dockerPlatform
+    exit 0
 }
 
 function Test-ValidSnapshot([string]$Path) {

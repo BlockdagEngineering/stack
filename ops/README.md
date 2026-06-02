@@ -149,7 +149,7 @@ Configure source triage with:
 
 ```text
 BDAG_MINING_GUARD_SOURCE_BRANCH=develop
-BDAG_MINING_GUARD_SOURCE_REPOS=/path/to/pool-stack-docker:/path/to/pool:/path/to/pool-dashboard
+BDAG_MINING_GUARD_SOURCE_REPOS=/path/to/pool-stack-docker:/path/to/pool:/path/to/dashboard
 ```
 
 ## Paid Conversion Evidence
