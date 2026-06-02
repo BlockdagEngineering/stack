@@ -135,6 +135,65 @@ class AutomationControlTests(unittest.TestCase):
         self.assertTrue(decision.allowed)
         self.assertEqual([], self.event_lines())
 
+    def test_ensure_normal_control_state_creates_missing_control(self) -> None:
+        created, previous_status, path = automation_control.ensure_normal_control_state(
+            state_path=self.state_path,
+            lock_path=self.lock_path,
+            owner="unit-test",
+            owner_unit="test_automation_control",
+            reason="create missing default",
+            correlation_id="test-create",
+            now=self.now,
+        )
+
+        self.assertTrue(created)
+        self.assertEqual("missing", previous_status)
+        self.assertEqual(str(self.state_path), path)
+        control, status, _reason = automation_control.read_control_state(
+            state_path=self.state_path,
+            now=self.now,
+        )
+        self.assertEqual("ok", status)
+        self.assertIsNotNone(control)
+        self.assertEqual("normal", control["state"])
+
+    def test_ensure_normal_control_state_preserves_existing_hold(self) -> None:
+        self.write_state(self.control_state("repair_hold"))
+
+        created, previous_status, _path = automation_control.ensure_normal_control_state(
+            state_path=self.state_path,
+            lock_path=self.lock_path,
+            owner="unit-test",
+            owner_unit="test_automation_control",
+            reason="must not overwrite hold",
+            now=self.now,
+        )
+
+        self.assertFalse(created)
+        self.assertEqual("ok", previous_status)
+        control, status, _reason = automation_control.read_control_state(
+            state_path=self.state_path,
+            now=self.now,
+        )
+        self.assertEqual("ok", status)
+        self.assertEqual("repair_hold", control["state"])
+
+    def test_ensure_normal_control_state_leaves_corrupt_file_without_repair_flag(self) -> None:
+        self.state_path.write_text("{not-json", encoding="utf-8")
+
+        created, previous_status, _path = automation_control.ensure_normal_control_state(
+            state_path=self.state_path,
+            lock_path=self.lock_path,
+            owner="unit-test",
+            owner_unit="test_automation_control",
+            reason="must not overwrite corrupt file by default",
+            now=self.now,
+        )
+
+        self.assertFalse(created)
+        self.assertEqual("corrupt", previous_status)
+        self.assertEqual("{not-json", self.state_path.read_text(encoding="utf-8"))
+
     def test_transition_hold_requires_exact_allowlist_match(self) -> None:
         self.write_state(self.control_state("transition_hold"))
 
