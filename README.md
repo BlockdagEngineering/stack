@@ -246,6 +246,17 @@ On macOS and Windows Docker Desktop hosts, prefer the packaged installer or run
 the ops dashboard from a session where the Docker CLI already works instead of
 installing Linux systemd units.
 
+Source checkout tests require Python's standard library test runner plus
+`pytest`. On Ubuntu/Debian hosts, install the test dependency with:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3-pytest
+```
+
+Agents should verify it with `python3 -m pytest --version` before running
+`ops/tests` through pytest-backed deployment checks.
+
 The dashboard runtime collectors use Python's standard HTTP client for local
 pool metrics and public enrichment calls. Do not make live status depend on
 host utilities such as `curl`; release packages should behave the same on Pi5
