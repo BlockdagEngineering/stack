@@ -201,5 +201,5 @@ ENV PYTHONUNBUFFERED=1 \
     BDAG_DASHBOARD_REQUIRE_TOKEN=auto
 
 WORKDIR /opt/dashboard
-EXPOSE 9280
+EXPOSE ${DASHBOARD_HOST_PORT:-9280}
 ENTRYPOINT ["/usr/local/bin/entrypoint-dashboard.sh"]
