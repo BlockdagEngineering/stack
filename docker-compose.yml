@@ -243,11 +243,23 @@ services:
       node: { condition: service_started }
       pool: { condition: service_started }
     environment:
-      BDAG_RPC_URL: http://bdag-miner-node-1:38131
+      # The canonical pool-dashboard code defaults to the standalone
+      # two-node runtime names; this stack uses node/pool/postgres.
+      BDAG_NODE_SERVICES: node
+      BDAG_STACK_SERVICES: postgres,node,pool
+      BDAG_POOL_CONTAINER: pool
+      BDAG_POOL_CONTAINERS: pool
+      BDAG_POOL_DB_CONTAINER: postgres
+      BDAG_POOL_DB_USER: ${POSTGRES_USER:-bdag_pool}
+      BDAG_POOL_DB_NAME: ${POSTGRES_DB:-bdagpool}
+      BDAG_POOL_METRICS_PORT: 9090
+      BDAG_NODE_RPC_URLS: node=http://node:38131
+      BDAG_GLOBAL_CHAIN_RPC_URLS: node=http://node:38131
+      BDAG_RPC_URL: http://node:38131
       # Must match node.conf rpcuser / rpcpass (same as pool service).
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
-      DASHBOARD_EVM_RPC_URL: http://bdag-miner-node-1:18545
+      DASHBOARD_EVM_RPC_URL: http://node:18545
       DASHBOARD_LISTEN: 0.0.0.0:9280
       DASHBOARD_RPC_POLL_SECONDS: 5
       DASHBOARD_MAX_POINTS: 120
