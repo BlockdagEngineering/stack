@@ -494,7 +494,13 @@ export DOCKER_DEFAULT_PLATFORM="$DOCKER_PLATFORM"
 echo ""
 echo "=== Building Docker images (${DOCKER_PLATFORM}) ==="
 echo ""
-docker compose build
+if [[ -x ./scripts/bdag-low-io-build.sh ]]; then
+    ./scripts/bdag-low-io-build.sh docker compose build
+elif command -v ionice >/dev/null 2>&1; then
+    ionice -c 3 nice -n 19 docker compose build
+else
+    nice -n 19 docker compose build
+fi
 
 echo ""
 echo "=== Starting services ==="

@@ -77,6 +77,7 @@ services:
     logging: *mining-logging
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
+      - /var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     cpu_shares: 3072
     blkio_config:
       weight: 900
@@ -91,6 +92,9 @@ services:
     volumes:
       - ./asic-pool:/data/asic-pool:ro
     environment:
+      TMPDIR: /tmp
+      TMP: /tmp
+      TEMP: /tmp
       POOL_PORT: ${POOL_PORT:-3334}
       NODE_RPC_URL: http://bdag-miner-node-1:38131
       NODE_RPC_URLS: ${NODE_RPC_URLS:-http://bdag-miner-node-1:38131}
@@ -234,6 +238,7 @@ services:
     logging: *mining-logging
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
+      - /var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     command:
       - postgres
       - -c
@@ -254,6 +259,10 @@ services:
         hard: 262144
     env_file:
       - ./asic-pool/.env
+    environment:
+      TMPDIR: /tmp
+      TMP: /tmp
+      TEMP: /tmp
     volumes:
       - ${BDAG_POSTGRES_DATA_DIR:-./data/postgres}:/var/lib/postgresql/data
       - ./asic-pool/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
@@ -357,6 +366,10 @@ BDAG_HOST_TMPDIR=/run/bdag-pool/tmp
 BDAG_CONTAINER_TMPFS_SIZE=128m
 BDAG_NODE_TMPFS_SIZE=512m
 BDAG_NODE_SHM_SIZE=512m
+BDAG_BUILD_TMPDIR=./.build-tmp
+BDAG_BUILD_CACHE_WARN_GIB=4
+BDAG_ROOT_FREE_WARN_GIB=6
+BDAG_ROOT_FREE_FAIL_GIB=2
 
 # Single-node is the only supported topology. Nodes stay sync-only until
 # BDAG_NODE_MINING_ARGS is explicitly set.
@@ -1008,8 +1021,12 @@ cp "$ROOT/src/docker/entrypoint.sh" "$BUILD_DIR/node/entrypoint.sh"
 cp "$ROOT/src/docker/node.Dockerfile" "$BUILD_DIR/node/Dockerfile"
 chmod +x "$BUILD_DIR/pool/pool" "$BUILD_DIR/pool/dashboard-api" "$BUILD_DIR/node/bdag" "$BUILD_DIR/node/nodeworker" "$BUILD_DIR/node/fastsnap" "$BUILD_DIR/node/entrypoint.sh"
 
-"${DOCKER[@]}" build -t "bdag-release/asic-pool:$TAG_SUFFIX-$ARCH" "$BUILD_DIR/pool"
-"${DOCKER[@]}" build -t "bdag-release/node:$TAG_SUFFIX-$ARCH" "$BUILD_DIR/node"
+LOW_IO=("$ROOT/scripts/bdag-low-io-build.sh")
+if [[ ! -x "${LOW_IO[0]}" ]]; then
+  LOW_IO=()
+fi
+"${LOW_IO[@]}" "${DOCKER[@]}" build -t "bdag-release/asic-pool:$TAG_SUFFIX-$ARCH" "$BUILD_DIR/pool"
+"${LOW_IO[@]}" "${DOCKER[@]}" build -t "bdag-release/node:$TAG_SUFFIX-$ARCH" "$BUILD_DIR/node"
 "${DOCKER[@]}" tag "bdag-release/asic-pool:$TAG_SUFFIX-$ARCH" bdag-release/asic-pool:local
 "${DOCKER[@]}" tag "bdag-release/node:$TAG_SUFFIX-$ARCH" bdag-release/node:local
 

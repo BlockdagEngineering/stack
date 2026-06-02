@@ -93,6 +93,13 @@ def load_env_file(path: Path) -> dict[str, str]:
     return env
 
 
+def env_float(env: dict[str, str], name: str, default: float) -> float:
+    try:
+        return float(env.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 def safe_int(value: Any, default: int | None = None) -> int | None:
     try:
         if value is None or str(value).strip() == "":
@@ -334,6 +341,10 @@ def env_runtime_dir(root: Path, env: dict[str, str]) -> Path:
 
 def env_ephemeral_dir(root: Path, env: dict[str, str]) -> Path:
     return env_path(root, env, "BDAG_EPHEMERAL_DIR", Path("/run/bdag-pool"))
+
+
+def env_build_tmpdir(root: Path, env: dict[str, str]) -> Path:
+    return env_path(root, env, "BDAG_BUILD_TMPDIR", root / ".build-tmp")
 
 
 def storage_device(path: Path) -> dict[str, Any]:
@@ -667,6 +678,99 @@ def check_ephemeral_storage(checks: list[Check], root: Path, env: dict[str, str]
         )
 
 
+def docker_system_df() -> list[dict[str, Any]]:
+    try:
+        proc = run(["docker", "system", "df", "--format", "{{json .}}"], timeout=15)
+    except subprocess.TimeoutExpired:
+        return []
+    if proc.returncode != 0:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in proc.stdout.splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def size_to_bytes(value: str) -> int | None:
+    text = value.strip()
+    if not text or text == "0B":
+        return 0
+    match = re.match(r"^([0-9]+(?:\.[0-9]+)?)([KMGT]?B)$", text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    number = float(match.group(1))
+    unit = match.group(2).upper()
+    multiplier = {
+        "B": 1,
+        "KB": 1000,
+        "MB": 1000**2,
+        "GB": 1000**3,
+        "TB": 1000**4,
+    }[unit]
+    return int(number * multiplier)
+
+
+def check_disk_io_noise_guard(checks: list[Check], root: Path, env: dict[str, str], profile: HostProfile) -> None:
+    root_usage = disk_usage(Path("/"))
+    root_warn_gib = env_float(env, "BDAG_ROOT_FREE_WARN_GIB", 6.0)
+    root_fail_gib = env_float(env, "BDAG_ROOT_FREE_FAIL_GIB", 2.0)
+    build_tmp = env_build_tmpdir(root, env)
+    build_tmp_device = storage_device(build_tmp)
+    containerd_path = Path("/var/lib/containerd").resolve()
+    containerd_exists = containerd_path.exists()
+    containerd_same_as_root = same_filesystem(Path("/"), containerd_path) if containerd_exists else None
+    docker_rows = docker_system_df()
+    build_cache_row = next((row for row in docker_rows if str(row.get("Type")) == "Build Cache"), {})
+    build_cache_bytes = size_to_bytes(str(build_cache_row.get("Size") or ""))
+    build_cache_warn_gib = env_float(env, "BDAG_BUILD_CACHE_WARN_GIB", 4.0)
+
+    evidence = {
+        "root_usage": root_usage,
+        "root_warn_gib": root_warn_gib,
+        "root_fail_gib": root_fail_gib,
+        "BDAG_BUILD_TMPDIR": str(build_tmp),
+        "build_tmp_device": build_tmp_device,
+        "containerd_path": str(containerd_path),
+        "containerd_exists": containerd_exists,
+        "containerd_same_as_root": containerd_same_as_root,
+        "docker_build_cache": build_cache_row,
+        "docker_build_cache_bytes": build_cache_bytes,
+        "docker_build_cache_warn_gib": build_cache_warn_gib,
+        "host_profile": profile.as_dict(),
+    }
+
+    if root_usage["free_bytes"] < root_fail_gib * GIB:
+        add(checks, "fail", "disk_io_root_free_space_guard", f"root filesystem has only {root_usage['free_gib']}GiB free.", "Free space before building or starting Docker; the onboard/root filesystem must not absorb build or temp spillover.", evidence)
+    elif root_usage["free_bytes"] < root_warn_gib * GIB:
+        add(checks, "warn", "disk_io_root_free_space_guard", f"root filesystem has {root_usage['free_gib']}GiB free.", "Keep Docker/containerd/build cache/chain artifacts off the root filesystem and prune after deployment.", evidence)
+    else:
+        add(checks, "pass", "disk_io_root_free_space_guard", f"root filesystem has {root_usage['free_gib']}GiB free", evidence=evidence)
+
+    if str(build_tmp_device.get("fstype") or "") in RAM_BACKED_FS:
+        add(checks, "warn", "build_tmpdir_not_tmpfs", "BDAG_BUILD_TMPDIR resolves to RAM-backed tmpfs.", "Use tmpfs only for small scratch. Point BDAG_BUILD_TMPDIR at capacity storage and run builds through scripts/bdag-low-io-build.sh.", evidence)
+    else:
+        add(checks, "pass", "build_tmpdir_not_tmpfs", "build scratch directory is not tmpfs", evidence=evidence)
+
+    if containerd_exists and containerd_same_as_root and profile.profile == "constrained":
+        add(checks, "warn", "containerd_root_placement", "containerd shares the constrained root filesystem.", "Move /var/lib/containerd to capacity storage or a larger non-root disk so unpacked image layers do not fill eMMC.", evidence)
+    elif containerd_exists:
+        add(checks, "pass", "containerd_root_placement", "containerd is not on the constrained root filesystem", evidence=evidence)
+    else:
+        add(checks, "warn", "containerd_root_placement", "/var/lib/containerd is missing or not inspectable.", "Verify containerd storage before building images.", evidence)
+
+    if build_cache_bytes is None:
+        add(checks, "warn", "docker_build_cache_budget", "Docker build-cache size could not be parsed.", "Run docker system df and prune builder cache after successful deployments.", evidence)
+    elif build_cache_bytes > build_cache_warn_gib * GIB:
+        add(checks, "warn", "docker_build_cache_budget", f"Docker build cache is {round(build_cache_bytes / GIB, 2)}GiB.", "Run docker builder prune -af after successful deployment so cache I/O does not compete with chain sync.", evidence)
+    else:
+        add(checks, "pass", "docker_build_cache_budget", f"Docker build cache is {round(build_cache_bytes / GIB, 2)}GiB", evidence=evidence)
+
+
 def chain_marker_exists(path: Path) -> bool:
     if not path.exists():
         return False
@@ -939,6 +1043,7 @@ def run_preflight(root: Path, env_file: Path) -> dict[str, Any]:
     check_storage(checks, root, env, profile)
     check_storage_profile(checks, root, env, profile)
     check_ephemeral_storage(checks, root, env)
+    check_disk_io_noise_guard(checks, root, env, profile)
     check_node_data_layout(checks, root, env)
     check_env_defaults(checks, env, profile)
     check_swap(checks, profile)

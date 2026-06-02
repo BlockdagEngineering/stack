@@ -75,6 +75,8 @@ FILES=(
   "ops/systemd/user-bdag-chain-restore-guard.timer"
   "ops/systemd/user-bdag-hourly-snapshot.timer"
   "ops/systemd/user-bdag-incident-reporter.timer"
+  "ops/systemd/user-bdag-mining-30min-guard.service"
+  "ops/systemd/user-bdag-mining-30min-guard.timer"
   "ops/systemd/user-bdag-node-child-guard.timer"
   "ops/systemd/user-bdag-rawdatadir-sidecar.service"
   "ops/systemd/user-bdag-rawdatadir-sidecar.timer"
