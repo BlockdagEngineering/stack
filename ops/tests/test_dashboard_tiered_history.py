@@ -56,9 +56,10 @@ class DashboardTieredHistoryTests(unittest.TestCase):
         latest = 1_781_000_000
         epochs = []
         epochs.extend(latest - minute * 60 for minute in range(0, 75))
-        epochs.extend(latest - hour * 3600 for hour in range(2, 26))
-        epochs.extend(latest - day * 86400 for day in range(2, 9))
-        epochs.extend(latest - week * 7 * 86400 for week in range(2, 6))
+        epochs.extend(latest - minute * 300 for minute in range(13, 300))
+        epochs.extend(latest - minute * 900 for minute in range(97, 300))
+        epochs.extend(latest - minute * 1800 for minute in range(145, 400))
+        epochs.extend(latest - minute * 7200 for minute in range(85, 380))
         snapshots = [earnings_snapshot(epoch) for epoch in sorted(set(epochs))]
         source = self.root / "earnings-snapshots.jsonl"
         source.write_text("\n".join(json.dumps(snapshot) for snapshot in snapshots) + "\n", encoding="utf-8")
@@ -72,10 +73,11 @@ class DashboardTieredHistoryTests(unittest.TestCase):
 
         self.assertEqual(sample_count, len(snapshots))
         self.assertTrue((self.root / "ram" / "earnings" / "minute.json").exists())
-        self.assertTrue((self.root / "disk" / "earnings" / "hour.json").exists())
-        self.assertTrue((self.root / "disk" / "earnings" / "day.json").exists())
-        self.assertTrue((self.root / "disk" / "earnings" / "week.json").exists())
-        self.assertLessEqual(len(history), 61 + 24 + 7 + 5)
+        self.assertTrue((self.root / "disk" / "earnings" / "five_minute.json").exists())
+        self.assertTrue((self.root / "disk" / "earnings" / "fifteen_minute.json").exists())
+        self.assertTrue((self.root / "disk" / "earnings" / "thirty_minute.json").exists())
+        self.assertTrue((self.root / "disk" / "earnings" / "two_hour.json").exists())
+        self.assertLessEqual(len(history), 61 + 277 + 193 + 193 + 289)
 
         generated = [row["generated_at"] for row in history]
         self.assertEqual(len(generated), len(set(generated)))
@@ -84,7 +86,7 @@ class DashboardTieredHistoryTests(unittest.TestCase):
         self.assertTrue(minute_epochs)
         self.assertTrue(all(latest - epoch <= 3600 for epoch in minute_epochs if epoch is not None))
 
-    def test_update_promotes_old_hot_sample_to_hourly_disk_tier(self) -> None:
+    def test_update_promotes_old_hot_sample_to_five_minute_disk_tier(self) -> None:
         latest = 1_781_000_000
         old = earnings_snapshot(latest - 70 * 60, miner_id="00:11:22:33:44:55")
         new = earnings_snapshot(latest, miner_id="66:77:88:99:aa:bb")
@@ -106,9 +108,33 @@ class DashboardTieredHistoryTests(unittest.TestCase):
         )
 
         minute_payload = json.loads((self.root / "ram" / "earnings" / "minute.json").read_text(encoding="utf-8"))
-        hour_payload = json.loads((self.root / "disk" / "earnings" / "hour.json").read_text(encoding="utf-8"))
+        hour_payload = json.loads((self.root / "disk" / "earnings" / "five_minute.json").read_text(encoding="utf-8"))
         self.assertEqual([row["generated_at"] for row in minute_payload["rows"]], [new["generated_at"]])
         self.assertEqual([row["generated_at"] for row in hour_payload["rows"]], [old["generated_at"]])
+
+    def test_history_tiers_do_not_exceed_frontend_gap_thresholds(self) -> None:
+        tiers = {tier.name: tier for tier in pool_ops.dashboard_history_tiers()}
+
+        self.assertEqual(tiers["minute"].step_seconds, 60)
+        self.assertEqual(tiers["five_minute"].step_seconds, 300)
+        self.assertEqual(tiers["fifteen_minute"].step_seconds, 900)
+        self.assertEqual(tiers["thirty_minute"].step_seconds, 1800)
+        self.assertEqual(tiers["two_hour"].step_seconds, 7200)
+
+        self.assertLessEqual(tiers["five_minute"].step_seconds, 15 * 60)
+        self.assertLessEqual(tiers["five_minute"].step_seconds, 30 * 60)
+        self.assertLessEqual(tiers["five_minute"].step_seconds, 60 * 60)
+        self.assertLessEqual(tiers["fifteen_minute"].step_seconds, 3 * 3600)
+        self.assertLessEqual(tiers["thirty_minute"].step_seconds, 8 * 3600)
+        self.assertLessEqual(tiers["two_hour"].step_seconds, 36 * 3600)
+
+    def test_rebuild_sample_epochs_cover_dashboard_ranges_without_internal_gaps(self) -> None:
+        latest = 1_781_000_000
+        epochs = pool_ops.dashboard_history_rebuild_sample_epochs(latest, max_age_seconds=720 * 3600)
+        self.assertIn(latest, epochs)
+        self.assertGreater(len(epochs), 900)
+        gaps = [right - left for left, right in zip(epochs, epochs[1:])]
+        self.assertLessEqual(max(gaps), 2 * 3600)
 
 
 if __name__ == "__main__":
