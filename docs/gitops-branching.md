@@ -2,7 +2,7 @@
 
 This repository is part of the BlockDAG mining pool stack. The same branch naming regimen applies across:
 
-- `pool-dashboard`
+- `dashboard`
 - `pool-stack-docker`
 - `blockdag-corechain`
 - `pool`
@@ -26,7 +26,7 @@ Use lowercase kebab-case after the slash. Include the repo/component prefix when
 Examples:
 
 - `feature/corechain-fastsnap-v2-discovery`
-- `feature/pool-dashboard-miner-health-tab`
+- `feature/dashboard-miner-health-tab`
 - `fix/pool-credit-idempotency`
 - `release/pool-stack-20260524-rc4`
 - `hotfix/pool-submit-regression`
@@ -45,7 +45,7 @@ Examples:
 
 Every stack release candidate must record the exact branch and commit for all participating repos:
 
-- `pool-dashboard`
+- `dashboard`
 - `pool-stack-docker`
 - `blockdag-corechain`
 - `pool`

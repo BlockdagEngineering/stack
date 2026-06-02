@@ -199,9 +199,9 @@
       <li>Expose profile facts in <code>/api/status</code>: single node, DHCP/NAT gateway, USB chain data, template backend count, miner identity mode, IO budget, source-serving eligibility.</li>
       <li>On USB/router profiles, keep FastSync/FastArtifact as consumer-only. Do not enable rawdatadir sidecar/source timers that stage, publish, rsync, tar, scan, or serve artifacts.</li>
       <li>Preserve no-miner sync-only behavior in installer and repair paths: no mining flags, no template probes, no mining work generation until actual miner demand and a non-zero payment address exist.</li>
-      <li>Release manifest pins exact SHAs and image digests for <code>pool</code>, <code>blockdag-corechain</code>, <code>pool-dashboard</code>, and <code>pool-stack-docker</code>.</li>
+      <li>Release manifest pins exact SHAs and image digests for <code>pool</code>, <code>blockdag-corechain</code>, <code>dashboard</code>, and <code>pool-stack-docker</code>.</li>
       <li>Runtime status exposes packaged repo SHAs/image digests and validates they match the release manifest. Mining start refuses on mismatch unless a logged emergency override is set.</li>
-      <li>Keep repo boundaries clean: dashboard source in <code>pool-dashboard</code>; stack packages/pins it and validates packaged copy.</li>
+      <li>Keep repo boundaries clean: dashboard source in <code>dashboard</code>; stack packages/pins it and validates packaged copy.</li>
     </ol>
     <p><strong>Exit criteria:</strong> USB/router hosts cannot accidentally become artifact sources; fresh installs remain sync-only without miners; releases are provenance-pinned and drift-detecting.</p>
 
@@ -235,7 +235,7 @@
       <tbody>
         <tr><td><code>blockdag-corechain</code></td><td>Template identity, immutable cache, V3 submit, structured outcomes, latest-only/last-good semantics, nodeworker readiness gate, zero-address and coinbase invariants.</td><td>Regression quarantine resolved; corechain tests prove old valid solved headers are accepted after template refresh.</td></tr>
         <tr><td><code>pool</code></td><td>Store template contract in jobs, V3 submit support, protected network-target candidate path, router eligibility split, contract-mode metrics, runtime admin hardening.</td><td>Corechain contract exists and observe-only pool data confirms false local drops.</td></tr>
-        <tr><td><code>pool-dashboard</code></td><td>Paid mining state, split recent activity truths, first-screen paid panel, watchdog paid-conversion repairs, MAC-keyed miner state, runbooks.</td><td>Tests prove shares cannot mask unpaid mining.</td></tr>
+        <tr><td><code>dashboard</code></td><td>Paid mining state, split recent activity truths, first-screen paid panel, watchdog paid-conversion repairs, MAC-keyed miner state, runbooks.</td><td>Tests prove shares cannot mask unpaid mining.</td></tr>
         <tr><td><code>pool-stack-docker</code></td><td>Capability profiles, USB low-IO source blocking, no-miner sync-only installer enforcement, release manifest/pinning, canary and rollback scripts, packaging validation.</td><td>Release gate can prove exact source/image provenance and paid-conversion evidence.</td></tr>
       </tbody>
     </table>

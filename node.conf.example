@@ -55,7 +55,7 @@ miningaddr=
 # "modules=miner" only when the host has managed/connected miners and is meant
 # to serve mining templates.
 modules=Blockdag
-# modules=miner
+modules=miner
 
 evm.http.api=eth,net,web3,txpool,debug
 http.readtimeout=45s

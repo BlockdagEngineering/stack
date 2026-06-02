@@ -14,15 +14,15 @@ export BDAG_DASHBOARD_REQUIRE_TOKEN="${BDAG_DASHBOARD_REQUIRE_TOKEN:-auto}"
 
 mkdir -p "$BDAG_RUNTIME_DIR"
 
-if [ -f /opt/pool-dashboard/ops/dashboard.py ]; then
-  app_dir=/opt/pool-dashboard/ops
-  app=/opt/pool-dashboard/ops/dashboard.py
-elif [ -f /opt/pool-dashboard/dashboard.py ]; then
-  app_dir=/opt/pool-dashboard
-  app=/opt/pool-dashboard/dashboard.py
+if [ -f /opt/dashboard/ops/dashboard.py ]; then
+  app_dir=/opt/dashboard/ops
+  app=/opt/dashboard/ops/dashboard.py
+elif [ -f /opt/dashboard/dashboard.py ]; then
+  app_dir=/opt/dashboard
+  app=/opt/dashboard/dashboard.py
 else
-  log "dashboard.py not found in pool-dashboard checkout"
-  find /opt/pool-dashboard -maxdepth 2 -type f | sort >&2 || true
+  log "dashboard.py not found in dashboard checkout"
+  find /opt/dashboard -maxdepth 2 -type f | sort >&2 || true
   exit 1
 fi
 
@@ -30,6 +30,6 @@ if [ ! -S /var/run/docker.sock ]; then
   log "warning: /var/run/docker.sock is not mounted; status and repair actions will be limited"
 fi
 
-log "starting canonical pool-dashboard from $app"
+log "starting canonical dashboard from $app"
 cd "$app_dir"
 exec python3 "$app"

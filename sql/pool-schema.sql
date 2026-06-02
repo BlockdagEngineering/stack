@@ -1,4 +1,4 @@
--- Mining pool persistence for asic-pool (keep in sync with asic-pool/schema.sql).
+-- Mining pool persistence. This is the canonical pool schema.
 -- Applied by scripts/init-pool-postgres.sh
 
 CREATE TABLE IF NOT EXISTS miners (
@@ -53,3 +53,10 @@ CREATE TABLE IF NOT EXISTS payouts (
     amount NUMERIC(30,0) NOT NULL,
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS idx_blocks_status_height
+ON blocks(status, height);
+
+CREATE INDEX IF NOT EXISTS idx_credits_unpaid_block_hash
+ON credits(block_hash)
+WHERE is_paid = FALSE;

@@ -256,7 +256,7 @@ services:
       - ./asic-pool/.env
     volumes:
       - ${BDAG_POSTGRES_DATA_DIR:-./data/postgres}:/var/lib/postgresql/data
-      - ./asic-pool/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+      - ./sql/pool-schema.sql:/docker-entrypoint-initdb.d/01-pool-schema.sql:ro
     networks:
       - pool-net
 
@@ -576,10 +576,10 @@ RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bd
 
 COPY pool /usr/local/bin/pool
 COPY dashboard-api /usr/local/bin/dashboard-api
-COPY schema.sql /var/lib/bdagStack/pool/schema.sql
+COPY pool-schema.sql /var/lib/bdagStack/pool/pool-schema.sql
 
 RUN chmod +x /usr/local/bin/pool /usr/local/bin/dashboard-api \
- && chown bdagStack:bdagStack /var/lib/bdagStack/pool/schema.sql
+ && chown bdagStack:bdagStack /var/lib/bdagStack/pool/pool-schema.sql
 
 USER bdagStack
 WORKDIR /var/lib/bdagStack/pool
@@ -999,7 +999,7 @@ fi
 
 cp "$BIN_DIR/pool" "$BUILD_DIR/pool/pool"
 cp "$BIN_DIR/dashboard-api" "$BUILD_DIR/pool/dashboard-api"
-cp "$ROOT/asic-pool/schema.sql" "$BUILD_DIR/pool/schema.sql"
+cp "$ROOT/sql/pool-schema.sql" "$BUILD_DIR/pool/pool-schema.sql"
 cp "$ROOT/src/docker/pool.Dockerfile" "$BUILD_DIR/pool/Dockerfile"
 cp "$BIN_DIR/bdag" "$BUILD_DIR/node/bdag"
 cp "$BIN_DIR/nodeworker" "$BUILD_DIR/node/nodeworker"
@@ -1370,8 +1370,9 @@ main() {
   say "Overlaying current production ops files"
   rsync -a --delete --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' "$PROJECT_ROOT/ops"/ "$PACKAGE_DIR/ops"/
   rsync -a "$PROJECT_ROOT/scripts"/ "$PACKAGE_DIR/scripts"/
+  mkdir -p "$PACKAGE_DIR/sql"
+  rsync -a "$PROJECT_ROOT/sql/pool-schema.sql" "$PACKAGE_DIR/sql/pool-schema.sql"
   mkdir -p "$PACKAGE_DIR/asic-pool"
-  rsync -a "$PROJECT_ROOT/asic-pool/schema.sql" "$PACKAGE_DIR/asic-pool/schema.sql"
   cp "$PROJECT_ROOT/ops/release-install.sh" "$PACKAGE_DIR/install.sh"
   chmod +x "$PACKAGE_DIR/install.sh"
   write_release_compose

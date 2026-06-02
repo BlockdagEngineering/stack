@@ -56,7 +56,7 @@ SOURCE_REPOS = [
             [
                 "/home/jeremy/blockdag-source/pool-stack-docker",
                 "/home/jeremy/blockdag-source/pool",
-                "/home/jeremy/blockdag-source/pool-dashboard",
+                "/home/jeremy/blockdag-source/dashboard",
             ]
         ),
     ).split(os.pathsep)

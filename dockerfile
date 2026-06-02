@@ -52,13 +52,15 @@ RUN set -eu; mkdir -p /out; \
     chmod +x /out/mining-pool 
 
 # ----------------------------------------------------------------------------
-# Dashboard Source Stage (canonical pool-dashboard repo)
+# Dashboard Source Stage (canonical dashboard repo)
 # ----------------------------------------------------------------------------
 FROM alpine:3.20 AS dashboard-source
-ARG POOL_DASHBOARD_REPO=https://github.com/BlockdagEngineering/pool-dashboard.git
-ARG POOL_DASHBOARD_REF=6585347bfa78a1e6ed2a6178eaa38c7ccac9d022
+ARG DASHBOARD_REPO
+ARG DASHBOARD_REF
 RUN apk add --no-cache ca-certificates git
 RUN --mount=type=secret,id=github_token,required=false set -eu; \
+    repo="${DASHBOARD_REPO:-https://github.com/BlockdagEngineering/dashboard.git}"; \
+    ref="${DASHBOARD_REF:-6585347bfa78a1e6ed2a6178eaa38c7ccac9d022}"; \
     token="$(cat /run/secrets/github_token 2>/dev/null || true)"; \
     if [ -n "$token" ]; then \
       auth="$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"; \
@@ -66,12 +68,12 @@ RUN --mount=type=secret,id=github_token,required=false set -eu; \
       export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader; \
       export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"; \
     fi; \
-    git clone --depth 1 "$POOL_DASHBOARD_REPO" /src/pool-dashboard; \
-    cd /src/pool-dashboard; \
-    if git rev-parse --verify "$POOL_DASHBOARD_REF^{commit}" >/dev/null 2>&1; then \
-      git checkout --detach "$POOL_DASHBOARD_REF"; \
+    git clone --depth 1 "$repo" /src/dashboard; \
+    cd /src/dashboard; \
+    if git rev-parse --verify "$ref^{commit}" >/dev/null 2>&1; then \
+      git checkout --detach "$ref"; \
     else \
-      git fetch --depth 1 origin "$POOL_DASHBOARD_REF"; \
+      git fetch --depth 1 origin "$ref"; \
       git checkout --detach FETCH_HEAD; \
     fi; \
     rm -rf .git
@@ -174,12 +176,12 @@ RUN apk add --no-cache \
     shadow \
     tzdata
 
-COPY --from=dashboard-source /src/pool-dashboard /opt/pool-dashboard
+COPY --from=dashboard-source /src/dashboard /opt/dashboard
 COPY docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
 RUN chmod +x /usr/local/bin/entrypoint-dashboard.sh \
  && mkdir -p /var/lib/bdag-dashboard/runtime /workspace \
- && if [ -f /opt/pool-dashboard/requirements.txt ]; then \
-      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/pool-dashboard/requirements.txt; \
+ && if [ -f /opt/dashboard/requirements.txt ]; then \
+      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/dashboard/requirements.txt; \
     fi
 
 ENV PYTHONUNBUFFERED=1 \
@@ -190,6 +192,6 @@ ENV PYTHONUNBUFFERED=1 \
     BDAG_DASHBOARD_PORT=9280 \
     BDAG_DASHBOARD_REQUIRE_TOKEN=auto
 
-WORKDIR /opt/pool-dashboard
+WORKDIR /opt/dashboard
 EXPOSE 9280
 ENTRYPOINT ["/usr/local/bin/entrypoint-dashboard.sh"]

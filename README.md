@@ -13,9 +13,28 @@ This stack can be run in any environment where docker is installed. It includes 
 
 ## Release package
 
-GitHub Releases attach `pool-stack-docker-<tag>.zip` with `bin/` (pre-built `**blockdag-node**`, `**nodeworker**`, `**mining-pool**`), `docker-compose.yml`, `dockerfile`, `.env.example`, `docker/`, and cross-platform installers. **Node and pool release images** stage binaries from `./bin`; the `dashboard` image checks out `BlockdagEngineering/pool-dashboard` at `POOL_DASHBOARD_REF`. Export `GITHUB_TOKEN` before `docker compose build` if that repository is private in your environment.
+GitHub Releases attach pinned bootstrap scripts (`install.sh` for Linux/macOS
+and `install.ps1` for Windows) plus one runtime payload zip per Linux container
+architecture:
 
-After unpacking, run the installer from the extracted directory:
+- `pool-stack-docker-<tag>-linux-amd64.zip`
+- `pool-stack-docker-<tag>-linux-arm64.zip`
+
+The bootstrap script is generated for one release tag. It detects the host OS
+and CPU architecture, selects `linux-amd64` or `linux-arm64`, and downloads only
+the matching payload zip from that same tag. Linux ARM64, macOS ARM64, Windows
+ARM64, and Pi5 ARM64 hosts use the `linux-arm64` runtime payload.
+
+Each payload zip contains `bin/` (pre-built `blockdag-node`, `nodeworker`,
+`fastsnap`, `mining-pool`, and `dashboard-api`), `docker-compose.yml`,
+`dockerfile`, `.env.example`,
+`docker/`, and the cross-platform payload installers. **Node and pool release
+images** stage binaries from `./bin`; the `dashboard` image checks out
+`BlockdagEngineering/dashboard` at `DASHBOARD_REF`. Export `GITHUB_TOKEN` before
+`docker compose build` if that repository is private in your environment.
+
+Run the bootstrap script from the GitHub release, or manually unpack the
+matching payload zip and run the payload installer from the extracted directory:
 
 ```bash
 # Linux / macOS
@@ -27,7 +46,11 @@ bash install.sh
 .\install.ps1
 ```
 
-The installer detects the host OS and CPU architecture, writes `.env` and `node.conf`, generates a strong Postgres password unless `POSTGRES_PASSWORD` is already set, downloads `latest.bdsnap` when needed, and runs `docker compose build && docker compose up -d --no-build --pull never`. The release currently runs the service images as `linux/amd64`; ARM hosts need Docker Desktop or Docker Engine with amd64 emulation enabled.
+The payload installer writes `.env` and `node.conf`, generates a strong Postgres
+password unless `POSTGRES_PASSWORD` is already set, downloads `latest.bdsnap`
+when needed, sets `DOCKER_PLATFORM` from the downloaded payload's
+`release-payload.env`, and runs
+`docker compose build && docker compose up -d --no-build --pull never`.
 
 Fresh installs assume zero miner sources. Initial install and chain sync must
 work with no ASICs or Stratum miners configured; operators can opt in to the
@@ -167,10 +190,12 @@ before using the data.
 
 ## Pi5 Release Candidate Stability Defaults
 
-The Pi5 ARM64 release builder (`ops/build-pi5-arm64-release.sh`) now generates a
-self-monitoring stack package. It defaults to `BDAG_NODE_MODE=single`, which
-runs `bdag-miner-node-1` only to reduce USB power pressure. The release no
-longer supports adding another local backend.
+The Pi5 ARM64 release builder (`ops/build-pi5-arm64-release.sh`) remains the
+separate appliance/hardening package path. Normal release payloads include
+native `linux-arm64` runtime binaries, but they do not include the Pi5 appliance
+image/archive flow. The Pi5 appliance package defaults to
+`BDAG_NODE_MODE=single`, which runs `bdag-miner-node-1` only to reduce USB power
+pressure. The appliance release no longer supports adding another local backend.
 
 No-miner deployments are sync-only by default: `BDAG_ENABLE_NODE_MINING=0`,
 `BDAG_NODE_MODULES=Blockdag`, and an empty `BDAG_NODE_MINING_ARGS`. Enable node
@@ -225,10 +250,11 @@ make hard failures stop the install, or `BDAG_APPLIANCE_PREFLIGHT=0` to skip it
 explicitly. The field report behind these checks is in
 `docs/t430-single-node-appliance-hardening.md`.
 
-The release builder also runs `scripts/verify-release-architecture.py` before
-image assembly so ARM64 packages cannot silently receive AMD64 binaries; the
-checker reads ELF/Mach-O/PE headers directly so it can be used from Linux,
-macOS, and Windows build hosts.
+The normal release workflow and the Pi5 appliance builder run
+`scripts/verify-release-architecture.py` before package or image assembly so
+ARM64 packages cannot silently receive AMD64 binaries; the checker reads
+ELF/Mach-O/PE headers directly so it can be used from Linux, macOS, and Windows
+build hosts.
 
 The Python operations dashboard is the canonical operator interface and source
 of truth, normally exposed on `BDAG_DASHBOARD_PORT`/`8088`. Its tabs separate
@@ -289,7 +315,8 @@ HTML summary under `ops/runtime/measurements`.
 ## Quick start
 
 ```bash
-# 1. Unzip pool-stack-docker-<tag>.zip
+# 1. Run the pinned bootstrap from the GitHub release, or unzip the matching
+#    pool-stack-docker-<tag>-linux-<arch>.zip payload.
 
 # 2. Run the installer
 bash install.sh

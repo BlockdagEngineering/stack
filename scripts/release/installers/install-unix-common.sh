@@ -7,7 +7,10 @@ cd "$PACKAGE_ROOT"
 
 OS_NAME="${BDAG_INSTALL_OS:-$(uname -s | tr '[:upper:]' '[:lower:]')}"
 ARCH_NAME="${BDAG_INSTALL_ARCH:-$(uname -m)}"
-DOCKER_PLATFORM="linux/amd64"
+PAYLOAD_METADATA_FILE="$PACKAGE_ROOT/release-payload.env"
+BDAG_RELEASE_PAYLOAD_TARGET=""
+BDAG_RELEASE_PAYLOAD_ARCH=""
+BDAG_RELEASE_PAYLOAD_DOCKER_PLATFORM=""
 SNAPSHOT_URL="${BDAG_SNAPSHOT_URL:-https://bdagstack.bdagdev.xyz/latest.bdsnap}"
 SNAPSHOT_MIN_BYTES="${BDAG_SNAPSHOT_MIN_BYTES:-1048576}"
 BDAG_REQUIRE_SNAPSHOT="${BDAG_REQUIRE_SNAPSHOT:-1}"
@@ -24,12 +27,6 @@ BDAG_CLEAN_ORPHAN_CONTAINERS="${BDAG_CLEAN_ORPHAN_CONTAINERS:-0}"
 echo "=== BlockDAG Pool Stack Installer (${OS_NAME}/${ARCH_NAME}) ==="
 echo ""
 
-if [[ "$ARCH_NAME" == "arm64" ]]; then
-    echo "This release contains linux/amd64 service binaries."
-    echo "Docker will run the stack with platform ${DOCKER_PLATFORM}; amd64 emulation must be enabled."
-    echo ""
-fi
-
 require_command() {
     local name="$1"
     local hint="$2"
@@ -38,6 +35,62 @@ require_command() {
         exit 1
     fi
 }
+
+read_payload_metadata() {
+    [[ -f "$PAYLOAD_METADATA_FILE" ]] || return 0
+
+    local key value
+    while IFS='=' read -r key value || [[ -n "$key" ]]; do
+        case "$key" in
+            ''|\#*) continue ;;
+            BDAG_RELEASE_PAYLOAD_TARGET) BDAG_RELEASE_PAYLOAD_TARGET="$value" ;;
+            BDAG_RELEASE_PAYLOAD_ARCH) BDAG_RELEASE_PAYLOAD_ARCH="$value" ;;
+            DOCKER_PLATFORM) BDAG_RELEASE_PAYLOAD_DOCKER_PLATFORM="$value" ;;
+        esac
+    done < "$PAYLOAD_METADATA_FILE"
+
+    if [[ -z "$BDAG_RELEASE_PAYLOAD_ARCH" ]]; then
+        case "$BDAG_RELEASE_PAYLOAD_TARGET" in
+            linux-amd64) BDAG_RELEASE_PAYLOAD_ARCH=amd64 ;;
+            linux-arm64) BDAG_RELEASE_PAYLOAD_ARCH=arm64 ;;
+        esac
+    fi
+}
+
+normalize_arch() {
+    case "$1" in
+        x86_64|amd64) printf '%s\n' amd64 ;;
+        arm64|aarch64) printf '%s\n' arm64 ;;
+        *)
+            echo "Error: unsupported CPU architecture '${1}'." >&2
+            exit 1
+            ;;
+    esac
+}
+
+resolve_docker_platform() {
+    local payload_arch expected_platform
+    read_payload_metadata
+    payload_arch="${BDAG_RELEASE_PAYLOAD_ARCH:-$(normalize_arch "$ARCH_NAME")}"
+    payload_arch="$(normalize_arch "$payload_arch")"
+    expected_platform="linux/${payload_arch}"
+
+    if [[ -n "$BDAG_RELEASE_PAYLOAD_DOCKER_PLATFORM" && "$BDAG_RELEASE_PAYLOAD_DOCKER_PLATFORM" != "$expected_platform" ]]; then
+        echo "Error: release-payload.env has inconsistent DOCKER_PLATFORM=${BDAG_RELEASE_PAYLOAD_DOCKER_PLATFORM}; expected ${expected_platform}." >&2
+        exit 1
+    fi
+
+    DOCKER_PLATFORM="$expected_platform"
+}
+
+DOCKER_PLATFORM=""
+resolve_docker_platform
+export DOCKER_PLATFORM
+
+if [[ -n "$BDAG_RELEASE_PAYLOAD_TARGET" ]]; then
+    echo "Runtime payload: ${BDAG_RELEASE_PAYLOAD_TARGET} (${DOCKER_PLATFORM})"
+    echo ""
+fi
 
 sed_escape() {
     printf '%s' "$1" | sed 's/[\/&|]/\\&/g'
@@ -385,6 +438,12 @@ set_env_value() {
         printf '\n%s=%s\n' "$key" "$value" >> "$file"
     fi
 }
+
+if [[ "${BDAG_INSTALL_TEST_WRITE_ENV_ONLY:-0}" == "1" ]]; then
+    cp .env.example .env
+    set_env_value .env DOCKER_PLATFORM "$DOCKER_PLATFORM"
+    exit 0
+fi
 
 require_command docker "Install Docker Desktop or Docker Engine, then re-run this installer."
 docker compose version >/dev/null 2>&1 || {
