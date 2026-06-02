@@ -78,6 +78,16 @@ class DashboardGlobalRenderingTests(unittest.TestCase):
         self.assertIn("let globalRefreshInFlight = false;", html)
         self.assertNotIn("refreshGlobal(); }, 300000);", html)
 
+    def test_sync_estimate_uses_backend_next_step_when_present(self) -> None:
+        html = dashboard.HTML
+
+        self.assertIn("if (estimate.next_step) {", html)
+        self.assertIn('text("syncNextStep", estimate.next_step);', html)
+        self.assertLess(
+            html.index("if (estimate.next_step) {"),
+            html.index('text("syncNextStep", "pool can mine normally once backend template checks are healthy");'),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
