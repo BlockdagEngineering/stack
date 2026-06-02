@@ -46,6 +46,7 @@ from pool_ops import (
     save_miner_admin_password,
     scan_miners,
     upsert_miner_registry,
+    warm_dashboard_history_caches,
     write_action_state,
 )
 
@@ -3960,6 +3961,14 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> int:
     ensure_runtime()
+    history_warmup = warm_dashboard_history_caches()
+    warmed = history_warmup.get("histories", {}) if isinstance(history_warmup, dict) else {}
+    if warmed:
+        summary = ", ".join(
+            f"{name}:{payload.get('chart_rows', 0) if isinstance(payload, dict) else 0}"
+            for name, payload in warmed.items()
+        )
+        print(f"Dashboard history warmup {history_warmup.get('status', 'unknown')}: {summary}")
     if token_required():
         token = get_action_token()
         print(f"Action token file: {RUNTIME_DIR / 'dashboard-token.txt'}")

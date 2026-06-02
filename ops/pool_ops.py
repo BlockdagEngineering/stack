@@ -331,6 +331,15 @@ EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_
 EARNINGS_ONCHAIN_CACHE_SECONDS = int(os.environ.get("BDAG_EARNINGS_ONCHAIN_CACHE_SECONDS", "120"))
 EARNINGS_DERIVED_HISTORY_ENABLED = env_bool("BDAG_EARNINGS_DERIVED_HISTORY_ENABLED", True)
 EARNINGS_DERIVED_HISTORY_BUCKET_SECONDS = env_int("BDAG_EARNINGS_DERIVED_HISTORY_BUCKET_SECONDS", 300, minimum=60)
+DASHBOARD_HISTORY_HOT_SECONDS = env_int("BDAG_DASHBOARD_HISTORY_HOT_SECONDS", 3600, minimum=60)
+DASHBOARD_HISTORY_HOT_STEP_SECONDS = env_int("BDAG_DASHBOARD_HISTORY_HOT_STEP_SECONDS", 60, minimum=60)
+DASHBOARD_HISTORY_HOURLY_SECONDS = env_int("BDAG_DASHBOARD_HISTORY_HOURLY_SECONDS", 24 * 3600, minimum=3600)
+DASHBOARD_HISTORY_HOURLY_STEP_SECONDS = env_int("BDAG_DASHBOARD_HISTORY_HOURLY_STEP_SECONDS", 3600, minimum=3600)
+DASHBOARD_HISTORY_DAILY_SECONDS = env_int("BDAG_DASHBOARD_HISTORY_DAILY_SECONDS", 7 * 86400, minimum=86400)
+DASHBOARD_HISTORY_DAILY_STEP_SECONDS = env_int("BDAG_DASHBOARD_HISTORY_DAILY_STEP_SECONDS", 86400, minimum=86400)
+DASHBOARD_HISTORY_WEEKLY_SECONDS = env_int("BDAG_DASHBOARD_HISTORY_WEEKLY_SECONDS", 31 * 86400, minimum=7 * 86400)
+DASHBOARD_HISTORY_WEEKLY_STEP_SECONDS = env_int("BDAG_DASHBOARD_HISTORY_WEEKLY_STEP_SECONDS", 7 * 86400, minimum=7 * 86400)
+DASHBOARD_HISTORY_DISK_DIR = path_from_env("BDAG_DASHBOARD_HISTORY_DISK_DIR", RUNTIME_DIR / "dashboard-history", PROJECT_ROOT)
 PEER_GEO_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_PEER_GEO_CACHE_TTL_SECONDS", "86400"))
 PEER_GEO_LOOKUP_TIMEOUT = float(os.environ.get("BDAG_PEER_GEO_LOOKUP_TIMEOUT", "8.0"))
 PUBLIC_EVM_RPC_DEFAULTS = [
@@ -1121,6 +1130,277 @@ def compact_jsonl_file(path: Path, limit: int, mode: int | None = None) -> int:
     rows = read_jsonl_file(path, limit=limit)
     write_jsonl_file(path, rows[-limit:], mode=mode)
     return len(rows[-limit:])
+
+
+@dataclass(frozen=True)
+class DashboardHistoryTier:
+    name: str
+    storage: str
+    min_age_seconds: int
+    max_age_seconds: int
+    step_seconds: int
+
+
+def dashboard_history_ram_dir() -> Path:
+    configured = os.environ.get("BDAG_DASHBOARD_HISTORY_RAM_DIR")
+    if configured:
+        return path_from_env("BDAG_DASHBOARD_HISTORY_RAM_DIR", configured, PROJECT_ROOT)
+    candidates: list[Path] = []
+    if Path("/dev/shm").exists():
+        candidates.append(Path("/dev/shm"))
+    xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if xdg_runtime:
+        candidates.append(Path(xdg_runtime).expanduser())
+    for base in candidates:
+        try:
+            if base.exists() and os.access(base, os.W_OK):
+                return (base / f"{PROJECT_ROOT.name}-dashboard-history").resolve()
+        except OSError:
+            continue
+    return (DASHBOARD_HISTORY_DISK_DIR / "hot-fallback").resolve()
+
+
+def dashboard_history_tiers() -> list[DashboardHistoryTier]:
+    hot_max = max(DASHBOARD_HISTORY_HOT_SECONDS, DASHBOARD_HISTORY_HOT_STEP_SECONDS)
+    hourly_max = max(DASHBOARD_HISTORY_HOURLY_SECONDS, hot_max + DASHBOARD_HISTORY_HOURLY_STEP_SECONDS)
+    daily_max = max(DASHBOARD_HISTORY_DAILY_SECONDS, hourly_max + DASHBOARD_HISTORY_DAILY_STEP_SECONDS)
+    weekly_max = max(DASHBOARD_HISTORY_WEEKLY_SECONDS, daily_max + DASHBOARD_HISTORY_WEEKLY_STEP_SECONDS)
+    return [
+        DashboardHistoryTier("minute", "ram", 0, hot_max, DASHBOARD_HISTORY_HOT_STEP_SECONDS),
+        DashboardHistoryTier("hour", "disk", hot_max, hourly_max, DASHBOARD_HISTORY_HOURLY_STEP_SECONDS),
+        DashboardHistoryTier("day", "disk", hourly_max, daily_max, DASHBOARD_HISTORY_DAILY_STEP_SECONDS),
+        DashboardHistoryTier("week", "disk", daily_max, weekly_max, DASHBOARD_HISTORY_WEEKLY_STEP_SECONDS),
+    ]
+
+
+def dashboard_history_tier_path(kind: str, tier: DashboardHistoryTier) -> Path:
+    safe_kind = re.sub(r"[^a-zA-Z0-9_.-]+", "-", kind).strip("-") or "default"
+    base = dashboard_history_ram_dir() if tier.storage == "ram" else DASHBOARD_HISTORY_DISK_DIR
+    return base / safe_kind / f"{tier.name}.json"
+
+
+def dashboard_history_state_path(kind: str) -> Path:
+    safe_kind = re.sub(r"[^a-zA-Z0-9_.-]+", "-", kind).strip("-") or "default"
+    return DASHBOARD_HISTORY_DISK_DIR / safe_kind / "state.json"
+
+
+def history_snapshot_epoch(snapshot: dict[str, Any]) -> float | None:
+    parsed = parse_earnings_timestamp(snapshot.get("generated_at") or snapshot.get("updated_at"))
+    return parsed.timestamp() if parsed is not None else None
+
+
+def _read_dashboard_history_tier(path: Path) -> list[dict[str, Any]]:
+    payload = read_json_file(path, {})
+    rows = payload.get("rows") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _dedupe_history_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_key: dict[str, tuple[float, dict[str, Any]]] = {}
+    for row in rows:
+        epoch = history_snapshot_epoch(row)
+        if epoch is None:
+            continue
+        key = str(row.get("generated_at") or row.get("updated_at") or epoch)
+        existing = by_key.get(key)
+        if existing is None or epoch >= existing[0]:
+            by_key[key] = (epoch, row)
+    return [row for _epoch, row in sorted(by_key.values(), key=lambda item: item[0])]
+
+
+def build_dashboard_history_tiers(
+    snapshots: list[dict[str, Any]],
+    compact_snapshot,
+    snapshot_has_data,
+) -> tuple[dict[str, list[dict[str, Any]]], float | None]:
+    timed: list[tuple[float, dict[str, Any]]] = []
+    for snapshot in snapshots:
+        if not isinstance(snapshot, dict) or not snapshot_has_data(snapshot):
+            continue
+        compacted = compact_snapshot(snapshot)
+        if not isinstance(compacted, dict):
+            continue
+        epoch = history_snapshot_epoch(compacted)
+        if epoch is None:
+            continue
+        timed.append((epoch, compacted))
+    if not timed:
+        return {tier.name: [] for tier in dashboard_history_tiers()}, None
+
+    latest_epoch = max(epoch for epoch, _snapshot in timed)
+    buckets: dict[str, dict[int, tuple[float, dict[str, Any]]]] = {
+        tier.name: {} for tier in dashboard_history_tiers()
+    }
+    for epoch, snapshot in timed:
+        age = max(0, int(latest_epoch - epoch))
+        for tier in dashboard_history_tiers():
+            if age > tier.max_age_seconds:
+                continue
+            if tier.min_age_seconds and age <= tier.min_age_seconds:
+                continue
+            bucket_key = int(epoch // max(1, tier.step_seconds))
+            existing = buckets[tier.name].get(bucket_key)
+            if existing is None or epoch >= existing[0]:
+                buckets[tier.name][bucket_key] = (epoch, snapshot)
+            break
+
+    tier_rows: dict[str, list[dict[str, Any]]] = {}
+    for tier in dashboard_history_tiers():
+        values = sorted(buckets[tier.name].values(), key=lambda item: item[0])
+        tier_rows[tier.name] = [snapshot for _epoch, snapshot in values]
+    return tier_rows, latest_epoch
+
+
+def write_dashboard_history_tiers(
+    kind: str,
+    tier_rows: dict[str, list[dict[str, Any]]],
+    latest_epoch: float | None,
+    source_sample_count: int | None = None,
+) -> None:
+    state_rows: dict[str, int] = {}
+    for tier in dashboard_history_tiers():
+        rows = tier_rows.get(tier.name, [])
+        path = dashboard_history_tier_path(kind, tier)
+        write_json_file(
+            path,
+            {
+                "schema_version": 1,
+                "kind": kind,
+                "tier": tier.name,
+                "storage": tier.storage,
+                "step_seconds": tier.step_seconds,
+                "min_age_seconds": tier.min_age_seconds,
+                "max_age_seconds": tier.max_age_seconds,
+                "latest_epoch": latest_epoch,
+                "updated_at": now_iso(),
+                "rows": rows,
+            },
+            mode=0o600,
+        )
+        state_rows[tier.name] = len(rows)
+
+    previous_state = read_json_file(dashboard_history_state_path(kind), {})
+    if source_sample_count is None and isinstance(previous_state, dict):
+        source_sample_count = safe_int(previous_state.get("source_sample_count"), 0)
+    write_json_file(
+        dashboard_history_state_path(kind),
+        {
+            "schema_version": 1,
+            "kind": kind,
+            "updated_at": now_iso(),
+            "latest_epoch": latest_epoch,
+            "ram_dir": str(dashboard_history_ram_dir()),
+            "disk_dir": str(DASHBOARD_HISTORY_DISK_DIR),
+            "source_sample_count": source_sample_count or 0,
+            "tiers": [
+                {
+                    "name": tier.name,
+                    "storage": tier.storage,
+                    "step_seconds": tier.step_seconds,
+                    "min_age_seconds": tier.min_age_seconds,
+                    "max_age_seconds": tier.max_age_seconds,
+                    "rows": state_rows.get(tier.name, 0),
+                }
+                for tier in dashboard_history_tiers()
+            ],
+        },
+        mode=0o600,
+    )
+
+
+def load_dashboard_history_tiers(kind: str) -> tuple[list[dict[str, Any]], bool, bool]:
+    rows: list[dict[str, Any]] = []
+    any_file = False
+    hot_file_exists = False
+    for tier in dashboard_history_tiers():
+        path = dashboard_history_tier_path(kind, tier)
+        if path.exists():
+            any_file = True
+            if tier.name == "minute":
+                hot_file_exists = True
+        rows.extend(_read_dashboard_history_tier(path))
+    return _dedupe_history_rows(rows), any_file, hot_file_exists
+
+
+def rebuild_dashboard_history_from_source(
+    kind: str,
+    source_file: Path,
+    compact_snapshot,
+    snapshot_has_data,
+) -> tuple[list[dict[str, Any]], int]:
+    source_rows = read_jsonl_file(source_file)
+    tier_rows, latest_epoch = build_dashboard_history_tiers(source_rows, compact_snapshot, snapshot_has_data)
+    write_dashboard_history_tiers(kind, tier_rows, latest_epoch, source_sample_count=len(source_rows))
+    rows = [row for tier in dashboard_history_tiers() for row in tier_rows.get(tier.name, [])]
+    return _dedupe_history_rows(rows), len(source_rows)
+
+
+def read_dashboard_history(
+    kind: str,
+    source_file: Path,
+    compact_snapshot,
+    snapshot_has_data,
+    limit: int | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    rows, any_file, hot_file_exists = load_dashboard_history_tiers(kind)
+    state = read_json_file(dashboard_history_state_path(kind), {})
+    source_sample_count = safe_int(state.get("source_sample_count") if isinstance(state, dict) else None, len(rows)) or 0
+    if source_file.exists() and (not any_file or not hot_file_exists):
+        rows, source_sample_count = rebuild_dashboard_history_from_source(kind, source_file, compact_snapshot, snapshot_has_data)
+    if limit is not None:
+        rows = rows[-max(0, limit):]
+    return rows, source_sample_count
+
+
+def update_dashboard_history_with_snapshot(
+    kind: str,
+    source_file: Path,
+    snapshot: dict[str, Any],
+    compact_snapshot,
+    snapshot_has_data,
+) -> None:
+    rows, any_file, _hot_file_exists = load_dashboard_history_tiers(kind)
+    state = read_json_file(dashboard_history_state_path(kind), {})
+    source_sample_count = safe_int(state.get("source_sample_count") if isinstance(state, dict) else None, 0) or 0
+    if not any_file and source_file.exists():
+        source_rows = read_jsonl_file(source_file)
+        source_sample_count = len(source_rows)
+        candidates = source_rows
+    else:
+        source_sample_count += 1
+        candidates = rows + [snapshot]
+    tier_rows, latest_epoch = build_dashboard_history_tiers(candidates, compact_snapshot, snapshot_has_data)
+    write_dashboard_history_tiers(kind, tier_rows, latest_epoch, source_sample_count=source_sample_count)
+
+
+def warm_dashboard_history_caches() -> dict[str, Any]:
+    """Rebuild RAM hot tiers from append logs after dashboard startup."""
+    warmed: dict[str, Any] = {"status": "ok", "histories": {}}
+    targets = [
+        ("global", GLOBAL_HISTORY_FILE, compact_global_snapshot_for_history, global_snapshot_has_plot_data),
+        ("earnings", EARNINGS_SNAPSHOT_FILE, compact_earnings_snapshot, earnings_snapshot_has_plot_data),
+    ]
+    for kind, source_file, compact_snapshot, snapshot_has_data in targets:
+        try:
+            rows, sample_count = rebuild_dashboard_history_from_source(kind, source_file, compact_snapshot, snapshot_has_data)
+            warmed["histories"][kind] = {
+                "status": "ok",
+                "source": str(source_file),
+                "sample_count": sample_count,
+                "chart_rows": len(rows),
+                "ram_dir": str(dashboard_history_ram_dir()),
+                "disk_dir": str(DASHBOARD_HISTORY_DISK_DIR),
+            }
+        except Exception as exc:  # noqa: BLE001 - dashboard startup must continue without history warmup.
+            warmed["status"] = "degraded"
+            warmed["histories"][kind] = {
+                "status": "failed",
+                "source": str(source_file),
+                "error": str(exc),
+            }
+    return warmed
 
 
 def merge_unique_strings(*values: Any) -> list[str]:
@@ -6624,8 +6904,80 @@ def collect_peer_location_guess() -> dict[str, Any]:
     }
 
 
+def global_snapshot_has_plot_data(snapshot: dict[str, Any]) -> bool:
+    clusters = snapshot.get("clusters")
+    return isinstance(clusters, list) and any(isinstance(cluster, dict) for cluster in clusters)
+
+
+def compact_global_snapshot_for_history(snapshot: dict[str, Any]) -> dict[str, Any]:
+    keys = [
+        "schema_version",
+        "status",
+        "source",
+        "source_truth",
+        "source_contract",
+        "height_method",
+        "generated_at",
+        "updated_at",
+        "latest_block",
+        "chain_block_count",
+        "latest_order",
+        "requested_blocks",
+        "fetched_blocks",
+        "unknown_blocks",
+        "partial_scan",
+        "head_only",
+        "maintenance_deferred",
+        "deferred_scan",
+        "scan_window_hours",
+        "avg_blocks_per_second",
+        "max_transactions_per_block",
+        "max_avg_block_transactions_per_second",
+        "fetch_errors",
+    ]
+    compacted = {key: snapshot.get(key) for key in keys if key in snapshot}
+    compacted["generated_at"] = compacted.get("generated_at") or compacted.get("updated_at")
+    compacted["clusters"] = [
+        {
+            "address": cluster.get("address"),
+            "address_short": cluster.get("address_short"),
+            "pool_name": cluster.get("pool_name", ""),
+            "pool_label": cluster.get("pool_label", cluster.get("address_short")),
+            "source": cluster.get("source", "on-chain"),
+            "local_pool": bool(cluster.get("local_pool")),
+            "estimated_bdag_avg_hour": cluster.get("estimated_bdag_avg_hour"),
+            "estimated_usd_avg_hour": cluster.get("estimated_usd_avg_hour"),
+            "estimated_zar_avg_hour": cluster.get("estimated_zar_avg_hour"),
+            "estimated_bdag_recent_hour": cluster.get("estimated_bdag_recent_hour"),
+            "estimated_usd_recent_hour": cluster.get("estimated_usd_recent_hour"),
+            "estimated_zar_recent_hour": cluster.get("estimated_zar_recent_hour"),
+            "blocks": cluster.get("blocks"),
+            "shares": cluster.get("shares", cluster.get("blocks")),
+            "credit_blocks": cluster.get("credit_blocks", cluster.get("blocks")),
+            "found_blocks": cluster.get("found_blocks", cluster.get("blocks")),
+            "share_percent": cluster.get("share_percent"),
+            "credited_bdag": cluster.get("credited_bdag", cluster.get("estimated_bdag")),
+            "estimated_bdag": cluster.get("estimated_bdag"),
+            "estimated_usd": cluster.get("estimated_usd"),
+            "estimated_zar": cluster.get("estimated_zar"),
+        }
+        for cluster in snapshot.get("clusters") or []
+        if isinstance(cluster, dict)
+    ]
+    return compacted
+
+
 def read_global_history(limit: int | None = None) -> list[dict[str, Any]]:
-    return read_jsonl_file(GLOBAL_HISTORY_FILE, limit=limit)
+    history, _sample_count = read_dashboard_history(
+        "global",
+        GLOBAL_HISTORY_FILE,
+        compact_global_snapshot_for_history,
+        global_snapshot_has_plot_data,
+        limit=limit,
+    )
+    if not history and GLOBAL_HISTORY_FILE.exists():
+        return read_jsonl_file(GLOBAL_HISTORY_FILE, limit=limit)
+    return history
 
 
 def is_valid_global_chain_snapshot(snapshot: Mapping[str, Any] | None) -> bool:
@@ -6687,6 +7039,13 @@ def record_global_snapshot(snapshot: dict[str, Any]) -> None:
         append_jsonl_file(GLOBAL_HISTORY_FILE, snapshot, mode=0o600)
     except OSError:
         return
+    update_dashboard_history_with_snapshot(
+        "global",
+        GLOBAL_HISTORY_FILE,
+        snapshot,
+        compact_global_snapshot_for_history,
+        global_snapshot_has_plot_data,
+    )
     state = read_json_file(GLOBAL_HISTORY_STATE_FILE, {})
     previous_count = safe_int(state.get("row_count") if isinstance(state, dict) else None, 0)
     row_count = previous_count + 1 if previous_count > 0 else count_text_lines(GLOBAL_HISTORY_FILE)
@@ -8363,15 +8722,13 @@ def read_earnings_history(limit: int | None = None) -> list[dict[str, Any]]:
 
 
 def _earnings_history_bucket_seconds(age_seconds: float) -> int:
-    if age_seconds <= 6 * 3600:
-        return 30
-    if age_seconds <= 24 * 3600:
-        return 120
-    if age_seconds <= 3 * 86400:
-        return 300
-    if age_seconds <= 7 * 86400:
-        return 900
-    return 1800
+    if age_seconds <= DASHBOARD_HISTORY_HOT_SECONDS:
+        return DASHBOARD_HISTORY_HOT_STEP_SECONDS
+    if age_seconds <= DASHBOARD_HISTORY_HOURLY_SECONDS:
+        return DASHBOARD_HISTORY_HOURLY_STEP_SECONDS
+    if age_seconds <= DASHBOARD_HISTORY_DAILY_SECONDS:
+        return DASHBOARD_HISTORY_DAILY_STEP_SECONDS
+    return DASHBOARD_HISTORY_WEEKLY_STEP_SECONDS
 
 
 def compact_miner_estimate_for_history(miner: dict[str, Any]) -> dict[str, Any]:
@@ -8534,70 +8891,12 @@ def compact_earnings_history_for_dashboard(history: list[dict[str, Any]]) -> lis
 
 
 def read_compact_earnings_history_for_dashboard() -> tuple[list[dict[str, Any]], int]:
-    if not EARNINGS_SNAPSHOT_FILE.exists():
-        return [], 0
-
-    latest_epoch: float | None = None
-    sample_count = 0
-    try:
-        with EARNINGS_SNAPSHOT_FILE.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                try:
-                    snapshot = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                sample_count += 1
-                if not isinstance(snapshot, dict):
-                    continue
-                if not earnings_snapshot_has_plot_data(snapshot):
-                    continue
-                parsed = parse_earnings_timestamp(snapshot.get("generated_at"))
-                if parsed is None:
-                    continue
-                epoch = parsed.timestamp()
-                if latest_epoch is None or epoch > latest_epoch:
-                    latest_epoch = epoch
-    except OSError:
-        return [], 0
-
-    if latest_epoch is None:
-        return [], sample_count
-
-    cutoff = latest_epoch - max(3600, EARNINGS_DASHBOARD_HISTORY_SECONDS)
-    anchor: tuple[float, dict[str, Any]] | None = None
-    buckets: dict[tuple[int, int], tuple[float, dict[str, Any]]] = {}
-    try:
-        with EARNINGS_SNAPSHOT_FILE.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                try:
-                    snapshot = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(snapshot, dict):
-                    continue
-                if not earnings_snapshot_has_plot_data(snapshot):
-                    continue
-                parsed = parse_earnings_timestamp(snapshot.get("generated_at"))
-                if parsed is None:
-                    continue
-                epoch = parsed.timestamp()
-                if epoch < cutoff:
-                    anchor = (epoch, snapshot)
-                    continue
-                age = max(0.0, latest_epoch - epoch)
-                bucket_seconds = _earnings_history_bucket_seconds(age)
-                bucket_key = (bucket_seconds, int(epoch // bucket_seconds))
-                existing = buckets.get(bucket_key)
-                if existing is None or epoch >= existing[0]:
-                    buckets[bucket_key] = (epoch, snapshot)
-    except OSError:
-        return [], sample_count
-
-    selected = list(buckets.values())
-    if anchor is not None:
-        selected.append(anchor)
-    selected.sort(key=lambda item: item[0])
-    return [compact_earnings_snapshot(snapshot) for _, snapshot in selected], sample_count
+    return read_dashboard_history(
+        "earnings",
+        EARNINGS_SNAPSHOT_FILE,
+        compact_earnings_snapshot,
+        earnings_snapshot_has_plot_data,
+    )
 
 
 def format_earnings_history_timestamp(value: Any) -> str | None:
@@ -9193,6 +9492,13 @@ def record_earnings_snapshot() -> dict[str, Any]:
     with EARNINGS_SNAPSHOT_FILE.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(snapshot) + "\n")
     EARNINGS_SNAPSHOT_FILE.chmod(0o600)
+    update_dashboard_history_with_snapshot(
+        "earnings",
+        EARNINGS_SNAPSHOT_FILE,
+        snapshot,
+        compact_earnings_snapshot,
+        earnings_snapshot_has_plot_data,
+    )
     return snapshot
 
 
