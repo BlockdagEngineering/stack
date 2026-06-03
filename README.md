@@ -231,8 +231,11 @@ is low. See `docs/platform-adaptive-runtime.md`.
 The dashboard, watchdog, sync coordinator, P2P guard, and startup checks also
 share one cross-process status sample. `ops/status_sampler.py` writes
 `ops/runtime/status-sampler.json` atomically, and routine callers read it
-through `collect_status_cached()` when it is fresh. Direct repair diagnostics
-can still force a live collection with `max_age_seconds=0`.
+through `collect_status_cached()` when it is fresh. The default sampler reuse
+window is bounded at 120 seconds so constrained hosts do not repeatedly probe
+Docker, node RPC, pool metrics, and miner state while the node is catching up.
+Direct repair diagnostics can still force a live collection with
+`max_age_seconds=0`.
 
 The Pi5 release builder marks generated runtime compose files with
 `BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1` and rejects `build:`/`dockerfile:`

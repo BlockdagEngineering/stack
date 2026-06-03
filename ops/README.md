@@ -112,8 +112,11 @@ python3 ops/status_sampler.py --loop
 
 The sampler writes `ops/runtime/status-sampler.json` atomically. Dashboard,
 watchdog, sync coordinator, P2P guard, and startup checks consume it through
-`collect_status_cached()` while it is fresh. Use `max_age_seconds=0` only for
-explicit live diagnostics or hard repair paths that must bypass cached state.
+`collect_status_cached()` while it is fresh. The default freshness window is
+120 seconds, which keeps constrained mining hosts from adding unnecessary
+status-probe I/O while the node is busy importing. Use `max_age_seconds=0` only
+for explicit live diagnostics or hard repair paths that must bypass cached
+state.
 
 The sampler is also the backstop for the mining imperative. If the user-systemd
 guard units drift disabled, it re-enables them. If `pool` is stopped while

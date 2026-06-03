@@ -220,6 +220,11 @@ LOG_DIR = RUNTIME_DIR / "logs"
 SHARED_STATUS_CACHE_FILE = RUNTIME_DIR / "shared-status-cache.json"
 STATUS_SAMPLER_FILE = RUNTIME_DIR / "status-sampler.json"
 SYNC_PROGRESS_HEALTH_STATE_FILE = RUNTIME_DIR / "sync-progress-health-state.json"
+STATUS_PAYLOAD_STALE_AFTER_SECONDS = env_float(
+    "BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS",
+    120.0,
+    minimum=5.0,
+)
 SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS = int(os.environ.get("BDAG_SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS", "2700"))
 DEFAULT_POOL_ENV_FILE = PROJECT_ROOT / ".env" if (PROJECT_ROOT / ".env").exists() else PROJECT_ROOT / "asic-pool" / ".env"
 POOL_ENV_FILE = path_from_env("BDAG_POOL_ENV_FILE", DEFAULT_POOL_ENV_FILE, PROJECT_ROOT)
@@ -420,7 +425,7 @@ HTTP_USER_AGENT = os.environ.get("BDAG_HTTP_USER_AGENT", "blockdag-dashboard/1.0
 SHARED_STATUS_CACHE_ENABLED = env_bool("BDAG_SHARED_STATUS_CACHE_ENABLED", True)
 SHARED_STATUS_CACHE_SECONDS = env_float("BDAG_SHARED_STATUS_CACHE_SECONDS", 3.0, minimum=0.0)
 STATUS_SAMPLER_ENABLED = env_bool("BDAG_STATUS_SAMPLER_ENABLED", True)
-STATUS_SAMPLER_MAX_AGE_SECONDS = env_float("BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS", 12.0, minimum=0.0)
+STATUS_SAMPLER_MAX_AGE_SECONDS = env_float("BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS", 120.0, minimum=0.0)
 STATUS_SAMPLER_BYPASS = env_bool("BDAG_STATUS_SAMPLER_BYPASS", False)
 HOST_PROFILE_OVERRIDE = os.environ.get("BDAG_HOST_PROFILE", "auto").strip().lower() or "auto"
 ADAPTIVE_CONCURRENCY_ENABLED = env_bool("BDAG_ADAPTIVE_CONCURRENCY_ENABLED", True)
@@ -4792,7 +4797,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "generated_epoch_seconds": seconds_since_epoch(),
             "fresh": True,
             "age_seconds": 0,
-            "stale_after_seconds": 30,
+            "stale_after_seconds": STATUS_PAYLOAD_STALE_AFTER_SECONDS,
             "stale_sources": ["docker"],
             "mode": "unknown",
             "can_mine": False,
@@ -5510,7 +5515,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "generated_epoch_seconds": seconds_since_epoch(),
         "fresh": True,
         "age_seconds": 0,
-        "stale_after_seconds": 30,
+        "stale_after_seconds": STATUS_PAYLOAD_STALE_AFTER_SECONDS,
         "stale_sources": [],
         "mode": mode,
         "can_mine": can_mine,

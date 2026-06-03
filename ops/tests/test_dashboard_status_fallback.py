@@ -112,6 +112,39 @@ class DashboardStatusFallbackTests(unittest.TestCase):
         self.assertIsInstance(payload["pool"], dict)
         self.assertTrue(payload["status_sampler"]["stale"])
 
+    def test_extended_sampler_window_serves_bounded_constrained_host_sample(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = self.configure_fast_path(tmp)
+            dashboard.SAMPLER_CACHE_SECONDS = 120.0
+            dashboard.STATUS_CACHE_SECONDS = 120.0
+            (runtime / "status-sampler.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "epoch": 940.0,
+                        "include_logs": True,
+                        "payload": {
+                            "generated_at": "2026-05-31T22:00:00+0000",
+                            "overall": "syncing",
+                            "fresh": True,
+                            "age_seconds": 0.0,
+                            "stale_after_seconds": 120,
+                            "failures": [],
+                            "warnings": [],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = dashboard.dashboard_status_payload()
+
+        self.assertEqual(payload["overall"], "syncing")
+        self.assertTrue(payload["fresh"])
+        self.assertEqual(payload["age_seconds"], 60.0)
+        self.assertTrue(payload["status_sampler"]["hit"])
+        self.assertEqual(payload["status_sampler"]["max_age_seconds"], 120.0)
+
     def test_api_status_rechecks_files_instead_of_serving_process_cached_ok(self) -> None:
         now = {"value": 1000.0}
 
