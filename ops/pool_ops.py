@@ -452,6 +452,23 @@ BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS = env_float(
     ADAPTIVE_CHAIN_RPC_WARN_MS,
     minimum=0.0,
 )
+BACKGROUND_MAINTENANCE_LAZY_TASKS = set(
+    split_env_list(
+        "BDAG_BACKGROUND_MAINTENANCE_LAZY_TASKS",
+        "rawdatadir_sidecar,rawdatadir_publish,ipfs_content_sidecar,ipfs_segment_writer",
+    )
+)
+BACKGROUND_MAINTENANCE_POOL_READY_TASKS = set(
+    split_env_list(
+        "BDAG_BACKGROUND_MAINTENANCE_POOL_READY_TASKS",
+        "rawdatadir_sidecar,rawdatadir_publish,ipfs_content_sidecar,ipfs_segment_writer",
+    )
+)
+BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN = env_float(
+    "BDAG_BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN",
+    1.25,
+    minimum=0.1,
+)
 
 
 def is_transient_template_tx_error_text(text: str) -> bool:
@@ -2838,6 +2855,47 @@ def parse_pool_log(log: str) -> dict[str, Any]:
         for event in submit_stall_events
         if event.get("action") == "invalidated"
     ]
+    expired_job_reconnect_lines = [
+        line
+        for line in recent
+        if "[RECOVERY] reconnecting stale miner" in line and "expired-job recovery attempts" in line
+    ]
+    last_expired_job_reconnect_line = expired_job_reconnect_lines[-1] if expired_job_reconnect_lines else None
+    last_expired_job_reconnect_epoch = _pool_log_epoch(last_expired_job_reconnect_line)
+    auth_after_expired_reconnect_lines = [
+        line
+        for line in recent
+        if last_expired_job_reconnect_epoch is not None
+        and AUTH_ACCEPT_RE.search(line)
+        and (_pool_log_epoch(line) or 0) >= last_expired_job_reconnect_epoch
+    ]
+    valid_share_after_expired_reconnect_lines = [
+        line
+        for line in recent
+        if last_expired_job_reconnect_epoch is not None
+        and VALID_SHARE_RE.search(line)
+        and (_pool_log_epoch(line) or 0) >= last_expired_job_reconnect_epoch
+    ]
+    timeout_after_expired_reconnect_lines = [
+        line
+        for line in recent
+        if last_expired_job_reconnect_epoch is not None
+        and "read error:" in line
+        and "i/o timeout" in line
+        and (_pool_log_epoch(line) or 0) >= last_expired_job_reconnect_epoch
+    ]
+    last_expired_job_reauthorize_line = (
+        auth_after_expired_reconnect_lines[-1] if auth_after_expired_reconnect_lines else None
+    )
+    last_expired_job_timeout_line = (
+        timeout_after_expired_reconnect_lines[-1] if timeout_after_expired_reconnect_lines else None
+    )
+    expired_job_reconnect_failed_no_share = bool(
+        last_expired_job_reconnect_line
+        and auth_after_expired_reconnect_lines
+        and not valid_share_after_expired_reconnect_lines
+        and timeout_after_expired_reconnect_lines
+    )
     block_submit_failure_count = len(block_submit_err_lines) + len(duplicate_block_lines) + len(stale_job_candidate_lines)
     accepted_job_expired_storm = bool(
         len(stale_submit_lines) >= POOL_ACCEPTED_JOB_EXPIRED_STORM_COUNT
@@ -2917,6 +2975,21 @@ def parse_pool_log(log: str) -> dict[str, Any]:
         "accepted_job_expired_storm": accepted_job_expired_storm,
         "accepted_job_expired_storm_threshold": POOL_ACCEPTED_JOB_EXPIRED_STORM_COUNT,
         "accepted_job_expired_storm_ratio": POOL_ACCEPTED_JOB_EXPIRED_STORM_RATIO,
+        "expired_job_reconnect_count": len(expired_job_reconnect_lines),
+        "expired_job_reconnect_failed_no_share": expired_job_reconnect_failed_no_share,
+        "expired_job_reconnect_failure_reason": (
+            "stale-client expired-job reconnect reauthorized, produced no valid shares, then timed out"
+            if expired_job_reconnect_failed_no_share
+            else ""
+        ),
+        "expired_job_reconnect_last_at": _parse_log_timestamp(last_expired_job_reconnect_line),
+        "expired_job_reconnect_last_age_seconds": _pool_log_age_seconds(last_expired_job_reconnect_line),
+        "expired_job_reconnect_last_line": last_expired_job_reconnect_line,
+        "expired_job_reauthorize_after_reconnect_count": len(auth_after_expired_reconnect_lines),
+        "expired_job_reauthorize_last_at": _parse_log_timestamp(last_expired_job_reauthorize_line),
+        "expired_job_client_timeout_after_reconnect_count": len(timeout_after_expired_reconnect_lines),
+        "expired_job_client_timeout_last_at": _parse_log_timestamp(last_expired_job_timeout_line),
+        "expired_job_client_timeout_last_line": last_expired_job_timeout_line,
         "job_notify_count": len(job_notify_lines),
         "head_change_count": len(head_change_lines),
         "block_submit_success_count": len(block_submit_ok_lines),
@@ -5177,6 +5250,11 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             f"({pool.get('stale_submit_count')} expired job submits vs "
             f"{pool.get('valid_share_count')} valid shares)"
         )
+    elif pool.get("expired_job_reconnect_failed_no_share"):
+        add_sync_warning(
+            "pool stale-client expired-job reconnect recovery failed: miners re-authorized, "
+            "no valid shares followed, and the client timed out"
+        )
     elif connected_miners > 0 and pool.get("stale_submit_count", 0) > max(10, pool.get("valid_share_count", 0) * 2):
         add_sync_warning("pool is mostly rejecting stale jobs instead of accepting fresh shares")
     if connected_miners > 0 and pool.get("pool_template_frozen"):
@@ -5248,6 +5326,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             or (pool.get("stale_job_candidate_storm") and connected_miners > 0)
             or (pool.get("block_submit_error_storm") and connected_miners > 0)
             or (pool.get("accepted_job_expired_storm") and connected_miners > 0)
+            or pool.get("expired_job_reconnect_failed_no_share")
             or (source_job_hard_degraded and connected_miners > 0)
             or (source_selected_backend_hard_degraded and connected_miners > 0)
             or (
@@ -5305,7 +5384,10 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         and any(containers.get(node, {}).get("running") for node in NODES)
     )
     no_miner_sync_only = bool(no_miner_node_only and sync_progress.get("status") == "syncing")
-    if no_miner_node_only:
+    no_miner_after_expired_reconnect_failure = bool(
+        no_miner_node_only and pool.get("expired_job_reconnect_failed_no_share")
+    )
+    if no_miner_node_only and not no_miner_after_expired_reconnect_failure:
         warnings = [
             item for item in warnings
             if not is_no_miner_sync_noise(item)
@@ -5330,6 +5412,11 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             add_sync_warning("no miners present; node is syncing and mining work remains idle")
         else:
             add_maintenance_warning("no miners present; pool services stay up but no mining work is sent")
+    elif no_miner_after_expired_reconnect_failure:
+        add_maintenance_warning(
+            "no miners are connected after failed expired-job reconnect recovery; "
+            "pool restart/reconnect repair is required"
+        )
     sync_progress_health = observe_sync_progress_health(sync_progress)
     active_sync_progress_nodes = sync_progress_health.get("active_nodes") or []
     if active_sync_progress_nodes:
@@ -5506,15 +5593,25 @@ def _sync_chain_rpc_latency_ms(sync_progress: dict[str, Any]) -> float | None:
     return max(values) if values else None
 
 
+def _background_task_selected(task: str, selected: set[str]) -> bool:
+    normalized = str(task or "").strip()
+    return "*" in selected or normalized in selected
+
+
 def background_maintenance_decision(task: str, status: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return whether optional background work should run on this tick."""
+    task_is_lazy = _background_task_selected(task, BACKGROUND_MAINTENANCE_LAZY_TASKS)
+    pool_ready_required = _background_task_selected(task, BACKGROUND_MAINTENANCE_POOL_READY_TASKS)
+    profile = host_runtime_profile()
     if not BACKGROUND_MAINTENANCE_BACKOFF_ENABLED:
         return {
             "allowed": True,
             "task": task,
             "reasons": [],
             "backoff_enabled": False,
-            "host_profile": host_runtime_profile(),
+            "host_profile": profile,
+            "task_is_lazy": task_is_lazy,
+            "pool_ready_required": pool_ready_required,
         }
 
     payload = status if isinstance(status, dict) else collect_status_cached(include_logs=False)
@@ -5558,6 +5655,25 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
             f"chain RPC latency {chain_rpc_latency_ms:.1f}ms >= {BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS:.1f}ms"
         )
 
+    loadavg_1m = safe_float(host_pressure.get("loadavg_1m"))
+    cpu_count = max(1, safe_int(profile.get("cpu_count"), os.cpu_count() or 1))
+    loadavg_warn = round(cpu_count * BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN, 2)
+    if task_is_lazy and loadavg_1m is not None and loadavg_1m >= loadavg_warn:
+        reasons.append(
+            f"host loadavg_1m {loadavg_1m:.2f} >= lazy threshold {loadavg_warn:.2f}"
+        )
+
+    if pool_ready_required:
+        overall = str(payload.get("overall") or "unknown").strip().lower()
+        mode = str(payload.get("mode") or "unknown").strip().lower()
+        if overall != "ok":
+            reasons.append(f"pool status is not ok: overall={overall}")
+        if mode in {"down", "degraded", "syncing", "unknown", "ready_no_miners"}:
+            reasons.append(f"pool mode is not ready for archive work: mode={mode}")
+        for key in ("can_mine", "can_accept_shares", "can_submit_blocks"):
+            if payload.get(key) is False:
+                reasons.append(f"pool {key}=false")
+
     return {
         "allowed": not reasons,
         "task": task,
@@ -5574,7 +5690,11 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
         "cpu_some_avg10_warn": BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN,
         "chain_rpc_latency_ms": chain_rpc_latency_ms,
         "chain_rpc_latency_warn_ms": BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS,
-        "host_profile": host_runtime_profile(),
+        "loadavg_1m": loadavg_1m,
+        "loadavg_1m_warn": loadavg_warn if task_is_lazy else None,
+        "task_is_lazy": task_is_lazy,
+        "pool_ready_required": pool_ready_required,
+        "host_profile": profile,
         "adaptive_concurrency": adaptive_worker_budgets({**host_pressure, "chain_rpc_latency_ms": chain_rpc_latency_ms}),
         "shared_status_cache": payload.get("shared_status_cache"),
     }
