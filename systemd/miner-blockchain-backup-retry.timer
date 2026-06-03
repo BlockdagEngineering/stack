@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for pending BDAG Miner blockchain backup every 15 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Unit=miner-blockchain-backup-retry.service
+
+[Install]
+WantedBy=timers.target
