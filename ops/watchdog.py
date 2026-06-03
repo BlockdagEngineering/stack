@@ -1432,6 +1432,13 @@ def check_once(
         bool(pool_health.get("accepted_job_expired_storm"))
         and int(miner_health.get("connected_count", 0) or 0) > 0
     )
+    connected_miner_count = int_or_none(
+        miner_health.get("connected_count_effective") or miner_health.get("connected_count")
+    ) or 0
+    expired_job_reconnect_failed = bool(
+        pool_health.get("expired_job_reconnect_failed_no_share")
+        and connected_miner_count == 0
+    )
     submit_path_recovery_recent = bool(pool_health.get("submit_stall_recovery_recent"))
     submit_path_self_healed_recently = bool(pool_health.get("submit_stall_self_healed_recently"))
     submit_path_recovery_age = pool_health.get("submit_stall_last_recovery_age_seconds")
@@ -1988,7 +1995,7 @@ def check_once(
                     "selected_backend": pool_health.get("selected_backend"),
                 },
             )
-    elif submit_path_zero_success_storm or accepted_job_expired_storm:
+    elif submit_path_zero_success_storm or accepted_job_expired_storm or expired_job_reconnect_failed:
         failure_count = int(pool_health.get("block_submit_failure_count") or 0)
         duplicate_count = int(pool_health.get("duplicate_block_count") or 0)
         submit_errors = int(pool_health.get("block_submit_error_count") or 0)
@@ -1996,7 +2003,17 @@ def check_once(
         stale_job_count = int(pool_health.get("stale_job_candidate_count") or 0)
         expired_submit_count = int(pool_health.get("stale_submit_count") or 0)
         valid_share_count = int(pool_health.get("valid_share_count") or 0)
-        if accepted_job_expired_storm:
+        if expired_job_reconnect_failed:
+            reason = (
+                "pool expired-job stale-client reconnect recovery exhausted: "
+                "a miner re-authorized after forced reconnect, produced no valid shares, "
+                "then timed out leaving zero active Stratum connections "
+                f"(reconnects={pool_health.get('expired_job_reconnect_count')}, "
+                f"reauthorize_after_reconnect={pool_health.get('expired_job_reauthorize_after_reconnect_count')}, "
+                f"timeouts_after_reconnect={pool_health.get('expired_job_client_timeout_after_reconnect_count')}, "
+                f"last_timeout={pool_health.get('expired_job_client_timeout_last_at')})"
+            )
+        elif accepted_job_expired_storm:
             reason = (
                 "pool acceptedJobs cache is rejecting expired jobs while miners are connected "
                 f"(expired_job_submits={expired_submit_count}, valid_shares={valid_share_count}, "
@@ -2019,17 +2036,26 @@ def check_once(
         state["consecutive_node_orphan_storm"] = 0
         state["consecutive_share_stalls"] = 0
         state["consecutive_submit_path_stalls"] = int(state.get("consecutive_submit_path_stalls", 0) or 0) + 1
-        state["last_status"] = "pool_accepted_job_expired_storm" if accepted_job_expired_storm else "pool_submit_path_stall"
+        state["last_status"] = (
+            "pool_expired_job_reconnect_exhausted"
+            if expired_job_reconnect_failed
+            else ("pool_accepted_job_expired_storm" if accepted_job_expired_storm else "pool_submit_path_stall")
+        )
         state["last_failures"] = []
         state["last_share_warnings"] = [reason]
         log(f"pool_submit_path_stall consecutive={state['consecutive_submit_path_stalls']} reason={reason}")
         record_efficiency_event(
-            "pool_accepted_job_expired_storm" if accepted_job_expired_storm else "pool_submit_path_stall",
+            (
+                "pool_expired_job_reconnect_exhausted"
+                if expired_job_reconnect_failed
+                else ("pool_accepted_job_expired_storm" if accepted_job_expired_storm else "pool_submit_path_stall")
+            ),
             "critical",
             reason,
             {
-                "connected_miners": miner_health.get("connected_count"),
+                "connected_miners": connected_miner_count,
                 "accepted_job_expired_storm": accepted_job_expired_storm,
+                "expired_job_reconnect_failed": expired_job_reconnect_failed,
                 "expired_job_submit_count": expired_submit_count,
                 "valid_share_count": valid_share_count,
                 "block_submit_failure_count": failure_count,
@@ -2038,6 +2064,10 @@ def check_once(
                 "tip_overdue_count": overdue_count,
                 "stale_job_candidate_count": stale_job_count,
                 "pool_started_age_seconds": pool_started_age_seconds,
+                "expired_job_reconnect_last_at": pool_health.get("expired_job_reconnect_last_at"),
+                "expired_job_reconnect_last_line": pool_health.get("expired_job_reconnect_last_line"),
+                "expired_job_client_timeout_last_at": pool_health.get("expired_job_client_timeout_last_at"),
+                "expired_job_client_timeout_last_line": pool_health.get("expired_job_client_timeout_last_line"),
             },
         )
         if repair:
@@ -2114,11 +2144,12 @@ def check_once(
                     {"cooldown_remaining_seconds": cooldown_remaining, "reason": reason},
                 )
             else:
-                prefix = (
-                    "pool acceptedJobs expired storm: "
-                    if accepted_job_expired_storm
-                    else "pool submit-path zero-success storm: "
-                )
+                if expired_job_reconnect_failed:
+                    prefix = "pool expired-job reconnect exhausted: "
+                elif accepted_job_expired_storm:
+                    prefix = "pool acceptedJobs expired storm: "
+                else:
+                    prefix = "pool submit-path zero-success storm: "
                 ok = run_pool_restart(prefix + reason)
                 state["last_repair_at"] = int(time.time())
                 state["last_share_repair_at"] = int(time.time())

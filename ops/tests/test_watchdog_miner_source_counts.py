@@ -3,6 +3,7 @@
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 OPS_DIR = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OPS_DIR))
@@ -133,6 +134,72 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         since = watchdog.update_useful_work_stall_since(state, [], [], self.now)
 
         self.assertEqual({}, since)
+
+    def test_failed_expired_job_reconnect_without_clients_restarts_pool(self) -> None:
+        state: dict[str, object] = {}
+        events: list[tuple[str, str, str, dict[str, object]]] = []
+        restarts: list[str] = []
+        written: list[dict[str, object]] = []
+        status = {
+            "failures": [],
+            "stack_failures": [],
+            "miner_failures": [],
+            "mining_address": ADDRESS,
+            "nodes": {},
+            "sync_health": {},
+            "sync_progress": {"status": "synced", "remaining_blocks": 0, "nodes": {}},
+            "pool_health": {
+                "expired_job_reconnect_failed_no_share": True,
+                "expired_job_reconnect_count": 14,
+                "expired_job_reauthorize_after_reconnect_count": 14,
+                "expired_job_client_timeout_after_reconnect_count": 1,
+                "expired_job_client_timeout_last_at": "2026-06-03T01:08:08",
+                "expired_job_client_timeout_last_line": "2026/06/03 01:08:08 [192.168.1.16:33726] read error: i/o timeout",
+                "stale_submit_count": 180,
+                "valid_share_count": 0,
+            },
+            "miner_health": {
+                "connected_count": 0,
+                "connected_count_effective": 0,
+                "miners": [],
+            },
+        }
+
+        def record(event_type: str, severity: str, message: str, details=None) -> None:
+            events.append((event_type, severity, message, details or {}))
+
+        with mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_status_cached", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "constrained_fastartifact_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", side_effect=record
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_pool_restart", side_effect=lambda reason: restarts.append(reason) or True
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("pool_expired_job_reconnect_exhausted", result["watchdog_state"]["last_status"])
+        self.assertEqual(1, len(restarts))
+        self.assertIn("pool expired-job reconnect exhausted", restarts[0])
+        self.assertEqual("pool_expired_job_reconnect_exhausted", events[0][0])
+        self.assertEqual("critical", events[0][1])
+        self.assertTrue(events[0][3]["expired_job_reconnect_failed"])
+        self.assertTrue(written)
 
 
 if __name__ == "__main__":
