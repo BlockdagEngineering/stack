@@ -306,10 +306,14 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             "template_conversion_stall": {},
             "loss_ledger": {},
         }
+        stale_lane_failure = (
+            "stale-lane mac=38:1f:8d:fb:ea:fc observed_ip=192.168.1.103 "
+            "ASIC API/health check is unreachable and no recent pool submissions were seen"
+        )
         pool_ops.collect_miner_health = lambda: {
-            "managed_count": 1,
+            "managed_count": 2,
             "connected_count": 0,
-            "failures": [],
+            "failures": [stale_lane_failure],
             "warnings": [],
             "miners": [],
         }
@@ -354,6 +358,10 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertEqual(status["mode"], "mining")
         self.assertTrue(status["can_submit_blocks"])
         self.assertTrue(status["can_mine"])
+        self.assertEqual(status["blocking_failures"], [])
+        self.assertEqual(status["blocking_miner_failures"], [])
+        self.assertEqual(status["miner_failures"], [stale_lane_failure])
+        self.assertEqual(status["advisory_miner_failures"], [stale_lane_failure])
         self.assertEqual(status["sync_warnings"], [])
         self.assertFalse(status["pool_health"]["needs_fast_repair"])
         self.assertFalse(status["sync_health"]["needs_fast_sync_repair"])
@@ -361,6 +369,29 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         joined_maintenance = "\n".join(status["maintenance_warnings"])
         self.assertIn("accepted block submission remains fresh", joined_maintenance)
         self.assertIn("transient initial-download", joined_maintenance)
+        self.assertIn("miner repair required but active mining continues", joined_maintenance)
+
+    def test_miner_failures_block_when_no_active_mining_evidence(self) -> None:
+        self.assertTrue(
+            pool_ops.miner_failures_block_stack(
+                ["miner is down"],
+                connected_miners=0,
+                pool_has_recent_share_activity=False,
+                pool_has_recent_paid_work=False,
+                source_job_health_ok=None,
+            )
+        )
+
+    def test_miner_failures_are_advisory_with_active_mining_evidence(self) -> None:
+        self.assertFalse(
+            pool_ops.miner_failures_block_stack(
+                ["one managed miner is down"],
+                connected_miners=3,
+                pool_has_recent_share_activity=True,
+                pool_has_recent_paid_work=False,
+                source_job_health_ok=False,
+            )
+        )
 
 
 class EffectiveMinerDemandTests(unittest.TestCase):
