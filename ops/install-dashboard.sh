@@ -129,6 +129,8 @@ BDAG_POOL_DB_NAME=pool
 BDAG_NODE_MODE=single
 BDAG_NODE_SERVICES=node
 BDAG_STACK_SERVICES=postgres,node,pool
+BDAG_NODE_RPC_URLS=node=http://127.0.0.1:38131
+BDAG_GLOBAL_CHAIN_RPC_URLS=node=http://127.0.0.1:38131
 BDAG_ENABLE_NODE_MINING=0
 SYNC_SOURCE_NODE=0
 BDAG_NO_FASTSYNC_SERVE=auto
@@ -220,6 +222,10 @@ migrate_legacy_env_value BDAG_POOL_CONTAINERS asic-pool pool
 migrate_legacy_env_value BDAG_POOL_DB_CONTAINER pool-db postgres
 migrate_legacy_env_value BDAG_NODE_SERVICES bdag-miner-node-1 node
 migrate_legacy_env_value BDAG_STACK_SERVICES "pool-db,bdag-miner-node-1,asic-pool" "postgres,node,pool"
+migrate_legacy_env_value BDAG_NODE_RPC_URLS "bdag-miner-node-1=http://bdag-miner-node-1:38131" "node=http://127.0.0.1:38131"
+migrate_legacy_env_value BDAG_NODE_RPC_URLS "node=http://node:38131" "node=http://127.0.0.1:38131"
+migrate_legacy_env_value BDAG_GLOBAL_CHAIN_RPC_URLS "bdag-miner-node-1=http://bdag-miner-node-1:38131" "node=http://127.0.0.1:38131"
+migrate_legacy_env_value BDAG_GLOBAL_CHAIN_RPC_URLS "node=http://node:38131" "node=http://127.0.0.1:38131"
 
 ensure_env_value BDAG_PROJECT_ROOT "$PROJECT_ROOT"
 ensure_env_value BDAG_RUNTIME_DIR "$RUNTIME_DIR"
@@ -230,6 +236,8 @@ ensure_env_value BDAG_POOL_DB_CONTAINER postgres
 ensure_env_value BDAG_NODE_MODE single
 ensure_env_value BDAG_NODE_SERVICES node
 ensure_env_value BDAG_STACK_SERVICES "postgres,node,pool"
+ensure_env_value BDAG_NODE_RPC_URLS "node=http://127.0.0.1:38131"
+ensure_env_value BDAG_GLOBAL_CHAIN_RPC_URLS "node=http://127.0.0.1:38131"
 ensure_env_value BDAG_ENABLE_NODE_MINING 0
 ensure_env_value SYNC_SOURCE_NODE 0
 ensure_env_value BDAG_NO_FASTSYNC_SERVE auto
