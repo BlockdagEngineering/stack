@@ -71,7 +71,7 @@ def main() -> None:
         "--exclude=/peerstore*",
         "seal_rawdatadir_sidecar_content.py",
         "BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE",
-        "BDAG_NODE_SERVICES:-bdag-miner-node-1",
+        "BDAG_NODE_SERVICES:-node",
     ):
         assert_contains(sidecar, needle, SIDECAR)
 
@@ -87,7 +87,7 @@ def main() -> None:
         "BDAG_RAWDATADIR_FINALIZE=1",
         "raw datadir artifact publish requires",
         "BDAG_RAWDATADIR_SOURCE_DIR",
-        "BDAG_NODE_SERVICES:-bdag-miner-node-1",
+        "BDAG_NODE_SERVICES:-node",
         "background maintenance backoff active",
     ):
         assert_contains(publish, needle, PUBLISH)

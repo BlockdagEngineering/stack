@@ -46,7 +46,8 @@ def main() -> int:
 
     os.environ.setdefault("BDAG_PROJECT_ROOT", str(ROOT))
     os.environ.setdefault("BDAG_RUNTIME_DIR", str(ROOT / "ops" / "runtime"))
-    os.environ.setdefault("BDAG_POOL_ENV_FILE", str(ROOT / "asic-pool" / ".env"))
+    default_env_file = ROOT / ".env" if (ROOT / ".env").exists() else ROOT / "asic-pool" / ".env"
+    os.environ.setdefault("BDAG_POOL_ENV_FILE", str(default_env_file))
 
     print(f"Scanning {args.scan_target} for BlockDAG ASIC web APIs...")
     scan = scan_miners(args.scan_target)

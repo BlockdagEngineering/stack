@@ -57,6 +57,20 @@ nodeworker_arg_value() {
   return 1
 }
 
+nodeworker_arg_present() {
+  local key="$1"
+  shift
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --"$key"|--"$key"=*)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
 node_arg_value() {
   local key="$1"
   local node_args="$2"
@@ -631,6 +645,12 @@ if [ -n "${NODE_ARGS_APPEND:-}" ]; then
   if [ "${appended}" -eq 0 ]; then
     args+=("--node-args=${NODE_ARGS_APPEND}")
   fi
+  set -- "${args[@]}"
+fi
+
+if [ "$(basename "${1:-}")" = "nodeworker" ] && ! nodeworker_arg_present "health.liveness-timeout" "$@"; then
+  args=("$@")
+  args+=("--health.liveness-timeout=${BDAG_NODEWORKER_LIVENESS_TIMEOUT:-5m}")
   set -- "${args[@]}"
 fi
 

@@ -53,6 +53,7 @@ services:
   pool-db:
     <<: *pool-critical
     image: postgres:15-bookworm
+    container_name: postgres
     restart: unless-stopped
     logging: *mining-logging
     tmpfs:
@@ -80,6 +81,7 @@ services:
   node:
     <<: *node-critical
     platform: ${DOCKER_PLATFORM:-linux/amd64}
+    container_name: node
     build:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
@@ -146,6 +148,7 @@ services:
       BDAG_FASTSYNC_PEERS: ${BDAG_FASTSYNC_PEERS:-}
       BDAG_FASTSYNC_PREPROCESS_WORKERS: ${BDAG_FASTSYNC_PREPROCESS_WORKERS:-1}
       BDAG_ENTRYPOINT_CHOWN_MODE: ${BDAG_ENTRYPOINT_CHOWN_MODE:-needed}
+      BDAG_NODEWORKER_LIVENESS_TIMEOUT: ${BDAG_NODEWORKER_LIVENESS_TIMEOUT:-5m}
     volumes:
     # Note: The default behaviour is to keep any DB state from a previous run, 
     # to prevent unintentional loss of synced chain data.
@@ -164,6 +167,7 @@ services:
   pool:
     <<: *pool-critical
     platform: ${DOCKER_PLATFORM:-linux/amd64}
+    container_name: pool
     build:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
@@ -229,6 +233,7 @@ services:
   dashboard:
     <<: *dashboard-low
     platform: ${DOCKER_PLATFORM:-linux/amd64}
+    container_name: dashboard
     build:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
@@ -251,23 +256,23 @@ services:
       TMPDIR: /tmp
       TMP: /tmp
       TEMP: /tmp
-      # The canonical pool-dashboard code defaults to the standalone
-      # two-node runtime names; this stack uses node/pool/pool-db.
-      BDAG_NODE_SERVICES: ${BDAG_DASHBOARD_NODE_SERVICES:-node}
-      BDAG_STACK_SERVICES: ${BDAG_DASHBOARD_STACK_SERVICES:-pool-db,node,pool}
-      BDAG_POOL_CONTAINER: ${BDAG_DASHBOARD_POOL_CONTAINER:-pool}
-      BDAG_POOL_CONTAINERS: ${BDAG_DASHBOARD_POOL_CONTAINERS:-pool}
-      BDAG_POOL_DB_CONTAINER: ${BDAG_DASHBOARD_POOL_DB_CONTAINER:-pool-db}
+      # The dashboard should observe current container names; watchdog code keeps
+      # legacy Compose service-label fallback for migrated installs.
+      BDAG_NODE_SERVICES: node
+      BDAG_STACK_SERVICES: postgres,node,pool
+      BDAG_POOL_CONTAINER: pool
+      BDAG_POOL_CONTAINERS: pool
+      BDAG_POOL_DB_CONTAINER: postgres
       BDAG_POOL_DB_USER: ${POSTGRES_USER:-bdag_pool}
       BDAG_POOL_DB_NAME: ${POSTGRES_DB:-bdagpool}
-      BDAG_POOL_METRICS_PORT: ${BDAG_DASHBOARD_POOL_METRICS_PORT:-9090}
-      BDAG_NODE_RPC_URLS: ${BDAG_DASHBOARD_NODE_RPC_URLS:-node=http://node:38131}
-      BDAG_GLOBAL_CHAIN_RPC_URLS: ${BDAG_DASHBOARD_GLOBAL_CHAIN_RPC_URLS:-node=http://node:38131}
-      BDAG_RPC_URL: ${BDAG_DASHBOARD_RPC_URL:-http://node:38131}
+      BDAG_POOL_METRICS_PORT: 9090
+      BDAG_NODE_RPC_URLS: node=http://node:38131
+      BDAG_GLOBAL_CHAIN_RPC_URLS: node=http://node:38131
+      BDAG_RPC_URL: http://node:38131
       # Must match node.conf rpcuser / rpcpass (same as pool service).
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
-      DASHBOARD_EVM_RPC_URL: ${BDAG_DASHBOARD_EVM_RPC_URL:-http://node:18545}
+      DASHBOARD_EVM_RPC_URL: http://node:18545
       DASHBOARD_LISTEN: ${DASHBOARD_LISTEN:-0.0.0.0:9280}
       DASHBOARD_RPC_POLL_SECONDS: 5
       DASHBOARD_MAX_POINTS: 120
@@ -287,6 +292,7 @@ services:
   # --------------------------------------------------------------------------
   cpu-miner:
     platform: ${DOCKER_PLATFORM:-linux/amd64}
+    container_name: cpu-miner
     profiles: [miner]
     build:
       context: .

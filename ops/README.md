@@ -29,7 +29,7 @@ The dashboard also watches for pool share stalls. If miners are connected but th
 
 The watchdog also has a fast-sync recovery path. If real syncing warnings persist for `BDAG_WATCHDOG_SYNCING_THRESHOLD` checks, default `5`, it runs a normal stack restart to force fresh peer/RPC connections and apply the current config. This restart is cooldown-limited by `BDAG_SYNCING_RESTART_COOLDOWN`, default `900` seconds, so it cannot loop continuously.
 
-The persisted peer list in `asic-pool/.env` should contain only valid multiaddrs. Removing a bad peer from `.env` takes effect on the next controlled node restart; it does not interrupt currently running miners by itself.
+The persisted peer list in `.env` should contain only valid multiaddrs. Removing a bad peer from `.env` takes effect on the next controlled node restart; it does not interrupt currently running miners by itself.
 
 The pool is configured to use the local node service directly as its DAG RPC endpoint on the next stack start. The dashboard compares the local chain view against external references where configured.
 
@@ -42,7 +42,7 @@ ops/runtime/miner-backups/
 Default miner settings are derived from the running pool:
 
 - Pool URL: `stratum+tcp://<pool-lan-ip>:3334`
-- Worker/wallet: the `MINING_ADDRESS` in `asic-pool/.env`
+- Worker/wallet: the `MINING_ADDRESS` in `.env`
 - Pool password: `1234`
 
 Managed miners are stored in:
@@ -116,7 +116,7 @@ watchdog, sync coordinator, P2P guard, and startup checks consume it through
 explicit live diagnostics or hard repair paths that must bypass cached state.
 
 The sampler is also the backstop for the mining imperative. If the user-systemd
-guard units drift disabled, it re-enables them. If `asic-pool` is stopped while
+guard units drift disabled, it re-enables them. If `pool` is stopped while
 miner demand is visible, an ASIC LAN neighbor is present, or the chain is synced
 and ready to mine, it starts the pool container without recreating dependencies.
 Set `BDAG_MINING_IMPERATIVE_REPAIR_ENABLED=0` only for an intentional maintenance
@@ -323,7 +323,7 @@ Avoid exposing the dashboard directly to the public internet.
 
 The dashboard is now configurable through `ops/runtime/ops.env`, so it can be copied to another pool host or run as multiple named instances on one management machine.
 
-Create a clean bundle that excludes runtime logs, passwords, chain data, database data, snapshots, and `asic-pool/.env`:
+Create a clean bundle that excludes runtime logs, passwords, chain data, database data, snapshots, `.env`, and `asic-pool/.env`:
 
 ```bash
 ./ops/package-dashboard.sh

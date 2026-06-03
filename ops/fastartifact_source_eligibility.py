@@ -371,8 +371,8 @@ def total_memory_bytes() -> int | None:
 
 
 def active_node_service(env: dict[str, str]) -> str:
-    services = split_csv(env.get("BDAG_NODE_SERVICES", "bdag-miner-node-1"))
-    return services[0] if services else "bdag-miner-node-1"
+    services = split_csv(env.get("BDAG_NODE_SERVICES", "node"))
+    return services[0] if services else "node"
 
 
 def env_path(env: dict[str, str], key: str, default: str | Path) -> Path:
@@ -383,6 +383,8 @@ def env_path(env: dict[str, str], key: str, default: str | Path) -> Path:
 def node_data_dir(env: dict[str, str], service: str) -> Path:
     if service.endswith("node-1") or service == "node1":
         return env_path(env, "BDAG_NODE1_DATA_DIR", "./data/node1")
+    if service == "node":
+        return env_path(env, "BDAG_NODE_DATA_DIR", env.get("BDAG_NODE1_DATA_DIR") or env.get("BDAG_DATA_DIR") or "./data/node")
     return env_path(env, "BDAG_NODE_DATA_DIR", env.get("BDAG_DATA_DIR") or "./data/node")
 
 

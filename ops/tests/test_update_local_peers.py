@@ -66,10 +66,10 @@ class UpdateLocalPeersActiveMiningGuardTest(unittest.TestCase):
             ):
                 self.assertEqual(update_local_peers.configured_active_nodes({}), [])
 
-    def test_missing_node_services_keeps_legacy_default(self) -> None:
+    def test_missing_node_services_uses_current_single_node_default(self) -> None:
         with mock.patch.dict("os.environ", {}, clear=True):
             with mock.patch.object(update_local_peers, "read_env_values", return_value={}):
-                self.assertEqual(update_local_peers.configured_active_nodes({}), list(update_local_peers.NODE_SPECS))
+                self.assertEqual(update_local_peers.configured_active_nodes({}), ["node"])
 
 
 if __name__ == "__main__":

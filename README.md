@@ -208,7 +208,9 @@ No-miner deployments are sync-only by default: `BDAG_ENABLE_NODE_MINING=0`,
 mining/template flags only when real miners are attached. The dashboard,
 watchdog, stack sentinel, P2P guard, peer refresh, chain restore guard, and
 snapshot timers are installed by `ops/install-dashboard.sh` unless explicitly
-disabled.
+disabled. Runtime tooling defaults to the current single-node stack names
+`node`, `pool`, and `postgres`, while retaining compatibility with legacy
+Compose labels during migration.
 
 Dashboard block height is sourced from chain RPC `getBlockCount`; template
 height, logs, and main-order values are shown only as

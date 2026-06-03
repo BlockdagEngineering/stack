@@ -57,7 +57,7 @@ def build_state() -> dict[str, Any]:
     status = collect_status_cached(include_logs=False)
     nodes = status.get("nodes") if isinstance(status, dict) else {}
     sync_progress = status.get("sync_progress") if isinstance(status, dict) else {}
-    active_node = NODES[0] if NODES else "bdag-miner-node-1"
+    active_node = NODES[0] if NODES else "node"
     node_info = nodes.get(active_node, {}) if isinstance(nodes, dict) else {}
     remaining = safe_int(node_info.get("remaining_blocks"), safe_int(sync_progress.get("remaining_blocks") if isinstance(sync_progress, dict) else 0))
     state = {
