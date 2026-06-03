@@ -9,6 +9,12 @@ Environment=BDAG_WATCHDOG_INTERVAL=30
 Environment=BDAG_WATCHDOG_FAILURE_THRESHOLD=3
 Environment=BDAG_CLEAN_RESTORE_COOLDOWN=1800
 Environment=BDAG_POOL_ACTIVITY_LOG_LINES=1200
+Environment=BDAG_NODE_SERVICES=node
+Environment=BDAG_STACK_SERVICES=postgres,node,pool
+Environment=BDAG_POOL_CONTAINER=pool
+Environment=BDAG_POOL_DB_CONTAINER=postgres
+Environment=BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS=120
+Environment=BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=120
 EnvironmentFile=-/home/jeremy/blockdag-asic-pool/ops/runtime/ops.env
 Nice=5
 IOSchedulingClass=best-effort

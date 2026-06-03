@@ -8,6 +8,15 @@ WorkingDirectory=/home/jeremy/blockdag-asic-pool
 Environment=BDAG_DASHBOARD_BIND=127.0.0.1
 Environment=BDAG_DASHBOARD_PORT=8088
 Environment=BDAG_POOL_ACTIVITY_LOG_LINES=1200
+Environment=BDAG_NODE_SERVICES=node
+Environment=BDAG_STACK_SERVICES=postgres,node,pool
+Environment=BDAG_POOL_CONTAINER=pool
+Environment=BDAG_POOL_DB_CONTAINER=postgres
+Environment=BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK=0
+Environment=BDAG_DASHBOARD_STATUS_CACHE_SECONDS=120
+Environment=BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS=120
+Environment=BDAG_DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS=60
+Environment=BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=120
 EnvironmentFile=-/home/jeremy/blockdag-asic-pool/ops/runtime/ops.env
 Nice=10
 IOSchedulingClass=best-effort
