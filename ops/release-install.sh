@@ -101,12 +101,15 @@ set_env_value() {
 
 configure_active_node_env() {
   set_env_value .env COMPOSE_PROFILES ""
-  set_env_value .env BDAG_NODE_SERVICES "bdag-miner-node-1"
-  set_env_value .env BDAG_STACK_SERVICES "pool-db,bdag-miner-node-1,asic-pool"
-  set_env_value .env POOL_RPC_BACKENDS "node1=http://bdag-miner-node-1:38131"
+  set_env_value .env BDAG_POOL_CONTAINER "pool"
+  set_env_value .env BDAG_POOL_CONTAINERS "pool"
+  set_env_value .env BDAG_POOL_DB_CONTAINER "postgres"
+  set_env_value .env BDAG_NODE_SERVICES "node"
+  set_env_value .env BDAG_STACK_SERVICES "postgres,node,pool"
+  set_env_value .env POOL_RPC_BACKENDS "node=http://node:38131"
   set_env_value .env POOL_SUBMIT_RPC_URLS ""
-  set_env_value .env WALLET_RPC_URL "http://bdag-miner-node-1:18545"
-  set_env_value .env WALLET_RPC_URLS "http://bdag-miner-node-1:18545"
+  set_env_value .env WALLET_RPC_URL "http://node:18545"
+  set_env_value .env WALLET_RPC_URLS "http://node:18545"
 }
 
 configure_node_mining_env() {
@@ -412,7 +415,7 @@ configure_env() {
   set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE "./data-restore/rawdatadir-sidecar-content"
   set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP 2
   set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED 1
-  set_env_value .env BDAG_RAWDATADIR_ACTIVE_SERVICE "bdag-miner-node-1"
+  set_env_value .env BDAG_RAWDATADIR_ACTIVE_SERVICE "node"
   set_env_value .env BDAG_RAWDATADIR_FINALIZE 0
   set_env_value .env BDAG_RAWDATADIR_PEERS ""
   set_env_value .env BDAG_RAWDATADIR_TRUSTED_SIGNERS ""

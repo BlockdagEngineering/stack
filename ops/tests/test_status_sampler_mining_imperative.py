@@ -61,7 +61,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         return {
             "overall": "syncing" if sync_status != "synced" else "ok",
             "sync_warnings": [] if sync_status == "synced" else ["behind"],
-            "containers": {"asic-pool": {"running": False}},
+            "containers": {status_sampler.POOL_CONTAINER: {"running": False}},
             "sync_progress": {
                 "status": sync_status,
                 "remaining_blocks": remaining_blocks,
@@ -86,8 +86,8 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         repair = status_sampler.mining_imperative_repair(self.stopped_pool_payload())
 
-        self.assertIn(["docker", "start", "asic-pool"], commands)
-        self.assertIn("started_container:asic-pool", repair["actions"])
+        self.assertIn(["docker", "start", status_sampler.POOL_CONTAINER], commands)
+        self.assertIn(f"started_container:{status_sampler.POOL_CONTAINER}", repair["actions"])
 
     def test_compose_command_uses_stable_project_name_for_symlinked_runtime(self) -> None:
         os.environ["BDAG_PROJECT_ROOT"] = "/home/jeremy/blockdag-asic-pool"
@@ -106,8 +106,8 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         repair = status_sampler.mining_imperative_repair(self.stopped_pool_payload(sync_status="synced", remaining_blocks=0))
 
-        self.assertIn(["docker", "start", "asic-pool"], commands)
-        self.assertIn("started_container:asic-pool", repair["actions"])
+        self.assertIn(["docker", "start", status_sampler.POOL_CONTAINER], commands)
+        self.assertIn(f"started_container:{status_sampler.POOL_CONTAINER}", repair["actions"])
 
     def test_does_not_start_pool_without_miner_demand_or_ready_chain(self) -> None:
         commands = []
@@ -118,7 +118,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         repair = status_sampler.mining_imperative_repair(self.stopped_pool_payload(sync_status="syncing", remaining_blocks=12))
 
-        self.assertNotIn(["docker", "start", "asic-pool"], commands)
+        self.assertNotIn(["docker", "start", status_sampler.POOL_CONTAINER], commands)
         self.assertEqual(repair["actions"], [])
 
     def test_reenables_guard_timer_when_it_drifts_disabled(self) -> None:
@@ -135,7 +135,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         status_sampler.run = fake_run
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
-        payload["containers"]["asic-pool"]["running"] = True
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
 
         repair = status_sampler.mining_imperative_repair(payload)
 
@@ -145,7 +145,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
     def test_repairs_missing_tracked_miners_from_pool_activity(self) -> None:
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
-        payload["containers"]["asic-pool"]["running"] = True
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 0, "connected_count": 1, "managed_count": 0}
         activity = {"miners": [{"ip": "172.18.0.1"}], "unattributed_valid_shares": 8, "unattributed_blocks": 1}
         status_sampler.collect_pool_activity = lambda lines=0: activity
@@ -168,7 +168,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["NODE_ARGS_APPEND"] = "--fastartifactsync"
         os.environ["BDAG_NODE_SERVICES"] = "bdag-miner-node-1"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
-        payload["containers"]["asic-pool"]["running"] = True
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
 
         def fake_set_runtime_env(key: str, value: str):
@@ -203,7 +203,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["BDAG_NODE_MINING_ARGS"] = ""
         os.environ["BDAG_NODE_SERVICES"] = "bdag-miner-node-1"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
-        payload["containers"]["asic-pool"]["running"] = True
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
 
         def fake_set_runtime_env(key: str, value: str):
@@ -241,7 +241,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         )
         os.environ["BDAG_NODE_SERVICES"] = "bdag-miner-node-1"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
-        payload["containers"]["asic-pool"]["running"] = True
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
 
         def fake_set_runtime_env(key: str, value: str):
@@ -271,7 +271,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         )
         os.environ["BDAG_NODE_SERVICES"] = "bdag-miner-node-1"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
-        payload["containers"]["asic-pool"]["running"] = True
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
 
         def fake_set_runtime_env(key: str, value: str):
@@ -304,7 +304,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["MINING_ADDRESS"] = "0x0000000000000000000000000000000000000000"
         os.environ["BDAG_ENABLE_NODE_MINING"] = "0"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
-        payload["containers"]["asic-pool"]["running"] = True
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
         status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
 
@@ -333,7 +333,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["BOOTSTRAP_PEER_ADDRESSES"] = f"/ip4/10.0.0.2/tcp/8151/p2p/{peer_id},/ip4/4.4.4.4/tcp/8150/p2p/good"
         os.environ["BDAG_NODE_SERVICES"] = "bdag-miner-node-1"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
-        payload["containers"]["asic-pool"]["running"] = True
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
         payload["nodes"] = {
             "bdag-miner-node-1": {

@@ -18,15 +18,18 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-ENV_FILE = PROJECT_ROOT / "asic-pool" / ".env"
+ENV_FILE = PROJECT_ROOT / ".env" if (PROJECT_ROOT / ".env").exists() else PROJECT_ROOT / "asic-pool" / ".env"
 RUNTIME_DIR = Path(os.environ.get("BDAG_RUNTIME_DIR", PROJECT_ROOT / "ops" / "runtime"))
 RUNTIME_ENV_FILE = RUNTIME_DIR / "ops.env"
 SYNC_COORDINATOR_STATE_FILE = RUNTIME_DIR / "sync-coordinator-state.json"
 DEFERRED_APPLY_FILE = RUNTIME_DIR / "local-peers-deferred-apply"
+DEFAULT_ACTIVE_NODE_SERVICES = ["node"]
 NODE_SPECS = {
+    "node": {"port": 8151, "env": "NODE1_PEER_ADDRESSES"},
     "bdag-miner-node-1": {"port": 8151, "env": "NODE1_PEER_ADDRESSES"},
 }
 NODE_PEER_ID_ENV = {
+    "node": ("BDAG_LOCAL_NODE_PEER_ID", "BDAG_NODE_PEER_ID", "BDAG_LOCAL_NODE1_PEER_ID", "BDAG_NODE1_PEER_ID"),
     "bdag-miner-node-1": ("BDAG_LOCAL_NODE1_PEER_ID", "BDAG_NODE1_PEER_ID"),
 }
 PEER_RE = re.compile(r"Node started p2p server.*?/p2p/([A-Za-z0-9]+)")
@@ -546,7 +549,8 @@ def without_inactive_local_node_peers(peers: list[str], active_nodes: list[str],
     if not inactive_nodes:
         return peers
     local_hosts = set(local_ipv4_addresses()) | {host_ip, "127.0.0.1", "localhost"}
-    inactive_ports = {NODE_SPECS[node]["port"] for node in inactive_nodes}
+    active_ports = {NODE_SPECS[node]["port"] for node in active_nodes if node in NODE_SPECS}
+    inactive_ports = {NODE_SPECS[node]["port"] for node in inactive_nodes if NODE_SPECS[node]["port"] not in active_ports}
     inactive_dns_hosts = set(inactive_nodes)
     result: list[str] = []
     for peer in peers:
@@ -624,7 +628,7 @@ def configured_active_nodes(pool_values: dict[str, str]) -> list[str]:
         or ""
     )
     if not raw:
-        return list(NODE_SPECS)
+        return list(DEFAULT_ACTIVE_NODE_SERVICES)
     nodes = [item.strip() for item in raw.split(",") if item.strip()]
     return [node for node in nodes if node in NODE_SPECS]
 
@@ -669,11 +673,12 @@ def main() -> int:
         if node in peers
     }
     updates: dict[str, str] = {}
-    if "bdag-miner-node-1" in active_nodes:
+    primary_node = "node" if "node" in active_nodes else "bdag-miner-node-1" if "bdag-miner-node-1" in active_nodes else ""
+    if primary_node:
         node1_peers = without_inactive_local_node_peers(
             without_peer_ids(
                 list(candidate_peers),
-                inactive_local_peer_ids | {peers.get("bdag-miner-node-1", "")},
+                inactive_local_peer_ids | {peers.get(primary_node, "")},
             ),
             active_nodes,
             host_ip,

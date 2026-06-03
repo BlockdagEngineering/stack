@@ -28,6 +28,8 @@ FILES=(
   "docs/rawdatadir-libp2p-sync.md"
   "docs/t430-appliance-hardening.md"
   "docs/ipfs-append-only-segment-protocol.html"
+  "host/mining-appliance/bdag-runtime-priority.timer"
+  "host/mining-appliance/bdag-node-child-guard"
   "ops/README.md"
   "ops/automation_control.py"
   "ops/build-rawdatadir-artifact.sh"
@@ -68,6 +70,8 @@ FILES=(
   "ops/tests/test_compose_migrations.py"
   "ops/tests/test_rawdatadir_sidecar_verify.py"
   "ops/tests/test_status_sampler_mining_imperative.py"
+  "ops/tests/test_node_child_guard.py"
+  "ops/tests/test_stack_naming_coherence.py"
   "ops/tests/test_sync_coordinator_fast_catchup.py"
   "ops/tests/test_watchdog_miner_source_counts.py"
   "ops/update-local-peers.py"
@@ -331,7 +335,7 @@ post_deploy_critical_containers() {
     printf '%s\n' "$services" | tr ',' ' '
     return
   fi
-  printf '%s\n' "pool-db bdag-miner-node-1 asic-pool"
+  printf '%s\n' "postgres node pool"
 }
 
 dashboard_api_ready() {

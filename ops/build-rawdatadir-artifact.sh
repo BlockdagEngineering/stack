@@ -84,7 +84,10 @@ resolve_node_image() {
     return
   fi
   local image_id
-  image_id="$(compose images -q bdag-miner-node-1 2>/dev/null | head -n1 || true)"
+  image_id="$(compose images -q node 2>/dev/null | head -n1 || true)"
+  if [[ -z "$image_id" ]]; then
+    image_id="$(compose images -q bdag-miner-node-1 2>/dev/null | head -n1 || true)"
+  fi
   if [[ -n "$image_id" ]]; then
     printf '%s\n' "$image_id"
     return

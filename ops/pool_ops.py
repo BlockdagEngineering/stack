@@ -221,23 +221,25 @@ SHARED_STATUS_CACHE_FILE = RUNTIME_DIR / "shared-status-cache.json"
 STATUS_SAMPLER_FILE = RUNTIME_DIR / "status-sampler.json"
 SYNC_PROGRESS_HEALTH_STATE_FILE = RUNTIME_DIR / "sync-progress-health-state.json"
 SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS = int(os.environ.get("BDAG_SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS", "2700"))
-POOL_ENV_FILE = path_from_env("BDAG_POOL_ENV_FILE", PROJECT_ROOT / "asic-pool" / ".env", PROJECT_ROOT)
+DEFAULT_POOL_ENV_FILE = PROJECT_ROOT / ".env" if (PROJECT_ROOT / ".env").exists() else PROJECT_ROOT / "asic-pool" / ".env"
+POOL_ENV_FILE = path_from_env("BDAG_POOL_ENV_FILE", DEFAULT_POOL_ENV_FILE, PROJECT_ROOT)
 DATA_DIR = path_from_env("BDAG_DATA_DIR", PROJECT_ROOT / "data", PROJECT_ROOT)
 
-POOL_CONTAINER = os.environ.get("BDAG_POOL_CONTAINER", "asic-pool")
+POOL_CONTAINER = os.environ.get("BDAG_POOL_CONTAINER", "pool")
 POOL_CONTAINERS = unique_names([POOL_CONTAINER, *split_env_list("BDAG_POOL_CONTAINERS", "")])
-POOL_DB_CONTAINER = os.environ.get("BDAG_POOL_DB_CONTAINER", "pool-db")
+POOL_DB_CONTAINER = os.environ.get("BDAG_POOL_DB_CONTAINER", "postgres")
 POOL_DB_USER = os.environ.get("BDAG_POOL_DB_USER", "test")
 POOL_DB_NAME = os.environ.get("BDAG_POOL_DB_NAME", "pool")
-NODES = split_env_list("BDAG_NODE_SERVICES", "bdag-miner-node-1")
+NODES = split_env_list("BDAG_NODE_SERVICES", "node")
 OBSERVER_NODES = unique_names(split_env_list("BDAG_OBSERVER_NODE_SERVICES", ""))
 STACK_SERVICES = split_env_list(
     "BDAG_STACK_SERVICES",
-    "pool-db,bdag-miner-node-1,asic-pool",
+    "postgres,node,pool",
 )
 SERVICES = unique_names([*STACK_SERVICES, POOL_DB_CONTAINER, *NODES, *POOL_CONTAINERS])
 NODE_DATA_DIRS = split_env_list("BDAG_NODE_DATA_DIRS", "node1")
 NODE_METRIC_PORTS = {
+    "node": int(os.environ.get("BDAG_NODE_METRICS_PORT", "6060")),
     "bdag-miner-node-1": int(os.environ.get("BDAG_NODE1_METRICS_PORT", "6061")),
 }
 NATIVE_SYNC_LEAD_THRESHOLD = int(os.environ.get("BDAG_NATIVE_SYNC_LEAD_THRESHOLD_BLOCKS", "5"))
@@ -1070,17 +1072,20 @@ def docker_compose_project_name() -> str:
 
 
 def docker_compose_command(*args: str) -> list[str]:
-    return [
+    command = [
         "docker",
         "compose",
         "-p",
         docker_compose_project_name(),
-        "--env-file",
-        str(POOL_ENV_FILE),
+    ]
+    if POOL_ENV_FILE.exists():
+        command.extend(["--env-file", str(POOL_ENV_FILE)])
+    command.extend([
         "-f",
         str(PROJECT_ROOT / "docker-compose.yml"),
         *args,
-    ]
+    ])
+    return command
 
 
 def compose_service_name(name: str) -> str:
@@ -1099,6 +1104,14 @@ def compose_service_name(name: str) -> str:
         service = ""
     if service and service != "<no value>":
         return service
+    container_to_service = {
+        "postgres": "pool-db",
+        "node": "node",
+        "pool": "pool",
+        "dashboard": "dashboard",
+    }
+    if name in container_to_service:
+        return container_to_service[name]
     project_names = unique_names([docker_compose_project_name(), "pool-stack-docker"])
     for project in project_names:
         for sep in ("-", "_"):
@@ -10374,7 +10387,7 @@ def _render_restart_checklist(status: dict[str, Any], handoff_path: Path) -> str
         "Startup checks:",
         "- confirm the dashboard API is listening",
         "- confirm bdag-watchdog.service is running",
-        "- confirm asic-pool and both node containers are running",
+        "- confirm pool, node, postgres, and dashboard containers are running",
         "- if miners are connected but valid shares stop, restart the stack",
         "- if the dashboard port is down, restart the user services first",
         "",

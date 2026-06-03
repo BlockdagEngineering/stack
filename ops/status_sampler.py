@@ -415,9 +415,9 @@ def constrained_fastartifact_profile() -> bool:
 
 
 def node_services_for_recreate() -> list[str]:
-    configured = config_value("BDAG_NODE_SERVICES", "bdag-miner-node-1")
+    configured = config_value("BDAG_NODE_SERVICES", "node")
     services = [item for item in configured.replace(" ", ",").split(",") if item]
-    return [item for item in services if item.startswith("bdag-miner-node-")] or ["bdag-miner-node-1"]
+    return services or ["node"]
 
 
 def node_command_line(node_service: str) -> str | None:

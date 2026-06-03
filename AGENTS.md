@@ -119,8 +119,8 @@ only display configured names after an operator explicitly adds them.
 ## Self-Healing Release Invariants
 
 The Pi5 release candidate must install `bdag-stack-sentinel.timer` and the
-dashboard/watchdog/peer/chain guards by default. A stopped `pool-db`,
-node, or `asic-pool` container is a stack failure even when there are
+dashboard/watchdog/peer/chain guards by default. A stopped `postgres`,
+`node`, or `pool` container is a stack failure even when there are
 no miners. No-miner mode means no mining work is sent; it does not mean services
 are allowed to stay down.
 

@@ -46,6 +46,7 @@ LAN_GATEWAY_WARN_MS = float(os.environ.get("BDAG_P2P_GUARD_GATEWAY_WARN_MS", "20
 INCIDENT_COOLDOWN_SECONDS = int(os.environ.get("BDAG_P2P_GUARD_INCIDENT_COOLDOWN", "600"))
 
 NODE_METRIC_PORTS = {
+    "node": int(os.environ.get("BDAG_NODE_METRICS_PORT", "6060")),
     "bdag-miner-node-1": int(os.environ.get("BDAG_NODE1_METRICS_PORT", "6061")),
 }
 

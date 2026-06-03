@@ -1830,7 +1830,7 @@ HTML = r"""<!doctype html>
     let globalLoaded = false;
     let lastGlobalData = null;
     let globalRefreshInFlight = false;
-    const defaultServiceOrder = ["pool-db", "bdag-miner-node-1", "asic-pool"];
+    const defaultServiceOrder = ["postgres", "node", "pool"];
     function text(id, value) { document.getElementById(id).textContent = value ?? ""; }
     function currentTheme() {
       return document.documentElement.dataset.theme === "dark" ? "dark" : "light";

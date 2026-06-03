@@ -3,12 +3,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STACK_DIR="${BDAG_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-ENV_FILE="$STACK_DIR/asic-pool/.env"
+ENV_FILE="${BDAG_POOL_ENV_FILE:-$STACK_DIR/.env}"
+if [[ ! -f "$ENV_FILE" && -f "$STACK_DIR/asic-pool/.env" ]]; then
+  ENV_FILE="$STACK_DIR/asic-pool/.env"
+fi
 STATE_DIR="$STACK_DIR/ops/runtime"
 LOG_DIR="$STATE_DIR/logs"
 STATE_FILE="$STATE_DIR/fastsync-peer-monitor-state.json"
 MARKER_FILE="$STATE_DIR/fastsync-peer-visible"
-NODE_CONTAINER="${BDAG_FASTSYNC_MONITOR_NODE:-bdag-miner-node-1}"
+NODE_CONTAINER="${BDAG_FASTSYNC_MONITOR_NODE:-node}"
 RPC_URL="${BDAG_FASTSYNC_MONITOR_RPC_URL:-${BDAG_NODE_RPC_URL:-}}"
 
 mkdir -p "$LOG_DIR"

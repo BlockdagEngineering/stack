@@ -119,7 +119,7 @@ selected_backend_from_metrics() {
 }
 
 selected_backend_from_env() {
-  for env_file in "$ROOT/asic-pool/.env" "$ROOT/.env"; do
+  for env_file in "$ROOT/.env" "$ROOT/asic-pool/.env"; do
     [ -f "$env_file" ] || continue
     sed -n 's/^POOL_RPC_BACKENDS=//p' "$env_file" |
       awk -F'[=,]' 'NF { print $1; exit }'
@@ -132,16 +132,16 @@ selected_backend() {
     backend="$(selected_backend_from_env || true)"
   fi
   case "$backend" in
-    node1|bdag-miner-node-1) printf '%s\n' "node1" ;;
-    node) printf '%s\n' "node" ;;
-    *) printf '%s\n' "node1" ;;
+    node1|node|primary) printf '%s\n' "node" ;;
+    bdag-miner-node-1) printf '%s\n' "bdag-miner-node-1" ;;
+    *) printf '%s\n' "node" ;;
   esac
 }
 
 node_container_for_backend() {
   case "$1" in
-    node1) printf '%s\n' "bdag-miner-node-1" ;;
-    node) printf '%s\n' "node" ;;
+    node1|node) printf '%s\n' "node" ;;
+    bdag-miner-node-1) printf '%s\n' "bdag-miner-node-1" ;;
   esac
 }
 
@@ -189,7 +189,7 @@ tune_processes() {
     [ -n "$pids" ] && tune_pids "$pool_nice" 2 0 -900 $pids
   done
 
-  for container in bdag-miner-node-1; do
+  for container in node bdag-miner-node-1; do
     [ "$container" = "$active_node" ] && continue
     pids="$(docker_container_pids "$container")"
     [ -n "$pids" ] && tune_pids "$active_node_nice" 2 0 -950 $pids
@@ -229,11 +229,10 @@ tune_docker_weights() {
   else
     docker_update_one "$active_node" 6144 1000
   fi
-  for container in bdag-miner-node-1; do
+  for container in node bdag-miner-node-1; do
     [ "$container" = "$active_node" ] && continue
     docker_update_one "$container" 6144 1000
   done
-  docker_update_one node 6144 1000
 
   docker_update_one asic-pool 5120 950
   docker_update_one pool 5120 950

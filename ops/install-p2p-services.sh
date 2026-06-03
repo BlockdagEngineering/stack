@@ -110,7 +110,7 @@ install_rawdatadir_source_timer() {
   local sidecar_content_base
 
   network="$(env_value BDAG_FASTSNAP_NETWORK mainnet)"
-  active_service="$(env_value BDAG_NODE_SERVICES bdag-miner-node-1)"
+  active_service="$(env_value BDAG_NODE_SERVICES node)"
   active_service="${active_service%%,*}"
   case "$active_service" in
     bdag-miner-node-1|node1) source_dir="$(env_value BDAG_NODE1_DATA_DIR ./data/node1)/$network" ;;
