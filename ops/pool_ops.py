@@ -673,6 +673,24 @@ def effective_connected_miner_count(
     )
 
 
+def miner_failures_block_stack(
+    miner_failures: list[str],
+    connected_miners: int,
+    pool_has_recent_share_activity: bool,
+    pool_has_recent_paid_work: bool,
+    source_job_health_ok: bool | None,
+) -> bool:
+    if not miner_failures:
+        return False
+    if connected_miners <= 0:
+        return True
+    return not (
+        pool_has_recent_share_activity
+        or pool_has_recent_paid_work
+        or source_job_health_ok is True
+    )
+
+
 def safe_float(value: Any, default: float | None = None) -> float | None:
     try:
         if value is None:
@@ -5299,7 +5317,25 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             f"{pool.get('block_submit_error_count')} submit errors)"
         )
 
-    failures = stack_failures + miner_health.get("failures", [])
+    miner_failures = [str(item) for item in miner_health.get("failures", []) if item]
+    blocking_miner_failures = (
+        miner_failures
+        if miner_failures_block_stack(
+            miner_failures,
+            connected_miners,
+            pool_has_recent_share_activity,
+            pool_has_recent_paid_work,
+            source_job_health_ok,
+        )
+        else []
+    )
+    advisory_miner_failures = [
+        item for item in miner_failures
+        if item not in blocking_miner_failures
+    ]
+    for item in advisory_miner_failures:
+        add_maintenance_warning(f"miner repair required but active mining continues: {item}")
+    failures = stack_failures + blocking_miner_failures
     miner_warnings = miner_health.get("warnings", [])
     warnings.extend(miner_warnings)
     maintenance_warnings.extend(miner_warnings)
@@ -5494,7 +5530,9 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "pool_health": pool_health,
         "failures": failures,
         "stack_failures": stack_failures,
-        "miner_failures": miner_health.get("failures", []),
+        "miner_failures": miner_failures,
+        "blocking_miner_failures": blocking_miner_failures,
+        "advisory_miner_failures": advisory_miner_failures,
         "warnings": warnings,
         "sync_warnings": sync_warnings,
         "maintenance_warnings": maintenance_warnings,
