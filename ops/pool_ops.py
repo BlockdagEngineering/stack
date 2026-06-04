@@ -561,7 +561,7 @@ def run(command: list[str], timeout: int = 20) -> CommandResult:
         proc = subprocess.run(
             command,
             cwd=PROJECT_ROOT,
-            text=True,
+            text=False,
             capture_output=True,
             timeout=timeout,
             check=False,
@@ -574,11 +574,16 @@ def run(command: list[str], timeout: int = 20) -> CommandResult:
             elapsed=round(time.time() - start, 3),
         )
     except subprocess.TimeoutExpired as exc:
+        stderr = strip_ansi(exc.stderr or "")
+        if stderr:
+            stderr = f"{stderr}\nTimed out after {timeout}s"
+        else:
+            stderr = f"Timed out after {timeout}s"
         return CommandResult(
             command=command,
             returncode=124,
             stdout=strip_ansi(exc.stdout or ""),
-            stderr=strip_ansi((exc.stderr or "") + f"\nTimed out after {timeout}s"),
+            stderr=stderr,
             elapsed=round(time.time() - start, 3),
         )
     except FileNotFoundError as exc:
