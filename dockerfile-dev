@@ -178,6 +178,7 @@ RUN apk add --no-cache \
     curl \
     findutils \
     iproute2 \
+    openssl \
     procps \
     py3-pip \
     python3 \
