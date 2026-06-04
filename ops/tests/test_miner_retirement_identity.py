@@ -214,6 +214,12 @@ class MinerRegistryIdentityTests(unittest.TestCase):
             "Athena-01b",
         )
 
+    def test_miner_mac_from_payload_accepts_firmware_name_field(self) -> None:
+        self.assertEqual(
+            pool_ops.miner_mac_from_payload({"name": "28:E2:97:2E:00:1B"}, "192.168.1.107", {}),
+            "28:e2:97:2e:00:1b",
+        )
+
     def test_registry_includes_direct_lan_neighbor_hint(self) -> None:
         old_target = os.environ.get("BDAG_MINER_SCAN_TARGET")
         old_read_neighbor_macs = pool_ops.read_neighbor_macs
