@@ -90,6 +90,11 @@ DEFAULT_ASIC_HASHRATE_REPAIR_COOLDOWN = int(
 DEFAULT_ASIC_HASHRATE_STARTUP_GRACE_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_ASIC_HASHRATE_STARTUP_GRACE_SECONDS", "180")
 )
+DEFAULT_ASIC_API_STALL_STALE_SECONDS = int(os.environ.get("BDAG_WATCHDOG_ASIC_API_STALL_STALE_SECONDS", "180"))
+DEFAULT_ASIC_API_STALL_CONFIRM_SECONDS = int(os.environ.get("BDAG_WATCHDOG_ASIC_API_STALL_CONFIRM_SECONDS", "120"))
+DEFAULT_ASIC_API_STALL_REPAIR_COOLDOWN = int(
+    os.environ.get("BDAG_WATCHDOG_ASIC_API_STALL_REPAIR_COOLDOWN", str(DEFAULT_MINER_RESTART_COOLDOWN))
+)
 DEFAULT_MINER_USEFUL_WORK_STALL_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_MINER_USEFUL_WORK_STALL_SECONDS", "150")
 )
@@ -289,6 +294,29 @@ def update_useful_work_stall_since(
     return updated
 
 
+def update_asic_api_stall_since(
+    state: dict[str, Any],
+    api_stalled_asics: list[dict[str, Any]],
+    now: int,
+) -> dict[str, int]:
+    previous = state.get("asic_api_stall_since") if isinstance(state.get("asic_api_stall_since"), dict) else {}
+    updated: dict[str, int] = {}
+    for item in api_stalled_asics:
+        key = miner_stall_identity_key(item)
+        if not key:
+            continue
+        old_value = previous.get(key)
+        ip_key = f"ip:{item.get('ip')}" if item.get("ip") else ""
+        if old_value is None and ip_key:
+            old_value = previous.get(ip_key) or previous.get(str(item.get("ip")))
+        try:
+            updated[key] = int(old_value if old_value is not None else now)
+        except (TypeError, ValueError):
+            updated[key] = now
+    state["asic_api_stall_since"] = updated
+    return updated
+
+
 def int_or_none(value: Any) -> int | None:
     try:
         if value is None:
@@ -484,6 +512,93 @@ def low_difficulty_primary_miners(status: dict[str, Any]) -> list[dict[str, Any]
         and row.get("low_difficulty_flood")
         and is_lan_ipv4(str(row.get("ip", "")))
     ]
+
+
+ASIC_API_STALL_TEXT_FRAGMENTS = (
+    "/mcb/cgminer",
+    "cgminercmd=devs",
+    "miner request failed",
+    "timed out",
+    "timeout",
+    "http 500",
+    "server error",
+    "connection refused",
+    "connection reset",
+    "remote end closed",
+)
+
+
+def asic_api_stall_primary_miners(
+    status: dict[str, Any],
+    stale_seconds: int = DEFAULT_ASIC_API_STALL_STALE_SECONDS,
+) -> list[dict[str, Any]]:
+    pool_health = status.get("pool_health", status.get("pool", {}))
+    if not isinstance(pool_health, dict):
+        pool_health = {}
+    if pool_initial_download_effective(status) or int(pool_health.get("job_notify_count") or 0) <= 0:
+        return []
+    if any(
+        bool(pool_health.get(key))
+        for key in (
+            "share_stall",
+            "job_stall",
+            "pool_template_frozen",
+            "duplicate_block_storm",
+            "stale_job_candidate_storm",
+            "block_submit_error_storm",
+            "accepted_job_expired_storm",
+            "expired_job_reconnect_failed_no_share",
+            "block_submit_zero_success_storm",
+            "initial_download",
+            "rpc_refused",
+        )
+    ):
+        return []
+    if template_failing_nodes(status) or active_rpc_template_failing(status):
+        return []
+
+    mining_address = str(status.get("mining_address") or "")
+    miners = ((status.get("miner_health") or {}).get("miners") or [])
+    affected: list[dict[str, Any]] = []
+    for row in miners:
+        if not isinstance(row, dict) or not row.get("managed"):
+            continue
+        if row.get("device_type") != "asic" or not is_lan_ipv4(str(row.get("ip", ""))):
+            continue
+        if not is_primary_pool_identity(row, mining_address):
+            continue
+        if row.get("connected") or row.get("pool_active") is True or row.get("work_pool_active") is True:
+            continue
+        if row.get("status") not in {"down", "degraded"}:
+            continue
+        stale_age = (
+            int_or_none(row.get("last_pool_seen_age_seconds"))
+            or int_or_none(row.get("last_share_age_seconds"))
+            or int_or_none(row.get("last_submit_age_seconds"))
+        )
+        if stale_age is not None and stale_age < stale_seconds:
+            continue
+        debug = row.get("debug") if isinstance(row.get("debug"), dict) else {}
+        issue_text = " ".join(
+            str(value or "")
+            for value in (
+                row.get("issue"),
+                row.get("debug_error"),
+                row.get("api_error"),
+                debug.get("error"),
+                debug.get("debug_error"),
+            )
+        ).lower()
+        api_unavailable = debug.get("available") is False or bool(row.get("debug_error"))
+        api_stall_evidence = api_unavailable or any(fragment in issue_text for fragment in ASIC_API_STALL_TEXT_FRAGMENTS)
+        if not api_stall_evidence:
+            continue
+        item = dict(row)
+        item["api_stall_issue"] = issue_text.strip()
+        item["api_stall_stale_age_seconds"] = stale_age
+        item["restart_open_first"] = True
+        affected.append(item)
+    return affected
 
 
 def useful_work_stalled_primary_miners(
@@ -923,7 +1038,15 @@ def run_pool_restart(reason: str) -> bool:
 
 def run_miner_restarts(targets: list[dict[str, Any]], reason: str) -> dict[str, Any]:
     target_label = ",".join(str(item.get("ip") or "") for item in targets) or "asic-miners"
-    if not automation_mutation_allowed(automation_control.ACTION_ASIC_MINER_RESTART, target_label, reason):
+    open_restart_only = bool(targets) and all(
+        bool(item.get("restart_open_first")) or "api-stall" in reason.lower() for item in targets
+    )
+    mutation_action = (
+        automation_control.ACTION_ASIC_MINER_OPEN_RESTART
+        if open_restart_only
+        else automation_control.ACTION_ASIC_MINER_RESTART
+    )
+    if not automation_mutation_allowed(mutation_action, target_label, reason):
         return {
             "status": "suppressed",
             "reason": "automation control denied ASIC miner restart",
@@ -964,8 +1087,39 @@ def run_miner_restarts(targets: list[dict[str, Any]], reason: str) -> dict[str, 
             if not is_lan_ipv4(ip):
                 result = {"ip": ip, "status": "skipped", "error": "not a LAN IPv4 address"}
             else:
+                open_restart_first = bool(target.get("restart_open_first")) or "api-stall" in reason.lower()
                 try:
-                    if target.get("configured") is False and password:
+                    if open_restart_first:
+                        try:
+                            result = {
+                                **restart_miner_open(ip),
+                                "action": "restart-open-api-stall",
+                                "note": "ASIC API/cgminer endpoint was stalled; open restart is preferred over config rewrite",
+                            }
+                        except Exception as exc:  # noqa: BLE001 - try authenticated restart before failing.
+                            if password:
+                                try:
+                                    result = {
+                                        **restart_miner(ip, password),
+                                        "action": "restart-auth-fallback",
+                                        "open_restart_error": str(exc),
+                                    }
+                                except Exception as auth_exc:  # noqa: BLE001
+                                    result = {
+                                        "ip": ip,
+                                        "status": "failed",
+                                        "action": "restart-open-api-stall",
+                                        "error": str(exc),
+                                        "auth_restart_error": str(auth_exc),
+                                    }
+                            else:
+                                result = {
+                                    "ip": ip,
+                                    "status": "failed",
+                                    "action": "restart-open-api-stall",
+                                    "error": str(exc),
+                                }
+                    elif target.get("configured") is False and password:
                         result = configure_miner(
                             ip=ip,
                             admin_password=password,
@@ -1443,6 +1597,7 @@ def check_once(
     submit_path_self_healed_recently = bool(pool_health.get("submit_stall_self_healed_recently"))
     submit_path_recovery_age = pool_health.get("submit_stall_last_recovery_age_seconds")
     low_diff_asics = low_difficulty_primary_miners(status)
+    api_stall_asics = asic_api_stall_primary_miners(status, DEFAULT_ASIC_API_STALL_STALE_SECONDS)
     useful_work_stalled_asics = useful_work_stalled_primary_miners(status)
     hashrate_issue_asics = asic_hashrate_issue_primary_miners(
         status,
@@ -1477,6 +1632,7 @@ def check_once(
         degraded_asics,
         now,
     )
+    asic_api_stall_since = update_asic_api_stall_since(state, api_stall_asics, now)
     asic_hashrate_issue_since = (
         state.get("asic_hashrate_issue_since")
         if isinstance(state.get("asic_hashrate_issue_since"), dict)
@@ -1713,6 +1869,88 @@ def check_once(
                 if ok:
                     state["consecutive_syncing"] = 0
                     state["consecutive_node_orphan_storm"] = 0
+    elif api_stall_asics:
+        affected = [
+            {
+                "identity_key": miner_stall_identity_key(item),
+                "ip": item.get("ip"),
+                "mac": item.get("mac"),
+                "name": item.get("display_name"),
+                "status": item.get("status"),
+                "configured": item.get("configured"),
+                "connected": item.get("connected"),
+                "pool_active": item.get("pool_active"),
+                "work_pool_active": item.get("work_pool_active"),
+                "last_pool_seen_age_seconds": item.get("last_pool_seen_age_seconds"),
+                "last_share_age_seconds": item.get("last_share_age_seconds"),
+                "last_submit_age_seconds": item.get("last_submit_age_seconds"),
+                "api_stall_stale_age_seconds": item.get("api_stall_stale_age_seconds"),
+                "issue": item.get("issue"),
+                "debug_error": item.get("debug_error"),
+            }
+            for item in api_stall_asics
+        ]
+        eligible_miners = []
+        waiting = []
+        for item in api_stall_asics:
+            ip = str(item.get("ip"))
+            identity_key = miner_stall_identity_key(item)
+            stalled_for = now - int(asic_api_stall_since.get(identity_key, now) or now)
+            cooldown_remaining = DEFAULT_ASIC_API_STALL_REPAIR_COOLDOWN - (
+                now - int(miner_restart_by_ip.get(ip, 0) or 0)
+            )
+            if stalled_for >= DEFAULT_ASIC_API_STALL_CONFIRM_SECONDS and cooldown_remaining <= 0:
+                eligible_miners.append(item)
+            else:
+                waiting.append(
+                    f"{identity_key or ip} ip={ip} stalled_for={stalled_for}s "
+                    f"confirm={DEFAULT_ASIC_API_STALL_CONFIRM_SECONDS}s "
+                    f"cooldown_remaining={max(cooldown_remaining, 0)}s"
+                )
+        reason = (
+            f"{len(api_stall_asics)} managed ASIC miner(s) have a sustained local API/cgminer stall "
+            "while pool-wide backend/template failure checks are clear"
+        )
+        state["consecutive_failures"] = 0
+        state["consecutive_syncing"] = 0
+        state["consecutive_node_orphan_storm"] = 0
+        state["consecutive_share_stalls"] = 0
+        state["consecutive_miner_useful_work_stalls"] = 0
+        state["last_status"] = "asic_api_stall"
+        state["last_failures"] = []
+        state["last_share_warnings"] = [reason]
+        state["last_asic_api_stall"] = affected
+        log(
+            "asic_api_stall "
+            f"affected={affected} eligible={[item.get('ip') for item in eligible_miners]} "
+            f"waiting={'; '.join(waiting) or 'none'}"
+        )
+        record_efficiency_event(
+            "asic_api_stall",
+            "warning",
+            reason,
+            {
+                "affected_miners": affected,
+                "eligible": [item.get("ip") for item in eligible_miners],
+                "waiting": waiting,
+                "primary_miner_count": primary_miner_count,
+            },
+        )
+        if repair and eligible_miners:
+            repair_targets = []
+            for item in eligible_miners[:1]:
+                target = dict(item)
+                target["restart_open_first"] = True
+                repair_targets.append(target)
+            result = run_miner_restarts(repair_targets, "ASIC API-stall watchdog: " + reason)
+            state["last_miner_repair_at"] = now
+            state["last_miner_repair"] = result
+            for item in repair_targets:
+                ip = str(item.get("ip"))
+                miner_restart_by_ip[ip] = now
+                asic_api_stall_since.pop(miner_stall_identity_key(item), None)
+            state["last_miner_restart_at_by_ip"] = miner_restart_by_ip
+            state["asic_api_stall_since"] = asic_api_stall_since
     elif useful_work_stalled_asics:
         affected = [
             {
@@ -2443,6 +2681,9 @@ def loop(
         f"asic_hashrate_stale={DEFAULT_ASIC_HASHRATE_STALE_SECONDS}s "
         f"asic_hashrate_confirm={DEFAULT_ASIC_HASHRATE_CONFIRM_SECONDS}s "
         f"asic_hashrate_cooldown={DEFAULT_ASIC_HASHRATE_REPAIR_COOLDOWN}s "
+        f"asic_api_stall_stale={DEFAULT_ASIC_API_STALL_STALE_SECONDS}s "
+        f"asic_api_stall_confirm={DEFAULT_ASIC_API_STALL_CONFIRM_SECONDS}s "
+        f"asic_api_stall_cooldown={DEFAULT_ASIC_API_STALL_REPAIR_COOLDOWN}s "
         f"earnings_snapshot_interval={DEFAULT_EARNINGS_SNAPSHOT_INTERVAL_SECONDS}s"
     )
     while True:
