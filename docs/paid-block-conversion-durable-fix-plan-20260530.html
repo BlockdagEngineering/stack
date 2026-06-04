@@ -73,7 +73,7 @@
         <tr><td>The ASIC private Ethernet/NAT link is the root cause.</td><td>Rejected by RCA and reviewers.</td><td>Keep router/DHCP hardening, but focus on template validity, submit readiness, local candidate drops, and chain confirmation.</td></tr>
         <tr><td>Chain synced means mining ready.</td><td>False.</td><td>Add first-class paid mining state. Require template source readiness, accepted submits, or on-chain confirmation.</td></tr>
         <tr><td>Accepted shares prove earning.</td><td>False.</td><td>Shares are connectivity and ASIC-work telemetry only. Paid health uses accepted submits and confirmed blue/payout-matched chain blocks.</td></tr>
-        <tr><td>A hard 800 ms candidate age is safer on a roughly 1 second chain.</td><td>Unproven and currently harmful.</td><td>Pool wall-clock expiry becomes a backstop only. Corechain validity/expiry is authoritative.</td></tr>
+        <tr><td>A hard sub-second candidate age is safer on a roughly 1 second chain.</td><td>Unproven and currently harmful.</td><td>Pool wall-clock expiry becomes a backstop only. Corechain validity/expiry is authoritative.</td></tr>
         <tr><td>Current parent mismatch always means unpaid.</td><td>Unsafe.</td><td>Corechain recent-template replay and obsolete-depth rules decide whether an old template remains submit-valid.</td></tr>
         <tr><td>Dashboard overall ok is enough.</td><td>False.</td><td>Dashboard exposes separate <code>paid_mining_state</code> and blocks green mining status when paid conversion is degraded.</td></tr>
         <tr><td>OfficePool is a good first development lab.</td><td>False.</td><td>Use source tests, offline replay, and a non-mining test host first. OfficePool is a late guarded canary.</td></tr>
