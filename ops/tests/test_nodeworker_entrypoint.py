@@ -84,18 +84,17 @@ class NodeworkerEntrypointTest(unittest.TestCase):
             {
                 "BDAG_ENABLE_NODE_MINING": "1",
                 "BDAG_NODE_MINING_ARGS": (
-                    "--allowminingwhennearlysynced --allowsubmitwhennotsynced --miner "
-                    "--miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+                    "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
                 ),
             }
         )
 
         self.assert_stdout_contains(result, "BDAG_FASTARTIFACTSYNC_ENABLED=1")
         self.assert_stdout_contains(result, "--fastartifactsync")
-        self.assert_stdout_contains(result, "--allowminingwhennearlysynced")
-        self.assert_stdout_contains(result, "--allowsubmitwhennotsynced")
         self.assert_stdout_contains(result, "--miner")
         self.assert_stdout_contains(result, "--miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc")
+        self.assertNotIn("--allowminingwhennearlysynced", result.stdout)
+        self.assertNotIn("--allowsubmitwhennotsynced", result.stdout)
         self.assertNotIn("--modules=Blockdag,miner", result.stdout)
 
 

@@ -41,6 +41,11 @@ class StackNamingCoherenceTests(unittest.TestCase):
             self.assertIn("BDAG_STACK_SERVICES=postgres,node,pool", text)
             self.assertIn("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=120", text)
             self.assertIn("BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS=120", text)
+        self.assertIn("POOL_GBT_MIN_INTERVAL_MS=1100", env_example)
+        self.assertIn("POOL_GBT_PRESSURE_INTERVAL_MS=500", env_example)
+        self.assertIn("POOL_GBT_PRESSURE_WINDOW_SECONDS=10", env_example)
+        self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS=15", env_example)
+        self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS=30", env_example)
         self.assertIn("NODE_RPC_URLS=http://node:38131", env_example)
         self.assertIn("NODE_RPC_URLS=http://127.0.0.1:38131", portable)
 
@@ -70,9 +75,17 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertNotIn("container_name:", compose)
         self.assertIn("NODE_RPC_URLS: ${NODE_RPC_URLS:-http://node:38131}", compose)
         self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool", compose)
+        self.assertIn("POOL_GBT_MIN_INTERVAL_MS: ${POOL_GBT_MIN_INTERVAL_MS:-1100}", compose)
+        self.assertIn("POOL_GBT_PRESSURE_INTERVAL_MS: ${POOL_GBT_PRESSURE_INTERVAL_MS:-500}", compose)
+        self.assertIn("POOL_GBT_PRESSURE_WINDOW_SECONDS: ${POOL_GBT_PRESSURE_WINDOW_SECONDS:-10}", compose)
+        self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS: ${POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS:-15}", compose)
+        self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS: ${POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS:-30}", compose)
         self.assertIn('set_env_value .env BDAG_NODE_SERVICES "node"', installer)
         self.assertIn('set_env_value .env BDAG_STACK_SERVICES "postgres,node,pool"', installer)
         self.assertIn('set_env_value .env POOL_RPC_BACKENDS "node=http://node:38131"', installer)
+        self.assertIn("set_env_value .env POOL_GBT_MIN_INTERVAL_MS 1100", installer)
+        self.assertIn("set_env_value .env POOL_GBT_PRESSURE_INTERVAL_MS 500", installer)
+        self.assertIn("set_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS 15", installer)
 
     def test_watchdogs_default_to_current_names_with_legacy_compatibility(self) -> None:
         pool_ops = read("ops/pool_ops.py")
@@ -128,6 +141,8 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn('need_file "ops/systemd/bdag-status-sampler.service"', validator)
         self.assertIn('need_grep \'BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS=120\' ".env.example"', validator)
         self.assertIn('need_grep \'BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=120\' ".env.example"', validator)
+        self.assertIn('need_grep \'POOL_GBT_MIN_INTERVAL_MS=1100\' ".env.example"', validator)
+        self.assertIn('need_grep \'pool_template_rpc_pressure\' "scripts/mining-appliance-preflight.py"', validator)
 
 
 if __name__ == "__main__":
