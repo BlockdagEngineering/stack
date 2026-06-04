@@ -27,7 +27,6 @@ from pool_ops import (
     env_bool,
     now_iso,
     read_env_file_value,
-    read_env_value,
     read_miner_registry,
     read_neighbor_macs,
     read_latest_earnings_snapshot_info,
@@ -161,6 +160,9 @@ def dict_value(value: Any) -> dict[str, Any]:
 
 
 def config_value(name: str, default: str = "") -> str:
+    value = os.environ.get(name)
+    if value is not None:
+        return value
     for path in (POOL_ENV_FILE, PROJECT_ROOT / ".env"):
         try:
             file_value = read_env_file_value(path, name)
@@ -168,10 +170,7 @@ def config_value(name: str, default: str = "") -> str:
             file_value = None
         if file_value is not None:
             return file_value
-    value = os.environ.get(name)
-    if value is not None:
-        return value
-    return read_env_value(name) or default
+    return default
 
 
 def set_env_file_value(path: Any, key: str, value: str) -> bool:
@@ -462,7 +461,7 @@ def node_mining_template_support_should_repair(payload: dict[str, Any]) -> bool:
     args = config_value("BDAG_NODE_MINING_ARGS")
     if not env_enabled_value(config_value("BDAG_ENABLE_NODE_MINING"), False):
         return True
-    if "miner" not in modules:
+    if modules and ("blockdag" not in modules or "miner" in modules):
         return True
     if not node_mining_args_have_required_submit_guards(args, address):
         return True
@@ -672,7 +671,8 @@ def repair_node_mining_template_support(payload: dict[str, Any]) -> bool:
 
     changed_paths = []
     changed_paths.extend(set_runtime_env_value("BDAG_ENABLE_NODE_MINING", "1"))
-    changed_paths.extend(set_runtime_env_value("BDAG_NODE_MODULES", "Blockdag,miner"))
+    changed_paths.extend(set_runtime_env_value("BDAG_NODE_MODULES", "Blockdag"))
+    changed_paths.extend(set_runtime_env_value("NODE_ARGS_APPEND", node_mining_runtime_args(address)))
     changed_paths.extend(
         set_runtime_env_value(
             "BDAG_NODE_MINING_ARGS",

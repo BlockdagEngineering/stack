@@ -15,9 +15,10 @@ class StackNamingCoherenceTests(unittest.TestCase):
     def test_compose_dashboard_exports_current_container_names(self) -> None:
         compose = read("docker-compose.yml")
 
-        self.assertIn("container_name: postgres", compose)
-        self.assertIn("container_name: node", compose)
-        self.assertIn("container_name: pool", compose)
+        self.assertNotIn("container_name:", compose)
+        self.assertIn("  pool-db:", compose)
+        self.assertIn("  node:", compose)
+        self.assertIn("  pool:", compose)
         self.assertIn("BDAG_NODE_SERVICES: node", compose)
         self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool", compose)
         self.assertIn("BDAG_POOL_CONTAINER: pool", compose)
@@ -38,9 +39,10 @@ class StackNamingCoherenceTests(unittest.TestCase):
             self.assertIn("BDAG_POOL_DB_CONTAINER=postgres", text)
             self.assertIn("BDAG_NODE_SERVICES=node", text)
             self.assertIn("BDAG_STACK_SERVICES=postgres,node,pool", text)
-            self.assertIn("NODE_RPC_URLS=http://node:38131", text)
             self.assertIn("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=120", text)
             self.assertIn("BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS=120", text)
+        self.assertIn("NODE_RPC_URLS=http://node:38131", env_example)
+        self.assertIn("NODE_RPC_URLS=http://127.0.0.1:38131", portable)
 
         self.assertIn("BDAG_POOL_CONTAINER=pool", installer)
         self.assertIn("BDAG_POOL_DB_CONTAINER=postgres", installer)
@@ -63,10 +65,9 @@ class StackNamingCoherenceTests(unittest.TestCase):
         installer = read("ops/release-install.sh")
 
         self.assertIn("  pool:", compose)
-        self.assertIn("container_name: pool", compose)
         self.assertIn("  node:", compose)
-        self.assertIn("container_name: node", compose)
-        self.assertIn("container_name: postgres", compose)
+        self.assertIn("  pool-db:", compose)
+        self.assertNotIn("container_name:", compose)
         self.assertIn("NODE_RPC_URLS: ${NODE_RPC_URLS:-http://node:38131}", compose)
         self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool", compose)
         self.assertIn('set_env_value .env BDAG_NODE_SERVICES "node"', installer)
@@ -122,7 +123,7 @@ class StackNamingCoherenceTests(unittest.TestCase):
 
         self.assertIn('need_grep \'BDAG_STACK_SERVICES=postgres,node,pool\' ".env.example"', validator)
         self.assertIn('need_grep \'BDAG_NODE_SERVICES: node\' "docker-compose.yml"', validator)
-        self.assertIn('need_grep \'container_name: postgres\' "docker-compose.yml"', validator)
+        self.assertIn('reject_grep \'container_name:\' "docker-compose.yml"', validator)
         self.assertIn('need_file "ops/tests/test_stack_naming_coherence.py"', validator)
         self.assertIn('need_file "ops/systemd/bdag-status-sampler.service"', validator)
         self.assertIn('need_grep \'BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS=120\' ".env.example"', validator)

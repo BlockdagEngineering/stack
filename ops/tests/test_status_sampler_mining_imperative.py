@@ -28,6 +28,8 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "append_incident",
                 "collect_pool_activity",
                 "log",
+                "POOL_ENV_FILE",
+                "PROJECT_ROOT",
                 "read_neighbor_macs",
                 "read_miner_registry",
                 "run",
@@ -47,6 +49,18 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         status_sampler.MINING_IMPERATIVE_CONSTRAINED_FASTARTIFACT_REPAIR_ENABLED = True
         status_sampler.MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED = True
         status_sampler.MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED = True
+        status_sampler.POOL_ENV_FILE = pathlib.Path("/nonexistent/status-sampler-test.env")
+        status_sampler.PROJECT_ROOT = pathlib.Path("/nonexistent/status-sampler-test-root")
+        for key in (
+            "POOL_COINBASE_ADDRESS",
+            "MINING_POOL_ADDRESS",
+            "MINING_ADDRESS",
+            "BDAG_ENABLE_NODE_MINING",
+            "BDAG_NODE_MODULES",
+            "BDAG_NODE_MINING_ARGS",
+            "NODE_ARGS_APPEND",
+        ):
+            os.environ.pop(key, None)
 
     def restore(self) -> None:
         for name, value in self.originals.items():
@@ -222,7 +236,10 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         self.assertIn("enabled_node_mining_template_support", repair["actions"])
         self.assertEqual(env_updates["BDAG_ENABLE_NODE_MINING"], "1")
-        self.assertEqual(env_updates["BDAG_NODE_MODULES"], "Blockdag,miner")
+        self.assertEqual(env_updates["BDAG_NODE_MODULES"], "Blockdag")
+        self.assertIn("--allowminingwhennearlysynced", env_updates["NODE_ARGS_APPEND"])
+        self.assertIn("--allowsubmitwhennotsynced", env_updates["NODE_ARGS_APPEND"])
+        self.assertIn("--miner", env_updates["NODE_ARGS_APPEND"])
         self.assertIn("--allowminingwhennearlysynced", env_updates["BDAG_NODE_MINING_ARGS"])
         self.assertIn("--allowsubmitwhennotsynced", env_updates["BDAG_NODE_MINING_ARGS"])
         self.assertIn("--miner", env_updates["BDAG_NODE_MINING_ARGS"])
@@ -235,7 +252,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
         os.environ["MINING_ADDRESS"] = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         os.environ["BDAG_ENABLE_NODE_MINING"] = "1"
-        os.environ["BDAG_NODE_MODULES"] = "Blockdag,miner"
+        os.environ["BDAG_NODE_MODULES"] = "Blockdag"
         os.environ["BDAG_NODE_MINING_ARGS"] = (
             "--allowminingwhennearlysynced --miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         )
@@ -258,13 +275,43 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertIn("--allowsubmitwhennotsynced", env_updates["BDAG_NODE_MINING_ARGS"])
         self.assertTrue(any("--force-recreate" in command for command in commands))
 
-    def test_recreates_node_when_live_process_lacks_submit_guard(self) -> None:
+    def test_repairs_unsupported_miner_rpc_module(self) -> None:
         commands = []
         env_updates = {}
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
         os.environ["MINING_ADDRESS"] = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         os.environ["BDAG_ENABLE_NODE_MINING"] = "1"
         os.environ["BDAG_NODE_MODULES"] = "Blockdag,miner"
+        os.environ["BDAG_NODE_MINING_ARGS"] = (
+            "--allowminingwhennearlysynced --allowsubmitwhennotsynced --miner "
+            "--miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        )
+        os.environ["BDAG_NODE_SERVICES"] = "bdag-miner-node-1"
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
+
+        def fake_set_runtime_env(key: str, value: str):
+            env_updates[key] = value
+            os.environ[key] = value
+            return [f"/runtime/{key}"]
+
+        status_sampler.set_runtime_env_value = fake_set_runtime_env
+        status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertIn("enabled_node_mining_template_support", repair["actions"])
+        self.assertEqual(env_updates["BDAG_NODE_MODULES"], "Blockdag")
+        self.assertTrue(any("--force-recreate" in command for command in commands))
+
+    def test_recreates_node_when_live_process_lacks_submit_guard(self) -> None:
+        commands = []
+        env_updates = {}
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        os.environ["MINING_ADDRESS"] = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        os.environ["BDAG_ENABLE_NODE_MINING"] = "1"
+        os.environ["BDAG_NODE_MODULES"] = "Blockdag"
         os.environ["BDAG_NODE_MINING_ARGS"] = (
             "--allowminingwhennearlysynced --allowsubmitwhennotsynced --miner "
             "--miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
@@ -322,7 +369,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["BDAG_STORAGE_PROFILE"] = "usb-chain-internal-runtime"
         os.environ["BDAG_FASTARTIFACTSYNC_ENABLED"] = "0"
         os.environ["BDAG_ENABLE_NODE_MINING"] = "1"
-        os.environ["BDAG_NODE_MODULES"] = "Blockdag,miner"
+        os.environ["BDAG_NODE_MODULES"] = "Blockdag"
         os.environ["MINING_ADDRESS"] = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         os.environ["BDAG_NODE_MINING_ARGS"] = (
             "--allowminingwhennearlysynced --allowsubmitwhennotsynced --miner "
