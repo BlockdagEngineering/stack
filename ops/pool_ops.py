@@ -1786,7 +1786,7 @@ def mac_for_ip(ip: str, neighbors: dict[str, str] | None = None) -> str:
 
 
 def miner_mac_from_payload(miner: dict[str, Any], ip: str, neighbors: dict[str, str] | None = None) -> str:
-    for key in ("mac", "mac_address", "macAddress", "ethaddr", "hwaddr"):
+    for key in ("mac", "mac_address", "macAddress", "ethaddr", "hwaddr", "name"):
         mac = normalize_mac(miner.get(key))
         if mac:
             return mac
@@ -2319,6 +2319,14 @@ def get_miner_status(ip: str, timeout: float = MINER_HTTP_TIMEOUT) -> dict[str, 
     return response["body"] if isinstance(response["body"], dict) else {}
 
 
+def get_miner_settings(ip: str, timeout: float = MINER_HTTP_TIMEOUT) -> dict[str, Any]:
+    try:
+        response = miner_request(ip, "/mcb/setting", timeout=timeout)
+    except MinerAPIError:
+        return {}
+    return response["body"] if isinstance(response["body"], dict) else {}
+
+
 def get_miner_cgminer_devs(ip: str, timeout: float = MINER_HTTP_TIMEOUT) -> dict[str, Any]:
     response = miner_request(ip, "/mcb/cgminer?cgminercmd=devs", timeout=timeout)
     body = response["body"]
@@ -2338,12 +2346,15 @@ def discover_miner(ip: str, timeout: float = MINER_SCAN_TIMEOUT) -> dict[str, An
         return None
 
     status = get_miner_status(ip, timeout=timeout)
+    settings = get_miner_settings(ip, timeout=timeout)
+    identity_payload = {**settings, **status}
     active_pool = next((pool for pool in pools if pool.get("active")), pools[0] if pools else {})
-    mac = miner_mac_from_payload(status, ip)
+    mac = miner_mac_from_payload(identity_payload, ip)
     return {
         "ip": ip,
         "mac": mac,
         "device_id": f"mac:{mac}" if mac else "",
+        "name": settings.get("name", ""),
         "model": status.get("model", ""),
         "hardware": status.get("hardware", ""),
         "firmware": status.get("firmware", ""),
