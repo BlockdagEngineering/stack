@@ -8,6 +8,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from datetime import datetime, timezone
@@ -117,6 +118,9 @@ DEFAULT_EARNINGS_SNAPSHOT_INTERVAL_SECONDS = int(
 DEFAULT_NODE_TEMPLATE_RESTART_COOLDOWN = int(os.environ.get("BDAG_WATCHDOG_NODE_TEMPLATE_RESTART_COOLDOWN", "180"))
 DEFAULT_NODE_ORPHAN_STORM_RESTART_COOLDOWN = int(
     os.environ.get("BDAG_WATCHDOG_NODE_ORPHAN_STORM_RESTART_COOLDOWN", "300")
+)
+DEFAULT_NODE_DAG_TIP_CLEANUP_COOLDOWN = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_DAG_TIP_CLEANUP_COOLDOWN", "1800")
 )
 DEFAULT_OPTIMUM_STATE_EVENT_COOLDOWN = int(os.environ.get("BDAG_WATCHDOG_OPTIMUM_STATE_EVENT_COOLDOWN", "300"))
 
@@ -951,16 +955,9 @@ def run_node_restart(node_service: str, reason: str) -> bool:
     write_action_state(state_payload)
     log(f"starting targeted restart for {node_service}: {reason}; log={log_path}")
 
-    command = [
-        "docker",
-        "compose",
-        "--env-file",
-        str(POOL_ENV_FILE),
-        "-f",
-        str(PROJECT_ROOT / "docker-compose.yml"),
-        "restart",
-        node_service,
-    ]
+    # NODES contains runtime container names. The Compose service may be named
+    # differently after topology migration, so restart the concrete container.
+    command = ["docker", "restart", node_service]
     result = run_logged(command, log_path, timeout=180)
     ok = result.ok
 
@@ -976,6 +973,71 @@ def run_node_restart(node_service: str, reason: str) -> bool:
     if not ok:
         record_failed_repair(
             f"targeted node restart for {node_service}",
+            reason,
+            {"node": node_service, "log_path": str(log_path)},
+        )
+    lock_handle.close()
+    return ok
+
+
+def run_node_dag_tip_cleanup(node_service: str, reason: str) -> bool:
+    if node_service not in NODES:
+        log(f"node DAG tip cleanup skipped for unknown node={node_service} reason={reason}")
+        return False
+    if not automation_mutation_allowed(automation_control.ACTION_NODE_RESTART, node_service, reason):
+        return False
+
+    lock_handle = acquire_lock(blocking=False)
+    if lock_handle is None:
+        log(f"node DAG tip cleanup skipped because another repair is running; node={node_service} reason={reason}")
+        return False
+
+    started = time.time()
+    action_name = f"cleanuptips-{node_service}"
+    log_path = action_log_path(action_name)
+    state_payload = {
+        "name": action_name,
+        "mode": "node-cleanuptips",
+        "node": node_service,
+        "reason": reason,
+        "status": "running",
+        "started_at": now_iso(),
+        "finished_at": None,
+        "log_path": str(log_path),
+    }
+    write_action_state(state_payload)
+    log(f"starting node DAG tip cleanup for {node_service}: {reason}; log={log_path}")
+
+    node_arg = shlex.quote(node_service)
+    script = f"""set -euo pipefail
+node={node_arg}
+image=$(docker inspect "$node" --format '{{{{.Config.Image}}}}')
+uid=$(docker exec "$node" id -u bdagStack 2>/dev/null || printf '999')
+gid=$(docker exec "$node" id -g bdagStack 2>/dev/null || printf '999')
+restart_node() {{
+    docker start "$node" >/dev/null 2>&1 || true
+}}
+trap restart_node EXIT
+docker stop "$node" || true
+docker run --rm --volumes-from "$node" --user "${{uid}}:${{gid}}" --entrypoint /usr/local/bin/blockdag-node "$image" --configfile /etc/bdagStack/node.conf --cleanuptips
+trap - EXIT
+docker start "$node"
+"""
+    result = run_logged(["bash", "-lc", script], log_path, timeout=600)
+    ok = result.ok
+
+    state_payload.update(
+        {
+            "status": "ok" if ok else "failed",
+            "finished_at": now_iso(),
+            "elapsed": round(time.time() - started, 3),
+        }
+    )
+    write_action_state(state_payload)
+    log(f"finished node DAG tip cleanup for {node_service} status={state_payload['status']} elapsed={state_payload['elapsed']}s")
+    if not ok:
+        record_failed_repair(
+            f"node DAG tip cleanup for {node_service}",
             reason,
             {"node": node_service, "log_path": str(log_path)},
         )
@@ -1264,21 +1326,23 @@ def active_sync_import_nodes(
             continue
         progress = progress_nodes.get(node, {}) if isinstance(progress_nodes.get(node), dict) else {}
         latest = max(int(info.get("latest_block") or 0), int(progress.get("current_block") or 0))
-        if info.get("importing") and latest > 0:
+        raw_age = info.get("last_import_age_seconds")
+        import_age: int | None = None
+        if raw_age is not None:
+            try:
+                import_age = int(float(raw_age))
+            except (TypeError, ValueError):
+                import_age = None
+        if info.get("importing") and latest > 0 and (import_age is None or import_age <= grace_seconds):
             active.append(node)
             continue
         changed_at = int(height_changed_at.get(node) or 0)
         if latest > 0 and changed_at and current_time - changed_at <= grace_seconds:
             active.append(node)
             continue
-        raw_age = info.get("last_import_age_seconds")
-        if raw_age is None or latest <= 0:
+        if import_age is None or latest <= 0:
             continue
-        try:
-            age = int(float(raw_age))
-        except (TypeError, ValueError):
-            continue
-        if age <= grace_seconds:
+        if import_age <= grace_seconds:
             active.append(node)
     return active
 
@@ -1328,7 +1392,7 @@ def suppress_sync_restart_for_active_import(
     if not expected_sync_wait:
         return False
 
-    state["last_sync_repair_at"] = int(time.time())
+    state["last_sync_repair_suppressed_epoch"] = int(time.time())
     state["last_sync_repair_suppressed_at"] = now_iso()
     state["last_sync_repair_suppressed_reason"] = "active block import"
     details = {
@@ -1348,6 +1412,40 @@ def suppress_sync_restart_for_active_import(
         details,
     )
     return True
+
+
+def dag_tip_damage_nodes(status: dict[str, Any]) -> list[str]:
+    nodes = status.get("nodes", {}) if isinstance(status.get("nodes"), dict) else {}
+    damaged: list[str] = []
+    for node in NODES:
+        info = nodes.get(node, {}) if isinstance(nodes.get(node), dict) else {}
+        if info.get("dag_tip_damage"):
+            damaged.append(node)
+    return damaged
+
+
+def should_cleanup_dag_tips(state: dict[str, Any], node: str, cooldown: int | None = None) -> bool:
+    cooldown_seconds = DEFAULT_NODE_DAG_TIP_CLEANUP_COOLDOWN if cooldown is None else cooldown
+    by_node = (
+        state.get("last_node_dag_tip_cleanup_at_by_node")
+        if isinstance(state.get("last_node_dag_tip_cleanup_at_by_node"), dict)
+        else {}
+    )
+    now = int(time.time())
+    return now - int(by_node.get(node, 0) or 0) >= cooldown_seconds
+
+
+def mark_dag_tip_cleanup_attempt(state: dict[str, Any], node: str) -> None:
+    by_node = (
+        state.get("last_node_dag_tip_cleanup_at_by_node")
+        if isinstance(state.get("last_node_dag_tip_cleanup_at_by_node"), dict)
+        else {}
+    )
+    updated = dict(by_node)
+    updated[node] = int(time.time())
+    state["last_node_dag_tip_cleanup_at_by_node"] = updated
+    state["last_node_dag_tip_cleanup_node"] = node
+    state["last_node_dag_tip_cleanup_at"] = now_iso()
 
 
 def should_clean_restore(state: dict[str, Any], status: dict[str, Any], threshold: int, cooldown: int) -> bool:
@@ -1612,6 +1710,7 @@ def check_once(
     )
     template_nodes = template_failing_nodes(status)
     orphan_nodes = orphan_storm_nodes(status)
+    dag_tip_nodes = dag_tip_damage_nodes(status)
     node_template_restart_by_node = (
         state.get("last_node_template_restart_at_by_node")
         if isinstance(state.get("last_node_template_restart_at_by_node"), dict)
@@ -1767,7 +1866,26 @@ def check_once(
             {"consecutive_failures": state["consecutive_failures"]},
         )
         if repair:
-            if should_clean_restore(state, status, threshold, clean_restore_cooldown):
+            dag_tip_node = dag_tip_nodes[0] if dag_tip_nodes else ""
+            if dag_tip_node and should_cleanup_dag_tips(state, dag_tip_node):
+                reason = (
+                    "node DAG tips reference missing block data; running narrow --cleanuptips repair before restart: "
+                    + "; ".join(stack_failures)
+                )
+                ok = run_node_dag_tip_cleanup(dag_tip_node, reason)
+                state["last_repair_at"] = int(time.time())
+                mark_dag_tip_cleanup_attempt(state, dag_tip_node)
+                if ok:
+                    state["consecutive_failures"] = 0
+            elif dag_tip_node:
+                log(f"node DAG tip cleanup for {dag_tip_node} suppressed by cooldown; failures={'; '.join(stack_failures)}")
+                record_efficiency_event(
+                    "repair_suppressed",
+                    "warning",
+                    f"node DAG tip cleanup for {dag_tip_node} suppressed by cooldown",
+                    {"node": dag_tip_node, "failures": stack_failures},
+                )
+            elif should_clean_restore(state, status, threshold, clean_restore_cooldown):
                 ok = run_repair("clean", "; ".join(stack_failures))
                 state["last_repair_at"] = int(time.time())
                 if ok:
@@ -2633,14 +2751,18 @@ def check_once(
             restart_node = template_nodes[0] if template_nodes else choose_lagging_node(status)
             if suppress_sync_restart_for_active_import(status, state, "; ".join(sync_warnings), restart_node):
                 ok = False
+                repair_attempted = False
             elif restart_node:
                 ok = run_node_restart(restart_node, "persistent syncing: " + "; ".join(sync_warnings))
+                repair_attempted = True
             else:
                 ok = run_repair("restart", "persistent syncing: " + "; ".join(sync_warnings))
-            state["last_repair_at"] = int(time.time())
-            state["last_sync_repair_at"] = int(time.time())
-            if ok:
-                state["consecutive_syncing"] = 0
+                repair_attempted = True
+            if repair_attempted:
+                state["last_repair_at"] = int(time.time())
+                state["last_sync_repair_at"] = int(time.time())
+                if ok:
+                    state["consecutive_syncing"] = 0
     else:
         if state.get("last_status") != status["overall"]:
             log(f"status={status['overall']} warnings={'; '.join(status['warnings']) or 'none'}")

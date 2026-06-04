@@ -812,7 +812,6 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         "BDAG_ENABLE_NODE_MINING": env.get("BDAG_ENABLE_NODE_MINING"),
         "BDAG_NODE_MODULES": env.get("BDAG_NODE_MODULES"),
         "BDAG_NODE_MINING_ARGS": env.get("BDAG_NODE_MINING_ARGS"),
-        "BDAG_ALLOW_UNSYNCED_NODE_MINING": env.get("BDAG_ALLOW_UNSYNCED_NODE_MINING"),
     }
     add(checks, "pass", "active_node_topology", "release topology uses one production node", evidence=evidence)
 
@@ -865,36 +864,69 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     node_mining_enabled = bool_enabled(env.get("BDAG_ENABLE_NODE_MINING"), False)
     node_modules = {item.strip().lower() for item in (env.get("BDAG_NODE_MODULES") or "").split(",") if item.strip()}
     node_mining_args = env.get("BDAG_NODE_MINING_ARGS") or ""
-    unsynced_mining_allowed = bool_enabled(env.get("BDAG_ALLOW_UNSYNCED_NODE_MINING"), False)
     missing_mining_args = [
         flag
         for flag in ("--miner", "--miningaddr=")
         if flag not in node_mining_args
     ]
-    unsynced_mining_flags = [
+    unsafe_mining_bypass_args = [
         flag
         for flag in ("--allowminingwhennearlysynced", "--allowsubmitwhennotsynced")
         if flag in node_mining_args
     ]
-    missing_unsynced_flags = [
-        flag
-        for flag in ("--allowminingwhennearlysynced", "--allowsubmitwhennotsynced")
-        if flag not in node_mining_args
-    ]
-    if node_mining_enabled and "miner" not in node_modules:
-        add(checks, "fail", "node_mining_runtime", "node mining is enabled but the miner module is not exposed.", "Set BDAG_NODE_MODULES=Blockdag,miner so the pool can request fresh templates.", evidence)
+    if node_mining_enabled and node_modules and "blockdag" not in node_modules:
+        add(checks, "fail", "node_mining_runtime", "node mining is enabled but the Blockdag RPC module is not exposed.", "Set BDAG_NODE_MODULES=Blockdag; miner mode is enabled by --miner in BDAG_NODE_MINING_ARGS.", evidence)
+    elif node_mining_enabled and "miner" in node_modules:
+        add(checks, "fail", "node_mining_runtime", "BDAG_NODE_MODULES includes unsupported miner RPC module for this release image.", "Set BDAG_NODE_MODULES=Blockdag and keep --miner in BDAG_NODE_MINING_ARGS so chain RPC and templates remain available.", evidence)
+    elif node_mining_enabled and unsafe_mining_bypass_args:
+        add(checks, "fail", "node_mining_runtime", "node mining enables unsafe sync bypass args: " + ", ".join(unsafe_mining_bypass_args), "Remove sync bypass args; getTemplateHealth and readiness gates must fail closed until P2P freshness and sync safety are healthy.", evidence)
     elif node_mining_enabled and missing_mining_args:
         add(checks, "fail", "node_mining_runtime", "node mining is enabled but required mining args are missing: " + ", ".join(missing_mining_args), "Set BDAG_NODE_MINING_ARGS with miner mode and the payout mining address.", evidence)
-    elif node_mining_enabled and unsynced_mining_flags and not unsynced_mining_allowed:
-        add(checks, "fail", "node_mining_runtime", "unsafe unsynced mining flags are configured without BDAG_ALLOW_UNSYNCED_NODE_MINING=1: " + ", ".join(unsynced_mining_flags), "Remove the unsynced mining flags so the pool cannot mine or submit blocks while isolated or behind main chain.", evidence)
-    elif node_mining_enabled and unsynced_mining_allowed and missing_unsynced_flags:
-        add(checks, "fail", "node_mining_runtime", "unsynced mining override is enabled but required override flags are missing: " + ", ".join(missing_unsynced_flags), "Either disable BDAG_ALLOW_UNSYNCED_NODE_MINING or set both unsynced mining flags deliberately.", evidence)
     elif node_mining_enabled and constrained_mining_profile and "--maxinbound=1" not in node_mining_args:
         add(checks, "warn", "node_mining_runtime", "constrained ASIC-router mining is enabled without --maxinbound=1.", "Add --maxinbound=1 so inbound catch-up peers cannot contend with paid block submission on USB/router hosts while P2P remains usable.", evidence)
     elif node_mining_enabled:
         add(checks, "pass", "node_mining_runtime", "node miner/template runtime args are configured", evidence=evidence)
     else:
         add(checks, "pass", "node_mining_runtime", "node mining stays disabled until miners are present", evidence=evidence)
+
+    pool_rpc_pressure = {
+        "POOL_GBT_MIN_INTERVAL_MS": env.get("POOL_GBT_MIN_INTERVAL_MS"),
+        "POOL_GBT_PRESSURE_INTERVAL_MS": env.get("POOL_GBT_PRESSURE_INTERVAL_MS"),
+        "POOL_GBT_PRESSURE_WINDOW_SECONDS": env.get("POOL_GBT_PRESSURE_WINDOW_SECONDS"),
+        "POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS": env.get("POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS"),
+        "POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS": env.get("POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS"),
+    }
+    gbt_min_ms = safe_int(pool_rpc_pressure["POOL_GBT_MIN_INTERVAL_MS"], None)
+    gbt_pressure_ms = safe_int(pool_rpc_pressure["POOL_GBT_PRESSURE_INTERVAL_MS"], None)
+    gbt_pressure_window_seconds = safe_int(pool_rpc_pressure["POOL_GBT_PRESSURE_WINDOW_SECONDS"], None)
+    node_health_probe_seconds = safe_int(pool_rpc_pressure["POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS"], None)
+    pressure_failures = []
+    if gbt_min_ms is not None and gbt_min_ms < 1000:
+        pressure_failures.append("POOL_GBT_MIN_INTERVAL_MS below 1000ms")
+    if gbt_pressure_ms is not None and gbt_pressure_ms < 250:
+        pressure_failures.append("POOL_GBT_PRESSURE_INTERVAL_MS below 250ms")
+    if node_health_probe_seconds is not None and node_health_probe_seconds < 10:
+        pressure_failures.append("POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS below 10s")
+    if pressure_failures:
+        add(
+            checks,
+            "fail",
+            "pool_template_rpc_pressure",
+            "pool template RPC settings can saturate the node RPC client limit: " + ", ".join(pressure_failures),
+            "Use POOL_GBT_MIN_INTERVAL_MS=1100, POOL_GBT_PRESSURE_INTERVAL_MS=500, POOL_GBT_PRESSURE_WINDOW_SECONDS=10, and POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS=15.",
+            pool_rpc_pressure,
+        )
+    elif gbt_pressure_window_seconds is not None and gbt_pressure_window_seconds > 15:
+        add(
+            checks,
+            "warn",
+            "pool_template_rpc_pressure",
+            f"pool template pressure window is {gbt_pressure_window_seconds}s.",
+            "Use 10s unless a measured soak test proves the node can absorb sustained template pressure while importing and mining.",
+            pool_rpc_pressure,
+        )
+    else:
+        add(checks, "pass", "pool_template_rpc_pressure", "pool template RPC pressure stays within constrained-node defaults", evidence=pool_rpc_pressure)
 
     if not bool_enabled(env.get("BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC"), True):
         add(checks, "warn", "fastsync_acceleration", "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC is disabled.", "Enable coordinator acceleration so nodes more than 1000 blocks behind use fastest catch-up defaults.", evidence)

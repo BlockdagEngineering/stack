@@ -34,6 +34,22 @@ def path_from_env(name: str, default: str | Path, base: Path | None = None) -> P
     return path.resolve()
 
 
+def apply_stack_env_aliases() -> None:
+    """Normalize legacy/current mining address env names before subprocesses inherit them."""
+    aliases = {
+        "MINING_POOL_ADDRESS": ("MINING_ADDRESS", "BDAG_MINING_ADDRESS", "POOL_COINBASE_ADDRESS"),
+        "MINING_ADDRESS": ("BDAG_MINING_ADDRESS", "MINING_POOL_ADDRESS", "POOL_COINBASE_ADDRESS"),
+    }
+    for target, sources in aliases.items():
+        if os.environ.get(target):
+            continue
+        for source in sources:
+            value = os.environ.get(source)
+            if value:
+                os.environ[target] = value
+                break
+
+
 def bootstrap_stack_env() -> None:
     """Load the stack env before module-level defaults are frozen."""
     project_root = Path(os.environ.get("BDAG_PROJECT_ROOT") or Path(__file__).resolve().parents[1]).expanduser()
@@ -66,6 +82,7 @@ def bootstrap_stack_env() -> None:
             if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
                 value = value[1:-1]
             os.environ.setdefault(key, value)
+    apply_stack_env_aliases()
 
 
 bootstrap_stack_env()
@@ -619,7 +636,8 @@ def read_env_file_value(path: Path, name: str) -> str | None:
 
 def read_env_value(name: str) -> str | None:
     aliases = {
-        "MINING_ADDRESS": ["BDAG_MINING_ADDRESS", "MINING_POOL_ADDRESS"],
+        "MINING_ADDRESS": ["BDAG_MINING_ADDRESS", "MINING_POOL_ADDRESS", "POOL_COINBASE_ADDRESS"],
+        "MINING_POOL_ADDRESS": ["MINING_ADDRESS", "BDAG_MINING_ADDRESS", "POOL_COINBASE_ADDRESS"],
         "POOL_PORT": ["BDAG_POOL_PORT"],
     }.get(name, [])
     for env_name in [*aliases, name]:
@@ -2798,6 +2816,13 @@ def parse_node_log(log: str) -> dict[str, Any]:
         for line in recent
         if "already have block (orphan)" in line
     ]
+    dag_tip_damage_lines = [
+        line
+        for line in recent
+        if "The dag data was damaged" in line
+        or "Can't find tip:" in line
+        or "Tip is missing block data" in line
+    ]
     template_error_lines = [line for line in recent if "Failed to create new block template" in line]
     template_transient_tx_error_lines = [
         line
@@ -2819,6 +2844,8 @@ def parse_node_log(log: str) -> dict[str, Any]:
         for line in recent
         if "[CRIT" in line
         or "Failed to truncate extra state histories" in line
+        or "The dag data was damaged" in line
+        or "Can't find tip:" in line
         or "fatal" in line.lower()
     ]
     return {
@@ -2837,6 +2864,8 @@ def parse_node_log(log: str) -> dict[str, Any]:
             and len(imported_lines) == 0
         ),
         "orphan_block_error_lines": orphan_error_lines[-5:],
+        "dag_tip_damage": bool(dag_tip_damage_lines),
+        "dag_tip_damage_lines": dag_tip_damage_lines[-5:],
         "p2p_error_lines": (invalid_peer_lines + p2p_stream_lines)[-5:],
         "mining_template_error_count": len(template_error_lines),
         "mining_template_hard_error_count": len(template_hard_error_lines),
@@ -5015,6 +5044,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "orphan_block_errors": parsed["orphan_block_errors"],
             "orphan_block_error_storm": parsed["orphan_block_error_storm"],
             "orphan_block_error_lines": parsed["orphan_block_error_lines"],
+            "dag_tip_damage": parsed["dag_tip_damage"],
+            "dag_tip_damage_lines": parsed["dag_tip_damage_lines"],
             "p2p_error_lines": parsed["p2p_error_lines"],
             "mining_template_error_count": parsed["mining_template_error_count"],
             "mining_template_hard_error_count": parsed["mining_template_hard_error_count"],

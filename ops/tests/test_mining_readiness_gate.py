@@ -164,6 +164,36 @@ class MiningReadinessGateTests(unittest.TestCase):
         failures = result["backends"]["node1"]["samples"][0]["failures"]
         self.assertIn("getBlockTemplate_empty", failures)
 
+    def test_block_template_probe_uses_current_node_rpc_signature(self) -> None:
+        mining_address = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+
+        def handler(method: str, params: list[Any] | dict[str, Any], _calls: dict[str, int]) -> Any:
+            if method == "getBlockCount":
+                return rpc_result(1000)
+            if method == "getTemplateHealth":
+                health = healthy_health(2000)
+                health.pop("is_current")
+                health["chain_current"] = True
+                return rpc_result(health)
+            if method == "getBlockTemplate":
+                if params != [[], 10, mining_address]:
+                    return rpc_error(-32602, f"unexpected params: {params!r}")
+                return rpc_result({"main_order": 2000, "parent": "0xparent"})
+            return rpc_error(-32601, "method not found")
+
+        with FakeJsonRpcServer(handler) as server:
+            result = gate.evaluate_gate(
+                [gate.Backend("node1", server.url)],
+                timeout=0.5,
+                sample_count=1,
+                sample_interval_seconds=0,
+                after_chain_incident=True,
+                mining_address=mining_address,
+            )
+
+        self.assertTrue(result["ok"], result["failures"])
+        self.assertEqual(["node1"], result["eligible_backends"])
+
     def test_old_node_without_template_health_fails_closed_after_incident(self) -> None:
         def handler(method: str, _params: list[Any] | dict[str, Any], _calls: dict[str, int]) -> Any:
             if method == "getBlockCount":

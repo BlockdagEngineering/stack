@@ -172,8 +172,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn('need_grep \'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS\' "docker-compose.yml"', validator)
         self.assertIn('need_grep \'NODE_RPC_URLS: .*http://node:38131\' "docker-compose.yml"', validator)
         self.assertIn('need_grep \'BDAG_STACK_SERVICES=postgres,node,pool\' ".env.example"', validator)
-        self.assertIn('need_grep \'container_name: postgres\' "docker-compose.yml"', validator)
-        self.assertIn('need_grep \'container_name: pool\' "docker-compose.yml"', validator)
+        self.assertIn('reject_grep \'container_name:\' "docker-compose.yml"', validator)
 
     def test_live_runtime_validator_keeps_release_packaging_source_only(self) -> None:
         validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
