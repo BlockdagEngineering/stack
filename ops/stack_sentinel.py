@@ -41,6 +41,7 @@ DASHBOARD_TIMEOUT = float(os.environ.get("BDAG_SENTINEL_DASHBOARD_TIMEOUT", "20"
 INCIDENT_COOLDOWN_SECONDS = int(os.environ.get("BDAG_SENTINEL_INCIDENT_COOLDOWN_SECONDS", "300"))
 SHARE_STALE_SECONDS = int(os.environ.get("BDAG_SENTINEL_SHARE_STALE_SECONDS", "180"))
 NODE_LOG_LOOKBACK_SECONDS = int(os.environ.get("BDAG_SENTINEL_NODE_LOG_LOOKBACK_SECONDS", "300"))
+NODE_LOG_SCAN_TIMEOUT_SECONDS = float(os.environ.get("BDAG_SENTINEL_NODE_LOG_SCAN_TIMEOUT_SECONDS", "12"))
 ZERO_STATE_ROOT_WARN_COUNT = int(os.environ.get("BDAG_SENTINEL_ZERO_STATE_ROOT_WARN_COUNT", "3"))
 ZERO_STATE_ROOT_CRITICAL_COUNT = int(os.environ.get("BDAG_SENTINEL_ZERO_STATE_ROOT_CRITICAL_COUNT", "20"))
 FAILURE_AGE_RE = re.compile(r"\bfor \d+s\b")
@@ -78,6 +79,14 @@ def log(message: str) -> None:
     ensure_runtime()
     with LOG_FILE.open("a", encoding="utf-8") as handle:
         handle.write(f"[{now_iso()}] {message}\n")
+
+
+def timeout_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
 
 
 def read_state() -> dict[str, Any]:
@@ -374,14 +383,39 @@ def inspect_and_repair_containers(status: dict[str, Any] | None, state: dict[str
 
 def check_node_log_red_flags(state: dict[str, Any], now: int) -> None:
     for node in NODES:
-        result = subprocess.run(
-            ["docker", "logs", "--since", f"{NODE_LOG_LOOKBACK_SECONDS}s", node],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=12,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                ["docker", "logs", "--since", f"{NODE_LOG_LOOKBACK_SECONDS}s", node],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=NODE_LOG_SCAN_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout_text = timeout_text(exc.stdout)
+            stderr_text = timeout_text(exc.stderr)
+            signature = f"{node}:{NODE_LOG_LOOKBACK_SECONDS}:{NODE_LOG_SCAN_TIMEOUT_SECONDS}"
+            if should_emit(state, f"node_log_scan_timeout_{node}", signature, now):
+                message = (
+                    f"{node} docker log scan timed out after {NODE_LOG_SCAN_TIMEOUT_SECONDS:.1f}s "
+                    f"over a {NODE_LOG_LOOKBACK_SECONDS}s lookback"
+                )
+                append_incident(
+                    "node_log_scan_timeout",
+                    "warning",
+                    "stack-sentinel",
+                    message,
+                    {
+                        "node": node,
+                        "lookback_seconds": NODE_LOG_LOOKBACK_SECONDS,
+                        "timeout_seconds": NODE_LOG_SCAN_TIMEOUT_SECONDS,
+                        "stdout_bytes": len(stdout_text),
+                        "stderr_bytes": len(stderr_text),
+                    },
+                )
+                log(message)
+            continue
         text = f"{result.stdout}\n{result.stderr}"
         zero_state_count = text.count("Zero state root hash")
         if zero_state_count < ZERO_STATE_ROOT_WARN_COUNT:

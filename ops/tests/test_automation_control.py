@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -343,6 +344,38 @@ class AutomationControlTests(unittest.TestCase):
 
         self.assertEqual(1, len(self.event_lines()))
         self.assertEqual("automation_control_suppressed", incidents[0][0])
+
+    def test_sentinel_log_scan_timeout_records_warning_without_crashing(self) -> None:
+        incidents: list[tuple[str, str, str, str, dict[str, object] | None]] = []
+        messages: list[str] = []
+
+        def fake_incident(event_type: str, severity: str, component: str, message: str, details=None) -> None:
+            incidents.append((event_type, severity, component, message, details))
+
+        timeout = subprocess.TimeoutExpired(
+            ["docker", "logs"],
+            12,
+            output=b"partial stdout",
+            stderr=b"partial stderr",
+        )
+
+        with unittest.mock.patch.object(stack_sentinel, "NODES", ["bdag-miner-node-1"]), unittest.mock.patch.object(
+            stack_sentinel.subprocess, "run", side_effect=timeout
+        ), unittest.mock.patch.object(
+            stack_sentinel, "append_incident", fake_incident
+        ), unittest.mock.patch.object(
+            stack_sentinel, "log", lambda message: messages.append(message)
+        ):
+            state: dict[str, object] = {}
+            stack_sentinel.check_node_log_red_flags(state, 100)
+
+        self.assertEqual(1, len(incidents))
+        self.assertEqual("node_log_scan_timeout", incidents[0][0])
+        self.assertEqual("warning", incidents[0][1])
+        self.assertEqual("stack-sentinel", incidents[0][2])
+        self.assertEqual(1, len(messages))
+        self.assertEqual(14, incidents[0][4]["stdout_bytes"])
+        self.assertEqual(14, incidents[0][4]["stderr_bytes"])
 
 
 if __name__ == "__main__":
