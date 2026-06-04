@@ -261,8 +261,16 @@ class GlobalTabFallbackTests(unittest.TestCase):
 
     def test_global_live_head_promotes_latest_block_without_losing_scan_window(self) -> None:
         old_probe = pool_ops.probe_global_chain_block_count
+        old_display_probe = pool_ops.probe_global_display_block_height
         self.addCleanup(lambda: setattr(pool_ops, "probe_global_chain_block_count", old_probe))
+        self.addCleanup(lambda: setattr(pool_ops, "probe_global_display_block_height", old_display_probe))
         pool_ops.probe_global_chain_block_count = lambda: (150, "chain", "http://chain-rpc", [])
+        pool_ops.probe_global_display_block_height = lambda: (
+            120,
+            "chain:getBlockTemplate",
+            {"template_height": 120},
+            [],
+        )
 
         payload = pool_ops.refresh_global_chain_head(
             {
@@ -274,8 +282,10 @@ class GlobalTabFallbackTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(payload["latest_block"], 150)
-        self.assertEqual(payload["chain_latest_block"], 150)
+        self.assertEqual(payload["latest_block"], 120)
+        self.assertEqual(payload["display_latest_block"], 120)
+        self.assertEqual(payload["chain_latest_block"], 120)
+        self.assertEqual(payload["chain_block_count"], 150)
         self.assertEqual(payload["scan_end_block"], 99)
         self.assertEqual(payload["chain_tip_lag_blocks"], 51)
 
@@ -671,6 +681,19 @@ class GlobalLocalPoolOverlayTests(unittest.TestCase):
                     "display_name": "Achilles",
                     "device_type": "asic",
                     "last_workers": [wallet],
+                    "last_shares_window": 11,
+                    "last_configured_ok": True,
+                    "last_share_epoch": 200,
+                },
+                {
+                    "ip": "192.168.1.108",
+                    "mac": "28:e2:97:1e:c0:b6",
+                    "display_name": "Stale",
+                    "device_type": "asic",
+                    "last_workers": [wallet],
+                    "last_shares_window": 0,
+                    "last_blocks_window": 99,
+                    "last_share_epoch": 100,
                 }
             ]
         }

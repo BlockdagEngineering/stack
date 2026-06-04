@@ -324,6 +324,7 @@ GLOBAL_RPC_WORKERS = env_int("BDAG_GLOBAL_RPC_WORKERS", 24, minimum=1)
 GLOBAL_CHAIN_ORDER_RPC_TIMEOUT = env_float("BDAG_GLOBAL_CHAIN_ORDER_RPC_TIMEOUT", 3.0, minimum=0.5)
 GLOBAL_CHAIN_BLOCK_RPC_TIMEOUT = env_float("BDAG_GLOBAL_CHAIN_BLOCK_RPC_TIMEOUT", 3.0, minimum=0.5)
 GLOBAL_CHAIN_PREFLIGHT_SAMPLE_MIN_BLOCKS = env_int("BDAG_GLOBAL_CHAIN_PREFLIGHT_SAMPLE_MIN_BLOCKS", 64, minimum=1)
+GLOBAL_POOL_HEIGHT_MAX_AGE_SECONDS = env_int("BDAG_GLOBAL_POOL_HEIGHT_MAX_AGE_SECONDS", 600, minimum=0)
 GLOBAL_HISTORY_LIMIT = int(os.environ.get("BDAG_GLOBAL_HISTORY_LIMIT", "9000"))
 GLOBAL_HISTORY_COMPACT_MULTIPLIER = max(1, int(os.environ.get("BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER", "2")))
 GLOBAL_CACHE_SCHEMA_VERSION = 2
@@ -613,7 +614,7 @@ def read_env_file_value(path: Path, name: str) -> str | None:
 
 def read_env_value(name: str) -> str | None:
     aliases = {
-        "MINING_ADDRESS": ["BDAG_MINING_ADDRESS"],
+        "MINING_ADDRESS": ["BDAG_MINING_ADDRESS", "MINING_POOL_ADDRESS"],
         "POOL_PORT": ["BDAG_POOL_PORT"],
     }.get(name, [])
     for env_name in [*aliases, name]:
@@ -6740,6 +6741,101 @@ def probe_global_chain_block_count() -> tuple[int | None, str, str, list[str]]:
     return block_count, source_name, source_url, errors
 
 
+def latest_pool_db_block_height() -> tuple[int | None, str, dict[str, Any], list[str]]:
+    try:
+        summary = pool_db_json(
+            """
+            SELECT json_build_object(
+              'latest_height', max(height),
+              'last_block_at', max(created_at)::text,
+              'last_block_epoch', floor(extract(epoch FROM max(created_at)))::bigint,
+              'block_count', count(*)
+            )
+            FROM blocks;
+            """
+        ) or {}
+    except Exception as exc:  # noqa: BLE001 - pool DB may be unavailable during startup.
+        return None, "pool-db", {}, [f"pool-db: {exc}"]
+    if not isinstance(summary, dict):
+        return None, "pool-db", {}, ["pool-db: latest block query returned non-object payload"]
+    height = safe_int(summary.get("latest_height"), None)
+    if height is None or height <= 0:
+        return None, "pool-db", summary, ["pool-db: no block height recorded"]
+    epoch = safe_int(summary.get("last_block_epoch"), None)
+    age = max(0, seconds_since_epoch() - epoch) if epoch is not None else None
+    summary["last_block_age_seconds"] = age
+    if (
+        GLOBAL_POOL_HEIGHT_MAX_AGE_SECONDS > 0
+        and age is not None
+        and age > GLOBAL_POOL_HEIGHT_MAX_AGE_SECONDS
+    ):
+        return None, "pool-db", summary, [
+            f"pool-db: latest block height {height} is stale ({age}s old)"
+        ]
+    return height, "pool-db", summary, []
+
+
+def mining_template_params() -> list[Any]:
+    pool_address = read_env_value("MINING_ADDRESS") or ""
+    params: list[Any] = [[], 10]
+    if valid_eth_address(pool_address):
+        params.append(pool_address)
+    return params
+
+
+def probe_global_display_block_height() -> tuple[int | None, str, dict[str, Any], list[str]]:
+    errors: list[str] = []
+    candidates: list[tuple[int, str, dict[str, Any]]] = []
+    pool_height, pool_source, pool_meta, pool_errors = latest_pool_db_block_height()
+    errors.extend(pool_errors)
+    if pool_height is not None:
+        candidates.append((pool_height, pool_source, pool_meta))
+
+    rpc_sources = global_chain_rpc_urls() or [("local-chain", f"http://127.0.0.1:{NODE_MINING_RPC_PORT}")]
+    for source_name, source_url in rpc_sources:
+        try:
+            template = mining_rpc_call(
+                source_url,
+                "getBlockTemplate",
+                mining_template_params(),
+                timeout=min(5.0, max(1.0, NODE_CHAIN_RPC_TIMEOUT)),
+            )
+            if not isinstance(template, dict):
+                raise RuntimeError(f"getBlockTemplate returned {template!r}")
+            height = safe_int(template.get("height"), None)
+            if height is None or height <= 0:
+                raise RuntimeError(f"getBlockTemplate returned invalid height {template.get('height')!r}")
+            candidates.append((
+                height,
+                f"{source_name}:getBlockTemplate",
+                {
+                    "rpc_url": source_url,
+                    "template_height": height,
+                    "template_blues": template.get("blues"),
+                    "template_curtime": template.get("curtime"),
+                },
+            ))
+        except Exception as exc:  # noqa: BLE001 - fall through to other height sources.
+            errors.append(f"{source_name}: getBlockTemplate: {exc}")
+
+    for source_name, source_url in rpc_sources:
+        try:
+            height = parse_rpc_quantity(mining_rpc_call(source_url, "getMainChainHeight", [], timeout=4.0))
+            if height > 0:
+                candidates.append((
+                    height,
+                    f"{source_name}:getMainChainHeight",
+                    {"rpc_url": source_url, "main_chain_height": height},
+                ))
+        except Exception as exc:  # noqa: BLE001 - diagnostic only.
+            errors.append(f"{source_name}: getMainChainHeight: {exc}")
+
+    if not candidates:
+        return None, "", {}, errors
+    height, source, metadata = max(candidates, key=lambda item: item[0])
+    return height, source, metadata, errors[:20]
+
+
 def dashboard_history_iso_from_epoch(epoch: int | float) -> str:
     return datetime.fromtimestamp(int(epoch), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S%z")
 
@@ -7787,11 +7883,11 @@ def is_valid_global_chain_snapshot(snapshot: Mapping[str, Any] | None) -> bool:
     latest_block = safe_int(snapshot.get("latest_block"), None)
     chain_block_count = safe_int(snapshot.get("chain_block_count"), None)
     latest_order = safe_int(snapshot.get("latest_order"), None)
-    if latest_block is None or chain_block_count != latest_block:
+    if latest_block is None or chain_block_count is None:
         return False
     if latest_order is None or latest_order < 0:
         return False
-    if latest_block > 0 and latest_order > latest_block:
+    if chain_block_count > 0 and latest_order > chain_block_count:
         return False
     requested_blocks = safe_int(snapshot.get("requested_blocks"), None)
     fetched_blocks = safe_int(snapshot.get("fetched_blocks"), None)
@@ -7866,14 +7962,23 @@ def write_global_cache(payload: dict[str, Any]) -> None:
 
 
 def refresh_global_chain_head(payload: dict[str, Any]) -> dict[str, Any]:
-    """Add a live chain tip to dashboard payloads without changing scan-window data."""
+    """Add a live displayed block height without changing scan-window data."""
     try:
         block_count, source_name, _source_url, errors = probe_global_chain_block_count()
     except Exception as exc:  # noqa: BLE001 - live tip freshness is best-effort.
         block_count = None
         source_name = ""
         errors = [str(exc)]
-    if block_count is None:
+    try:
+        display_height, display_source, display_metadata, display_errors = probe_global_display_block_height()
+        errors.extend(display_errors)
+    except Exception as exc:  # noqa: BLE001 - display freshness is best-effort.
+        display_height = None
+        display_source = ""
+        display_metadata = {}
+        errors.append(str(exc))
+
+    if block_count is None and display_height is None:
         if errors:
             existing_errors = list(payload.get("head_probe_errors") or [])
             payload["head_probe_errors"] = [*existing_errors, *errors][:20]
@@ -7884,13 +7989,20 @@ def refresh_global_chain_head(payload: dict[str, Any]) -> dict[str, Any]:
         scanned_tip = safe_int(payload.get("latest_block"), 0)
         if scanned_tip is not None:
             payload["scan_end_block"] = scanned_tip
-    payload["chain_latest_block"] = block_count
-    payload["chain_latest_block_source"] = source_name or "getBlockCount"
-    payload["chain_latest_block_updated_at"] = now_iso()
-    payload["chain_tip_lag_blocks"] = max(0, block_count - (scanned_tip or 0))
-    payload["latest_block"] = block_count
-    if payload.get("chain_block_count") in (None, ""):
+    if block_count is not None:
         payload["chain_block_count"] = block_count
+        payload["chain_block_count_source"] = source_name or "getBlockCount"
+    if display_height is None:
+        display_height = block_count
+        display_source = source_name or "getBlockCount"
+        display_metadata = {"fallback": "getBlockCount"}
+    payload["chain_latest_block"] = display_height
+    payload["display_latest_block"] = display_height
+    payload["chain_latest_block_source"] = display_source or "live-height"
+    payload["chain_latest_block_updated_at"] = now_iso()
+    payload["chain_tip_lag_blocks"] = max(0, block_count - (scanned_tip or 0)) if block_count is not None else 0
+    payload["latest_block"] = display_height
+    payload["display_latest_block_metadata"] = display_metadata
     return payload
 
 
@@ -7912,18 +8024,35 @@ def _pool_earning_rates_from_cluster(cluster: dict[str, Any], scan_window_hours:
     )
 
 
+def miner_worker_identity_score(miner: dict[str, Any]) -> tuple[int, int, int, int, int, int]:
+    return (
+        safe_int(miner.get("last_shares_window"), 0),
+        1 if bool(miner.get("last_configured_ok")) else 0,
+        safe_int(miner.get("last_share_epoch"), 0),
+        safe_int(miner.get("last_blocks_window"), 0),
+        safe_int(miner.get("last_submit_epoch"), 0),
+        safe_int(miner.get("last_pool_seen_epoch"), 0),
+    )
+
+
 def local_worker_identity_map() -> dict[str, dict[str, Any]]:
     registry = read_miner_registry()
     workers: dict[str, dict[str, Any]] = {}
+    scores: dict[str, tuple[int, int, int, int, int, int]] = {}
     for miner in registry.get("miners", []) or []:
         if not isinstance(miner, dict):
             continue
         worker_values = merge_unique_strings(miner.get("last_workers"), miner.get("workers"))
         label = miner_display_label(miner)
+        score = miner_worker_identity_score(miner)
         for worker in worker_values:
             if not is_spendable_eth_address(worker):
                 continue
-            workers[str(worker).lower()] = {
+            worker_key = str(worker).lower()
+            if worker_key in workers and score <= scores.get(worker_key, (0, 0, 0, 0, 0, 0)):
+                continue
+            scores[worker_key] = score
+            workers[worker_key] = {
                 "pool_name": label,
                 "display_name": miner.get("display_name") or miner.get("name") or "",
                 "display_label": label,
@@ -8367,7 +8496,7 @@ def collect_global_blockchain() -> dict[str, Any]:
     if cached_valid and seconds_since_epoch() - cached_at <= GLOBAL_CACHE_TTL_SECONDS:
         live_count, live_source, _live_url, live_errors = probe_global_chain_block_count()
         if live_count is not None:
-            cached_count = safe_int(cached.get("latest_block"), 0)
+            cached_count = safe_int(cached.get("chain_block_count"), safe_int(cached.get("latest_block"), 0))
             if cached_count > live_count:
                 cached_valid = False
                 invalid_cache_error = (
