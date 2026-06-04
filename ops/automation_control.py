@@ -50,6 +50,7 @@ ACTION_NODE_RESTART = "node_restart"
 ACTION_CONTAINER_START = "container_start"
 ACTION_CONTAINER_RECREATE = "container_recreate"
 ACTION_CONTAINER_RESTART = "container_restart"
+ACTION_ASIC_MINER_OPEN_RESTART = "asic_miner_open_restart"
 ACTION_ASIC_MINER_RESTART = "asic_miner_restart"
 ACTION_ASIC_POOL_START = "asic_pool_start"
 ACTION_ASIC_POOL_RESTART = "asic_pool_restart"
@@ -66,6 +67,7 @@ HIGH_RISK_ACTIONS = {
     ACTION_CONTAINER_START,
     ACTION_CONTAINER_RECREATE,
     ACTION_CONTAINER_RESTART,
+    ACTION_ASIC_MINER_OPEN_RESTART,
     ACTION_ASIC_MINER_RESTART,
     ACTION_ASIC_POOL_START,
     ACTION_ASIC_POOL_RESTART,
@@ -325,6 +327,8 @@ def _transition_hold_allows(control: dict[str, Any], action: str, actor: str, ta
         tokens = {
             f"{action}:{target}",
             f"{actor}:{action}:{target}",
+            f"{action}:*",
+            f"{actor}:{action}:*",
         }
     else:
         tokens = {
