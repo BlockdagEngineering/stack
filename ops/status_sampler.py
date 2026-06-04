@@ -27,7 +27,6 @@ from pool_ops import (
     env_bool,
     now_iso,
     read_env_file_value,
-    read_env_value,
     read_miner_registry,
     read_neighbor_macs,
     read_latest_earnings_snapshot_info,
@@ -104,10 +103,8 @@ FASTSYNC_PEER_QUARANTINE_ENV_KEYS = split_env_list(
     "BDAG_MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENV_KEYS",
     "NODE1_PEER_ADDRESSES,BDAG_FASTSYNC_PEERS,BOOTSTRAP_PEER_ADDRESSES",
 )
-NODE_MINING_REQUIRED_BOOL_FLAGS = (
-    "--miner",
-)
-NODE_MINING_UNSYNCED_BOOL_FLAGS = (
+NODE_MINING_REQUIRED_BOOL_FLAGS = ("--miner",)
+NODE_MINING_UNSAFE_BYPASS_FLAGS = (
     "--allowminingwhennearlysynced",
     "--allowsubmitwhennotsynced",
 )
@@ -173,7 +170,7 @@ def config_value(name: str, default: str = "") -> str:
             file_value = None
         if file_value is not None:
             return file_value
-    return read_env_value(name) or default
+    return default
 
 
 def set_env_file_value(path: Any, key: str, value: str) -> bool:
@@ -280,8 +277,6 @@ def node_mining_runtime_args(address: str) -> str:
         *NODE_MINING_REQUIRED_BOOL_FLAGS,
         f"--miningaddr={address}",
     ]
-    if env_bool("BDAG_ALLOW_UNSYNCED_NODE_MINING", False):
-        parts = [*NODE_MINING_UNSYNCED_BOOL_FLAGS, *parts]
     if constrained_fastartifact_profile():
         # A USB-backed ASIC router should mine and relay blocks, not serve as a
         # catch-up source for other peers while it is trying to convert shares
@@ -291,20 +286,15 @@ def node_mining_runtime_args(address: str) -> str:
     return " ".join(parts)
 
 
-def node_mining_args_have_required_submit_guards(args: str, address: str) -> bool:
+def node_mining_args_are_safe_and_complete(args: str, address: str) -> bool:
     if not node_args_have_mining_address(args, address):
         return False
+    for flag in NODE_MINING_UNSAFE_BYPASS_FLAGS:
+        if node_args_have_bool_flag(args, flag):
+            return False
     for flag in NODE_MINING_REQUIRED_BOOL_FLAGS:
         if not node_args_have_bool_flag(args, flag):
             return False
-    if env_bool("BDAG_ALLOW_UNSYNCED_NODE_MINING", False):
-        for flag in NODE_MINING_UNSYNCED_BOOL_FLAGS:
-            if not node_args_have_bool_flag(args, flag):
-                return False
-    else:
-        for flag in NODE_MINING_UNSYNCED_BOOL_FLAGS:
-            if node_args_have_bool_flag(args, flag):
-                return False
     if constrained_fastartifact_profile():
         for flag, wanted in NODE_MINING_CONSTRAINED_ASSIGNMENTS.items():
             if node_args_assignment_value(args, flag) != wanted:
@@ -484,16 +474,16 @@ def node_mining_template_support_should_repair(payload: dict[str, Any]) -> bool:
     args = config_value("BDAG_NODE_MINING_ARGS")
     if not env_enabled_value(config_value("BDAG_ENABLE_NODE_MINING"), False):
         return True
-    if "miner" not in modules:
+    if modules and ("blockdag" not in modules or "miner" in modules):
         return True
-    if not node_mining_args_have_required_submit_guards(args, address):
+    if not node_mining_args_are_safe_and_complete(args, address):
         return True
     append_args = config_value("NODE_ARGS_APPEND")
-    if append_args and not node_mining_args_have_required_submit_guards(append_args, address):
+    if append_args and not node_mining_args_are_safe_and_complete(append_args, address):
         return True
     for service in node_services_for_recreate():
         command_line = node_command_line(service)
-        if command_line and not node_mining_args_have_required_submit_guards(command_line, address):
+        if command_line and not node_mining_args_are_safe_and_complete(command_line, address):
             return True
     return False
 
@@ -697,7 +687,7 @@ def repair_node_mining_template_support(payload: dict[str, Any]) -> bool:
 
     changed_paths = []
     changed_paths.extend(set_runtime_env_value("BDAG_ENABLE_NODE_MINING", "1"))
-    changed_paths.extend(set_runtime_env_value("BDAG_NODE_MODULES", "Blockdag,miner"))
+    changed_paths.extend(set_runtime_env_value("BDAG_NODE_MODULES", "Blockdag"))
     runtime_args = node_mining_runtime_args(address)
     changed_paths.extend(
         set_runtime_env_value(

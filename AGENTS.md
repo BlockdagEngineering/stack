@@ -39,17 +39,29 @@ miners. If a node is behind tip and `miner_health.connected_count == 0` or
 `miner_health.managed_count == 0`, preserve sync-only behavior and prioritize
 chain catch-up over template generation.
 
-When actual ASIC demand is present, the selected node must be able to build
-templates on the main chain with usable peers. Runtime repairs may enable
-`BDAG_ENABLE_NODE_MINING=1`, `BDAG_NODE_MODULES=Blockdag,miner`, and
-`BDAG_NODE_MINING_ARGS` containing `--miner` plus a non-zero
-`--miningaddr=<wallet>`. Do not add `--allowminingwhennearlysynced` or
-`--allowsubmitwhennotsynced` by default; those unsafe overrides require an
-explicit `BDAG_ALLOW_UNSYNCED_NODE_MINING=1` operator decision. For constrained
-USB/router appliances also keep `--maxinbound=1`, because
+When actual ASIC demand is present, the opposite invariant applies: the selected
+node must be able to build templates and accept block candidates during brief
+false `Client in initial download` windows. Runtime repairs must enable
+`BDAG_ENABLE_NODE_MINING=1`, `BDAG_NODE_MODULES=Blockdag`, and
+`BDAG_NODE_MINING_ARGS` containing `--miner` and a non-zero
+`--miningaddr=<wallet>`.
+Do not add `miner` to `BDAG_NODE_MODULES`; this release image enables mining
+through the `--miner` node argument and exposes templates through the `Blockdag`
+RPC module.
+Do not add `--allowminingwhennearlysynced` or `--allowsubmitwhennotsynced`.
+Those bypass flags can make template health report ready while the node has
+stale or absent P2P mining freshness; future runtime repair must remove them
+and keep the pool stopped until direct readiness passes.
+For constrained USB/router appliances also keep `--maxinbound=1`, because
 inbound catch-up peers and artifact requests have caused rewind/sync churn that
 converted valid ASIC work into `node-syncing`, `tip-overdue`, and
 `invalidated_job` losses.
+
+Keep pool `getBlockTemplate` pressure below the node RPC client ceiling. Do not
+override `POOL_GBT_MIN_INTERVAL_MS` below `1000`, do not override
+`POOL_GBT_PRESSURE_INTERVAL_MS` below `250`, and keep node-health probes at
+least `10` seconds apart unless a measured soak test proves the node can absorb
+more frequent RPC traffic while importing and mining.
 
 Any system with USB-backed blockchain data is a FastSync/FastArtifact consumer,
 not a source, by default. Keep `SYNC_SOURCE_NODE=0`; do not reintroduce

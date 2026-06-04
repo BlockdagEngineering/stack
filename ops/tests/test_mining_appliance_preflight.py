@@ -123,6 +123,85 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         found = {check.name: check for check in checks}
         self.assertEqual(found["fastartifactsync"].status, "fail")
 
+    def test_pool_template_rpc_pressure_rejects_unsafe_overrides(self) -> None:
+        profile = preflight.HostProfile(
+            os_name="linux",
+            arch="x86_64",
+            cpu_count=8,
+            memory_bytes=16 * preflight.GIB,
+            profile="standard",
+            kernel="test",
+        )
+        checks = []
+        preflight.check_env_defaults(
+            checks,
+            {
+                "POOL_GBT_MIN_INTERVAL_MS": "100",
+                "POOL_GBT_PRESSURE_INTERVAL_MS": "100",
+                "POOL_GBT_PRESSURE_WINDOW_SECONDS": "30",
+                "POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS": "5",
+            },
+            profile,
+        )
+
+        found = {check.name: check for check in checks}
+        self.assertEqual(found["pool_template_rpc_pressure"].status, "fail")
+        self.assertIn("POOL_GBT_MIN_INTERVAL_MS below 1000ms", found["pool_template_rpc_pressure"].detail)
+        self.assertIn("POOL_GBT_PRESSURE_INTERVAL_MS below 250ms", found["pool_template_rpc_pressure"].detail)
+        self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS below 10s", found["pool_template_rpc_pressure"].detail)
+
+    def test_pool_template_rpc_pressure_accepts_safe_defaults(self) -> None:
+        profile = preflight.HostProfile(
+            os_name="linux",
+            arch="x86_64",
+            cpu_count=8,
+            memory_bytes=16 * preflight.GIB,
+            profile="standard",
+            kernel="test",
+        )
+        checks = []
+        preflight.check_env_defaults(
+            checks,
+            {
+                "POOL_GBT_MIN_INTERVAL_MS": "1100",
+                "POOL_GBT_PRESSURE_INTERVAL_MS": "500",
+                "POOL_GBT_PRESSURE_WINDOW_SECONDS": "10",
+                "POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS": "15",
+                "POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS": "30",
+            },
+            profile,
+        )
+
+        found = {check.name: check for check in checks}
+        self.assertEqual(found["pool_template_rpc_pressure"].status, "pass")
+
+    def test_node_mining_runtime_rejects_unsafe_sync_bypass_args(self) -> None:
+        profile = preflight.HostProfile(
+            os_name="linux",
+            arch="x86_64",
+            cpu_count=8,
+            memory_bytes=16 * preflight.GIB,
+            profile="standard",
+            kernel="test",
+        )
+        checks = []
+        preflight.check_env_defaults(
+            checks,
+            {
+                "BDAG_ENABLE_NODE_MINING": "1",
+                "BDAG_NODE_MODULES": "Blockdag",
+                "BDAG_NODE_MINING_ARGS": (
+                    "--allowminingwhennearlysynced --allowsubmitwhennotsynced --miner "
+                    "--miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+                ),
+            },
+            profile,
+        )
+
+        found = {check.name: check for check in checks}
+        self.assertEqual(found["node_mining_runtime"].status, "fail")
+        self.assertIn("unsafe sync bypass args", found["node_mining_runtime"].detail)
+
     def test_constrained_mining_profile_accepts_no_fastsync_serve_policy(self) -> None:
         profile = preflight.HostProfile(
             os_name="linux",
@@ -187,7 +266,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             checks,
             {
                 "BDAG_ENABLE_NODE_MINING": "1",
-                "BDAG_NODE_MODULES": "Blockdag,miner",
+                "BDAG_NODE_MODULES": "Blockdag",
                 "BDAG_NODE_MINING_ARGS": "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc",
             },
             profile,
@@ -210,7 +289,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             checks,
             {
                 "BDAG_ENABLE_NODE_MINING": "1",
-                "BDAG_NODE_MODULES": "Blockdag,miner",
+                "BDAG_NODE_MODULES": "Blockdag",
                 "BDAG_NODE_MINING_ARGS": (
                     "--allowminingwhennearlysynced --allowsubmitwhennotsynced "
                     "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
@@ -221,7 +300,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
 
         found = {check.name: check for check in checks}
         self.assertEqual(found["node_mining_runtime"].status, "fail")
-        self.assertIn("BDAG_ALLOW_UNSYNCED_NODE_MINING=1", found["node_mining_runtime"].detail)
+        self.assertIn("unsafe sync bypass args", found["node_mining_runtime"].detail)
 
     def test_usb_chain_mining_source_rejects_sync_source_node(self) -> None:
         old_mount_info = preflight.mount_info
