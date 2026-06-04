@@ -4206,10 +4206,16 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
             continue
 
         mac = miner_mac_from_payload(miner, ip, neighbors)
+        discovered = None
+        if not mac and is_lan_ipv4(ip):
+            discovered = discover_miner(ip, timeout=MINER_SCAN_TIMEOUT)
+            if discovered:
+                mac = miner_mac_from_payload(discovered, ip, neighbors)
         if is_docker_bridge_pool_log_client(ip, mac):
             continue
         item = existing_by_mac.get(mac) if mac else None
         item = dict(item or existing.get(ip, {"ip": ip}))
+        previous_ip = str(item.get("ip") or "")
         workers = merge_unique_strings(item.get("last_workers"), miner.get("workers"))
         ports = merge_unique_strings(item.get("last_ports"), miner.get("ports"))
         incoming_job_extranonces = merge_unique_strings(miner.get("job_extranonces"))
@@ -4233,14 +4239,25 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
             item["discovered_by"] = "lan-scan" if item.get("device_type") == "asic" else "pool-log"
         if not item.get("model") and item.get("device_type") == "stratum":
             item["model"] = "Stratum client"
+        if discovered:
+            item["device_type"] = "asic"
+            if not item.get("discovered_by") or item.get("discovered_by") == "pool-log":
+                item["discovered_by"] = "asic-api"
+            for key in ("name", "model", "hardware", "firmware", "mcbversion"):
+                if discovered.get(key):
+                    item[key] = discovered[key]
+            if discovered.get("pool_count") is not None:
+                item["last_pool_count"] = discovered["pool_count"]
+            item["last_seen_at"] = now_iso()
+            item["last_seen_epoch"] = now_epoch
 
         item.update(
             {
                 "ip": ip,
                 "mac": mac or item.get("mac", ""),
                 "device_id": f"mac:{mac}" if mac else item.get("device_id", ""),
-                "ip_history": merge_unique_strings(item.get("ip_history"), ip),
-                "sources": merge_unique_strings(item.get("sources"), "pool-log"),
+                "ip_history": merge_unique_strings(item.get("ip_history"), previous_ip, ip),
+                "sources": merge_unique_strings(item.get("sources"), "pool-log", "asic-api" if discovered else None),
                 "auto_discovered": bool(item.get("auto_discovered", item.get("discovered_by") == "pool-log")),
                 "expected_pool_url": item.get("expected_pool_url") or defaults["pool_url"],
                 "expected_worker_user": item.get("expected_worker_user") or (workers[0] if workers else defaults["worker_user"]),
@@ -4405,18 +4422,18 @@ def collect_miner_health() -> dict[str, Any]:
         relevant = managed or configured_record or work_pool_active or has_recent_shares or has_recent_blocks or primary_pool_log
         if not relevant and is_pool_log_only_miner(registered):
             continue
-        shares = activity_item.get("shares", registered.get("last_shares_window", 0))
-        share_work = activity_item.get("share_work", registered.get("last_share_work_window", 0))
+        shares = current_shares
+        share_work = activity_item.get("share_work", 0) if activity_item else 0
         share_work_int = int(share_work or 0)
-        share_difficulty = activity_item.get("share_difficulty", registered.get("last_share_difficulty_window", 0))
-        blocks_found = activity_item.get("blocks_found", registered.get("last_blocks_window", 0))
+        share_difficulty = activity_item.get("share_difficulty", 0) if activity_item else 0
+        blocks_found = current_blocks_found
         last_share_at = activity_item.get("last_share_at") or registered.get("last_share_at")
         last_job_at = activity_item.get("last_job_at") or registered.get("last_job_at")
         last_submit_at = activity_item.get("last_submit_at") or registered.get("last_submit_at")
         issue = api_error or debug_error
         last_difficulty = activity_item.get("last_difficulty") or registered.get("last_difficulty")
         last_difficulty_value = safe_decimal(last_difficulty)
-        submits = int(activity_item.get("submits", registered.get("last_submits_window", 0)) or 0)
+        submits = current_submits
         low_difficulty_flood = bool(
             last_difficulty_value is not None
             and last_difficulty_value > 0
