@@ -18,8 +18,9 @@ evm.ws.port=18546
 
 # Bootstrap peers (mainnet seed nodes). The node entrypoint folds these into
 # the same P2P FastSync candidate set as operator-configured peers. Address
-# class is not a priority signal.
-
+# class is not a priority signal. Keep only public peers that are currently
+# reachable; site-local peers belong in .env runtime overrides.
+addpeer=/ip4/13.57.132.47/tcp/8150/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus
 
 # Peer limit
 maxpeers=350
@@ -47,6 +48,7 @@ miningaddr=
 # to serve mining templates.
 modules=Blockdag
 modules=miner
+miner=true
 
 evm.http.api=eth,net,web3,txpool,debug
 http.readtimeout=45s
