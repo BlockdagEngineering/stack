@@ -812,6 +812,7 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         "BDAG_ENABLE_NODE_MINING": env.get("BDAG_ENABLE_NODE_MINING"),
         "BDAG_NODE_MODULES": env.get("BDAG_NODE_MODULES"),
         "BDAG_NODE_MINING_ARGS": env.get("BDAG_NODE_MINING_ARGS"),
+        "BDAG_ALLOW_UNSYNCED_NODE_MINING": env.get("BDAG_ALLOW_UNSYNCED_NODE_MINING"),
     }
     add(checks, "pass", "active_node_topology", "release topology uses one production node", evidence=evidence)
 
@@ -864,19 +865,34 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     node_mining_enabled = bool_enabled(env.get("BDAG_ENABLE_NODE_MINING"), False)
     node_modules = {item.strip().lower() for item in (env.get("BDAG_NODE_MODULES") or "").split(",") if item.strip()}
     node_mining_args = env.get("BDAG_NODE_MINING_ARGS") or ""
+    unsynced_mining_allowed = bool_enabled(env.get("BDAG_ALLOW_UNSYNCED_NODE_MINING"), False)
     missing_mining_args = [
         flag
-        for flag in ("--allowminingwhennearlysynced", "--allowsubmitwhennotsynced", "--miner", "--miningaddr=")
+        for flag in ("--miner", "--miningaddr=")
+        if flag not in node_mining_args
+    ]
+    unsynced_mining_flags = [
+        flag
+        for flag in ("--allowminingwhennearlysynced", "--allowsubmitwhennotsynced")
+        if flag in node_mining_args
+    ]
+    missing_unsynced_flags = [
+        flag
+        for flag in ("--allowminingwhennearlysynced", "--allowsubmitwhennotsynced")
         if flag not in node_mining_args
     ]
     if node_mining_enabled and "miner" not in node_modules:
         add(checks, "fail", "node_mining_runtime", "node mining is enabled but the miner module is not exposed.", "Set BDAG_NODE_MODULES=Blockdag,miner so the pool can request fresh templates.", evidence)
     elif node_mining_enabled and missing_mining_args:
-        add(checks, "fail", "node_mining_runtime", "node mining is enabled but required mining guard args are missing: " + ", ".join(missing_mining_args), "Set BDAG_NODE_MINING_ARGS with near-sync mining, submit override, miner mode, and the payout mining address.", evidence)
+        add(checks, "fail", "node_mining_runtime", "node mining is enabled but required mining args are missing: " + ", ".join(missing_mining_args), "Set BDAG_NODE_MINING_ARGS with miner mode and the payout mining address.", evidence)
+    elif node_mining_enabled and unsynced_mining_flags and not unsynced_mining_allowed:
+        add(checks, "fail", "node_mining_runtime", "unsafe unsynced mining flags are configured without BDAG_ALLOW_UNSYNCED_NODE_MINING=1: " + ", ".join(unsynced_mining_flags), "Remove the unsynced mining flags so the pool cannot mine or submit blocks while isolated or behind main chain.", evidence)
+    elif node_mining_enabled and unsynced_mining_allowed and missing_unsynced_flags:
+        add(checks, "fail", "node_mining_runtime", "unsynced mining override is enabled but required override flags are missing: " + ", ".join(missing_unsynced_flags), "Either disable BDAG_ALLOW_UNSYNCED_NODE_MINING or set both unsynced mining flags deliberately.", evidence)
     elif node_mining_enabled and constrained_mining_profile and "--maxinbound=1" not in node_mining_args:
         add(checks, "warn", "node_mining_runtime", "constrained ASIC-router mining is enabled without --maxinbound=1.", "Add --maxinbound=1 so inbound catch-up peers cannot contend with paid block submission on USB/router hosts while P2P remains usable.", evidence)
     elif node_mining_enabled:
-        add(checks, "pass", "node_mining_runtime", "node miner/template runtime guard args are configured", evidence=evidence)
+        add(checks, "pass", "node_mining_runtime", "node miner/template runtime args are configured", evidence=evidence)
     else:
         add(checks, "pass", "node_mining_runtime", "node mining stays disabled until miners are present", evidence=evidence)
 

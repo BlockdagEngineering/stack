@@ -358,8 +358,8 @@ DASHBOARD_CHAIN_HISTORY_SOURCE_CONTRACT = "blockdag-mining-rpc-history-v1"
 PEER_GEO_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_PEER_GEO_CACHE_TTL_SECONDS", "86400"))
 PEER_GEO_LOOKUP_TIMEOUT = float(os.environ.get("BDAG_PEER_GEO_LOOKUP_TIMEOUT", "8.0"))
 PUBLIC_EVM_RPC_DEFAULTS = [
-    ("bdagscan-rpc", "https://rpc.bdagscan.com"),
     ("blockdag-engineering-rpc", "https://rpc.blockdag.engineering"),
+    ("bdagscan-rpc", "https://rpc.bdagscan.com"),
 ]
 MINER_STALE_SECONDS = int(os.environ.get("BDAG_MINER_STALE_SECONDS", "120"))
 POOL_ACTIVITY_LOG_LINES = int(os.environ.get("BDAG_POOL_ACTIVITY_LOG_LINES", "2000"))
@@ -8757,8 +8757,8 @@ def collect_wallet_balances(address: str | None = None) -> dict[str, Any]:
     for source, url in named_urls_from_env(
         "BDAG_PUBLIC_RPC_URLS",
         [
-            ("bdagscan-rpc", "https://rpc.bdagscan.com"),
             ("blockdag-engineering-rpc", "https://rpc.blockdag.engineering"),
+            ("bdagscan-rpc", "https://rpc.bdagscan.com"),
         ],
     ):
         try:
@@ -8844,8 +8844,8 @@ def collect_wallet_balances_for_addresses(addresses: list[str]) -> dict[str, Any
         for source, url in named_urls_from_env(
             "BDAG_PUBLIC_RPC_URLS",
             [
-                ("bdagscan-rpc", "https://rpc.bdagscan.com"),
                 ("blockdag-engineering-rpc", "https://rpc.blockdag.engineering"),
+                ("bdagscan-rpc", "https://rpc.bdagscan.com"),
             ],
         )
     )
@@ -8961,8 +8961,8 @@ def archive_rpc_urls() -> list[tuple[str, str]]:
         *named_urls_from_env(
             "BDAG_PUBLIC_RPC_URLS",
             [
-                ("bdagscan-rpc", "https://rpc.bdagscan.com"),
                 ("blockdag-engineering-rpc", "https://rpc.blockdag.engineering"),
+                ("bdagscan-rpc", "https://rpc.bdagscan.com"),
             ],
         ),
         *global_evm_rpc_urls(),
