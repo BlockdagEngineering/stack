@@ -48,6 +48,7 @@ miningaddr=
 # to serve mining templates.
 modules=Blockdag
 modules=miner
+miner=true
 
 evm.http.api=eth,net,web3,txpool,debug
 http.readtimeout=45s
