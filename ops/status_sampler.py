@@ -103,10 +103,10 @@ FASTSYNC_PEER_QUARANTINE_ENV_KEYS = split_env_list(
     "BDAG_MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENV_KEYS",
     "NODE1_PEER_ADDRESSES,BDAG_FASTSYNC_PEERS,BOOTSTRAP_PEER_ADDRESSES",
 )
-NODE_MINING_REQUIRED_BOOL_FLAGS = (
+NODE_MINING_REQUIRED_BOOL_FLAGS = ("--miner",)
+NODE_MINING_UNSAFE_BYPASS_FLAGS = (
     "--allowminingwhennearlysynced",
     "--allowsubmitwhennotsynced",
-    "--miner",
 )
 NODE_MINING_CONSTRAINED_ASSIGNMENTS = {
     "--maxinbound": "1",
@@ -276,9 +276,12 @@ def node_mining_runtime_args(address: str) -> str:
     return " ".join(parts)
 
 
-def node_mining_args_have_required_submit_guards(args: str, address: str) -> bool:
+def node_mining_args_are_safe_and_complete(args: str, address: str) -> bool:
     if not node_args_have_mining_address(args, address):
         return False
+    for flag in NODE_MINING_UNSAFE_BYPASS_FLAGS:
+        if node_args_have_bool_flag(args, flag):
+            return False
     for flag in NODE_MINING_REQUIRED_BOOL_FLAGS:
         if not node_args_have_bool_flag(args, flag):
             return False
@@ -463,11 +466,11 @@ def node_mining_template_support_should_repair(payload: dict[str, Any]) -> bool:
         return True
     if modules and ("blockdag" not in modules or "miner" in modules):
         return True
-    if not node_mining_args_have_required_submit_guards(args, address):
+    if not node_mining_args_are_safe_and_complete(args, address):
         return True
     for service in node_services_for_recreate():
         command_line = node_command_line(service)
-        if command_line and not node_mining_args_have_required_submit_guards(command_line, address):
+        if command_line and not node_mining_args_are_safe_and_complete(command_line, address):
             return True
     return False
 

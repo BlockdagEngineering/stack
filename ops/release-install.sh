@@ -110,6 +110,12 @@ configure_active_node_env() {
   set_env_value .env POOL_SUBMIT_RPC_URLS ""
   set_env_value .env WALLET_RPC_URL "http://node:18545"
   set_env_value .env WALLET_RPC_URLS "http://node:18545"
+  set_env_value .env POOL_GBT_MIN_INTERVAL_MS 1100
+  set_env_value .env POOL_GBT_PRESSURE_INTERVAL_MS 500
+  set_env_value .env POOL_GBT_PRESSURE_WINDOW_SECONDS 10
+  set_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_ENABLED true
+  set_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS 15
+  set_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS 30
 }
 
 configure_node_mining_env() {
@@ -117,7 +123,7 @@ configure_node_mining_env() {
   if [[ "$enabled" == "1" ]]; then
     set_env_value .env BDAG_ENABLE_NODE_MINING 1
     set_env_value .env BDAG_NODE_MODULES "Blockdag"
-    set_env_value .env BDAG_NODE_MINING_ARGS "--allowminingwhennearlysynced --allowsubmitwhennotsynced --miner --miningaddr=${mining_address} --maxinbound=1"
+    set_env_value .env BDAG_NODE_MINING_ARGS "--miner --miningaddr=${mining_address} --maxinbound=1"
   else
     set_env_value .env BDAG_ENABLE_NODE_MINING 0
     set_env_value .env BDAG_NODE_MODULES "Blockdag"
