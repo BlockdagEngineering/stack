@@ -351,7 +351,7 @@ def detect_network_topology(values: dict[str, str]) -> str:
         return "asic-router"
 
     default_iface = default_route_interface()
-    asic_iface = env_value(values, "BDAG_ASIC_LAN_INTERFACE", "eth0")
+    asic_iface = env_value(values, "BDAG_ASIC_LAN_INTERFACE", "").strip()
     networks = asic_lan_networks(values)
     for iface, addresses in interface_ipv4_addresses().items():
         if default_iface and iface == default_iface:

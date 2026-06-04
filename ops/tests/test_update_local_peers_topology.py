@@ -44,6 +44,32 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
         finally:
             update_local_peers.run = old_run
 
+    def test_blank_asic_lan_interface_auto_detects_matching_non_default_interface(self) -> None:
+        old_run = update_local_peers.run
+
+        def fake_run(command: list[str], timeout: int = 20) -> str:
+            if command == ["ip", "route"]:
+                return "default via 192.168.68.1 dev wlan0 proto dhcp src 192.168.68.60 metric 600\n"
+            if command == ["ip", "-br", "addr"]:
+                return "\n".join(
+                    [
+                        "enp2s0 UP 192.168.1.105/24",
+                        "wlan0 UP 192.168.68.60/22",
+                    ]
+                )
+            raise AssertionError(command)
+
+        try:
+            update_local_peers.run = fake_run
+            values = {
+                "BDAG_NETWORK_TOPOLOGY": "auto",
+                "BDAG_ASIC_LAN_INTERFACE": "",
+                "BDAG_ASIC_LAN_CIDRS": "192.168.1.0/24",
+            }
+            self.assertEqual("asic-router", update_local_peers.detect_network_topology(values))
+        finally:
+            update_local_peers.run = old_run
+
     def test_p2p_candidates_merge_all_complete_peer_sources_by_latency(self) -> None:
         old_latency = update_local_peers.peer_tcp_latency
 
