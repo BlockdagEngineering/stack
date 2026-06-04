@@ -81,12 +81,27 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
 
         self.assertIn("BDAG_NODE_SERVICES: node", compose)
+        self.assertIn("BDAG_NETWORK: ${BDAG_NETWORK:-${NETWORK:-mainnet}}", compose)
         self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool", compose)
         self.assertIn("BDAG_POOL_CONTAINER: pool", compose)
         self.assertIn("BDAG_POOL_DB_CONTAINER: postgres", compose)
         self.assertIn("BDAG_NODE_RPC_URLS: node=http://node:38131", compose)
         self.assertIn("DASHBOARD_EVM_RPC_URL: http://node:18545", compose)
         self.assertNotIn("BDAG_RPC_URL: http://bdag-miner-node-1:38131", compose)
+
+    def test_host_dashboard_env_uses_host_reachable_chain_rpc(self) -> None:
+        installer = (ROOT_DIR / "ops" / "install-dashboard.sh").read_text(encoding="utf-8")
+        portable_env = (ROOT_DIR / "ops" / "portable.env.example").read_text(encoding="utf-8")
+
+        self.assertIn("BDAG_NODE_RPC_URLS=node=http://127.0.0.1:38131", installer)
+        self.assertIn("BDAG_GLOBAL_CHAIN_RPC_URLS=node=http://127.0.0.1:38131", installer)
+        self.assertIn(
+            'migrate_legacy_env_value BDAG_NODE_RPC_URLS "node=http://node:38131" "node=http://127.0.0.1:38131"',
+            installer,
+        )
+        self.assertIn("BDAG_NODE_RPC_URLS=node=http://127.0.0.1:38131", portable_env)
+        self.assertIn("BDAG_GLOBAL_CHAIN_RPC_URLS=node=http://127.0.0.1:38131", portable_env)
+        self.assertNotIn("NODE_RPC_URLS=http://node:38131", portable_env)
 
     def test_compose_protects_temp_paths_from_overlay_io(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
