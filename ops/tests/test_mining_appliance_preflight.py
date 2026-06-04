@@ -173,6 +173,56 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         self.assertEqual(found["fastartifactsync"].status, "pass")
         self.assertEqual(found["fastartifactsync"].detail, "Fast Artifact Sync V2 startup flag is enabled")
 
+    def test_node_mining_runtime_accepts_safe_main_chain_args(self) -> None:
+        profile = preflight.HostProfile(
+            os_name="linux",
+            arch="x86_64",
+            cpu_count=8,
+            memory_bytes=16 * preflight.GIB,
+            profile="standard",
+            kernel="test",
+        )
+        checks = []
+        preflight.check_env_defaults(
+            checks,
+            {
+                "BDAG_ENABLE_NODE_MINING": "1",
+                "BDAG_NODE_MODULES": "Blockdag,miner",
+                "BDAG_NODE_MINING_ARGS": "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc",
+            },
+            profile,
+        )
+
+        found = {check.name: check for check in checks}
+        self.assertEqual(found["node_mining_runtime"].status, "pass")
+
+    def test_node_mining_runtime_rejects_unsynced_flags_without_override(self) -> None:
+        profile = preflight.HostProfile(
+            os_name="linux",
+            arch="x86_64",
+            cpu_count=8,
+            memory_bytes=16 * preflight.GIB,
+            profile="standard",
+            kernel="test",
+        )
+        checks = []
+        preflight.check_env_defaults(
+            checks,
+            {
+                "BDAG_ENABLE_NODE_MINING": "1",
+                "BDAG_NODE_MODULES": "Blockdag,miner",
+                "BDAG_NODE_MINING_ARGS": (
+                    "--allowminingwhennearlysynced --allowsubmitwhennotsynced "
+                    "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+                ),
+            },
+            profile,
+        )
+
+        found = {check.name: check for check in checks}
+        self.assertEqual(found["node_mining_runtime"].status, "fail")
+        self.assertIn("BDAG_ALLOW_UNSYNCED_NODE_MINING=1", found["node_mining_runtime"].detail)
+
     def test_usb_chain_mining_source_rejects_sync_source_node(self) -> None:
         old_mount_info = preflight.mount_info
         old_is_usb_source = preflight.is_usb_source

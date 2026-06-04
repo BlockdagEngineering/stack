@@ -205,7 +205,9 @@ before using the data.
 
 No-miner deployments are sync-only by default: `BDAG_ENABLE_NODE_MINING=0`,
 `BDAG_NODE_MODULES=Blockdag`, and an empty `BDAG_NODE_MINING_ARGS`. Enable node
-mining/template flags only when real miners are attached. The dashboard,
+mining/template flags only when real miners are attached, and keep unsynced
+mining overrides disabled unless `BDAG_ALLOW_UNSYNCED_NODE_MINING=1` is an
+explicit operator decision for a controlled recovery. The dashboard,
 watchdog, stack sentinel, P2P guard, peer refresh, chain restore guard, and
 snapshot timers are installed by `ops/install-dashboard.sh` unless explicitly
 disabled. Runtime tooling defaults to the current single-node stack names
