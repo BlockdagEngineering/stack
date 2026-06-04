@@ -267,6 +267,14 @@ make hard failures stop the install, or `BDAG_APPLIANCE_PREFLIGHT=0` to skip it
 explicitly. The field report behind these checks is in
 `docs/t430-appliance-hardening.md`.
 
+Mining hosts install `bdag-mining-host-tuning.service` and timer through
+`ops/install-p2p-services.sh`. The tuning script discovers the active Compose
+containers, raises node/pool/Postgres CPU and block I/O weights, applies
+process `nice`/`ionice`, writes cgroup v2 `memory.low` protection, and keeps the
+default network interface on `fq_codel`. The policy is safe to reapply and uses
+the `BDAG_*_CPU_SHARES`, `BDAG_*_MEMORY_LOW`, and `BDAG_TUNE_NET_QDISC` knobs
+from `.env`.
+
 The release builder also runs `scripts/verify-release-architecture.py` before
 image assembly so ARM64 packages cannot silently receive AMD64 binaries; the
 checker reads ELF/Mach-O/PE headers directly so it can be used from Linux,

@@ -25,19 +25,29 @@ x-node-critical: &node-critical
     - /var/tmp:size=${BDAG_NODE_TMPFS_SIZE:-512m},mode=1777
     - /run/bdag-ephemeral:size=${BDAG_NODE_TMPFS_SIZE:-512m},mode=1777
   shm_size: ${BDAG_NODE_SHM_SIZE:-512m}
-  cpu_shares: 4096
+  cpu_shares: ${BDAG_NODE_CPU_SHARES:-6144}
+  mem_swappiness: 0
   blkio_config:
     weight: 1000
   oom_score_adj: -900
+  ulimits:
+    nofile:
+      soft: 1048576
+      hard: 1048576
 
 x-pool-critical: &pool-critical
-  cpu_shares: 3072
+  cpu_shares: ${BDAG_POOL_CPU_SHARES:-5120}
+  mem_swappiness: 0
   blkio_config:
-    weight: 900
+    weight: 950
   oom_score_adj: -800
+  ulimits:
+    nofile:
+      soft: 1048576
+      hard: 1048576
 
 x-dashboard-low: &dashboard-low
-  cpu_shares: 256
+  cpu_shares: ${BDAG_DASHBOARD_CPU_SHARES:-128}
   blkio_config:
     weight: 100
   oom_score_adj: 300
@@ -55,6 +65,7 @@ services:
     image: postgres:15-bookworm
     restart: unless-stopped
     logging: *mining-logging
+    shm_size: ${BDAG_POOL_DB_SHM_SIZE:-256m}
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
       - /var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
@@ -166,6 +177,7 @@ services:
   pool:
     <<: *pool-critical
     platform: ${DOCKER_PLATFORM:-linux/amd64}
+    shm_size: ${BDAG_POOL_SHM_SIZE:-256m}
     build:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
