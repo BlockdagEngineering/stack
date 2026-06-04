@@ -290,6 +290,49 @@ remove_node_arg_prefix() {
   export NODE_ARGS_APPEND
 }
 
+node_args_contains_prefix() {
+  local node_args="$1"
+  local prefix="$2"
+  local word
+  for word in $node_args; do
+    case "$word" in
+      "$prefix"|"$prefix"=*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+append_node_arg_prefix_once() {
+  local flag="$1"
+  local node_args="$2"
+  local prefix="${flag%%=*}"
+  if node_args_contains_prefix "$node_args" "$prefix"; then
+    return 0
+  fi
+  NODE_ARGS_APPEND="${NODE_ARGS_APPEND:+$NODE_ARGS_APPEND }$flag"
+  export NODE_ARGS_APPEND
+}
+
+apply_node_mining_runtime_args() {
+  case "${BDAG_ENABLE_NODE_MINING:-0}" in
+    1|true|TRUE|yes|YES|on|ON) ;;
+    *) return 0 ;;
+  esac
+
+  local node_args modules word
+  node_args="$(node_args_from_argv "$@" || true)"
+  modules="${BDAG_NODE_MODULES:-}"
+  if [ -n "$modules" ]; then
+    append_node_arg_prefix_once "--modules=${modules}" "$node_args ${NODE_ARGS_APPEND:-}"
+  fi
+  for word in ${BDAG_NODE_MINING_ARGS:-}; do
+    case "$word" in
+      --miningaddr=*) append_node_arg_prefix_once "$word" "$node_args ${NODE_ARGS_APPEND:-}" ;;
+      --*) append_node_arg_once "$word" "$node_args ${NODE_ARGS_APPEND:-}" ;;
+    esac
+  done
+}
+
 mount_source_for_path() {
   local path="$1" real best_src="" best_target="" src target fstype rest
   real="$(readlink -m "$path" 2>/dev/null || printf '%s' "$path")"
@@ -631,6 +674,7 @@ configure_directory_artifact_serving() {
 apply_ordered_fastsync_peers "$@"
 apply_no_fastsync_serve_guard "$@"
 apply_default_fastsync_flags "$@"
+apply_node_mining_runtime_args "$@"
 
 if [ -n "${NODE_ARGS_APPEND:-}" ]; then
   args=("$@")

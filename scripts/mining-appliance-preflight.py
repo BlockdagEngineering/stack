@@ -869,8 +869,10 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         for flag in ("--allowminingwhennearlysynced", "--allowsubmitwhennotsynced", "--miner", "--miningaddr=")
         if flag not in node_mining_args
     ]
-    if node_mining_enabled and "miner" not in node_modules:
-        add(checks, "fail", "node_mining_runtime", "node mining is enabled but the miner module is not exposed.", "Set BDAG_NODE_MODULES=Blockdag,miner so the pool can request fresh templates.", evidence)
+    if node_mining_enabled and node_modules and "blockdag" not in node_modules:
+        add(checks, "fail", "node_mining_runtime", "node mining is enabled but the Blockdag RPC module is not exposed.", "Set BDAG_NODE_MODULES=Blockdag; miner mode is enabled by --miner in BDAG_NODE_MINING_ARGS.", evidence)
+    elif node_mining_enabled and "miner" in node_modules:
+        add(checks, "fail", "node_mining_runtime", "BDAG_NODE_MODULES includes unsupported miner RPC module for this release image.", "Set BDAG_NODE_MODULES=Blockdag and keep --miner in BDAG_NODE_MINING_ARGS so chain RPC and templates remain available.", evidence)
     elif node_mining_enabled and missing_mining_args:
         add(checks, "fail", "node_mining_runtime", "node mining is enabled but required mining guard args are missing: " + ", ".join(missing_mining_args), "Set BDAG_NODE_MINING_ARGS with near-sync mining, submit override, miner mode, and the payout mining address.", evidence)
     elif node_mining_enabled and constrained_mining_profile and "--maxinbound=1" not in node_mining_args:
