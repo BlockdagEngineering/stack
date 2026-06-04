@@ -60,7 +60,7 @@ ARG DASHBOARD_REF=develop
 RUN apk add --no-cache ca-certificates git
 RUN --mount=type=secret,id=github_token,required=false set -eu; \
     repo="${DASHBOARD_REPO:-https://github.com/BlockdagEngineering/dashboard.git}"; \
-    ref="develop"; \
+    ref="${DASHBOARD_REF:-develop}"; \
     token="$(cat /run/secrets/github_token 2>/dev/null || true)"; \
     if [ -n "$token" ]; then \
       auth="$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"; \
@@ -177,6 +177,9 @@ RUN apk add --no-cache \
     tzdata
 
 COPY --from=dashboard-source /src/dashboard /opt/dashboard
+# Compose supplies dashboard_src from DASHBOARD_SRC_CONTEXT so local fresh builds
+# run the checked-out dashboard code instead of silently cloning an older ref.
+COPY --from=dashboard_src . /opt/dashboard
 COPY docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
 RUN chmod +x /usr/local/bin/entrypoint-dashboard.sh \
  && mkdir -p /var/lib/bdag-dashboard/runtime /workspace \
