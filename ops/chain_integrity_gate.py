@@ -617,7 +617,7 @@ def dashboard_pressure_gate(
     env: Mapping[str, str],
     dashboard_fetcher: DashboardFetcher = fetch_dashboard_status,
 ) -> tuple[str, list[str], dict[str, Any]]:
-    url = str(env.get("BDAG_DASHBOARD_STATUS_URL") or "http://127.0.0.1:8088/api/status").strip()
+    url = str(env.get("BDAG_DASHBOARD_STATUS_URL") or "http://127.0.0.1/api/status").strip()
     timeout = env_float(env, "BDAG_CHAIN_INTEGRITY_DASHBOARD_TIMEOUT_SECONDS", 2.0)
     try:
         status, elapsed = dashboard_fetcher(url, timeout)

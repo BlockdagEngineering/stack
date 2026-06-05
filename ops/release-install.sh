@@ -494,7 +494,7 @@ configure_env() {
   configure_active_node_env
   configure_node_mining_env "$node_mining_enabled" "$mining_address"
   set_env_value .env BDAG_DASHBOARD_HOST_BIND_IP "$(env_value BDAG_DASHBOARD_HOST_BIND_IP 127.0.0.1)"
-  set_env_value .env DASHBOARD_HOST_PORT "$(env_value DASHBOARD_HOST_PORT 8088)"
+  set_env_value .env DASHBOARD_HOST_PORT "$(env_value DASHBOARD_HOST_PORT 80)"
 
   mem_kb="$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
   mem_gb=$(( mem_kb / 1024 / 1024 ))
@@ -713,7 +713,7 @@ main() {
   configure_miners
   say "Install complete"
   echo "Stratum: ${BDAG_POOL_URL:-$(grep '^BDAG_POOL_URL=' .env | cut -d= -f2-)}"
-  echo "Dashboard: http://${BDAG_DASHBOARD_BIND:-127.0.0.1}:${BDAG_DASHBOARD_PORT:-8088}"
+  echo "Dashboard: http://${BDAG_DASHBOARD_HOST_BIND_IP:-127.0.0.1}:${DASHBOARD_HOST_PORT:-80}"
   echo "Run ./tools/status.sh for a status check."
 }
 
