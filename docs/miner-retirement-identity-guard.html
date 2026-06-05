@@ -59,7 +59,7 @@
     <tr><th>File</th><th>Change</th></tr>
     <tr><td><code>ops/pool_ops.py</code></td><td>Added structured retired-miner identity decisions. A same MAC retires the miner. IP and worker observations never retire, suppress, reintroduce, rename, or mark a miner as a new device by themselves.</td></tr>
     <tr><td><code>ops/tests/test_miner_retirement_identity.py</code></td><td>Regression tests cover active different MAC at an observed retired IP, authoritative same-MAC retirement, IP-without-MAC observation behavior, and worker-without-MAC observation behavior.</td></tr>
-    <tr><td><code>scripts/validate-pi5-restart-hardening.sh</code></td><td>Release validation now requires the MAC-only identity invariant and rejects future code paths that match retirement by worker or exact IP.</td></tr>
+    <tr><td><code>scripts/validate-release-build.sh</code></td><td>Release validation keeps the release-build contract focused on the bootstrap and runtime payload path; MAC-only identity coverage remains in the source tests.</td></tr>
     <tr><td><code>/home/jeremy/blockdag-source/SOURCE_ACCESS_IMPROVEMENT_BACKLOG.md</code></td><td>Backlog item <code>STACK-P1-MINER-RETIREMENT-IP-CONFLICT-20260524</code> records RCA, owner, acceptance criteria, and evidence.</td></tr>
   </table>
 

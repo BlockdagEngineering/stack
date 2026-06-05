@@ -14,7 +14,7 @@ On the current pool host:
 ```
 
 The bundle excludes runtime logs, miner admin passwords, chain data, database
-data, snapshots, and `asic-pool/.env`.
+data, snapshots, and `.env` or `asic-pool/.env`.
 
 ## Install on Another Pool Host
 
@@ -36,7 +36,7 @@ ops/runtime/ops.env
 Edit `ops/runtime/ops.env` for that pool. The most important values are:
 
 ```bash
-BDAG_POOL_ENV_FILE=/path/to/blockdag-asic-pool/asic-pool/.env
+BDAG_POOL_ENV_FILE=/path/to/blockdag-asic-pool/.env
 BDAG_MINING_ADDRESS=0xYourWalletAddress
 BDAG_POOL_HOST=192.168.1.10
 BDAG_POOL_URL=stratum+tcp://192.168.1.10:3334
@@ -46,10 +46,11 @@ BDAG_MINER_SCAN_TARGET=192.168.1.0/24
 If that pool uses different container names, update:
 
 ```bash
-BDAG_POOL_CONTAINER=asic-pool
-BDAG_POOL_DB_CONTAINER=pool-db
-BDAG_NODE_SERVICES=bdag-miner-node-1
-BDAG_STACK_SERVICES=pool-db,bdag-miner-node-1,asic-pool
+BDAG_POOL_CONTAINER=pool
+BDAG_POOL_CONTAINERS=pool
+BDAG_POOL_DB_CONTAINER=postgres
+BDAG_NODE_SERVICES=node
+BDAG_STACK_SERVICES=postgres,node,pool
 ```
 
 Restart after edits:

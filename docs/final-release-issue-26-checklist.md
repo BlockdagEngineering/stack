@@ -12,19 +12,21 @@ while removing local assumptions that caused install or sync drift.
   peer preference, and the zero-state-root `HasState` guard.
 - `pool`: `develop` at `61b231c0501b32338f4ad47561a09e03e5933adc` or newer,
   pinned to a single backend submit path.
-- `pool-dashboard`: `develop` at `c82978751f035afd0e9da2b3d5d1fac69eae6858`
-  or newer.
+- `dashboard`: `develop`; release builds always use this branch.
 
 ## Release Requirements
 
 - GitHub release workflows pin known source commits, use Go 1.26, and set
   `GOFLAGS=-buildvcs=false`; pool binaries also pass `-buildvcs=false`
-  explicitly.
+  explicitly. Normal pool releases build both `linux-amd64` and `linux-arm64`
+  runtime payload zips and generate pinned bootstrap scripts for the same tag.
 - Release archives are audited by `scripts/check-release-archive.py` so `.git`,
   package metadata, mutable data directories, local `.env`, `node.conf`, and
   transient snapshot files do not ship.
-- Universal installers preserve existing node data, peer identity, signer
-  material, and runtime state unless `BDAG_RESET_NODE_DATA=1` is set.
+- Payload installers preserve existing node data, peer identity, signer
+  material, and runtime state unless `BDAG_RESET_NODE_DATA=1` is set. They set
+  `DOCKER_PLATFORM` from `release-payload.env`, not from a universal AMD64
+  assumption.
 - Installers preflight architecture, Docker Compose, disk, port occupancy, time
   sync, optional `jq`, and seed reachability. Old/orphan Compose cleanup is a
   dry-run unless `BDAG_CLEAN_ORPHAN_CONTAINERS=1` is set.
@@ -44,5 +46,4 @@ while removing local assumptions that caused install or sync drift.
 - Live data scans must avoid mutable Postgres/node paths; release packaging uses
   tracked source plus explicit runtime/data exclusions.
 
-Run `scripts/validate-pi5-restart-hardening.sh --mode source .` before tagging
-the release candidate.
+Run `scripts/validate-release-build.sh .` before tagging the release candidate.

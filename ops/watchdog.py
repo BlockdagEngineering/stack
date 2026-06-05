@@ -8,6 +8,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from datetime import datetime, timezone
@@ -90,6 +91,11 @@ DEFAULT_ASIC_HASHRATE_REPAIR_COOLDOWN = int(
 DEFAULT_ASIC_HASHRATE_STARTUP_GRACE_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_ASIC_HASHRATE_STARTUP_GRACE_SECONDS", "180")
 )
+DEFAULT_ASIC_API_STALL_STALE_SECONDS = int(os.environ.get("BDAG_WATCHDOG_ASIC_API_STALL_STALE_SECONDS", "180"))
+DEFAULT_ASIC_API_STALL_CONFIRM_SECONDS = int(os.environ.get("BDAG_WATCHDOG_ASIC_API_STALL_CONFIRM_SECONDS", "120"))
+DEFAULT_ASIC_API_STALL_REPAIR_COOLDOWN = int(
+    os.environ.get("BDAG_WATCHDOG_ASIC_API_STALL_REPAIR_COOLDOWN", str(DEFAULT_MINER_RESTART_COOLDOWN))
+)
 DEFAULT_MINER_USEFUL_WORK_STALL_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_MINER_USEFUL_WORK_STALL_SECONDS", "150")
 )
@@ -112,6 +118,9 @@ DEFAULT_EARNINGS_SNAPSHOT_INTERVAL_SECONDS = int(
 DEFAULT_NODE_TEMPLATE_RESTART_COOLDOWN = int(os.environ.get("BDAG_WATCHDOG_NODE_TEMPLATE_RESTART_COOLDOWN", "180"))
 DEFAULT_NODE_ORPHAN_STORM_RESTART_COOLDOWN = int(
     os.environ.get("BDAG_WATCHDOG_NODE_ORPHAN_STORM_RESTART_COOLDOWN", "300")
+)
+DEFAULT_NODE_DAG_TIP_CLEANUP_COOLDOWN = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_DAG_TIP_CLEANUP_COOLDOWN", "1800")
 )
 DEFAULT_OPTIMUM_STATE_EVENT_COOLDOWN = int(os.environ.get("BDAG_WATCHDOG_OPTIMUM_STATE_EVENT_COOLDOWN", "300"))
 
@@ -286,6 +295,29 @@ def update_useful_work_stall_since(
         except (TypeError, ValueError):
             updated[key] = now
     state["miner_useful_work_stall_since"] = updated
+    return updated
+
+
+def update_asic_api_stall_since(
+    state: dict[str, Any],
+    api_stalled_asics: list[dict[str, Any]],
+    now: int,
+) -> dict[str, int]:
+    previous = state.get("asic_api_stall_since") if isinstance(state.get("asic_api_stall_since"), dict) else {}
+    updated: dict[str, int] = {}
+    for item in api_stalled_asics:
+        key = miner_stall_identity_key(item)
+        if not key:
+            continue
+        old_value = previous.get(key)
+        ip_key = f"ip:{item.get('ip')}" if item.get("ip") else ""
+        if old_value is None and ip_key:
+            old_value = previous.get(ip_key) or previous.get(str(item.get("ip")))
+        try:
+            updated[key] = int(old_value if old_value is not None else now)
+        except (TypeError, ValueError):
+            updated[key] = now
+    state["asic_api_stall_since"] = updated
     return updated
 
 
@@ -484,6 +516,93 @@ def low_difficulty_primary_miners(status: dict[str, Any]) -> list[dict[str, Any]
         and row.get("low_difficulty_flood")
         and is_lan_ipv4(str(row.get("ip", "")))
     ]
+
+
+ASIC_API_STALL_TEXT_FRAGMENTS = (
+    "/mcb/cgminer",
+    "cgminercmd=devs",
+    "miner request failed",
+    "timed out",
+    "timeout",
+    "http 500",
+    "server error",
+    "connection refused",
+    "connection reset",
+    "remote end closed",
+)
+
+
+def asic_api_stall_primary_miners(
+    status: dict[str, Any],
+    stale_seconds: int = DEFAULT_ASIC_API_STALL_STALE_SECONDS,
+) -> list[dict[str, Any]]:
+    pool_health = status.get("pool_health", status.get("pool", {}))
+    if not isinstance(pool_health, dict):
+        pool_health = {}
+    if pool_initial_download_effective(status) or int(pool_health.get("job_notify_count") or 0) <= 0:
+        return []
+    if any(
+        bool(pool_health.get(key))
+        for key in (
+            "share_stall",
+            "job_stall",
+            "pool_template_frozen",
+            "duplicate_block_storm",
+            "stale_job_candidate_storm",
+            "block_submit_error_storm",
+            "accepted_job_expired_storm",
+            "expired_job_reconnect_failed_no_share",
+            "block_submit_zero_success_storm",
+            "initial_download",
+            "rpc_refused",
+        )
+    ):
+        return []
+    if template_failing_nodes(status) or active_rpc_template_failing(status):
+        return []
+
+    mining_address = str(status.get("mining_address") or "")
+    miners = ((status.get("miner_health") or {}).get("miners") or [])
+    affected: list[dict[str, Any]] = []
+    for row in miners:
+        if not isinstance(row, dict) or not row.get("managed"):
+            continue
+        if row.get("device_type") != "asic" or not is_lan_ipv4(str(row.get("ip", ""))):
+            continue
+        if not is_primary_pool_identity(row, mining_address):
+            continue
+        if row.get("connected") or row.get("pool_active") is True or row.get("work_pool_active") is True:
+            continue
+        if row.get("status") not in {"down", "degraded"}:
+            continue
+        stale_age = (
+            int_or_none(row.get("last_pool_seen_age_seconds"))
+            or int_or_none(row.get("last_share_age_seconds"))
+            or int_or_none(row.get("last_submit_age_seconds"))
+        )
+        if stale_age is not None and stale_age < stale_seconds:
+            continue
+        debug = row.get("debug") if isinstance(row.get("debug"), dict) else {}
+        issue_text = " ".join(
+            str(value or "")
+            for value in (
+                row.get("issue"),
+                row.get("debug_error"),
+                row.get("api_error"),
+                debug.get("error"),
+                debug.get("debug_error"),
+            )
+        ).lower()
+        api_unavailable = debug.get("available") is False or bool(row.get("debug_error"))
+        api_stall_evidence = api_unavailable or any(fragment in issue_text for fragment in ASIC_API_STALL_TEXT_FRAGMENTS)
+        if not api_stall_evidence:
+            continue
+        item = dict(row)
+        item["api_stall_issue"] = issue_text.strip()
+        item["api_stall_stale_age_seconds"] = stale_age
+        item["restart_open_first"] = True
+        affected.append(item)
+    return affected
 
 
 def useful_work_stalled_primary_miners(
@@ -836,16 +955,9 @@ def run_node_restart(node_service: str, reason: str) -> bool:
     write_action_state(state_payload)
     log(f"starting targeted restart for {node_service}: {reason}; log={log_path}")
 
-    command = [
-        "docker",
-        "compose",
-        "--env-file",
-        str(POOL_ENV_FILE),
-        "-f",
-        str(PROJECT_ROOT / "docker-compose.yml"),
-        "restart",
-        node_service,
-    ]
+    # NODES contains runtime container names. The Compose service may be named
+    # differently after topology migration, so restart the concrete container.
+    command = ["docker", "restart", node_service]
     result = run_logged(command, log_path, timeout=180)
     ok = result.ok
 
@@ -861,6 +973,71 @@ def run_node_restart(node_service: str, reason: str) -> bool:
     if not ok:
         record_failed_repair(
             f"targeted node restart for {node_service}",
+            reason,
+            {"node": node_service, "log_path": str(log_path)},
+        )
+    lock_handle.close()
+    return ok
+
+
+def run_node_dag_tip_cleanup(node_service: str, reason: str) -> bool:
+    if node_service not in NODES:
+        log(f"node DAG tip cleanup skipped for unknown node={node_service} reason={reason}")
+        return False
+    if not automation_mutation_allowed(automation_control.ACTION_NODE_RESTART, node_service, reason):
+        return False
+
+    lock_handle = acquire_lock(blocking=False)
+    if lock_handle is None:
+        log(f"node DAG tip cleanup skipped because another repair is running; node={node_service} reason={reason}")
+        return False
+
+    started = time.time()
+    action_name = f"cleanuptips-{node_service}"
+    log_path = action_log_path(action_name)
+    state_payload = {
+        "name": action_name,
+        "mode": "node-cleanuptips",
+        "node": node_service,
+        "reason": reason,
+        "status": "running",
+        "started_at": now_iso(),
+        "finished_at": None,
+        "log_path": str(log_path),
+    }
+    write_action_state(state_payload)
+    log(f"starting node DAG tip cleanup for {node_service}: {reason}; log={log_path}")
+
+    node_arg = shlex.quote(node_service)
+    script = f"""set -euo pipefail
+node={node_arg}
+image=$(docker inspect "$node" --format '{{{{.Config.Image}}}}')
+uid=$(docker exec "$node" id -u bdagStack 2>/dev/null || printf '999')
+gid=$(docker exec "$node" id -g bdagStack 2>/dev/null || printf '999')
+restart_node() {{
+    docker start "$node" >/dev/null 2>&1 || true
+}}
+trap restart_node EXIT
+docker stop "$node" || true
+docker run --rm --volumes-from "$node" --user "${{uid}}:${{gid}}" --entrypoint /usr/local/bin/blockdag-node "$image" --configfile /etc/bdagStack/node.conf --cleanuptips
+trap - EXIT
+docker start "$node"
+"""
+    result = run_logged(["bash", "-lc", script], log_path, timeout=600)
+    ok = result.ok
+
+    state_payload.update(
+        {
+            "status": "ok" if ok else "failed",
+            "finished_at": now_iso(),
+            "elapsed": round(time.time() - started, 3),
+        }
+    )
+    write_action_state(state_payload)
+    log(f"finished node DAG tip cleanup for {node_service} status={state_payload['status']} elapsed={state_payload['elapsed']}s")
+    if not ok:
+        record_failed_repair(
+            f"node DAG tip cleanup for {node_service}",
             reason,
             {"node": node_service, "log_path": str(log_path)},
         )
@@ -923,7 +1100,15 @@ def run_pool_restart(reason: str) -> bool:
 
 def run_miner_restarts(targets: list[dict[str, Any]], reason: str) -> dict[str, Any]:
     target_label = ",".join(str(item.get("ip") or "") for item in targets) or "asic-miners"
-    if not automation_mutation_allowed(automation_control.ACTION_ASIC_MINER_RESTART, target_label, reason):
+    open_restart_only = bool(targets) and all(
+        bool(item.get("restart_open_first")) or "api-stall" in reason.lower() for item in targets
+    )
+    mutation_action = (
+        automation_control.ACTION_ASIC_MINER_OPEN_RESTART
+        if open_restart_only
+        else automation_control.ACTION_ASIC_MINER_RESTART
+    )
+    if not automation_mutation_allowed(mutation_action, target_label, reason):
         return {
             "status": "suppressed",
             "reason": "automation control denied ASIC miner restart",
@@ -964,8 +1149,39 @@ def run_miner_restarts(targets: list[dict[str, Any]], reason: str) -> dict[str, 
             if not is_lan_ipv4(ip):
                 result = {"ip": ip, "status": "skipped", "error": "not a LAN IPv4 address"}
             else:
+                open_restart_first = bool(target.get("restart_open_first")) or "api-stall" in reason.lower()
                 try:
-                    if target.get("configured") is False and password:
+                    if open_restart_first:
+                        try:
+                            result = {
+                                **restart_miner_open(ip),
+                                "action": "restart-open-api-stall",
+                                "note": "ASIC API/cgminer endpoint was stalled; open restart is preferred over config rewrite",
+                            }
+                        except Exception as exc:  # noqa: BLE001 - try authenticated restart before failing.
+                            if password:
+                                try:
+                                    result = {
+                                        **restart_miner(ip, password),
+                                        "action": "restart-auth-fallback",
+                                        "open_restart_error": str(exc),
+                                    }
+                                except Exception as auth_exc:  # noqa: BLE001
+                                    result = {
+                                        "ip": ip,
+                                        "status": "failed",
+                                        "action": "restart-open-api-stall",
+                                        "error": str(exc),
+                                        "auth_restart_error": str(auth_exc),
+                                    }
+                            else:
+                                result = {
+                                    "ip": ip,
+                                    "status": "failed",
+                                    "action": "restart-open-api-stall",
+                                    "error": str(exc),
+                                }
+                    elif target.get("configured") is False and password:
                         result = configure_miner(
                             ip=ip,
                             admin_password=password,
@@ -1110,21 +1326,23 @@ def active_sync_import_nodes(
             continue
         progress = progress_nodes.get(node, {}) if isinstance(progress_nodes.get(node), dict) else {}
         latest = max(int(info.get("latest_block") or 0), int(progress.get("current_block") or 0))
-        if info.get("importing") and latest > 0:
+        raw_age = info.get("last_import_age_seconds")
+        import_age: int | None = None
+        if raw_age is not None:
+            try:
+                import_age = int(float(raw_age))
+            except (TypeError, ValueError):
+                import_age = None
+        if info.get("importing") and latest > 0 and (import_age is None or import_age <= grace_seconds):
             active.append(node)
             continue
         changed_at = int(height_changed_at.get(node) or 0)
         if latest > 0 and changed_at and current_time - changed_at <= grace_seconds:
             active.append(node)
             continue
-        raw_age = info.get("last_import_age_seconds")
-        if raw_age is None or latest <= 0:
+        if import_age is None or latest <= 0:
             continue
-        try:
-            age = int(float(raw_age))
-        except (TypeError, ValueError):
-            continue
-        if age <= grace_seconds:
+        if import_age <= grace_seconds:
             active.append(node)
     return active
 
@@ -1174,7 +1392,7 @@ def suppress_sync_restart_for_active_import(
     if not expected_sync_wait:
         return False
 
-    state["last_sync_repair_at"] = int(time.time())
+    state["last_sync_repair_suppressed_epoch"] = int(time.time())
     state["last_sync_repair_suppressed_at"] = now_iso()
     state["last_sync_repair_suppressed_reason"] = "active block import"
     details = {
@@ -1194,6 +1412,40 @@ def suppress_sync_restart_for_active_import(
         details,
     )
     return True
+
+
+def dag_tip_damage_nodes(status: dict[str, Any]) -> list[str]:
+    nodes = status.get("nodes", {}) if isinstance(status.get("nodes"), dict) else {}
+    damaged: list[str] = []
+    for node in NODES:
+        info = nodes.get(node, {}) if isinstance(nodes.get(node), dict) else {}
+        if info.get("dag_tip_damage"):
+            damaged.append(node)
+    return damaged
+
+
+def should_cleanup_dag_tips(state: dict[str, Any], node: str, cooldown: int | None = None) -> bool:
+    cooldown_seconds = DEFAULT_NODE_DAG_TIP_CLEANUP_COOLDOWN if cooldown is None else cooldown
+    by_node = (
+        state.get("last_node_dag_tip_cleanup_at_by_node")
+        if isinstance(state.get("last_node_dag_tip_cleanup_at_by_node"), dict)
+        else {}
+    )
+    now = int(time.time())
+    return now - int(by_node.get(node, 0) or 0) >= cooldown_seconds
+
+
+def mark_dag_tip_cleanup_attempt(state: dict[str, Any], node: str) -> None:
+    by_node = (
+        state.get("last_node_dag_tip_cleanup_at_by_node")
+        if isinstance(state.get("last_node_dag_tip_cleanup_at_by_node"), dict)
+        else {}
+    )
+    updated = dict(by_node)
+    updated[node] = int(time.time())
+    state["last_node_dag_tip_cleanup_at_by_node"] = updated
+    state["last_node_dag_tip_cleanup_node"] = node
+    state["last_node_dag_tip_cleanup_at"] = now_iso()
 
 
 def should_clean_restore(state: dict[str, Any], status: dict[str, Any], threshold: int, cooldown: int) -> bool:
@@ -1432,10 +1684,18 @@ def check_once(
         bool(pool_health.get("accepted_job_expired_storm"))
         and int(miner_health.get("connected_count", 0) or 0) > 0
     )
+    connected_miner_count = int_or_none(
+        miner_health.get("connected_count_effective") or miner_health.get("connected_count")
+    ) or 0
+    expired_job_reconnect_failed = bool(
+        pool_health.get("expired_job_reconnect_failed_no_share")
+        and connected_miner_count == 0
+    )
     submit_path_recovery_recent = bool(pool_health.get("submit_stall_recovery_recent"))
     submit_path_self_healed_recently = bool(pool_health.get("submit_stall_self_healed_recently"))
     submit_path_recovery_age = pool_health.get("submit_stall_last_recovery_age_seconds")
     low_diff_asics = low_difficulty_primary_miners(status)
+    api_stall_asics = asic_api_stall_primary_miners(status, DEFAULT_ASIC_API_STALL_STALE_SECONDS)
     useful_work_stalled_asics = useful_work_stalled_primary_miners(status)
     hashrate_issue_asics = asic_hashrate_issue_primary_miners(
         status,
@@ -1450,6 +1710,7 @@ def check_once(
     )
     template_nodes = template_failing_nodes(status)
     orphan_nodes = orphan_storm_nodes(status)
+    dag_tip_nodes = dag_tip_damage_nodes(status)
     node_template_restart_by_node = (
         state.get("last_node_template_restart_at_by_node")
         if isinstance(state.get("last_node_template_restart_at_by_node"), dict)
@@ -1470,6 +1731,7 @@ def check_once(
         degraded_asics,
         now,
     )
+    asic_api_stall_since = update_asic_api_stall_since(state, api_stall_asics, now)
     asic_hashrate_issue_since = (
         state.get("asic_hashrate_issue_since")
         if isinstance(state.get("asic_hashrate_issue_since"), dict)
@@ -1604,7 +1866,26 @@ def check_once(
             {"consecutive_failures": state["consecutive_failures"]},
         )
         if repair:
-            if should_clean_restore(state, status, threshold, clean_restore_cooldown):
+            dag_tip_node = dag_tip_nodes[0] if dag_tip_nodes else ""
+            if dag_tip_node and should_cleanup_dag_tips(state, dag_tip_node):
+                reason = (
+                    "node DAG tips reference missing block data; running narrow --cleanuptips repair before restart: "
+                    + "; ".join(stack_failures)
+                )
+                ok = run_node_dag_tip_cleanup(dag_tip_node, reason)
+                state["last_repair_at"] = int(time.time())
+                mark_dag_tip_cleanup_attempt(state, dag_tip_node)
+                if ok:
+                    state["consecutive_failures"] = 0
+            elif dag_tip_node:
+                log(f"node DAG tip cleanup for {dag_tip_node} suppressed by cooldown; failures={'; '.join(stack_failures)}")
+                record_efficiency_event(
+                    "repair_suppressed",
+                    "warning",
+                    f"node DAG tip cleanup for {dag_tip_node} suppressed by cooldown",
+                    {"node": dag_tip_node, "failures": stack_failures},
+                )
+            elif should_clean_restore(state, status, threshold, clean_restore_cooldown):
                 ok = run_repair("clean", "; ".join(stack_failures))
                 state["last_repair_at"] = int(time.time())
                 if ok:
@@ -1706,6 +1987,88 @@ def check_once(
                 if ok:
                     state["consecutive_syncing"] = 0
                     state["consecutive_node_orphan_storm"] = 0
+    elif api_stall_asics:
+        affected = [
+            {
+                "identity_key": miner_stall_identity_key(item),
+                "ip": item.get("ip"),
+                "mac": item.get("mac"),
+                "name": item.get("display_name"),
+                "status": item.get("status"),
+                "configured": item.get("configured"),
+                "connected": item.get("connected"),
+                "pool_active": item.get("pool_active"),
+                "work_pool_active": item.get("work_pool_active"),
+                "last_pool_seen_age_seconds": item.get("last_pool_seen_age_seconds"),
+                "last_share_age_seconds": item.get("last_share_age_seconds"),
+                "last_submit_age_seconds": item.get("last_submit_age_seconds"),
+                "api_stall_stale_age_seconds": item.get("api_stall_stale_age_seconds"),
+                "issue": item.get("issue"),
+                "debug_error": item.get("debug_error"),
+            }
+            for item in api_stall_asics
+        ]
+        eligible_miners = []
+        waiting = []
+        for item in api_stall_asics:
+            ip = str(item.get("ip"))
+            identity_key = miner_stall_identity_key(item)
+            stalled_for = now - int(asic_api_stall_since.get(identity_key, now) or now)
+            cooldown_remaining = DEFAULT_ASIC_API_STALL_REPAIR_COOLDOWN - (
+                now - int(miner_restart_by_ip.get(ip, 0) or 0)
+            )
+            if stalled_for >= DEFAULT_ASIC_API_STALL_CONFIRM_SECONDS and cooldown_remaining <= 0:
+                eligible_miners.append(item)
+            else:
+                waiting.append(
+                    f"{identity_key or ip} ip={ip} stalled_for={stalled_for}s "
+                    f"confirm={DEFAULT_ASIC_API_STALL_CONFIRM_SECONDS}s "
+                    f"cooldown_remaining={max(cooldown_remaining, 0)}s"
+                )
+        reason = (
+            f"{len(api_stall_asics)} managed ASIC miner(s) have a sustained local API/cgminer stall "
+            "while pool-wide backend/template failure checks are clear"
+        )
+        state["consecutive_failures"] = 0
+        state["consecutive_syncing"] = 0
+        state["consecutive_node_orphan_storm"] = 0
+        state["consecutive_share_stalls"] = 0
+        state["consecutive_miner_useful_work_stalls"] = 0
+        state["last_status"] = "asic_api_stall"
+        state["last_failures"] = []
+        state["last_share_warnings"] = [reason]
+        state["last_asic_api_stall"] = affected
+        log(
+            "asic_api_stall "
+            f"affected={affected} eligible={[item.get('ip') for item in eligible_miners]} "
+            f"waiting={'; '.join(waiting) or 'none'}"
+        )
+        record_efficiency_event(
+            "asic_api_stall",
+            "warning",
+            reason,
+            {
+                "affected_miners": affected,
+                "eligible": [item.get("ip") for item in eligible_miners],
+                "waiting": waiting,
+                "primary_miner_count": primary_miner_count,
+            },
+        )
+        if repair and eligible_miners:
+            repair_targets = []
+            for item in eligible_miners[:1]:
+                target = dict(item)
+                target["restart_open_first"] = True
+                repair_targets.append(target)
+            result = run_miner_restarts(repair_targets, "ASIC API-stall watchdog: " + reason)
+            state["last_miner_repair_at"] = now
+            state["last_miner_repair"] = result
+            for item in repair_targets:
+                ip = str(item.get("ip"))
+                miner_restart_by_ip[ip] = now
+                asic_api_stall_since.pop(miner_stall_identity_key(item), None)
+            state["last_miner_restart_at_by_ip"] = miner_restart_by_ip
+            state["asic_api_stall_since"] = asic_api_stall_since
     elif useful_work_stalled_asics:
         affected = [
             {
@@ -1988,7 +2351,7 @@ def check_once(
                     "selected_backend": pool_health.get("selected_backend"),
                 },
             )
-    elif submit_path_zero_success_storm or accepted_job_expired_storm:
+    elif submit_path_zero_success_storm or accepted_job_expired_storm or expired_job_reconnect_failed:
         failure_count = int(pool_health.get("block_submit_failure_count") or 0)
         duplicate_count = int(pool_health.get("duplicate_block_count") or 0)
         submit_errors = int(pool_health.get("block_submit_error_count") or 0)
@@ -1996,7 +2359,17 @@ def check_once(
         stale_job_count = int(pool_health.get("stale_job_candidate_count") or 0)
         expired_submit_count = int(pool_health.get("stale_submit_count") or 0)
         valid_share_count = int(pool_health.get("valid_share_count") or 0)
-        if accepted_job_expired_storm:
+        if expired_job_reconnect_failed:
+            reason = (
+                "pool expired-job stale-client reconnect recovery exhausted: "
+                "a miner re-authorized after forced reconnect, produced no valid shares, "
+                "then timed out leaving zero active Stratum connections "
+                f"(reconnects={pool_health.get('expired_job_reconnect_count')}, "
+                f"reauthorize_after_reconnect={pool_health.get('expired_job_reauthorize_after_reconnect_count')}, "
+                f"timeouts_after_reconnect={pool_health.get('expired_job_client_timeout_after_reconnect_count')}, "
+                f"last_timeout={pool_health.get('expired_job_client_timeout_last_at')})"
+            )
+        elif accepted_job_expired_storm:
             reason = (
                 "pool acceptedJobs cache is rejecting expired jobs while miners are connected "
                 f"(expired_job_submits={expired_submit_count}, valid_shares={valid_share_count}, "
@@ -2019,17 +2392,26 @@ def check_once(
         state["consecutive_node_orphan_storm"] = 0
         state["consecutive_share_stalls"] = 0
         state["consecutive_submit_path_stalls"] = int(state.get("consecutive_submit_path_stalls", 0) or 0) + 1
-        state["last_status"] = "pool_accepted_job_expired_storm" if accepted_job_expired_storm else "pool_submit_path_stall"
+        state["last_status"] = (
+            "pool_expired_job_reconnect_exhausted"
+            if expired_job_reconnect_failed
+            else ("pool_accepted_job_expired_storm" if accepted_job_expired_storm else "pool_submit_path_stall")
+        )
         state["last_failures"] = []
         state["last_share_warnings"] = [reason]
         log(f"pool_submit_path_stall consecutive={state['consecutive_submit_path_stalls']} reason={reason}")
         record_efficiency_event(
-            "pool_accepted_job_expired_storm" if accepted_job_expired_storm else "pool_submit_path_stall",
+            (
+                "pool_expired_job_reconnect_exhausted"
+                if expired_job_reconnect_failed
+                else ("pool_accepted_job_expired_storm" if accepted_job_expired_storm else "pool_submit_path_stall")
+            ),
             "critical",
             reason,
             {
-                "connected_miners": miner_health.get("connected_count"),
+                "connected_miners": connected_miner_count,
                 "accepted_job_expired_storm": accepted_job_expired_storm,
+                "expired_job_reconnect_failed": expired_job_reconnect_failed,
                 "expired_job_submit_count": expired_submit_count,
                 "valid_share_count": valid_share_count,
                 "block_submit_failure_count": failure_count,
@@ -2038,6 +2420,10 @@ def check_once(
                 "tip_overdue_count": overdue_count,
                 "stale_job_candidate_count": stale_job_count,
                 "pool_started_age_seconds": pool_started_age_seconds,
+                "expired_job_reconnect_last_at": pool_health.get("expired_job_reconnect_last_at"),
+                "expired_job_reconnect_last_line": pool_health.get("expired_job_reconnect_last_line"),
+                "expired_job_client_timeout_last_at": pool_health.get("expired_job_client_timeout_last_at"),
+                "expired_job_client_timeout_last_line": pool_health.get("expired_job_client_timeout_last_line"),
             },
         )
         if repair:
@@ -2114,11 +2500,12 @@ def check_once(
                     {"cooldown_remaining_seconds": cooldown_remaining, "reason": reason},
                 )
             else:
-                prefix = (
-                    "pool acceptedJobs expired storm: "
-                    if accepted_job_expired_storm
-                    else "pool submit-path zero-success storm: "
-                )
+                if expired_job_reconnect_failed:
+                    prefix = "pool expired-job reconnect exhausted: "
+                elif accepted_job_expired_storm:
+                    prefix = "pool acceptedJobs expired storm: "
+                else:
+                    prefix = "pool submit-path zero-success storm: "
                 ok = run_pool_restart(prefix + reason)
                 state["last_repair_at"] = int(time.time())
                 state["last_share_repair_at"] = int(time.time())
@@ -2364,14 +2751,18 @@ def check_once(
             restart_node = template_nodes[0] if template_nodes else choose_lagging_node(status)
             if suppress_sync_restart_for_active_import(status, state, "; ".join(sync_warnings), restart_node):
                 ok = False
+                repair_attempted = False
             elif restart_node:
                 ok = run_node_restart(restart_node, "persistent syncing: " + "; ".join(sync_warnings))
+                repair_attempted = True
             else:
                 ok = run_repair("restart", "persistent syncing: " + "; ".join(sync_warnings))
-            state["last_repair_at"] = int(time.time())
-            state["last_sync_repair_at"] = int(time.time())
-            if ok:
-                state["consecutive_syncing"] = 0
+                repair_attempted = True
+            if repair_attempted:
+                state["last_repair_at"] = int(time.time())
+                state["last_sync_repair_at"] = int(time.time())
+                if ok:
+                    state["consecutive_syncing"] = 0
     else:
         if state.get("last_status") != status["overall"]:
             log(f"status={status['overall']} warnings={'; '.join(status['warnings']) or 'none'}")
@@ -2412,6 +2803,9 @@ def loop(
         f"asic_hashrate_stale={DEFAULT_ASIC_HASHRATE_STALE_SECONDS}s "
         f"asic_hashrate_confirm={DEFAULT_ASIC_HASHRATE_CONFIRM_SECONDS}s "
         f"asic_hashrate_cooldown={DEFAULT_ASIC_HASHRATE_REPAIR_COOLDOWN}s "
+        f"asic_api_stall_stale={DEFAULT_ASIC_API_STALL_STALE_SECONDS}s "
+        f"asic_api_stall_confirm={DEFAULT_ASIC_API_STALL_CONFIRM_SECONDS}s "
+        f"asic_api_stall_cooldown={DEFAULT_ASIC_API_STALL_REPAIR_COOLDOWN}s "
         f"earnings_snapshot_interval={DEFAULT_EARNINGS_SNAPSHOT_INTERVAL_SECONDS}s"
     )
     while True:

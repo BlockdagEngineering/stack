@@ -73,6 +73,59 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         self.assertEqual(index["history_completeness"]["complete_from_order"], 100)
         self.assertEqual(index["history_completeness"]["backfill_required_before_order"], 100)
         self.assertEqual(len(index["segments"]), 1)
+        self.assertNotIn("signatures", index)
+        self.assertNotIn("index_root", index)
+
+    def test_build_segment_publishes_unsigned_manifest_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            captured: dict[str, dict] = {}
+
+            def add_side_effect(_path, payload, _env):
+                captured[payload["document_type"]] = json.loads(json.dumps(payload))
+                if payload["document_type"] == "bdag_chain_order_segment_payload_v1":
+                    return ("baf-payload", "payload-sha", 100)
+                return ("baf-manifest", "manifest-sha", 200)
+
+            blocks = [
+                {
+                    "order": 1,
+                    "hash": "0x1",
+                    "header": {"timestamp": 123},
+                    "raw_block_hex": "abcd",
+                    "raw_block_sha256": "raw-sha",
+                }
+            ]
+
+            with mock.patch.object(ipfs_segment_writer, "fetch_segment_blocks", return_value=blocks), mock.patch.object(
+                ipfs_segment_writer,
+                "segment_dir",
+                return_value=Path(tmp),
+            ), mock.patch.object(
+                ipfs_segment_writer,
+                "add_checked_json",
+                side_effect=add_side_effect,
+            ), mock.patch.object(
+                ipfs_segment_writer,
+                "ipfs_peer_id",
+                return_value="peer",
+            ):
+                record = ipfs_segment_writer.build_segment(
+                    mock.Mock(),
+                    "unit",
+                    "http://source:38131",
+                    1,
+                    1,
+                    {},
+                    {"BDAG_NETWORK": "mainnet"},
+                )
+
+        manifest = captured["bdag_ipfs_segment_manifest_v1"]
+        self.assertNotIn("manifest_cid", manifest)
+        self.assertNotIn("signature_status", manifest)
+        self.assertNotIn("manifest_root", manifest)
+        self.assertNotIn("signatures", manifest)
+        self.assertNotIn("manifest_root", record)
+        self.assertNotIn("manifest_signatures", record)
 
     def test_canonical_json_bytes_are_stable(self) -> None:
         left = ipfs_segment_writer.canonical_json_bytes({"b": 1, "a": [2, 3]})

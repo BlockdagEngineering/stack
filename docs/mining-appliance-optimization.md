@@ -1,8 +1,8 @@
 # Mining Appliance Optimization
 
 This repo ships defaults for dedicated BlockDAG mining hosts. They are intended
-for single-node deployments; every node service should use the same
-node resource profile and the same host profile.
+for the default one-node deployment; every node service should use the same node
+resource profile and the same host profile.
 
 ## Docker Defaults
 
@@ -111,13 +111,11 @@ a single-device USB profile and the preflight reports that all hot writes share
 one device.
 
 USB-backed chain hosts must not act as default FastSync/FastArtifact sources.
-The release default is `BDAG_NO_FASTSYNC_SERVE=auto`: when the node datadir is
-USB-backed, or the storage profile is `usb-chain-internal-runtime` or
-`single-usb-constrained`, the entrypoint adds `--nofastsyncserve`, disables
-continuous FastArtifact serving, and clears directory artifact publication for
-that node. The node still consumes the fastest available sync source and relays
-found blocks; it just does not make the active USB chain path a bulk download
-source for other clients.
+The release default is `SYNC_SOURCE_NODE=0`: the entrypoint adds
+`--nofastsyncserve`, disables continuous FastArtifact serving, and clears
+directory artifact publication for that node. The node still consumes the
+fastest available sync source and relays found blocks; it just does not make the
+active chain path a bulk download source for other clients.
 
 Small scratch files that are safe to lose should not use the chain disk either.
 The release defaults create `/run/bdag-pool` through tmpfiles and set:

@@ -1,19 +1,32 @@
 # Pool Stack Agent Notes
 
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked in GitHub Issues for `BlockdagEngineering/stack` using the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five canonical triage labels exactly as named. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Multi-context repo with shared context in sibling `../codex-memory`; read that memory repo before repo-local context docs when present. See `docs/agents/domain.md`.
+
 ## Release Candidate Dashboard Source
 
+
 The only dashboard repository for this release candidate is
-`BlockdagEngineering/pool-dashboard`. Its `main` branch was replaced with the
-live Python operations dashboard captured from
-`/home/jeremy/blockdag-asic-pool/ops` at commit
-`6585347bfa78a1e6ed2a6178eaa38c7ccac9d022`.
+`BlockdagEngineering/dashboard`. Release builds must always use its `develop`
+branch.
 
 Do not reintroduce the retired standalone read-only dashboard, command-center
 prototype, or Grafana/Prometheus/Loki observability dashboard as RC dashboard
 sources. The stack repository still owns full-node, pool, Docker, installer,
 and chain-sync packaging. The dashboard repository owns the dashboard/control
 plane source, and any dashboard code imported into this RC must preserve the
-hardening gates in `scripts/validate-pi5-restart-hardening.sh`.
+release build gates in `scripts/validate-release-build.sh`.
 
 ## No-Miner Sync-Only Invariant
 
@@ -29,20 +42,33 @@ chain catch-up over template generation.
 When actual ASIC demand is present, the opposite invariant applies: the selected
 node must be able to build templates and accept block candidates during brief
 false `Client in initial download` windows. Runtime repairs must enable
-`BDAG_ENABLE_NODE_MINING=1`, `BDAG_NODE_MODULES=Blockdag,miner`, and
-`BDAG_NODE_MINING_ARGS` containing `--allowminingwhennearlysynced`,
-`--allowsubmitwhennotsynced`, `--miner`, and a non-zero `--miningaddr=<wallet>`.
+`BDAG_ENABLE_NODE_MINING=1`, `BDAG_NODE_MODULES=Blockdag`, and
+`BDAG_NODE_MINING_ARGS` containing `--miner` and a non-zero
+`--miningaddr=<wallet>`.
+Do not add `miner` to `BDAG_NODE_MODULES`; this release image enables mining
+through the `--miner` node argument and exposes templates through the `Blockdag`
+RPC module.
+Do not add `--allowminingwhennearlysynced` or `--allowsubmitwhennotsynced`.
+Those bypass flags can make template health report ready while the node has
+stale or absent P2P mining freshness; future runtime repair must remove them
+and keep the pool stopped until direct readiness passes.
 For constrained USB/router appliances also keep `--maxinbound=1`, because
 inbound catch-up peers and artifact requests have caused rewind/sync churn that
 converted valid ASIC work into `node-syncing`, `tip-overdue`, and
 `invalidated_job` losses.
 
+Keep pool `getBlockTemplate` pressure below the node RPC client ceiling. Do not
+override `POOL_GBT_MIN_INTERVAL_MS` below `1000`, do not override
+`POOL_GBT_PRESSURE_INTERVAL_MS` below `250`, and keep node-health probes at
+least `10` seconds apart unless a measured soak test proves the node can absorb
+more frequent RPC traffic while importing and mining.
+
 Any system with USB-backed blockchain data is a FastSync/FastArtifact consumer,
-not a source, by default. Keep `BDAG_NO_FASTSYNC_SERVE=auto` or set it to `1`;
-do not reintroduce `NODE_ARGS_APPEND=--fastartifactsync` or artifact serving on
-low-IO USB hosts. These nodes must still do normal outbound sync and block
-relay, but must not serve bulk range, snapshot, or artifact traffic from the USB
-chain path unless a human deliberately overrides the policy for a proven
+not a source, by default. Keep `SYNC_SOURCE_NODE=0`; do not reintroduce
+`NODE_ARGS_APPEND=--fastartifactsync` or artifact serving on low-IO USB hosts.
+These nodes must still do normal outbound sync and block relay, but must not
+serve bulk range, snapshot, or artifact traffic from the USB chain path unless a
+human deliberately overrides the policy for a proven
 high-IO source host.
 
 Fresh installs assume zero miner sources. Do not hard-code one, four, five, or
@@ -76,6 +102,12 @@ prefer `BDAG_FASTSYNC_PREPROCESS_WORKERS=1` on Pi catch-up hosts. The parallel
 preprocessor has previously panicked in `processFastBlockRange`; uptime and
 steady catch-up beat the small parallel precheck speedup.
 
+Startup seed freshness must have operational slack. If a sidecar, raw datadir
+artifact, or remote seed is within `BDAG_SYNC_ACCEPTABLE_STARTUP_LAG_BLOCKS`
+(default 4000 blocks), start the node and let P2P/FastSync catch the tail.
+Use the recorded copy duration allowance to avoid repeated full copies; do not
+recopy just to close an already-acceptable lag.
+
 ## Five ASIC Template Conversion Invariant
 
 For five-X100 local mining hosts and other multi-miner deployments, connected
@@ -100,21 +132,21 @@ only display configured names after an operator explicitly adds them.
 ## Self-Healing Release Invariants
 
 The Pi5 release candidate must install `bdag-stack-sentinel.timer` and the
-dashboard/watchdog/peer/chain guards by default. A stopped `pool-db`,
-node, or `asic-pool` container is a stack failure even when there are
+dashboard/watchdog/peer/chain guards by default. A stopped `postgres`,
+`node`, or `pool` container is a stack failure even when there are
 no miners. No-miner mode means no mining work is sent; it does not mean services
 are allowed to stay down.
 
 Dashboard block height must come from the node chain RPC `getBlockCount` only.
 `getMainChainHeight`, template height, log imports, and peer
 lead values are diagnostics and must not be displayed as the node block count.
-Keep `scripts/validate-pi5-restart-hardening.sh` enforcing this so future drift
-cannot reintroduce mixed height sources.
+Keep source and release validation enforcing this so future drift cannot
+reintroduce mixed height sources.
 
 Pool block-candidate submission must use the single configured backend endpoint.
 Normal shares must not fan out, and valid block candidates should return to the
 miner as soon as the active endpoint accepts them. Keep release defaults pinned
-to one endpoint on single-node hosts.
+to one endpoint.
 
 Keep Issue #26 final release mitigations in
 `docs/final-release-issue-26-checklist.md` current when changing source repo
@@ -175,6 +207,12 @@ ARM64 Pi package or container by accident. Prefer header-based verification
 over host-specific `file` output so the same gate works from Linux, macOS, and
 Windows build hosts.
 
+Normal pool GitHub releases use pinned bootstrap scripts plus Runtime Payload
+Zips, not one universal zip. Use the glossary terms in `docs/glossary.md`:
+Bootstrap Script, Runtime Payload Zip, and Linux ARM64 Runtime. The normal
+payload zips are split by Linux Docker runtime architecture (`linux-amd64` and
+`linux-arm64`); do not reintroduce a separate appliance package path.
+
 Source-checkout validation must never delete an active local runtime. If a live
 machine runs the RC directly from the source checkout, `ops/runtime` can hold
 the dashboard environment and sampler state currently used by systemd. Keep
@@ -221,11 +259,11 @@ directory artifact is opt-in through `BDAG_FASTSYNC_ARTIFACT_DIRECTORY` and
 auto-serve that verified checkpoint from `artifact.manifest.json`. Do not make
 future changes that force archive assembly back into the default fast path.
 
-For single-node mining pools, raw datadir FastArtifact source serving is the
-preferred sync-source design. The live node datadir must never be served or
-exported directly. Use `ops/fastartifact_source_eligibility.py`,
+Raw datadir FastArtifact source serving is the preferred sync-source design.
+The live node datadir must never be served or exported directly. Use
+`ops/fastartifact_source_eligibility.py`,
 `ops/maintain-rawdatadir-sidecar.sh`, and `ops/publish-rawdatadir-artifact.sh`
 so source serving fails closed on USB/removable storage and publishes only a
 signed `raw_datadir_checkpoint` generation from a finalized sidecar. Keep
-`BDAG_FASTSNAP_SEED_TIMER_ENABLED=0` in single-node defaults; IPFS segments and
+`BDAG_FASTSNAP_SEED_TIMER_ENABLED=0` in release defaults; IPFS segments and
 finalized raw-datadir sidecars own content publication.

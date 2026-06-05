@@ -92,10 +92,11 @@ install_fastsnap_seed_timer() {
 }
 
 install_rawdatadir_source_timer() {
-  local mode
+  local source_node mode
+  source_node="$(env_value SYNC_SOURCE_NODE 0)"
   mode="$(env_value BDAG_RAWDATADIR_SOURCE_MODE auto)"
-  if [[ "$mode" =~ ^(0|false|no|off|disabled)$ ]]; then
-    warn "Raw datadir FastArtifact source disabled by BDAG_RAWDATADIR_SOURCE_MODE=$mode"
+  if [[ "$source_node" =~ ^(0|false|no|off|disabled)$ ]]; then
+    warn "Raw datadir FastArtifact source disabled by SYNC_SOURCE_NODE=$source_node"
     return 0
   fi
   if [[ ! -x "$ROOT/ops/fastartifact_source_eligibility.py" || ! -x "$ROOT/ops/maintain-rawdatadir-sidecar.sh" || ! -x "$ROOT/ops/verify-rawdatadir-sidecar.py" || ! -x "$ROOT/ops/publish-rawdatadir-artifact.sh" ]]; then
@@ -109,7 +110,7 @@ install_rawdatadir_source_timer() {
   local sidecar_content_base
 
   network="$(env_value BDAG_FASTSNAP_NETWORK mainnet)"
-  active_service="$(env_value BDAG_NODE_SERVICES bdag-miner-node-1)"
+  active_service="$(env_value BDAG_NODE_SERVICES node)"
   active_service="${active_service%%,*}"
   case "$active_service" in
     bdag-miner-node-1|node1) source_dir="$(env_value BDAG_NODE1_DATA_DIR ./data/node1)/$network" ;;
@@ -126,9 +127,10 @@ install_rawdatadir_source_timer() {
 BDAG_PROJECT_ROOT=$ROOT
 BDAG_ENV_FILE=$ROOT/.env
 BDAG_COMPOSE_FILE=$ROOT/docker-compose.yml
+SYNC_SOURCE_NODE=$source_node
 BDAG_RAWDATADIR_SOURCE_MODE=$mode
 BDAG_RAWDATADIR_NETWORK=$network
-BDAG_RAWDATADIR_SINGLE_NODE_SERVICE=$active_service
+BDAG_RAWDATADIR_ACTIVE_SERVICE=$active_service
 BDAG_RAWDATADIR_SIDECAR_SOURCE=$source_dir
 BDAG_RAWDATADIR_SIDECAR_DIR=$sidecar_dir
 BDAG_RAWDATADIR_SIDECAR_SAFE_STATUS=$ROOT/ops/runtime/rawdatadir-sidecar-safe-status.json
@@ -139,11 +141,10 @@ BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP=$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT
 BDAG_RAWDATADIR_SIDECAR_CONTENT_CHUNK_SIZE=$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_CHUNK_SIZE 67108864)
 BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED=$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED 1)
 BDAG_RAWDATADIR_REQUIRE_SIGNED=$(env_value BDAG_RAWDATADIR_REQUIRE_SIGNED 1)
-BDAG_RAWDATADIR_MAX_EXPORT_BACKEND_LAG=$(env_value BDAG_RAWDATADIR_MAX_EXPORT_BACKEND_LAG 10000)
 BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH=$(env_value BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH 1)
 BDAG_RAWDATADIR_MAX_EVM_REFERENCE_LAG=$(env_value BDAG_RAWDATADIR_MAX_EVM_REFERENCE_LAG 1000)
-BDAG_PUBLIC_RPC_URLS=$(env_value BDAG_PUBLIC_RPC_URLS bdagscan-rpc=https://rpc.bdagscan.com,blockdag-engineering-rpc=https://rpc.blockdag.engineering)
-BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=$(env_value BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE 0)
+BDAG_PUBLIC_RPC_URLS=$(env_value BDAG_PUBLIC_RPC_URLS blockdag-engineering-rpc=https://rpc.blockdag.engineering,bdagscan-rpc=https://rpc.bdagscan.com)
+BDAG_RAWDATADIR_FINALIZE=$(env_value BDAG_RAWDATADIR_FINALIZE 0)
 BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID=$(env_value BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID "")
 BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX=$(env_value BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX "")
 EOF
@@ -155,6 +156,7 @@ EOF
   current_manifest="$artifact_base/current/manifest.json"
 
   if [[ "$eligible" == "true" ]]; then
+    set_env_value "$ROOT/.env" SYNC_SOURCE_NODE "$source_node"
     set_env_value "$ROOT/.env" BDAG_RAWDATADIR_SOURCE_MODE "$mode"
     set_env_value "$ROOT/.env" BDAG_RAWDATADIR_ARTIFACT_BASE "$artifact_base"
     if [[ -f "$current_manifest" && ! -f "$artifact_base/current/DO_NOT_PUBLISH.txt" && ! -f "$artifact_base/current/DO_NOT_PUBLISH" ]]; then

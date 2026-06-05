@@ -19,6 +19,7 @@ class DashboardStatusFallbackTests(unittest.TestCase):
             "DASHBOARD_DIRECT_STATUS_FALLBACK": dashboard.DASHBOARD_DIRECT_STATUS_FALLBACK,
             "STATUS_CACHE_SECONDS": dashboard.STATUS_CACHE_SECONDS,
             "SAMPLER_CACHE_SECONDS": dashboard.SAMPLER_CACHE_SECONDS,
+            "DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS": dashboard.DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS,
             "collect_status_cached": dashboard.collect_status_cached,
             "time_time": dashboard.time.time,
         }
@@ -29,6 +30,7 @@ class DashboardStatusFallbackTests(unittest.TestCase):
         dashboard.DASHBOARD_DIRECT_STATUS_FALLBACK = self.originals["DASHBOARD_DIRECT_STATUS_FALLBACK"]
         dashboard.STATUS_CACHE_SECONDS = self.originals["STATUS_CACHE_SECONDS"]
         dashboard.SAMPLER_CACHE_SECONDS = self.originals["SAMPLER_CACHE_SECONDS"]
+        dashboard.DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS = self.originals["DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS"]
         dashboard.collect_status_cached = self.originals["collect_status_cached"]
         dashboard.time.time = self.originals["time_time"]
         dashboard.clear_api_cache()
@@ -39,6 +41,7 @@ class DashboardStatusFallbackTests(unittest.TestCase):
         dashboard.DASHBOARD_DIRECT_STATUS_FALLBACK = False
         dashboard.STATUS_CACHE_SECONDS = 10.0
         dashboard.SAMPLER_CACHE_SECONDS = 10.0
+        dashboard.DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS = 30.0
         dashboard.time.time = lambda: now
         dashboard.collect_status_cached = lambda **_kwargs: (_ for _ in ()).throw(
             AssertionError("dashboard status must not enter direct collection on cache miss")
@@ -109,6 +112,39 @@ class DashboardStatusFallbackTests(unittest.TestCase):
         self.assertIsInstance(payload["pool"], dict)
         self.assertTrue(payload["status_sampler"]["stale"])
 
+    def test_extended_sampler_window_serves_bounded_constrained_host_sample(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = self.configure_fast_path(tmp)
+            dashboard.SAMPLER_CACHE_SECONDS = 120.0
+            dashboard.STATUS_CACHE_SECONDS = 120.0
+            (runtime / "status-sampler.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "epoch": 940.0,
+                        "include_logs": True,
+                        "payload": {
+                            "generated_at": "2026-05-31T22:00:00+0000",
+                            "overall": "syncing",
+                            "fresh": True,
+                            "age_seconds": 0.0,
+                            "stale_after_seconds": 120,
+                            "failures": [],
+                            "warnings": [],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = dashboard.dashboard_status_payload()
+
+        self.assertEqual(payload["overall"], "syncing")
+        self.assertTrue(payload["fresh"])
+        self.assertEqual(payload["age_seconds"], 60.0)
+        self.assertTrue(payload["status_sampler"]["hit"])
+        self.assertEqual(payload["status_sampler"]["max_age_seconds"], 120.0)
+
     def test_api_status_rechecks_files_instead_of_serving_process_cached_ok(self) -> None:
         now = {"value": 1000.0}
 
@@ -169,6 +205,55 @@ class DashboardStatusFallbackTests(unittest.TestCase):
         self.assertIsInstance(payload["pool"], dict)
         self.assertFalse(payload["status_sampler"]["hit"])
         self.assertFalse(payload["shared_status_cache"]["hit"])
+        self.assertEqual(payload["mode"], "waiting_for_status_sample")
+        self.assertIn("Dashboard status is warming up", payload["status_reason"])
+        self.assertIn("within about 30s", payload["status_reason"])
+        self.assertNotIn("cache unavailable", payload["status_reason"])
+        self.assertEqual(payload["sync_progress"]["status"], "waiting_for_status_sample")
+        self.assertEqual(payload["sync_estimate"]["eta_seconds"], 30)
+        self.assertEqual(
+            payload["sync_estimate"]["next_step"],
+            "wait about 30s for the next dashboard status sample; mining may still be running",
+        )
+        self.assertEqual(payload["collector_budget_failure"]["class"], "waiting_for_status_sample")
+        self.assertEqual(payload["collector_budget_failure"]["estimated_wait_seconds"], 30)
+        self.assertIsNone(payload["collector_budget_failure"]["newest_cache_age_seconds"])
+
+    def test_status_payload_fallback_estimates_wait_from_stale_cache_age(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = self.configure_fast_path(tmp)
+            (runtime / "status-sampler.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "epoch": 985.0,
+                        "include_logs": True,
+                        "payload": {
+                            "generated_at": "2026-05-31T22:00:00+0000",
+                            "overall": "ok",
+                            "fresh": True,
+                            "age_seconds": 0.0,
+                            "stale_after_seconds": 10,
+                            "failures": [],
+                            "warnings": [],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = dashboard.dashboard_status_payload()
+
+        self.assertEqual(payload["mode"], "waiting_for_status_sample")
+        self.assertIn("newest cached sample is about 15s old", payload["status_reason"])
+        self.assertIn("current data in about 15s", payload["status_reason"])
+        self.assertEqual(payload["sync_estimate"]["eta_seconds"], 15)
+        self.assertEqual(
+            payload["sync_estimate"]["next_step"],
+            "wait about 15s for the next dashboard status sample; mining may still be running",
+        )
+        self.assertEqual(payload["collector_budget_failure"]["estimated_wait_seconds"], 15)
+        self.assertEqual(payload["collector_budget_failure"]["newest_cache_age_seconds"], 15.0)
 
     def test_stale_ok_cache_is_not_served_as_ok(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

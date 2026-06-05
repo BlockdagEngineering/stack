@@ -30,14 +30,27 @@ DENY_BASENAMES = {
     "Thumbs.db",
     "desktop.ini",
 }
+DENY_SUFFIXES = (".pyc", ".pyo")
+
+LOCAL_SKIP_COMPONENTS = {
+    ".git",
+    ".pytest_cache",
+    "__pycache__",
+}
+LOCAL_SKIP_SUFFIXES = DENY_SUFFIXES
 
 
 def iter_members(path: Path) -> list[str]:
     if path.is_dir():
         members: list[str] = []
         for root, dirs, files in os.walk(path):
-            dirs[:] = [d for d in dirs if d not in {".git"}]
-            for name in [*dirs, *files]:
+            dirs[:] = [d for d in dirs if d not in LOCAL_SKIP_COMPONENTS]
+            for name in dirs:
+                full = Path(root, name)
+                members.append(full.relative_to(path).as_posix())
+            for name in files:
+                if name.endswith(LOCAL_SKIP_SUFFIXES):
+                    continue
                 full = Path(root, name)
                 members.append(full.relative_to(path).as_posix())
         return members
@@ -58,6 +71,8 @@ def blocked_reason(member: str) -> str | None:
     basename = parts[-1]
     if any(part in DENY_COMPONENTS or part.startswith("runtime-") for part in parts):
         return "VCS metadata, cache, or mutable runtime/data directory"
+    if basename.endswith(DENY_SUFFIXES):
+        return "Python bytecode/cache file"
     if basename in DENY_BASENAMES or basename.endswith(".bdsnap.part") or basename.endswith(".tmp"):
         return "mutable host config, snapshot, or temporary file"
     return None

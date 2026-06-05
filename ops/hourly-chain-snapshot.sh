@@ -10,7 +10,10 @@ STAGE_LOCK_FILE="${BDAG_SNAPSHOT_STAGE_LOCK:-$PROJECT_ROOT/ops/runtime/chain-sna
 LOG_FILE="${BDAG_SNAPSHOT_LOG:-$PROJECT_ROOT/ops/runtime/logs/hourly-chain-snapshot.log}"
 STATE_FILE="${BDAG_SNAPSHOT_STATE:-$PROJECT_ROOT/ops/runtime/hourly-chain-snapshot-state}"
 SNAPSHOT_STOP_STATE_FILE="${BDAG_SNAPSHOT_STOP_STATE_FILE:-$PROJECT_ROOT/ops/runtime/snapshot-stop-state.json}"
-ENV_FILE="${BDAG_ENV_FILE:-$PROJECT_ROOT/asic-pool/.env}"
+ENV_FILE="${BDAG_ENV_FILE:-$PROJECT_ROOT/.env}"
+if [[ ! -f "$ENV_FILE" && -f "$PROJECT_ROOT/asic-pool/.env" ]]; then
+  ENV_FILE="$PROJECT_ROOT/asic-pool/.env"
+fi
 COMPOSE_FILE="${BDAG_COMPOSE_FILE:-$PROJECT_ROOT/docker-compose.yml}"
 SNAPSHOT_BACKOFF_BLOCKS="${BDAG_SNAPSHOT_BACKOFF_BLOCKS:-0}"
 SNAPSHOT_MAX_BLOCK_LAG="${BDAG_SNAPSHOT_MAX_BLOCK_LAG:-5}"
@@ -253,7 +256,7 @@ configured_node_keys() {
 
 service_for_node_key() {
   case "$1" in
-    node1) printf '%s\n' "bdag-miner-node-1" ;;
+    node1) printf '%s\n' "node" ;;
     *) return 1 ;;
   esac
 }

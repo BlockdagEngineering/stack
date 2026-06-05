@@ -57,6 +57,20 @@ nodeworker_arg_value() {
   return 1
 }
 
+nodeworker_arg_present() {
+  local key="$1"
+  shift
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --"$key"|--"$key"=*)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
 node_arg_value() {
   local key="$1"
   local node_args="$2"
@@ -276,6 +290,49 @@ remove_node_arg_prefix() {
   export NODE_ARGS_APPEND
 }
 
+node_args_contains_prefix() {
+  local node_args="$1"
+  local prefix="$2"
+  local word
+  for word in $node_args; do
+    case "$word" in
+      "$prefix"|"$prefix"=*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+append_node_arg_prefix_once() {
+  local flag="$1"
+  local node_args="$2"
+  local prefix="${flag%%=*}"
+  if node_args_contains_prefix "$node_args" "$prefix"; then
+    return 0
+  fi
+  NODE_ARGS_APPEND="${NODE_ARGS_APPEND:+$NODE_ARGS_APPEND }$flag"
+  export NODE_ARGS_APPEND
+}
+
+apply_node_mining_runtime_args() {
+  case "${BDAG_ENABLE_NODE_MINING:-0}" in
+    1|true|TRUE|yes|YES|on|ON) ;;
+    *) return 0 ;;
+  esac
+
+  local node_args modules word
+  node_args="$(node_args_from_argv "$@" || true)"
+  modules="${BDAG_NODE_MODULES:-}"
+  if [ -n "$modules" ]; then
+    append_node_arg_prefix_once "--modules=${modules}" "$node_args ${NODE_ARGS_APPEND:-}"
+  fi
+  for word in ${BDAG_NODE_MINING_ARGS:-}; do
+    case "$word" in
+      --miningaddr=*) append_node_arg_prefix_once "$word" "$node_args ${NODE_ARGS_APPEND:-}" ;;
+      --*) append_node_arg_once "$word" "$node_args ${NODE_ARGS_APPEND:-}" ;;
+    esac
+  done
+}
+
 mount_source_for_path() {
   local path="$1" real best_src="" best_target="" src target fstype rest
   real="$(readlink -m "$path" 2>/dev/null || printf '%s' "$path")"
@@ -317,6 +374,20 @@ path_is_usb_backed() {
   esac
 }
 
+env_value_true() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON|enabled|ENABLED) return 0 ;;
+  esac
+  return 1
+}
+
+env_value_false() {
+  case "${1:-}" in
+    0|false|FALSE|no|NO|off|OFF|disabled|DISABLED) return 0 ;;
+  esac
+  return 1
+}
+
 node_data_parent_from_args() {
   local node_args config_file data_parent
   node_args="$(node_args_from_argv "$@" || true)"
@@ -328,19 +399,33 @@ node_data_parent_from_args() {
   printf '%s\n' "${data_parent:-/var/lib/bdagStack/node}"
 }
 
-should_disable_fastsync_serving() {
-  case "${BDAG_NO_FASTSYNC_SERVE:-auto}" in
-    1|true|yes|on) return 0 ;;
-    0|false|no|off) return 1 ;;
-  esac
+fastsync_serving_disable_reason() {
+  local no_serve="${BDAG_NO_FASTSYNC_SERVE:-auto}"
+  if env_value_true "$no_serve"; then
+    printf 'BDAG_NO_FASTSYNC_SERVE=%s\n' "$no_serve"
+    return 0
+  fi
+  if env_value_false "$no_serve"; then
+    return 1
+  fi
 
-  case "${BDAG_STORAGE_PROFILE:-}" in
-    usb-chain-internal-runtime|single-usb-constrained) return 0 ;;
+  local storage_profile="${BDAG_STORAGE_PROFILE:-}"
+  storage_profile="${storage_profile,,}"
+  case "$storage_profile" in
+    usb-chain-internal-runtime|single-usb-constrained)
+      printf 'BDAG_STORAGE_PROFILE=%s\n' "$storage_profile"
+      return 0
+      ;;
   esac
 
   local data_parent
   data_parent="$(node_data_parent_from_args "$@")"
-  path_is_usb_backed "$data_parent"
+  if path_is_usb_backed "$data_parent"; then
+    printf 'usb_backed_datadir=%s\n' "$data_parent"
+    return 0
+  fi
+
+  return 1
 }
 
 node_binary_from_argv() {
@@ -377,7 +462,12 @@ node_binary_supports_arg() {
 }
 
 apply_no_fastsync_serve_guard() {
-  if ! should_disable_fastsync_serving "$@"; then
+  local disable_reason
+  disable_reason="$(fastsync_serving_disable_reason "$@" || true)"
+  if [ -z "$disable_reason" ]; then
+    if env_value_false "${SYNC_SOURCE_NODE:-}"; then
+      log "SYNC_SOURCE_NODE=${SYNC_SOURCE_NODE} disables raw datadir source publishing only; Fast Artifact startup stays enabled unless storage/profile detection requires no-serve."
+    fi
     return 0
   fi
 
@@ -388,9 +478,9 @@ apply_no_fastsync_serve_guard() {
   remove_node_arg_prefix "--fastartifactsync"
   if node_binary_supports_arg "--nofastsyncserve" "$@"; then
     append_node_arg_once "--nofastsyncserve" "$node_args ${NODE_ARGS_APPEND:-}"
-    log "USB-backed or constrained chain profile detected; disabling bulk FastSync, snapshot, and artifact serving while keeping normal outbound sync and block relay."
+    log "FastSync serving guard active ($disable_reason); disabling bulk FastSync, snapshot, and artifact serving while keeping normal outbound sync and block relay."
   else
-    log "USB-backed or constrained chain profile detected; removed --fastartifactsync, but the selected node binary does not support --nofastsyncserve."
+    log "FastSync serving guard active ($disable_reason); removed --fastartifactsync, but the selected node binary does not support --nofastsyncserve."
   fi
 }
 
@@ -584,6 +674,7 @@ configure_directory_artifact_serving() {
 apply_ordered_fastsync_peers "$@"
 apply_no_fastsync_serve_guard "$@"
 apply_default_fastsync_flags "$@"
+apply_node_mining_runtime_args "$@"
 
 if [ -n "${NODE_ARGS_APPEND:-}" ]; then
   args=("$@")
@@ -601,8 +692,20 @@ if [ -n "${NODE_ARGS_APPEND:-}" ]; then
   set -- "${args[@]}"
 fi
 
+if [ "$(basename "${1:-}")" = "nodeworker" ] && ! nodeworker_arg_present "health.liveness-timeout" "$@"; then
+  args=("$@")
+  args+=("--health.liveness-timeout=${BDAG_NODEWORKER_LIVENESS_TIMEOUT:-5m}")
+  set -- "${args[@]}"
+fi
+
 if [ "${BDAG_FASTSYNC_PRINT_ORDERED_PEERS:-0}" = "1" ]; then
   printf '%s\n' "${BDAG_FASTSNAP_PEERS:-}"
+  exit 0
+fi
+
+if [ "${BDAG_ENTRYPOINT_PRINT_NODE_FLAGS:-0}" = "1" ]; then
+  printf 'BDAG_FASTARTIFACTSYNC_ENABLED=%s\n' "${BDAG_FASTARTIFACTSYNC_ENABLED:-}"
+  printf 'NODE_ARGS_APPEND=%s\n' "${NODE_ARGS_APPEND:-}"
   exit 0
 fi
 

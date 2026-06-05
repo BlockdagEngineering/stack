@@ -20,10 +20,23 @@ LOG_DIR = RUNTIME_DIR / "logs"
 STATE_FILE = RUNTIME_DIR / "node-child-guard-state.json"
 LOCK_FILE = RUNTIME_DIR / "node-child-guard.lock"
 LOG_FILE = LOG_DIR / "node-child-guard.log"
-POOL_ENV_FILE = Path(os.environ.get("BDAG_POOL_ENV_FILE", PROJECT_ROOT / "asic-pool" / ".env"))
+DEFAULT_NODE_CHILD_GUARD_NODES = "node,bdag-miner-node-1"
+
+
+def default_pool_env_file() -> Path:
+    for candidate in (PROJECT_ROOT / ".env", PROJECT_ROOT / "asic-pool" / ".env"):
+        if candidate.exists():
+            return candidate
+    return PROJECT_ROOT / ".env"
+
+
+POOL_ENV_FILE = Path(os.environ.get("BDAG_POOL_ENV_FILE", default_pool_env_file()))
 NODES = [
     item.strip()
-    for item in os.environ.get("BDAG_NODE_CHILD_GUARD_NODES", "bdag-miner-node-1").split(",")
+    for item in os.environ.get(
+        "BDAG_NODE_CHILD_GUARD_NODES",
+        os.environ.get("BDAG_NODE_SERVICES", DEFAULT_NODE_CHILD_GUARD_NODES),
+    ).split(",")
     if item.strip()
 ]
 COOLDOWN_SECONDS = int(os.environ.get("BDAG_NODE_CHILD_GUARD_RESTART_COOLDOWN_SECONDS", "180"))
@@ -92,12 +105,17 @@ def bdag_child_running(name: str) -> bool:
     if result.returncode != 0:
         log(f"docker top failed node={name} stderr={result.stderr.strip()}")
         return False
-    for line in result.stdout.splitlines()[1:]:
+    return bdag_child_running_from_top(result.stdout)
+
+
+def bdag_child_running_from_top(top: str) -> bool:
+    for line in top.splitlines()[1:]:
         columns = line.split(None, 2)
         command = columns[1] if len(columns) > 1 else ""
         args = columns[2] if len(columns) > 2 else ""
         first_arg = args.split(None, 1)[0] if args else ""
-        if command == "bdag" or first_arg == "/usr/local/bin/bdag" or first_arg.endswith("/bdag"):
+        executable_names = {Path(command).name, Path(first_arg).name}
+        if executable_names & {"bdag", "blockdag-node"}:
             return True
     return False
 
@@ -112,16 +130,41 @@ def tcp_open(host: str, port: int, timeout: float = 1.5) -> bool:
         return False
 
 
+def docker_compose_project_name() -> str:
+    configured = os.environ.get("BDAG_COMPOSE_PROJECT_NAME") or os.environ.get("COMPOSE_PROJECT_NAME")
+    if configured:
+        return configured
+    return PROJECT_ROOT.name
+
+
 def compose_command(*args: str) -> list[str]:
-    return [
+    command = [
         "docker",
         "compose",
-        "--env-file",
-        str(POOL_ENV_FILE),
+        "-p",
+        docker_compose_project_name(),
+    ]
+    if POOL_ENV_FILE.exists():
+        command.extend(
+            [
+                "--env-file",
+                str(POOL_ENV_FILE),
+            ]
+        )
+    command.extend([
         "-f",
         str(PROJECT_ROOT / "docker-compose.yml"),
         *args,
-    ]
+    ])
+    return command
+
+
+def compose_service_name(name: str) -> str:
+    result = run(["docker", "inspect", "-f", '{{ index .Config.Labels "com.docker.compose.service" }}', name], timeout=8)
+    service = result.stdout.strip() if result.returncode == 0 else ""
+    if service and service != "<no value>":
+        return service
+    return name
 
 
 def restart_node(node: str, reason: str, state: dict[str, Any], now: int) -> bool:
@@ -129,7 +172,12 @@ def restart_node(node: str, reason: str, state: dict[str, Any], now: int) -> boo
     if now - last < COOLDOWN_SECONDS:
         log(f"restart suppressed node={node} cooldown_remaining={COOLDOWN_SECONDS - (now - last)}s reason={reason}")
         return False
-    result = run(compose_command("restart", node), timeout=180)
+    compose_target = compose_service_name(node)
+    result = run(compose_command("restart", compose_target), timeout=180)
+    if result.returncode != 0:
+        fallback = run(["docker", "restart", node], timeout=180)
+        if fallback.returncode == 0:
+            result = fallback
     restarted = dict(state.get("last_restart_at_by_node") or {})
     restarted[node] = now
     state["last_restart_at_by_node"] = restarted
@@ -143,7 +191,12 @@ def start_node(node: str, reason: str, state: dict[str, Any], now: int) -> bool:
     if now - last < COOLDOWN_SECONDS:
         log(f"start suppressed node={node} cooldown_remaining={COOLDOWN_SECONDS - (now - last)}s reason={reason}")
         return False
-    result = run(compose_command("up", "-d", "--no-deps", node), timeout=180)
+    compose_target = compose_service_name(node)
+    result = run(compose_command("up", "-d", "--no-deps", compose_target), timeout=180)
+    if result.returncode != 0:
+        fallback = run(["docker", "start", node], timeout=180)
+        if fallback.returncode == 0:
+            result = fallback
     restarted = dict(state.get("last_restart_at_by_node") or {})
     restarted[node] = now
     state["last_restart_at_by_node"] = restarted

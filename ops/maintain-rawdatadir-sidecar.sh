@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Keep a low-priority local sidecar copy close to the live datadir. This is for
-# single-node systems that cannot safely stop their only chain process for a
-# long copy window. It does not publish an artifact by itself; use
-# ops/build-rawdatadir-artifact.sh with BDAG_RAWDATADIR_SOURCE_DIR pointing at
-# the sidecar after a guarded final sync window.
+# Keep a low-priority local sidecar copy close to the live datadir. It does not
+# publish an artifact by itself; use ops/publish-rawdatadir-artifact.sh to run a
+# guarded final sync window and build from the sidecar.
 
 PROJECT_ROOT="${BDAG_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 NETWORK="${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}"
-NODE_SERVICES_CSV="${BDAG_NODE_SERVICES:-bdag-miner-node-1}"
-ACTIVE_NODE_SERVICE="${BDAG_RAWDATADIR_SINGLE_NODE_SERVICE:-${NODE_SERVICES_CSV%%,*}}"
-ACTIVE_NODE_SERVICE="${ACTIVE_NODE_SERVICE:-bdag-miner-node-1}"
+NODE_SERVICES_CSV="${BDAG_NODE_SERVICES:-node}"
+ACTIVE_NODE_SERVICE="${BDAG_RAWDATADIR_ACTIVE_SERVICE:-${NODE_SERVICES_CSV%%,*}}"
+ACTIVE_NODE_SERVICE="${ACTIVE_NODE_SERVICE:-node}"
 case "$ACTIVE_NODE_SERVICE" in
   bdag-miner-node-1|node1) DEFAULT_NODE_DIR="${BDAG_NODE1_DATA_DIR:-$PROJECT_ROOT/data/node1}" ;;
+  node) DEFAULT_NODE_DIR="${BDAG_NODE_DATA_DIR:-${BDAG_NODE1_DATA_DIR:-$PROJECT_ROOT/data/node}}" ;;
   *) DEFAULT_NODE_DIR="${BDAG_NODE_DATA_DIR:-$PROJECT_ROOT/data/node}" ;;
 esac
 SOURCE_DIR="${BDAG_RAWDATADIR_SIDECAR_SOURCE:-$DEFAULT_NODE_DIR/$NETWORK}"
@@ -26,6 +25,7 @@ DELETE_MODE="${BDAG_RAWDATADIR_SIDECAR_DELETE:-1}"
 BWLIMIT="${BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT:-}"
 USE_SUDO="${BDAG_RAWDATADIR_SIDECAR_USE_SUDO:-auto}"
 SIDECAR_MODE="${BDAG_RAWDATADIR_SIDECAR_MODE:-${BDAG_RAWDATADIR_SOURCE_MODE:-auto}}"
+SYNC_SOURCE_NODE_VALUE="${SYNC_SOURCE_NODE:-}"
 FINAL_STOPPED_SYNC="${BDAG_RAWDATADIR_SIDECAR_FINAL_STOPPED_SYNC:-0}"
 CONTENT_MODE="${BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE:-auto}"
 CONTENT_SCRIPT="$PROJECT_ROOT/ops/seal_rawdatadir_sidecar_content.py"
@@ -92,6 +92,12 @@ case "${SIDECAR_MODE,,}" in
     exit 0
     ;;
 esac
+case "${SYNC_SOURCE_NODE_VALUE,,}" in
+  0|false|no|off|disabled)
+    log "raw datadir sidecar sync disabled by SYNC_SOURCE_NODE=$SYNC_SOURCE_NODE_VALUE"
+    exit 0
+    ;;
+esac
 
 case "${FINAL_STOPPED_SYNC,,}" in
   1|true|yes|on)
@@ -120,7 +126,8 @@ esac
 # A sidecar refresh is not a public source/publish decision. Keep retrying the
 # low-priority copy after mining pressure clears, but still refuse unsafe
 # storage/topology conditions such as USB/removable paths or insufficient space.
-if ! BDAG_RAWDATADIR_SOURCE_MODE="$SIDECAR_MODE" \
+if ! SYNC_SOURCE_NODE="${SYNC_SOURCE_NODE_VALUE:-0}" \
+  BDAG_RAWDATADIR_SOURCE_MODE="$SIDECAR_MODE" \
   BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH="$eligibility_require_evm_reference_fresh" \
   "$PROJECT_ROOT/ops/fastartifact_source_eligibility.py" --status-file "$STATUS_FILE" >/dev/null; then
   log "raw datadir sidecar safety check deferred sync; see $STATUS_FILE"

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -60,11 +61,11 @@ class AutomationControlTests(unittest.TestCase):
             now=self.now,
         )
 
-    def check(self, action: str = automation_control.ACTION_ASIC_POOL_START):
+    def check(self, action: str = automation_control.ACTION_ASIC_POOL_START, target: str = "asic-pool"):
         return automation_control.check_mutation_allowed(
             action,
             actor="watchdog",
-            target="asic-pool",
+            target=target,
             reason="test mutation",
             state_path=self.state_path,
             event_path=self.event_path,
@@ -135,6 +136,65 @@ class AutomationControlTests(unittest.TestCase):
         self.assertTrue(decision.allowed)
         self.assertEqual([], self.event_lines())
 
+    def test_ensure_normal_control_state_creates_missing_control(self) -> None:
+        created, previous_status, path = automation_control.ensure_normal_control_state(
+            state_path=self.state_path,
+            lock_path=self.lock_path,
+            owner="unit-test",
+            owner_unit="test_automation_control",
+            reason="create missing default",
+            correlation_id="test-create",
+            now=self.now,
+        )
+
+        self.assertTrue(created)
+        self.assertEqual("missing", previous_status)
+        self.assertEqual(str(self.state_path), path)
+        control, status, _reason = automation_control.read_control_state(
+            state_path=self.state_path,
+            now=self.now,
+        )
+        self.assertEqual("ok", status)
+        self.assertIsNotNone(control)
+        self.assertEqual("normal", control["state"])
+
+    def test_ensure_normal_control_state_preserves_existing_hold(self) -> None:
+        self.write_state(self.control_state("repair_hold"))
+
+        created, previous_status, _path = automation_control.ensure_normal_control_state(
+            state_path=self.state_path,
+            lock_path=self.lock_path,
+            owner="unit-test",
+            owner_unit="test_automation_control",
+            reason="must not overwrite hold",
+            now=self.now,
+        )
+
+        self.assertFalse(created)
+        self.assertEqual("ok", previous_status)
+        control, status, _reason = automation_control.read_control_state(
+            state_path=self.state_path,
+            now=self.now,
+        )
+        self.assertEqual("ok", status)
+        self.assertEqual("repair_hold", control["state"])
+
+    def test_ensure_normal_control_state_leaves_corrupt_file_without_repair_flag(self) -> None:
+        self.state_path.write_text("{not-json", encoding="utf-8")
+
+        created, previous_status, _path = automation_control.ensure_normal_control_state(
+            state_path=self.state_path,
+            lock_path=self.lock_path,
+            owner="unit-test",
+            owner_unit="test_automation_control",
+            reason="must not overwrite corrupt file by default",
+            now=self.now,
+        )
+
+        self.assertFalse(created)
+        self.assertEqual("corrupt", previous_status)
+        self.assertEqual("{not-json", self.state_path.read_text(encoding="utf-8"))
+
     def test_transition_hold_requires_exact_allowlist_match(self) -> None:
         self.write_state(self.control_state("transition_hold"))
 
@@ -166,6 +226,26 @@ class AutomationControlTests(unittest.TestCase):
         allowed = self.check()
 
         self.assertTrue(allowed.allowed)
+
+    def test_transition_hold_allows_target_wildcard_for_specific_action_only(self) -> None:
+        self.write_state(
+            self.control_state(
+                "transition_hold",
+                allowed_mutations=[f"{automation_control.ACTION_ASIC_MINER_OPEN_RESTART}:*"],
+            )
+        )
+
+        allowed = self.check(
+            automation_control.ACTION_ASIC_MINER_OPEN_RESTART,
+            target="192.168.1.16",
+        )
+        broader_restart = self.check(
+            automation_control.ACTION_ASIC_MINER_RESTART,
+            target="192.168.1.16",
+        )
+
+        self.assertTrue(allowed.allowed)
+        self.assertFalse(broader_restart.allowed)
 
     def patch_default_control_paths(self):
         return unittest.mock.patch.multiple(
@@ -222,6 +302,48 @@ class AutomationControlTests(unittest.TestCase):
         self.assertEqual("suppressed", result["status"])
         self.assertEqual(1, len(self.event_lines()))
         self.assertEqual("automation_control_suppressed", events[0][0])
+
+    def test_watchdog_api_stall_miner_restart_uses_open_restart_before_configure(self) -> None:
+        self.write_state(
+            self.control_state(
+                "transition_hold",
+                allowed_mutations=[f"{automation_control.ACTION_ASIC_MINER_OPEN_RESTART}:*"],
+            )
+        )
+        action_log = self.root / "action-restart-miners.log"
+        lock_handle = unittest.mock.Mock()
+        writes: list[dict[str, object]] = []
+
+        with self.patch_default_control_paths(), unittest.mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), unittest.mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), unittest.mock.patch.object(
+            watchdog, "read_miner_admin_password", return_value="redacted"
+        ), unittest.mock.patch.object(
+            watchdog, "acquire_lock", return_value=lock_handle
+        ), unittest.mock.patch.object(
+            watchdog, "action_log_path", return_value=action_log
+        ), unittest.mock.patch.object(
+            watchdog, "write_action_state", side_effect=lambda payload: writes.append(dict(payload))
+        ), unittest.mock.patch.object(
+            watchdog, "restart_miner_open", return_value={"ip": "192.168.1.16", "status": "ok", "response": ""}
+        ) as open_restart, unittest.mock.patch.object(
+            watchdog, "restart_miner", side_effect=AssertionError("auth restart should not be used")
+        ), unittest.mock.patch.object(
+            watchdog, "configure_miner", side_effect=AssertionError("API-stall repair must not rewrite config first")
+        ):
+            result = watchdog.run_miner_restarts(
+                [{"ip": "192.168.1.16", "configured": False, "restart_open_first": True}],
+                "ASIC API-stall watchdog: local API timed out",
+            )
+
+        self.assertEqual("ok", result["status"])
+        self.assertEqual("restart-open-api-stall", result["results"][0]["action"])
+        open_restart.assert_called_once_with("192.168.1.16")
+        lock_handle.close.assert_called_once()
+        self.assertEqual("running", writes[0]["status"])
+        self.assertEqual("ok", writes[-1]["status"])
 
     def test_sentinel_suppresses_pool_starts_when_control_missing(self) -> None:
         incidents: list[tuple[str, str, str, str]] = []
@@ -284,6 +406,38 @@ class AutomationControlTests(unittest.TestCase):
 
         self.assertEqual(1, len(self.event_lines()))
         self.assertEqual("automation_control_suppressed", incidents[0][0])
+
+    def test_sentinel_log_scan_timeout_records_warning_without_crashing(self) -> None:
+        incidents: list[tuple[str, str, str, str, dict[str, object] | None]] = []
+        messages: list[str] = []
+
+        def fake_incident(event_type: str, severity: str, component: str, message: str, details=None) -> None:
+            incidents.append((event_type, severity, component, message, details))
+
+        timeout = subprocess.TimeoutExpired(
+            ["docker", "logs"],
+            12,
+            output=b"partial stdout",
+            stderr=b"partial stderr",
+        )
+
+        with unittest.mock.patch.object(stack_sentinel, "NODES", ["bdag-miner-node-1"]), unittest.mock.patch.object(
+            stack_sentinel.subprocess, "run", side_effect=timeout
+        ), unittest.mock.patch.object(
+            stack_sentinel, "append_incident", fake_incident
+        ), unittest.mock.patch.object(
+            stack_sentinel, "log", lambda message: messages.append(message)
+        ):
+            state: dict[str, object] = {}
+            stack_sentinel.check_node_log_red_flags(state, 100)
+
+        self.assertEqual(1, len(incidents))
+        self.assertEqual("node_log_scan_timeout", incidents[0][0])
+        self.assertEqual("warning", incidents[0][1])
+        self.assertEqual("stack-sentinel", incidents[0][2])
+        self.assertEqual(1, len(messages))
+        self.assertEqual(14, incidents[0][4]["stdout_bytes"])
+        self.assertEqual(14, incidents[0][4]["stderr_bytes"])
 
 
 if __name__ == "__main__":

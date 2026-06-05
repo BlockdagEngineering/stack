@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import fcntl
@@ -49,6 +50,7 @@ ACTION_NODE_RESTART = "node_restart"
 ACTION_CONTAINER_START = "container_start"
 ACTION_CONTAINER_RECREATE = "container_recreate"
 ACTION_CONTAINER_RESTART = "container_restart"
+ACTION_ASIC_MINER_OPEN_RESTART = "asic_miner_open_restart"
 ACTION_ASIC_MINER_RESTART = "asic_miner_restart"
 ACTION_ASIC_POOL_START = "asic_pool_start"
 ACTION_ASIC_POOL_RESTART = "asic_pool_restart"
@@ -65,6 +67,7 @@ HIGH_RISK_ACTIONS = {
     ACTION_CONTAINER_START,
     ACTION_CONTAINER_RECREATE,
     ACTION_CONTAINER_RESTART,
+    ACTION_ASIC_MINER_OPEN_RESTART,
     ACTION_ASIC_MINER_RESTART,
     ACTION_ASIC_POOL_START,
     ACTION_ASIC_POOL_RESTART,
@@ -233,6 +236,68 @@ def write_control_state(
         handle.close()
 
 
+def default_normal_control_state(
+    *,
+    owner: str,
+    owner_unit: str,
+    reason: str,
+    correlation_id: str = "",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    timestamp = (now or datetime.now(timezone.utc)).astimezone().isoformat(timespec="seconds")
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "state": STATE_NORMAL,
+        "owner": owner,
+        "owner_unit": owner_unit,
+        "pid": os.getpid(),
+        "reason": reason,
+        "correlation_id": correlation_id or f"{owner_unit}-{int(time.time())}",
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "expires_at": None,
+        "allowed_mutations": [],
+        "suppressed_count": 0,
+        "last_transition": {"from": "missing", "to": STATE_NORMAL, "at": timestamp, "by": owner_unit},
+    }
+
+
+def ensure_normal_control_state(
+    *,
+    state_path: Path | None = None,
+    lock_path: Path | None = None,
+    owner: str = "installer",
+    owner_unit: str = "automation-control",
+    reason: str = "Provision default automation control state",
+    correlation_id: str = "",
+    repair_invalid: bool = False,
+    now: datetime | None = None,
+) -> tuple[bool, str, str]:
+    path = _state_path(state_path)
+    control, status, status_reason = read_control_state(state_path=path, now=now)
+    if control is not None and status == "ok":
+        return False, status, str(path)
+    if status != "missing" and not repair_invalid:
+        return False, status, str(path)
+    state = default_normal_control_state(
+        owner=owner,
+        owner_unit=owner_unit,
+        reason=reason,
+        correlation_id=correlation_id,
+        now=now,
+    )
+    previous = status
+    state["last_transition"] = {
+        "from": previous,
+        "to": STATE_NORMAL,
+        "at": state["updated_at"],
+        "by": owner_unit,
+        "reason": status_reason,
+    }
+    write_control_state(state, state_path=path, lock_path=lock_path, now=now)
+    return True, previous, str(path)
+
+
 def append_control_event(
     event: dict[str, Any],
     *,
@@ -262,6 +327,8 @@ def _transition_hold_allows(control: dict[str, Any], action: str, actor: str, ta
         tokens = {
             f"{action}:{target}",
             f"{actor}:{action}:{target}",
+            f"{action}:*",
+            f"{actor}:{action}:*",
         }
     else:
         tokens = {
@@ -397,3 +464,52 @@ def log_denial_event(
         event_path=event_path,
         lock_path=lock_path,
     )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Manage the BlockDAG automation control gate.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    ensure_parser = subparsers.add_parser(
+        "ensure-normal",
+        help="Create a normal automation-control file only when it is missing.",
+    )
+    ensure_parser.add_argument("--state-path", type=Path, default=None)
+    ensure_parser.add_argument("--lock-path", type=Path, default=None)
+    ensure_parser.add_argument("--owner", default="installer")
+    ensure_parser.add_argument("--owner-unit", default="automation-control")
+    ensure_parser.add_argument("--reason", default="Provision default automation control state")
+    ensure_parser.add_argument("--correlation-id", default="")
+    ensure_parser.add_argument(
+        "--repair-invalid",
+        action="store_true",
+        help="Replace an invalid/expired control file with normal state. Use only during explicit recovery.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.command == "ensure-normal":
+        created, previous_status, path = ensure_normal_control_state(
+            state_path=args.state_path,
+            lock_path=args.lock_path,
+            owner=args.owner,
+            owner_unit=args.owner_unit,
+            reason=args.reason,
+            correlation_id=args.correlation_id,
+            repair_invalid=args.repair_invalid,
+        )
+        print(
+            json.dumps(
+                {
+                    "created": created,
+                    "previous_status": previous_status,
+                    "path": path,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    parser.error(f"unknown command: {args.command}")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

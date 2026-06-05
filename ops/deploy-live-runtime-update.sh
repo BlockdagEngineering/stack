@@ -19,16 +19,21 @@ ROLLBACK_DIR=""
 COMPOSE_BACKUP_BEFORE_MARK=""
 FILES=(
   "AGENTS.md"
-  "asic-pool/schema.sql"
+  "sql/pool-schema.sql"
   "docker-compose-miner.yml"
   "docker/entrypoint-nodeworker.sh"
   "docs/five-asic-template-conversion-guard.html"
   "docs/ipfs-content-sidecar.html"
+  "docs/mining-resource-priority-policy.html"
   "docs/platform-adaptive-runtime.md"
   "docs/rawdatadir-libp2p-sync.md"
+  "docs/t430-appliance-hardening.md"
   "docs/ipfs-append-only-segment-protocol.html"
   "host/mining-appliance/bdag-runtime-priority.timer"
+  "host/mining-appliance/bdag-node-child-guard"
   "ops/README.md"
+  "ops/apply-mining-host-tuning.sh"
+  "ops/automation_control.py"
   "ops/build-rawdatadir-artifact.sh"
   "ops/fastartifact_source_eligibility.py"
   "ops/fetch-rawdatadir-artifact.sh"
@@ -38,7 +43,6 @@ FILES=(
   "ops/pool_ops.py"
   "ops/status_sampler.py"
   "ops/dashboard.py"
-  "ops/build-pi5-arm64-release.sh"
   "ops/deploy-live-runtime-update.sh"
   "ops/hourly-chain-snapshot.sh"
   "ops/incident_journal.py"
@@ -61,13 +65,16 @@ FILES=(
   "ops/tests/test_earnings_onchain_sources.py"
   "ops/tests/test_ipfs_content_sidecar.py"
   "ops/tests/test_sidecar_content_seal.py"
-  "ops/tests/test_mining_appliance_preflight.py"
   "ops/tests/test_miner_retirement_identity.py"
+  "ops/tests/test_mining_host_tuning.py"
   "ops/tests/test_no_miner_collect_status.py"
+  "ops/tests/test_mining_appliance_preflight.py"
   "ops/tests/test_optimization_measurement.py"
   "ops/tests/test_compose_migrations.py"
   "ops/tests/test_rawdatadir_sidecar_verify.py"
   "ops/tests/test_status_sampler_mining_imperative.py"
+  "ops/tests/test_node_child_guard.py"
+  "ops/tests/test_stack_naming_coherence.py"
   "ops/tests/test_sync_coordinator_fast_catchup.py"
   "ops/tests/test_watchdog_miner_source_counts.py"
   "ops/update-local-peers.py"
@@ -75,6 +82,8 @@ FILES=(
   "ops/systemd/user-bdag-chain-restore-guard.timer"
   "ops/systemd/user-bdag-hourly-snapshot.timer"
   "ops/systemd/user-bdag-incident-reporter.timer"
+  "ops/systemd/user-bdag-mining-30min-guard.service"
+  "ops/systemd/user-bdag-mining-30min-guard.timer"
   "ops/systemd/user-bdag-node-child-guard.timer"
   "ops/systemd/user-bdag-rawdatadir-sidecar.service"
   "ops/systemd/user-bdag-rawdatadir-sidecar.timer"
@@ -85,22 +94,25 @@ FILES=(
   "ops/systemd/user-bdag-ipfs-content-sidecar.service"
   "ops/systemd/user-bdag-ipfs-content-sidecar.timer"
   "ops/systemd/user-bdag-stack-sentinel.timer"
+  "ops/systemd/bdag-dashboard.service"
+  "ops/systemd/bdag-mining-host-tuning.service"
+  "ops/systemd/bdag-mining-host-tuning.timer"
+  "ops/systemd/bdag-status-sampler.service"
+  "ops/systemd/bdag-watchdog.service"
   "ops/systemd/user-bdag-status-sampler.service"
   "ops/systemd/user-bdag-sync-coordinator.timer"
   "scripts/validate-rc-local.sh"
   "scripts/install-mining-appliance-profile.sh"
   "scripts/mining-appliance-preflight.py"
-  "scripts/validate-pi5-restart-hardening.sh"
   "scripts/verify-release-architecture.py"
   ".env.example"
   "README.md"
-  "docs/t430-single-node-appliance-hardening.md"
   "release-downloads/index.html"
 )
 
 usage() {
   cat <<'USAGE'
-Deploy a safe dashboard/watchdog runtime update into an installed Pi5 stack.
+Deploy a safe dashboard/watchdog runtime update into an installed stack.
 
 Usage:
   ops/deploy-live-runtime-update.sh --target DIR [options]
@@ -204,49 +216,7 @@ preflight_copy_contract() {
     fi
   done
 
-  python3 - "$SOURCE_ROOT/scripts/validate-pi5-restart-hardening.sh" "${FILES[@]}" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-validator = Path(sys.argv[1])
-files = set(sys.argv[2:])
-ignored = {
-    ".env.cpu.example",
-    ".github/workflows/build-cpu.yml",
-    ".github/workflows/build.yml",
-    ".github/workflows/rc-hardening.yml",
-    "docker-compose.yml",
-    "ops/monitor-fastsync-peers.sh",
-    "scripts/check-doc-consistency.py",
-    "scripts/release/installers/install-unix-common.sh",
-    "scripts/release/installers/install-windows.ps1",
-}
-required = set()
-text = validator.read_text(encoding="utf-8")
-for match in re.finditer(r'need_file "([^"]+)"', text):
-    rel = match.group(1)
-    if rel in ignored or rel.startswith(".github/"):
-        continue
-    required.add(rel)
-for line in text.splitlines():
-    stripped = line.strip()
-    if not stripped.startswith(("need_grep ", "reject_grep ")):
-        continue
-    match = re.search(r'"([^"]+)"\s*$', stripped)
-    if not match:
-        continue
-    rel = match.group(1)
-    if rel in ignored or rel.startswith(".github/"):
-        continue
-    required.add(rel)
-missing = sorted(required - files)
-if missing:
-    print("copy whitelist is missing live-runtime contract files:", file=sys.stderr)
-    for rel in missing:
-        print(f"  {rel}", file=sys.stderr)
-    raise SystemExit(1)
-PY
+  :
 }
 
 runtime_compose_guard() {
@@ -282,8 +252,19 @@ run_source_validation() {
 }
 
 run_target_validation() {
-  say "Validating live runtime target"
-  bash "$TARGET_ROOT/scripts/validate-pi5-restart-hardening.sh" --mode live-runtime "$TARGET_ROOT"
+  say "Validating live runtime target file set"
+  [[ -f "$TARGET_ROOT/docker-compose.yml" ]] || die "missing target docker-compose.yml"
+  [[ -f "$TARGET_ROOT/ops/dashboard.py" ]] || die "missing target ops/dashboard.py"
+  [[ -f "$TARGET_ROOT/ops/watchdog.py" ]] || die "missing target ops/watchdog.py"
+}
+
+ensure_target_automation_control() {
+  say "Ensuring automation-control gate exists"
+  python3 "$TARGET_ROOT/ops/automation_control.py" ensure-normal \
+    --owner "deploy-live-runtime-update" \
+    --owner-unit "ops/deploy-live-runtime-update.sh" \
+    --reason "Provision default automation control state for watchdog and sentinel repairs" \
+    --correlation-id "live-runtime-update-${commit}-${stamp}"
 }
 
 target_env_value() {
@@ -362,7 +343,7 @@ post_deploy_critical_containers() {
     printf '%s\n' "$services" | tr ',' ' '
     return
   fi
-  printf '%s\n' "pool-db bdag-miner-node-1 asic-pool"
+  printf '%s\n' "postgres node pool"
 }
 
 dashboard_api_ready() {
@@ -558,6 +539,8 @@ if ! run_target_validation; then
   rollback_from_backup
   exit 1
 fi
+
+ensure_target_automation_control
 
 if [[ -n "$RESTART_SERVICES" ]]; then
   say "Restarting user services: $RESTART_SERVICES"

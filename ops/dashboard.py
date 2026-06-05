@@ -46,6 +46,7 @@ from pool_ops import (
     save_miner_admin_password,
     scan_miners,
     upsert_miner_registry,
+    warm_dashboard_history_caches,
     write_action_state,
 )
 
@@ -57,9 +58,19 @@ REQUIRE_TOKEN = os.environ.get("BDAG_DASHBOARD_REQUIRE_TOKEN", "auto")
 WATCHDOG = PROJECT_ROOT / "ops" / "watchdog.py"
 P2P_GUARD_STATE = RUNTIME_DIR / "p2p-health-state.json"
 REPORTS_DIR = RUNTIME_DIR / "reports"
-STATUS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_STATUS_CACHE_SECONDS", "10"))
+DEFAULT_STATUS_CACHE_SECONDS = os.environ.get("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS", "120")
+STATUS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_STATUS_CACHE_SECONDS", DEFAULT_STATUS_CACHE_SECONDS))
 EARNINGS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_EARNINGS_CACHE_SECONDS", "30"))
-SAMPLER_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS", "10"))
+SAMPLER_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS", DEFAULT_STATUS_CACHE_SECONDS))
+DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS = max(
+    5.0,
+    float(
+        os.environ.get(
+            "BDAG_DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS",
+            os.environ.get("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS", str(max(SAMPLER_CACHE_SECONDS, STATUS_CACHE_SECONDS))),
+        )
+    ),
+)
 DASHBOARD_DIRECT_STATUS_FALLBACK = os.environ.get(
     "BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -218,13 +229,50 @@ def cached_status_for_dashboard(include_logs: bool = True) -> tuple[dict[str, ob
     return None, diagnostics
 
 
+def rounded_wait_seconds(seconds: float) -> int:
+    if seconds <= 15:
+        return max(1, int(round(seconds)))
+    return max(5, int(((seconds + 4.999) // 5) * 5))
+
+
+def dashboard_status_wait_context(diagnostics: dict[str, object]) -> tuple[str, int, float | None]:
+    ages: list[float] = []
+    for key in ("status_sampler", "shared_status_cache"):
+        info = diagnostics.get(key)
+        if not isinstance(info, dict):
+            continue
+        age = dashboard_float(info.get("age_seconds"))
+        if age is not None:
+            ages.append(age)
+
+    newest_age = min(ages) if ages else None
+    if newest_age is None:
+        wait_seconds = rounded_wait_seconds(DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS)
+        return (
+            "Dashboard status is warming up. Waiting for the next sampler update; "
+            f"it usually arrives within about {wait_seconds}s.",
+            wait_seconds,
+            None,
+        )
+
+    remaining = DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS - newest_age
+    wait_seconds = rounded_wait_seconds(remaining if remaining > 1 else DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS)
+    return (
+        "Dashboard status is waiting for the next sampler update. "
+        f"The newest cached sample is about {rounded_wait_seconds(newest_age)}s old; "
+        f"the next dashboard refresh should have current data in about {wait_seconds}s.",
+        wait_seconds,
+        newest_age,
+    )
+
+
 def dashboard_status_fast_fallback(diagnostics: dict[str, object]) -> dict[str, object]:
-    failure_message = "dashboard status cache unavailable; direct collection skipped"
+    failure_message, wait_seconds, newest_age = dashboard_status_wait_context(diagnostics)
     payload: dict[str, object] = {
         "generated_at": now_iso(),
         "overall": "degraded",
         "status_reason": failure_message,
-        "mode": "status_cache_unavailable",
+        "mode": "waiting_for_status_sample",
         "can_mine": False,
         "can_accept_shares": False,
         "can_submit_blocks": False,
@@ -248,15 +296,23 @@ def dashboard_status_fast_fallback(diagnostics: dict[str, object]) -> dict[str, 
         "collector_budget_exceeded": True,
         "collector_budget_failure": {
             "component": "dashboard_status",
-            "class": "collector_budget_exceeded",
-            "detail": "No fresh status sampler or shared status cache was available; direct collection was skipped.",
+            "class": "waiting_for_status_sample",
+            "detail": failure_message,
+            "estimated_wait_seconds": wait_seconds,
+            "newest_cache_age_seconds": newest_age,
         },
         "chain_rpc_error": "not_checked_budgeted_status_fallback",
         "containers": {},
         "nodes": {},
         "node_services": [],
         "stack_services": [],
-        "sync_progress": {"status": "unknown", "percent": None, "remaining_blocks": None},
+        "sync_progress": {"status": "waiting_for_status_sample", "percent": None, "remaining_blocks": None},
+        "sync_estimate": {
+            "stage": "Waiting for status sample",
+            "narrative": failure_message,
+            "next_step": f"wait about {wait_seconds}s for the next dashboard status sample; mining may still be running",
+            "eta_seconds": wait_seconds,
+        },
         "sync_health": {},
         "pool": {},
         "pool_metrics": {},
@@ -537,7 +593,7 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
     managed_nodes = payload.get("managed_node_services") if isinstance(payload.get("managed_node_services"), list) else []
     single_active_node = len(managed_nodes) == 1
     leader = choose_sync_leader(payload)
-    mode = str(coordinator.get("mode") or "single_node_catchup")
+    mode = str(coordinator.get("mode") or "active_node_catchup")
     threshold = safe_int(((coordinator.get("last_decision") or {}).get("thresholds") or {}).get("leader_near_tip_blocks"), 5) or 5
 
     state = read_json(SYNC_ESTIMATE_STATE_FILE, {})
@@ -612,7 +668,7 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
     stage = (
         "Synced"
         if sync_progress.get("status") == "synced"
-        else "Single-node catch-up"
+        else "Active-node catch-up"
         if single_active_node
         else "Syncing"
     )
@@ -968,6 +1024,15 @@ HTML = r"""<!doctype html>
       justify-self: stretch;
       align-items: stretch;
     }
+    .status-overview.single-card {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .status-overview.single-card > .panel {
+      grid-column: 1 / -1;
+    }
+    .status-overview.single-card .node-card-grid {
+      display: none;
+    }
     .status-overview .panel,
     .status-overview .node-card-grid {
       grid-column: auto;
@@ -1000,6 +1065,29 @@ HTML = r"""<!doctype html>
     .span-8 { grid-column: span 8; }
     .span-12 { grid-column: span 12; }
     .kpi-label { color: var(--muted); font-size: 12px; text-transform: uppercase; font-weight: 700; }
+    .stack-summary-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      min-width: 0;
+    }
+    .stack-summary-main {
+      min-width: 0;
+    }
+    .height-summary {
+      min-width: 170px;
+      text-align: right;
+    }
+    .height-value {
+      margin-top: 6px;
+      color: var(--text);
+      font-size: 32px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      white-space: nowrap;
+    }
     .stack-endpoint {
       display: flex;
       align-items: baseline;
@@ -1351,6 +1439,9 @@ HTML = r"""<!doctype html>
       }
       .span-2, .span-3, .span-4, .span-6, .span-8, .node-card-grid { grid-column: span 12; }
       .field-span-2, .field-span-3, .field-span-4, .field-span-6 { grid-column: span 12; }
+      .stack-summary-row { align-items: stretch; }
+      .height-summary { min-width: 130px; }
+      .height-value { font-size: 26px; }
       main { padding: 14px; }
       .tabs { padding-left: 14px; padding-right: 14px; }
       input { min-width: 100%; }
@@ -1395,8 +1486,16 @@ HTML = r"""<!doctype html>
           <span>Pool Endpoint</span>
           <span class="stack-endpoint-value" id="poolEndpoint">...</span>
         </div>
-        <div class="kpi-label">Stack</div>
-        <div class="kpi-value" id="overall">...</div>
+        <div class="stack-summary-row">
+          <div class="stack-summary-main">
+            <div class="kpi-label">Stack</div>
+            <div class="kpi-value" id="overall">...</div>
+          </div>
+          <div class="height-summary">
+            <div class="kpi-label">Height</div>
+            <div class="height-value" id="syncHeight">...</div>
+          </div>
+        </div>
         <div class="status-reason" id="statusReason"></div>
         <div class="sync-progress">
           <div class="sync-progress-bar" title="Node EVM sync progress">
@@ -1410,7 +1509,7 @@ HTML = r"""<!doctype html>
         <div id="syncNarrative" class="sync-narrative"></div>
         <div class="sync-detail-list">
           <span class="label">Mode</span><span class="value" id="syncMode">...</span>
-          <span class="label">Active</span><span class="value" id="syncActiveNode">...</span>
+          <span class="label" id="syncActiveLabel">Active</span><span class="value" id="syncActiveNode">...</span>
           <span class="label">Rate</span><span class="value" id="syncRate">...</span>
           <span class="label">ETA</span><span class="value" id="syncEta">...</span>
           <span class="label">Next</span><span class="value" id="syncNextStep">...</span>
@@ -1732,7 +1831,7 @@ HTML = r"""<!doctype html>
     let globalLoaded = false;
     let lastGlobalData = null;
     let globalRefreshInFlight = false;
-    const defaultServiceOrder = ["pool-db", "bdag-miner-node-1", "asic-pool"];
+    const defaultServiceOrder = ["postgres", "node", "pool"];
     function text(id, value) { document.getElementById(id).textContent = value ?? ""; }
     function currentTheme() {
       return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
@@ -2015,23 +2114,60 @@ HTML = r"""<!doctype html>
     }
     function renderSyncEstimate(data, progress) {
       const estimate = data.sync_estimate || {};
+      if (data.mode === "status_cache_unavailable" || data.collector_budget_exceeded && !(data.sync_progress || {}).status) {
+        text("syncNarrative", "Status sampler is unavailable; waiting for a fresh stack sample.");
+        text("syncMode", "unknown");
+        const activeLabel = document.getElementById("syncActiveLabel");
+        const activeValue = document.getElementById("syncActiveNode");
+        if (activeLabel) activeLabel.classList.add("hidden");
+        if (activeValue) activeValue.classList.add("hidden");
+        text("syncHeight", "n/a");
+        text("syncRate", "estimating from the next sample");
+        text("syncEta", "estimating after the next progress sample");
+        text("syncNextStep", "restore status sampling so dashboard readiness can be evaluated");
+        return;
+      }
       const leader = estimate.leader || data.sync_health?.planned_pause_leader || "";
       const leaderNode = estimate.nodes?.[leader] || {};
+      const managedNodes = data.managed_node_services || [];
+      const singleManagedNode = managedNodes.length === 1;
       const remaining = firstPresent(leaderNode.remaining_blocks, estimate.remaining_blocks, progress.remaining_blocks);
       const current = firstPresent(leaderNode.current_block, progress.current_block);
       const highest = firstPresent(leaderNode.highest_block, progress.highest_block);
+      const singleNode = singleManagedNode ? (data.nodes || {})[managedNodes[0]] || {} : {};
+      const displayedHeight = firstPresent(current, singleNode.chain_block_count, null);
+      const heightText = hasValue(displayedHeight)
+        ? (hasValue(highest) && Number(highest) !== Number(displayedHeight)
+          ? `${fmt(displayedHeight)} / ${fmt(highest)}`
+          : fmt(displayedHeight))
+        : "n/a";
       const threshold = firstPresent(estimate.seed_threshold_blocks, data.sync_coordinator?.last_decision?.thresholds?.leader_near_tip_blocks, 5);
-      text("syncNarrative", estimate.narrative || (progress.status === "synced" ? "Managed nodes are synced." : "Managed nodes are syncing."));
+      const defaultNarrative = progress.status === "synced"
+        ? (singleManagedNode ? "Managed node is synced to the current network tip." : "Managed nodes are synced.")
+        : (singleManagedNode ? "Managed node is syncing." : "Managed nodes are syncing.");
+      text("syncNarrative", estimate.narrative || defaultNarrative);
       text("syncMode", estimate.stage || progress.status || "unknown");
-      text(
-        "syncActiveNode",
-        leader
-          ? `${leader} ${fmt(current)} / ${fmt(highest)}; ${fmt(remaining)} block(s) remaining`
-          : `${fmt(current)} / ${fmt(highest)}; ${fmt(remaining)} block(s) remaining`
-      );
+      text("syncHeight", heightText);
+      const activeLabel = document.getElementById("syncActiveLabel");
+      const activeValue = document.getElementById("syncActiveNode");
+      if (singleManagedNode) {
+        if (activeLabel) activeLabel.classList.add("hidden");
+        if (activeValue) activeValue.classList.add("hidden");
+      } else {
+        if (activeLabel) activeLabel.classList.remove("hidden");
+        if (activeValue) activeValue.classList.remove("hidden");
+        text(
+          "syncActiveNode",
+          leader
+            ? `${leader} ${fmt(current)} / ${fmt(highest)}; ${fmt(remaining)} block(s) remaining`
+            : `${fmt(current)} / ${fmt(highest)}; ${fmt(remaining)} block(s) remaining`
+        );
+      }
       text("syncRate", syncRateText(estimate));
       text("syncEta", etaText(estimate.eta_seconds, estimate.eta_at));
-      if (progress.status === "synced") {
+      if (estimate.next_step) {
+        text("syncNextStep", estimate.next_step);
+      } else if (progress.status === "synced") {
         text("syncNextStep", "pool can mine normally once backend template checks are healthy");
       } else {
         text("syncNextStep", "wait for nodes to finish syncing; the pool is holding mining jobs until backend sync is complete");
@@ -2087,6 +2223,15 @@ HTML = r"""<!doctype html>
       container.innerHTML = "";
       const syncNodes = syncProgress.nodes || {};
       const backendState = firstTemplateBackendState(data).backends || {};
+      const managedNodeNames = data.managed_node_services || [];
+      const observerNodeNames = data.observer_node_services || [];
+      const singleManagedTopology = managedNodeNames.length === 1 && observerNodeNames.length === 0;
+      const fallbackOnly = data.mode === "status_cache_unavailable" || (data.collector_budget_exceeded && !nodeNames.length);
+      const overview = container.closest(".status-overview");
+      if (overview) overview.classList.toggle("single-card", singleManagedTopology || fallbackOnly);
+      if (singleManagedTopology || fallbackOnly) {
+        return;
+      }
       if (!nodeNames.length) {
         container.innerHTML = `<div class="node-card"><div class="kpi-label">Nodes</div><div class="kpi-value">n/a</div><div class="subtle">No node services reported.</div></div>`;
         return;
@@ -2134,7 +2279,7 @@ HTML = r"""<!doctype html>
         }
         container.appendChild(group);
       }
-      appendGroup("Managed production routing nodes", managed);
+      appendGroup(managed.length === 1 ? "Managed production routing node" : "Managed production routing nodes", managed);
       appendGroup("Observer nodes - advisory only", observers);
     }
     function renderNodeLogs(nodeNames, nodes, data) {
@@ -3817,6 +3962,14 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> int:
     ensure_runtime()
+    history_warmup = warm_dashboard_history_caches()
+    warmed = history_warmup.get("histories", {}) if isinstance(history_warmup, dict) else {}
+    if warmed:
+        summary = ", ".join(
+            f"{name}:{payload.get('chart_rows', 0) if isinstance(payload, dict) else 0}"
+            for name, payload in warmed.items()
+        )
+        print(f"Dashboard history warmup {history_warmup.get('status', 'unknown')}: {summary}")
     if token_required():
         token = get_action_token()
         print(f"Action token file: {RUNTIME_DIR / 'dashboard-token.txt'}")
