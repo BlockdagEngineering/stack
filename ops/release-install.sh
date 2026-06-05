@@ -391,7 +391,7 @@ configure_env() {
   set_env_value .env POSTGRES_USER "$postgres_user"
   set_env_value .env POSTGRES_PASSWORD "$postgres_password"
   set_env_value .env POSTGRES_DB "$postgres_db"
-  set_env_value .env PG_URL "postgres://${postgres_user}:${postgres_password}@pool-db:5432/${postgres_db}"
+  set_env_value .env PG_URL "postgres://${postgres_user}:${postgres_password}@postgres:5432/${postgres_db}"
   set_env_value .env BDAG_POOL_HOST "$lan_ip"
   set_env_value .env BDAG_POOL_URL "stratum+tcp://$lan_ip:3334"
   set_env_value .env BDAG_MINER_SCAN_TARGET "$scan_target"
@@ -570,7 +570,7 @@ start_stack() {
   say "Starting BlockDAG pool stack"
   guard_runtime_compose
   if [[ "${BDAG_RELEASE_PULL_BASE_IMAGES:-0}" == "1" ]]; then
-    compose_cmd pull pool-db || true
+    compose_cmd pull postgres || true
   else
     warn "Skipping implicit image pulls. Set BDAG_RELEASE_PULL_BASE_IMAGES=1 for an explicit base-image refresh."
   fi
