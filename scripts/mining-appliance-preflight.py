@@ -93,6 +93,13 @@ def load_env_file(path: Path) -> dict[str, str]:
     return env
 
 
+def env_float(env: dict[str, str], name: str, default: float) -> float:
+    try:
+        return float(env.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 def safe_int(value: Any, default: int | None = None) -> int | None:
     try:
         if value is None or str(value).strip() == "":
@@ -336,6 +343,10 @@ def env_ephemeral_dir(root: Path, env: dict[str, str]) -> Path:
     return env_path(root, env, "BDAG_EPHEMERAL_DIR", Path("/run/bdag-pool"))
 
 
+def env_build_tmpdir(root: Path, env: dict[str, str]) -> Path:
+    return env_path(root, env, "BDAG_BUILD_TMPDIR", root / ".build-tmp")
+
+
 def storage_device(path: Path) -> dict[str, Any]:
     mount = mount_info(path)
     source = clean_mount_source(str(mount.get("source") or ""))
@@ -381,7 +392,7 @@ def check_host(checks: list[Check], profile: HostProfile) -> None:
             f"{profile.os_name}/{profile.arch} profile={profile.profile} "
             f"cpu={profile.cpu_count} memory={profile.memory_gib:.2f}GiB kernel={profile.kernel}"
         ),
-        "Use single-node mode and adaptive concurrency on constrained hosts.",
+        "Use the default one-node layout and adaptive concurrency on constrained hosts.",
         profile.as_dict(),
     )
     if profile.os_name != "linux":
@@ -467,15 +478,16 @@ def check_storage(checks: list[Check], root: Path, env: dict[str, str], profile:
     topology = (env.get("BDAG_DETECTED_NETWORK_TOPOLOGY") or env.get("BDAG_NETWORK_TOPOLOGY") or "").strip().lower()
     mining_appliance = (
         mining_address and mining_address.lower() != ZERO_ETH_ADDRESS
-    ) or topology == "single-node-asic-router"
-    no_fastsync_serve = bool_enabled(env.get("BDAG_NO_FASTSYNC_SERVE", "auto"), True)
-    if usb_chain_data and mining_appliance and not no_fastsync_serve:
+    ) or topology == "asic-router"
+    sync_source_node = bool_enabled(env.get("SYNC_SOURCE_NODE"), False)
+    no_fastsync_serve = not sync_source_node
+    if usb_chain_data and mining_appliance and sync_source_node:
         add(
             checks,
             "fail",
             "usb_mining_fastsync_serving",
             "USB-backed mining node is configured to serve bulk FastSync data.",
-            "Set BDAG_NO_FASTSYNC_SERVE=auto or 1 so the node can consume sync and relay blocks without serving range, snapshot, or artifact traffic from USB while mining.",
+            "Set SYNC_SOURCE_NODE=0 so the node can consume sync and relay blocks without serving range, snapshot, or artifact traffic from USB while mining.",
             evidence,
         )
     elif usb_chain_data and mining_appliance:
@@ -619,6 +631,8 @@ def check_ephemeral_storage(checks: list[Check], root: Path, env: dict[str, str]
         "BDAG_EPHEMERAL_DIR": str(ephemeral_dir),
         "TMPDIR": str(tmpdir),
         "BDAG_CONTAINER_TMPFS_SIZE": env.get("BDAG_CONTAINER_TMPFS_SIZE"),
+        "BDAG_NODE_TMPFS_SIZE": env.get("BDAG_NODE_TMPFS_SIZE"),
+        "BDAG_NODE_SHM_SIZE": env.get("BDAG_NODE_SHM_SIZE"),
         "ephemeral_device": ephemeral_device,
         "tmpdir_device": tmpdir_device,
         "BDAG_FASTSNAP_DIRECTORY_STAGING": str(staging_path) if staging_path else "",
@@ -664,6 +678,99 @@ def check_ephemeral_storage(checks: list[Check], root: Path, env: dict[str, str]
         )
 
 
+def docker_system_df() -> list[dict[str, Any]]:
+    try:
+        proc = run(["docker", "system", "df", "--format", "{{json .}}"], timeout=15)
+    except subprocess.TimeoutExpired:
+        return []
+    if proc.returncode != 0:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in proc.stdout.splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def size_to_bytes(value: str) -> int | None:
+    text = value.strip()
+    if not text or text == "0B":
+        return 0
+    match = re.match(r"^([0-9]+(?:\.[0-9]+)?)([KMGT]?B)$", text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    number = float(match.group(1))
+    unit = match.group(2).upper()
+    multiplier = {
+        "B": 1,
+        "KB": 1000,
+        "MB": 1000**2,
+        "GB": 1000**3,
+        "TB": 1000**4,
+    }[unit]
+    return int(number * multiplier)
+
+
+def check_disk_io_noise_guard(checks: list[Check], root: Path, env: dict[str, str], profile: HostProfile) -> None:
+    root_usage = disk_usage(Path("/"))
+    root_warn_gib = env_float(env, "BDAG_ROOT_FREE_WARN_GIB", 6.0)
+    root_fail_gib = env_float(env, "BDAG_ROOT_FREE_FAIL_GIB", 2.0)
+    build_tmp = env_build_tmpdir(root, env)
+    build_tmp_device = storage_device(build_tmp)
+    containerd_path = Path("/var/lib/containerd").resolve()
+    containerd_exists = containerd_path.exists()
+    containerd_same_as_root = same_filesystem(Path("/"), containerd_path) if containerd_exists else None
+    docker_rows = docker_system_df()
+    build_cache_row = next((row for row in docker_rows if str(row.get("Type")) == "Build Cache"), {})
+    build_cache_bytes = size_to_bytes(str(build_cache_row.get("Size") or ""))
+    build_cache_warn_gib = env_float(env, "BDAG_BUILD_CACHE_WARN_GIB", 4.0)
+
+    evidence = {
+        "root_usage": root_usage,
+        "root_warn_gib": root_warn_gib,
+        "root_fail_gib": root_fail_gib,
+        "BDAG_BUILD_TMPDIR": str(build_tmp),
+        "build_tmp_device": build_tmp_device,
+        "containerd_path": str(containerd_path),
+        "containerd_exists": containerd_exists,
+        "containerd_same_as_root": containerd_same_as_root,
+        "docker_build_cache": build_cache_row,
+        "docker_build_cache_bytes": build_cache_bytes,
+        "docker_build_cache_warn_gib": build_cache_warn_gib,
+        "host_profile": profile.as_dict(),
+    }
+
+    if root_usage["free_bytes"] < root_fail_gib * GIB:
+        add(checks, "fail", "disk_io_root_free_space_guard", f"root filesystem has only {root_usage['free_gib']}GiB free.", "Free space before building or starting Docker; the onboard/root filesystem must not absorb build or temp spillover.", evidence)
+    elif root_usage["free_bytes"] < root_warn_gib * GIB:
+        add(checks, "warn", "disk_io_root_free_space_guard", f"root filesystem has {root_usage['free_gib']}GiB free.", "Keep Docker/containerd/build cache/chain artifacts off the root filesystem and prune after deployment.", evidence)
+    else:
+        add(checks, "pass", "disk_io_root_free_space_guard", f"root filesystem has {root_usage['free_gib']}GiB free", evidence=evidence)
+
+    if str(build_tmp_device.get("fstype") or "") in RAM_BACKED_FS:
+        add(checks, "warn", "build_tmpdir_not_tmpfs", "BDAG_BUILD_TMPDIR resolves to RAM-backed tmpfs.", "Use tmpfs only for small scratch. Point BDAG_BUILD_TMPDIR at capacity storage and run builds through scripts/bdag-low-io-build.sh.", evidence)
+    else:
+        add(checks, "pass", "build_tmpdir_not_tmpfs", "build scratch directory is not tmpfs", evidence=evidence)
+
+    if containerd_exists and containerd_same_as_root and profile.profile == "constrained":
+        add(checks, "warn", "containerd_root_placement", "containerd shares the constrained root filesystem.", "Move /var/lib/containerd to capacity storage or a larger non-root disk so unpacked image layers do not fill eMMC.", evidence)
+    elif containerd_exists:
+        add(checks, "pass", "containerd_root_placement", "containerd is not on the constrained root filesystem", evidence=evidence)
+    else:
+        add(checks, "warn", "containerd_root_placement", "/var/lib/containerd is missing or not inspectable.", "Verify containerd storage before building images.", evidence)
+
+    if build_cache_bytes is None:
+        add(checks, "warn", "docker_build_cache_budget", "Docker build-cache size could not be parsed.", "Run docker system df and prune builder cache after successful deployments.", evidence)
+    elif build_cache_bytes > build_cache_warn_gib * GIB:
+        add(checks, "warn", "docker_build_cache_budget", f"Docker build cache is {round(build_cache_bytes / GIB, 2)}GiB.", "Run docker builder prune -af after successful deployment so cache I/O does not compete with chain sync.", evidence)
+    else:
+        add(checks, "pass", "docker_build_cache_budget", f"Docker build cache is {round(build_cache_bytes / GIB, 2)}GiB", evidence=evidence)
+
+
 def chain_marker_exists(path: Path) -> bool:
     if not path.exists():
         return False
@@ -672,11 +779,10 @@ def chain_marker_exists(path: Path) -> bool:
 
 def check_node_data_layout(checks: list[Check], root: Path, env: dict[str, str]) -> None:
     data_dir = env_data_dir(root, env)
-    node_mode = (env.get("BDAG_NODE_MODE") or "single").strip().lower()
     node1 = data_dir / "node1"
     node1_has = chain_marker_exists(node1 / "mainnet") or chain_marker_exists(node1)
-    evidence = {"data_dir": str(data_dir), "node_mode": node_mode, "active_node_has_chain_markers": node1_has}
-    add(checks, "pass", "single_node_data_layout", "active node data layout is inspectable", evidence=evidence)
+    evidence = {"data_dir": str(data_dir), "active_node_has_chain_markers": node1_has}
+    add(checks, "pass", "active_node_data_layout", "active node data layout is inspectable", evidence=evidence)
 
     backup_like = []
     if data_dir.exists():
@@ -690,10 +796,10 @@ def check_node_data_layout(checks: list[Check], root: Path, env: dict[str, str])
 
 def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostProfile) -> None:
     evidence = {
-        "BDAG_NODE_MODE": env.get("BDAG_NODE_MODE"),
         "BDAG_NODE_CACHE_MB": env.get("BDAG_NODE_CACHE_MB"),
         "NODE_MAX_PEERS": env.get("NODE_MAX_PEERS"),
         "BDAG_FASTSYNC_PREPROCESS_WORKERS": env.get("BDAG_FASTSYNC_PREPROCESS_WORKERS"),
+        "SYNC_SOURCE_NODE": env.get("SYNC_SOURCE_NODE"),
         "BDAG_NO_FASTSYNC_SERVE": env.get("BDAG_NO_FASTSYNC_SERVE"),
         "BDAG_FASTARTIFACTSYNC_ENABLED": env.get("BDAG_FASTARTIFACTSYNC_ENABLED"),
         "BDAG_STORAGE_PROFILE": env.get("BDAG_STORAGE_PROFILE"),
@@ -707,11 +813,7 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         "BDAG_NODE_MODULES": env.get("BDAG_NODE_MODULES"),
         "BDAG_NODE_MINING_ARGS": env.get("BDAG_NODE_MINING_ARGS"),
     }
-    node_mode = (env.get("BDAG_NODE_MODE") or "single").strip().lower()
-    if profile.profile == "constrained" and node_mode not in {"single", "single-node", "one", "1"}:
-        add(checks, "warn", "constrained_node_mode", f"constrained host is configured for BDAG_NODE_MODE={node_mode}.", "Use single-node mode unless the host has enough RAM, disk bandwidth, and power headroom for two nodes.", evidence)
-    else:
-        add(checks, "pass", "constrained_node_mode", f"BDAG_NODE_MODE={node_mode or 'single'}", evidence=evidence)
+    add(checks, "pass", "active_node_topology", "release topology uses one production node", evidence=evidence)
 
     cache_mb = safe_int(env.get("BDAG_NODE_CACHE_MB"), 1024)
     if profile.profile == "constrained" and cache_mb and cache_mb > 1536:
@@ -735,14 +837,17 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     topology = (env.get("BDAG_DETECTED_NETWORK_TOPOLOGY") or env.get("BDAG_NETWORK_TOPOLOGY") or "").strip().lower()
     constrained_mining_profile = (
         storage_profile in {"usb-chain-internal-runtime", "single-usb-constrained"}
-        or topology == "single-node-asic-router"
+        or topology == "asic-router"
     )
     node_args_append_enables_fastartifact = node_args_enable_fastartifact(env.get("NODE_ARGS_APPEND"))
     evidence["NODE_ARGS_APPEND"] = env.get("NODE_ARGS_APPEND")
     append_args_enable_fastartifact = node_args_append_enables_fastartifact
-    no_fastsync_serve = bool_enabled(env.get("BDAG_NO_FASTSYNC_SERVE", "auto"), True)
+    no_fastsync_serve_value = (env.get("BDAG_NO_FASTSYNC_SERVE") or "auto").strip().lower()
+    explicit_no_fastsync_serve = bool_enabled(no_fastsync_serve_value, False) and no_fastsync_serve_value != "auto"
+    auto_no_fastsync_serve = constrained_mining_profile and no_fastsync_serve_value in {"", "auto"}
+    no_fastsync_serve = explicit_no_fastsync_serve or auto_no_fastsync_serve
     if constrained_mining_profile and no_fastsync_serve and append_args_enable_fastartifact:
-        add(checks, "fail", "fastartifactsync", "BDAG_NO_FASTSYNC_SERVE suppresses serving, but node args still add --fastartifactsync.", "Clear NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
+        add(checks, "fail", "fastartifactsync", "FastSync serving is suppressed, but node args still add --fastartifactsync.", "Clear NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
     elif constrained_mining_profile and not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True) and append_args_enable_fastartifact:
         add(checks, "fail", "fastartifactsync", "BDAG_FASTARTIFACTSYNC_ENABLED is disabled, but node args still add --fastartifactsync.", "Clear NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
     elif constrained_mining_profile and no_fastsync_serve:
@@ -761,19 +866,67 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     node_mining_args = env.get("BDAG_NODE_MINING_ARGS") or ""
     missing_mining_args = [
         flag
-        for flag in ("--allowminingwhennearlysynced", "--allowsubmitwhennotsynced", "--miner", "--miningaddr=")
+        for flag in ("--miner", "--miningaddr=")
         if flag not in node_mining_args
     ]
-    if node_mining_enabled and "miner" not in node_modules:
-        add(checks, "fail", "node_mining_runtime", "node mining is enabled but the miner module is not exposed.", "Set BDAG_NODE_MODULES=Blockdag,miner so the pool can request fresh templates.", evidence)
+    unsafe_mining_bypass_args = [
+        flag
+        for flag in ("--allowminingwhennearlysynced", "--allowsubmitwhennotsynced")
+        if flag in node_mining_args
+    ]
+    if node_mining_enabled and node_modules and "blockdag" not in node_modules:
+        add(checks, "fail", "node_mining_runtime", "node mining is enabled but the Blockdag RPC module is not exposed.", "Set BDAG_NODE_MODULES=Blockdag; miner mode is enabled by --miner in BDAG_NODE_MINING_ARGS.", evidence)
+    elif node_mining_enabled and "miner" in node_modules:
+        add(checks, "fail", "node_mining_runtime", "BDAG_NODE_MODULES includes unsupported miner RPC module for this release image.", "Set BDAG_NODE_MODULES=Blockdag and keep --miner in BDAG_NODE_MINING_ARGS so chain RPC and templates remain available.", evidence)
+    elif node_mining_enabled and unsafe_mining_bypass_args:
+        add(checks, "fail", "node_mining_runtime", "node mining enables unsafe sync bypass args: " + ", ".join(unsafe_mining_bypass_args), "Remove sync bypass args; getTemplateHealth and readiness gates must fail closed until P2P freshness and sync safety are healthy.", evidence)
     elif node_mining_enabled and missing_mining_args:
-        add(checks, "fail", "node_mining_runtime", "node mining is enabled but required mining guard args are missing: " + ", ".join(missing_mining_args), "Set BDAG_NODE_MINING_ARGS with near-sync mining, submit override, miner mode, and the payout mining address.", evidence)
+        add(checks, "fail", "node_mining_runtime", "node mining is enabled but required mining args are missing: " + ", ".join(missing_mining_args), "Set BDAG_NODE_MINING_ARGS with miner mode and the payout mining address.", evidence)
     elif node_mining_enabled and constrained_mining_profile and "--maxinbound=1" not in node_mining_args:
         add(checks, "warn", "node_mining_runtime", "constrained ASIC-router mining is enabled without --maxinbound=1.", "Add --maxinbound=1 so inbound catch-up peers cannot contend with paid block submission on USB/router hosts while P2P remains usable.", evidence)
     elif node_mining_enabled:
-        add(checks, "pass", "node_mining_runtime", "node miner/template runtime guard args are configured", evidence=evidence)
+        add(checks, "pass", "node_mining_runtime", "node miner/template runtime args are configured", evidence=evidence)
     else:
         add(checks, "pass", "node_mining_runtime", "node mining stays disabled until miners are present", evidence=evidence)
+
+    pool_rpc_pressure = {
+        "POOL_GBT_MIN_INTERVAL_MS": env.get("POOL_GBT_MIN_INTERVAL_MS"),
+        "POOL_GBT_PRESSURE_INTERVAL_MS": env.get("POOL_GBT_PRESSURE_INTERVAL_MS"),
+        "POOL_GBT_PRESSURE_WINDOW_SECONDS": env.get("POOL_GBT_PRESSURE_WINDOW_SECONDS"),
+        "POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS": env.get("POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS"),
+        "POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS": env.get("POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS"),
+    }
+    gbt_min_ms = safe_int(pool_rpc_pressure["POOL_GBT_MIN_INTERVAL_MS"], None)
+    gbt_pressure_ms = safe_int(pool_rpc_pressure["POOL_GBT_PRESSURE_INTERVAL_MS"], None)
+    gbt_pressure_window_seconds = safe_int(pool_rpc_pressure["POOL_GBT_PRESSURE_WINDOW_SECONDS"], None)
+    node_health_probe_seconds = safe_int(pool_rpc_pressure["POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS"], None)
+    pressure_failures = []
+    if gbt_min_ms is not None and gbt_min_ms < 1000:
+        pressure_failures.append("POOL_GBT_MIN_INTERVAL_MS below 1000ms")
+    if gbt_pressure_ms is not None and gbt_pressure_ms < 250:
+        pressure_failures.append("POOL_GBT_PRESSURE_INTERVAL_MS below 250ms")
+    if node_health_probe_seconds is not None and node_health_probe_seconds < 10:
+        pressure_failures.append("POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS below 10s")
+    if pressure_failures:
+        add(
+            checks,
+            "fail",
+            "pool_template_rpc_pressure",
+            "pool template RPC settings can saturate the node RPC client limit: " + ", ".join(pressure_failures),
+            "Use POOL_GBT_MIN_INTERVAL_MS=1100, POOL_GBT_PRESSURE_INTERVAL_MS=500, POOL_GBT_PRESSURE_WINDOW_SECONDS=10, and POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS=15.",
+            pool_rpc_pressure,
+        )
+    elif gbt_pressure_window_seconds is not None and gbt_pressure_window_seconds > 15:
+        add(
+            checks,
+            "warn",
+            "pool_template_rpc_pressure",
+            f"pool template pressure window is {gbt_pressure_window_seconds}s.",
+            "Use 10s unless a measured soak test proves the node can absorb sustained template pressure while importing and mining.",
+            pool_rpc_pressure,
+        )
+    else:
+        add(checks, "pass", "pool_template_rpc_pressure", "pool template RPC pressure stays within constrained-node defaults", evidence=pool_rpc_pressure)
 
     if not bool_enabled(env.get("BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC"), True):
         add(checks, "warn", "fastsync_acceleration", "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC is disabled.", "Enable coordinator acceleration so nodes more than 1000 blocks behind use fastest catch-up defaults.", evidence)
@@ -934,6 +1087,7 @@ def run_preflight(root: Path, env_file: Path) -> dict[str, Any]:
     check_storage(checks, root, env, profile)
     check_storage_profile(checks, root, env, profile)
     check_ephemeral_storage(checks, root, env)
+    check_disk_io_noise_guard(checks, root, env, profile)
     check_node_data_layout(checks, root, env)
     check_env_defaults(checks, env, profile)
     check_swap(checks, profile)

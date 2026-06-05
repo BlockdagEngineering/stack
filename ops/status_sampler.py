@@ -27,7 +27,6 @@ from pool_ops import (
     env_bool,
     now_iso,
     read_env_file_value,
-    read_env_value,
     read_miner_registry,
     read_neighbor_macs,
     read_latest_earnings_snapshot_info,
@@ -89,7 +88,7 @@ CONSTRAINED_FASTARTIFACT_TOPOLOGIES = {
     item.lower()
     for item in split_env_list(
         "BDAG_CONSTRAINED_FASTARTIFACT_TOPOLOGIES",
-        "single-node-asic-router",
+        "asic-router",
     )
 }
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
@@ -104,10 +103,10 @@ FASTSYNC_PEER_QUARANTINE_ENV_KEYS = split_env_list(
     "BDAG_MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENV_KEYS",
     "NODE1_PEER_ADDRESSES,BDAG_FASTSYNC_PEERS,BOOTSTRAP_PEER_ADDRESSES",
 )
-NODE_MINING_REQUIRED_BOOL_FLAGS = (
+NODE_MINING_REQUIRED_BOOL_FLAGS = ("--miner",)
+NODE_MINING_UNSAFE_BYPASS_FLAGS = (
     "--allowminingwhennearlysynced",
     "--allowsubmitwhennotsynced",
-    "--miner",
 )
 NODE_MINING_CONSTRAINED_ASSIGNMENTS = {
     "--maxinbound": "1",
@@ -161,6 +160,9 @@ def dict_value(value: Any) -> dict[str, Any]:
 
 
 def config_value(name: str, default: str = "") -> str:
+    value = os.environ.get(name)
+    if value is not None:
+        return value
     for path in (POOL_ENV_FILE, PROJECT_ROOT / ".env"):
         try:
             file_value = read_env_file_value(path, name)
@@ -168,10 +170,7 @@ def config_value(name: str, default: str = "") -> str:
             file_value = None
         if file_value is not None:
             return file_value
-    value = os.environ.get(name)
-    if value is not None:
-        return value
-    return read_env_value(name) or default
+    return default
 
 
 def set_env_file_value(path: Any, key: str, value: str) -> bool:
@@ -244,7 +243,17 @@ def node_args_have_mining_address(args: str, address: str) -> bool:
 
 
 def node_args_words(args: str) -> list[str]:
-    return [word for word in args.replace("'", " ").replace('"', " ").split() if word]
+    words: list[str] = []
+    for word in args.replace("'", " ").replace('"', " ").split():
+        if not word:
+            continue
+        if word.startswith("--node-args="):
+            embedded = word.split("=", 1)[1].strip()
+            if embedded:
+                words.append(embedded)
+            continue
+        words.append(word)
+    return words
 
 
 def node_args_have_bool_flag(args: str, flag: str) -> bool:
@@ -277,9 +286,12 @@ def node_mining_runtime_args(address: str) -> str:
     return " ".join(parts)
 
 
-def node_mining_args_have_required_submit_guards(args: str, address: str) -> bool:
+def node_mining_args_are_safe_and_complete(args: str, address: str) -> bool:
     if not node_args_have_mining_address(args, address):
         return False
+    for flag in NODE_MINING_UNSAFE_BYPASS_FLAGS:
+        if node_args_have_bool_flag(args, flag):
+            return False
     for flag in NODE_MINING_REQUIRED_BOOL_FLAGS:
         if not node_args_have_bool_flag(args, flag):
             return False
@@ -415,9 +427,9 @@ def constrained_fastartifact_profile() -> bool:
 
 
 def node_services_for_recreate() -> list[str]:
-    configured = config_value("BDAG_NODE_SERVICES", "bdag-miner-node-1")
+    configured = config_value("BDAG_NODE_SERVICES", "node")
     services = [item for item in configured.replace(" ", ",").split(",") if item]
-    return [item for item in services if item.startswith("bdag-miner-node-")] or ["bdag-miner-node-1"]
+    return services or ["node"]
 
 
 def node_command_line(node_service: str) -> str | None:
@@ -462,13 +474,16 @@ def node_mining_template_support_should_repair(payload: dict[str, Any]) -> bool:
     args = config_value("BDAG_NODE_MINING_ARGS")
     if not env_enabled_value(config_value("BDAG_ENABLE_NODE_MINING"), False):
         return True
-    if "miner" not in modules:
+    if modules and ("blockdag" not in modules or "miner" in modules):
         return True
-    if not node_mining_args_have_required_submit_guards(args, address):
+    if not node_mining_args_are_safe_and_complete(args, address):
+        return True
+    append_args = config_value("NODE_ARGS_APPEND")
+    if append_args and not node_mining_args_are_safe_and_complete(append_args, address):
         return True
     for service in node_services_for_recreate():
         command_line = node_command_line(service)
-        if command_line and not node_mining_args_have_required_submit_guards(command_line, address):
+        if command_line and not node_mining_args_are_safe_and_complete(command_line, address):
             return True
     return False
 
@@ -625,6 +640,7 @@ def repair_fastsync_orphan_peers(payload: dict[str, Any]) -> bool:
 
 def repair_constrained_fastartifact(payload: dict[str, Any]) -> bool:
     changed_paths = set_runtime_env_value("BDAG_FASTARTIFACTSYNC_ENABLED", "0")
+    changed_paths.extend(set_runtime_env_value("SYNC_SOURCE_NODE", "0"))
     changed_paths.extend(set_runtime_env_value("BDAG_NO_FASTSYNC_SERVE", "1"))
     changed_paths.extend(set_runtime_env_value("NODE_ARGS_APPEND", ""))
     ok, node_results = recreate_node_services()
@@ -671,13 +687,15 @@ def repair_node_mining_template_support(payload: dict[str, Any]) -> bool:
 
     changed_paths = []
     changed_paths.extend(set_runtime_env_value("BDAG_ENABLE_NODE_MINING", "1"))
-    changed_paths.extend(set_runtime_env_value("BDAG_NODE_MODULES", "Blockdag,miner"))
+    changed_paths.extend(set_runtime_env_value("BDAG_NODE_MODULES", "Blockdag"))
+    runtime_args = node_mining_runtime_args(address)
     changed_paths.extend(
         set_runtime_env_value(
             "BDAG_NODE_MINING_ARGS",
-            node_mining_runtime_args(address),
+            runtime_args,
         )
     )
+    changed_paths.extend(set_runtime_env_value("NODE_ARGS_APPEND", runtime_args))
     ok, node_results = recreate_node_services()
     action = {
         "changed_env_paths": sorted(set(changed_paths)),

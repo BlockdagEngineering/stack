@@ -1,10 +1,10 @@
-# Pool release build (GITHUB `pool-v*` tarball, BUILD_CONTEXT=.).
+# syntax=docker/dockerfile:1.7
+# Pool release build (GITHUB `pool-v*` tarball, build context is repo root).
 #
 # Expects unpacked layout:
 #
 #   ./
 #   ├── bin/blockdag-node, bin/nodeworker, bin/mining-pool, bin/dashboard-api
-#   ├── dashboard/          (Compose builds the dashboard Go binary here)
 #   ├── docker/             (e.g. no-snapshot.marker; see SNAPSHOT_PATH)
 #   ├── .env.example, docker-compose.yml, …
 #
@@ -28,11 +28,17 @@ COPY bin ./bin
 RUN set -eu; mkdir -p /out; \
     test -f ./bin/blockdag-node || { echo 'ERROR: ./bin/blockdag-node missing'; exit 1; }; \
     test -f ./bin/nodeworker     || { echo 'ERROR: ./bin/nodeworker missing'; exit 1; }; \
-    test -f ./bin/fastsnap       || { echo 'ERROR: ./bin/fastsnap missing'; exit 1; }; \
     cp -f ./bin/blockdag-node /out/blockdag-node && \
     cp -f ./bin/nodeworker    /out/nodeworker && \
-    cp -f ./bin/fastsnap      /out/fastsnap && \
-    chmod +x /out/blockdag-node /out/nodeworker /out/fastsnap
+    chmod +x /out/blockdag-node /out/nodeworker; \
+    if [ -f ./bin/fastsnap ]; then \
+      cp -f ./bin/fastsnap /out/fastsnap; \
+      chmod +x /out/fastsnap; \
+    else \
+      echo 'WARN: ./bin/fastsnap missing; image will skip FastSnap bootstrap at runtime'; \
+      : > /out/fastsnap; \
+      chmod 0644 /out/fastsnap; \
+    fi
 
 # ----------------------------------------------------------------------------
 # Pool Build Stage (asic-pool) — binaries from tarball bin/
@@ -46,19 +52,31 @@ RUN set -eu; mkdir -p /out; \
     chmod +x /out/mining-pool 
 
 # ----------------------------------------------------------------------------
-# Dashboard Build Stage (dashboard)
+# Dashboard Source Stage (canonical dashboard repo)
 # ----------------------------------------------------------------------------
-FROM base AS dashboard-build
-WORKDIR /src/dashboard
-COPY dashboard .
-# base removed apt lists; refresh index before npm (bookworm npm package installs node toolchain).
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    npm \
- && rm -rf /var/lib/apt/lists/* \
- && npm ci \
- && npm run css:build \
- && go mod tidy \
- && go build -o out/dashboard .
+FROM alpine:3.20 AS dashboard-source
+ARG DASHBOARD_REPO
+ARG DASHBOARD_REF=develop
+RUN apk add --no-cache ca-certificates git
+RUN --mount=type=secret,id=github_token,required=false set -eu; \
+    repo="${DASHBOARD_REPO:-https://github.com/BlockdagEngineering/dashboard.git}"; \
+    ref="${DASHBOARD_REF:-develop}"; \
+    token="$(cat /run/secrets/github_token 2>/dev/null || true)"; \
+    if [ -n "$token" ]; then \
+      auth="$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"; \
+      export GIT_CONFIG_COUNT=1; \
+      export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader; \
+      export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"; \
+    fi; \
+    git clone --depth 1 "$repo" /src/dashboard; \
+    cd /src/dashboard; \
+    if git rev-parse --verify "$ref^{commit}" >/dev/null 2>&1; then \
+      git checkout --detach "$ref"; \
+    else \
+      git fetch --depth 1 origin "$ref"; \
+      git checkout --detach FETCH_HEAD; \
+    fi; \
+    rm -rf .git
 
 # ----------------------------------------------------------------------------
 # Node Runtime Stage (with optional snapshot import)
@@ -78,7 +96,8 @@ RUN mkdir -p /etc/bdagStack /var/lib/bdagStack/node/mainnet /var/lib/bdagStack/n
 COPY --from=node-build /out/blockdag-node  /usr/local/bin/blockdag-node
 COPY --from=node-build /out/nodeworker     /usr/local/bin/nodeworker
 COPY --from=node-build /out/fastsnap       /usr/local/bin/fastsnap
-RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker /usr/local/bin/fastsnap
+RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker \
+ && if [ -s /usr/local/bin/fastsnap ]; then chmod +x /usr/local/bin/fastsnap; fi
 
 COPY docker/entrypoint-nodeworker.sh /usr/local/bin/docker-entrypoint-nodeworker.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh
@@ -139,22 +158,43 @@ WORKDIR /var/lib/bdagStack/pool
 EXPOSE 3334 8080
 ENTRYPOINT ["/usr/local/bin/mining-pool"]
 
-# 
-# Dashboard Runtime Stage
 # ----------------------------------------------------------------------------
-FROM ubuntu:24.04 AS dashboard
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates tzdata \
- && rm -rf /var/lib/apt/lists/*
+# Dashboard Runtime Stage (Python operations dashboard/control plane)
+# ----------------------------------------------------------------------------
+FROM docker:27-cli AS dashboard
 
-RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack \
- && mkdir -p /app/logs \
- && chown bdagStack:bdagStack /app/logs
+RUN apk add --no-cache \
+    bash \
+    ca-certificates \
+    coreutils \
+    curl \
+    findutils \
+    iproute2 \
+    procps \
+    py3-pip \
+    python3 \
+    shadow \
+    tzdata
 
-WORKDIR /app/logs
-COPY --from=dashboard-build /src/dashboard/out/dashboard /usr/local/bin/dashboard
+COPY --from=dashboard-source /src/dashboard /opt/dashboard
+# Compose supplies dashboard_src from DASHBOARD_SRC_CONTEXT so local fresh builds
+# run the checked-out dashboard code instead of silently cloning an older ref.
+COPY --from=dashboard_src . /opt/dashboard
+COPY docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
+RUN chmod +x /usr/local/bin/entrypoint-dashboard.sh \
+ && mkdir -p /var/lib/bdag-dashboard/runtime /workspace \
+ && if [ -f /opt/dashboard/requirements.txt ]; then \
+      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/dashboard/requirements.txt; \
+    fi
+
+ENV PYTHONUNBUFFERED=1 \
+    BDAG_PROJECT_ROOT=/workspace \
+    BDAG_RUNTIME_DIR=/var/lib/bdag-dashboard/runtime \
+    BDAG_POOL_ENV_FILE=/workspace/.env \
+    BDAG_DASHBOARD_BIND=0.0.0.0 \
+    BDAG_DASHBOARD_PORT=9280 \
+    BDAG_DASHBOARD_REQUIRE_TOKEN=auto
+
+WORKDIR /opt/dashboard
 EXPOSE 9280
-
-RUN chmod +x /usr/local/bin/dashboard
-USER bdagStack
-ENTRYPOINT [ "/usr/local/bin/dashboard" ]
+ENTRYPOINT ["/usr/local/bin/entrypoint-dashboard.sh"]

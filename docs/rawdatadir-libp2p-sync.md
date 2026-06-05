@@ -18,8 +18,14 @@ This keeps the release candidate on the existing security model:
 
 Source serving is automatic only after the local eligibility gate passes. The
 gate fails closed on USB/removable/external storage, low disk/RAM/CPU, and
-unsafe single-node checkpoint conditions. Do not serve a live mining datadir;
+unsafe checkpoint conditions. Do not serve a live mining datadir;
 publish only from a finalized sidecar copy.
+
+`SYNC_SOURCE_NODE=0` is the raw-datadir publisher control. It does not by itself
+turn a receiver into a USB/constrained host, and it does not disable the node's
+normal `--fastartifactsync` startup flag. Bulk serving is suppressed by
+`BDAG_NO_FASTSYNC_SERVE=1` or by `auto` detection of a real USB/low-IO chain
+profile.
 
 ## Producer Flow
 
@@ -55,7 +61,7 @@ artifact. A node restart may be required on the serving host to pick them up.
 Do not promote a new `current` artifact while a receiver is actively
 downloading; the RC server advertises one current artifact root at a time.
 
-Single-node host:
+Default host:
 
 1. Keep a local sidecar copy close to tip:
 
@@ -80,12 +86,12 @@ path stable content-addressed data without pretending a live sidecar is a
 finalized checkpoint.
 
 2. When an operator approves a finalization window, let the publisher stop the
-   single node, run one final sidecar sync, restart the node, and build the
+   production node, run one final sidecar sync, restart the node, and build the
    signed artifact from the finalized sidecar. The final sidecar sync also
    seals a publishable file/chunk content generation for IPFS transport:
 
 ```bash
-BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=1 \
+BDAG_RAWDATADIR_FINALIZE=1 \
 ./ops/publish-rawdatadir-artifact.sh
 ```
 
@@ -116,6 +122,18 @@ node, and lets normal FastSync catch the remaining tail. If no source is
 available, it records the reason and retries instead of falling back
 permanently.
 
+Receiver startup uses an acceptance window, not exact-tip chasing. A seed or
+sidecar within `BDAG_SYNC_ACCEPTABLE_STARTUP_LAG_BLOCKS=4000` blocks is
+considered close enough to start, and the node should catch up the tail over
+normal P2P/FastSync. The shared policy can widen the window from the previous
+copy duration with `BDAG_SYNC_COPY_MINUTE_BLOCK_ALLOWANCE=4` block(s) per copy
+minute. For raw-datadir receiver fetches, set `BDAG_RAWDATADIR_TARGET_TIP` to
+the observed network or source tip; when `BDAG_RAWDATADIR_MIN_TIP` is not set,
+the fetcher requests `target_tip - acceptable_lag` so an otherwise good artifact
+is not rejected only because the copy took time. Once the receiver and source
+are within the acceptance window, fix peer connectivity if catch-up stalls; do
+not continuously redo the full copy just to close the last blocks.
+
 Relevant defaults:
 
 ```bash
@@ -123,6 +141,8 @@ BDAG_FAST_CATCHUP_ARTIFACT_MODE=auto
 BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS=300
 BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS=1000
 BDAG_FAST_CATCHUP_ARTIFACT_MIN_GAIN_BLOCKS=1000
+BDAG_SYNC_ACCEPTABLE_STARTUP_LAG_BLOCKS=4000
+BDAG_SYNC_COPY_MINUTE_BLOCK_ALLOWANCE=4
 BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED=1
 BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS=0
 BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT=21600s

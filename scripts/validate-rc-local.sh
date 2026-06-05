@@ -49,4 +49,4 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/release_readiness_check_test.py
 python3 scripts/check-doc-consistency.py
 find "$TMP_SOURCE/ops" "$TMP_SOURCE/scripts" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 find "$TMP_SOURCE/ops" "$TMP_SOURCE/scripts" -name '*.pyc' -delete 2>/dev/null || true
-bash scripts/validate-pi5-restart-hardening.sh --mode source .
+bash scripts/validate-release-build.sh .

@@ -25,14 +25,15 @@ DEFAULT_SAMPLE_COUNT = 3
 DEFAULT_SAMPLE_INTERVAL_SECONDS = 10.0
 DEFAULT_MAX_REFERENCE_LAG = 120
 DEFAULT_LOG_LOOKBACK_MINUTES = 15
+DEFAULT_POW_TYPE = 10
 JSON_RPC_CONTENT_TYPE = "application/json"
 
 # Policy markers consumed by the governance suite:
 # direct BlockDAG node JSON-RPC endpoints
-# single_node_unexpected_service
-# single_node_unexpected_pool_backend
-# single_node_unexpected_running_container
-# single_node_unexpected_eligible_backend
+# unexpected_extra_service
+# unexpected_extra_pool_backend
+# unexpected_extra_running_container
+# unexpected_extra_eligible_backend
 
 HARD_TEMPLATE_ERROR_CODES = {
     "bdag_pool_syncing",
@@ -215,6 +216,49 @@ def request_url_and_auth(url: str) -> tuple[str, str | None]:
     return clean_url, f"Basic {token}"
 
 
+def read_env_file_value(path: Path, key: str) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("export "):
+            stripped = stripped[7:].strip()
+        if not stripped.startswith(f"{key}="):
+            continue
+        value = stripped.split("=", 1)[1].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        return value
+    return ""
+
+
+def default_mining_address(explicit: str | None = None) -> str:
+    for value in (
+        explicit,
+        os.environ.get("MINING_ADDRESS"),
+        os.environ.get("BDAG_MINING_ADDRESS"),
+        os.environ.get("BDAG_POOL_MINING_ADDRESS"),
+    ):
+        if value and str(value).strip():
+            return str(value).strip()
+    for path in (Path.cwd() / ".env", Path.cwd() / "asic-pool" / ".env"):
+        value = read_env_file_value(path, "MINING_ADDRESS")
+        if value:
+            return value
+    return ""
+
+
+def get_block_template_params(pow_type: int = DEFAULT_POW_TYPE, mining_address: str = "") -> list[Any]:
+    params: list[Any] = [[], int(pow_type)]
+    if mining_address:
+        params.append(mining_address)
+    return params
+
+
 def _classify_transport_error(error: BaseException) -> str:
     if isinstance(error, socket.timeout):
         return "timeout"
@@ -322,8 +366,12 @@ def normalized_health(result: Any) -> dict[str, Any]:
     return flatten_mapping(result)
 
 
-def get_health_bool(health: dict[str, Any], key: str) -> bool | None:
-    return parse_bool(first_present(health, key))
+def get_health_bool(health: dict[str, Any], key: str, *aliases: str) -> bool | None:
+    for candidate in (key, *aliases):
+        value = parse_bool(first_present(health, candidate))
+        if value is not None:
+            return value
+    return None
 
 
 def add_bool_predicate(
@@ -332,11 +380,12 @@ def add_bool_predicate(
     health: dict[str, Any],
     key: str,
     *,
+    aliases: tuple[str, ...] = (),
     required: bool = True,
     required_after_incident: bool = False,
     after_chain_incident: bool = False,
 ) -> None:
-    value = get_health_bool(health, key)
+    value = get_health_bool(health, key, *aliases)
     if value is True:
         return
     if value is False:
@@ -408,6 +457,8 @@ def probe_backend_once(
     after_chain_incident: bool = False,
     max_reference_lag: int = DEFAULT_MAX_REFERENCE_LAG,
     allow_reference_unavailable: bool = False,
+    pow_type: int = DEFAULT_POW_TYPE,
+    mining_address: str = "",
 ) -> dict[str, Any]:
     sample: dict[str, Any] = {
         "backend": backend.name,
@@ -466,6 +517,7 @@ def probe_backend_once(
             warnings,
             health,
             "is_current",
+            aliases=("chain_current",),
             required=True,
             after_chain_incident=after_chain_incident,
         )
@@ -521,7 +573,12 @@ def probe_backend_once(
                 failures.append(f"blocking_template_error:{code}")
 
     try:
-        template_result = json_rpc_call(backend.url, "getBlockTemplate", timeout=timeout)
+        template_result = json_rpc_call(
+            backend.url,
+            "getBlockTemplate",
+            get_block_template_params(pow_type, mining_address),
+            timeout=timeout,
+        )
         if not isinstance(template_result, dict):
             failures.append("getBlockTemplate returned non-object")
         elif not template_result:
@@ -584,6 +641,8 @@ def evaluate_backend(
     after_chain_incident: bool = False,
     max_reference_lag: int = DEFAULT_MAX_REFERENCE_LAG,
     allow_reference_unavailable: bool = False,
+    pow_type: int = DEFAULT_POW_TYPE,
+    mining_address: str = "",
     now: float | None = None,
 ) -> dict[str, Any]:
     started_at = time.time() if now is None else now
@@ -612,6 +671,8 @@ def evaluate_backend(
             after_chain_incident=after_chain_incident,
             max_reference_lag=max_reference_lag,
             allow_reference_unavailable=allow_reference_unavailable,
+            pow_type=pow_type,
+            mining_address=mining_address,
         )
         sample["sample_index"] = index + 1
         height = sample.get("height")
@@ -647,7 +708,6 @@ def evaluate_backend(
 
 def validate_topology(
     *,
-    node_mode: str | None = None,
     node_services: list[str] | None = None,
     pool_rpc_backends: list[str] | None = None,
     running_containers: list[str] | None = None,
@@ -662,24 +722,15 @@ def validate_topology(
     normalized_excluded = sorted({canonical_node_name(item) for item in (excluded_backends or []) if item})
     failures: list[str] = []
 
-    mode = (node_mode or "").strip().lower()
-    if mode in {"single", "single-node", "single_node", "1"}:
-        mode = "single"
-    elif mode:
-        failures.append(f"unknown_node_mode:{node_mode}")
-    else:
-        mode = "unspecified"
-
-    if mode == "single":
-        for label, values in (
-            ("service", normalized_services),
-            ("pool_backend", normalized_pool_backends),
-            ("running_container", normalized_running),
-            ("eligible_backend", normalized_eligible),
-        ):
-            for node in values:
-                if node != "node1" and node not in normalized_excluded:
-                    failures.append(f"single_node_unexpected_{label}:{node}")
+    for label, values in (
+        ("service", normalized_services),
+        ("pool_backend", normalized_pool_backends),
+        ("running_container", normalized_running),
+        ("eligible_backend", normalized_eligible),
+    ):
+        for node in values:
+            if node != "node1" and node not in normalized_excluded:
+                failures.append(f"unexpected_extra_{label}:{node}")
 
     if running_containers is not None:
         for node in normalized_running:
@@ -694,7 +745,7 @@ def validate_topology(
     return {
         "ok": not failures,
         "failures": failures,
-        "mode": mode,
+        "topology": "active_node",
         "node_services": normalized_services,
         "pool_rpc_backends": normalized_pool_backends,
         "running_containers": normalized_running,
@@ -793,13 +844,15 @@ def evaluate_gate(
     allow_reference_unavailable: bool = False,
     log_sources: list[str] | None = None,
     log_lookback_minutes: int = DEFAULT_LOG_LOOKBACK_MINUTES,
-    node_mode: str | None = None,
     node_services: list[str] | None = None,
     pool_rpc_backends: list[str] | None = None,
     running_containers: list[str] | None = None,
     excluded_backends: list[str] | None = None,
     strict_routing: bool = False,
+    pow_type: int = DEFAULT_POW_TYPE,
+    mining_address: str | None = None,
 ) -> dict[str, Any]:
+    resolved_mining_address = default_mining_address(mining_address)
     backend_results = {
         backend.name: evaluate_backend(
             backend,
@@ -810,13 +863,14 @@ def evaluate_gate(
             after_chain_incident=after_chain_incident,
             max_reference_lag=max_reference_lag,
             allow_reference_unavailable=allow_reference_unavailable,
+            pow_type=pow_type,
+            mining_address=resolved_mining_address,
         )
         for backend in backends
     }
     eligible_backends = [name for name, result in backend_results.items() if result.get("ready")]
 
     topology = validate_topology(
-        node_mode=node_mode,
         node_services=node_services,
         pool_rpc_backends=pool_rpc_backends,
         running_containers=running_containers,
@@ -847,6 +901,8 @@ def evaluate_gate(
             "after_chain_incident": after_chain_incident,
             "max_reference_lag": max_reference_lag,
             "allow_reference_unavailable": allow_reference_unavailable,
+            "pow_type": pow_type,
+            "mining_address_present": bool(resolved_mining_address),
         },
     }
 
@@ -863,6 +919,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--samples", type=int, default=DEFAULT_SAMPLE_COUNT)
     parser.add_argument("--sample-interval", type=float, default=DEFAULT_SAMPLE_INTERVAL_SECONDS)
     parser.add_argument("--max-reference-lag", type=int, default=DEFAULT_MAX_REFERENCE_LAG)
+    parser.add_argument("--pow-type", type=int, default=DEFAULT_POW_TYPE)
+    parser.add_argument("--mining-address", default=None)
     parser.add_argument(
         "--after-chain-incident",
         action="store_true",
@@ -876,7 +934,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--log-source", action="append", default=[], help="file:/path, plain path, -, or docker:container")
     parser.add_argument("--log-lookback-minutes", type=int, default=DEFAULT_LOG_LOOKBACK_MINUTES)
-    parser.add_argument("--node-mode", default=os.environ.get("BDAG_NODE_MODE") or None)
     parser.add_argument("--node-services", default=os.environ.get("BDAG_NODE_SERVICES") or None)
     parser.add_argument("--pool-rpc-backends", default=os.environ.get("POOL_RPC_BACKENDS") or None)
     parser.add_argument("--running-container", action="append", default=[])
@@ -899,12 +956,13 @@ def main(argv: list[str] | None = None) -> int:
         allow_reference_unavailable=args.allow_reference_unavailable,
         log_sources=args.log_source,
         log_lookback_minutes=args.log_lookback_minutes,
-        node_mode=args.node_mode,
         node_services=parse_backend_list(args.node_services),
         pool_rpc_backends=parse_backend_list(args.pool_rpc_backends),
         running_containers=args.running_container,
         excluded_backends=args.excluded_backend,
         strict_routing=args.strict_routing,
+        pow_type=args.pow_type,
+        mining_address=args.mining_address,
     )
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))

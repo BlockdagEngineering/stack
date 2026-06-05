@@ -173,7 +173,7 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
                 "BDAG_RAWDATADIR_SIDECAR_DIR": str(tmp_path / "sidecar"),
                 "BDAG_RAWDATADIR_ARTIFACT_BASE": str(tmp_path / "artifact"),
                 "BDAG_STORAGE_PROFILE": "single-usb-constrained",
-                "BDAG_DETECTED_NETWORK_TOPOLOGY": "single-node-asic-router",
+                "BDAG_DETECTED_NETWORK_TOPOLOGY": "asic-router",
                 "BDAG_RAWDATADIR_MIN_FREE_GIB": "0",
                 "BDAG_RAWDATADIR_MIN_RAM_GIB": "0",
                 "BDAG_RAWDATADIR_MIN_CPU_COUNT": "1",
@@ -184,19 +184,19 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
 
         self.assertFalse(payload["eligible"])
         self.assertEqual(payload["storage_profile"], "single-usb-constrained")
-        self.assertEqual(payload["network_topology"], "single-node-asic-router")
+        self.assertEqual(payload["network_topology"], "asic-router")
         self.assertIn("storage_profile_usb_low_io:single-usb-constrained", payload["reasons"])
 
-    def test_source_eligibility_rejects_explicit_no_fastsync_serve(self) -> None:
+    def test_sync_source_node_disabled_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
             env = {
+                "SYNC_SOURCE_NODE": "0",
                 "BDAG_NODE_SERVICES": "bdag-miner-node-1",
                 "BDAG_NODE1_DATA_DIR": str(tmp_path / "node1"),
                 "BDAG_RAWDATADIR_SIDECAR_SOURCE": str(tmp_path / "node1" / "mainnet"),
                 "BDAG_RAWDATADIR_SIDECAR_DIR": str(tmp_path / "sidecar"),
                 "BDAG_RAWDATADIR_ARTIFACT_BASE": str(tmp_path / "artifact"),
-                "BDAG_NO_FASTSYNC_SERVE": "1",
                 "BDAG_RAWDATADIR_MIN_FREE_GIB": "0",
                 "BDAG_RAWDATADIR_MIN_RAM_GIB": "0",
                 "BDAG_RAWDATADIR_MIN_CPU_COUNT": "1",
@@ -206,7 +206,30 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
             payload = self._build_payload_with_safe_paths(tmp_path, env)
 
         self.assertFalse(payload["eligible"])
-        self.assertIn("fastsync_serving_disabled", payload["reasons"])
+        self.assertFalse(payload["sync_source_node"])
+        self.assertIn("source_mode_disabled", payload["reasons"])
+
+    def test_sync_source_node_enabled_overrides_legacy_no_fastsync_serve(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            env = {
+                "SYNC_SOURCE_NODE": "1",
+                "BDAG_NO_FASTSYNC_SERVE": "1",
+                "BDAG_NODE_SERVICES": "bdag-miner-node-1",
+                "BDAG_NODE1_DATA_DIR": str(tmp_path / "node1"),
+                "BDAG_RAWDATADIR_SIDECAR_SOURCE": str(tmp_path / "node1" / "mainnet"),
+                "BDAG_RAWDATADIR_SIDECAR_DIR": str(tmp_path / "sidecar"),
+                "BDAG_RAWDATADIR_ARTIFACT_BASE": str(tmp_path / "artifact"),
+                "BDAG_RAWDATADIR_MIN_FREE_GIB": "0",
+                "BDAG_RAWDATADIR_MIN_RAM_GIB": "0",
+                "BDAG_RAWDATADIR_MIN_CPU_COUNT": "1",
+            }
+            (tmp_path / "artifact").mkdir()
+
+            payload = self._build_payload_with_safe_paths(tmp_path, env)
+
+        self.assertTrue(payload["eligible"])
+        self.assertTrue(payload["sync_source_node"])
 
     def _build_payload_with_safe_paths(self, tmp_path: Path, env: dict[str, str]) -> dict[str, object]:
         def safe_classification(name: str, path: Path) -> dict[str, object]:

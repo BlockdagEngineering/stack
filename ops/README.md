@@ -29,7 +29,7 @@ The dashboard also watches for pool share stalls. If miners are connected but th
 
 The watchdog also has a fast-sync recovery path. If real syncing warnings persist for `BDAG_WATCHDOG_SYNCING_THRESHOLD` checks, default `5`, it runs a normal stack restart to force fresh peer/RPC connections and apply the current config. This restart is cooldown-limited by `BDAG_SYNCING_RESTART_COOLDOWN`, default `900` seconds, so it cannot loop continuously.
 
-The persisted peer list in `asic-pool/.env` should contain only valid multiaddrs. Removing a bad peer from `.env` takes effect on the next controlled node restart; it does not interrupt currently running miners by itself.
+The persisted peer list in `.env` should contain only valid multiaddrs. Removing a bad peer from `.env` takes effect on the next controlled node restart; it does not interrupt currently running miners by itself.
 
 The pool is configured to use the local node service directly as its DAG RPC endpoint on the next stack start. The dashboard compares the local chain view against external references where configured.
 
@@ -42,7 +42,7 @@ ops/runtime/miner-backups/
 Default miner settings are derived from the running pool:
 
 - Pool URL: `stratum+tcp://<pool-lan-ip>:3334`
-- Worker/wallet: the `MINING_ADDRESS` in `asic-pool/.env`
+- Worker/wallet: the `MINING_ADDRESS` in `.env`
 - Pool password: `1234`
 
 Managed miners are stored in:
@@ -112,15 +112,48 @@ python3 ops/status_sampler.py --loop
 
 The sampler writes `ops/runtime/status-sampler.json` atomically. Dashboard,
 watchdog, sync coordinator, P2P guard, and startup checks consume it through
-`collect_status_cached()` while it is fresh. Use `max_age_seconds=0` only for
-explicit live diagnostics or hard repair paths that must bypass cached state.
+`collect_status_cached()` while it is fresh. The default freshness window is
+120 seconds, which keeps constrained mining hosts from adding unnecessary
+status-probe I/O while the node is busy importing. Use `max_age_seconds=0` only
+for explicit live diagnostics or hard repair paths that must bypass cached
+state.
 
 The sampler is also the backstop for the mining imperative. If the user-systemd
-guard units drift disabled, it re-enables them. If `asic-pool` is stopped while
+guard units drift disabled, it re-enables them. If `pool` is stopped while
 miner demand is visible, an ASIC LAN neighbor is present, or the chain is synced
 and ready to mine, it starts the pool container without recreating dependencies.
 Set `BDAG_MINING_IMPERATIVE_REPAIR_ENABLED=0` only for an intentional maintenance
 window where mining must remain stopped.
+
+## Thirty-Minute Mining Guard
+
+`ops/mining_guard_30min.py` is the periodic Codex-facing proof-of-health check
+for the mining path. Installed stacks run it through
+`bdag-mining-30min-guard.timer` every 30 minutes with low CPU and idle IO
+priority.
+
+The guard records each sample in:
+
+```text
+ops/runtime/mining-30min-guard-state.json
+ops/runtime/mining-30min-guard-history.jsonl
+ops/runtime/logs/mining-30min-guard.log
+```
+
+When the sample is not healthy, the guard writes an incident with the current
+mining symptoms and fetches source metadata from the configured stack
+repositories. This satisfies the first repair step: check current `develop`
+before deciding whether the fault is already fixed upstream. The background
+guard is intentionally fetch-only. It does not edit source, build images,
+commit, push, or restart the local stack; an active Codex repair session must
+own those steps with tests, deployment evidence, and rollback context.
+
+Configure source triage with:
+
+```text
+BDAG_MINING_GUARD_SOURCE_BRANCH=develop
+BDAG_MINING_GUARD_SOURCE_REPOS=/path/to/pool-stack-docker:/path/to/pool:/path/to/dashboard
+```
 
 ## Paid Conversion Evidence
 
@@ -293,7 +326,7 @@ Avoid exposing the dashboard directly to the public internet.
 
 The dashboard is now configurable through `ops/runtime/ops.env`, so it can be copied to another pool host or run as multiple named instances on one management machine.
 
-Create a clean bundle that excludes runtime logs, passwords, chain data, database data, snapshots, and `asic-pool/.env`:
+Create a clean bundle that excludes runtime logs, passwords, chain data, database data, snapshots, `.env`, and `asic-pool/.env`:
 
 ```bash
 ./ops/package-dashboard.sh

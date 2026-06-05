@@ -73,7 +73,7 @@
         <tr><td>The ASIC private Ethernet/NAT link is the root cause.</td><td>Rejected by RCA and reviewers.</td><td>Keep router/DHCP hardening, but focus on template validity, submit readiness, local candidate drops, and chain confirmation.</td></tr>
         <tr><td>Chain synced means mining ready.</td><td>False.</td><td>Add first-class paid mining state. Require template source readiness, accepted submits, or on-chain confirmation.</td></tr>
         <tr><td>Accepted shares prove earning.</td><td>False.</td><td>Shares are connectivity and ASIC-work telemetry only. Paid health uses accepted submits and confirmed blue/payout-matched chain blocks.</td></tr>
-        <tr><td>A hard 800 ms candidate age is safer on a roughly 1 second chain.</td><td>Unproven and currently harmful.</td><td>Pool wall-clock expiry becomes a backstop only. Corechain validity/expiry is authoritative.</td></tr>
+        <tr><td>A hard sub-second candidate age is safer on a roughly 1 second chain.</td><td>Unproven and currently harmful.</td><td>Pool wall-clock expiry becomes a backstop only. Corechain validity/expiry is authoritative.</td></tr>
         <tr><td>Current parent mismatch always means unpaid.</td><td>Unsafe.</td><td>Corechain recent-template replay and obsolete-depth rules decide whether an old template remains submit-valid.</td></tr>
         <tr><td>Dashboard overall ok is enough.</td><td>False.</td><td>Dashboard exposes separate <code>paid_mining_state</code> and blocks green mining status when paid conversion is degraded.</td></tr>
         <tr><td>OfficePool is a good first development lab.</td><td>False.</td><td>Use source tests, offline replay, and a non-mining test host first. OfficePool is a late guarded canary.</td></tr>
@@ -195,13 +195,13 @@
 
     <h3>Phase 6: Stack Profiles, Installers, And Release Packaging</h3>
     <ol>
-      <li>Add explicit capability profiles, including <code>single-node-pi5-asic-router-usb</code>, Pi5 non-router, AMD64 SSD/NVMe, ARM64 SSD/NVMe, no-miner sync node, multi-ASIC pool, and fast-sync source.</li>
-      <li>Expose profile facts in <code>/api/status</code>: single node, DHCP/NAT gateway, USB chain data, template backend count, miner identity mode, IO budget, source-serving eligibility.</li>
+      <li>Add explicit capability profiles, including <code>pi5-asic-router-usb</code>, Pi5 non-router, AMD64 SSD/NVMe, ARM64 SSD/NVMe, no-miner sync node, multi-ASIC pool, and fast-sync source.</li>
+      <li>Expose profile facts in <code>/api/status</code>: one production node, DHCP/NAT gateway, USB chain data, template backend count, miner identity mode, IO budget, source-serving eligibility.</li>
       <li>On USB/router profiles, keep FastSync/FastArtifact as consumer-only. Do not enable rawdatadir sidecar/source timers that stage, publish, rsync, tar, scan, or serve artifacts.</li>
       <li>Preserve no-miner sync-only behavior in installer and repair paths: no mining flags, no template probes, no mining work generation until actual miner demand and a non-zero payment address exist.</li>
-      <li>Release manifest pins exact SHAs and image digests for <code>pool</code>, <code>blockdag-corechain</code>, <code>pool-dashboard</code>, and <code>pool-stack-docker</code>.</li>
+      <li>Release manifest pins exact SHAs and image digests for <code>pool</code>, <code>blockdag-corechain</code>, <code>dashboard</code>, and <code>pool-stack-docker</code>.</li>
       <li>Runtime status exposes packaged repo SHAs/image digests and validates they match the release manifest. Mining start refuses on mismatch unless a logged emergency override is set.</li>
-      <li>Keep repo boundaries clean: dashboard source in <code>pool-dashboard</code>; stack packages/pins it and validates packaged copy.</li>
+      <li>Keep repo boundaries clean: dashboard source in <code>dashboard</code>; stack packages/pins it and validates packaged copy.</li>
     </ol>
     <p><strong>Exit criteria:</strong> USB/router hosts cannot accidentally become artifact sources; fresh installs remain sync-only without miners; releases are provenance-pinned and drift-detecting.</p>
 
@@ -235,7 +235,7 @@
       <tbody>
         <tr><td><code>blockdag-corechain</code></td><td>Template identity, immutable cache, V3 submit, structured outcomes, latest-only/last-good semantics, nodeworker readiness gate, zero-address and coinbase invariants.</td><td>Regression quarantine resolved; corechain tests prove old valid solved headers are accepted after template refresh.</td></tr>
         <tr><td><code>pool</code></td><td>Store template contract in jobs, V3 submit support, protected network-target candidate path, router eligibility split, contract-mode metrics, runtime admin hardening.</td><td>Corechain contract exists and observe-only pool data confirms false local drops.</td></tr>
-        <tr><td><code>pool-dashboard</code></td><td>Paid mining state, split recent activity truths, first-screen paid panel, watchdog paid-conversion repairs, MAC-keyed miner state, runbooks.</td><td>Tests prove shares cannot mask unpaid mining.</td></tr>
+        <tr><td><code>dashboard</code></td><td>Paid mining state, split recent activity truths, first-screen paid panel, watchdog paid-conversion repairs, MAC-keyed miner state, runbooks.</td><td>Tests prove shares cannot mask unpaid mining.</td></tr>
         <tr><td><code>pool-stack-docker</code></td><td>Capability profiles, USB low-IO source blocking, no-miner sync-only installer enforcement, release manifest/pinning, canary and rollback scripts, packaging validation.</td><td>Release gate can prove exact source/image provenance and paid-conversion evidence.</td></tr>
       </tbody>
     </table>

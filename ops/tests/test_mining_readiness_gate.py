@@ -164,6 +164,36 @@ class MiningReadinessGateTests(unittest.TestCase):
         failures = result["backends"]["node1"]["samples"][0]["failures"]
         self.assertIn("getBlockTemplate_empty", failures)
 
+    def test_block_template_probe_uses_current_node_rpc_signature(self) -> None:
+        mining_address = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+
+        def handler(method: str, params: list[Any] | dict[str, Any], _calls: dict[str, int]) -> Any:
+            if method == "getBlockCount":
+                return rpc_result(1000)
+            if method == "getTemplateHealth":
+                health = healthy_health(2000)
+                health.pop("is_current")
+                health["chain_current"] = True
+                return rpc_result(health)
+            if method == "getBlockTemplate":
+                if params != [[], 10, mining_address]:
+                    return rpc_error(-32602, f"unexpected params: {params!r}")
+                return rpc_result({"main_order": 2000, "parent": "0xparent"})
+            return rpc_error(-32601, "method not found")
+
+        with FakeJsonRpcServer(handler) as server:
+            result = gate.evaluate_gate(
+                [gate.Backend("node1", server.url)],
+                timeout=0.5,
+                sample_count=1,
+                sample_interval_seconds=0,
+                after_chain_incident=True,
+                mining_address=mining_address,
+            )
+
+        self.assertTrue(result["ok"], result["failures"])
+        self.assertEqual(["node1"], result["eligible_backends"])
+
     def test_old_node_without_template_health_fails_closed_after_incident(self) -> None:
         def handler(method: str, _params: list[Any] | dict[str, Any], _calls: dict[str, int]) -> Any:
             if method == "getBlockCount":
@@ -278,9 +308,8 @@ class MiningReadinessGateTests(unittest.TestCase):
         self.assertIn("reference_height_lag_121_gt_120", failures)
         self.assertIn("reference_main_order_lag_121_gt_120", failures)
 
-    def test_single_node_topology_accepts_direct_backend(self) -> None:
+    def test_active_node_topology_accepts_direct_backend(self) -> None:
         topology = gate.validate_topology(
-            node_mode="single-node",
             node_services=["bdag-miner-node-1"],
             pool_rpc_backends=["node1"],
             running_containers=["bdag-miner-node-1"],
@@ -289,11 +318,10 @@ class MiningReadinessGateTests(unittest.TestCase):
 
         self.assertTrue(topology["ok"])
 
-    def test_single_node_topology_rejects_extra_runtime_backend(self) -> None:
+    def test_active_node_topology_rejects_extra_runtime_backend(self) -> None:
         extra_service = "bdag-miner-node-" + "2"
         extra_alias = "node" + "2"
         topology = gate.validate_topology(
-            node_mode="single-node",
             node_services=["bdag-miner-node-1", extra_service],
             pool_rpc_backends=["node1", extra_alias],
             running_containers=["bdag-miner-node-1", extra_service],
@@ -301,10 +329,10 @@ class MiningReadinessGateTests(unittest.TestCase):
         )
 
         self.assertFalse(topology["ok"])
-        self.assertIn(f"single_node_unexpected_service:{extra_alias}", topology["failures"])
-        self.assertIn(f"single_node_unexpected_pool_backend:{extra_alias}", topology["failures"])
-        self.assertIn(f"single_node_unexpected_running_container:{extra_alias}", topology["failures"])
-        self.assertIn(f"single_node_unexpected_eligible_backend:{extra_alias}", topology["failures"])
+        self.assertIn(f"unexpected_extra_service:{extra_alias}", topology["failures"])
+        self.assertIn(f"unexpected_extra_pool_backend:{extra_alias}", topology["failures"])
+        self.assertIn(f"unexpected_extra_running_container:{extra_alias}", topology["failures"])
+        self.assertIn(f"unexpected_extra_eligible_backend:{extra_alias}", topology["failures"])
 
 
 if __name__ == "__main__":

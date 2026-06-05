@@ -16,7 +16,7 @@ SPEC.loader.exec_module(update_local_peers)
 
 
 class UpdateLocalPeersTopologyTests(unittest.TestCase):
-    def test_detects_single_node_asic_router_and_uses_default_route_ip(self) -> None:
+    def test_detects_asic_router_and_uses_default_route_ip(self) -> None:
         old_run = update_local_peers.run
 
         def fake_run(command: list[str], timeout: int = 20) -> str:
@@ -39,8 +39,34 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
                 "BDAG_ASIC_LAN_INTERFACE": "eth0",
                 "BDAG_ASIC_LAN_CIDRS": "192.168.1.0/24",
             }
-            self.assertEqual("single-node-asic-router", update_local_peers.detect_network_topology(values))
+            self.assertEqual("asic-router", update_local_peers.detect_network_topology(values))
             self.assertEqual("192.168.68.60", update_local_peers.choose_local_ip(values=values))
+        finally:
+            update_local_peers.run = old_run
+
+    def test_blank_asic_lan_interface_auto_detects_matching_non_default_interface(self) -> None:
+        old_run = update_local_peers.run
+
+        def fake_run(command: list[str], timeout: int = 20) -> str:
+            if command == ["ip", "route"]:
+                return "default via 192.168.68.1 dev wlan0 proto dhcp src 192.168.68.60 metric 600\n"
+            if command == ["ip", "-br", "addr"]:
+                return "\n".join(
+                    [
+                        "enp2s0 UP 192.168.1.105/24",
+                        "wlan0 UP 192.168.68.60/22",
+                    ]
+                )
+            raise AssertionError(command)
+
+        try:
+            update_local_peers.run = fake_run
+            values = {
+                "BDAG_NETWORK_TOPOLOGY": "auto",
+                "BDAG_ASIC_LAN_INTERFACE": "",
+                "BDAG_ASIC_LAN_CIDRS": "192.168.1.0/24",
+            }
+            self.assertEqual("asic-router", update_local_peers.detect_network_topology(values))
         finally:
             update_local_peers.run = old_run
 

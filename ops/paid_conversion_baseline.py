@@ -29,7 +29,7 @@ PROM_LINE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([-+0-9.eE
 SOURCE_REPOS = {
     "pool_stack_docker": PROJECT_ROOT,
     "pool": Path(os.environ.get("BDAG_POOL_SOURCE", "/home/jeremy/blockdag-source/pool")),
-    "pool_dashboard": Path(os.environ.get("BDAG_POOL_DASHBOARD_SOURCE", "/home/jeremy/blockdag-source/pool-dashboard")),
+    "dashboard": Path(os.environ.get("BDAG_DASHBOARD_SOURCE", "/home/jeremy/blockdag-source/dashboard")),
     "blockdag_corechain": Path(os.environ.get("BDAG_CORECHAIN_SOURCE", "/home/jeremy/blockdag-source/blockdag-corechain")),
 }
 KEEP_PREFIXES = (

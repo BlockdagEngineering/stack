@@ -165,6 +165,19 @@ def source_eligibility(env: dict[str, str]) -> dict[str, Any]:
     return payload
 
 
+def source_publish_allowed(eligibility: dict[str, Any]) -> bool:
+    return bool(eligibility.get("eligible", False)) and bool(eligibility.get("publish_allowed", False))
+
+
+def source_publish_block_reasons(eligibility: dict[str, Any]) -> list[str]:
+    reasons = eligibility.get("reasons")
+    if isinstance(reasons, list) and reasons:
+        return [str(reason) for reason in reasons]
+    if eligibility.get("eligible", False) and not eligibility.get("publish_allowed", False):
+        return ["source_publish_not_allowed"]
+    return ["source_not_eligible"]
+
+
 def artifact_paths(env: dict[str, str]) -> tuple[Path, Path]:
     sidecar_content_base = resolve_path(
         env.get("BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE") or env.get("BDAG_RAWDATADIR_ARTIFACT_BASE"),
@@ -349,10 +362,16 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
 
-    source_eligibility_required = env_bool(env, "BDAG_IPFS_CONTENT_REQUIRE_SOURCE_ELIGIBILITY", False)
+    source_eligibility_required = env_bool(env, "BDAG_IPFS_CONTENT_REQUIRE_SOURCE_ELIGIBILITY", True)
     eligibility = source_eligibility(env)
-    if source_eligibility_required and not eligibility.get("eligible", False):
-        payload = write_status(env, "deferred", reasons=eligibility.get("reasons") or ["source_not_eligible"], eligibility=eligibility)
+    if source_eligibility_required and not source_publish_allowed(eligibility):
+        payload = write_status(
+            env,
+            "deferred",
+            reasons=source_publish_block_reasons(eligibility),
+            eligibility=eligibility,
+            source_eligibility_required=source_eligibility_required,
+        )
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         return 0

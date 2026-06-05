@@ -175,6 +175,26 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertNotIn("live mining template probes", joined_warnings)
         self.assertNotIn("pool recently saw RPC connection refused", joined_warnings)
 
+    def test_pool_log_detects_failed_expired_job_reconnect(self) -> None:
+        log = "\n".join(
+            [
+                "2026/06/03 00:57:53 [RECOVERY] resending current job to 192.168.1.16:33654 after 10 expired job rejects (job=103884-abc)",
+                "2026/06/03 00:58:08 [RECOVERY] reconnecting stale miner 192.168.1.16:33654 after 3 expired-job recovery attempts (job=103899-abc)",
+                "2026/06/03 00:58:08 [REFRESH] expired job client reconnect (seq=103900 parent=abc)",
+                "2026/06/03 00:58:08 [192.168.1.16:33726] authorize accepted user=0x05518E03e148C56e426ff9e1CBdB962B4FC5250A",
+                "2026/06/03 00:59:09 [vardiff] 192.168.1.16:33726 increase pdiff 0.000000 -> 0.050000 (shares=0 expired=0 in 60s, target=20/60s)",
+                "2026/06/03 01:08:08 [192.168.1.16:33726] read error: read tcp 172.18.0.4:3334->192.168.1.16:33726: i/o timeout",
+            ]
+        )
+
+        pool = pool_ops.parse_pool_log(log)
+
+        self.assertTrue(pool["expired_job_reconnect_failed_no_share"])
+        self.assertEqual(1, pool["expired_job_reconnect_count"])
+        self.assertEqual(1, pool["expired_job_reauthorize_after_reconnect_count"])
+        self.assertEqual(1, pool["expired_job_client_timeout_after_reconnect_count"])
+        self.assertIn("reauthorized", pool["expired_job_reconnect_failure_reason"])
+
     def test_recent_paid_work_keeps_template_probe_noise_advisory_during_sync_progress(self) -> None:
         now = datetime(2026, 5, 27, 8, 30, 0, tzinfo=timezone.utc).timestamp()
         pool_ops.time.time = lambda: now
@@ -286,10 +306,14 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             "template_conversion_stall": {},
             "loss_ledger": {},
         }
+        stale_lane_failure = (
+            "stale-lane mac=38:1f:8d:fb:ea:fc observed_ip=192.168.1.103 "
+            "ASIC API/health check is unreachable and no recent pool submissions were seen"
+        )
         pool_ops.collect_miner_health = lambda: {
-            "managed_count": 1,
+            "managed_count": 2,
             "connected_count": 0,
-            "failures": [],
+            "failures": [stale_lane_failure],
             "warnings": [],
             "miners": [],
         }
@@ -334,6 +358,10 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertEqual(status["mode"], "mining")
         self.assertTrue(status["can_submit_blocks"])
         self.assertTrue(status["can_mine"])
+        self.assertEqual(status["blocking_failures"], [])
+        self.assertEqual(status["blocking_miner_failures"], [])
+        self.assertEqual(status["miner_failures"], [stale_lane_failure])
+        self.assertEqual(status["advisory_miner_failures"], [stale_lane_failure])
         self.assertEqual(status["sync_warnings"], [])
         self.assertFalse(status["pool_health"]["needs_fast_repair"])
         self.assertFalse(status["sync_health"]["needs_fast_sync_repair"])
@@ -341,6 +369,29 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         joined_maintenance = "\n".join(status["maintenance_warnings"])
         self.assertIn("accepted block submission remains fresh", joined_maintenance)
         self.assertIn("transient initial-download", joined_maintenance)
+        self.assertIn("miner repair required but active mining continues", joined_maintenance)
+
+    def test_miner_failures_block_when_no_active_mining_evidence(self) -> None:
+        self.assertTrue(
+            pool_ops.miner_failures_block_stack(
+                ["miner is down"],
+                connected_miners=0,
+                pool_has_recent_share_activity=False,
+                pool_has_recent_paid_work=False,
+                source_job_health_ok=None,
+            )
+        )
+
+    def test_miner_failures_are_advisory_with_active_mining_evidence(self) -> None:
+        self.assertFalse(
+            pool_ops.miner_failures_block_stack(
+                ["one managed miner is down"],
+                connected_miners=3,
+                pool_has_recent_share_activity=True,
+                pool_has_recent_paid_work=False,
+                source_job_health_ok=False,
+            )
+        )
 
 
 class EffectiveMinerDemandTests(unittest.TestCase):
@@ -516,6 +567,10 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
                 "BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN",
                 "BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN",
                 "BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS",
+                "BACKGROUND_MAINTENANCE_LAZY_TASKS",
+                "BACKGROUND_MAINTENANCE_POOL_READY_TASKS",
+                "BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN",
+                "host_runtime_profile",
             )
         }
         self.addCleanup(self.restore_globals)
@@ -582,6 +637,61 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
 
         self.assertFalse(decision["allowed"])
         self.assertTrue(any("chain RPC latency" in reason for reason in decision["reasons"]))
+
+    def test_lazy_archive_task_defers_until_pool_is_ready(self) -> None:
+        pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
+        pool_ops.BACKGROUND_MAINTENANCE_LAZY_TASKS = {"rawdatadir_sidecar"}
+        pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = {"rawdatadir_sidecar"}
+        pool_ops.host_runtime_profile = lambda: {"cpu_count": 8}
+        status = {
+            "overall": "ok",
+            "mode": "ready_no_miners",
+            "can_mine": False,
+            "can_accept_shares": False,
+            "can_submit_blocks": False,
+            "sync_progress": {"status": "synced", "remaining_blocks": 0},
+            "host_pressure": {
+                "iowait_percent": 1.0,
+                "io_some_avg10": 0.0,
+                "cpu_some_avg10": 0.0,
+                "loadavg_1m": 1.0,
+            },
+        }
+
+        decision = pool_ops.background_maintenance_decision("rawdatadir_sidecar", status)
+
+        self.assertFalse(decision["allowed"])
+        self.assertTrue(decision["task_is_lazy"])
+        self.assertTrue(decision["pool_ready_required"])
+        self.assertTrue(any("mode=ready_no_miners" in reason for reason in decision["reasons"]))
+        self.assertTrue(any("pool can_mine=false" in reason for reason in decision["reasons"]))
+
+    def test_lazy_archive_task_defers_on_load_pressure(self) -> None:
+        pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
+        pool_ops.BACKGROUND_MAINTENANCE_LAZY_TASKS = {"ipfs_segment_writer"}
+        pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = {"ipfs_segment_writer"}
+        pool_ops.BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN = 1.25
+        pool_ops.host_runtime_profile = lambda: {"cpu_count": 8}
+        status = {
+            "overall": "ok",
+            "mode": "mining",
+            "can_mine": True,
+            "can_accept_shares": True,
+            "can_submit_blocks": True,
+            "sync_progress": {"status": "synced", "remaining_blocks": 0},
+            "host_pressure": {
+                "iowait_percent": 1.0,
+                "io_some_avg10": 0.0,
+                "cpu_some_avg10": 0.0,
+                "loadavg_1m": 11.0,
+            },
+        }
+
+        decision = pool_ops.background_maintenance_decision("ipfs_segment_writer", status)
+
+        self.assertFalse(decision["allowed"])
+        self.assertEqual(decision["loadavg_1m_warn"], 10.0)
+        self.assertTrue(any("lazy threshold" in reason for reason in decision["reasons"]))
 
 
 class AdaptiveConcurrencyTests(unittest.TestCase):

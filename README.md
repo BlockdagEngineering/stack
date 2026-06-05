@@ -1,6 +1,6 @@
 # pool-stack-docker-stack
 
-This stack can be run in any environment where docker is installed. It includes an upgradable BDAG node, a mining pool with its db, and a minimal dashboard that  provides essential realtime monitoring.
+This stack can be run in any environment where docker is installed. It includes an upgradable BDAG node, a mining pool with its db, and the canonical operations dashboard/control plane.
 
 
 | Service     | Image / build                           | Purpose |
@@ -13,9 +13,29 @@ This stack can be run in any environment where docker is installed. It includes 
 
 ## Release package
 
-GitHub Releases attach `pool-stack-docker-<tag>.zip` with `bin/` (pre-built `**blockdag-node**`, `**nodeworker**`, `**mining-pool**`), `dashboard/` (Compose builds `dashboard`), `docker-compose.yml`, `dockerfile`, `.env.example`, `docker/`, and cross-platform installers. **Release images** stage binaries from `./bin`; no git clone inside Docker.
+GitHub Releases attach pinned bootstrap scripts (`install.sh` for Linux/macOS
+and `install.ps1` for Windows) plus one runtime payload zip per Linux container
+architecture:
 
-After unpacking, run the installer from the extracted directory:
+- `pool-stack-docker-<tag>-linux-amd64.zip`
+- `pool-stack-docker-<tag>-linux-arm64.zip`
+
+The bootstrap script is generated for one release tag. It detects the host OS
+and CPU architecture, selects `linux-amd64` or `linux-arm64`, and downloads only
+the matching payload zip from that same tag. Linux ARM64, macOS ARM64, and
+Windows ARM64 hosts use the `linux-arm64` runtime payload.
+
+Each payload zip contains `bin/` (pre-built `blockdag-node`, `nodeworker`,
+`fastsnap`, `mining-pool`, and `dashboard-api`), `docker-compose.yml`,
+`dockerfile`, `.env.example`,
+`docker/`, and the cross-platform payload installers. **Node and pool release
+images** stage binaries from `./bin`; the `dashboard` image checks out
+the `develop` branch from `BlockdagEngineering/dashboard`. Export
+`GITHUB_TOKEN` before `docker compose build` if that repository is private in
+your environment.
+
+Run the bootstrap script from the GitHub release, or manually unpack the
+matching payload zip and run the payload installer from the extracted directory:
 
 ```bash
 # Linux / macOS
@@ -27,7 +47,11 @@ bash install.sh
 .\install.ps1
 ```
 
-The installer detects the host OS and CPU architecture, writes `.env` and `node.conf`, generates a strong Postgres password unless `POSTGRES_PASSWORD` is already set, downloads `latest.bdsnap` when needed, and runs `docker compose build && docker compose up -d --no-build --pull never`. The release currently runs the service images as `linux/amd64`; ARM hosts need Docker Desktop or Docker Engine with amd64 emulation enabled.
+The payload installer writes `.env` and `node.conf`, generates a strong Postgres
+password unless `POSTGRES_PASSWORD` is already set, downloads `latest.bdsnap`
+when needed, sets `DOCKER_PLATFORM` from the downloaded payload's
+`release-payload.env`, and runs
+`docker compose build && docker compose up -d --no-build --pull never`.
 
 Fresh installs assume zero miner sources. Initial install and chain sync must
 work with no ASICs or Stratum miners configured; operators can opt in to the
@@ -80,7 +104,7 @@ must fail configuration/rendering rather than mine to
 `0x0000000000000000000000000000000000000000`.
 
 
-The `**pool`** image bakes `**.env.example`** into the image at `/var/lib/bdagStack/pool/.env` for `godotenv` (release `**dockerfile`** uses `**COPY .env.example**` relative to tarball root; git dev `**dockerfile-dev**` uses `**COPY pool-stack-docker/.env.example**`). Compose still sets most variables via `environment:`.
+The `**pool`** image bakes `**.env.example`** into the image at `/var/lib/bdagStack/pool/.env` for `godotenv` (release `**dockerfile`** uses `**COPY .env.example**` from repo root; git dev `**dockerfile-dev**` copies it from the named `**stack_src**` context). Compose still sets most variables via `environment:`.
 
 ## Mining resource priority
 
@@ -117,12 +141,24 @@ performance to select the fastest useful download peers.
 
 Nodes also start with `--fastartifactsync` by default
 (`BDAG_FASTARTIFACTSYNC_ENABLED=1`) so they advertise and consume Fast Artifact
-Sync V2 whenever the core binary supports it. The sync coordinator treats more
-than `BDAG_SYNC_COORDINATOR_FAR_BEHIND_BLOCKS=1000` remaining blocks as an
-automatic fastest-catch-up condition: it raises the selected leader's Docker CPU
-and IO weights, keeps duplicate sync work out of the production path, and restarts
-an unaccelerated or stale leader after the cooldown window so startup peer order
-and V2 artifact serving are active.
+Sync V2 whenever the core binary supports it. `SYNC_SOURCE_NODE=0` disables raw
+datadir source publication, not normal Fast Artifact startup. The no-serve guard
+removes the startup flag only when `BDAG_NO_FASTSYNC_SERVE` is explicitly true
+or `auto` detects USB/low-IO chain storage. The sync coordinator treats more than
+`BDAG_SYNC_COORDINATOR_FAR_BEHIND_BLOCKS=1000` remaining blocks as an automatic
+fastest-catch-up condition: it raises the selected leader's Docker CPU and IO
+weights, keeps duplicate sync work out of the production path, and restarts an
+unaccelerated or stale leader after the cooldown window so startup peer order and
+V2 artifact serving are active.
+
+Seed and sidecar freshness checks use a bounded startup-lag policy instead of
+trying to land exactly on tip. The default acceptable lag is
+`BDAG_SYNC_ACCEPTABLE_STARTUP_LAG_BLOCKS=4000`; scripts may also widen that by
+recording the prior copy duration and applying
+`BDAG_SYNC_COPY_MINUTE_BLOCK_ALLOWANCE=4` block(s) per copy minute. Once a
+receiver or remote node is inside that window, start it and let normal P2P or
+Fast Artifact Sync catch the tail. Do not recopy solely to reduce an
+already-acceptable lag.
 
 Old installations may still contain legacy address-bucket variable names.
 `ops/update-local-peers.py` treats them only as migration input, normalizes
@@ -158,46 +194,50 @@ immutable latest-index CID is
 recorded in that discovery file. At the first live segment publish on
 2026-05-31 it was `bafkreifvqj7qhkoifykybbvlxxmq3jhydgzq2kjxuq5fznjizjjogzgthi`.
 The stale monolithic FastSnap seed has been deprecated. The current implementation
-writes append-only live-tail chain-order segments from one local writer until the
-multi-node publisher registry/election is deployed. The durable protocol design
-is recorded in `docs/ipfs-append-only-segment-protocol.html`. IPFS and IPNS are
+writes append-only live-tail chain-order segments from the local node. The
+durable protocol design is recorded in
+`docs/ipfs-append-only-segment-protocol.html`. IPFS and IPNS are
 not chain trust. Receivers must verify segment CIDs, payload hashes, order
-continuity, publisher signatures once enabled, network/genesis identity,
-tip/state roots, and normal consensus before using the data.
+continuity, network/genesis identity, tip/state roots, and normal consensus
+before using the data.
 
-## Pi5 Release Candidate Stability Defaults
-
-The Pi5 ARM64 release builder (`ops/build-pi5-arm64-release.sh`) now generates a
-self-monitoring stack package. It defaults to `BDAG_NODE_MODE=single`, which
-runs `bdag-miner-node-1` only to reduce USB power pressure. The release no
-longer supports adding another local backend.
+## Runtime Stability Defaults
 
 No-miner deployments are sync-only by default: `BDAG_ENABLE_NODE_MINING=0`,
 `BDAG_NODE_MODULES=Blockdag`, and an empty `BDAG_NODE_MINING_ARGS`. Enable node
-mining/template flags only when real miners are attached. The dashboard,
+mining/template flags only when real miners are attached. Do not add unsynced
+mining bypass flags; readiness gates must fail closed until node sync and P2P
+freshness are healthy. The dashboard,
 watchdog, stack sentinel, P2P guard, peer refresh, chain restore guard, and
 snapshot timers are installed by `ops/install-dashboard.sh` unless explicitly
-disabled.
+disabled. Runtime tooling defaults to the current single-node stack names
+`node`, `pool`, and `postgres`, while retaining compatibility with legacy
+Compose labels during migration.
 
 Dashboard block height is sourced from chain RPC `getBlockCount`; template
 height, logs, and main-order values are shown only as
-diagnostics. Chain RPC checks retry slow storage-bound samples via
+diagnostics. Build and release flows should run through
+`scripts/bdag-low-io-build.sh`, which uses idle I/O priority, low CPU priority,
+and `BDAG_BUILD_TMPDIR` so image builds do not compete with chain sync or block
+submission. Chain RPC checks retry slow storage-bound samples via
 `BDAG_NODE_CHAIN_RPC_TIMEOUT` and `BDAG_NODE_CHAIN_RPC_RETRIES`, and the status
 payload exposes the active dashboard URL, RPC latency, and Linux IO pressure
 metrics. When PSI is unavailable, the dashboard falls back to `/proc/stat`
 `iowait` deltas and raises a maintenance warning after sustained high IO wait.
 The ops layer also detects a host profile with `BDAG_HOST_PROFILE=auto` and
 uses adaptive worker budgets for expensive dashboard/global/miner scans. The
-same release source is expected to behave conservatively on Pi5 or other
-constrained ARM64 hosts, while AMD64 and larger ARM64 hosts can use more
-parallelism when pressure is low. See
-`docs/platform-adaptive-runtime.md`.
+same release source is expected to behave conservatively on constrained ARM64
+hosts, while AMD64 and larger ARM64 hosts can use more parallelism when pressure
+is low. See `docs/platform-adaptive-runtime.md`.
 
 The dashboard, watchdog, sync coordinator, P2P guard, and startup checks also
 share one cross-process status sample. `ops/status_sampler.py` writes
 `ops/runtime/status-sampler.json` atomically, and routine callers read it
-through `collect_status_cached()` when it is fresh. Direct repair diagnostics
-can still force a live collection with `max_age_seconds=0`.
+through `collect_status_cached()` when it is fresh. The default sampler reuse
+window is bounded at 120 seconds so constrained hosts do not repeatedly probe
+Docker, node RPC, pool metrics, and miner state while the node is catching up.
+Direct repair diagnostics can still force a live collection with
+`max_age_seconds=0`.
 
 The Pi5 release builder marks generated runtime compose files with
 `BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1` and rejects `build:`/`dockerfile:`
@@ -210,19 +250,30 @@ before cutting an RC, and use `--mode live-runtime` for an installed stack where
 Constrained mining appliances also run a read-only install preflight before
 chain seeding or stack start. `scripts/mining-appliance-preflight.py` checks the
 host profile, root and chain-data free space, filesystem and mount options,
-storage profile split, single-node duplicate data, swap sizing, Docker root
+storage profile split, duplicate node data, swap sizing, Docker root
 placement, network route, schema presence, and resource-sensitive `.env`
 defaults. The installer resolves `BDAG_STORAGE_PROFILE=auto` into concrete
 chain, Postgres, and runtime paths so capacity USB storage can carry the growing
 chain while internal or other non-USB storage absorbs small frequent writes when
 it has enough headroom. USB-backed chain data always prefers this split. Small
-ephemeral scratch is kept on bounded tmpfs through `BDAG_EPHEMERAL_DIR` and
-`BDAG_CONTAINER_TMPFS_SIZE`; large snapshot and chain-artifact staging stays on
-capacity storage unless deliberately overridden. The installer reports
+ephemeral scratch is kept on bounded tmpfs through `BDAG_EPHEMERAL_DIR`,
+`BDAG_CONTAINER_TMPFS_SIZE`, and node-specific `BDAG_NODE_TMPFS_SIZE`; service
+containers also mount `/var/tmp` as tmpfs and export `TMPDIR`, `TMP`, and
+`TEMP` to avoid accidental temp spillover into overlay layers. Large
+snapshot and chain-artifact staging stays on capacity storage unless
+deliberately overridden. The installer reports
 warnings and continues by default. Set `BDAG_APPLIANCE_PREFLIGHT_STRICT=1` to
 make hard failures stop the install, or `BDAG_APPLIANCE_PREFLIGHT=0` to skip it
 explicitly. The field report behind these checks is in
-`docs/t430-single-node-appliance-hardening.md`.
+`docs/t430-appliance-hardening.md`.
+
+Mining hosts install `bdag-mining-host-tuning.service` and timer through
+`ops/install-p2p-services.sh`. The tuning script discovers the active Compose
+containers, raises node/pool/Postgres CPU and block I/O weights, applies
+process `nice`/`ionice`, writes cgroup v2 `memory.low` protection, and keeps the
+default network interface on `fq_codel`. The policy is safe to reapply and uses
+the `BDAG_*_CPU_SHARES`, `BDAG_*_MEMORY_LOW`, and `BDAG_TUNE_NET_QDISC` knobs
+from `.env`.
 
 The release builder also runs `scripts/verify-release-architecture.py` before
 image assembly so ARM64 packages cannot silently receive AMD64 binaries; the
@@ -245,10 +296,21 @@ On macOS and Windows Docker Desktop hosts, prefer the packaged installer or run
 the ops dashboard from a session where the Docker CLI already works instead of
 installing Linux systemd units.
 
+Source checkout tests require Python's standard library test runner plus
+`pytest`. On Ubuntu/Debian hosts, install the test dependency with:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3-pytest
+```
+
+Agents should verify it with `python3 -m pytest --version` before running
+`ops/tests` through pytest-backed deployment checks.
+
 The dashboard runtime collectors use Python's standard HTTP client for local
 pool metrics and public enrichment calls. Do not make live status depend on
-host utilities such as `curl`; release packages should behave the same on Pi5
-ARM64, Linux AMD64, macOS Docker Desktop, and Windows Docker Desktop once Docker
+host utilities such as `curl`; release packages should behave the same on Linux
+AMD64, Linux ARM64, macOS Docker Desktop, and Windows Docker Desktop once Docker
 and Python are available.
 
 For live dashboard/watchdog-only updates, use:
@@ -277,7 +339,8 @@ HTML summary under `ops/runtime/measurements`.
 ## Quick start
 
 ```bash
-# 1. Unzip pool-stack-docker-<tag>.zip
+# 1. Run the pinned bootstrap from the GitHub release, or unzip the matching
+#    pool-stack-docker-<tag>-linux-<arch>.zip payload.
 
 # 2. Run the installer
 bash install.sh
@@ -286,6 +349,10 @@ bash install.sh
 docker compose logs -f node
 docker compose logs -f pool
 ```
+
+To include optional services controlled by `.env`, set `COMPOSE_PROFILES` before
+`docker compose up`. Example: `COMPOSE_PROFILES=miner` enables the CPU miner
+service; leave `COMPOSE_PROFILES` empty to disable it.
 
 Once everything is running:
 
@@ -297,15 +364,15 @@ Once everything is running:
 ## Default V2 Sync Source
 
 New installs use Fast Artifact Sync V2 as the preferred bootstrap path. Client
-sync is enabled by default; source serving is gated by
-`BDAG_RAWDATADIR_SOURCE_MODE=auto` and only enables when the chain, sidecar,
-artifact, temporary, and Docker paths are not USB/removable/external and the
-host has enough CPU, RAM, and disk headroom.
+sync is enabled by default; source serving is disabled unless
+`SYNC_SOURCE_NODE=1` is set and the chain, sidecar, artifact, temporary, and
+Docker paths are not USB/removable/external and the host has enough CPU, RAM,
+and disk headroom.
 
 Eligible source hosts maintain a low-priority raw datadir sidecar and publish a
 signed `raw_datadir_checkpoint` artifact from a finalized sidecar generation.
-Single-node systems do not stop the live node automatically. Set
-`BDAG_RAWDATADIR_SINGLE_NODE_FINALIZE=1` only for an operator-approved
+The artifact publisher does not stop the live node automatically. Set
+`BDAG_RAWDATADIR_FINALIZE=1` only for an operator-approved
 finalization window.
 
 The old archive seed timer has been removed because IPFS segments and finalized

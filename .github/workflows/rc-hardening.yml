@@ -33,10 +33,9 @@ jobs:
       - name: Shell syntax
         run: |
           bash -n \
-            ops/build-pi5-arm64-release.sh \
             ops/deploy-live-runtime-update.sh \
             ops/release-install.sh \
-            scripts/validate-pi5-restart-hardening.sh \
+            scripts/validate-release-build.sh \
             scripts/release/installers/install-unix-common.sh
 
       - name: Documentation consistency
@@ -49,5 +48,5 @@ jobs:
           find ops scripts -type d -name __pycache__ -prune -exec rm -rf {} +
           find ops scripts -name '*.pyc' -delete
 
-      - name: Pi5 restart hardening validator
-        run: bash scripts/validate-pi5-restart-hardening.sh --mode source .
+      - name: Release build validator
+        run: bash scripts/validate-release-build.sh .
