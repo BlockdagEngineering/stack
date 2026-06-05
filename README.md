@@ -214,6 +214,19 @@ disabled. Runtime tooling defaults to the current single-node stack names
 `node`, `pool`, and `postgres`, while retaining compatibility with legacy
 Compose labels during migration.
 
+Catch-up has priority over mining when a production node is I/O-bound while it
+is behind peers or while the selected backend is not mineable/submit-ready.
+`BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED=1` makes this the primary mitigation
+using `iowait`, `io_some`, and `io_full` pressure signals; a production node
+more than `BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS=300` blocks behind peers is the
+backup trigger when pressure signals are missing or delayed.
+The status sampler stops the pool, disables node mining/template runtime churn,
+raises the node cache toward `BDAG_CATCHUP_NODE_CACHE_MB` within the host memory
+budget, and recreates only the node service when that runtime change is needed.
+The dashboard reports this as a deliberate catch-up pause, not a pool failure,
+and tells operators to leave miners configured until I/O pressure drops, peer lag
+is back inside the safe window, and template health is ready.
+
 Dashboard block height is sourced from chain RPC `getBlockCount`; template
 height, logs, and main-order values are shown only as
 diagnostics. Build and release flows should run through
