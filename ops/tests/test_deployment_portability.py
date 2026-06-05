@@ -81,7 +81,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
 
         self.assertIn("BDAG_NODE_SERVICES: node", compose)
-        self.assertIn("BDAG_NETWORK: ${BDAG_NETWORK:-${NETWORK:-mainnet}}", compose)
+        self.assertIn("BDAG_NETWORK: ${BDAG_NETWORK:-}", compose)
         self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool", compose)
         self.assertIn("BDAG_POOL_CONTAINER: pool", compose)
         self.assertIn("BDAG_POOL_DB_CONTAINER: postgres", compose)
@@ -122,7 +122,6 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             ".github/workflows/build-cpu.yml",
             ".github/workflows/build.yml",
             ".github/workflows/rc-hardening.yml",
-            "ops/monitor-fastsync-peers.sh",
             "docker-compose.yml",
             "scripts/check-doc-consistency.py",
             "scripts/release/installers/install-unix-common.sh",
@@ -143,20 +142,14 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn('need_grep \'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS\' "docker-compose.yml"', validator)
         self.assertIn('need_grep \'NODE_RPC_URLS: .*http://node:38131\' "docker-compose.yml"', validator)
         self.assertIn('need_grep \'BDAG_STACK_SERVICES=postgres,node,pool\' ".env.example"', validator)
-        self.assertIn('need_grep \'container_name: postgres\' "docker-compose.yml"', validator)
-        self.assertIn('need_grep \'container_name: pool\' "docker-compose.yml"', validator)
+        self.assertIn('need_grep \'BDAG_POOL_CONTAINER: pool\' "docker-compose.yml"', validator)
+        self.assertIn('need_grep \'BDAG_POOL_DB_CONTAINER: postgres\' "docker-compose.yml"', validator)
 
     def test_live_runtime_validator_keeps_release_packaging_source_only(self) -> None:
         validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
 
-        self.assertRegex(
-            validator,
-            r'if \[\[ "\$mode" == "source" \]\]; then\n'
-            r'(?:  need_grep .*\n)+'
-            r'  need_grep .if ! command -v jq. "ops/monitor-fastsync-peers.sh"\n'
-            r'fi',
-        )
-        self.assertIn('need_grep \'BDAG_FASTSYNC_PEER_ORDERING=p2p-latency\' ".env.cpu.example"', validator)
+        self.assertIn('need_grep \'check-release-archive.py\' ".github/workflows/build.yml"', validator)
+        self.assertIn('need_grep \'check-release-archive.py\' ".github/workflows/build-cpu.yml"', validator)
         self.assertIn('reject_grep \'BDAG_P2P_LAN_PEERS=\' ".env.cpu.example"', validator)
 
     def test_live_deploy_rollback_validates_manifest_not_new_rc_contract(self) -> None:

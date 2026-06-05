@@ -30,15 +30,7 @@ RUN set -eu; mkdir -p /out; \
     test -f ./bin/nodeworker     || { echo 'ERROR: ./bin/nodeworker missing'; exit 1; }; \
     cp -f ./bin/blockdag-node /out/blockdag-node && \
     cp -f ./bin/nodeworker    /out/nodeworker && \
-    chmod +x /out/blockdag-node /out/nodeworker; \
-    if [ -f ./bin/fastsnap ]; then \
-      cp -f ./bin/fastsnap /out/fastsnap; \
-      chmod +x /out/fastsnap; \
-    else \
-      echo 'WARN: ./bin/fastsnap missing; image will skip FastSnap bootstrap at runtime'; \
-      : > /out/fastsnap; \
-      chmod 0644 /out/fastsnap; \
-    fi
+    chmod +x /out/blockdag-node /out/nodeworker
 
 # ----------------------------------------------------------------------------
 # Pool Build Stage (asic-pool) — binaries from tarball bin/
@@ -95,9 +87,7 @@ RUN mkdir -p /etc/bdagStack /var/lib/bdagStack/node/mainnet /var/lib/bdagStack/n
 
 COPY --from=node-build /out/blockdag-node  /usr/local/bin/blockdag-node
 COPY --from=node-build /out/nodeworker     /usr/local/bin/nodeworker
-COPY --from=node-build /out/fastsnap       /usr/local/bin/fastsnap
-RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker \
- && if [ -s /usr/local/bin/fastsnap ]; then chmod +x /usr/local/bin/fastsnap; fi
+RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker
 
 COPY docker/entrypoint-nodeworker.sh /usr/local/bin/docker-entrypoint-nodeworker.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh

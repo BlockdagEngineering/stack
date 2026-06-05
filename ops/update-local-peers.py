@@ -42,29 +42,22 @@ ACTIVE_MINING_RECENT_SECONDS = int(os.environ.get("BDAG_LOCAL_PEERS_ACTIVE_MININ
 DEFAULT_ASIC_LAN_CIDRS = ""
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 AUTO_VALUES = {"", "auto", "detect"}
-# Migration input only. New releases must configure sync candidates through
-# BDAG_FASTSYNC_PEERS as complete P2P multiaddrs.
+# Migration input only. New releases should configure ordinary node peer
+# variables with complete P2P multiaddrs.
 LEGACY_PEER_SOURCE_KEYS = (
     "BDAG_P2P_LAN_PEERS",
     "LAN_PEER_ADDRESSES",
-    "BDAG_FASTSYNC_LAN_PEERS",
-    "BDAG_FASTSYNC_LOCAL_PEERS",
     "BDAG_P2P_VPN_PEERS",
     "VPN_PEER_ADDRESSES",
     "ZEROTIER_PEER_ADDRESSES",
     "DISCOVERED_ZEROTIER_PEER_ADDRESSES",
     "DISCOVERED_LAN_PEER_ADDRESSES",
-    "BDAG_FASTSYNC_VPN_PEERS",
-    "BDAG_FASTSYNC_PRIVATE_PEERS",
     "BDAG_P2P_PUBLIC_PEERS",
-    "BDAG_FASTSYNC_PUBLIC_PEERS",
     "EXTRA_PEER_ADDRESSES",
 )
 GENERIC_PEER_KEYS = (
     "BOOTSTRAP_PEER_ADDRESSES",
     "PEER_ADDRESSES",
-    "BDAG_FASTSYNC_PEERS",
-    "BDAG_FASTSNAP_PEERS",
     "LOCAL_PEER_ADDRESSES",
     "NODE1_PEER_ADDRESSES",
 )
@@ -226,28 +219,6 @@ def parse_networks(raw: str, default: str = "") -> list[ipaddress.IPv4Network]:
         if network.version == 4:
             networks.append(network)
     return networks
-
-
-def normalize_peer_ordering(value: str) -> str:
-    normalized = str(value or "").strip().lower()
-    if normalized in {
-        "",
-        "1",
-        "true",
-        "yes",
-        "on",
-        "enabled",
-        "latency",
-        "p2p",
-        "p2p-latency",
-        "flat",
-        "flat-latency",
-        "legacy-buckets",
-        "buckets",
-        "tiered-latency",
-    }:
-        return "p2p-latency"
-    return normalized
 
 
 def asic_lan_networks(values: dict[str, str]) -> list[ipaddress.IPv4Network]:
@@ -698,24 +669,16 @@ def main() -> int:
                 updates[peer_id_key] = ""
     updates["BDAG_NETWORK_TOPOLOGY"] = env_value(values, "BDAG_NETWORK_TOPOLOGY", "auto") or "auto"
     updates["BDAG_DETECTED_NETWORK_TOPOLOGY"] = topology
-    updates["BDAG_FASTSYNC_PEER_ORDERING"] = normalize_peer_ordering(env_value(values, "BDAG_FASTSYNC_PEER_ORDERING", "p2p-latency"))
-    updates["BDAG_FASTSYNC_PEERS"] = unique_csv(remote_candidate_peers)
     for legacy_key in (
         "BDAG_P2P_LAN_PEERS",
         "LAN_PEER_ADDRESSES",
-        "BDAG_FASTSYNC_LOCAL_PEERS",
         "BDAG_P2P_VPN_PEERS",
         "VPN_PEER_ADDRESSES",
         "ZEROTIER_PEER_ADDRESSES",
         "DISCOVERED_ZEROTIER_PEER_ADDRESSES",
         "DISCOVERED_LAN_PEER_ADDRESSES",
-        "BDAG_FASTSYNC_PRIVATE_PEERS",
         "BDAG_P2P_PUBLIC_PEERS",
         "EXTRA_PEER_ADDRESSES",
-        "BDAG_FASTSYNC_LAN_PREFIXES",
-        "BDAG_FASTSYNC_LAN_PEERS",
-        "BDAG_FASTSYNC_VPN_PEERS",
-        "BDAG_FASTSYNC_PUBLIC_PEERS",
     ):
         if legacy_key in values:
             updates[legacy_key] = ""

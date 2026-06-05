@@ -41,11 +41,7 @@ from pool_ops import (
     write_action_state,
 )
 from status_sampler import (
-    constrained_fastartifact_should_repair,
-    fastsync_peer_quarantine_should_repair,
     node_mining_template_support_should_repair,
-    repair_fastsync_orphan_peers,
-    repair_constrained_fastartifact,
     repair_missing_tracked_miners,
     repair_node_mining_template_support,
     status_payload_has_tracking_gap,
@@ -1688,29 +1684,6 @@ def check_once(
                 {"tracked_count_before": int(miner_health.get("tracked_count", 0) or 0)},
             )
 
-    if constrained_fastartifact_should_repair(status):
-        message = (
-            "constrained ASIC-router mining profile is synced with miner demand while "
-            "continuous FastArtifact mode is still active"
-        )
-        log(message)
-        if repair and repair_constrained_fastartifact(status):
-            state["last_constrained_fastartifact_repair_at"] = now_iso()
-            record_efficiency_event(
-                "watchdog_disabled_constrained_fastartifact",
-                "critical",
-                message,
-                {
-                    "mode": status.get("mode"),
-                    "overall": status.get("overall"),
-                    "sync_status": (status.get("sync_progress") or {}).get("status")
-                    if isinstance(status.get("sync_progress"), dict)
-                    else None,
-                },
-            )
-        elif repair:
-            record_failed_repair("watchdog_disable_constrained_fastartifact", message)
-
     if node_mining_template_support_should_repair(status):
         message = "miner demand exists but node miner/template support is disabled or missing miningaddr"
         log(message)
@@ -1724,20 +1697,6 @@ def check_once(
             )
         elif repair:
             record_failed_repair("watchdog_enable_node_mining_template_support", message)
-
-    if fastsync_peer_quarantine_should_repair(status):
-        message = "FastSync peer returned only orphan blocks while constrained mining host is synced"
-        log(message)
-        if repair and repair_fastsync_orphan_peers(status):
-            state["last_fastsync_peer_quarantine_at"] = now_iso()
-            record_efficiency_event(
-                "watchdog_quarantined_fastsync_orphan_peer",
-                "critical",
-                message,
-                {"mode": status.get("mode"), "overall": status.get("overall")},
-            )
-        elif repair:
-            record_failed_repair("watchdog_quarantine_fastsync_orphan_peer", message)
 
     if stack_failures and snapshot_active:
         state["consecutive_failures"] = 0
