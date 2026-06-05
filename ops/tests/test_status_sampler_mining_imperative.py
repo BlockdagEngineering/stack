@@ -234,8 +234,9 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertIn("cache=6144", node_conf)
         self.assertIn("--cache 6144", node_conf)
         self.assertIn("miningaddr=", node_conf)
-        self.assertIn("# modules=miner disabled during catch-up pause", node_conf)
-        self.assertIn("# miner=true disabled during catch-up pause", node_conf)
+        self.assertIn("modules=Blockdag", node_conf)
+        self.assertNotIn("modules=miner", node_conf)
+        self.assertNotIn("miner=true", node_conf)
         self.assertTrue(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
         self.assertTrue(any("--force-recreate" in command for command in commands))
 
@@ -494,7 +495,24 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         status_sampler.set_runtime_env_value = fake_set_runtime_env
         status_sampler.run = fake_run
 
-        repair = status_sampler.mining_imperative_repair(payload)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            status_sampler.PROJECT_ROOT = root
+            (root / "node.conf").write_text(
+                "\n".join(
+                    [
+                        "miningaddr=",
+                        "# modules=miner disabled during catch-up pause",
+                        "modules=Blockdag,miner",
+                        "# miner=true disabled during catch-up pause",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            repair = status_sampler.mining_imperative_repair(payload)
+            node_conf = (root / "node.conf").read_text(encoding="utf-8")
 
         self.assertIn("enabled_node_mining_template_support", repair["actions"])
         self.assertEqual(env_updates["BDAG_ENABLE_NODE_MINING"], "1")
@@ -505,6 +523,10 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertNotIn("--allowminingwhennearlysynced", env_updates["BDAG_NODE_MINING_ARGS"])
         self.assertNotIn("--allowsubmitwhennotsynced", env_updates["BDAG_NODE_MINING_ARGS"])
         self.assertEqual(env_updates["NODE_ARGS_APPEND"], env_updates["BDAG_NODE_MINING_ARGS"])
+        self.assertIn("miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc", node_conf)
+        self.assertIn("modules=Blockdag", node_conf)
+        self.assertNotIn("modules=miner", node_conf)
+        self.assertNotIn("miner=true", node_conf)
         self.assertTrue(any("--force-recreate" in command for command in commands))
 
     def test_node_args_parser_accepts_nodeworker_embedded_node_args(self) -> None:

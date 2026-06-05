@@ -1026,6 +1026,37 @@ def node_conf_path() -> Any:
     return PROJECT_ROOT / "node.conf"
 
 
+def normalize_node_conf_mining_runtime(text: str, enabled: bool, address: str = "") -> str:
+    mining_address = address if enabled else ""
+    lines: list[str] = []
+    miningaddr_written = False
+    modules_written = False
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if re.match(r"^#?\s*miningaddr\s*=", stripped):
+            if not miningaddr_written:
+                lines.append(f"miningaddr={mining_address}")
+                miningaddr_written = True
+            continue
+        if re.match(r"^#?\s*modules=miner\b", stripped):
+            continue
+        if re.match(r"^modules\s*=", stripped):
+            if not modules_written:
+                lines.append("modules=Blockdag")
+                modules_written = True
+            continue
+        if re.match(r"^#?\s*miner\s*=", stripped):
+            continue
+        lines.append(line)
+
+    if not miningaddr_written:
+        lines.append(f"miningaddr={mining_address}")
+    if not modules_written:
+        lines.append("modules=Blockdag")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def node_conf_cache_mb() -> int:
     path = node_conf_path()
     if not path.exists():
@@ -1061,26 +1092,7 @@ def update_node_conf_mining(enabled: bool, address: str = "") -> list[str]:
     if not path.exists():
         return []
     text = path.read_text(encoding="utf-8", errors="replace")
-    if enabled:
-        if address:
-            if re.search(r"(?m)^#?\s*miningaddr=.*$", text):
-                text = re.sub(r"(?m)^#?\s*miningaddr=.*$", f"miningaddr={address}", text, count=1)
-            else:
-                text = text.rstrip() + f"\nminingaddr={address}\n"
-        if re.search(r"(?m)^#\s*modules=miner.*$", text):
-            text = re.sub(r"(?m)^#\s*modules=miner.*$", "modules=miner", text, count=1)
-        elif not re.search(r"(?m)^modules=miner\s*$", text):
-            text = text.rstrip() + "\nmodules=miner\n"
-        if re.search(r"(?m)^#\s*miner=true.*$", text):
-            text = re.sub(r"(?m)^#\s*miner=true.*$", "miner=true", text, count=1)
-        elif re.search(r"(?m)^miner=false\s*$", text):
-            text = re.sub(r"(?m)^miner=false\s*$", "miner=true", text, count=1)
-        elif not re.search(r"(?m)^miner=true\s*$", text):
-            text = text.rstrip() + "\nminer=true\n"
-    else:
-        text = re.sub(r"(?m)^miningaddr=.*$", "miningaddr=", text)
-        text = re.sub(r"(?m)^modules=miner\s*$", "# modules=miner disabled during catch-up pause", text)
-        text = re.sub(r"(?m)^miner=true\s*$", "# miner=true disabled during catch-up pause", text)
+    text = normalize_node_conf_mining_runtime(text, enabled, address)
     return [str(path)] if write_text_if_changed(path, text) else []
 
 
