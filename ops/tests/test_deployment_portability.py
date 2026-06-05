@@ -138,6 +138,14 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertNotIn("node-data:/var/lib/bdagStack/node", compose)
         self.assertNotIn("nodeworker-data:/var/lib/bdagStack/nodeworker", compose)
 
+    def test_compose_has_one_pool_node_health_enabled_key(self) -> None:
+        compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+
+        self.assertEqual(
+            1,
+            compose.count("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED: ${POOL_RPC_ROUTER_NODE_HEALTH_ENABLED:-true}"),
+        )
+
     def test_pool_node_health_gate_is_enabled_by_default(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
