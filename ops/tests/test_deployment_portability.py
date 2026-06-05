@@ -173,6 +173,19 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("Fresh installs assume zero miner sources", readme)
         self.assertIn("0..N ASIC or Stratum miners", agents)
 
+    def test_p2p_firewall_uses_single_compose_port(self) -> None:
+        env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
+        firewall = (ROOT_DIR / "ops" / "allow-p2p-iptables.sh").read_text(encoding="utf-8")
+        installer = (ROOT_DIR / "ops" / "install-p2p-services.sh").read_text(encoding="utf-8")
+        unit = (ROOT_DIR / "ops" / "systemd" / "bdag-p2p-firewall.service").read_text(encoding="utf-8")
+
+        combined = "\n".join([env_example, firewall, installer, unit])
+        self.assertIn("P2P_PORT=8150", env_example)
+        self.assertIn('PORT="${P2P_PORT:-8150}"', firewall)
+        self.assertIn("Environment=P2P_PORT=8150", unit)
+        self.assertNotIn("BDAG_P2P_PORTS", combined)
+        self.assertNotIn("--dports", firewall)
+
 
 if __name__ == "__main__":
     unittest.main()

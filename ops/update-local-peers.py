@@ -25,8 +25,8 @@ SYNC_COORDINATOR_STATE_FILE = RUNTIME_DIR / "sync-coordinator-state.json"
 DEFERRED_APPLY_FILE = RUNTIME_DIR / "local-peers-deferred-apply"
 DEFAULT_ACTIVE_NODE_SERVICES = ["node"]
 NODE_SPECS = {
-    "node": {"port": 8151, "env": "NODE1_PEER_ADDRESSES"},
-    "bdag-miner-node-1": {"port": 8151, "env": "NODE1_PEER_ADDRESSES"},
+    "node": {"port": 8150, "env": "NODE1_PEER_ADDRESSES"},
+    "bdag-miner-node-1": {"port": 8150, "env": "NODE1_PEER_ADDRESSES"},
 }
 NODE_PEER_ID_ENV = {
     "node": ("BDAG_LOCAL_NODE_PEER_ID", "BDAG_NODE_PEER_ID", "BDAG_LOCAL_NODE1_PEER_ID", "BDAG_NODE1_PEER_ID"),
@@ -379,11 +379,20 @@ def clear_deferred_apply() -> None:
         pass
 
 
+def configured_p2p_port(values: dict[str, str]) -> int:
+    raw = env_value(values, "P2P_PORT", "8150")
+    try:
+        port = int(raw)
+    except ValueError:
+        return 8150
+    if 1 <= port <= 65535:
+        return port
+    return 8150
+
+
 def fallback_peer_ids(values: dict[str, str]) -> dict[str, str]:
-    by_port = {
-        str(spec["port"]): node
-        for node, spec in NODE_SPECS.items()
-    }
+    p2p_port = configured_p2p_port(values)
+    by_port = {str(p2p_port): "node"}
     result: dict[str, str] = {}
     for node, keys in NODE_PEER_ID_ENV.items():
         for key in keys:
@@ -638,9 +647,10 @@ def main() -> int:
         host_ip,
     )
 
+    p2p_port = configured_p2p_port(values)
     local_addrs = {
-        node: f"/ip4/{host_ip}/tcp/{spec['port']}/p2p/{peers[node]}"
-        for node, spec in NODE_SPECS.items()
+        node: f"/ip4/{host_ip}/tcp/{p2p_port}/p2p/{peers[node]}"
+        for node in NODE_SPECS
         if node in peers
     }
     updates: dict[str, str] = {}

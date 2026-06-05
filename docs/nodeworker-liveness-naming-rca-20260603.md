@@ -39,7 +39,7 @@ container with no child node.
 
 ## Build Gates
 
-CI now includes stack naming coherence tests that verify:
+CI now includes runtime naming checks that verify:
 
 - Compose/dashboard defaults use `postgres,node,pool`;
 - release installers and the ARM64 builder emit current names and `node` RPC
