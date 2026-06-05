@@ -77,7 +77,7 @@ services:
       POSTGRES_DB:       ${POSTGRES_DB:-bdagpool}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - ${BDAG_POSTGRES_DATA_DIR:-./data/postgres}:/var/lib/postgresql/data
       - ./sql/pool-schema.sql:/docker-entrypoint-initdb.d/01-pool-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bdag_pool} -d ${POSTGRES_DB:-bdagpool}"]
@@ -169,8 +169,8 @@ services:
     # so if you want to start fresh, you need to delete the volume explicity.
     # `docker compose down && docker volume rm <project>_node-data`\
 
-      - node-data:/var/lib/bdagStack/node
-      - nodeworker-data:/var/lib/bdagStack/nodeworker
+      - ${BDAG_NODE1_DATA_DIR:-./data/node1}:/var/lib/bdagStack/node
+      - ${BDAG_NODEWORKER_DATA_DIR:-./data/nodeworker}:/var/lib/bdagStack/nodeworker
       # node.conf in project root (copy from node.conf.example). gitignored.
       - ./node.conf:/etc/bdagStack/node.conf:ro
       - ${BDAG_RAWDATADIR_ARTIFACT_BASE:-./data-restore/rawdatadir}:/fastartifact/rawdatadir:ro
