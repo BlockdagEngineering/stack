@@ -1110,7 +1110,8 @@ def compose_service_name(name: str) -> str:
     if service and service != "<no value>":
         return service
     container_to_service = {
-        "postgres": "pool-db",
+        "postgres": "postgres",
+        "pool-db": "postgres",
         "node": "node",
         "pool": "pool",
         "dashboard": "dashboard",

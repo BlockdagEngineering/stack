@@ -184,8 +184,8 @@ services:
       METRICS_ADDR:       ${METRICS_ADDR:-0.0.0.0:9090}
       POOL_INSTANCE_ID:   ${POOL_INSTANCE_ID:-}
     ports:
-      - "${POOL_BIND_PORT:-3334}:3334"
-      - "${POOL_API_PORT:-9090}:9090"
+      - "0.0.0.0:${POOL_BIND_PORT:-3334}:3334"
+      - "0.0.0.0:${POOL_API_PORT:-9090}:9090"
 
 
 
