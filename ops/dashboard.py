@@ -589,6 +589,7 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
     sync_progress = payload.get("sync_progress") if isinstance(payload.get("sync_progress"), dict) else {}
     sync_health = payload.get("sync_health") if isinstance(payload.get("sync_health"), dict) else {}
     coordinator = payload.get("sync_coordinator") if isinstance(payload.get("sync_coordinator"), dict) else {}
+    catchup_policy = payload.get("catchup_policy") if isinstance(payload.get("catchup_policy"), dict) else {}
     nodes = payload.get("nodes") if isinstance(payload.get("nodes"), dict) else {}
     managed_nodes = payload.get("managed_node_services") if isinstance(payload.get("managed_node_services"), list) else []
     single_active_node = len(managed_nodes) == 1
@@ -665,14 +666,25 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
     leader_estimate = estimate_nodes.get(leader) if isinstance(estimate_nodes.get(leader), dict) else {}
     remaining = safe_int(leader_estimate.get("remaining_blocks")) if leader_estimate else safe_int(sync_progress.get("remaining_blocks"))
     rate = safe_float(leader_estimate.get("rate_blocks_per_second")) if leader_estimate else None
+    catchup_active = bool(catchup_policy.get("active"))
+    catchup_trigger = str(catchup_policy.get("trigger") or "")
     stage = (
-        "Synced"
+        "I/O-bound catch-up pause"
+        if catchup_active and catchup_trigger == "io_pressure"
+        else "Catch-up pause active"
+        if catchup_active
+        else "Synced"
         if sync_progress.get("status") == "synced"
         else "Active-node catch-up"
         if single_active_node
         else "Syncing"
     )
-    if sync_progress.get("status") == "synced":
+    if catchup_active:
+        narrative = str(
+            catchup_policy.get("user_message")
+            or "Mining is intentionally paused while the chain node catches up to peers."
+        )
+    elif sync_progress.get("status") == "synced":
         narrative = "Managed nodes are synced to the current network tip."
     elif single_active_node and leader:
         narrative = f"{leader} is the only active production node. The pool will wait for this node to finish sync before mining jobs are sent."
@@ -693,6 +705,10 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
         "eta_to_seed_seconds": leader_estimate.get("eta_to_seed_seconds") if leader_estimate else None,
         "eta_to_seed_at": leader_estimate.get("eta_to_seed_at") if leader_estimate else "",
         "narrative": narrative,
+        "catchup_pause_active": catchup_active,
+        "catchup_pause_lag_blocks": catchup_policy.get("lag_blocks"),
+        "catchup_pause_threshold_blocks": catchup_policy.get("threshold_blocks"),
+        "next_step": catchup_policy.get("next_step") if catchup_active else "",
         "nodes": estimate_nodes,
     }
     write_json(SYNC_ESTIMATE_STATE_FILE, new_state)
@@ -1999,7 +2015,13 @@ HTML = r"""<!doctype html>
     function render(data) {
       text("meta", data.generated_at + " | " + data.project_root + " | dashboard " + (data.dashboard_url || "unknown"));
       text("overall", data.overall);
-      text("statusReason", data.overall === "ok" ? "" : (data.status_reason || "Reason unavailable."));
+      const catchupPolicy = data.catchup_policy || {};
+      text(
+        "statusReason",
+        catchupPolicy.active
+          ? (catchupPolicy.summary || catchupPolicy.user_message || "Catch-up pause active.")
+          : (data.overall === "ok" ? "" : (data.status_reason || "Reason unavailable."))
+      );
       document.getElementById("overall").className = "kpi-value " + statusClass(data.overall);
       const nodeNames = data.node_services || Object.keys(data.nodes || {});
       renderSyncProgress(data.sync_progress || {}, data);
