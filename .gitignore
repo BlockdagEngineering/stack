@@ -1,6 +1,7 @@
 # Local environment
 .env
 .env.snapshot
+github
 release-downloads/*
 !release-downloads/
 !release-downloads/index.html
@@ -11,10 +12,24 @@ node.snapshot.conf
 
 # Built Linux binaries shipped in release tarballs (see CI); not committed here
 bin/
+!bin/
+bin/*
+!bin/.gitkeep
 
 # Editor / OS
 *.swp
 .DS_Store
+__pycache__/
+*.pyc
 
 # Local volumes if anyone bind-mounts them here
 data/
+data-restore/
+chain-data/
+ops/runtime
+ops/runtime-*/
+ops/*.pyc
+ops/__pycache__/
+asic-pool/.env
+artifacts/
+node-data/*

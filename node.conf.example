@@ -1,13 +1,10 @@
 # BlockDAG node configuration for the Docker Compose stack.
-# Copy to node.conf beside docker-compose.yml (gitignored):
-#   cp node.conf.example node.conf
-# Mounted into the node container at /etc/bdagStack/node.conf.
 
 # P2P listen
 listen=0.0.0.0
 port=8150
 
-# BDAG rpc listen
+# BDAG RPC listen
 rpclisten=0.0.0.0:38131
 
 # EVM RPC listen
@@ -16,48 +13,41 @@ evm.http.port=18545
 evm.ws.addr=0.0.0.0
 evm.ws.port=18546
 
-# Bootstrap peers (mainnet seed nodes)
-addpeer=/ip4/52.8.80.249/tcp/8150/p2p/16Uiu2HAkxWjKnodZCv7RAJv4XPEFgVZQokoqiFeo7N2nswXHcRMv
-addpeer=/ip4/3.77.181.33/tcp/8150/p2p/16Uiu2HAmRW22ByMzBHKx86W7G6Gjt2XJ4EForKBGdxqS8K9GbCfS
-addpeer=/ip4/63.34.228.240/tcp/8150/p2p/16Uiu2HAkzD1v3x29W6qCNS6JbbtAoSNNjG8kD1Xzrxyi1tWoSasq
-addpeer=/ip4/3.6.3.109/tcp/8150/p2p/16Uiu2HAm233S37d2Jtw5PPYe6dpwqUwNKpgvbiuNuV6DJ1QtbrSW
-addpeer=/ip4/3.214.202.100/tcp/8150/p2p/16Uiu2HAmGVzwYkqmGjnpniD9PZx7GPoDcMudxjNSzbFzBgFviRac
-addpeer=/ip4/204.236.183.207/tcp/8150/p2p/16Uiu2HAmMYqRrQio1mzbyjyV6FEgBcgzvFK5AvuhLquTuPqT8XKB
-addpeer=/ip4/52.8.54.60/tcp/8150/p2p/16Uiu2HAkzUWr4YUM7mAhLdCVZgFoV9He6aQzKTyWWrJ7SWQKRTN7
-addpeer=/ip4/54.151.18.92/tcp/8150/p2p/16Uiu2HAmVm91o1JXS2C7P6uTVuVX5empgnRtzuK4UaC8fHmePbKP
-addpeer=/ip4/204.236.141.121/tcp/8150/p2p/16Uiu2HAm5qppgbBCjVpTN5nKtjEU5KsSbs2gz4S9uPiSWVSGfNh1
+
+# Bootstrap peers (mainnet seed nodes). Add one addpeer=... line per complete
+# BDAG P2P multiaddr. Keep only public peers that are currently reachable.
 addpeer=/ip4/13.57.132.47/tcp/8150/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus
+addpeer=/ip4/3.218.54.171/tcp/8150/p2p/16Uiu2HAmUZBdpuutiLPuru1UQnX8hf6GyvG7yU2B832sYjvNhmQG
+addpeer=/ip4/16.28.133.168/tcp/8150/p2p/16Uiu2HAm9UcTayJDSajjJYsWwVaN2qqGeczcs9kXse3dMdvGDRjz
+
 
 # Peer limit
 maxpeers=350
+cache=2048
+cache.database=70
 
-# RPC auth (must match NODE_RPC_USER / NODE_RPC_PASS in .env so the pool +
+# RPC auth. Must match NODE_RPC_USER / NODE_RPC_PASS in .env.
 rpcuser=test
 rpcpass=test
 
-# Storage paths (bind-mounted from the named volumes in docker-compose.yml)
+# Storage paths
 datadir=/var/lib/bdagStack/node
 logdir=/var/log/bdagStack
 
-# Native metrics endpoint scraped by Netdata
+# Native metrics endpoint
 metrics=true
 profile=0.0.0.0:6060
 
-# Reward address when mining is enabled (--miner); repeat miningaddr= for multiple addresses.
+# Keep empty unless node mining is intentionally enabled.
 miningaddr=
 
-# API modules for DAG JSON-RPC (whitelist). Use one assignment per module — a
-# single line "modules=Blockdag,miner" is parsed as ONE module name and breaks
-# RPC (getBlockTemplate/getNodeInfo return -32601).
 modules=Blockdag
-modules=miner
 
 evm.http.api=eth,net,web3,txpool,debug
 http.readtimeout=45s
 http.writetimeout=45s
 http.idletimeout=45s
-evmenv="--rpc.allow-unprotected-txs --metrics --metrics.addr 0.0.0.0 --metrics.port 6060"
+evmenv="--rpc.allow-unprotected-txs --metrics --metrics.addr 0.0.0.0 --metrics.port 6060 --cache 2048"
 rpcmaxconcurrentreqs=500
-maxpeers=350
 http.ratelimit=1800
 http.rateburst=3200

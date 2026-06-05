@@ -7,6 +7,29 @@ $installerDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $packageRoot = Split-Path -Parent $installerDir
 Set-Location -Path $packageRoot
 
+function Normalize-Arch([string]$Value) {
+    switch ($Value.ToLowerInvariant()) {
+        'x86_64'  { return 'amd64' }
+        'amd64'   { return 'amd64' }
+        'arm64'   { return 'arm64' }
+        'aarch64' { return 'arm64' }
+        default { throw "Unsupported CPU architecture: $Value" }
+    }
+}
+
+function Read-PayloadMetadata([string]$Path) {
+    $metadata = @{}
+    if (-not (Test-Path $Path)) { return $metadata }
+    foreach ($line in [System.IO.File]::ReadLines((Get-Item $Path).FullName)) {
+        if (-not $line -or $line.StartsWith('#') -or -not $line.Contains('=')) {
+            continue
+        }
+        $idx = $line.IndexOf('=')
+        $metadata[$line.Substring(0, $idx)] = $line.Substring($idx + 1)
+    }
+    return $metadata
+}
+
 $arch = if ($env:BDAG_INSTALL_ARCH) { $env:BDAG_INSTALL_ARCH } else {
     switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()) {
         'X64'   { 'amd64' }
@@ -14,21 +37,41 @@ $arch = if ($env:BDAG_INSTALL_ARCH) { $env:BDAG_INSTALL_ARCH } else {
         default { throw "Unsupported CPU architecture: $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" }
     }
 }
-$dockerPlatform = 'linux/amd64'
+$arch = Normalize-Arch $arch
+$payloadMetadata = Read-PayloadMetadata (Join-Path $packageRoot 'release-payload.env')
+$payloadArch = $payloadMetadata['BDAG_RELEASE_PAYLOAD_ARCH']
+if (-not $payloadArch) {
+    switch ($payloadMetadata['BDAG_RELEASE_PAYLOAD_TARGET']) {
+        'linux-amd64' { $payloadArch = 'amd64' }
+        'linux-arm64' { $payloadArch = 'arm64' }
+    }
+}
+if (-not $payloadArch) {
+    $payloadArch = $arch
+}
+$payloadArch = Normalize-Arch $payloadArch
+$dockerPlatform = "linux/$payloadArch"
+if ($payloadMetadata['DOCKER_PLATFORM'] -and $payloadMetadata['DOCKER_PLATFORM'] -ne $dockerPlatform) {
+    throw "release-payload.env has inconsistent DOCKER_PLATFORM=$($payloadMetadata['DOCKER_PLATFORM']); expected $dockerPlatform."
+}
 $snapshotUrl = if ($env:BDAG_SNAPSHOT_URL) { $env:BDAG_SNAPSHOT_URL } else { 'https://bdagstack.bdagdev.xyz/latest.bdsnap' }
 $snapshotMinBytes = if ($env:BDAG_SNAPSHOT_MIN_BYTES) { [int64]$env:BDAG_SNAPSHOT_MIN_BYTES } else { [int64]1048576 }
 $requireSnapshot = $env:BDAG_REQUIRE_SNAPSHOT -ne '0'
-$resetNodeData = $env:BDAG_RESET_NODE_DATA -ne '0'
+$resetNodeData = $env:BDAG_RESET_NODE_DATA -eq '1'
 $requestedSnapshotDownloader = if ($env:BDAG_SNAPSHOT_DOWNLOADER) { $env:BDAG_SNAPSHOT_DOWNLOADER.ToLowerInvariant() } else { 'auto' }
 $aria2Connections = if ($env:BDAG_ARIA2_CONNECTIONS) { [int]$env:BDAG_ARIA2_CONNECTIONS } else { 8 }
 $installAria2 = $env:BDAG_INSTALL_ARIA2 -ne '0'
+$installMinFreeBytes = if ($env:BDAG_INSTALL_MIN_FREE_BYTES) { [int64]$env:BDAG_INSTALL_MIN_FREE_BYTES } else { [int64]10737418240 }
+$installCheckPorts = if ($env:BDAG_INSTALL_CHECK_PORTS) { $env:BDAG_INSTALL_CHECK_PORTS -split '[, ]+' } else { @('3334', '9280', '18545', '18546', '38131') }
+$strictPreflight = $env:BDAG_INSTALL_STRICT_PREFLIGHT -eq '1'
+$strictPorts = $env:BDAG_INSTALL_STRICT_PORTS -eq '1'
+$cleanOrphanContainers = $env:BDAG_CLEAN_ORPHAN_CONTAINERS -eq '1'
 
 Write-Host "=== BlockDAG Pool Stack Installer (windows/$arch) ===" -ForegroundColor Cyan
 Write-Host ""
 
-if ($arch -eq 'arm64') {
-    Write-Host "This release contains linux/amd64 service binaries."
-    Write-Host "Docker will run the stack with platform $dockerPlatform; amd64 emulation must be enabled."
+if ($payloadMetadata['BDAG_RELEASE_PAYLOAD_TARGET']) {
+    Write-Host "Runtime payload: $($payloadMetadata['BDAG_RELEASE_PAYLOAD_TARGET']) ($dockerPlatform)"
     Write-Host ""
 }
 
@@ -36,6 +79,65 @@ function Require-Command([string]$Name, [string]$Hint) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
         throw "$Name is required. $Hint"
     }
+}
+
+function Warn-OrFailPreflight([string]$Message) {
+    if ($strictPreflight) {
+        throw $Message
+    }
+    Write-Host "Warning: $Message" -ForegroundColor Yellow
+}
+
+function Test-PortListening([string]$Port) {
+    try {
+        return [bool](Get-NetTCPConnection -LocalPort ([int]$Port) -State Listen -ErrorAction Stop | Select-Object -First 1)
+    } catch {
+        return $false
+    }
+}
+
+function Invoke-ReleasePreflight {
+    Write-Host "=== Release preflight ===" -ForegroundColor Cyan
+
+    if ($arch -notin @('amd64', 'arm64')) {
+        Warn-OrFailPreflight "unsupported CPU architecture '$arch'."
+    }
+
+    $drive = Get-PSDrive -Name (Get-Location).Drive.Name
+    if ($drive.Free -lt $installMinFreeBytes) {
+        Warn-OrFailPreflight "free disk $($drive.Free) bytes is below BDAG_INSTALL_MIN_FREE_BYTES=$installMinFreeBytes."
+    }
+
+    $busyPorts = @()
+    foreach ($port in $installCheckPorts) {
+        if ($port -and (Test-PortListening $port)) {
+            $busyPorts += $port
+        }
+    }
+    if ($busyPorts.Count -gt 0) {
+        if ($strictPorts) {
+            throw "host ports already listening: $($busyPorts -join ', ')"
+        }
+        Write-Host "Warning: host ports already listening: $($busyPorts -join ', '). Existing stack services may be using them." -ForegroundColor Yellow
+    }
+
+    $timeService = Get-Service W32Time -ErrorAction SilentlyContinue
+    if (-not $timeService -or $timeService.Status -ne 'Running') {
+        Warn-OrFailPreflight "Windows Time service is not running."
+    }
+
+    if (Get-Command jq -ErrorAction SilentlyContinue) {
+        Write-Host "jq found; release scripts do not require it for installer JSON parsing."
+    } else {
+        Write-Host "jq not found; continuing because installer parsing avoids a jq dependency."
+    }
+
+    try {
+        Invoke-WebRequest -Uri $snapshotUrl -Method Head -UseBasicParsing -TimeoutSec 10 | Out-Null
+    } catch {
+        Warn-OrFailPreflight "could not reach snapshot seed URL $snapshotUrl; P2P sync may still work if BDAG_REQUIRE_SNAPSHOT=0."
+    }
+    Write-Host ""
 }
 
 function Set-EnvValue([string]$Path, [string]$Key, [string]$Value) {
@@ -49,6 +151,12 @@ function Set-EnvValue([string]$Path, [string]$Key, [string]$Value) {
     }
     $text = $text -replace "`r`n", "`n"
     [System.IO.File]::WriteAllText((Join-Path (Get-Location) $Path), $text, [System.Text.Encoding]::UTF8)
+}
+
+if ($env:BDAG_INSTALL_TEST_WRITE_ENV_ONLY -eq '1') {
+    Copy-Item .env.example .env -Force
+    Set-EnvValue .env DOCKER_PLATFORM $dockerPlatform
+    exit 0
 }
 
 function Test-ValidSnapshot([string]$Path) {
@@ -173,6 +281,24 @@ function Get-ComposeProjectName {
     }
 }
 
+function Plan-OrphanContainerCleanup {
+    $project = Get-ComposeProjectName
+    if (-not $project) { return }
+
+    $containers = & docker ps -a --filter "label=com.docker.compose.project=$project" --format "{{.Names}}`t{{.Status}}" 2>$null
+    if (-not $containers) { return }
+
+    Write-Host ""
+    Write-Host "Compose project '$project' has existing containers:" -ForegroundColor Yellow
+    $containers | ForEach-Object { Write-Host "  $_" }
+    if ($cleanOrphanContainers) {
+        Write-Host "BDAG_CLEAN_ORPHAN_CONTAINERS=1; running docker compose down --remove-orphans before start."
+        & docker compose down --remove-orphans
+    } else {
+        Write-Host "Dry-run cleanup only. Set BDAG_CLEAN_ORPHAN_CONTAINERS=1 to remove old/orphan compose containers during install." -ForegroundColor Yellow
+    }
+}
+
 function Prepare-NodeVolumeForSnapshot {
     if ($snapshotHostPath -ne './latest.bdsnap') { return }
 
@@ -243,8 +369,9 @@ if (-not (Test-Path .env.example) -or -not (Test-Path node.conf.example) -or -no
     throw "Run this installer from the extracted pool-stack-docker release folder."
 }
 
-$snapshotHostPath = './docker/no-snapshot.marker'
-$snapshotImportEnabled = '0'
+Invoke-ReleasePreflight
+
+$snapshotPath = 'docker/no-snapshot.marker'
 if (Test-ValidSnapshot latest.bdsnap) {
     Write-Host "Found snapshot: latest.bdsnap ($((Get-Item latest.bdsnap).Length) bytes)"
     $snapshotHostPath = './latest.bdsnap'
@@ -360,6 +487,7 @@ New-Item -ItemType Directory -Force -Path 'dashboard\logs' | Out-Null
 Clean-BuildContextMetadata
 Ensure-DockerignoreExcludesSnapshots
 Prepare-NodeVolumeForSnapshot
+Plan-OrphanContainerCleanup
 $env:DOCKER_DEFAULT_PLATFORM = $dockerPlatform
 
 Write-Host ""
@@ -369,7 +497,7 @@ if ($LASTEXITCODE -ne 0) { throw "docker compose build failed." }
 
 Write-Host ""
 Write-Host "=== Starting services ===" -ForegroundColor Cyan
-& docker compose up -d
+& docker compose up -d --no-build --pull never
 if ($LASTEXITCODE -ne 0) { throw "docker compose up failed." }
 
 Write-Host ""
