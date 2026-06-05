@@ -130,6 +130,57 @@ class MinerRetirementIdentityTests(unittest.TestCase):
         self.assertEqual(result["results"][0]["reason"], "retired-miner-mac")
         self.assertEqual(result["results"][0]["mac"], "28:e2:97:4c:e4:0a")
 
+    def test_configure_miners_handles_empty_discovery_before_configuring(self) -> None:
+        old_discover_miner = pool_ops.discover_miner
+        old_configure_miner = pool_ops.configure_miner
+        old_read_neighbor_macs = pool_ops.read_neighbor_macs
+        self.addCleanup(lambda: setattr(pool_ops, "discover_miner", old_discover_miner))
+        self.addCleanup(lambda: setattr(pool_ops, "configure_miner", old_configure_miner))
+        self.addCleanup(lambda: setattr(pool_ops, "read_neighbor_macs", old_read_neighbor_macs))
+        pool_ops.read_neighbor_macs = lambda: {"192.168.1.103": "28:e2:97:3d:95:13"}
+        pool_ops.discover_miner = lambda ip, timeout=0: None
+
+        configured: list[dict[str, object]] = []
+
+        def fake_configure_miner(**kwargs):
+            configured.append(kwargs)
+            return {"ip": kwargs["ip"], "status": "ok"}
+
+        pool_ops.configure_miner = fake_configure_miner
+
+        result = pool_ops.configure_miners(
+            ["192.168.1.103"],
+            admin_password="admin-pass",
+            pool_url="stratum+tcp://192.168.1.120:3334",
+            worker_user="0x05518E03e148C56e426ff9e1CBdB962B4FC5250A",
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["results"][0]["status"], "ok")
+        self.assertEqual(configured[0]["ip"], "192.168.1.103")
+
+    def test_miner_login_falls_back_to_plain_password(self) -> None:
+        old_encrypt = pool_ops.encrypt_miner_password
+        old_request = pool_ops.miner_request
+        self.addCleanup(lambda: setattr(pool_ops, "encrypt_miner_password", old_encrypt))
+        self.addCleanup(lambda: setattr(pool_ops, "miner_request", old_request))
+        pool_ops.encrypt_miner_password = lambda password: "encrypted-password"
+        calls: list[str] = []
+
+        def fake_miner_request(ip, path, **_kwargs):
+            calls.append(path)
+            if "cipher=true" in path:
+                raise pool_ops.MinerAPIError("cipher login rejected")
+            return {"body": {"JWT Token": "plain-token"}}
+
+        pool_ops.miner_request = fake_miner_request
+
+        token = pool_ops.miner_login("192.168.1.103", "123456789")
+
+        self.assertEqual(token, "plain-token")
+        self.assertIn("cipher=true", calls[0])
+        self.assertIn("password=123456789", calls[1])
+
 
 class MinerHealthCountTests(unittest.TestCase):
     def test_ok_count_includes_unmanaged_tracked_miners(self) -> None:

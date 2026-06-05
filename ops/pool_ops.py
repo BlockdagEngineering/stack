@@ -2469,16 +2469,43 @@ def encrypt_miner_password(password: str) -> str:
 
 
 def miner_login(ip: str, admin_password: str) -> str:
-    cipher_text = encrypt_miner_password(admin_password)
-    query = urllib.parse.urlencode({"username": "admin", "password": cipher_text, "cipher": "true"})
-    response = miner_request(ip, f"/user/login?{query}", timeout=MINER_HTTP_TIMEOUT)
-    body = response["body"]
-    if not isinstance(body, dict):
-        raise MinerAPIError(f"{ip} login returned an unexpected response")
-    token = body.get("JWT Token") or body.get("token") or body.get("jwt") or body.get("JWT")
-    if not token:
-        raise MinerAPIError(f"{ip} login did not return an access token")
-    return str(token)
+    attempts: list[tuple[str, dict[str, str]]] = []
+    try:
+        attempts.append(
+            (
+                "encrypted",
+                {
+                    "username": "admin",
+                    "password": encrypt_miner_password(admin_password),
+                    "cipher": "true",
+                },
+            )
+        )
+    except MinerAPIError as exc:
+        attempts.append(("encrypted-unavailable", {"error": str(exc)}))
+    attempts.append(("plain", {"username": "admin", "password": admin_password}))
+
+    errors: list[str] = []
+    for mode, params in attempts:
+        if "error" in params:
+            errors.append(f"{mode}: {params['error']}")
+            continue
+        query = urllib.parse.urlencode(params)
+        try:
+            response = miner_request(ip, f"/user/login?{query}", timeout=MINER_HTTP_TIMEOUT)
+        except MinerAPIError as exc:
+            errors.append(f"{mode}: {exc}")
+            continue
+        body = response["body"]
+        if not isinstance(body, dict):
+            errors.append(f"{mode}: unexpected response")
+            continue
+        token = body.get("JWT Token") or body.get("token") or body.get("jwt") or body.get("JWT")
+        if token:
+            return str(token)
+        errors.append(f"{mode}: no access token")
+    detail = "; ".join(errors) if errors else "no login attempts were made"
+    raise MinerAPIError(f"{ip} login failed ({detail})")
 
 
 def miner_put_auth(ip: str, path: str, payload: dict[str, Any], token: str) -> dict[str, Any]:
@@ -2627,6 +2654,8 @@ def configure_miners(
             try:
                 discovered_for_guard = discover_miner(ip, timeout=MINER_HTTP_TIMEOUT)
             except Exception:
+                discovered_for_guard = {}
+            if not isinstance(discovered_for_guard, dict):
                 discovered_for_guard = {}
             guard_mac = normalize_mac(discovered_for_guard.get("mac")) or mac_for_ip(ip)
             guard_decision = retired_miner_identity_decision({**discovered_for_guard, "ip": ip, "mac": guard_mac}, ip, guard_mac)
