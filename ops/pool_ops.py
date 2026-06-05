@@ -242,6 +242,14 @@ STATUS_PAYLOAD_STALE_AFTER_SECONDS = env_float(
     120.0,
     minimum=5.0,
 )
+CATCHUP_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_PAUSE_ENABLED", True)
+CATCHUP_PAUSE_THRESHOLD_BLOCKS = env_int("BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS", 300, minimum=1)
+CATCHUP_NODE_CACHE_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MB", 6144, minimum=0)
+CATCHUP_IO_PRESSURE_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED", True)
+CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS = env_int("BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS", 25, minimum=1)
+CATCHUP_IOWAIT_WARN_PERCENT = env_float("BDAG_CATCHUP_IOWAIT_WARN_PERCENT", 15.0, minimum=0.0)
+CATCHUP_IO_SOME_AVG10_WARN = env_float("BDAG_CATCHUP_IO_SOME_AVG10_WARN", 20.0, minimum=0.0)
+CATCHUP_IO_FULL_AVG10_WARN = env_float("BDAG_CATCHUP_IO_FULL_AVG10_WARN", 10.0, minimum=0.0)
 SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS = int(os.environ.get("BDAG_SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS", "2700"))
 DEFAULT_POOL_ENV_FILE = PROJECT_ROOT / ".env" if (PROJECT_ROOT / ".env").exists() else PROJECT_ROOT / "asic-pool" / ".env"
 POOL_ENV_FILE = path_from_env("BDAG_POOL_ENV_FILE", DEFAULT_POOL_ENV_FILE, PROJECT_ROOT)
@@ -720,6 +728,20 @@ def miner_failures_block_stack(
         or pool_has_recent_paid_work
         or source_job_health_ok is True
     )
+
+
+def selected_backend_unready_reasons(selected_source_health: Mapping[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    for key, label in (
+        ("node_mineable", "mineable=false"),
+        ("node_submit_ready", "submit_ready=false"),
+        ("node_p2p_mining_fresh", "p2p_mining_fresh=false"),
+    ):
+        if key in selected_source_health and not bool(selected_source_health.get(key)):
+            reasons.append(label)
+    if selected_source_health.get("node_last_template_build_error_blocking") is True:
+        reasons.append("template_build_error_blocking=true")
+    return reasons
 
 
 def safe_float(value: Any, default: float | None = None) -> float | None:
@@ -4725,6 +4747,160 @@ def repair_managed_miners(reason: str = "watchdog miner repair") -> dict[str, An
     }
 
 
+def max_catchup_lag_blocks(
+    sync_progress: Mapping[str, Any],
+    node_details: Mapping[str, Any],
+    selected_source_health: Mapping[str, Any] | None = None,
+) -> int:
+    values: list[int] = []
+    for key in ("remaining_blocks", "peer_ahead_blocks"):
+        value = safe_int(sync_progress.get(key), -1)
+        if value >= 0:
+            values.append(value)
+    progress_nodes = sync_progress.get("nodes") if isinstance(sync_progress.get("nodes"), dict) else {}
+    for info in progress_nodes.values():
+        if not isinstance(info, dict):
+            continue
+        for key in ("remaining_blocks", "peer_ahead_blocks"):
+            value = safe_int(info.get(key), -1)
+            if value >= 0:
+                values.append(value)
+    for info in node_details.values():
+        if not isinstance(info, dict):
+            continue
+        for key in ("remaining_blocks", "peer_ahead_blocks"):
+            value = safe_int(info.get(key), -1)
+            if value >= 0:
+                values.append(value)
+    if isinstance(selected_source_health, Mapping):
+        value = safe_int(selected_source_health.get("node_p2p_best_peer_lead_blocks"), -1)
+        if value >= 0:
+            values.append(value)
+    return max(values) if values else 0
+
+
+def catchup_io_pressure_reasons(host_pressure: Mapping[str, Any] | None) -> list[str]:
+    if not isinstance(host_pressure, Mapping):
+        return []
+    reasons: list[str] = []
+    iowait = safe_float(host_pressure.get("iowait_percent"))
+    io_some = safe_float(host_pressure.get("io_some_avg10"))
+    io_full = safe_float(host_pressure.get("io_full_avg10"))
+    if bool(host_pressure.get("iowait_warning_active")):
+        reasons.append("sustained_iowait_warning")
+    if iowait is not None and iowait >= CATCHUP_IOWAIT_WARN_PERCENT:
+        reasons.append(f"iowait_percent={iowait:.2f}>={CATCHUP_IOWAIT_WARN_PERCENT:.2f}")
+    if io_some is not None and io_some >= CATCHUP_IO_SOME_AVG10_WARN:
+        reasons.append(f"io_some_avg10={io_some:.2f}>={CATCHUP_IO_SOME_AVG10_WARN:.2f}")
+    if io_full is not None and io_full >= CATCHUP_IO_FULL_AVG10_WARN:
+        reasons.append(f"io_full_avg10={io_full:.2f}>={CATCHUP_IO_FULL_AVG10_WARN:.2f}")
+    return reasons
+
+
+def build_catchup_policy(
+    sync_progress: Mapping[str, Any],
+    node_details: Mapping[str, Any],
+    containers: Mapping[str, Any],
+    selected_source_health: Mapping[str, Any] | None = None,
+    host_pressure: Mapping[str, Any] | None = None,
+    mining_ready: bool | None = None,
+) -> dict[str, Any]:
+    lag = max_catchup_lag_blocks(sync_progress, node_details, selected_source_health)
+    status = str(sync_progress.get("status") or "").lower()
+    peer_catchup = lag > 0
+    io_pressure_reasons = catchup_io_pressure_reasons(host_pressure)
+    backend_unready_reasons = selected_backend_unready_reasons(selected_source_health or {})
+    mining_ready_for_policy = bool(mining_ready) if mining_ready is not None else not bool(
+        backend_unready_reasons
+    )
+    backend_unready_under_pressure = bool(
+        io_pressure_reasons
+        and backend_unready_reasons
+        and not mining_ready_for_policy
+    )
+    io_pressure_active = bool(
+        CATCHUP_IO_PRESSURE_PAUSE_ENABLED
+        and io_pressure_reasons
+        and not mining_ready_for_policy
+        and ((peer_catchup and lag >= CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS) or backend_unready_under_pressure)
+    )
+    lag_threshold_active = bool(lag > CATCHUP_PAUSE_THRESHOLD_BLOCKS and (status != "synced" or not mining_ready_for_policy))
+    active = bool(CATCHUP_PAUSE_ENABLED and (io_pressure_active or lag_threshold_active))
+    pool_running = bool((containers.get(POOL_CONTAINER) or {}).get("running")) if isinstance(containers, Mapping) else False
+    trigger = ("io_pressure" if io_pressure_active else ("lag_threshold" if lag_threshold_active else "")) if active else ""
+    summary = (
+        (
+            f"catch-up pause active: chain node is I/O-bound while {lag} blocks behind peers; "
+            "mining work is intentionally paused"
+            if lag > 0
+            else "catch-up pause active: backend is not ready while the host is I/O-bound; mining work is intentionally paused"
+        )
+        if trigger == "io_pressure"
+        else (
+            f"catch-up pause active: chain node is {lag} blocks behind peers "
+            f"(threshold {CATCHUP_PAUSE_THRESHOLD_BLOCKS}); mining work is intentionally paused"
+        )
+        if active
+        else ""
+    )
+    user_message = (
+        "The pool is deliberately prioritizing chain catch-up because the node is I/O-bound while behind peers. "
+        "Mining/template work is paused so disk, CPU, and network capacity go to block import instead of stale jobs. "
+        "Leave miners configured for this pool; they are not the problem while this state is active."
+        if trigger == "io_pressure" and lag > 0
+        else (
+            "The pool is deliberately pausing mining/template work because the backend is not ready while the host "
+            "is I/O-bound. This prevents miners from hammering stale or invalid work. Leave miners configured for "
+            "this pool; they are not the problem while this state is active."
+            if trigger == "io_pressure"
+            else (
+                "The pool is deliberately prioritizing chain catch-up. Mining/template work is paused so the "
+                "node can spend disk, CPU, and network capacity importing blocks instead of handing stale jobs "
+                "to miners. Leave miners configured for this pool; they are not the problem while this state is active."
+                if active
+                else ""
+            )
+        )
+    )
+    if not active:
+        next_step = ""
+    elif trigger == "io_pressure":
+        next_step = (
+            "The sampler will allow mining again when I/O pressure drops, peer lag is inside the safe window, "
+            "and backend template checks are ready."
+        )
+    else:
+        next_step = (
+            f"The sampler will allow mining again when peer lag is at or below "
+            f"{CATCHUP_PAUSE_THRESHOLD_BLOCKS} blocks and backend template checks are ready."
+        )
+    return {
+        "enabled": CATCHUP_PAUSE_ENABLED,
+        "active": active,
+        "trigger": trigger,
+        "lag_blocks": lag,
+        "threshold_blocks": CATCHUP_PAUSE_THRESHOLD_BLOCKS,
+        "io_pressure_pause_enabled": CATCHUP_IO_PRESSURE_PAUSE_ENABLED,
+        "io_pressure_active": io_pressure_active,
+        "io_pressure_reasons": io_pressure_reasons,
+        "io_pressure_min_lag_blocks": CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS,
+        "io_pressure_iowait_warn_percent": CATCHUP_IOWAIT_WARN_PERCENT,
+        "io_pressure_io_some_avg10_warn": CATCHUP_IO_SOME_AVG10_WARN,
+        "io_pressure_io_full_avg10_warn": CATCHUP_IO_FULL_AVG10_WARN,
+        "mining_ready": mining_ready_for_policy,
+        "backend_unready_under_pressure": backend_unready_under_pressure,
+        "backend_unready_reasons": backend_unready_reasons,
+        "lag_threshold_active": lag_threshold_active,
+        "pool_pause_recommended": active,
+        "pool_pause_active": bool(active and not pool_running),
+        "pool_running": pool_running,
+        "node_cache_target_mb": CATCHUP_NODE_CACHE_MB,
+        "summary": summary,
+        "user_message": user_message,
+        "next_step": next_step,
+    }
+
+
 def collect_status(include_logs: bool = True) -> dict[str, Any]:
     ensure_runtime()
     docker_error = docker_access_error()
@@ -5105,6 +5281,24 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         if isinstance(pool_metrics.get("selected_backend_source_health"), dict)
         else {}
     )
+    selected_source_peer_lead_blocks = safe_int(
+        selected_source_health.get("node_p2p_best_peer_lead_blocks"),
+        0,
+    )
+    if selected_source_peer_lead_blocks > 0:
+        if len(NODES) == 1:
+            node_details.setdefault(NODES[0], {})
+            node_details[NODES[0]]["peer_ahead_blocks"] = max(
+                safe_int(node_details[NODES[0]].get("peer_ahead_blocks"), 0),
+                selected_source_peer_lead_blocks,
+            )
+            node_details[NODES[0]]["peer_ahead_blocks_source"] = (
+                "pool_rpc_backend_node_health_p2p_best_peer_lead_blocks"
+            )
+        add_sync_warning(
+            "selected pool backend is still catching up by "
+            f"{selected_source_peer_lead_blocks} blocks according to pool backend health"
+        )
     pool["source_job_health"] = source_job_health
     pool["source_backend_health"] = source_backend_health
     pool["selected_backend_source_health"] = selected_source_health
@@ -5238,18 +5432,12 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     )
     source_job_health_ok_raw = source_job_health.get("ok") if isinstance(source_job_health, dict) else None
     source_job_health_ok = None if source_job_health_ok_raw is None else bool(source_job_health_ok_raw)
-    selected_source_checks = []
-    if isinstance(selected_source_health, dict):
-        for key in ("node_mineable", "node_submit_ready", "node_p2p_mining_fresh"):
-            if key in selected_source_health:
-                selected_source_checks.append(bool(selected_source_health.get(key)))
-        if selected_source_health.get("node_last_template_build_error_blocking") is True:
-            selected_source_checks.append(False)
-    selected_source_degraded = bool(selected_source_checks and not all(selected_source_checks))
+    selected_source_unready_reasons = selected_backend_unready_reasons(selected_source_health)
+    selected_source_degraded = bool(selected_source_unready_reasons)
     source_job_hard_degraded = bool(source_job_health_ok is False and not pool_has_recent_paid_work)
-    source_selected_backend_hard_degraded = bool(selected_source_degraded and not pool_has_recent_paid_work)
+    source_selected_backend_hard_degraded = bool(selected_source_degraded)
     source_health_transient_degraded = bool(
-        (source_job_health_ok is False or selected_source_degraded)
+        source_job_health_ok is False
         and pool_has_recent_paid_work
     )
     pool["source_job_health_ok"] = source_job_health_ok
@@ -5326,7 +5514,10 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         add_maintenance_warning("pool source job health is advisory-degraded while accepted block submission remains fresh")
     if connected_miners > 0 and source_selected_backend_hard_degraded:
         backend = pool.get("selected_backend") or "selected backend"
-        add_sync_warning(f"pool source health says {backend} is not mineable/submit-ready and accepted block submission is stale")
+        add_sync_warning(
+            f"pool source health says {backend} is not ready for mining "
+            f"({', '.join(selected_source_unready_reasons)})"
+        )
     elif connected_miners > 0 and source_health_transient_degraded:
         backend = pool.get("selected_backend") or "selected backend"
         add_maintenance_warning(f"pool source health says {backend} is degraded, but accepted block submission remains fresh")
@@ -5497,6 +5688,38 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         node_details[node]["chain_rpc_timeout_seconds"] = progress.get("chain_rpc_timeout_seconds")
         node_details[node]["chain_rpc_retry_limit"] = progress.get("chain_rpc_retry_limit")
         node_details[node]["chain_rpc_error"] = progress.get("chain_rpc_error") or progress.get("error") or ""
+    catchup_mining_ready = bool(
+        sync_progress.get("status") == "synced"
+        and not selected_source_unready_reasons
+        and source_job_health_ok is not False
+        and not pool.get("initial_download")
+    )
+    catchup_policy = build_catchup_policy(
+        sync_progress,
+        node_details,
+        containers,
+        selected_source_health,
+        host_pressure,
+        mining_ready=catchup_mining_ready,
+    )
+    if catchup_policy.get("active"):
+        pool_down_message = f"{POOL_CONTAINER} is not running"
+        stack_failures = [item for item in stack_failures if item != pool_down_message]
+        failures = stack_failures + blocking_miner_failures
+        summary = str(catchup_policy.get("summary") or "")
+        if summary:
+            warnings = [item for item in warnings if item != summary]
+            sync_warnings = [item for item in sync_warnings if item != summary]
+            warnings.insert(0, summary)
+            sync_warnings.insert(0, summary)
+        sync_health["catchup_pause_active"] = True
+        sync_health["catchup_pause_threshold_blocks"] = catchup_policy.get("threshold_blocks")
+        sync_health["catchup_pause_lag_blocks"] = catchup_policy.get("lag_blocks")
+        sync_health["catchup_pause_pool_stopped"] = catchup_policy.get("pool_pause_active")
+        pool["catchup_pause_active"] = True
+        pool["catchup_pause_reason"] = summary
+        pool_health["catchup_pause_active"] = True
+        pool_health["catchup_pause_reason"] = summary
     no_miner_node_only = bool(
         connected_miners == 0
         and managed_miners == 0
@@ -5563,7 +5786,13 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         if len(reason_items) > 3:
             status_reason += f"; +{len(reason_items) - 3} more"
 
-    mode = "mining" if connected_miners > 0 else ("sync_only_no_miners" if no_miner_sync_only else "ready_no_miners")
+    mode = (
+        "catchup_pause"
+        if catchup_policy.get("active")
+        else "mining"
+        if connected_miners > 0
+        else ("sync_only_no_miners" if no_miner_sync_only else "ready_no_miners")
+    )
     can_accept_shares = bool(connected_miners > 0 and containers.get(POOL_CONTAINER, {}).get("running") and not failures)
     can_submit_blocks = bool(can_accept_shares and not pool_health.get("needs_fast_repair") and not sync_warnings)
     can_mine = bool(can_accept_shares and can_submit_blocks)
@@ -5607,6 +5836,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "sync_progress": sync_progress,
         "sync_health": sync_health,
         "sync_coordinator": sync_coordinator,
+        "catchup_policy": catchup_policy,
         "rpc_template_health": template_probe_health,
         "pool": pool,
         "pool_metrics": pool_metrics,
