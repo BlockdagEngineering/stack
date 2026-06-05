@@ -4847,20 +4847,22 @@ def build_catchup_policy(
         and backend_unready_reasons
         and not mining_ready_for_policy
     )
+    lag_threshold_met = bool(lag >= CATCHUP_PAUSE_THRESHOLD_BLOCKS)
+    io_pressure_lag_observed = bool(peer_catchup and lag >= CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS)
+    catchup_churn_detected = bool(backend_unready_under_pressure and io_pressure_lag_observed)
     io_pressure_active = bool(
         CATCHUP_IO_PRESSURE_PAUSE_ENABLED
-        and io_pressure_reasons
-        and not mining_ready_for_policy
-        and ((peer_catchup and lag >= CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS) or backend_unready_under_pressure)
+        and catchup_churn_detected
+        and lag_threshold_met
     )
-    lag_threshold_active = bool(lag > CATCHUP_PAUSE_THRESHOLD_BLOCKS and (status != "synced" or not mining_ready_for_policy))
+    lag_threshold_active = bool(lag_threshold_met and (status != "synced" or not mining_ready_for_policy))
     active = bool(CATCHUP_PAUSE_ENABLED and (io_pressure_active or lag_threshold_active))
     pool_running = bool((containers.get(POOL_CONTAINER) or {}).get("running")) if isinstance(containers, Mapping) else False
     trigger = ("io_pressure" if io_pressure_active else ("lag_threshold" if lag_threshold_active else "")) if active else ""
     summary = (
         (
             f"catch-up pause active: chain node is I/O-bound while {lag} blocks behind peers; "
-            "mining work is intentionally paused"
+            "backend churn is detected and mining work is intentionally paused"
             if lag > 0
             else "catch-up pause active: backend is not ready while the host is I/O-bound; mining work is intentionally paused"
         )
@@ -4873,7 +4875,8 @@ def build_catchup_policy(
         else ""
     )
     user_message = (
-        "The pool is deliberately prioritizing chain catch-up because the node is I/O-bound while behind peers. "
+        "The pool is deliberately prioritizing chain catch-up because backend churn is detected while the node "
+        "is I/O-bound and behind peers. "
         "Mining/template work is paused so disk, CPU, and network capacity go to block import instead of stale jobs. "
         "Leave miners configured for this pool; they are not the problem while this state is active."
         if trigger == "io_pressure" and lag > 0
@@ -4895,12 +4898,12 @@ def build_catchup_policy(
         next_step = ""
     elif trigger == "io_pressure":
         next_step = (
-            "The sampler will allow mining again when I/O pressure drops, peer lag is inside the safe window, "
+            "The sampler will allow mining again when I/O pressure drops, peer lag is below the pause threshold, "
             "and backend template checks are ready."
         )
     else:
         next_step = (
-            f"The sampler will allow mining again when peer lag is at or below "
+            f"The sampler will allow mining again when peer lag is below "
             f"{CATCHUP_PAUSE_THRESHOLD_BLOCKS} blocks and backend template checks are ready."
         )
     return {
@@ -4919,6 +4922,8 @@ def build_catchup_policy(
         "mining_ready": mining_ready_for_policy,
         "backend_unready_under_pressure": backend_unready_under_pressure,
         "backend_unready_reasons": backend_unready_reasons,
+        "catchup_churn_detected": catchup_churn_detected,
+        "lag_threshold_met": lag_threshold_met,
         "lag_threshold_active": lag_threshold_active,
         "pool_pause_recommended": active,
         "pool_pause_active": bool(active and not pool_running),

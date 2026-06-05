@@ -526,16 +526,20 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         policy.get("backend_unready_under_pressure")
         or (io_pressure_reasons and backend_unready_reasons and not mining_ready)
     )
+    lag_threshold_met = bool(lag >= threshold)
+    io_pressure_lag_observed = bool(lag >= io_min_lag)
+    catchup_churn_detected = bool(
+        policy.get("catchup_churn_detected")
+        or (backend_unready_under_pressure and io_pressure_lag_observed)
+    )
     io_pressure_active = bool(
         io_pressure_enabled
-        and io_pressure_reasons
-        and not mining_ready
-        and (lag >= io_min_lag or backend_unready_under_pressure)
+        and catchup_churn_detected
+        and lag_threshold_met
     )
-    lag_threshold_active = bool(lag > threshold and (not chain_ready_for_mining(payload) or not mining_ready))
-    active = bool(policy.get("active")) if "active" in policy else False
-    if not active:
-        active = bool(CATCHUP_PAUSE_ENABLED and (io_pressure_active or lag_threshold_active))
+    lag_threshold_active = bool(lag_threshold_met and (not chain_ready_for_mining(payload) or not mining_ready))
+    pause_enabled = bool(policy.get("enabled", CATCHUP_PAUSE_ENABLED))
+    active = bool(pause_enabled and (io_pressure_active or lag_threshold_active))
     trigger = str(policy.get("trigger") or "")
     if not trigger and active:
         trigger = "io_pressure" if io_pressure_active else "lag_threshold"
@@ -543,7 +547,7 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         trigger = ""
     return {
         **policy,
-        "enabled": bool(policy.get("enabled", CATCHUP_PAUSE_ENABLED)),
+        "enabled": pause_enabled,
         "active": active,
         "trigger": trigger,
         "lag_blocks": lag,
@@ -554,6 +558,8 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "io_pressure_min_lag_blocks": io_min_lag,
         "backend_unready_under_pressure": backend_unready_under_pressure,
         "backend_unready_reasons": backend_unready_reasons,
+        "catchup_churn_detected": catchup_churn_detected,
+        "lag_threshold_met": lag_threshold_met,
         "lag_threshold_active": lag_threshold_active,
         "mining_ready": mining_ready,
     }

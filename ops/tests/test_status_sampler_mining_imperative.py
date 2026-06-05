@@ -367,6 +367,36 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertFalse(policy["io_pressure_active"])
         self.assertFalse(policy["backend_unready_under_pressure"])
 
+    def test_backend_churn_below_threshold_does_not_create_pause(self) -> None:
+        payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=80)
+        payload["catchup_policy"] = {
+            "backend_unready_reasons": ["mineable=false", "submit_ready=false"],
+            "mining_ready": False,
+        }
+        payload["host_pressure"] = {
+            "iowait_percent": 22.0,
+            "io_some_avg10": 28.0,
+            "io_full_avg10": 23.0,
+        }
+
+        policy = status_sampler.catchup_policy_from_payload(payload)
+
+        self.assertFalse(policy["active"])
+        self.assertFalse(policy["io_pressure_active"])
+        self.assertFalse(policy["lag_threshold_met"])
+        self.assertTrue(policy["backend_unready_under_pressure"])
+        self.assertTrue(policy["catchup_churn_detected"])
+
+    def test_catchup_policy_from_payload_pauses_at_300_blocks(self) -> None:
+        payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=300)
+
+        policy = status_sampler.catchup_policy_from_payload(payload)
+
+        self.assertTrue(policy["active"])
+        self.assertEqual(policy["trigger"], "lag_threshold")
+        self.assertEqual(policy["lag_blocks"], 300)
+        self.assertTrue(policy["lag_threshold_met"])
+
     def test_reenables_guard_timer_when_it_drifts_disabled(self) -> None:
         commands = []
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = ["bdag-stack-sentinel.timer"]

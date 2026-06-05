@@ -12,6 +12,32 @@ import pool_ops  # noqa: E402
 
 
 class PoolEfficiencyLossLedgerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.originals = {
+            name: getattr(pool_ops, name)
+            for name in (
+                "CATCHUP_PAUSE_ENABLED",
+                "CATCHUP_PAUSE_THRESHOLD_BLOCKS",
+                "CATCHUP_IO_PRESSURE_PAUSE_ENABLED",
+                "CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS",
+                "CATCHUP_IOWAIT_WARN_PERCENT",
+                "CATCHUP_IO_SOME_AVG10_WARN",
+                "CATCHUP_IO_FULL_AVG10_WARN",
+            )
+        }
+        self.addCleanup(self.restore_globals)
+        pool_ops.CATCHUP_PAUSE_ENABLED = True
+        pool_ops.CATCHUP_PAUSE_THRESHOLD_BLOCKS = 300
+        pool_ops.CATCHUP_IO_PRESSURE_PAUSE_ENABLED = True
+        pool_ops.CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS = 25
+        pool_ops.CATCHUP_IOWAIT_WARN_PERCENT = 15.0
+        pool_ops.CATCHUP_IO_SOME_AVG10_WARN = 20.0
+        pool_ops.CATCHUP_IO_FULL_AVG10_WARN = 10.0
+
+    def restore_globals(self) -> None:
+        for name, value in self.originals.items():
+            setattr(pool_ops, name, value)
+
     def test_loss_ledger_flags_block_share_and_template_waste(self) -> None:
         ledger = pool_ops.build_pool_efficiency_loss_ledger(
             block_submit_outcomes=Counter(
@@ -79,9 +105,9 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
             ],
         )
 
-    def test_catchup_policy_pauses_pool_above_threshold(self) -> None:
+    def test_catchup_policy_pauses_pool_at_threshold(self) -> None:
         policy = pool_ops.build_catchup_policy(
-            {"status": "syncing", "remaining_blocks": 450},
+            {"status": "syncing", "remaining_blocks": 300},
             {"node": {"peer_ahead_blocks": 20}},
             {"pool": {"running": False}},
             {},
@@ -90,14 +116,16 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
         self.assertTrue(policy["active"])
         self.assertTrue(policy["pool_pause_active"])
         self.assertEqual(policy["threshold_blocks"], 300)
+        self.assertEqual(policy["lag_blocks"], 300)
+        self.assertTrue(policy["lag_threshold_met"])
         self.assertIn("mining work is intentionally paused", policy["summary"])
         self.assertIn("Leave miners configured", policy["user_message"])
         self.assertEqual(policy["trigger"], "lag_threshold")
 
     def test_catchup_policy_uses_io_pressure_as_primary_trigger(self) -> None:
         policy = pool_ops.build_catchup_policy(
-            {"status": "syncing", "remaining_blocks": 80},
-            {"node": {"peer_ahead_blocks": 80}},
+            {"status": "syncing", "remaining_blocks": 450},
+            {"node": {"peer_ahead_blocks": 450}},
             {"pool": {"running": True}},
             {"node_mineable": False, "node_submit_ready": False},
             {"iowait_percent": 18.0, "io_some_avg10": 22.0, "io_full_avg10": 23.0},
@@ -107,11 +135,29 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
         self.assertTrue(policy["active"])
         self.assertEqual(policy["trigger"], "io_pressure")
         self.assertTrue(policy["io_pressure_active"])
-        self.assertFalse(policy["lag_threshold_active"])
-        self.assertEqual(policy["lag_blocks"], 80)
+        self.assertTrue(policy["lag_threshold_active"])
+        self.assertEqual(policy["lag_blocks"], 450)
+        self.assertTrue(policy["catchup_churn_detected"])
         self.assertIn("I/O-bound", policy["summary"])
         self.assertIn("I/O pressure drops", policy["next_step"])
         self.assertTrue(any("io_full_avg10" in reason for reason in policy["io_pressure_reasons"]))
+
+    def test_catchup_policy_records_churn_below_pause_threshold_without_pausing(self) -> None:
+        policy = pool_ops.build_catchup_policy(
+            {"status": "syncing", "remaining_blocks": 80},
+            {"node": {"peer_ahead_blocks": 80}},
+            {"pool": {"running": True}},
+            {"node_mineable": False, "node_submit_ready": False},
+            {"iowait_percent": 18.0, "io_some_avg10": 22.0, "io_full_avg10": 23.0},
+            mining_ready=False,
+        )
+
+        self.assertFalse(policy["active"])
+        self.assertFalse(policy["io_pressure_active"])
+        self.assertFalse(policy["lag_threshold_met"])
+        self.assertTrue(policy["backend_unready_under_pressure"])
+        self.assertTrue(policy["catchup_churn_detected"])
+        self.assertEqual(policy["lag_blocks"], 80)
 
     def test_catchup_policy_uses_backend_peer_lead_when_sync_claims_synced(self) -> None:
         policy = pool_ops.build_catchup_policy(
@@ -122,7 +168,7 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
                 "node_mineable": False,
                 "node_submit_ready": False,
                 "node_p2p_mining_fresh": True,
-                "node_p2p_best_peer_lead_blocks": 80,
+                "node_p2p_best_peer_lead_blocks": 450,
             },
             {"io_full_avg10": 23.0},
             mining_ready=False,
@@ -130,9 +176,10 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
 
         self.assertTrue(policy["active"])
         self.assertEqual(policy["trigger"], "io_pressure")
-        self.assertEqual(policy["lag_blocks"], 80)
+        self.assertEqual(policy["lag_blocks"], 450)
+        self.assertTrue(policy["catchup_churn_detected"])
 
-    def test_catchup_policy_pauses_backend_unready_under_io_pressure_without_lag(self) -> None:
+    def test_catchup_policy_does_not_pause_backend_unready_under_io_pressure_without_lag(self) -> None:
         policy = pool_ops.build_catchup_policy(
             {"status": "synced", "remaining_blocks": 0},
             {"node": {}},
@@ -142,12 +189,14 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
             mining_ready=False,
         )
 
-        self.assertTrue(policy["active"])
-        self.assertEqual(policy["trigger"], "io_pressure")
+        self.assertFalse(policy["active"])
+        self.assertEqual(policy["trigger"], "")
         self.assertEqual(policy["lag_blocks"], 0)
         self.assertTrue(policy["backend_unready_under_pressure"])
-        self.assertIn("backend is not ready", policy["summary"])
-        self.assertIn("stale or invalid work", policy["user_message"])
+        self.assertFalse(policy["catchup_churn_detected"])
+        self.assertFalse(policy["lag_threshold_met"])
+        self.assertEqual(policy["summary"], "")
+        self.assertEqual(policy["user_message"], "")
 
 
 class PoolPrometheusMetricsParsingTests(unittest.TestCase):
