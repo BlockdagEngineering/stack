@@ -102,9 +102,6 @@ jobs:
           env "${common_env[@]}" go build -trimpath \
             -ldflags="-X github.com/BlockdagNetworkLabs/bdag/version.Build=release-${BUILD_REF}" \
             -o ../../bin/nodeworker ./cmd/nodeworker
-          env "${common_env[@]}" go build -trimpath \
-            -ldflags="-X github.com/BlockdagNetworkLabs/bdag/version.Build=release-${BUILD_REF}" \
-            -o ../../bin/fastsnap ./cmd/fastsnap
 
       - name: Build mining-pool
         shell: bash
@@ -124,7 +121,7 @@ jobs:
           cp -f ./build/bin/dashboard-api ../../bin/dashboard-api
 
       - name: Ensure executables
-        run: chmod +x bin/blockdag-node bin/nodeworker bin/fastsnap bin/mining-pool bin/dashboard-api
+        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api
 
       - name: Verify release architecture
         shell: bash
@@ -132,14 +129,13 @@ jobs:
           scripts/verify-release-architecture.py --target "${{ matrix.target }}" \
             bin/blockdag-node \
             bin/nodeworker \
-            bin/fastsnap \
             bin/mining-pool \
             bin/dashboard-api
 
       - name: Generate checksums
         shell: bash
         run: |
-          sha256sum bin/blockdag-node bin/nodeworker bin/fastsnap bin/mining-pool bin/dashboard-api > checksums.txt
+          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api > checksums.txt
 
       - name: Validate compose (pool Dockerfile)
         shell: bash

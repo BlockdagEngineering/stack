@@ -140,8 +140,6 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
             ],
             candidates.peers,
         )
-        self.assertEqual("p2p-latency", update_local_peers.normalize_peer_ordering("1"))
-        self.assertEqual("p2p-latency", update_local_peers.normalize_peer_ordering("tiered-latency"))
 
     def test_single_active_node_does_not_add_itself_as_a_peer(self) -> None:
         peers = [

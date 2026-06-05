@@ -462,13 +462,13 @@ BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS = env_float(
 BACKGROUND_MAINTENANCE_LAZY_TASKS = set(
     split_env_list(
         "BDAG_BACKGROUND_MAINTENANCE_LAZY_TASKS",
-        "rawdatadir_sidecar,rawdatadir_publish,ipfs_content_sidecar,ipfs_segment_writer",
+        "",
     )
 )
 BACKGROUND_MAINTENANCE_POOL_READY_TASKS = set(
     split_env_list(
         "BDAG_BACKGROUND_MAINTENANCE_POOL_READY_TASKS",
-        "rawdatadir_sidecar,rawdatadir_publish,ipfs_content_sidecar,ipfs_segment_writer",
+        "",
     )
 )
 BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN = env_float(

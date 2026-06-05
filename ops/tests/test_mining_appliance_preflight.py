@@ -52,9 +52,6 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             {
                 "BDAG_NODE_CACHE_MB": "4096",
                 "NODE_MAX_PEERS": "512",
-                "BDAG_FASTSYNC_PREPROCESS_WORKERS": "4",
-                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
-                "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": "0",
                 "BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS": "3600",
                 "BDAG_STATUS_SAMPLER_ENABLED": "0",
                 "BDAG_ADAPTIVE_CONCURRENCY_ENABLED": "0",
@@ -67,87 +64,12 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         self.assertIn("active_node_topology", passes)
         self.assertIn("node_cache_budget", warnings)
         self.assertIn("peer_budget", warnings)
-        self.assertIn("fastsync_preprocess_workers", warnings)
-        self.assertIn("fastartifactsync", warnings)
-        self.assertIn("fastsync_acceleration", warnings)
-        self.assertIn("fastsync_restart_cooldown", warnings)
+        self.assertIn("sync_restart_cooldown", warnings)
         self.assertIn("status_sampler", warnings)
         self.assertIn("adaptive_concurrency", warnings)
         self.assertIn("entrypoint_chown_mode", warnings)
 
-    def test_constrained_mining_profile_accepts_disabled_fastartifact_startup_flag(self) -> None:
-        profile = preflight.HostProfile(
-            os_name="linux",
-            arch="aarch64",
-            cpu_count=4,
-            memory_bytes=8 * preflight.GIB,
-            profile="constrained",
-            kernel="test",
-        )
-        checks = []
-        preflight.check_env_defaults(
-            checks,
-            {
-                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
-                "BDAG_STORAGE_PROFILE": "usb-chain-internal-runtime",
-                "BDAG_DETECTED_NETWORK_TOPOLOGY": "asic-router",
-                "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": "1",
-            },
-            profile,
-        )
-
-        statuses = {check.name: check.status for check in checks}
-        self.assertEqual(statuses["fastartifactsync"], "pass")
-
-    def test_constrained_mining_profile_rejects_fastartifact_append_override(self) -> None:
-        profile = preflight.HostProfile(
-            os_name="linux",
-            arch="aarch64",
-            cpu_count=4,
-            memory_bytes=8 * preflight.GIB,
-            profile="constrained",
-            kernel="test",
-        )
-        checks = []
-        preflight.check_env_defaults(
-            checks,
-            {
-                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
-                "BDAG_STORAGE_PROFILE": "single-usb-constrained",
-                "BDAG_DETECTED_NETWORK_TOPOLOGY": "asic-router",
-                "NODE_ARGS_APPEND": "--fastartifactsync",
-            },
-            profile,
-        )
-
-        found = {check.name: check for check in checks}
-        self.assertEqual(found["fastartifactsync"].status, "fail")
-
-    def test_constrained_mining_profile_accepts_no_fastsync_serve_policy(self) -> None:
-        profile = preflight.HostProfile(
-            os_name="linux",
-            arch="aarch64",
-            cpu_count=4,
-            memory_bytes=8 * preflight.GIB,
-            profile="constrained",
-            kernel="test",
-        )
-        checks = []
-        preflight.check_env_defaults(
-            checks,
-            {
-                "SYNC_SOURCE_NODE": "0",
-                "BDAG_FASTARTIFACTSYNC_ENABLED": "1",
-                "BDAG_STORAGE_PROFILE": "single-usb-constrained",
-                "BDAG_DETECTED_NETWORK_TOPOLOGY": "asic-router",
-            },
-            profile,
-        )
-
-        found = {check.name: check for check in checks}
-        self.assertEqual(found["fastartifactsync"].status, "pass")
-
-    def test_sync_source_zero_does_not_make_single_device_receiver_constrained(self) -> None:
+    def test_sync_source_zero_does_not_make_single_device_profile_constrained(self) -> None:
         profile = preflight.HostProfile(
             os_name="linux",
             arch="x86_64",
@@ -161,50 +83,13 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             checks,
             {
                 "SYNC_SOURCE_NODE": "0",
-                "BDAG_NO_FASTSYNC_SERVE": "auto",
-                "BDAG_FASTARTIFACTSYNC_ENABLED": "1",
                 "BDAG_STORAGE_PROFILE": "single-device",
-                "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": "1",
             },
             profile,
         )
 
         found = {check.name: check for check in checks}
-        self.assertEqual(found["fastartifactsync"].status, "pass")
-        self.assertEqual(found["fastartifactsync"].detail, "Fast Artifact Sync V2 startup flag is enabled")
-
-    def test_usb_chain_mining_source_rejects_sync_source_node(self) -> None:
-        old_mount_info = preflight.mount_info
-        old_is_usb_source = preflight.is_usb_source
-
-        def fake_mount_info(path: Path) -> dict[str, str]:
-            value = str(path)
-            if value.startswith("/mnt/usb"):
-                return {"target": "/mnt/usb", "source": "/dev/sda1", "fstype": "f2fs", "options": "rw,noatime,lazytime"}
-            return {"target": "/", "source": "/dev/mmcblk0p2", "fstype": "ext4", "options": "rw,relatime"}
-
-        try:
-            preflight.mount_info = fake_mount_info
-            preflight.is_usb_source = lambda source: source.startswith("/dev/sda")
-            profile = preflight.HostProfile("linux", "aarch64", 4, 8 * preflight.GIB, "constrained", "test")
-            checks = []
-            preflight.check_storage(
-                checks,
-                Path("/opt/blockdag-pool"),
-                {
-                    "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
-                    "BDAG_NETWORK_TOPOLOGY": "asic-router",
-                    "SYNC_SOURCE_NODE": "1",
-                    "MINING_ADDRESS": "0x1111111111111111111111111111111111111111",
-                },
-                profile,
-            )
-        finally:
-            preflight.mount_info = old_mount_info
-            preflight.is_usb_source = old_is_usb_source
-
-        found = {check.name: check for check in checks}
-        self.assertEqual(found["usb_mining_fastsync_serving"].status, "fail")
+        self.assertEqual(found["active_node_topology"].status, "pass")
 
     def test_active_node_data_layout_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -443,30 +328,6 @@ class MiningAppliancePreflightTest(unittest.TestCase):
 
         found = {check.name: check.status for check in checks}
         self.assertEqual(found["ephemeral_tmpfs"], "warn")
-
-    def test_fastsnap_large_staging_on_tmpfs_warns(self) -> None:
-        old_mount_info = preflight.mount_info
-        old_is_usb_source = preflight.is_usb_source
-
-        def fake_mount_info(path: Path) -> dict[str, str]:
-            return {"target": "/run", "source": "tmpfs", "fstype": "tmpfs", "options": "rw,nosuid,nodev"}
-
-        try:
-            preflight.mount_info = fake_mount_info
-            preflight.is_usb_source = lambda source: False
-            checks = []
-            preflight.check_ephemeral_storage(
-                checks,
-                Path("/opt/blockdag-pool"),
-                {"BDAG_EPHEMERAL_DIR": "/run/bdag-pool", "BDAG_FASTSNAP_DIRECTORY_STAGING": "/run/bdag-pool/staging"},
-            )
-        finally:
-            preflight.mount_info = old_mount_info
-            preflight.is_usb_source = old_is_usb_source
-
-        found = {check.name: check.status for check in checks}
-        self.assertEqual(found["ephemeral_tmpfs"], "pass")
-        self.assertEqual(found["fastsnap_staging_tmpfs"], "warn")
 
     def test_disk_io_guard_warns_for_tmpfs_build_tmpdir_and_large_cache(self) -> None:
         old_disk_usage = preflight.disk_usage

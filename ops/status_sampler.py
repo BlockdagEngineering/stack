@@ -73,37 +73,11 @@ MINING_IMPERATIVE_MINER_TRACKING_REPAIR_ENABLED = env_bool(
     "BDAG_MINING_IMPERATIVE_MINER_TRACKING_REPAIR_ENABLED",
     True,
 )
-MINING_IMPERATIVE_CONSTRAINED_FASTARTIFACT_REPAIR_ENABLED = env_bool(
-    "BDAG_MINING_IMPERATIVE_CONSTRAINED_FASTARTIFACT_REPAIR_ENABLED",
-    True,
-)
 MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED = env_bool(
     "BDAG_MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED",
     True,
 )
-MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED = env_bool(
-    "BDAG_MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED",
-    True,
-)
-CONSTRAINED_FASTARTIFACT_TOPOLOGIES = {
-    item.lower()
-    for item in split_env_list(
-        "BDAG_CONSTRAINED_FASTARTIFACT_TOPOLOGIES",
-        "asic-router",
-    )
-}
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
-CONSTRAINED_FASTARTIFACT_STORAGE_PROFILES = {
-    item.lower()
-    for item in split_env_list(
-        "BDAG_CONSTRAINED_FASTARTIFACT_STORAGE_PROFILES",
-        "usb-chain-internal-runtime",
-    )
-}
-FASTSYNC_PEER_QUARANTINE_ENV_KEYS = split_env_list(
-    "BDAG_MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENV_KEYS",
-    "NODE1_PEER_ADDRESSES,BDAG_FASTSYNC_PEERS,BOOTSTRAP_PEER_ADDRESSES",
-)
 NODE_MINING_REQUIRED_BOOL_FLAGS = (
     "--allowminingwhennearlysynced",
     "--allowsubmitwhennotsynced",
@@ -268,7 +242,7 @@ def node_mining_runtime_args(address: str) -> str:
         *NODE_MINING_REQUIRED_BOOL_FLAGS,
         f"--miningaddr={address}",
     ]
-    if constrained_fastartifact_profile():
+    if constrained_storage_profile():
         # A USB-backed ASIC router should mine and relay blocks, not serve as a
         # catch-up source for other peers while it is trying to convert shares
         # into accepted blocks. Keep one inbound slot because this node build
@@ -283,7 +257,7 @@ def node_mining_args_have_required_submit_guards(args: str, address: str) -> boo
     for flag in NODE_MINING_REQUIRED_BOOL_FLAGS:
         if not node_args_have_bool_flag(args, flag):
             return False
-    if constrained_fastartifact_profile():
+    if constrained_storage_profile():
         for flag, wanted in NODE_MINING_CONSTRAINED_ASSIGNMENTS.items():
             if node_args_assignment_value(args, flag) != wanted:
                 return False
@@ -405,12 +379,13 @@ def asic_lan_neighbor_present() -> bool:
     return False
 
 
-def constrained_fastartifact_profile() -> bool:
+def constrained_storage_profile() -> bool:
     topology = (config_value("BDAG_DETECTED_NETWORK_TOPOLOGY") or config_value("BDAG_NETWORK_TOPOLOGY")).strip().lower()
     storage_profile = config_value("BDAG_STORAGE_PROFILE").strip().lower()
     return bool(
-        topology in CONSTRAINED_FASTARTIFACT_TOPOLOGIES
-        or storage_profile in CONSTRAINED_FASTARTIFACT_STORAGE_PROFILES
+        topology == "asic-router"
+        or storage_profile == "usb-chain-internal-runtime"
+        or storage_profile == "single-usb-constrained"
     )
 
 
@@ -438,18 +413,6 @@ def node_command_line(node_service: str) -> str | None:
     return command_line or None
 
 
-def node_command_has_fastartifact(node_service: str) -> bool:
-    command_line = node_command_line(node_service)
-    if not command_line:
-        return False
-    for word in command_line.split():
-        if word == "--fastartifactsync":
-            return True
-        if word.startswith("--fastartifactsync="):
-            return word.split("=", 1)[1].strip().lower() not in {"0", "false", "no", "off"}
-    return False
-
-
 def node_mining_template_support_should_repair(payload: dict[str, Any]) -> bool:
     if not MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED:
         return False
@@ -473,51 +436,6 @@ def node_mining_template_support_should_repair(payload: dict[str, Any]) -> bool:
     return False
 
 
-def payload_node_tail_lines(payload: dict[str, Any]) -> list[str]:
-    nodes = payload.get("nodes") if isinstance(payload.get("nodes"), dict) else {}
-    lines: list[str] = []
-    for row in nodes.values():
-        if not isinstance(row, dict):
-            continue
-        tail = row.get("tail") if isinstance(row.get("tail"), list) else []
-        lines.extend(str(line) for line in tail)
-    return lines
-
-
-def fastsync_orphan_peer_ids(payload: dict[str, Any]) -> list[str]:
-    peer_ids: list[str] = []
-    pattern = re.compile(r"Fast-sync range returned only orphan blocks.*\bpeer=([A-Za-z0-9]+)")
-    for line in payload_node_tail_lines(payload):
-        match = pattern.search(line)
-        if match and match.group(1) not in peer_ids:
-            peer_ids.append(match.group(1))
-    return peer_ids
-
-
-def fastsync_peer_quarantine_should_repair(payload: dict[str, Any]) -> bool:
-    if not MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED:
-        return False
-    if not constrained_fastartifact_profile():
-        return False
-    if not chain_ready_for_mining(payload):
-        return False
-    if not (status_payload_has_miner_demand(payload) or asic_lan_neighbor_present()):
-        return False
-    return bool(fastsync_orphan_peer_ids(payload))
-
-
-def constrained_fastartifact_should_repair(payload: dict[str, Any]) -> bool:
-    if not MINING_IMPERATIVE_CONSTRAINED_FASTARTIFACT_REPAIR_ENABLED:
-        return False
-    if not constrained_fastartifact_profile():
-        return False
-    if not (status_payload_has_miner_demand(payload) or asic_lan_neighbor_present()):
-        return False
-    if env_enabled_value(config_value("BDAG_FASTARTIFACTSYNC_ENABLED"), True):
-        return True
-    return any(node_command_has_fastartifact(service) for service in node_services_for_recreate())
-
-
 def recreate_node_services() -> tuple[bool, list[dict[str, Any]]]:
     node_results = []
     ok = True
@@ -529,14 +447,6 @@ def recreate_node_services() -> tuple[bool, list[dict[str, Any]]]:
         node_results.append({"service": service, "returncode": result.returncode, "ok": result.ok})
         ok = ok and result.ok
     return ok, node_results
-
-
-def remove_peer_ids_from_csv(value: str, peer_ids: list[str]) -> str:
-    peers = [item.strip() for item in value.split(",") if item.strip()]
-    if not peers or not peer_ids:
-        return value
-    kept = [peer for peer in peers if not any(peer_id in peer for peer_id in peer_ids)]
-    return ",".join(kept)
 
 
 def repair_missing_tracked_miners(payload: dict[str, Any]) -> bool:
@@ -568,88 +478,6 @@ def repair_missing_tracked_miners(payload: dict[str, Any]) -> bool:
         "mining_imperative_tracked_miners_repair_failed",
         "critical",
         "Mining imperative could not repair missing tracked miners despite miner demand",
-        action,
-        payload,
-    )
-    return False
-
-
-def repair_fastsync_orphan_peers(payload: dict[str, Any]) -> bool:
-    peer_ids = fastsync_orphan_peer_ids(payload)
-    changed_paths = []
-    changed_keys = []
-    for key in FASTSYNC_PEER_QUARANTINE_ENV_KEYS:
-        current = config_value(key)
-        updated = remove_peer_ids_from_csv(current, peer_ids)
-        if updated != current:
-            changed_paths.extend(set_runtime_env_value(key, updated))
-            changed_keys.append(key)
-    action = {
-        "peer_ids": peer_ids,
-        "changed_keys": changed_keys,
-        "changed_env_paths": sorted(set(changed_paths)),
-    }
-    if not changed_keys:
-        log(f"mining imperative found orphan FastSync peer(s) but no configured peer list matched: {','.join(peer_ids)}")
-        record_incident(
-            "mining_imperative_fastsync_peer_quarantine_no_match",
-            "warning",
-            "FastSync orphan peer observed but no configured peer list matched it",
-            action,
-            payload,
-        )
-        return False
-
-    ok, node_results = recreate_node_services()
-    action["node_recreate_results"] = node_results
-    if ok:
-        log(f"mining imperative quarantined orphan FastSync peer(s): {','.join(peer_ids)}")
-        record_incident(
-            "mining_imperative_fastsync_peer_quarantined",
-            "critical",
-            "Quarantined FastSync peer returning only orphan blocks on constrained mining host",
-            action,
-            payload,
-        )
-        return True
-    log("mining imperative failed to recreate node after quarantining orphan FastSync peer(s)")
-    record_incident(
-        "mining_imperative_fastsync_peer_quarantine_failed",
-        "critical",
-        "Could not recreate node after quarantining FastSync orphan peer",
-        action,
-        payload,
-    )
-    return False
-
-
-def repair_constrained_fastartifact(payload: dict[str, Any]) -> bool:
-    changed_paths = set_runtime_env_value("BDAG_FASTARTIFACTSYNC_ENABLED", "0")
-    changed_paths.extend(set_runtime_env_value("SYNC_SOURCE_NODE", "0"))
-    changed_paths.extend(set_runtime_env_value("BDAG_NO_FASTSYNC_SERVE", "1"))
-    changed_paths.extend(set_runtime_env_value("NODE_ARGS_APPEND", ""))
-    ok, node_results = recreate_node_services()
-    action = {
-        "changed_env_paths": changed_paths,
-        "node_recreate_results": node_results,
-        "topology": config_value("BDAG_DETECTED_NETWORK_TOPOLOGY") or config_value("BDAG_NETWORK_TOPOLOGY"),
-        "storage_profile": config_value("BDAG_STORAGE_PROFILE"),
-    }
-    if ok:
-        log("mining imperative disabled FastArtifact during constrained synced mining profile")
-        record_incident(
-            "mining_imperative_constrained_fastartifact_disabled",
-            "critical",
-            "Disabled continuous FastArtifact mode for constrained synced ASIC-router mining",
-            action,
-            payload,
-        )
-        return True
-    log("mining imperative failed to recreate node after disabling constrained FastArtifact mode")
-    record_incident(
-        "mining_imperative_constrained_fastartifact_repair_failed",
-        "critical",
-        "Could not recreate node after disabling constrained FastArtifact mode",
         action,
         payload,
     )
@@ -777,17 +605,9 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
         if repair_missing_tracked_miners(payload):
             actions.append("repaired_tracked_miners")
 
-    if constrained_fastartifact_should_repair(payload):
-        if repair_constrained_fastartifact(payload):
-            actions.append("disabled_constrained_fastartifact")
-
     if node_mining_template_support_should_repair(payload):
         if repair_node_mining_template_support(payload):
             actions.append("enabled_node_mining_template_support")
-
-    if fastsync_peer_quarantine_should_repair(payload):
-        if repair_fastsync_orphan_peers(payload):
-            actions.append("quarantined_fastsync_orphan_peer")
 
     if MINING_IMPERATIVE_START_POOL_ENABLED and not pool_container_running(payload):
         miner_demand = status_payload_has_miner_demand(payload)

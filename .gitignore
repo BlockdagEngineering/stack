@@ -32,3 +32,4 @@ ops/*.pyc
 ops/__pycache__/
 asic-pool/.env
 artifacts/
+node-data/*

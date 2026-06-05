@@ -25,7 +25,7 @@ Use lowercase kebab-case after the slash. Include the repo/component prefix when
 
 Examples:
 
-- `feature/corechain-fastsnap-v2-discovery`
+- `feature/corechain-peer-discovery`
 - `feature/dashboard-miner-health-tab`
 - `fix/pool-credit-idempotency`
 - `release/pool-stack-20260524-rc4`

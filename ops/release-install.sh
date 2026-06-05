@@ -378,7 +378,7 @@ configure_env() {
     node_mining_enabled=1
   fi
 
-  local node_rpc_pass postgres_password postgres_user postgres_db fastartifact_enabled
+  local node_rpc_pass postgres_password postgres_user postgres_db
   node_rpc_pass="$(random_secret)"
   postgres_password="$(random_secret)"
   postgres_user="$(grep -E '^POSTGRES_USER=' .env | cut -d= -f2-)"
@@ -395,70 +395,10 @@ configure_env() {
   set_env_value .env BDAG_POOL_HOST "$lan_ip"
   set_env_value .env BDAG_POOL_URL "stratum+tcp://$lan_ip:3334"
   set_env_value .env BDAG_MINER_SCAN_TARGET "$scan_target"
-  set_env_value .env BDAG_FASTSYNC_PREPROCESS_WORKERS 1
-  fastartifact_enabled=1
-  if [[ "$node_mining_enabled" == "1" ]]; then
-    case "$(env_value BDAG_STORAGE_PROFILE auto)" in
-      usb-chain-internal-runtime|single-usb-constrained)
-        fastartifact_enabled=0
-        ;;
-    esac
-  fi
-  set_env_value .env BDAG_FASTARTIFACTSYNC_ENABLED "$fastartifact_enabled"
   set_env_value .env SYNC_SOURCE_NODE "0"
-  set_env_value .env BDAG_NO_FASTSYNC_SERVE "auto"
   set_env_value .env NODE_ARGS_APPEND ""
-  set_env_value .env BDAG_FASTSNAP_SEED_TIMER_ENABLED 0
-  set_env_value .env BDAG_RAWDATADIR_SOURCE_MODE auto
-  set_env_value .env BDAG_RAWDATADIR_ARTIFACT_BASE "./data-restore/rawdatadir"
-  set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE auto
-  set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE "./data-restore/rawdatadir-sidecar-content"
-  set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP 2
-  set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED 1
-  set_env_value .env BDAG_RAWDATADIR_ACTIVE_SERVICE "node"
-  set_env_value .env BDAG_RAWDATADIR_FINALIZE 0
-  set_env_value .env BDAG_RAWDATADIR_PEERS ""
-  set_env_value .env BDAG_RAWDATADIR_TRUSTED_SIGNERS ""
-  set_env_value .env BDAG_IPFS_CONTENT_SIDECAR_MODE auto
-  set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_DIR "./data-restore/rawdatadir-sidecar-content/current"
-  set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST "./data-restore/rawdatadir-sidecar-content/current/manifest.json"
-  set_env_value .env BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT 0
-  set_env_value .env BDAG_IPFS_CONTENT_PUBLISH_IPNS 0
-  set_env_value .env BDAG_IPFS_CONTENT_IPNS_KEY ""
-  set_env_value .env BDAG_IPFS_CONTENT_REPUBLISH_IPNS_WHILE_WAITING 1
-  set_env_value .env BDAG_IPFS_CONTENT_IPNS_TTL "1m"
-  set_env_value .env BDAG_IPFS_CONTENT_IPNS_LIFETIME "8760h"
-  set_env_value .env BDAG_IPFS_CONTENT_DISCOVERY_FILE "./ops/ipfs-content-discovery.json"
-  set_env_value .env BDAG_IPFS_CONTENT_LATEST_IPNS "/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk"
-  set_env_value .env BDAG_IPFS_CONTENT_DEFAULT_INDEX_CID "bafkreia7jk2ljqi3raiohugp6nw3633njfp7jmnuvqh47po52et4kupu2a"
-  set_env_value .env BDAG_IPFS_CONTENT_DEFAULT_ROOT_CID ""
-  set_env_value .env BDAG_IPFS_CONTENT_STATUS_FILE "./ops/runtime/ipfs-content-sidecar-status.json"
-  set_env_value .env BDAG_IPFS_CONTENT_LATEST_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
-  set_env_value .env BDAG_IPFS_SEGMENT_WRITER_MODE auto
-  set_env_value .env BDAG_IPFS_SEGMENT_START_POLICY live_tail
-  set_env_value .env BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS 600
-  set_env_value .env BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT 300
-  set_env_value .env BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN 1
-  set_env_value .env BDAG_IPFS_SEGMENT_MAX_RPC_PER_SECOND 25
-  set_env_value .env BDAG_IPFS_SEGMENT_RPC_TIMEOUT 8
-  set_env_value .env BDAG_IPFS_SEGMENT_BLOCK_RPC_RETRIES 2
-  set_env_value .env BDAG_IPFS_SEGMENT_PUBLISH_IPNS 0
-  set_env_value .env BDAG_IPFS_SEGMENT_IPNS_KEY ""
-  set_env_value .env BDAG_IPFS_SEGMENT_IPNS_TTL "1m"
-  set_env_value .env BDAG_IPFS_SEGMENT_IPNS_LIFETIME "8760h"
-  set_env_value .env BDAG_IPFS_SEGMENT_STATUS_FILE "./ops/runtime/ipfs-content/segment-writer-status.json"
-  set_env_value .env BDAG_IPFS_SEGMENT_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
-  set_env_value .env BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC 1
   set_env_value .env BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS 900
-  set_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT 1
   set_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT 1
-  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MODE auto
-  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS 300
-  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS 1000
-  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MIN_GAIN_BLOCKS 1000
-  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED 1
-  set_env_value .env BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS 0
-  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT 21600s
   configure_active_node_env
   configure_node_mining_env "$node_mining_enabled" "$mining_address"
 
@@ -607,7 +547,7 @@ publish_p2p_snapshot_archive() {
     return 0
   fi
   if [[ ! -d "$source_datadir/BdagChain" ]]; then
-    warn "No seeded node1 chain DB found; the node will sync first, then use raw-datadir FastArtifact source serving after a finalized sidecar publish."
+    warn "No seeded node1 chain DB found. The node will sync from configured P2P peers."
     return 0
   fi
 

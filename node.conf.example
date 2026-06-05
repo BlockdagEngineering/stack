@@ -16,10 +16,10 @@ evm.http.port=18545
 evm.ws.addr=0.0.0.0
 evm.ws.port=18546
 
-# Bootstrap peers (mainnet seed nodes). The node entrypoint folds these into
-# the same P2P FastSync candidate set as operator-configured peers. Address
-# class is not a priority signal. Keep only public peers that are currently
-# reachable; site-local peers belong in .env runtime overrides.
+# Bootstrap peers (mainnet seed nodes). The node entrypoint treats these as
+# ordinary operator-configured P2P peers. Address class is not a priority
+# signal. Keep only public peers that are currently reachable; site-local peers
+# belong in .env runtime overrides.
 addpeer=/ip4/13.57.132.47/tcp/8150/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus
 
 # Peer limit

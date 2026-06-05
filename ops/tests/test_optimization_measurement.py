@@ -23,7 +23,7 @@ class OptimizationMeasurementTests(unittest.TestCase):
                 "remaining_blocks": 5,
                 "nodes": {
                     "primary": {"chain_rpc_latency_ms": 12.5},
-                    "sidecar": {"chain_rpc_latency_ms": 8.0},
+                    "secondary": {"chain_rpc_latency_ms": 8.0},
                 },
             },
             "host_pressure": {"iowait_percent": 3.0, "io_some_avg10": 1.0, "cpu_some_avg10": 2.0},
