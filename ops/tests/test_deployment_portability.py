@@ -128,6 +128,16 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertGreaterEqual(compose.count("TMP: /tmp"), 5)
         self.assertGreaterEqual(compose.count("TEMP: /tmp"), 5)
 
+    def test_compose_mounts_configured_persistent_data_paths(self) -> None:
+        compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+
+        self.assertIn("${BDAG_POSTGRES_DATA_DIR:-./data/postgres}:/var/lib/postgresql/data", compose)
+        self.assertIn("${BDAG_NODE1_DATA_DIR:-./data/node1}:/var/lib/bdagStack/node", compose)
+        self.assertIn("${BDAG_NODEWORKER_DATA_DIR:-./data/nodeworker}:/var/lib/bdagStack/nodeworker", compose)
+        self.assertNotIn("postgres-data:/var/lib/postgresql/data", compose)
+        self.assertNotIn("node-data:/var/lib/bdagStack/node", compose)
+        self.assertNotIn("nodeworker-data:/var/lib/bdagStack/nodeworker", compose)
+
     def test_pool_node_health_gate_is_enabled_by_default(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
