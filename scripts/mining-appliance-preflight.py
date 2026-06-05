@@ -806,6 +806,14 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         "BDAG_DETECTED_NETWORK_TOPOLOGY": env.get("BDAG_DETECTED_NETWORK_TOPOLOGY"),
         "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": env.get("BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC"),
         "BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS": env.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS"),
+        "BDAG_CATCHUP_PAUSE_ENABLED": env.get("BDAG_CATCHUP_PAUSE_ENABLED"),
+        "BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS": env.get("BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS"),
+        "BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED": env.get("BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED"),
+        "BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS": env.get("BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS"),
+        "BDAG_CATCHUP_IOWAIT_WARN_PERCENT": env.get("BDAG_CATCHUP_IOWAIT_WARN_PERCENT"),
+        "BDAG_CATCHUP_IO_SOME_AVG10_WARN": env.get("BDAG_CATCHUP_IO_SOME_AVG10_WARN"),
+        "BDAG_CATCHUP_IO_FULL_AVG10_WARN": env.get("BDAG_CATCHUP_IO_FULL_AVG10_WARN"),
+        "BDAG_CATCHUP_NODE_CACHE_MB": env.get("BDAG_CATCHUP_NODE_CACHE_MB"),
         "BDAG_STATUS_SAMPLER_ENABLED": env.get("BDAG_STATUS_SAMPLER_ENABLED"),
         "BDAG_ADAPTIVE_CONCURRENCY_ENABLED": env.get("BDAG_ADAPTIVE_CONCURRENCY_ENABLED"),
         "BDAG_ENTRYPOINT_CHOWN_MODE": env.get("BDAG_ENTRYPOINT_CHOWN_MODE"),
@@ -938,6 +946,28 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         add(checks, "warn", "fastsync_restart_cooldown", f"fast restart cooldown is {fast_restart_cooldown}s.", "Use 900s so a stale or unaccelerated importer does not remain down-level for too long.", evidence)
     else:
         add(checks, "pass", "fastsync_restart_cooldown", f"fast restart cooldown={fast_restart_cooldown}s", evidence=evidence)
+
+    catchup_pause_threshold = safe_int(env.get("BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS"), 300)
+    catchup_io_min_lag = safe_int(env.get("BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS"), 25)
+    catchup_iowait_warn = safe_int(env.get("BDAG_CATCHUP_IOWAIT_WARN_PERCENT"), 15)
+    catchup_io_full_warn = safe_int(env.get("BDAG_CATCHUP_IO_FULL_AVG10_WARN"), 10)
+    if not bool_enabled(env.get("BDAG_CATCHUP_PAUSE_ENABLED"), True):
+        add(checks, "warn", "catchup_pause", "BDAG_CATCHUP_PAUSE_ENABLED is disabled.", "Enable catch-up pause so I/O-bound nodes behind peers stop mining/template churn and prioritize import.", evidence)
+    elif catchup_pause_threshold and catchup_pause_threshold > 300:
+        add(checks, "warn", "catchup_pause", f"catch-up pause threshold is {catchup_pause_threshold} blocks.", "Use 300 blocks so stale mining work stops before a node falls materially behind peers.", evidence)
+    else:
+        add(checks, "pass", "catchup_pause", f"catch-up pause threshold={catchup_pause_threshold} blocks", evidence=evidence)
+
+    if not bool_enabled(env.get("BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED"), True):
+        add(checks, "warn", "catchup_io_pause", "BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED is disabled.", "Keep I/O-pressure catch-up pause enabled so the stack reacts before the 300-block backup threshold when the node is I/O-bound.", evidence)
+    elif catchup_io_min_lag and catchup_io_min_lag > 100:
+        add(checks, "warn", "catchup_io_pause", f"I/O pressure pause minimum lag is {catchup_io_min_lag} blocks.", "Use 25 blocks so I/O-bound catch-up reduces stale mining work early.", evidence)
+    elif catchup_iowait_warn and catchup_iowait_warn > 15:
+        add(checks, "warn", "catchup_io_pause", f"I/O pressure iowait threshold is {catchup_iowait_warn}%.", "Use 15% so sustained disk contention pauses mining before the peer gap grows.", evidence)
+    elif catchup_io_full_warn and catchup_io_full_warn > 10:
+        add(checks, "warn", "catchup_io_pause", f"I/O full pressure threshold is {catchup_io_full_warn}.", "Use 10.0 so full I/O stalls pause mining before the peer gap grows.", evidence)
+    else:
+        add(checks, "pass", "catchup_io_pause", f"I/O-pressure catch-up pause enabled min_lag={catchup_io_min_lag}", evidence=evidence)
 
     if not bool_enabled(env.get("BDAG_STATUS_SAMPLER_ENABLED"), True):
         add(checks, "warn", "status_sampler", "BDAG_STATUS_SAMPLER_ENABLED is disabled.", "Enable the sampler so dashboard, watchdog, and guards share one low-overhead status collection.", evidence)

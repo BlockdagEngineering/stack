@@ -22,6 +22,7 @@ from pool_ops import (
     STATUS_SAMPLER_FILE,
     collect_pool_activity,
     collect_status_cached,
+    detect_total_memory_bytes,
     docker_compose_command,
     ensure_runtime,
     env_bool,
@@ -43,6 +44,16 @@ from pool_ops import (
 def env_float(name: str, default: float, minimum: float | None = None) -> float:
     try:
         value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    return value
+
+
+def env_int(name: str, default: int, minimum: int | None = None) -> int:
+    try:
+        value = int(float(os.environ.get(name, str(default))))
     except (TypeError, ValueError):
         value = default
     if minimum is not None:
@@ -111,6 +122,17 @@ NODE_MINING_UNSAFE_BYPASS_FLAGS = (
 NODE_MINING_CONSTRAINED_ASSIGNMENTS = {
     "--maxinbound": "1",
 }
+CATCHUP_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_PAUSE_ENABLED", True)
+CATCHUP_PAUSE_THRESHOLD_BLOCKS = env_int("BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS", 300, minimum=1)
+CATCHUP_NODE_RECREATE_ENABLED = env_bool("BDAG_CATCHUP_NODE_RECREATE_ENABLED", True)
+CATCHUP_NODE_CACHE_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MB", 6144, minimum=0)
+CATCHUP_NODE_CACHE_MIN_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MIN_MB", 1024, minimum=256)
+CATCHUP_NODE_CACHE_MEMORY_PERCENT = env_float("BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT", 40.0, minimum=5.0)
+CATCHUP_IO_PRESSURE_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED", True)
+CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS = env_int("BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS", 25, minimum=1)
+CATCHUP_IOWAIT_WARN_PERCENT = env_float("BDAG_CATCHUP_IOWAIT_WARN_PERCENT", 15.0, minimum=0.0)
+CATCHUP_IO_SOME_AVG10_WARN = env_float("BDAG_CATCHUP_IO_SOME_AVG10_WARN", 20.0, minimum=0.0)
+CATCHUP_IO_FULL_AVG10_WARN = env_float("BDAG_CATCHUP_IO_FULL_AVG10_WARN", 10.0, minimum=0.0)
 LOG_FILE = LOG_DIR / "status-sampler.log"
 
 
@@ -365,6 +387,109 @@ def chain_ready_for_mining(payload: dict[str, Any]) -> bool:
     return payload.get("overall") == "ok" and not payload.get("sync_warnings")
 
 
+def catchup_lag_blocks(payload: dict[str, Any]) -> int:
+    values: list[int] = []
+    policy = dict_value(payload.get("catchup_policy"))
+    policy_lag = safe_int(policy.get("lag_blocks"), -1)
+    if policy_lag >= 0:
+        values.append(policy_lag)
+
+    sync = dict_value(payload.get("sync_progress"))
+    for key in ("remaining_blocks", "peer_ahead_blocks"):
+        value = safe_int(sync.get(key), -1)
+        if value >= 0:
+            values.append(value)
+    for info in dict_value(sync.get("nodes")).values():
+        if not isinstance(info, dict):
+            continue
+        for key in ("remaining_blocks", "peer_ahead_blocks"):
+            value = safe_int(info.get(key), -1)
+            if value >= 0:
+                values.append(value)
+
+    for info in dict_value(payload.get("nodes")).values():
+        if not isinstance(info, dict):
+            continue
+        value = safe_int(info.get("peer_ahead_blocks"), -1)
+        if value >= 0:
+            values.append(value)
+
+    selected_health = dict_value(
+        dict_value(payload.get("pool_metrics")).get("selected_backend_source_health")
+    ) or dict_value(dict_value(payload.get("pool")).get("selected_backend_source_health"))
+    value = safe_int(selected_health.get("node_p2p_best_peer_lead_blocks"), -1)
+    if value >= 0:
+        values.append(value)
+    return max(values) if values else 0
+
+
+def catchup_io_pressure_reasons(payload: dict[str, Any]) -> list[str]:
+    host_pressure = dict_value(payload.get("host_pressure"))
+    reasons: list[str] = []
+    iowait = safe_float(host_pressure.get("iowait_percent")) if host_pressure.get("iowait_percent") is not None else None
+    io_some = safe_float(host_pressure.get("io_some_avg10")) if host_pressure.get("io_some_avg10") is not None else None
+    io_full = safe_float(host_pressure.get("io_full_avg10")) if host_pressure.get("io_full_avg10") is not None else None
+    if bool(host_pressure.get("iowait_warning_active")):
+        reasons.append("sustained_iowait_warning")
+    if iowait is not None and iowait >= CATCHUP_IOWAIT_WARN_PERCENT:
+        reasons.append(f"iowait_percent={iowait:.2f}>={CATCHUP_IOWAIT_WARN_PERCENT:.2f}")
+    if io_some is not None and io_some >= CATCHUP_IO_SOME_AVG10_WARN:
+        reasons.append(f"io_some_avg10={io_some:.2f}>={CATCHUP_IO_SOME_AVG10_WARN:.2f}")
+    if io_full is not None and io_full >= CATCHUP_IO_FULL_AVG10_WARN:
+        reasons.append(f"io_full_avg10={io_full:.2f}>={CATCHUP_IO_FULL_AVG10_WARN:.2f}")
+    return reasons
+
+
+def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    policy = dict_value(payload.get("catchup_policy"))
+    threshold = safe_int(policy.get("threshold_blocks"), CATCHUP_PAUSE_THRESHOLD_BLOCKS)
+    lag = catchup_lag_blocks(payload)
+    io_pressure_reasons = policy.get("io_pressure_reasons")
+    if not isinstance(io_pressure_reasons, list):
+        io_pressure_reasons = catchup_io_pressure_reasons(payload)
+    io_pressure_enabled = bool(policy.get("io_pressure_pause_enabled", CATCHUP_IO_PRESSURE_PAUSE_ENABLED))
+    io_min_lag = safe_int(policy.get("io_pressure_min_lag_blocks"), CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS)
+    mining_ready = bool(policy.get("mining_ready", payload.get("can_mine") is True))
+    backend_unready_under_pressure = bool(
+        policy.get("backend_unready_under_pressure")
+        or (io_pressure_reasons and not mining_ready and payload.get("can_mine") is False)
+    )
+    io_pressure_active = bool(
+        io_pressure_enabled
+        and io_pressure_reasons
+        and not mining_ready
+        and (lag >= io_min_lag or backend_unready_under_pressure)
+    )
+    lag_threshold_active = bool(lag > threshold and (not chain_ready_for_mining(payload) or not mining_ready))
+    active = bool(policy.get("active")) if "active" in policy else False
+    if not active:
+        active = bool(CATCHUP_PAUSE_ENABLED and (io_pressure_active or lag_threshold_active))
+    trigger = str(policy.get("trigger") or "")
+    if not trigger and active:
+        trigger = "io_pressure" if io_pressure_active else "lag_threshold"
+    if not active:
+        trigger = ""
+    return {
+        **policy,
+        "enabled": bool(policy.get("enabled", CATCHUP_PAUSE_ENABLED)),
+        "active": active,
+        "trigger": trigger,
+        "lag_blocks": lag,
+        "threshold_blocks": threshold,
+        "io_pressure_pause_enabled": io_pressure_enabled,
+        "io_pressure_active": io_pressure_active,
+        "io_pressure_reasons": io_pressure_reasons,
+        "io_pressure_min_lag_blocks": io_min_lag,
+        "backend_unready_under_pressure": backend_unready_under_pressure,
+        "lag_threshold_active": lag_threshold_active,
+        "mining_ready": mining_ready,
+    }
+
+
+def catchup_pause_active(payload: dict[str, Any]) -> bool:
+    return bool(catchup_policy_from_payload(payload).get("active"))
+
+
 def status_payload_has_miner_demand(payload: dict[str, Any]) -> bool:
     miner_health = dict_value(payload.get("miner_health"))
     if safe_int(miner_health.get("connected_count")) > 0 or safe_int(miner_health.get("managed_count")) > 0:
@@ -464,6 +589,8 @@ def node_command_has_fastartifact(node_service: str) -> bool:
 
 def node_mining_template_support_should_repair(payload: dict[str, Any]) -> bool:
     if not MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED:
+        return False
+    if catchup_pause_active(payload):
         return False
     if not (status_payload_has_miner_demand(payload) or asic_lan_neighbor_present()):
         return False
@@ -671,6 +798,154 @@ def repair_constrained_fastartifact(payload: dict[str, Any]) -> bool:
     return False
 
 
+def write_text_if_changed(path: Any, text: str) -> bool:
+    if not path.exists():
+        return False
+    current = path.read_text(encoding="utf-8", errors="replace")
+    if current == text:
+        return False
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+    return True
+
+
+def node_conf_path() -> Any:
+    return PROJECT_ROOT / "node.conf"
+
+
+def node_conf_cache_mb() -> int:
+    path = node_conf_path()
+    if not path.exists():
+        return 0
+    match = re.search(r"(?m)^cache=(\d+)\s*$", path.read_text(encoding="utf-8", errors="replace"))
+    return safe_int(match.group(1), 0) if match else 0
+
+
+def update_node_conf_cache(cache_mb: int) -> list[str]:
+    path = node_conf_path()
+    if not path.exists() or cache_mb <= 0:
+        return []
+    original = path.read_text(encoding="utf-8", errors="replace")
+    text, count = re.subn(r"(?m)^cache=\d+\s*$", f"cache={cache_mb}", original, count=1)
+    if count == 0:
+        text, count = re.subn(r"(?m)^cache\.database=", f"cache={cache_mb}\ncache.database=", text, count=1)
+        if count == 0:
+            text = text.rstrip() + f"\ncache={cache_mb}\n"
+    if re.search(r"--cache\s+\d+", text):
+        text = re.sub(r"--cache\s+\d+", f"--cache {cache_mb}", text)
+    elif re.search(r'(?m)^evmenv="', text):
+        text = re.sub(
+            r'(?m)^evmenv="([^"]*)"',
+            lambda match: f'evmenv="{match.group(1).rstrip()} --cache {cache_mb}"',
+            text,
+            count=1,
+        )
+    return [str(path)] if write_text_if_changed(path, text) else []
+
+
+def update_node_conf_mining(enabled: bool, address: str = "") -> list[str]:
+    path = node_conf_path()
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if enabled:
+        if address:
+            if re.search(r"(?m)^#?\s*miningaddr=.*$", text):
+                text = re.sub(r"(?m)^#?\s*miningaddr=.*$", f"miningaddr={address}", text, count=1)
+            else:
+                text = text.rstrip() + f"\nminingaddr={address}\n"
+        if re.search(r"(?m)^#\s*modules=miner.*$", text):
+            text = re.sub(r"(?m)^#\s*modules=miner.*$", "modules=miner", text, count=1)
+        elif not re.search(r"(?m)^modules=miner\s*$", text):
+            text = text.rstrip() + "\nmodules=miner\n"
+        if re.search(r"(?m)^#\s*miner=true.*$", text):
+            text = re.sub(r"(?m)^#\s*miner=true.*$", "miner=true", text, count=1)
+        elif re.search(r"(?m)^miner=false\s*$", text):
+            text = re.sub(r"(?m)^miner=false\s*$", "miner=true", text, count=1)
+        elif not re.search(r"(?m)^miner=true\s*$", text):
+            text = text.rstrip() + "\nminer=true\n"
+    else:
+        text = re.sub(r"(?m)^miningaddr=.*$", "miningaddr=", text)
+        text = re.sub(r"(?m)^modules=miner\s*$", "# modules=miner disabled during catch-up pause", text)
+        text = re.sub(r"(?m)^miner=true\s*$", "# miner=true disabled during catch-up pause", text)
+    return [str(path)] if write_text_if_changed(path, text) else []
+
+
+def catchup_target_node_cache_mb() -> int:
+    if CATCHUP_NODE_CACHE_MB <= 0:
+        return 0
+    memory_bytes = detect_total_memory_bytes()
+    if not memory_bytes:
+        return CATCHUP_NODE_CACHE_MB
+    memory_mb = max(0, int(memory_bytes / (1024 * 1024)))
+    percent_target = int(memory_mb * (CATCHUP_NODE_CACHE_MEMORY_PERCENT / 100.0))
+    return max(256, min(CATCHUP_NODE_CACHE_MB, max(CATCHUP_NODE_CACHE_MIN_MB, percent_target)))
+
+
+def apply_catchup_node_runtime(payload: dict[str, Any], policy: dict[str, Any]) -> bool:
+    changed_paths: list[str] = []
+    env_updates: dict[str, str] = {}
+    disabled_values = {
+        "BDAG_ENABLE_NODE_MINING": "0",
+        "BDAG_NODE_MODULES": "Blockdag",
+        "BDAG_NODE_MINING_ARGS": "",
+        "NODE_ARGS_APPEND": "",
+    }
+    for key, wanted in disabled_values.items():
+        if config_value(key) != wanted:
+            changed_paths.extend(set_runtime_env_value(key, wanted))
+            env_updates[key] = wanted
+    changed_paths.extend(update_node_conf_mining(False))
+
+    target_cache = catchup_target_node_cache_mb()
+    if target_cache > 0:
+        if safe_int(config_value("BDAG_NODE_CACHE_MB"), 0) < target_cache:
+            changed_paths.extend(set_runtime_env_value("BDAG_NODE_CACHE_MB", str(target_cache)))
+            env_updates["BDAG_NODE_CACHE_MB"] = str(target_cache)
+        current_conf_cache = node_conf_cache_mb()
+        if current_conf_cache and current_conf_cache < target_cache:
+            changed_paths.extend(update_node_conf_cache(target_cache))
+
+    changed_paths = sorted(set(changed_paths))
+    if not changed_paths:
+        return False
+
+    node_results: list[dict[str, Any]] = []
+    ok = True
+    if CATCHUP_NODE_RECREATE_ENABLED:
+        ok, node_results = recreate_node_services()
+    action = {
+        "policy": policy,
+        "changed_env": env_updates,
+        "changed_paths": changed_paths,
+        "node_recreate_results": node_results,
+        "target_cache_mb": target_cache,
+    }
+    if ok:
+        log(
+            "catch-up pause adjusted node runtime "
+            f"lag={policy.get('lag_blocks')} threshold={policy.get('threshold_blocks')} paths={','.join(changed_paths)}"
+        )
+        record_incident(
+            "catchup_pause_node_runtime_adjusted",
+            "warning",
+            "Catch-up pause disabled mining/template churn and raised node cache while the node is behind peers",
+            action,
+            payload,
+        )
+        return True
+    log("catch-up pause failed to recreate node after runtime adjustment")
+    record_incident(
+        "catchup_pause_node_runtime_adjust_failed",
+        "critical",
+        "Catch-up pause could not recreate the node after runtime adjustment",
+        action,
+        payload,
+    )
+    return False
+
+
 def repair_node_mining_template_support(payload: dict[str, Any]) -> bool:
     address = configured_mining_address()
     if not valid_mining_address(address):
@@ -696,6 +971,7 @@ def repair_node_mining_template_support(payload: dict[str, Any]) -> bool:
         )
     )
     changed_paths.extend(set_runtime_env_value("NODE_ARGS_APPEND", runtime_args))
+    changed_paths.extend(update_node_conf_mining(True, address))
     ok, node_results = recreate_node_services()
     action = {
         "changed_env_paths": sorted(set(changed_paths)),
@@ -727,6 +1003,58 @@ def pool_container_running(payload: dict[str, Any]) -> bool:
     containers = dict_value(payload.get("containers"))
     container = dict_value(containers.get(POOL_CONTAINER))
     return bool(container.get("running"))
+
+
+def stop_pool_container(payload: dict[str, Any], reason: str) -> bool:
+    compose = run(docker_compose_command("stop", POOL_CONTAINER), timeout=120)
+    action = {
+        "reason": reason,
+        "container": POOL_CONTAINER,
+        "method": "docker compose stop",
+        **compose.as_dict(),
+    }
+    if compose.ok:
+        log(f"catch-up pause stopped {POOL_CONTAINER}: {reason}")
+        record_incident(
+            "catchup_pause_stopped_pool",
+            "warning",
+            f"Catch-up pause stopped {POOL_CONTAINER}: {reason}",
+            action,
+            payload,
+        )
+        return True
+
+    stop = run(["docker", "stop", POOL_CONTAINER], timeout=60)
+    action = {
+        "reason": reason,
+        "container": POOL_CONTAINER,
+        "method": "docker stop",
+        "compose_stop": compose.as_dict(),
+        "docker_stop": stop.as_dict(),
+    }
+    if stop.ok:
+        log(f"catch-up pause stopped {POOL_CONTAINER} with docker stop: {reason}")
+        record_incident(
+            "catchup_pause_stopped_pool",
+            "warning",
+            f"Catch-up pause stopped {POOL_CONTAINER}: {reason}",
+            action,
+            payload,
+        )
+        return True
+
+    log(
+        f"catch-up pause could not stop {POOL_CONTAINER}: {reason}; "
+        f"compose_rc={compose.returncode} docker_stop_rc={stop.returncode}"
+    )
+    record_incident(
+        "catchup_pause_pool_stop_failed",
+        "critical",
+        f"Catch-up pause could not stop {POOL_CONTAINER}: {reason}",
+        action,
+        payload,
+    )
+    return False
 
 
 def start_pool_container(payload: dict[str, Any], reason: str) -> bool:
@@ -786,6 +1114,8 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
         return {"enabled": False, "actions": []}
 
     actions: list[str] = []
+    catchup_policy = catchup_policy_from_payload(payload)
+    catchup_active = bool(catchup_policy.get("active"))
     for unit in MINING_IMPERATIVE_GUARD_UNITS:
         if ensure_user_unit(unit, payload):
             actions.append(f"repaired_unit:{unit}")
@@ -798,7 +1128,17 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
         if repair_constrained_fastartifact(payload):
             actions.append("disabled_constrained_fastartifact")
 
-    if node_mining_template_support_should_repair(payload):
+    if catchup_active:
+        reason = (
+            f"node is {catchup_policy.get('lag_blocks')} blocks behind peers "
+            f"(pause threshold {catchup_policy.get('threshold_blocks')})"
+        )
+        if pool_container_running(payload) and stop_pool_container(payload, reason):
+            actions.append(f"stopped_container:{POOL_CONTAINER}:catchup_pause")
+        if apply_catchup_node_runtime(payload, catchup_policy):
+            actions.append("applied_catchup_node_runtime")
+
+    if not catchup_active and node_mining_template_support_should_repair(payload):
         if repair_node_mining_template_support(payload):
             actions.append("enabled_node_mining_template_support")
 
@@ -810,7 +1150,10 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
         miner_demand = status_payload_has_miner_demand(payload)
         lan_candidate = asic_lan_neighbor_present()
         chain_ready = chain_ready_for_mining(payload)
-        should_start = miner_demand or lan_candidate or (MINING_IMPERATIVE_START_IDLE_SYNCED_POOL and chain_ready)
+        should_start = (
+            not catchup_active
+            and (miner_demand or lan_candidate or (MINING_IMPERATIVE_START_IDLE_SYNCED_POOL and chain_ready))
+        )
         if should_start:
             reasons = []
             if miner_demand:
@@ -821,6 +1164,11 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
                 reasons.append("chain is ready")
             if start_pool_container(payload, "; ".join(reasons) or "mining service is required"):
                 actions.append(f"started_container:{POOL_CONTAINER}")
+        elif catchup_active:
+            log(
+                f"mining imperative left {POOL_CONTAINER} stopped for catch-up pause: "
+                f"lag={catchup_policy.get('lag_blocks')} threshold={catchup_policy.get('threshold_blocks')}"
+            )
         else:
             log(
                 f"mining imperative left {POOL_CONTAINER} stopped: "
