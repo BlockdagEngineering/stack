@@ -707,7 +707,8 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
         "narrative": narrative,
         "catchup_pause_active": catchup_active,
         "catchup_pause_lag_blocks": catchup_policy.get("lag_blocks"),
-        "catchup_pause_threshold_blocks": catchup_policy.get("threshold_blocks"),
+        "catchup_pause_io_pressure_min_lag_blocks": catchup_policy.get("io_pressure_min_lag_blocks"),
+        "catchup_pause_io_pressure_resume_lag_blocks": catchup_policy.get("io_pressure_resume_lag_blocks"),
         "next_step": catchup_policy.get("next_step") if catchup_active else "",
         "nodes": estimate_nodes,
     }

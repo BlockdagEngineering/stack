@@ -23,10 +23,12 @@ from pool_ops import (
     STATUS_SAMPLER_FILE,
     collect_pool_activity,
     collect_status_cached,
+    compose_service_name,
     detect_total_memory_bytes,
     docker_compose_command,
     ensure_runtime,
     env_bool,
+    evm_sync_priority_active,
     now_iso,
     read_json_file,
     read_env_file_value,
@@ -134,16 +136,17 @@ NODE_MINING_CONSTRAINED_ASSIGNMENTS = {
     "--maxinbound": "1",
 }
 CATCHUP_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_PAUSE_ENABLED", True)
-CATCHUP_PAUSE_THRESHOLD_BLOCKS = env_int("BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS", 300, minimum=1)
 CATCHUP_NODE_RECREATE_ENABLED = env_bool("BDAG_CATCHUP_NODE_RECREATE_ENABLED", True)
 CATCHUP_NODE_CACHE_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MB", 6144, minimum=0)
 CATCHUP_NODE_CACHE_MIN_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MIN_MB", 1024, minimum=256)
 CATCHUP_NODE_CACHE_MEMORY_PERCENT = env_float("BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT", 40.0, minimum=5.0)
-CATCHUP_IO_PRESSURE_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED", True)
+CATCHUP_IO_PRESSURE_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED", False)
 CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS = env_int("BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS", 25, minimum=1)
+CATCHUP_IO_PRESSURE_RESUME_LAG_BLOCKS = env_int("BDAG_CATCHUP_IO_PRESSURE_RESUME_LAG_BLOCKS", 5, minimum=0)
 CATCHUP_IOWAIT_WARN_PERCENT = env_float("BDAG_CATCHUP_IOWAIT_WARN_PERCENT", 15.0, minimum=0.0)
 CATCHUP_IO_SOME_AVG10_WARN = env_float("BDAG_CATCHUP_IO_SOME_AVG10_WARN", 20.0, minimum=0.0)
 CATCHUP_IO_FULL_AVG10_WARN = env_float("BDAG_CATCHUP_IO_FULL_AVG10_WARN", 10.0, minimum=0.0)
+STATUS_SAMPLER_AUTO_THIN_ENABLED = env_bool("BDAG_STATUS_SAMPLER_AUTO_THIN_ENABLED", True)
 LOG_FILE = LOG_DIR / "status-sampler.log"
 REPAIR_STATE_FILE = RUNTIME_DIR / "status-sampler-repair-state.json"
 NODE_BACKEND_FATAL_PATTERNS = (
@@ -511,12 +514,19 @@ def catchup_io_pressure_reasons(payload: dict[str, Any]) -> list[str]:
 
 def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     policy = dict_value(payload.get("catchup_policy"))
-    threshold = safe_int(policy.get("threshold_blocks"), CATCHUP_PAUSE_THRESHOLD_BLOCKS)
+    normalized_policy = {
+        key: value
+        for key, value in policy.items()
+        if key not in {"threshold_blocks", "lag_threshold_met", "lag_threshold_active"}
+    }
     lag = catchup_lag_blocks(payload)
     io_pressure_reasons = policy.get("io_pressure_reasons")
     if not isinstance(io_pressure_reasons, list):
         io_pressure_reasons = catchup_io_pressure_reasons(payload)
-    io_pressure_enabled = bool(policy.get("io_pressure_pause_enabled", CATCHUP_IO_PRESSURE_PAUSE_ENABLED))
+    io_pressure_enabled = bool(
+        CATCHUP_IO_PRESSURE_PAUSE_ENABLED
+        and policy.get("io_pressure_pause_enabled", True)
+    )
     io_min_lag = safe_int(policy.get("io_pressure_min_lag_blocks"), CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS)
     mining_ready = bool(policy.get("mining_ready", payload.get("can_mine") is True))
     backend_unready_reasons = policy.get("backend_unready_reasons")
@@ -526,7 +536,6 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         policy.get("backend_unready_under_pressure")
         or (io_pressure_reasons and backend_unready_reasons and not mining_ready)
     )
-    lag_threshold_met = bool(lag >= threshold)
     io_pressure_lag_observed = bool(lag >= io_min_lag)
     catchup_churn_detected = bool(
         policy.get("catchup_churn_detected")
@@ -535,38 +544,63 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     io_pressure_active = bool(
         io_pressure_enabled
         and catchup_churn_detected
-        and lag_threshold_met
     )
-    lag_threshold_active = bool(lag_threshold_met and (not chain_ready_for_mining(payload) or not mining_ready))
     pause_enabled = bool(policy.get("enabled", CATCHUP_PAUSE_ENABLED))
-    active = bool(pause_enabled and (io_pressure_active or lag_threshold_active))
+    active = bool(pause_enabled and io_pressure_active)
     trigger = str(policy.get("trigger") or "")
     if not trigger and active:
-        trigger = "io_pressure" if io_pressure_active else "lag_threshold"
+        trigger = "io_pressure"
     if not active:
         trigger = ""
     return {
-        **policy,
+        **normalized_policy,
         "enabled": pause_enabled,
         "active": active,
         "trigger": trigger,
         "lag_blocks": lag,
-        "threshold_blocks": threshold,
         "io_pressure_pause_enabled": io_pressure_enabled,
         "io_pressure_active": io_pressure_active,
         "io_pressure_reasons": io_pressure_reasons,
         "io_pressure_min_lag_blocks": io_min_lag,
+        "io_pressure_resume_lag_blocks": CATCHUP_IO_PRESSURE_RESUME_LAG_BLOCKS,
+        "io_pressure_lag_observed": io_pressure_lag_observed,
         "backend_unready_under_pressure": backend_unready_under_pressure,
         "backend_unready_reasons": backend_unready_reasons,
         "catchup_churn_detected": catchup_churn_detected,
-        "lag_threshold_met": lag_threshold_met,
-        "lag_threshold_active": lag_threshold_active,
         "mining_ready": mining_ready,
     }
 
 
 def catchup_pause_active(payload: dict[str, Any]) -> bool:
     return bool(catchup_policy_from_payload(payload).get("active"))
+
+
+def catchup_pause_release_blockers(
+    payload: dict[str, Any],
+    policy: dict[str, Any] | None = None,
+    pause: dict[str, Any] | None = None,
+) -> list[str]:
+    pause = pause or pool_pause_state()
+    if pause.get("type") != "catchup_pause":
+        return []
+    policy = policy or catchup_policy_from_payload(payload)
+    if not bool(policy.get("io_pressure_pause_enabled", CATCHUP_IO_PRESSURE_PAUSE_ENABLED)):
+        return []
+    lag = safe_int(policy.get("lag_blocks"), 0)
+    blockers: list[str] = []
+    if not chain_ready_for_mining(payload):
+        blockers.append("chain_not_ready")
+    if not bool(policy.get("mining_ready", payload.get("can_mine") is True)):
+        blockers.append("backend_template_not_ready")
+    resume_lag = safe_int(
+        policy.get("io_pressure_resume_lag_blocks"),
+        CATCHUP_IO_PRESSURE_RESUME_LAG_BLOCKS,
+    )
+    if lag > resume_lag:
+        blockers.append(f"peer_lag={lag}>{resume_lag}")
+    if policy.get("io_pressure_reasons"):
+        blockers.append("io_pressure_active")
+    return blockers
 
 
 def status_payload_has_miner_demand(payload: dict[str, Any]) -> bool:
@@ -670,6 +704,8 @@ def node_mining_template_support_should_repair(payload: dict[str, Any]) -> bool:
     if not MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED:
         return False
     if catchup_pause_active(payload):
+        return False
+    if catchup_pause_release_blockers(payload):
         return False
     if not (status_payload_has_miner_demand(payload) or asic_lan_neighbor_present()):
         return False
@@ -1149,7 +1185,7 @@ def apply_catchup_node_runtime(payload: dict[str, Any], policy: dict[str, Any]) 
     if ok:
         log(
             "catch-up pause adjusted node runtime "
-            f"lag={policy.get('lag_blocks')} threshold={policy.get('threshold_blocks')} paths={','.join(changed_paths)}"
+            f"lag={policy.get('lag_blocks')} trigger={policy.get('trigger')} paths={','.join(changed_paths)}"
         )
         record_incident(
             "catchup_pause_node_runtime_adjusted",
@@ -1229,44 +1265,81 @@ def pool_container_running(payload: dict[str, Any]) -> bool:
     return bool(container.get("running"))
 
 
+def docker_container_running(name: str) -> bool | None:
+    result = run(["docker", "inspect", "-f", "{{.State.Running}}", name], timeout=15)
+    if not result.ok:
+        return None
+    text = result.stdout.strip().lower()
+    if text == "true":
+        return True
+    if text == "false":
+        return False
+    return None
+
+
+def catchup_pause_reason(policy: dict[str, Any], blockers: list[str] | None = None) -> str:
+    lag = safe_int(policy.get("lag_blocks"), 0)
+    trigger = str(policy.get("trigger") or "")
+    if trigger == "io_pressure" or policy.get("io_pressure_active") or policy.get("io_pressure_reasons"):
+        min_lag = safe_int(policy.get("io_pressure_min_lag_blocks"), CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS)
+        resume_lag = safe_int(policy.get("io_pressure_resume_lag_blocks"), CATCHUP_IO_PRESSURE_RESUME_LAG_BLOCKS)
+        reason = (
+            f"node is I/O-bound and {lag} blocks behind peers "
+            f"(I/O pause threshold {min_lag}, resume lag {resume_lag})"
+        )
+    else:
+        reason = f"node is {lag} blocks behind peers"
+    if blockers:
+        reason = f"{reason}; release blockers: {', '.join(blockers)}"
+    return reason
+
+
 def stop_pool_container(
     payload: dict[str, Any],
     reason: str,
     pause_type: str = "catchup_pause",
     policy: dict[str, Any] | None = None,
 ) -> bool:
-    compose = run(docker_compose_command("stop", POOL_CONTAINER), timeout=120)
+    service = compose_service_name(POOL_CONTAINER)
+    compose = run(docker_compose_command("stop", service), timeout=120)
     action = {
         "reason": reason,
         "pause_type": pause_type,
         "container": POOL_CONTAINER,
+        "service": service,
         "method": "docker compose stop",
         **compose.as_dict(),
     }
     if compose.ok:
-        mark_pool_pause(payload, pause_type, reason, policy)
-        event_type = "catchup_pause_stopped_pool" if pause_type == "catchup_pause" else "mining_imperative_paused_pool"
-        message_prefix = "Catch-up pause" if pause_type == "catchup_pause" else "Mining imperative"
-        log(f"{pause_type} stopped {POOL_CONTAINER}: {reason}")
-        record_incident(
-            event_type,
-            "warning",
-            f"{message_prefix} stopped {POOL_CONTAINER}: {reason}",
-            action,
-            payload,
-        )
-        return True
+        running_after = docker_container_running(POOL_CONTAINER)
+        if running_after is False or running_after is None and service == POOL_CONTAINER:
+            mark_pool_pause(payload, pause_type, reason, policy)
+            event_type = "catchup_pause_stopped_pool" if pause_type == "catchup_pause" else "mining_imperative_paused_pool"
+            message_prefix = "Catch-up pause" if pause_type == "catchup_pause" else "Mining imperative"
+            log(f"{pause_type} stopped {POOL_CONTAINER}: {reason}")
+            record_incident(
+                event_type,
+                "warning",
+                f"{message_prefix} stopped {POOL_CONTAINER}: {reason}",
+                action,
+                payload,
+            )
+            return True
+        action["container_running_after"] = running_after
 
     stop = run(["docker", "stop", POOL_CONTAINER], timeout=60)
+    running_after = docker_container_running(POOL_CONTAINER)
     action = {
         "reason": reason,
         "pause_type": pause_type,
         "container": POOL_CONTAINER,
+        "service": service,
         "method": "docker stop",
         "compose_stop": compose.as_dict(),
         "docker_stop": stop.as_dict(),
+        "container_running_after": running_after,
     }
-    if stop.ok:
+    if stop.ok and running_after is not True:
         mark_pool_pause(payload, pause_type, reason, policy)
         event_type = "catchup_pause_stopped_pool" if pause_type == "catchup_pause" else "mining_imperative_paused_pool"
         message_prefix = "Catch-up pause" if pause_type == "catchup_pause" else "Mining imperative"
@@ -1295,31 +1368,13 @@ def stop_pool_container(
 
 
 def start_pool_container(payload: dict[str, Any], reason: str) -> bool:
-    start = run(["docker", "start", POOL_CONTAINER], timeout=60)
+    service = compose_service_name(POOL_CONTAINER)
+    compose = run(docker_compose_command("up", "-d", "--no-deps", "--force-recreate", service), timeout=180)
     action = {
         "reason": reason,
         "container": POOL_CONTAINER,
-        "method": "docker start",
-        **start.as_dict(),
-    }
-    if start.ok:
-        clear_pool_pause(reason)
-        log(f"mining imperative started {POOL_CONTAINER}: {reason}")
-        record_incident(
-            "mining_imperative_started_pool",
-            "critical",
-            f"Mining imperative started {POOL_CONTAINER}: {reason}",
-            action,
-            payload,
-        )
-        return True
-
-    compose = run(docker_compose_command("up", "-d", "--no-deps", POOL_CONTAINER), timeout=180)
-    action = {
-        "reason": reason,
-        "container": POOL_CONTAINER,
-        "method": "docker compose up --no-deps",
-        "docker_start": start.as_dict(),
+        "service": service,
+        "method": "docker compose up --no-deps --force-recreate",
         "compose": compose.as_dict(),
     }
     if compose.ok:
@@ -1329,6 +1384,27 @@ def start_pool_container(payload: dict[str, Any], reason: str) -> bool:
             "mining_imperative_recreated_pool",
             "critical",
             f"Mining imperative recreated {POOL_CONTAINER}: {reason}",
+            action,
+            payload,
+        )
+        return True
+
+    start = run(["docker", "start", POOL_CONTAINER], timeout=60)
+    action = {
+        "reason": reason,
+        "container": POOL_CONTAINER,
+        "service": service,
+        "method": "docker start",
+        "compose": compose.as_dict(),
+        "docker_start": start.as_dict(),
+    }
+    if start.ok:
+        clear_pool_pause(reason)
+        log(f"mining imperative started {POOL_CONTAINER} with docker start fallback: {reason}")
+        record_incident(
+            "mining_imperative_started_pool",
+            "critical",
+            f"Mining imperative started {POOL_CONTAINER}: {reason}",
             action,
             payload,
         )
@@ -1355,6 +1431,25 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
     actions: list[str] = []
     catchup_policy = catchup_policy_from_payload(payload)
     catchup_active = bool(catchup_policy.get("active"))
+    catchup_pause = pool_pause_state()
+    catchup_release_blockers = catchup_pause_release_blockers(payload, catchup_policy, catchup_pause)
+    catchup_hold_active = bool(not catchup_active and catchup_release_blockers)
+    effective_catchup_active = bool(catchup_active or catchup_hold_active)
+    catchup_repair_policy = catchup_policy
+    if catchup_hold_active:
+        pause_policy = dict_value(catchup_pause.get("policy"))
+        trigger = str(
+            catchup_policy.get("trigger")
+            or pause_policy.get("trigger")
+            or ("io_pressure" if catchup_policy.get("io_pressure_reasons") else "catchup_hold")
+        )
+        catchup_repair_policy = {
+            **catchup_policy,
+            "active": True,
+            "trigger": trigger,
+            "hold_active": True,
+            "release_blockers": catchup_release_blockers,
+        }
     backend_blockers = node_backend_blocks_pool_start(payload)
     applied_catchup_runtime = False
     for unit in MINING_IMPERATIVE_GUARD_UNITS:
@@ -1369,16 +1464,15 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
         if repair_constrained_fastartifact(payload):
             actions.append("disabled_constrained_fastartifact")
 
-    if catchup_active:
-        reason = (
-            f"node is {catchup_policy.get('lag_blocks')} blocks behind peers "
-            f"(pause threshold {catchup_policy.get('threshold_blocks')})"
-        )
-        if pool_container_running(payload) and stop_pool_container(payload, reason, "catchup_pause", catchup_policy):
+    if effective_catchup_active:
+        reason = catchup_pause_reason(catchup_repair_policy, catchup_release_blockers if catchup_hold_active else None)
+        if pool_container_running(payload) and stop_pool_container(payload, reason, "catchup_pause", catchup_repair_policy):
             actions.append(f"stopped_container:{POOL_CONTAINER}:catchup_pause")
-        if apply_catchup_node_runtime(payload, catchup_policy):
+        if apply_catchup_node_runtime(payload, catchup_repair_policy):
             actions.append("applied_catchup_node_runtime")
             applied_catchup_runtime = True
+    elif catchup_pause.get("type") == "catchup_pause":
+        clear_pool_pause("catch-up release conditions met")
     elif backend_blockers:
         reason = "node backend is not healthy: " + ", ".join(backend_blockers)
         if pool_container_running(payload) and stop_pool_container(payload, reason, "backend_recovery"):
@@ -1388,7 +1482,7 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
         if repair_node_backend(payload, backend_blockers):
             actions.append("recreated_node_backend")
 
-    if not catchup_active and node_mining_template_support_should_repair(payload):
+    if not effective_catchup_active and node_mining_template_support_should_repair(payload):
         if repair_node_mining_template_support(payload):
             actions.append("enabled_node_mining_template_support")
 
@@ -1401,7 +1495,7 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
         lan_candidate = asic_lan_neighbor_present()
         chain_ready = chain_ready_for_mining(payload)
         should_start = (
-            not catchup_active
+            not effective_catchup_active
             and not backend_blockers
             and (miner_demand or lan_candidate or (MINING_IMPERATIVE_START_IDLE_SYNCED_POOL and chain_ready))
         )
@@ -1415,10 +1509,11 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
                 reasons.append("chain is ready")
             if start_pool_container(payload, "; ".join(reasons) or "mining service is required"):
                 actions.append(f"started_container:{POOL_CONTAINER}")
-        elif catchup_active:
+        elif effective_catchup_active:
             log(
                 f"mining imperative left {POOL_CONTAINER} stopped for catch-up pause: "
-                f"lag={catchup_policy.get('lag_blocks')} threshold={catchup_policy.get('threshold_blocks')}"
+                f"lag={catchup_policy.get('lag_blocks')} trigger={catchup_repair_policy.get('trigger')} "
+                f"blockers={','.join(catchup_release_blockers)}"
             )
         elif backend_blockers:
             pause = pool_pause_state()
@@ -1450,15 +1545,42 @@ def write_error_state(error: Exception) -> None:
     )
 
 
+def status_payload_needs_thin_sample(payload: dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    sync_progress = dict_value(payload.get("sync_progress"))
+    if evm_sync_priority_active(sync_progress):
+        return True
+    catchup_policy = dict_value(payload.get("catchup_policy"))
+    if catchup_policy.get("active") or catchup_policy.get("hold_active"):
+        return True
+    return bool(catchup_io_pressure_reasons(payload))
+
+
+def previous_sample_needs_thin_mode() -> bool:
+    if not STATUS_SAMPLER_AUTO_THIN_ENABLED:
+        return False
+    cached = read_json_file(STATUS_SAMPLER_FILE, {})
+    payload = dict_value(cached.get("payload")) if isinstance(cached, dict) else {}
+    return status_payload_needs_thin_sample(payload)
+
+
 def sample_once(include_logs: bool) -> dict[str, Any]:
+    effective_include_logs = bool(include_logs and not previous_sample_needs_thin_mode())
     # max_age_seconds=0 is the explicit hard-bypass path: do not read either
     # the shared sampler file or the short shared cache while producing a sample.
-    payload = collect_status_cached(include_logs=include_logs, max_age_seconds=0)
-    write_status_sampler_payload(payload, include_logs=include_logs)
+    payload = collect_status_cached(include_logs=effective_include_logs, max_age_seconds=0)
+    payload["status_sampler_pressure_mode"] = {
+        "auto_thin_enabled": STATUS_SAMPLER_AUTO_THIN_ENABLED,
+        "requested_include_logs": include_logs,
+        "effective_include_logs": effective_include_logs,
+        "thin_sample": bool(include_logs and not effective_include_logs),
+    }
+    write_status_sampler_payload(payload, include_logs=effective_include_logs)
     log(
         "sampled "
         f"overall={payload.get('overall')} mode={payload.get('mode')} "
-        f"fresh={payload.get('fresh')} include_logs={include_logs}"
+        f"fresh={payload.get('fresh')} include_logs={effective_include_logs}"
     )
     return payload
 
@@ -1508,12 +1630,15 @@ def run_loop(interval_seconds: float, include_logs: bool, earnings_snapshot_inte
                 if repair.get("actions"):
                     log(f"mining imperative repair actions={','.join(repair['actions'])}")
                 last_mining_repair_epoch = now_epoch
-            last_earnings_attempt_epoch = maybe_record_earnings_snapshot(
-                time.time(),
-                last_earnings_attempt_epoch,
-                earnings_snapshot_interval_seconds,
-                record_earnings,
-            )
+            if status_payload_needs_thin_sample(payload):
+                log("earnings snapshot skipped while sampler pressure mode is active")
+            else:
+                last_earnings_attempt_epoch = maybe_record_earnings_snapshot(
+                    time.time(),
+                    last_earnings_attempt_epoch,
+                    earnings_snapshot_interval_seconds,
+                    record_earnings,
+                )
         except Exception as exc:  # noqa: BLE001 - sampler must keep trying.
             log(f"sample failed: {exc}")
             try:

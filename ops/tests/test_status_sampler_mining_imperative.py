@@ -29,19 +29,22 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "MINING_IMPERATIVE_NODE_BACKEND_REPAIR_COOLDOWN_SECONDS",
                 "MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED",
                 "CATCHUP_PAUSE_ENABLED",
-                "CATCHUP_PAUSE_THRESHOLD_BLOCKS",
                 "CATCHUP_NODE_RECREATE_ENABLED",
                 "CATCHUP_NODE_CACHE_MB",
                 "CATCHUP_NODE_CACHE_MIN_MB",
                 "CATCHUP_NODE_CACHE_MEMORY_PERCENT",
                 "CATCHUP_IO_PRESSURE_PAUSE_ENABLED",
                 "CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS",
+                "CATCHUP_IO_PRESSURE_RESUME_LAG_BLOCKS",
                 "CATCHUP_IOWAIT_WARN_PERCENT",
                 "CATCHUP_IO_SOME_AVG10_WARN",
                 "CATCHUP_IO_FULL_AVG10_WARN",
+                "POOL_CONTAINER",
                 "append_incident",
                 "collect_pool_activity",
+                "compose_service_name",
                 "detect_total_memory_bytes",
+                "evm_sync_priority_active",
                 "log",
                 "POOL_ENV_FILE",
                 "PROJECT_ROOT",
@@ -72,13 +75,13 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         status_sampler.PROJECT_ROOT = pathlib.Path("/nonexistent/status-sampler-test-root")
         status_sampler.REPAIR_STATE_FILE = pathlib.Path(self.tmpdir.name) / "repair-state.json"
         status_sampler.CATCHUP_PAUSE_ENABLED = True
-        status_sampler.CATCHUP_PAUSE_THRESHOLD_BLOCKS = 300
         status_sampler.CATCHUP_NODE_RECREATE_ENABLED = True
         status_sampler.CATCHUP_NODE_CACHE_MB = 6144
         status_sampler.CATCHUP_NODE_CACHE_MIN_MB = 1024
         status_sampler.CATCHUP_NODE_CACHE_MEMORY_PERCENT = 40.0
         status_sampler.CATCHUP_IO_PRESSURE_PAUSE_ENABLED = True
         status_sampler.CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS = 25
+        status_sampler.CATCHUP_IO_PRESSURE_RESUME_LAG_BLOCKS = 5
         status_sampler.CATCHUP_IOWAIT_WARN_PERCENT = 15.0
         status_sampler.CATCHUP_IO_SOME_AVG10_WARN = 20.0
         status_sampler.CATCHUP_IO_FULL_AVG10_WARN = 10.0
@@ -106,6 +109,12 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
     def command_result(self, command: list[str], returncode: int = 0, stdout: str = "", stderr: str = ""):
         return pool_ops.CommandResult(command, returncode, stdout, stderr, 0.0)
 
+    def assert_compose_pool_recreate(self, commands: list[list[str]]) -> None:
+        self.assertTrue(
+            any(command[-5:] == ["up", "-d", "--no-deps", "--force-recreate", "pool"] for command in commands),
+            commands,
+        )
+
     def stopped_pool_payload(self, sync_status: str = "syncing", remaining_blocks: int = 5) -> dict:
         return {
             "overall": "syncing" if sync_status != "synced" else "ok",
@@ -121,6 +130,15 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
             "pool_metrics": {"active_connections": 0, "source_job_health": {}},
         }
 
+    def test_sampler_thins_when_evm_lag_has_priority(self) -> None:
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["sync_progress"]["evm_lag_to_reference"] = 64
+        status_sampler.evm_sync_priority_active = lambda sync_progress: int(
+            sync_progress.get("evm_lag_to_reference") or 0
+        ) >= 25
+
+        self.assertTrue(status_sampler.status_payload_needs_thin_sample(payload))
+
     def test_starts_stopped_pool_when_asic_lan_neighbor_is_present(self) -> None:
         commands = []
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
@@ -135,7 +153,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         repair = status_sampler.mining_imperative_repair(self.stopped_pool_payload())
 
-        self.assertIn(["docker", "start", status_sampler.POOL_CONTAINER], commands)
+        self.assert_compose_pool_recreate(commands)
         self.assertIn(f"started_container:{status_sampler.POOL_CONTAINER}", repair["actions"])
 
     def test_compose_command_uses_stable_project_name_for_symlinked_runtime(self) -> None:
@@ -157,7 +175,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         repair = status_sampler.mining_imperative_repair(self.stopped_pool_payload(sync_status="synced", remaining_blocks=0))
 
-        self.assertIn(["docker", "start", status_sampler.POOL_CONTAINER], commands)
+        self.assert_compose_pool_recreate(commands)
         self.assertIn(f"started_container:{status_sampler.POOL_CONTAINER}", repair["actions"])
 
     def test_does_not_start_pool_without_miner_demand_or_ready_chain(self) -> None:
@@ -186,8 +204,14 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
         payload["catchup_policy"] = {
             "active": True,
+            "trigger": "io_pressure",
             "lag_blocks": 450,
-            "threshold_blocks": 300,
+            "io_pressure_reasons": ["io_full_avg10=23.00>=10.00"],
+            "io_pressure_min_lag_blocks": 25,
+            "io_pressure_resume_lag_blocks": 5,
+            "backend_unready_reasons": ["p2p_mining_fresh=false"],
+            "catchup_churn_detected": True,
+            "mining_ready": False,
         }
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -240,6 +264,36 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertTrue(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
         self.assertTrue(any("--force-recreate" in command for command in commands))
 
+    def test_stop_pool_container_normalizes_full_container_name_to_compose_service(self) -> None:
+        commands = []
+        inspect_results = iter(["true\n", "false\n"])
+        status_sampler.POOL_CONTAINER = "pool-stack-docker-pool-1"
+        status_sampler.compose_service_name = lambda _name: "pool"
+        payload = {
+            "containers": {status_sampler.POOL_CONTAINER: {"running": True}},
+            "sync_progress": {"status": "synced", "remaining_blocks": 0},
+        }
+
+        def fake_run(command: list[str], timeout: int = 20):
+            commands.append(command)
+            if command[:3] == ["docker", "inspect", "-f"]:
+                return self.command_result(command, stdout=next(inspect_results))
+            return self.command_result(command)
+
+        status_sampler.run = fake_run
+
+        ok = status_sampler.stop_pool_container(
+            payload,
+            "node is I/O-bound and behind peers",
+            "catchup_pause",
+            {"trigger": "io_pressure", "lag_blocks": 55},
+        )
+
+        self.assertTrue(ok)
+        self.assertTrue(any(command[-2:] == ["stop", "pool"] for command in commands))
+        self.assertIn(["docker", "stop", status_sampler.POOL_CONTAINER], commands)
+        self.assertEqual(status_sampler.pool_pause_state()["type"], "catchup_pause")
+
     def test_catchup_pause_does_not_restart_stopped_pool_for_visible_miners(self) -> None:
         commands = []
         env_updates = {}
@@ -252,8 +306,14 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
         payload["catchup_policy"] = {
             "active": True,
+            "trigger": "io_pressure",
             "lag_blocks": 450,
-            "threshold_blocks": 300,
+            "io_pressure_reasons": ["io_full_avg10=23.00>=10.00"],
+            "io_pressure_min_lag_blocks": 25,
+            "io_pressure_resume_lag_blocks": 5,
+            "backend_unready_reasons": ["p2p_mining_fresh=false"],
+            "catchup_churn_detected": True,
+            "mining_ready": False,
         }
 
         def fake_set_runtime_env(key: str, value: str):
@@ -271,6 +331,68 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertNotIn(f"started_container:{status_sampler.POOL_CONTAINER}", repair["actions"])
         self.assertNotIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
         self.assertFalse(any(command[:2] == ["docker", "start"] for command in commands))
+
+    def test_catchup_pause_holds_until_io_pressure_and_peer_lag_clear(self) -> None:
+        commands = []
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.write_repair_state(
+            {
+                "pool_pause": {
+                    "active": True,
+                    "type": "catchup_pause",
+                    "reason": "node is I/O-bound and behind peers",
+                    "started_at_epoch": 1,
+                    "policy": {"trigger": "io_pressure", "io_pressure_resume_lag_blocks": 5},
+                }
+            }
+        )
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = False
+        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
+        payload["pool_metrics"]["selected_backend_source_health"] = {"node_p2p_best_peer_lead_blocks": 18}
+        payload["catchup_policy"] = {
+            "backend_unready_reasons": ["p2p_mining_fresh=false"],
+            "mining_ready": False,
+        }
+        payload["host_pressure"] = {
+            "iowait_percent": 22.0,
+            "io_some_avg10": 28.0,
+            "io_full_avg10": 23.0,
+        }
+        status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertEqual(repair["actions"], [])
+        self.assertFalse(any(command[:2] == ["docker", "start"] for command in commands))
+        self.assertEqual(status_sampler.pool_pause_state()["type"], "catchup_pause")
+
+    def test_catchup_pause_releases_and_starts_pool_when_pressure_clears(self) -> None:
+        commands = []
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.write_repair_state(
+            {
+                "pool_pause": {
+                    "active": True,
+                    "type": "catchup_pause",
+                    "reason": "node is I/O-bound and behind peers",
+                    "started_at_epoch": 1,
+                    "policy": {"trigger": "io_pressure", "io_pressure_resume_lag_blocks": 5},
+                }
+            }
+        )
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = False
+        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
+        payload["pool_metrics"]["selected_backend_source_health"] = {"node_p2p_best_peer_lead_blocks": 0}
+        payload["catchup_policy"] = {"mining_ready": True}
+        status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assert_compose_pool_recreate(commands)
+        self.assertIn(f"started_container:{status_sampler.POOL_CONTAINER}", repair["actions"])
+        self.assertEqual(status_sampler.pool_pause_state(), {})
 
     def test_backend_recovery_recreates_dead_node_and_blocks_pool_start(self) -> None:
         commands = []
@@ -349,9 +471,37 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         repair = status_sampler.mining_imperative_repair(payload)
 
-        self.assertIn(["docker", "start", status_sampler.POOL_CONTAINER], commands)
+        self.assert_compose_pool_recreate(commands)
         self.assertIn(f"started_container:{status_sampler.POOL_CONTAINER}", repair["actions"])
         self.assertEqual(status_sampler.pool_pause_state(), {})
+
+    def test_io_pressure_pause_disabled_releases_existing_catchup_hold(self) -> None:
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.CATCHUP_IO_PRESSURE_PAUSE_ENABLED = False
+        status_sampler.write_repair_state(
+            {
+                "pool_pause": {
+                    "active": True,
+                    "type": "catchup_pause",
+                    "reason": "node is I/O-bound and behind peers",
+                    "started_at_epoch": 1,
+                    "policy": {"trigger": "io_pressure", "io_pressure_resume_lag_blocks": 5},
+                }
+            }
+        )
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["host_pressure"] = {
+            "iowait_percent": 22.0,
+            "io_some_avg10": 28.0,
+            "io_full_avg10": 23.0,
+        }
+
+        policy = status_sampler.catchup_policy_from_payload(payload)
+        blockers = status_sampler.catchup_pause_release_blockers(payload, policy)
+
+        self.assertFalse(policy["io_pressure_pause_enabled"])
+        self.assertFalse(policy["active"])
+        self.assertEqual(blockers, [])
 
     def test_io_pressure_without_backend_evidence_does_not_create_zero_lag_pause(self) -> None:
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
@@ -368,7 +518,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertFalse(policy["io_pressure_active"])
         self.assertFalse(policy["backend_unready_under_pressure"])
 
-    def test_backend_churn_below_threshold_does_not_create_pause(self) -> None:
+    def test_backend_io_churn_at_io_threshold_creates_pause(self) -> None:
         payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=80)
         payload["catchup_policy"] = {
             "backend_unready_reasons": ["mineable=false", "submit_ready=false"],
@@ -382,21 +532,22 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         policy = status_sampler.catchup_policy_from_payload(payload)
 
-        self.assertFalse(policy["active"])
-        self.assertFalse(policy["io_pressure_active"])
-        self.assertFalse(policy["lag_threshold_met"])
+        self.assertTrue(policy["active"])
+        self.assertTrue(policy["io_pressure_active"])
+        self.assertEqual(policy["trigger"], "io_pressure")
         self.assertTrue(policy["backend_unready_under_pressure"])
         self.assertTrue(policy["catchup_churn_detected"])
+        self.assertTrue(policy["io_pressure_lag_observed"])
 
-    def test_catchup_policy_from_payload_pauses_at_300_blocks(self) -> None:
+    def test_catchup_policy_from_payload_does_not_pause_on_lag_alone(self) -> None:
         payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=300)
 
         policy = status_sampler.catchup_policy_from_payload(payload)
 
-        self.assertTrue(policy["active"])
-        self.assertEqual(policy["trigger"], "lag_threshold")
+        self.assertFalse(policy["active"])
+        self.assertEqual(policy["trigger"], "")
         self.assertEqual(policy["lag_blocks"], 300)
-        self.assertTrue(policy["lag_threshold_met"])
+        self.assertFalse(policy["io_pressure_active"])
 
     def test_reenables_guard_timer_when_it_drifts_disabled(self) -> None:
         commands = []

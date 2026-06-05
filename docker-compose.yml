@@ -101,12 +101,18 @@ services:
         <<: *build-args
     restart: unless-stopped
     logging: *mining-logging
+    tmpfs:
+      - /tmp:size=${BDAG_NODE_TMPFS_SIZE:-512m},mode=1777
+      - /var/tmp:size=${BDAG_NODE_TMPFS_SIZE:-512m},mode=1777
+      - /run/bdag-ephemeral:size=${BDAG_NODE_EPHEMERAL_TMPFS_SIZE:-512m},mode=1777
+      - /var/log/bdagStack:size=${BDAG_NODE_LOG_TMPFS_SIZE:-128m},mode=0755
+      - /var/lib/bdagStack/node/mainnet/peerstore:size=${BDAG_NODE_PEERSTORE_TMPFS_SIZE:-64m},mode=0755
     ports:
-      - "${P2P_PORT:-8150}:8150"
-      - "${BDAG_RPC_PORT:-38131}:38131"
-      - "${EVM_HTTP_PORT:-18545}:18545"
-      - "${EVM_WS_PORT:-18546}:18546"
-      - "${NODE_METRICS_PORT:-6060}:6060"
+      - "${BDAG_HOST_BIND_IP:-0.0.0.0}:${P2P_PORT:-8150}:8150"
+      - "${BDAG_HOST_BIND_IP:-0.0.0.0}:${BDAG_RPC_PORT:-38131}:38131"
+      - "${BDAG_HOST_BIND_IP:-0.0.0.0}:${EVM_HTTP_PORT:-18545}:18545"
+      - "${BDAG_HOST_BIND_IP:-0.0.0.0}:${EVM_WS_PORT:-18546}:18546"
+      - "${BDAG_HOST_BIND_IP:-0.0.0.0}:${NODE_METRICS_PORT:-6060}:6060"
     environment:
       TMPDIR: /tmp
       TMP: /tmp
@@ -244,8 +250,8 @@ services:
       METRICS_ADDR:       ${METRICS_ADDR:-0.0.0.0:9090}
       POOL_INSTANCE_ID:   ${POOL_INSTANCE_ID:-}
     ports:
-      - "${POOL_BIND_PORT:-3334}:3334"
-      - "${POOL_API_PORT:-9090}:9090"
+      - "${BDAG_HOST_BIND_IP:-0.0.0.0}:${POOL_BIND_PORT:-3334}:3334"
+      - "${BDAG_HOST_BIND_IP:-0.0.0.0}:${POOL_API_PORT:-9090}:9090"
 
 
 
@@ -312,8 +318,9 @@ services:
       BDAG_DASHBOARD_STATUS_CACHE_SECONDS: ${BDAG_DASHBOARD_STATUS_CACHE_SECONDS:-120}
       BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS: ${BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS:-120}
       BDAG_DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS: ${BDAG_DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS:-60}
-      BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED: ${BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED:-1}
+      BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED: ${BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED:-0}
       BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS: ${BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS:-120}
+      BDAG_EVM_SYNC_PRIORITY_LAG_BLOCKS: ${BDAG_EVM_SYNC_PRIORITY_LAG_BLOCKS:-25}
       BDAG_GLOBAL_BLOCK_WINDOW: ${BDAG_GLOBAL_BLOCK_WINDOW:-128}
       BDAG_GLOBAL_DEFERRED_BLOCK_WINDOW: ${BDAG_GLOBAL_DEFERRED_BLOCK_WINDOW:-64}
       BDAG_POOL_HOST: ${BDAG_POOL_HOST:-}
@@ -323,11 +330,12 @@ services:
       BDAG_MINER_POOL_PASSWORD: ${BDAG_MINER_POOL_PASSWORD:-1234}
       MINING_POOL_ADDRESS: ${MINING_POOL_ADDRESS:?set MINING_POOL_ADDRESS to a non-zero payout address}
     ports:
-      - "${DASHBOARD_HOST_PORT:-9280}:9280"
+      - "${BDAG_DASHBOARD_HOST_BIND_IP:-127.0.0.1}:${DASHBOARD_HOST_PORT:-8088}:9280"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./ops:/opt/dashboard/ops:ro
       - ./:/workspace:ro
-      - dashboard-runtime:/var/lib/bdag-dashboard
+      - ./ops/runtime:/var/lib/bdag-dashboard/runtime
 
   # --------------------------------------------------------------------------
   # Optional CPU miner (dockerfile-dev target only). Enable with:

@@ -33,6 +33,26 @@ class PoolOpsEnvAliasTests(unittest.TestCase):
         with mock.patch.dict(pool_ops.os.environ, {"MINING_POOL_ADDRESS": ADDRESS}, clear=True):
             self.assertEqual(ADDRESS, pool_ops.read_env_value("MINING_ADDRESS"))
 
+    def test_host_bind_rewrites_loopback_rpc_urls(self) -> None:
+        with mock.patch.dict(
+            pool_ops.os.environ,
+            {
+                "BDAG_HOST_BIND_IP": "192.168.100.120",
+                "BDAG_NODE_RPC_URLS": "node=http://127.0.0.1:38131",
+                "BDAG_GLOBAL_CHAIN_RPC_URLS": "node=http://localhost:38131",
+                "NODE_RPC_URLS": "http://node:38131",
+            },
+            clear=True,
+        ):
+            pool_ops.apply_host_bind_rpc_aliases()
+
+            self.assertEqual("node=http://192.168.100.120:38131", pool_ops.os.environ["BDAG_NODE_RPC_URLS"])
+            self.assertEqual(
+                "node=http://192.168.100.120:38131",
+                pool_ops.os.environ["BDAG_GLOBAL_CHAIN_RPC_URLS"],
+            )
+            self.assertEqual("http://node:38131", pool_ops.os.environ["NODE_RPC_URLS"])
+
 
 if __name__ == "__main__":
     unittest.main()

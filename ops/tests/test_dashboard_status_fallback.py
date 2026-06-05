@@ -242,22 +242,25 @@ class DashboardStatusFallbackTests(unittest.TestCase):
                 "managed_node_services": ["node"],
                 "catchup_policy": {
                     "active": True,
+                    "trigger": "io_pressure",
                     "lag_blocks": 450,
-                    "threshold_blocks": 300,
+                    "io_pressure_min_lag_blocks": 25,
+                    "io_pressure_resume_lag_blocks": 5,
                     "user_message": "Mining is intentionally paused while chain catch-up has priority.",
-                    "next_step": "Mining resumes when lag is at or below 300 blocks.",
+                    "next_step": "Mining resumes when I/O pressure drops and lag is at or below 5 blocks.",
                 },
             }
 
             enriched = dashboard.enrich_status_with_sync_estimate(payload)
 
         estimate = enriched["sync_estimate"]
-        self.assertEqual(estimate["stage"], "Catch-up pause active")
+        self.assertEqual(estimate["stage"], "I/O-bound catch-up pause")
         self.assertTrue(estimate["catchup_pause_active"])
         self.assertEqual(estimate["catchup_pause_lag_blocks"], 450)
-        self.assertEqual(estimate["catchup_pause_threshold_blocks"], 300)
+        self.assertEqual(estimate["catchup_pause_io_pressure_min_lag_blocks"], 25)
+        self.assertEqual(estimate["catchup_pause_io_pressure_resume_lag_blocks"], 5)
         self.assertEqual(estimate["narrative"], "Mining is intentionally paused while chain catch-up has priority.")
-        self.assertEqual(estimate["next_step"], "Mining resumes when lag is at or below 300 blocks.")
+        self.assertEqual(estimate["next_step"], "Mining resumes when I/O pressure drops and lag is at or below 5 blocks.")
 
     def test_status_payload_fallback_estimates_wait_from_stale_cache_age(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

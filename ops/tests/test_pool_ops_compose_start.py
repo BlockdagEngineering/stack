@@ -21,6 +21,7 @@ class ComposeStartCommandTests(unittest.TestCase):
         self.original_pool_env = pool_ops.POOL_ENV_FILE
         self.original_env = dict(os.environ)
         self.addCleanup(self.restore)
+        os.environ.pop("BDAG_START_SERVICES", None)
 
     def restore(self) -> None:
         pool_ops.STACK_SERVICES = self.original_stack_services
@@ -52,30 +53,59 @@ class ComposeStartCommandTests(unittest.TestCase):
             "pool-stack-docker-pool-1": "pool",
             "pool-stack-docker-dashboard-1": "dashboard",
         }
-        with mock.patch.object(pool_ops.subprocess, "run", side_effect=self.fake_inspect(labels)):
+        inspected = {name: {"running": False} for name in pool_ops.STACK_SERVICES}
+        with (
+            mock.patch.object(pool_ops, "docker_inspect", return_value=inspected),
+            mock.patch.object(pool_ops.subprocess, "run", side_effect=self.fake_inspect(labels)),
+        ):
             command = pool_ops.docker_compose_start_command()
 
-        self.assertEqual(command[-6:], ["up", "-d", "postgres", "node", "pool", "dashboard"])
+        self.assertEqual(command[-7:], ["up", "-d", "--no-deps", "postgres", "node", "pool", "dashboard"])
         self.assertNotIn("hotsnap", command)
         self.assertNotIn("snapshot-node", command)
 
     def test_repair_start_command_infers_service_from_compose_container_name(self) -> None:
         pool_ops.STACK_SERVICES = ["pool-stack-docker-node-1"]
-        with mock.patch.object(
-            pool_ops.subprocess,
-            "run",
-            return_value=SimpleNamespace(returncode=1, stdout="", stderr="not found"),
+        with (
+            mock.patch.object(pool_ops, "docker_inspect", return_value={"pool-stack-docker-node-1": {"running": False}}),
+            mock.patch.object(
+                pool_ops.subprocess,
+                "run",
+                return_value=SimpleNamespace(returncode=1, stdout="", stderr="not found"),
+            ),
         ):
             command = pool_ops.docker_compose_start_command()
 
-        self.assertEqual(command[-3:], ["up", "-d", "node"])
+        self.assertEqual(command[-4:], ["up", "-d", "--no-deps", "node"])
 
     def test_inspect_timeout_falls_back_to_compose_container_name(self) -> None:
         pool_ops.STACK_SERVICES = ["pool-stack-docker-node-1"]
-        with mock.patch.object(pool_ops.subprocess, "run", side_effect=pool_ops.subprocess.TimeoutExpired("docker", 10)):
+        with (
+            mock.patch.object(pool_ops, "docker_inspect", return_value={"pool-stack-docker-node-1": {"running": False}}),
+            mock.patch.object(pool_ops.subprocess, "run", side_effect=pool_ops.subprocess.TimeoutExpired("docker", 10)),
+        ):
             command = pool_ops.docker_compose_start_command()
 
-        self.assertEqual(command[-3:], ["up", "-d", "node"])
+        self.assertEqual(command[-4:], ["up", "-d", "--no-deps", "node"])
+
+    def test_repair_start_command_omits_running_services(self) -> None:
+        pool_ops.STACK_SERVICES = ["pool-stack-docker-node-1", "pool-stack-docker-pool-1"]
+        labels = {
+            "pool-stack-docker-node-1": "node",
+            "pool-stack-docker-pool-1": "pool",
+        }
+        inspected = {
+            "pool-stack-docker-node-1": {"running": True},
+            "pool-stack-docker-pool-1": {"running": False},
+        }
+        with (
+            mock.patch.object(pool_ops, "docker_inspect", return_value=inspected),
+            mock.patch.object(pool_ops.subprocess, "run", side_effect=self.fake_inspect(labels)),
+        ):
+            command = pool_ops.docker_compose_start_command()
+
+        self.assertEqual(command[-4:], ["up", "-d", "--no-deps", "pool"])
+        self.assertNotIn("node", command[-4:])
 
 
 if __name__ == "__main__":

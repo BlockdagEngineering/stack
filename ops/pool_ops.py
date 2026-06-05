@@ -50,6 +50,19 @@ def apply_stack_env_aliases() -> None:
                 break
 
 
+def apply_host_bind_rpc_aliases() -> None:
+    bind_ip = os.environ.get("BDAG_HOST_BIND_IP", "").strip()
+    if not bind_ip or bind_ip == "0.0.0.0" or bind_ip.startswith("127."):
+        return
+    for key in ("BDAG_NODE_RPC_URLS", "BDAG_GLOBAL_CHAIN_RPC_URLS", "BDAG_RPC_URL", "NODE_RPC_URLS"):
+        value = os.environ.get(key, "")
+        if not value:
+            continue
+        value = value.replace("http://127.0.0.1:", f"http://{bind_ip}:")
+        value = value.replace("http://localhost:", f"http://{bind_ip}:")
+        os.environ[key] = value
+
+
 def bootstrap_stack_env() -> None:
     """Load the stack env before module-level defaults are frozen."""
     project_root = Path(os.environ.get("BDAG_PROJECT_ROOT") or Path(__file__).resolve().parents[1]).expanduser()
@@ -83,6 +96,7 @@ def bootstrap_stack_env() -> None:
                 value = value[1:-1]
             os.environ.setdefault(key, value)
     apply_stack_env_aliases()
+    apply_host_bind_rpc_aliases()
 
 
 bootstrap_stack_env()
@@ -236,6 +250,7 @@ RUNTIME_DIR = path_from_env("BDAG_RUNTIME_DIR", PROJECT_ROOT / "ops" / "runtime"
 LOG_DIR = RUNTIME_DIR / "logs"
 SHARED_STATUS_CACHE_FILE = RUNTIME_DIR / "shared-status-cache.json"
 STATUS_SAMPLER_FILE = RUNTIME_DIR / "status-sampler.json"
+STATUS_SAMPLER_REPAIR_STATE_FILE = RUNTIME_DIR / "status-sampler-repair-state.json"
 SYNC_PROGRESS_HEALTH_STATE_FILE = RUNTIME_DIR / "sync-progress-health-state.json"
 STATUS_PAYLOAD_STALE_AFTER_SECONDS = env_float(
     "BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS",
@@ -243,10 +258,10 @@ STATUS_PAYLOAD_STALE_AFTER_SECONDS = env_float(
     minimum=5.0,
 )
 CATCHUP_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_PAUSE_ENABLED", True)
-CATCHUP_PAUSE_THRESHOLD_BLOCKS = env_int("BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS", 300, minimum=1)
 CATCHUP_NODE_CACHE_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MB", 6144, minimum=0)
-CATCHUP_IO_PRESSURE_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED", True)
+CATCHUP_IO_PRESSURE_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED", False)
 CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS = env_int("BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS", 25, minimum=1)
+CATCHUP_IO_PRESSURE_RESUME_LAG_BLOCKS = env_int("BDAG_CATCHUP_IO_PRESSURE_RESUME_LAG_BLOCKS", 5, minimum=0)
 CATCHUP_IOWAIT_WARN_PERCENT = env_float("BDAG_CATCHUP_IOWAIT_WARN_PERCENT", 15.0, minimum=0.0)
 CATCHUP_IO_SOME_AVG10_WARN = env_float("BDAG_CATCHUP_IO_SOME_AVG10_WARN", 20.0, minimum=0.0)
 CATCHUP_IO_FULL_AVG10_WARN = env_float("BDAG_CATCHUP_IO_FULL_AVG10_WARN", 10.0, minimum=0.0)
@@ -358,6 +373,7 @@ GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS = env_int("BDAG_GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS"
 GLOBAL_EVM_FALLBACK_ENABLED = env_bool("BDAG_GLOBAL_EVM_FALLBACK_ENABLED", False)
 NODE_EVM_RPC_PORT = int(os.environ.get("BDAG_NODE_EVM_RPC_PORT", "18545"))
 EVM_SYNC_LAG_THRESHOLD_BLOCKS = env_int("BDAG_EVM_SYNC_LAG_THRESHOLD_BLOCKS", 1000, minimum=0)
+EVM_SYNC_PRIORITY_LAG_BLOCKS = env_int("BDAG_EVM_SYNC_PRIORITY_LAG_BLOCKS", 25, minimum=0)
 EARNINGS_HISTORY_RETENTION_SECONDS = int(os.environ.get("BDAG_EARNINGS_HISTORY_RETENTION_SECONDS", str(35 * 86400)))
 EARNINGS_DASHBOARD_HISTORY_SECONDS = int(os.environ.get("BDAG_EARNINGS_DASHBOARD_HISTORY_SECONDS", str(31 * 86400)))
 EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_EARNINGS_SNAPSHOT_INTERVAL_SECONDS", "60"))
@@ -963,12 +979,15 @@ def adaptive_pressure_level(pressure: dict[str, Any] | None) -> str:
     io_some = safe_float(pressure.get("io_some_avg10"))
     cpu_some = safe_float(pressure.get("cpu_some_avg10"))
     chain_rpc_latency = safe_float(pressure.get("chain_rpc_latency_ms"))
+    evm_lag = safe_float(pressure.get("evm_lag_to_reference"))
+    evm_priority_lag = max(1, EVM_SYNC_PRIORITY_LAG_BLOCKS)
     if (
         bool(pressure.get("iowait_warning_active"))
         or (iowait is not None and iowait >= ADAPTIVE_IOWAIT_WARN_PERCENT)
         or (io_some is not None and io_some >= ADAPTIVE_IO_SOME_AVG10_WARN)
         or (cpu_some is not None and cpu_some >= ADAPTIVE_CPU_SOME_AVG10_WARN)
         or (chain_rpc_latency is not None and chain_rpc_latency >= ADAPTIVE_CHAIN_RPC_WARN_MS)
+        or (evm_lag is not None and evm_lag >= evm_priority_lag)
     ):
         return "high"
     if (
@@ -976,6 +995,7 @@ def adaptive_pressure_level(pressure: dict[str, Any] | None) -> str:
         or (io_some is not None and io_some >= ADAPTIVE_IO_SOME_AVG10_WARN / 2)
         or (cpu_some is not None and cpu_some >= ADAPTIVE_CPU_SOME_AVG10_WARN / 2)
         or (chain_rpc_latency is not None and chain_rpc_latency >= ADAPTIVE_CHAIN_RPC_WARN_MS / 2)
+        or (evm_lag is not None and evm_lag >= max(1.0, evm_priority_lag / 2))
     ):
         return "moderate"
     return "low"
@@ -1178,14 +1198,21 @@ def compose_service_name(name: str) -> str:
 def stack_start_services() -> list[str]:
     configured = split_env_list("BDAG_START_SERVICES", "")
     services = configured or STACK_SERVICES or unique_names([POOL_DB_CONTAINER, *NODES, *POOL_CONTAINERS])
+    if not configured:
+        inspected = docker_inspect(services)
+        services = [
+            service
+            for service in services
+            if not inspected.get(service, {}).get("running")
+        ]
     return unique_names([compose_service_name(service) for service in services])
 
 
 def docker_compose_start_command() -> list[str]:
     services = stack_start_services()
     if not services:
-        return docker_compose_command("up", "-d")
-    return docker_compose_command("up", "-d", *services)
+        return []
+    return docker_compose_command("up", "-d", "--no-deps", *services)
 
 
 def read_jsonl_file(path: Path, limit: int | None = None) -> list[dict[str, Any]]:
@@ -4835,7 +4862,6 @@ def build_catchup_policy(
     mining_ready: bool | None = None,
 ) -> dict[str, Any]:
     lag = max_catchup_lag_blocks(sync_progress, node_details, selected_source_health)
-    status = str(sync_progress.get("status") or "").lower()
     peer_catchup = lag > 0
     io_pressure_reasons = catchup_io_pressure_reasons(host_pressure)
     backend_unready_reasons = selected_backend_unready_reasons(selected_source_health or {})
@@ -4847,29 +4873,21 @@ def build_catchup_policy(
         and backend_unready_reasons
         and not mining_ready_for_policy
     )
-    lag_threshold_met = bool(lag >= CATCHUP_PAUSE_THRESHOLD_BLOCKS)
     io_pressure_lag_observed = bool(peer_catchup and lag >= CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS)
     catchup_churn_detected = bool(backend_unready_under_pressure and io_pressure_lag_observed)
     io_pressure_active = bool(
         CATCHUP_IO_PRESSURE_PAUSE_ENABLED
         and catchup_churn_detected
-        and lag_threshold_met
     )
-    lag_threshold_active = bool(lag_threshold_met and (status != "synced" or not mining_ready_for_policy))
-    active = bool(CATCHUP_PAUSE_ENABLED and (io_pressure_active or lag_threshold_active))
+    active = bool(CATCHUP_PAUSE_ENABLED and io_pressure_active)
     pool_running = bool((containers.get(POOL_CONTAINER) or {}).get("running")) if isinstance(containers, Mapping) else False
-    trigger = ("io_pressure" if io_pressure_active else ("lag_threshold" if lag_threshold_active else "")) if active else ""
+    trigger = "io_pressure" if active else ""
     summary = (
         (
             f"catch-up pause active: chain node is I/O-bound while {lag} blocks behind peers; "
             "backend churn is detected and mining work is intentionally paused"
             if lag > 0
             else "catch-up pause active: backend is not ready while the host is I/O-bound; mining work is intentionally paused"
-        )
-        if trigger == "io_pressure"
-        else (
-            f"catch-up pause active: chain node is {lag} blocks behind peers "
-            f"(threshold {CATCHUP_PAUSE_THRESHOLD_BLOCKS}); mining work is intentionally paused"
         )
         if active
         else ""
@@ -4896,26 +4914,22 @@ def build_catchup_policy(
     )
     if not active:
         next_step = ""
-    elif trigger == "io_pressure":
-        next_step = (
-            "The sampler will allow mining again when I/O pressure drops, peer lag is below the pause threshold, "
-            "and backend template checks are ready."
-        )
     else:
         next_step = (
-            f"The sampler will allow mining again when peer lag is below "
-            f"{CATCHUP_PAUSE_THRESHOLD_BLOCKS} blocks and backend template checks are ready."
+            "The sampler will allow mining again when I/O pressure drops, peer lag is at or below "
+            f"{CATCHUP_IO_PRESSURE_RESUME_LAG_BLOCKS} blocks, and backend template checks are ready."
         )
     return {
         "enabled": CATCHUP_PAUSE_ENABLED,
         "active": active,
         "trigger": trigger,
         "lag_blocks": lag,
-        "threshold_blocks": CATCHUP_PAUSE_THRESHOLD_BLOCKS,
         "io_pressure_pause_enabled": CATCHUP_IO_PRESSURE_PAUSE_ENABLED,
         "io_pressure_active": io_pressure_active,
         "io_pressure_reasons": io_pressure_reasons,
         "io_pressure_min_lag_blocks": CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS,
+        "io_pressure_resume_lag_blocks": CATCHUP_IO_PRESSURE_RESUME_LAG_BLOCKS,
+        "io_pressure_lag_observed": io_pressure_lag_observed,
         "io_pressure_iowait_warn_percent": CATCHUP_IOWAIT_WARN_PERCENT,
         "io_pressure_io_some_avg10_warn": CATCHUP_IO_SOME_AVG10_WARN,
         "io_pressure_io_full_avg10_warn": CATCHUP_IO_FULL_AVG10_WARN,
@@ -4923,8 +4937,6 @@ def build_catchup_policy(
         "backend_unready_under_pressure": backend_unready_under_pressure,
         "backend_unready_reasons": backend_unready_reasons,
         "catchup_churn_detected": catchup_churn_detected,
-        "lag_threshold_met": lag_threshold_met,
-        "lag_threshold_active": lag_threshold_active,
         "pool_pause_recommended": active,
         "pool_pause_active": bool(active and not pool_running),
         "pool_running": pool_running,
@@ -4932,6 +4944,69 @@ def build_catchup_policy(
         "summary": summary,
         "user_message": user_message,
         "next_step": next_step,
+    }
+
+
+def overlay_held_catchup_pause(
+    catchup_policy: Mapping[str, Any],
+    containers: Mapping[str, Any],
+) -> dict[str, Any]:
+    state = read_json_file(STATUS_SAMPLER_REPAIR_STATE_FILE, {})
+    pause = state.get("pool_pause") if isinstance(state, Mapping) else {}
+    if not isinstance(pause, Mapping) or pause.get("type") != "catchup_pause" or not pause.get("active"):
+        return dict(catchup_policy)
+
+    pause_policy = pause.get("policy") if isinstance(pause.get("policy"), Mapping) else {}
+    if not bool(catchup_policy.get("io_pressure_pause_enabled", CATCHUP_IO_PRESSURE_PAUSE_ENABLED)):
+        return dict(catchup_policy)
+    merged = {
+        key: value
+        for key, value in {**pause_policy, **catchup_policy}.items()
+        if key not in {"threshold_blocks", "lag_threshold_met", "lag_threshold_active"}
+    }
+    pool_running = bool((containers.get(POOL_CONTAINER) or {}).get("running")) if isinstance(containers, Mapping) else False
+    lag = safe_int(merged.get("lag_blocks"), safe_int(pause_policy.get("lag_blocks"), 0))
+    resume_lag = safe_int(
+        merged.get("io_pressure_resume_lag_blocks"),
+        CATCHUP_IO_PRESSURE_RESUME_LAG_BLOCKS,
+    )
+    blockers: list[str] = []
+    if not bool(merged.get("mining_ready", True)):
+        blockers.append("backend_template_not_ready")
+    if lag > resume_lag:
+        blockers.append(f"peer_lag={lag}>{resume_lag}")
+    if merged.get("io_pressure_reasons"):
+        blockers.append("io_pressure_active")
+    blocker_text = f"; blockers: {', '.join(str(item) for item in blockers)}" if blockers else ""
+    summary = (
+        "catch-up pause hold active: mining work remains paused until I/O pressure clears, "
+        f"peer lag is at or below {resume_lag} blocks, and backend template checks are ready{blocker_text}"
+    )
+    return {
+        **merged,
+        "active": True,
+        "trigger": str(merged.get("trigger") or "io_pressure"),
+        "lag_blocks": lag,
+        "io_pressure_min_lag_blocks": safe_int(
+            merged.get("io_pressure_min_lag_blocks"),
+            CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS,
+        ),
+        "io_pressure_resume_lag_blocks": resume_lag,
+        "pool_pause_recommended": True,
+        "pool_pause_active": not pool_running,
+        "pool_running": pool_running,
+        "hold_active": True,
+        "release_blockers": blockers,
+        "summary": summary,
+        "user_message": (
+            "The pool is deliberately holding mining paused while the node finishes recovering from I/O-bound "
+            "backend churn. Leave miners pointed here; mining resumes after peer lag, I/O pressure, and template "
+            "readiness are all healthy."
+        ),
+        "next_step": (
+            "The sampler will allow mining again when I/O pressure drops, peer lag is at or below "
+            f"{resume_lag} blocks, and backend template checks are ready."
+        ),
     }
 
 
@@ -5274,28 +5349,9 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     running_pool_containers = [name for name in POOL_CONTAINERS if containers.get(name, {}).get("running")]
     pool_log = docker_logs_many(running_pool_containers, lines=180) if include_logs and running_pool_containers else ""
     pool = parse_pool_log(pool_log)
-    pool_metrics = collect_pool_prometheus_metrics(containers) if include_logs else {
-        "generated_at": now_iso(),
-        "status": "skipped",
-        "error": "logs excluded from status collection",
-        "containers": {},
-        "active_connections": None,
-        "selected_backend": "",
-        "block_submit_outcomes": {},
-        "block_submit_backend_outcomes": {},
-        "blocks": {},
-        "blocks_rejected_by_node": {},
-        "shares_accepted_total": 0.0,
-        "shares_rejected_by_reason": {},
-        "share_processing": {},
-        "loss_ledger": {},
-        "submit_stall_recoveries": {},
-        "submit_stall_recoveries_total": 0.0,
-        "source_job_health": {},
-        "source_backend_health": {},
-        "selected_backend_source_health": {},
-        "template_conversion_stall": {},
-    }
+    pool_metrics = collect_pool_prometheus_metrics(containers)
+    if not include_logs:
+        pool_metrics["log_collection_skipped"] = True
     pool["metrics"] = pool_metrics
     pool["selected_backend"] = pool_metrics.get("selected_backend") or ""
     pool["metrics_active_connections"] = pool_metrics.get("active_connections")
@@ -5707,7 +5763,11 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     ).stdout.strip()
     sync_progress = sync_progress_for_display_nodes(collect_sync_progress(), display_nodes)
     adaptive_concurrency = adaptive_worker_budgets(
-        {**host_pressure, "chain_rpc_latency_ms": _sync_chain_rpc_latency_ms(sync_progress)}
+        {
+            **host_pressure,
+            "chain_rpc_latency_ms": _sync_chain_rpc_latency_ms(sync_progress),
+            "evm_lag_to_reference": sync_progress_evm_lag_blocks(sync_progress),
+        }
     )
     for node, progress in (sync_progress.get("nodes") or {}).items():
         if not isinstance(progress, dict):
@@ -5736,6 +5796,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         host_pressure,
         mining_ready=catchup_mining_ready,
     )
+    catchup_policy = overlay_held_catchup_pause(catchup_policy, containers)
     if catchup_policy.get("active"):
         pool_down_message = f"{POOL_CONTAINER} is not running"
         stack_failures = [item for item in stack_failures if item != pool_down_message]
@@ -5747,8 +5808,9 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             warnings.insert(0, summary)
             sync_warnings.insert(0, summary)
         sync_health["catchup_pause_active"] = True
-        sync_health["catchup_pause_threshold_blocks"] = catchup_policy.get("threshold_blocks")
         sync_health["catchup_pause_lag_blocks"] = catchup_policy.get("lag_blocks")
+        sync_health["catchup_pause_io_pressure_min_lag_blocks"] = catchup_policy.get("io_pressure_min_lag_blocks")
+        sync_health["catchup_pause_io_pressure_resume_lag_blocks"] = catchup_policy.get("io_pressure_resume_lag_blocks")
         sync_health["catchup_pause_pool_stopped"] = catchup_policy.get("pool_pause_active")
         pool["catchup_pause_active"] = True
         pool["catchup_pause_reason"] = summary
@@ -5978,6 +6040,28 @@ def _sync_chain_rpc_latency_ms(sync_progress: dict[str, Any]) -> float | None:
     return max(values) if values else None
 
 
+def sync_progress_evm_lag_blocks(sync_progress: Mapping[str, Any] | None) -> int:
+    if not isinstance(sync_progress, Mapping):
+        return 0
+    values: list[int] = []
+    top_lag = safe_int(sync_progress.get("evm_lag_to_reference"), -1)
+    if top_lag >= 0:
+        values.append(top_lag)
+    nodes = sync_progress.get("nodes")
+    if isinstance(nodes, Mapping):
+        for info in nodes.values():
+            if not isinstance(info, Mapping):
+                continue
+            lag = safe_int(info.get("evm_lag_to_reference"), -1)
+            if lag >= 0:
+                values.append(lag)
+    return max(values) if values else 0
+
+
+def evm_sync_priority_active(sync_progress: Mapping[str, Any] | None) -> bool:
+    return sync_progress_evm_lag_blocks(sync_progress) >= max(1, EVM_SYNC_PRIORITY_LAG_BLOCKS)
+
+
 def _background_task_selected(task: str, selected: set[str]) -> bool:
     normalized = str(task or "").strip()
     return "*" in selected or normalized in selected
@@ -6006,6 +6090,7 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
     sync_status = str(sync_progress.get("status") or "unknown")
     remaining_blocks = _sync_remaining_blocks(sync_progress)
     chain_rpc_latency_ms = _sync_chain_rpc_latency_ms(sync_progress)
+    evm_lag_to_reference = sync_progress_evm_lag_blocks(sync_progress)
     if sync_status == "syncing" and (
         remaining_blocks < 0 or remaining_blocks > BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS
     ):
@@ -6014,6 +6099,12 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
             "chain catch-up has priority "
             f"status={sync_status} remaining={remaining_text} "
             f"threshold={BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS}"
+        )
+
+    if evm_lag_to_reference >= max(1, EVM_SYNC_PRIORITY_LAG_BLOCKS):
+        reasons.append(
+            "EVM catch-up has priority "
+            f"lag={evm_lag_to_reference} threshold={max(1, EVM_SYNC_PRIORITY_LAG_BLOCKS)}"
         )
 
     iowait = safe_float(host_pressure.get("iowait_percent"))
@@ -6067,6 +6158,9 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
         "sync_status": sync_status,
         "remaining_blocks": remaining_blocks,
         "sync_backoff_blocks": BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS,
+        "evm_lag_to_reference": evm_lag_to_reference,
+        "evm_sync_priority_lag_blocks": max(1, EVM_SYNC_PRIORITY_LAG_BLOCKS),
+        "evm_sync_priority_active": evm_lag_to_reference >= max(1, EVM_SYNC_PRIORITY_LAG_BLOCKS),
         "iowait_percent": iowait,
         "iowait_warn_percent": BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT,
         "io_some_avg10": io_some,
@@ -6080,7 +6174,13 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
         "task_is_lazy": task_is_lazy,
         "pool_ready_required": pool_ready_required,
         "host_profile": profile,
-        "adaptive_concurrency": adaptive_worker_budgets({**host_pressure, "chain_rpc_latency_ms": chain_rpc_latency_ms}),
+        "adaptive_concurrency": adaptive_worker_budgets(
+            {
+                **host_pressure,
+                "chain_rpc_latency_ms": chain_rpc_latency_ms,
+                "evm_lag_to_reference": evm_lag_to_reference,
+            }
+        ),
         "shared_status_cache": payload.get("shared_status_cache"),
     }
 
@@ -6739,6 +6839,42 @@ def collect_sync_progress() -> dict[str, Any]:
         starting_values = []
         error = "; ".join(item.get("error", "") for item in per_node.values() if item.get("error"))
 
+    evm_lag_values = [
+        value
+        for value in (safe_int(item.get("evm_lag_to_reference"), -1) for item in known)
+        if value >= 0
+    ]
+    evm_block_values = [
+        value
+        for value in (safe_int(item.get("evm_block_count"), -1) for item in known)
+        if value >= 0
+    ]
+    evm_reference_values = [
+        value
+        for value in (safe_int(item.get("evm_reference_block_count"), -1) for item in known)
+        if value >= 0
+    ]
+    evm_gap_values = [
+        value
+        for value in (safe_int(item.get("evm_gap_to_chain_count"), -1) for item in known)
+        if value >= 0
+    ]
+    evm_reference_sources = unique_names(
+        [
+            str(item.get("evm_reference_source") or "")
+            for item in known
+            if item.get("evm_reference_source")
+        ]
+    )
+    evm_reference_urls = unique_names(
+        [
+            str(item.get("evm_reference_url") or "")
+            for item in known
+            if item.get("evm_reference_url")
+        ]
+    )
+    evm_lag_to_reference = max(evm_lag_values) if evm_lag_values else None
+
     return {
         "status": status,
         "percent": percent,
@@ -6767,6 +6903,17 @@ def collect_sync_progress() -> dict[str, Any]:
         "remaining_blocks": max(remaining_values) if remaining_values else (0 if status == "synced" else None),
         "source": "nodes",
         "error": error,
+        "evm_block_count": min(evm_block_values) if evm_block_values else None,
+        "evm_reference_block_count": max(evm_reference_values) if evm_reference_values else None,
+        "evm_lag_to_reference": evm_lag_to_reference,
+        "evm_lag_to_chain": evm_lag_to_reference,
+        "evm_gap_to_chain_count": max(evm_gap_values) if evm_gap_values else None,
+        "evm_reference_source": ",".join(evm_reference_sources),
+        "evm_reference_url": ",".join(evm_reference_urls),
+        "evm_sync_priority_lag_blocks": max(1, EVM_SYNC_PRIORITY_LAG_BLOCKS),
+        "evm_sync_priority_active": bool(
+            evm_lag_to_reference is not None and evm_lag_to_reference >= max(1, EVM_SYNC_PRIORITY_LAG_BLOCKS)
+        ),
         "nodes": per_node,
     }
 
@@ -8918,6 +9065,7 @@ def collect_global_blockchain() -> dict[str, Any]:
         "io_some_avg10": maintenance_decision.get("io_some_avg10"),
         "cpu_some_avg10": maintenance_decision.get("cpu_some_avg10"),
         "chain_rpc_latency_ms": maintenance_decision.get("chain_rpc_latency_ms"),
+        "evm_lag_to_reference": maintenance_decision.get("evm_lag_to_reference"),
     }
     global_worker_count = adaptive_worker_count("global_rpc", GLOBAL_RPC_WORKERS, len(requested_orders), global_pressure)
     with ThreadPoolExecutor(max_workers=global_worker_count) as pool:

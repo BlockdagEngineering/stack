@@ -18,6 +18,9 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.old_mining_rpc_call = pool_ops.mining_rpc_call
         self.old_json_rpc_call = pool_ops.json_rpc_call
         self.old_evm_reference_rpc_urls = pool_ops.evm_reference_rpc_urls
+        self.old_node_rpc_urls = pool_ops.node_rpc_urls
+        self.old_node_sync_progress = pool_ops.node_sync_progress
+        self.old_evm_sync_priority_lag_blocks = pool_ops.EVM_SYNC_PRIORITY_LAG_BLOCKS
         self.old_sleep = pool_ops.time.sleep
         self.old_time = pool_ops.time.time
         self.addCleanup(self.restore_globals)
@@ -28,6 +31,9 @@ class ChainRpcResilienceTests(unittest.TestCase):
         pool_ops.mining_rpc_call = self.old_mining_rpc_call
         pool_ops.json_rpc_call = self.old_json_rpc_call
         pool_ops.evm_reference_rpc_urls = self.old_evm_reference_rpc_urls
+        pool_ops.node_rpc_urls = self.old_node_rpc_urls
+        pool_ops.node_sync_progress = self.old_node_sync_progress
+        pool_ops.EVM_SYNC_PRIORITY_LAG_BLOCKS = self.old_evm_sync_priority_lag_blocks
         pool_ops.time.sleep = self.old_sleep
         pool_ops.time.time = self.old_time
 
@@ -146,6 +152,41 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.assertEqual(progress["evm_lag_to_reference"], 2000)
         self.assertEqual(progress["evm_gap_to_chain_count"], 2000)
         self.assertEqual(progress["current_block_source"], "eth_blockNumber")
+
+    def test_collect_sync_progress_aggregates_evm_lag(self) -> None:
+        pool_ops.EVM_SYNC_PRIORITY_LAG_BLOCKS = 25
+        pool_ops.node_rpc_urls = lambda: [("node1", "http://node1:38131")]
+
+        def fake_progress(_source, _url):
+            return {
+                "status": "synced",
+                "percent": 100.0,
+                "current_block": 10100,
+                "highest_block": 10100,
+                "remaining_blocks": 0,
+                "source": "node1",
+                "error": "",
+                "chain_block_count": 10100,
+                "chain_main_height": 9000,
+                "chain_rpc_source": "getBlockCount",
+                "evm_block_count": 10000,
+                "evm_reference_block_count": 10064,
+                "evm_lag_to_reference": 64,
+                "evm_gap_to_chain_count": 100,
+                "evm_reference_source": "reference",
+                "evm_reference_url": "http://reference:18545",
+            }
+
+        pool_ops.node_sync_progress = fake_progress
+
+        progress = pool_ops.collect_sync_progress()
+
+        self.assertEqual(progress["status"], "synced")
+        self.assertEqual(progress["evm_block_count"], 10000)
+        self.assertEqual(progress["evm_reference_block_count"], 10064)
+        self.assertEqual(progress["evm_lag_to_reference"], 64)
+        self.assertEqual(progress["evm_gap_to_chain_count"], 100)
+        self.assertTrue(progress["evm_sync_priority_active"])
 
     def test_rpc_refused_is_recent_only_inside_warning_window(self) -> None:
         now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()

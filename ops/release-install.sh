@@ -321,6 +321,10 @@ configure_ephemeral_storage() {
   set_env_value .env BDAG_EPHEMERAL_DIR "$ephemeral_dir"
   set_env_value .env BDAG_HOST_TMPDIR "$ephemeral_dir/tmp"
   set_env_value .env BDAG_CONTAINER_TMPFS_SIZE "$tmpfs_size"
+  set_env_value .env BDAG_NODE_TMPFS_SIZE "$(env_value BDAG_NODE_TMPFS_SIZE 512m)"
+  set_env_value .env BDAG_NODE_EPHEMERAL_TMPFS_SIZE "$(env_value BDAG_NODE_EPHEMERAL_TMPFS_SIZE 512m)"
+  set_env_value .env BDAG_NODE_LOG_TMPFS_SIZE "$(env_value BDAG_NODE_LOG_TMPFS_SIZE 128m)"
+  set_env_value .env BDAG_NODE_PEERSTORE_TMPFS_SIZE "$(env_value BDAG_NODE_PEERSTORE_TMPFS_SIZE 64m)"
 
   if [[ "$enabled" == "1" ]]; then
     if ! need_sudo mkdir -p "$ephemeral_dir/tmp" ||
@@ -459,8 +463,7 @@ configure_env() {
   set_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT 1
   set_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT 1
   set_env_value .env BDAG_CATCHUP_PAUSE_ENABLED 1
-  set_env_value .env BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS 300
-  set_env_value .env BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED 1
+  set_env_value .env BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED 0
   set_env_value .env BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS 25
   set_env_value .env BDAG_CATCHUP_IOWAIT_WARN_PERCENT 15
   set_env_value .env BDAG_CATCHUP_IO_SOME_AVG10_WARN 20.0
@@ -469,6 +472,16 @@ configure_env() {
   set_env_value .env BDAG_CATCHUP_NODE_CACHE_MB 6144
   set_env_value .env BDAG_CATCHUP_NODE_CACHE_MIN_MB 1024
   set_env_value .env BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT 40
+  set_env_value .env BDAG_EVM_SYNC_PRIORITY_LAG_BLOCKS 25
+  set_env_value .env BDAG_STATUS_SAMPLER_AUTO_THIN_ENABLED 1
+  set_env_value .env BDAG_POOL_ACTIVITY_LOG_LINES 600
+  set_env_value .env BDAG_POOL_ACTIVITY_BOOTSTRAP_LOG_LINES 2500
+  set_env_value .env BDAG_WATCHDOG_EARNINGS_SNAPSHOT_INTERVAL_SECONDS 300
+  set_env_value .env BDAG_STATUS_SAMPLER_EARNINGS_SNAPSHOT_INTERVAL_SECONDS 300
+  set_env_value .env BDAG_DASHBOARD_EARNINGS_SAMPLER_INTERVAL_SECONDS 300
+  set_env_value .env BDAG_DASHBOARD_GLOBAL_SAMPLER_INTERVAL_SECONDS 300
+  set_env_value .env BDAG_GLOBAL_RPC_WORKERS 8
+  set_env_value .env BDAG_GLOBAL_BLOCK_WINDOW 128
   set_env_value .env BDAG_MINING_IMPERATIVE_NODE_BACKEND_REPAIR_ENABLED 1
   set_env_value .env BDAG_MINING_IMPERATIVE_NODE_BACKEND_REPAIR_COOLDOWN_SECONDS 120
   set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MODE auto
@@ -480,6 +493,8 @@ configure_env() {
   set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT 21600s
   configure_active_node_env
   configure_node_mining_env "$node_mining_enabled" "$mining_address"
+  set_env_value .env BDAG_DASHBOARD_HOST_BIND_IP "$(env_value BDAG_DASHBOARD_HOST_BIND_IP 127.0.0.1)"
+  set_env_value .env DASHBOARD_HOST_PORT "$(env_value DASHBOARD_HOST_PORT 8088)"
 
   mem_kb="$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
   mem_gb=$(( mem_kb / 1024 / 1024 ))
@@ -493,6 +508,7 @@ configure_env() {
 
   if yes_no "Expose the local dashboard on the LAN instead of only this machine?" "n"; then
     set_env_value .env BDAG_DASHBOARD_BIND "0.0.0.0"
+    set_env_value .env BDAG_DASHBOARD_HOST_BIND_IP "0.0.0.0"
   fi
 
   cp .env asic-pool/.env

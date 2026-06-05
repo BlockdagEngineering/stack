@@ -36,6 +36,12 @@ class MiningHostTuningTests(unittest.TestCase):
         self.assertIn("weight: 1000", compose)
         self.assertIn("weight: 950", compose)
         self.assertIn("mem_swappiness: 0", compose)
+        self.assertIn("/var/log/bdagStack:size=${BDAG_NODE_LOG_TMPFS_SIZE:-128m}", compose)
+        self.assertIn(
+            "/var/lib/bdagStack/node/mainnet/peerstore:size=${BDAG_NODE_PEERSTORE_TMPFS_SIZE:-64m}",
+            compose,
+        )
+        self.assertIn('"${BDAG_DASHBOARD_HOST_BIND_IP:-127.0.0.1}:${DASHBOARD_HOST_PORT:-8088}:9280"', compose)
         self.assertIn("shm_size: ${BDAG_NODE_SHM_SIZE:-512m}", compose)
         self.assertIn("shm_size: ${BDAG_POOL_DB_SHM_SIZE:-256m}", compose)
         self.assertIn("shm_size: ${BDAG_POOL_SHM_SIZE:-256m}", compose)
@@ -47,6 +53,11 @@ class MiningHostTuningTests(unittest.TestCase):
             "BDAG_NODE_CPU_SHARES=6144",
             "BDAG_POOL_CPU_SHARES=5120",
             "BDAG_DASHBOARD_CPU_SHARES=128",
+            "BDAG_NODE_EPHEMERAL_TMPFS_SIZE=512m",
+            "BDAG_NODE_LOG_TMPFS_SIZE=128m",
+            "BDAG_NODE_PEERSTORE_TMPFS_SIZE=64m",
+            "BDAG_DASHBOARD_HOST_BIND_IP=127.0.0.1",
+            "DASHBOARD_HOST_PORT=8088",
             "BDAG_NODE_MEMORY_LOW=768M",
             "BDAG_POOL_MEMORY_LOW=256M",
             "BDAG_POOL_DB_MEMORY_LOW=512M",

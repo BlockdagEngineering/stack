@@ -570,6 +570,7 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
                 "BACKGROUND_MAINTENANCE_LAZY_TASKS",
                 "BACKGROUND_MAINTENANCE_POOL_READY_TASKS",
                 "BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN",
+                "EVM_SYNC_PRIORITY_LAG_BLOCKS",
                 "host_runtime_profile",
             )
         }
@@ -620,6 +621,25 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
 
         self.assertFalse(decision["allowed"])
         self.assertTrue(any("remaining=unknown" in reason for reason in decision["reasons"]))
+
+    def test_background_maintenance_defers_when_evm_lag_has_priority(self) -> None:
+        pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
+        pool_ops.EVM_SYNC_PRIORITY_LAG_BLOCKS = 25
+        status = {
+            "sync_progress": {
+                "status": "synced",
+                "remaining_blocks": 0,
+                "evm_lag_to_reference": 64,
+            },
+            "host_pressure": {"iowait_percent": 1.0, "io_some_avg10": 0.0, "cpu_some_avg10": 0.0},
+        }
+
+        decision = pool_ops.background_maintenance_decision("global", status)
+
+        self.assertFalse(decision["allowed"])
+        self.assertTrue(decision["evm_sync_priority_active"])
+        self.assertEqual(decision["evm_lag_to_reference"], 64)
+        self.assertTrue(any("EVM catch-up has priority" in reason for reason in decision["reasons"]))
 
     def test_background_maintenance_defers_when_chain_rpc_latency_is_high(self) -> None:
         pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
@@ -705,6 +725,7 @@ class AdaptiveConcurrencyTests(unittest.TestCase):
                 "ADAPTIVE_IO_SOME_AVG10_WARN",
                 "ADAPTIVE_CPU_SOME_AVG10_WARN",
                 "ADAPTIVE_CHAIN_RPC_WARN_MS",
+                "EVM_SYNC_PRIORITY_LAG_BLOCKS",
                 "_HOST_RUNTIME_PROFILE_CACHE",
                 "detect_total_memory_bytes",
                 "detect_hardware_model",
@@ -767,6 +788,18 @@ class AdaptiveConcurrencyTests(unittest.TestCase):
         pool_ops._HOST_RUNTIME_PROFILE_CACHE = None
         pool_ops.os.cpu_count = lambda: 8
         pressure = {"chain_rpc_latency_ms": 1500.0}
+
+        workers = pool_ops.adaptive_worker_count("global_rpc", 24, 2048, pressure)
+
+        self.assertEqual(workers, 4)
+
+    def test_adaptive_workers_shrink_when_evm_lag_has_priority(self) -> None:
+        pool_ops.HOST_PROFILE_OVERRIDE = "standard"
+        pool_ops.ADAPTIVE_CONCURRENCY_ENABLED = True
+        pool_ops.EVM_SYNC_PRIORITY_LAG_BLOCKS = 25
+        pool_ops._HOST_RUNTIME_PROFILE_CACHE = None
+        pool_ops.os.cpu_count = lambda: 8
+        pressure = {"evm_lag_to_reference": 64}
 
         workers = pool_ops.adaptive_worker_count("global_rpc", 24, 2048, pressure)
 

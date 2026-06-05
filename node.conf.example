@@ -22,8 +22,9 @@ evm.ws.port=18546
 # reachable; site-local peers belong in .env runtime overrides.
 addpeer=/ip4/13.57.132.47/tcp/8150/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus
 
-# Peer limit
-maxpeers=350
+# Mining hosts should keep peer fanout bounded so failed dials and peerstore
+# churn do not compete with chain import, EVM catch-up, or paid block submit.
+maxpeers=64
 cache=2048
 cache.database=70
 
@@ -53,6 +54,6 @@ http.writetimeout=45s
 http.idletimeout=45s
 evmenv="--rpc.allow-unprotected-txs --metrics --metrics.addr 0.0.0.0 --metrics.port 6060 --cache 2048"
 rpcmaxconcurrentreqs=500
-maxpeers=350
+maxpeers=64
 http.ratelimit=1800
 http.rateburst=3200
