@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="${BDAG_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-P2P_PORTS="${BDAG_P2P_PORTS:-8151,8152}"
+P2P_PORT="${P2P_PORT:-8150}"
 P2P_PROTOCOLS="${BDAG_P2P_PROTOCOLS:-tcp}"
 
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
@@ -22,7 +22,7 @@ install_firewall() {
   fi
   need_sudo install -m 0755 "$ROOT/ops/allow-p2p-iptables.sh" /usr/local/sbin/bdag-allow-p2p-iptables
   need_sudo install -m 0644 "$ROOT/ops/systemd/bdag-p2p-firewall.service" /etc/systemd/system/bdag-p2p-firewall.service
-  printf 'BDAG_P2P_PORTS=%s\nBDAG_P2P_PROTOCOLS=%s\n' "$P2P_PORTS" "$P2P_PROTOCOLS" | need_sudo tee /etc/default/bdag-p2p-firewall >/dev/null
+  printf 'P2P_PORT=%s\nBDAG_P2P_PROTOCOLS=%s\n' "$P2P_PORT" "$P2P_PROTOCOLS" | need_sudo tee /etc/default/bdag-p2p-firewall >/dev/null
   need_sudo systemctl daemon-reload
   need_sudo systemctl enable --now bdag-p2p-firewall.service
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -16,6 +17,28 @@ SPEC.loader.exec_module(update_local_peers)
 
 
 class UpdateLocalPeersTopologyTests(unittest.TestCase):
+    ENV_KEYS = (
+        "BDAG_P2P_LAN_PEERS",
+        "BDAG_P2P_VPN_PEERS",
+        "BDAG_P2P_PUBLIC_PEERS",
+        "BOOTSTRAP_PEER_ADDRESSES",
+        "EXTRA_PEER_ADDRESSES",
+        "P2P_PORT",
+        "PEER_ADDRESSES",
+    )
+
+    def setUp(self) -> None:
+        self._old_env = {key: os.environ.get(key) for key in self.ENV_KEYS}
+        for key in self.ENV_KEYS:
+            os.environ.pop(key, None)
+
+    def tearDown(self) -> None:
+        for key, value in self._old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
     def test_detects_asic_router_and_uses_default_route_ip(self) -> None:
         old_run = update_local_peers.run
 
@@ -177,6 +200,12 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
             )
         finally:
             update_local_peers.local_ipv4_addresses = old_local_ipv4_addresses
+
+    def test_configured_p2p_port_uses_single_compose_port(self) -> None:
+        self.assertEqual(8150, update_local_peers.configured_p2p_port({}))
+        self.assertEqual(18150, update_local_peers.configured_p2p_port({"P2P_PORT": "18150"}))
+        self.assertEqual(8150, update_local_peers.configured_p2p_port({"P2P_PORT": "bad"}))
+        self.assertEqual(8150, update_local_peers.configured_p2p_port({"P2P_PORT": "70000"}))
 
 
 if __name__ == "__main__":

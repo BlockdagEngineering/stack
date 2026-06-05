@@ -1,16 +1,16 @@
 #!/usr/bin/env sh
 set -eu
 
-PORTS="${BDAG_P2P_PORTS:-8151,8152}"
+PORT="${P2P_PORT:-8150}"
 PROTOCOLS="${BDAG_P2P_PROTOCOLS:-tcp}"
 
 add_rule() {
   chain="$1"
   proto="$2"
-  if iptables -C "$chain" -p "$proto" -m multiport --dports "$PORTS" -j ACCEPT 2>/dev/null; then
+  if iptables -C "$chain" -p "$proto" --dport "$PORT" -j ACCEPT 2>/dev/null; then
     return 0
   fi
-  iptables -I "$chain" 1 -p "$proto" -m multiport --dports "$PORTS" -j ACCEPT
+  iptables -I "$chain" 1 -p "$proto" --dport "$PORT" -j ACCEPT
 }
 
 for proto in $(printf '%s' "$PROTOCOLS" | tr ',' ' '); do
