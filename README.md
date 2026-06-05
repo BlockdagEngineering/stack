@@ -226,6 +226,13 @@ budget, and recreates only the node service when that runtime change is needed.
 The dashboard reports this as a deliberate catch-up pause, not a pool failure,
 and tells operators to leave miners configured until I/O pressure drops, peer lag
 is back inside the safe window, and template health is ready.
+The sampler also treats a dead production node child or refused node RPC path as
+a backend-recovery pause: it keeps the pool stopped, recreates the node on the
+`BDAG_MINING_IMPERATIVE_NODE_BACKEND_REPAIR_COOLDOWN_SECONDS=120` cadence, and
+automatically starts the pool again when the backend is no longer blocked. The
+node entrypoint normalizes `BDAG_NETWORK=mainnet` to blank because current
+corechain builds use an absent `BDAG_NETWORK` as the main-chain default and only
+accept explicit env overrides for non-main networks.
 
 Dashboard block height is sourced from chain RPC `getBlockCount`; template
 height, logs, and main-order values are shown only as

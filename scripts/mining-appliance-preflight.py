@@ -814,6 +814,8 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         "BDAG_CATCHUP_IO_SOME_AVG10_WARN": env.get("BDAG_CATCHUP_IO_SOME_AVG10_WARN"),
         "BDAG_CATCHUP_IO_FULL_AVG10_WARN": env.get("BDAG_CATCHUP_IO_FULL_AVG10_WARN"),
         "BDAG_CATCHUP_NODE_CACHE_MB": env.get("BDAG_CATCHUP_NODE_CACHE_MB"),
+        "BDAG_MINING_IMPERATIVE_NODE_BACKEND_REPAIR_ENABLED": env.get("BDAG_MINING_IMPERATIVE_NODE_BACKEND_REPAIR_ENABLED"),
+        "BDAG_MINING_IMPERATIVE_NODE_BACKEND_REPAIR_COOLDOWN_SECONDS": env.get("BDAG_MINING_IMPERATIVE_NODE_BACKEND_REPAIR_COOLDOWN_SECONDS"),
         "BDAG_STATUS_SAMPLER_ENABLED": env.get("BDAG_STATUS_SAMPLER_ENABLED"),
         "BDAG_ADAPTIVE_CONCURRENCY_ENABLED": env.get("BDAG_ADAPTIVE_CONCURRENCY_ENABLED"),
         "BDAG_ENTRYPOINT_CHOWN_MODE": env.get("BDAG_ENTRYPOINT_CHOWN_MODE"),
@@ -968,6 +970,14 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         add(checks, "warn", "catchup_io_pause", f"I/O full pressure threshold is {catchup_io_full_warn}.", "Use 10.0 so full I/O stalls pause mining before the peer gap grows.", evidence)
     else:
         add(checks, "pass", "catchup_io_pause", f"I/O-pressure catch-up pause enabled min_lag={catchup_io_min_lag}", evidence=evidence)
+
+    backend_repair_cooldown = safe_int(env.get("BDAG_MINING_IMPERATIVE_NODE_BACKEND_REPAIR_COOLDOWN_SECONDS"), 120)
+    if not bool_enabled(env.get("BDAG_MINING_IMPERATIVE_NODE_BACKEND_REPAIR_ENABLED"), True):
+        add(checks, "warn", "node_backend_repair", "node backend self-healing is disabled.", "Enable backend repair so a dead chain child or refused RPC path pauses mining, recreates the node, and resumes the pool when healthy.", evidence)
+    elif backend_repair_cooldown and backend_repair_cooldown > 300:
+        add(checks, "warn", "node_backend_repair", f"node backend repair cooldown is {backend_repair_cooldown}s.", "Use 120s so a dead backend is retried quickly without recreate churn.", evidence)
+    else:
+        add(checks, "pass", "node_backend_repair", f"node backend self-healing enabled cooldown={backend_repair_cooldown}s", evidence=evidence)
 
     if not bool_enabled(env.get("BDAG_STATUS_SAMPLER_ENABLED"), True):
         add(checks, "warn", "status_sampler", "BDAG_STATUS_SAMPLER_ENABLED is disabled.", "Enable the sampler so dashboard, watchdog, and guards share one low-overhead status collection.", evidence)

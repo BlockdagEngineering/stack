@@ -19,6 +19,7 @@ from pool_ops import (
     POOL_CONTAINER,
     POOL_ENV_FILE,
     PROJECT_ROOT,
+    RUNTIME_DIR,
     STATUS_SAMPLER_FILE,
     collect_pool_activity,
     collect_status_cached,
@@ -27,6 +28,7 @@ from pool_ops import (
     ensure_runtime,
     env_bool,
     now_iso,
+    read_json_file,
     read_env_file_value,
     read_miner_registry,
     read_neighbor_macs,
@@ -91,6 +93,15 @@ MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED = env_bool(
     "BDAG_MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED",
     True,
 )
+MINING_IMPERATIVE_NODE_BACKEND_REPAIR_ENABLED = env_bool(
+    "BDAG_MINING_IMPERATIVE_NODE_BACKEND_REPAIR_ENABLED",
+    True,
+)
+MINING_IMPERATIVE_NODE_BACKEND_REPAIR_COOLDOWN_SECONDS = env_float(
+    "BDAG_MINING_IMPERATIVE_NODE_BACKEND_REPAIR_COOLDOWN_SECONDS",
+    120.0,
+    minimum=10.0,
+)
 MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED = env_bool(
     "BDAG_MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED",
     True,
@@ -134,6 +145,11 @@ CATCHUP_IOWAIT_WARN_PERCENT = env_float("BDAG_CATCHUP_IOWAIT_WARN_PERCENT", 15.0
 CATCHUP_IO_SOME_AVG10_WARN = env_float("BDAG_CATCHUP_IO_SOME_AVG10_WARN", 20.0, minimum=0.0)
 CATCHUP_IO_FULL_AVG10_WARN = env_float("BDAG_CATCHUP_IO_FULL_AVG10_WARN", 10.0, minimum=0.0)
 LOG_FILE = LOG_DIR / "status-sampler.log"
+REPAIR_STATE_FILE = RUNTIME_DIR / "status-sampler-repair-state.json"
+NODE_BACKEND_FATAL_PATTERNS = (
+    ("invalid_bdag_network", re.compile(r"\binvalid BDAG_NETWORK\b", re.IGNORECASE)),
+    ("setup_config_invalid", re.compile(r"\bSetupConfig:\s+invalid\b", re.IGNORECASE)),
+)
 
 
 def log(message: str) -> None:
@@ -179,6 +195,59 @@ def safe_int(value: Any, default: int = 0) -> int:
 
 def dict_value(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def read_repair_state() -> dict[str, Any]:
+    state = read_json_file(REPAIR_STATE_FILE, {})
+    return state if isinstance(state, dict) else {}
+
+
+def write_repair_state(state: dict[str, Any]) -> None:
+    payload = {
+        **state,
+        "schema_version": 1,
+        "updated_at": now_iso(),
+        "updated_at_epoch": time.time(),
+    }
+    write_json_file(REPAIR_STATE_FILE, payload, mode=0o600)
+
+
+def update_repair_state(**updates: Any) -> dict[str, Any]:
+    state = read_repair_state()
+    state.update(updates)
+    write_repair_state(state)
+    return state
+
+
+def pool_pause_state() -> dict[str, Any]:
+    return dict_value(read_repair_state().get("pool_pause"))
+
+
+def mark_pool_pause(payload: dict[str, Any], pause_type: str, reason: str, policy: dict[str, Any] | None = None) -> None:
+    sync = dict_value(payload.get("sync_progress"))
+    pause = {
+        "active": True,
+        "type": pause_type,
+        "reason": reason,
+        "started_at": now_iso(),
+        "started_at_epoch": time.time(),
+        "chain_status": sync.get("status"),
+        "remaining_blocks": sync.get("remaining_blocks"),
+        "policy": policy or {},
+    }
+    update_repair_state(pool_pause=pause)
+
+
+def clear_pool_pause(reason: str) -> None:
+    state = read_repair_state()
+    if "pool_pause" in state:
+        state.pop("pool_pause", None)
+    state["last_pool_resume"] = {
+        "reason": reason,
+        "resumed_at": now_iso(),
+        "resumed_at_epoch": time.time(),
+    }
+    write_repair_state(state)
 
 
 def config_value(name: str, default: str = "") -> str:
@@ -450,9 +519,12 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     io_pressure_enabled = bool(policy.get("io_pressure_pause_enabled", CATCHUP_IO_PRESSURE_PAUSE_ENABLED))
     io_min_lag = safe_int(policy.get("io_pressure_min_lag_blocks"), CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS)
     mining_ready = bool(policy.get("mining_ready", payload.get("can_mine") is True))
+    backend_unready_reasons = policy.get("backend_unready_reasons")
+    if not isinstance(backend_unready_reasons, list):
+        backend_unready_reasons = []
     backend_unready_under_pressure = bool(
         policy.get("backend_unready_under_pressure")
-        or (io_pressure_reasons and not mining_ready and payload.get("can_mine") is False)
+        or (io_pressure_reasons and backend_unready_reasons and not mining_ready)
     )
     io_pressure_active = bool(
         io_pressure_enabled
@@ -481,6 +553,7 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "io_pressure_reasons": io_pressure_reasons,
         "io_pressure_min_lag_blocks": io_min_lag,
         "backend_unready_under_pressure": backend_unready_under_pressure,
+        "backend_unready_reasons": backend_unready_reasons,
         "lag_threshold_active": lag_threshold_active,
         "mining_ready": mining_ready,
     }
@@ -624,6 +697,139 @@ def payload_node_tail_lines(payload: dict[str, Any]) -> list[str]:
         tail = row.get("tail") if isinstance(row.get("tail"), list) else []
         lines.extend(str(line) for line in tail)
     return lines
+
+
+def production_node_rows(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    nodes = payload.get("nodes") if isinstance(payload.get("nodes"), dict) else {}
+    rows: list[tuple[str, dict[str, Any]]] = []
+    for name, row in nodes.items():
+        if not isinstance(row, dict):
+            continue
+        if row.get("affects_production_health") is False:
+            continue
+        rows.append((str(name), row))
+    return rows
+
+
+def selected_backend_source_health(payload: dict[str, Any]) -> dict[str, Any]:
+    pool_metrics = dict_value(payload.get("pool_metrics"))
+    pool = dict_value(payload.get("pool"))
+    return dict_value(pool_metrics.get("selected_backend_source_health")) or dict_value(
+        pool.get("selected_backend_source_health")
+    )
+
+
+def append_unique(values: list[str], value: str) -> None:
+    if value and value not in values:
+        values.append(value)
+
+
+def node_backend_fatal_config_errors(payload: dict[str, Any]) -> list[dict[str, str]]:
+    matches: list[dict[str, str]] = []
+    for line in payload_node_tail_lines(payload):
+        for code, pattern in NODE_BACKEND_FATAL_PATTERNS:
+            if pattern.search(line):
+                matches.append({"code": code, "line": line[-500:]})
+                break
+    return matches
+
+
+def node_backend_down_reasons(payload: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    containers = dict_value(payload.get("containers"))
+    for name, row in production_node_rows(payload):
+        container = dict_value(containers.get(name))
+        if row.get("child_running") is False:
+            if container and not container.get("running"):
+                append_unique(reasons, f"{name}:container_not_running")
+            else:
+                append_unique(reasons, f"{name}:child_not_running")
+        chain_error = str(row.get("chain_rpc_error") or "").lower()
+        if "connection refused" in chain_error:
+            append_unique(reasons, f"{name}:chain_rpc_refused")
+
+    source_health = selected_backend_source_health(payload)
+    if source_health:
+        rpc_refused = source_health.get("rpc_refused")
+        if rpc_refused is True or str(rpc_refused).strip().lower() == "true":
+            append_unique(reasons, "selected_backend:rpc_refused")
+
+    for fatal in node_backend_fatal_config_errors(payload):
+        append_unique(reasons, f"node_config:{fatal.get('code')}")
+    return reasons
+
+
+def node_backend_blocks_pool_start(payload: dict[str, Any]) -> list[str]:
+    return node_backend_down_reasons(payload)
+
+
+def repair_node_backend(payload: dict[str, Any], reasons: list[str]) -> bool:
+    if not MINING_IMPERATIVE_NODE_BACKEND_REPAIR_ENABLED:
+        return False
+    state = read_repair_state()
+    now_epoch = time.time()
+    last_epoch = safe_float(state.get("last_node_backend_repair_epoch"), 0.0)
+    elapsed = now_epoch - last_epoch
+    if last_epoch > 0 and elapsed < MINING_IMPERATIVE_NODE_BACKEND_REPAIR_COOLDOWN_SECONDS:
+        log(
+            "mining imperative left node backend repair on cooldown "
+            f"elapsed={elapsed:.1f}s cooldown={MINING_IMPERATIVE_NODE_BACKEND_REPAIR_COOLDOWN_SECONDS:.1f}s "
+            f"reasons={','.join(reasons)}"
+        )
+        return False
+
+    fatal_errors = node_backend_fatal_config_errors(payload)
+    ok, node_results = recreate_node_services()
+    update_repair_state(
+        last_node_backend_repair_epoch=now_epoch,
+        last_node_backend_repair={
+            "attempted_at": now_iso(),
+            "attempted_at_epoch": now_epoch,
+            "ok": ok,
+            "reasons": reasons,
+            "fatal_config_errors": fatal_errors,
+            "node_recreate_results": node_results,
+        },
+    )
+    action = {
+        "reasons": reasons,
+        "fatal_config_errors": fatal_errors,
+        "node_recreate_results": node_results,
+        "cooldown_seconds": MINING_IMPERATIVE_NODE_BACKEND_REPAIR_COOLDOWN_SECONDS,
+    }
+    if ok:
+        if fatal_errors:
+            log(
+                "mining imperative recreated node backend after fatal config evidence; "
+                f"reasons={','.join(reasons)}"
+            )
+            record_incident(
+                "mining_imperative_node_backend_fatal_recreate",
+                "critical",
+                "Node backend showed fatal config evidence; recreated the node and kept mining paused until health returns",
+                action,
+                payload,
+            )
+        else:
+            log(f"mining imperative recreated node backend reasons={','.join(reasons)}")
+            record_incident(
+                "mining_imperative_node_backend_recreated",
+                "critical",
+                "Recreated node backend because the production chain child/RPC path was down",
+                action,
+                payload,
+            )
+        return True
+
+    log(f"mining imperative failed to recreate node backend reasons={','.join(reasons)}")
+    record_incident(
+        "mining_imperative_node_backend_recreate_failed",
+        "critical",
+        "Could not recreate node backend while mining was paused",
+        action,
+        payload,
+    )
+    return False
 
 
 def fastsync_orphan_peer_ids(payload: dict[str, Any]) -> list[str]:
@@ -1005,20 +1211,29 @@ def pool_container_running(payload: dict[str, Any]) -> bool:
     return bool(container.get("running"))
 
 
-def stop_pool_container(payload: dict[str, Any], reason: str) -> bool:
+def stop_pool_container(
+    payload: dict[str, Any],
+    reason: str,
+    pause_type: str = "catchup_pause",
+    policy: dict[str, Any] | None = None,
+) -> bool:
     compose = run(docker_compose_command("stop", POOL_CONTAINER), timeout=120)
     action = {
         "reason": reason,
+        "pause_type": pause_type,
         "container": POOL_CONTAINER,
         "method": "docker compose stop",
         **compose.as_dict(),
     }
     if compose.ok:
-        log(f"catch-up pause stopped {POOL_CONTAINER}: {reason}")
+        mark_pool_pause(payload, pause_type, reason, policy)
+        event_type = "catchup_pause_stopped_pool" if pause_type == "catchup_pause" else "mining_imperative_paused_pool"
+        message_prefix = "Catch-up pause" if pause_type == "catchup_pause" else "Mining imperative"
+        log(f"{pause_type} stopped {POOL_CONTAINER}: {reason}")
         record_incident(
-            "catchup_pause_stopped_pool",
+            event_type,
             "warning",
-            f"Catch-up pause stopped {POOL_CONTAINER}: {reason}",
+            f"{message_prefix} stopped {POOL_CONTAINER}: {reason}",
             action,
             payload,
         )
@@ -1027,17 +1242,21 @@ def stop_pool_container(payload: dict[str, Any], reason: str) -> bool:
     stop = run(["docker", "stop", POOL_CONTAINER], timeout=60)
     action = {
         "reason": reason,
+        "pause_type": pause_type,
         "container": POOL_CONTAINER,
         "method": "docker stop",
         "compose_stop": compose.as_dict(),
         "docker_stop": stop.as_dict(),
     }
     if stop.ok:
-        log(f"catch-up pause stopped {POOL_CONTAINER} with docker stop: {reason}")
+        mark_pool_pause(payload, pause_type, reason, policy)
+        event_type = "catchup_pause_stopped_pool" if pause_type == "catchup_pause" else "mining_imperative_paused_pool"
+        message_prefix = "Catch-up pause" if pause_type == "catchup_pause" else "Mining imperative"
+        log(f"{pause_type} stopped {POOL_CONTAINER} with docker stop: {reason}")
         record_incident(
-            "catchup_pause_stopped_pool",
+            event_type,
             "warning",
-            f"Catch-up pause stopped {POOL_CONTAINER}: {reason}",
+            f"{message_prefix} stopped {POOL_CONTAINER}: {reason}",
             action,
             payload,
         )
@@ -1066,6 +1285,7 @@ def start_pool_container(payload: dict[str, Any], reason: str) -> bool:
         **start.as_dict(),
     }
     if start.ok:
+        clear_pool_pause(reason)
         log(f"mining imperative started {POOL_CONTAINER}: {reason}")
         record_incident(
             "mining_imperative_started_pool",
@@ -1085,6 +1305,7 @@ def start_pool_container(payload: dict[str, Any], reason: str) -> bool:
         "compose": compose.as_dict(),
     }
     if compose.ok:
+        clear_pool_pause(reason)
         log(f"mining imperative recreated {POOL_CONTAINER} without dependencies: {reason}")
         record_incident(
             "mining_imperative_recreated_pool",
@@ -1116,6 +1337,8 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
     actions: list[str] = []
     catchup_policy = catchup_policy_from_payload(payload)
     catchup_active = bool(catchup_policy.get("active"))
+    backend_blockers = node_backend_blocks_pool_start(payload)
+    applied_catchup_runtime = False
     for unit in MINING_IMPERATIVE_GUARD_UNITS:
         if ensure_user_unit(unit, payload):
             actions.append(f"repaired_unit:{unit}")
@@ -1133,10 +1356,19 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
             f"node is {catchup_policy.get('lag_blocks')} blocks behind peers "
             f"(pause threshold {catchup_policy.get('threshold_blocks')})"
         )
-        if pool_container_running(payload) and stop_pool_container(payload, reason):
+        if pool_container_running(payload) and stop_pool_container(payload, reason, "catchup_pause", catchup_policy):
             actions.append(f"stopped_container:{POOL_CONTAINER}:catchup_pause")
         if apply_catchup_node_runtime(payload, catchup_policy):
             actions.append("applied_catchup_node_runtime")
+            applied_catchup_runtime = True
+    elif backend_blockers:
+        reason = "node backend is not healthy: " + ", ".join(backend_blockers)
+        if pool_container_running(payload) and stop_pool_container(payload, reason, "backend_recovery"):
+            actions.append(f"stopped_container:{POOL_CONTAINER}:backend_recovery")
+
+    if backend_blockers and not applied_catchup_runtime:
+        if repair_node_backend(payload, backend_blockers):
+            actions.append("recreated_node_backend")
 
     if not catchup_active and node_mining_template_support_should_repair(payload):
         if repair_node_mining_template_support(payload):
@@ -1152,6 +1384,7 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
         chain_ready = chain_ready_for_mining(payload)
         should_start = (
             not catchup_active
+            and not backend_blockers
             and (miner_demand or lan_candidate or (MINING_IMPERATIVE_START_IDLE_SYNCED_POOL and chain_ready))
         )
         if should_start:
@@ -1168,6 +1401,13 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
             log(
                 f"mining imperative left {POOL_CONTAINER} stopped for catch-up pause: "
                 f"lag={catchup_policy.get('lag_blocks')} threshold={catchup_policy.get('threshold_blocks')}"
+            )
+        elif backend_blockers:
+            pause = pool_pause_state()
+            paused_for = safe_float(time.time() - safe_float(pause.get("started_at_epoch"), time.time()), 0.0)
+            log(
+                f"mining imperative left {POOL_CONTAINER} stopped for backend recovery: "
+                f"reasons={','.join(backend_blockers)} paused_for={paused_for:.1f}s"
             )
         else:
             log(

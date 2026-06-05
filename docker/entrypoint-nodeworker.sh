@@ -109,6 +109,26 @@ read_config_value() {
   ' "$config_file"
 }
 
+normalize_bdag_network_env() {
+  local value
+  value="$(printf '%s' "${BDAG_NETWORK:-}" | tr '[:upper:]' '[:lower:]')"
+  case "$value" in
+    "")
+      return 0
+      ;;
+    mainnet)
+      log "BDAG_NETWORK=mainnet is the implicit default for this node build; unsetting the env override"
+      unset BDAG_NETWORK
+      ;;
+    devnet|testnet|privnet|mixnet)
+      return 0
+      ;;
+    *)
+      log "leaving unsupported BDAG_NETWORK=$BDAG_NETWORK for node startup validation"
+      ;;
+  esac
+}
+
 network_datadir() {
   local data_parent="$1"
   local network="$2"
@@ -671,6 +691,7 @@ configure_directory_artifact_serving() {
   fi
 }
 
+normalize_bdag_network_env
 apply_ordered_fastsync_peers "$@"
 apply_no_fastsync_serve_guard "$@"
 apply_default_fastsync_flags "$@"
@@ -704,6 +725,7 @@ if [ "${BDAG_FASTSYNC_PRINT_ORDERED_PEERS:-0}" = "1" ]; then
 fi
 
 if [ "${BDAG_ENTRYPOINT_PRINT_NODE_FLAGS:-0}" = "1" ]; then
+  printf 'BDAG_NETWORK=%s\n' "${BDAG_NETWORK:-}"
   printf 'BDAG_FASTARTIFACTSYNC_ENABLED=%s\n' "${BDAG_FASTARTIFACTSYNC_ENABLED:-}"
   printf 'NODE_ARGS_APPEND=%s\n' "${NODE_ARGS_APPEND:-}"
   exit 0

@@ -81,7 +81,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
 
         self.assertIn("BDAG_NODE_SERVICES: node", compose)
-        self.assertIn("BDAG_NETWORK: ${BDAG_NETWORK:-${NETWORK:-mainnet}}", compose)
+        self.assertIn("BDAG_NETWORK: ${BDAG_NETWORK:-}", compose)
         self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool", compose)
         self.assertIn("BDAG_POOL_CONTAINER: pool", compose)
         self.assertIn("BDAG_POOL_DB_CONTAINER: postgres", compose)

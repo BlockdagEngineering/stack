@@ -97,6 +97,12 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         self.assertNotIn("--allowsubmitwhennotsynced", result.stdout)
         self.assertNotIn("--modules=Blockdag,miner", result.stdout)
 
+    def test_mainnet_bdag_network_env_is_normalized_to_implicit_default(self) -> None:
+        result = self.run_entrypoint({"BDAG_NETWORK": "mainnet"})
+
+        self.assert_stdout_contains(result, "BDAG_NETWORK=\n")
+        self.assertIn("BDAG_NETWORK=mainnet is the implicit default", result.stderr)
+
 
 if __name__ == "__main__":
     raise SystemExit(unittest.main())
