@@ -1,14 +1,15 @@
+# syntax=docker/dockerfile:1.7
 # Pool-Stack Docker Compose Dev Build
 #
 # Builds the BlockDAG node + nodeworker, mining-pool,
 # and the cpu-miner from LOCAL CLONES of the source repositories.
-# Expected directory structure (build context = parent directory):
+# Build inputs are provided as named BuildKit contexts from compose:
 #
-#   parent/
-#   ├── pool-stack-docker/         (this repo - must match DOCKERFILE path in compose)
-#   ├── blockdag-corechain/         (local clone of blockdag node)
-#   ├── asic-pool/                  (local clone of mining pool)
-#   ├── cpu-miner/                  (local clone of cpu miner)
+#   stack_src          -> pool-stack-docker repo root
+#   blockdag_corechain -> local clone of blockdag node source
+#   pool_src           -> local clone of mining pool source
+#   cpu_miner_src      -> local clone of cpu miner source
+#   dashboard_src      -> local clone of dashboard/control-plane source
 #
 # Optional snapshot import: SNAPSHOT_PATH copies a .bdsnap from the build context
 # (see compose / Makefile). No URL download. Datadir matches node.conf.
@@ -26,19 +27,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ----------------------------------------------------------------------------
 FROM base AS node-build
 WORKDIR /src/blockdag-corechain
-COPY blockdag-corechain/ .
+COPY --from=blockdag_corechain . .
 RUN make all && \
     mkdir -p /out && \
     cp -f ./build/bin/bdag        /out/blockdag-node && \
-    cp -f ./build/bin/nodeworker  /out/nodeworker && \
-    cp -f ./build/bin/fastsnap    /out/fastsnap
+    cp -f ./build/bin/nodeworker  /out/nodeworker
 
 # ----------------------------------------------------------------------------
-# Pool Build Stage (asic-pool)
+# Pool Build Stage (pool)
 # ----------------------------------------------------------------------------
 FROM base AS pool-build
-WORKDIR /src/asic-pool
-COPY asic-pool/ .
+WORKDIR /src/pool
+COPY --from=pool_src . .
 RUN make build && \
     mkdir -p /out && \
     cp -f ./bin/pool           /out/mining-pool && \
@@ -49,31 +49,23 @@ RUN make build && \
 # ----------------------------------------------------------------------------
 FROM base AS miner-build
 WORKDIR /src/cpu-miner
-COPY cpu-miner/ .
+COPY --from=cpu_miner_src . .
 # CGO is required for the C-implemented scrypt inner loop. Use portable -O2
 # instead of -march=native so the resulting binary runs on any x86_64 host.
 RUN CGO_ENABLED=1 CGO_CFLAGS='-O2' go build -o /out/scrypt-miner ./cmd/miner
 
 # ----------------------------------------------------------------------------
-# Dashboard Build Stage (dashboard)
+# Dashboard Source Stage (canonical dashboard local clone)
 # ----------------------------------------------------------------------------
-FROM base AS dashboard-build
-WORKDIR /src/dashboard
-COPY pool-stack-docker/dashboard .
-# base removed apt lists; refresh index before npm (bookworm npm package installs node toolchain).
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    npm \
- && rm -rf /var/lib/apt/lists/* \
- && npm ci \
- && npm run css:build \
- && go mod tidy \
- && go build -o out/dashboard .
+FROM alpine:3.20 AS dashboard-source
+COPY --from=dashboard_src . /src/dashboard
+RUN rm -rf /src/dashboard/.git
 
 # ----------------------------------------------------------------------------
 # Node Runtime Stage (with optional snapshot import)
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS node
-ARG SNAPSHOT_PATH=pool-stack-docker/docker/no-snapshot.marker
+ARG SNAPSHOT_PATH=docker/no-snapshot.marker
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates tzdata \
@@ -85,13 +77,12 @@ RUN mkdir -p /etc/bdagStack /var/lib/bdagStack/node/mainnet /var/lib/bdagStack/n
 
 COPY --from=node-build /out/blockdag-node  /usr/local/bin/blockdag-node
 COPY --from=node-build /out/nodeworker     /usr/local/bin/nodeworker
-COPY --from=node-build /out/fastsnap       /usr/local/bin/fastsnap
-RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker /usr/local/bin/fastsnap
+RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker
 
-COPY pool-stack-docker/docker/entrypoint-nodeworker.sh /usr/local/bin/docker-entrypoint-nodeworker.sh
+COPY --from=stack_src docker/entrypoint-nodeworker.sh /usr/local/bin/docker-entrypoint-nodeworker.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh
 
-# Snapshot file must be in the build context (BUILD_CONTEXT is parent dir in dev).
+# Snapshot file must be in the main build context (repo root).
 COPY ${SNAPSHOT_PATH} /tmp/snapshot-candidate.bdsnap
 
 RUN set -eu; \
@@ -100,10 +91,11 @@ RUN set -eu; \
       /usr/local/bin/blockdag-node snap import \
         --datadir /var/lib/bdagStack/node/mainnet \
         --path /tmp/snapshot-candidate.bdsnap; \
+      cp -f /tmp/snapshot-candidate.bdsnap /var/lib/bdagStack/node/mainnet/snapshot.bdsnap; \
       chown -R bdagStack:bdagStack /var/lib/bdagStack/node /var/log/bdagStack; \
-      echo "Snapshot import finished"; \
+      echo "Snapshot import finished and P2P snapshot archive published"; \
     else \
-      echo "No snapshot file (marker or tiny file); node will sync from genesis or P2P"; \
+      echo "No snapshot file (marker or tiny file); node will sync from genesis or P2P and cannot serve a P2P snapshot until snapshot.bdsnap exists in its datadir"; \
     fi; \
     rm -f /tmp/snapshot-candidate.bdsnap
 
@@ -138,8 +130,8 @@ RUN chmod +x /usr/local/bin/mining-pool /usr/local/bin/dashboard-api
 
 # godotenv loads this path at runtime; bake .env.example so builds work without a
 # gitignored .env. Compose still passes env via `environment:`; copy .env to
-# pool-stack-docker/.env on the host if you want extra keys in the file.
-COPY pool-stack-docker/.env.example /var/lib/bdagStack/pool/.env
+# .env in this repository root on the host if you want extra keys in the file.
+COPY --from=stack_src .env.example /var/lib/bdagStack/pool/.env
 RUN chown bdagStack:bdagStack /var/lib/bdagStack/pool/.env
 
 USER bdagStack
@@ -148,7 +140,7 @@ EXPOSE 3334 8080
 ENTRYPOINT ["/usr/local/bin/mining-pool"]
 
 # ----------------------------------------------------------------------------
-# Miner Runtime Stage (cpu-miner; matches dockerfile-cpu-release layout)
+# CPU Miner Runtime Stage 
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS miner
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -172,22 +164,40 @@ ENV POOL_URL=stratum+tcp://pool:3334 \
 
 ENTRYPOINT ["/usr/local/bin/cpu-miner"]
 
-# 
-# Dashboard Runtime Stage
 # ----------------------------------------------------------------------------
-FROM ubuntu:24.04 AS dashboard
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates tzdata \
- && rm -rf /var/lib/apt/lists/*
+# Dashboard Runtime Stage (Python operations dashboard/control plane)
+# ----------------------------------------------------------------------------
+FROM docker:27-cli AS dashboard
 
-RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack \
- && mkdir -p /app/logs \
- && chown bdagStack:bdagStack /app/logs
+RUN apk add --no-cache \
+    bash \
+    ca-certificates \
+    coreutils \
+    curl \
+    findutils \
+    iproute2 \
+    procps \
+    py3-pip \
+    python3 \
+    shadow \
+    tzdata
 
-WORKDIR /app/logs
-COPY --from=dashboard-build  src/dashboard/out/dashboard /usr/local/bin/dashboard
-EXPOSE 9280
+COPY --from=dashboard-source /src/dashboard /opt/dashboard
+COPY --from=stack_src docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
+RUN chmod +x /usr/local/bin/entrypoint-dashboard.sh \
+ && mkdir -p /var/lib/bdag-dashboard/runtime /workspace \
+ && if [ -f /opt/dashboard/requirements.txt ]; then \
+      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/dashboard/requirements.txt; \
+    fi
 
-RUN chmod +x /usr/local/bin/dashboard
-USER bdagStack
-ENTRYPOINT [ "/usr/local/bin/dashboard" ]
+ENV PYTHONUNBUFFERED=1 \
+    BDAG_PROJECT_ROOT=/workspace \
+    BDAG_RUNTIME_DIR=/var/lib/bdag-dashboard/runtime \
+    BDAG_POOL_ENV_FILE=/workspace/.env \
+    BDAG_DASHBOARD_BIND=0.0.0.0 \
+    BDAG_DASHBOARD_PORT=9280 \
+    BDAG_DASHBOARD_REQUIRE_TOKEN=auto
+
+WORKDIR /opt/dashboard
+EXPOSE ${DASHBOARD_HOST_PORT:-9280}
+ENTRYPOINT ["/usr/local/bin/entrypoint-dashboard.sh"]
