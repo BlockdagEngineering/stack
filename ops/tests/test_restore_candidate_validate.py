@@ -30,9 +30,9 @@ class RestoreCandidateValidateTest(unittest.TestCase):
     ) -> tuple[Path, Path]:
         artifact = root / "artifact"
         artifact.mkdir()
-        (artifact / "node-datadir-mainnet-no-private-keys.tar.zst").write_bytes(b"payload")
+        (artifact / "node-chain-mainnet.tar.zst").write_bytes(b"payload")
         manifest = {
-            "artifact_type": "raw_datadir_checkpoint",
+            "artifact_type": "chain_checkpoint",
             "network": "mainnet",
             "chain_id": "1043",
             "genesis_hash": "0xabc",
@@ -40,8 +40,8 @@ class RestoreCandidateValidateTest(unittest.TestCase):
             "tip_hash": "0xtip",
             "state_root": "0x1234",
             "metadata": {
-                "raw_datadir_archive": "node-datadir-mainnet-no-private-keys.tar.zst",
-                "raw_datadir_source": "finalized-sidecar",
+                "archive": "node-chain-mainnet.tar.zst",
+                "source": "finalized-snapshot",
             },
             "signatures": [{"key_id": "test", "signature": "abcd"}],
         }
@@ -122,7 +122,7 @@ class RestoreCandidateValidateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             artifact, metadata_path = self.make_artifact(
                 Path(tmp),
-                manifest_extra={"artifact_type": "legacy_fastsnap_archive"},
+                manifest_extra={"artifact_type": "legacy_archive"},
             )
 
             payload = restore_candidate_validate.validate_candidate(
@@ -132,7 +132,7 @@ class RestoreCandidateValidateTest(unittest.TestCase):
             )
 
         self.assertFalse(payload["promotable"])
-        self.assertIn("unsupported_artifact_type:legacy_fastsnap_archive", payload["blocking_reasons"])
+        self.assertIn("unsupported_artifact_type:legacy_archive", payload["blocking_reasons"])
 
     def test_signature_material_without_validation_blocks_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -153,7 +153,7 @@ class RestoreCandidateValidateTest(unittest.TestCase):
     def test_missing_artifact_payload_blocks_content_complete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             artifact, metadata_path = self.make_artifact(Path(tmp))
-            (artifact / "node-datadir-mainnet-no-private-keys.tar.zst").unlink()
+            (artifact / "node-chain-mainnet.tar.zst").unlink()
 
             payload = restore_candidate_validate.validate_candidate(
                 artifact,
@@ -168,7 +168,7 @@ class RestoreCandidateValidateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             artifact, metadata_path = self.make_artifact(
                 Path(tmp),
-                manifest_extra={"metadata": {"raw_datadir_archive": "../outside.tar.zst"}},
+                manifest_extra={"metadata": {"archive": "../outside.tar.zst"}},
             )
 
             payload = restore_candidate_validate.validate_candidate(
@@ -235,34 +235,17 @@ class RestoreCandidateValidateTest(unittest.TestCase):
         self.assertIn("state_root_zero_or_missing", payload["blocking_reasons"])
         self.assertIn("network_or_genesis_mismatch", payload["blocking_reasons"])
 
-    def test_file_safe_sidecar_is_not_promotable_without_trust_evidence(self) -> None:
+    def test_private_or_ephemeral_paths_fail_file_safety(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            sidecar = Path(tmp) / "sidecar" / "mainnet"
-            chain = sidecar / "BdagChain"
-            chain.mkdir(parents=True)
-            (chain / "CURRENT").write_text("MANIFEST-000001\n", encoding="utf-8")
-            (chain / "MANIFEST-000001").write_text("", encoding="utf-8")
+            artifact, metadata_path = self.make_artifact(Path(tmp))
+            (artifact / "bdageth").mkdir()
+            (artifact / "bdageth" / "nodekey").write_text("secret-ish\n", encoding="utf-8")
 
-            payload = restore_candidate_validate.validate_candidate(sidecar, "sidecar")
-
-        self.assertTrue(payload["file_safe"])
-        self.assertTrue(payload["content_complete"])
-        self.assertFalse(payload["promotable"])
-        self.assertIn("unsigned_manifest", payload["blocking_reasons"])
-        self.assertIn("consensus_validation_missing", payload["blocking_reasons"])
-        self.assertIn("restore_trial_missing", payload["blocking_reasons"])
-
-    def test_sidecar_private_or_ephemeral_paths_fail_file_safety(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            sidecar = Path(tmp) / "sidecar" / "mainnet"
-            chain = sidecar / "BdagChain"
-            chain.mkdir(parents=True)
-            (chain / "CURRENT").write_text("MANIFEST-000001\n", encoding="utf-8")
-            (chain / "MANIFEST-000001").write_text("", encoding="utf-8")
-            (sidecar / "bdageth").mkdir()
-            (sidecar / "bdageth" / "nodekey").write_text("secret-ish\n", encoding="utf-8")
-
-            payload = restore_candidate_validate.validate_candidate(sidecar, "sidecar")
+            payload = restore_candidate_validate.validate_candidate(
+                artifact,
+                "artifact",
+                metadata_path=metadata_path,
+            )
 
         self.assertFalse(payload["file_safe"])
         self.assertIn("file_safety_failed", payload["blocking_reasons"])

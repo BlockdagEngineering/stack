@@ -24,7 +24,7 @@ TRUE_VALUES = {"1", "true", "yes", "on", "enabled", "passed", "pass", "valid", "
 ZERO_HASH_CHARS = {"0", "x"}
 
 MARKER_NAMES = ("DO_NOT_PUBLISH", "DO_NOT_PUBLISH.txt")
-SIDECAR_REQUIRED = ("BdagChain/CURRENT",)
+SUPPORTED_ARTIFACT_TYPES = {"chain_checkpoint", "chain_archive", "restore_candidate"}
 UNSAFE_RELATIVE_PATHS = (
     "network.key",
     "nodekey",
@@ -38,10 +38,6 @@ UNSAFE_RELATIVE_PATHS = (
     ".rsync-partial",
     "BdagChain/LOCK",
     "LOCK",
-)
-UNSAFE_SIDECAR_RELATIVE_PATHS = (
-    "artifact.manifest.json",
-    "snapshot.bdsnap",
 )
 
 HARD_TEXT_PATTERNS: tuple[tuple[str, str], ...] = (
@@ -195,7 +191,7 @@ def is_zero_hash(value: Any) -> bool:
     return bool(text) and set(text) <= ZERO_HASH_CHARS and any(ch == "0" for ch in text)
 
 
-def manifest_path_for(candidate: Path, candidate_type: str) -> Path | None:
+def manifest_path_for(candidate: Path) -> Path | None:
     if candidate.is_file():
         return candidate
     ordered = [
@@ -211,10 +207,9 @@ def manifest_path_for(candidate: Path, candidate_type: str) -> Path | None:
     matches = sorted(candidate.glob("*.manifest.json"))
     if matches:
         return matches[0]
-    if candidate_type == "artifact":
-        current = candidate / "current" / "manifest.json"
-        if current.is_file():
-            return current
+    current = candidate / "current" / "manifest.json"
+    if current.is_file():
+        return current
     return None
 
 
@@ -228,7 +223,6 @@ def metadata_path_for(value: str | None, candidate: Path) -> Path | None:
         "restore-candidate-metadata.json",
         "candidate-metadata.json",
         "restore-validation.json",
-        "rawdatadir-sidecar-safe-status.json",
     ):
         path = candidate / name
         if path.is_file():
@@ -249,24 +243,12 @@ def do_not_publish_markers(candidate: Path) -> list[str]:
     return markers
 
 
-def collect_unsafe_paths(candidate: Path, candidate_type: str) -> list[str]:
-    rels = list(UNSAFE_RELATIVE_PATHS)
-    if candidate_type == "sidecar":
-        rels.extend(UNSAFE_SIDECAR_RELATIVE_PATHS)
+def collect_unsafe_paths(candidate: Path) -> list[str]:
     unsafe: list[str] = []
-    for rel in rels:
+    for rel in UNSAFE_RELATIVE_PATHS:
         if (candidate / rel).exists():
             unsafe.append(rel)
     return sorted(set(unsafe))
-
-
-def sidecar_content_complete(candidate: Path) -> bool:
-    if not candidate.is_dir():
-        return False
-    if any(not (candidate / rel).exists() for rel in SIDECAR_REQUIRED):
-        return False
-    chain = candidate / "BdagChain"
-    return chain.is_dir() and any(chain.glob("MANIFEST-*"))
 
 
 def artifact_archive_names(manifest: dict[str, Any], metadata: dict[str, Any]) -> list[str]:
@@ -274,7 +256,7 @@ def artifact_archive_names(manifest: dict[str, Any], metadata: dict[str, Any]) -
     for payload in (metadata_as_dict(manifest.get("metadata")), metadata_as_dict(metadata.get("metadata")), manifest, metadata):
         if not isinstance(payload, dict):
             continue
-        for key in ("raw_datadir_archive", "archive", "payload", "payload_path", "artifact_file"):
+        for key in ("archive", "payload", "payload_path", "artifact_file"):
             value = str(payload.get(key) or "").strip()
             if value:
                 names.append(value)
@@ -448,27 +430,25 @@ def validate_candidate(
     reference_rpc_url: str = "",
     require_mineable: bool = False,
 ) -> dict[str, Any]:
-    manifest_path = manifest_path_for(candidate, candidate_type)
+    candidate_type = candidate_type or "artifact"
+    manifest_path = manifest_path_for(candidate)
     metadata_path = metadata_path_for(str(metadata_path) if metadata_path else None, candidate)
     manifest = read_json(manifest_path)
     metadata = read_json(metadata_path)
     payloads = flattened_sources(manifest, metadata)
 
     markers = do_not_publish_markers(candidate)
-    unsafe_paths = collect_unsafe_paths(candidate, candidate_type) if candidate.exists() else []
+    unsafe_paths = collect_unsafe_paths(candidate) if candidate.exists() else []
     file_safe_explicit, file_safe_present = bool_field(payloads, {"file_safe", "files_safe", "safe_files"})
     structural_file_safe = candidate.exists() and not unsafe_paths
     file_safe = structural_file_safe and (file_safe_explicit if file_safe_present else True)
 
-    if candidate_type == "sidecar":
-        structural_complete = sidecar_content_complete(candidate)
-    else:
-        structural_complete = artifact_content_complete(candidate, manifest_path, manifest, metadata)
+    structural_complete = artifact_content_complete(candidate, manifest_path, manifest, metadata)
     content_explicit, content_present = bool_field(
         payloads,
         {"content_complete", "contentComplete", "filesystem_complete", "complete"},
     )
-    if content_present and candidate_type == "artifact":
+    if content_present:
         content_complete = candidate.exists() and content_explicit
     else:
         content_complete = structural_complete and (content_explicit if content_present else True)
@@ -524,7 +504,7 @@ def validate_candidate(
     if markers:
         append_unique(blockers, "do_not_publish_present")
     artifact_type = artifact_type_value(manifest)
-    if candidate_type == "artifact" and artifact_type and artifact_type != "raw_datadir_checkpoint":
+    if artifact_type and artifact_type not in SUPPORTED_ARTIFACT_TYPES:
         append_unique(blockers, f"unsupported_artifact_type:{artifact_type}")
     if not finalized_source:
         append_unique(blockers, field_reason("finalized_source", finalized_source, finalized_present))
@@ -593,7 +573,7 @@ def validate_candidate(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate", required=True, help="Restore candidate directory or manifest path")
-    parser.add_argument("--type", required=True, choices=("artifact", "sidecar"), help="Restore candidate type")
+    parser.add_argument("--type", default="artifact", choices=("artifact",), help="Restore candidate type")
     parser.add_argument("--metadata", help="Optional JSON metadata/validation evidence file")
     parser.add_argument("--reference-rpc-url", default=os.environ.get("BDAG_CHAIN_REFERENCE_RPC_URL", ""))
     parser.add_argument("--require-mineable", action="store_true", help="Also require explicit mineable validation evidence")

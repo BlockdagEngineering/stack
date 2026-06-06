@@ -24,7 +24,6 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "MINING_IMPERATIVE_START_POOL_ENABLED",
                 "MINING_IMPERATIVE_START_IDLE_SYNCED_POOL",
                 "MINING_IMPERATIVE_MINER_TRACKING_REPAIR_ENABLED",
-                "MINING_IMPERATIVE_CONSTRAINED_FASTARTIFACT_REPAIR_ENABLED",
                 "MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED",
                 "MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED",
                 "CATCHUP_PAUSE_ENABLED",
@@ -59,12 +58,12 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
             lambda *_args, **_kwargs: SimpleNamespace(allowed=True, reason="unit test allow")
         )
         status_sampler.append_incident = lambda *args, **kwargs: {}
+        status_sampler.config_value = lambda name, default="": os.environ.get(name, default)
         status_sampler.log = lambda _message: None
         status_sampler.MINING_IMPERATIVE_REPAIR_ENABLED = True
         status_sampler.MINING_IMPERATIVE_START_POOL_ENABLED = True
         status_sampler.MINING_IMPERATIVE_START_IDLE_SYNCED_POOL = False
         status_sampler.MINING_IMPERATIVE_MINER_TRACKING_REPAIR_ENABLED = True
-        status_sampler.MINING_IMPERATIVE_CONSTRAINED_FASTARTIFACT_REPAIR_ENABLED = True
         status_sampler.MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED = True
         status_sampler.MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED = True
         status_sampler.POOL_ENV_FILE = pathlib.Path("/nonexistent/status-sampler-test.env")

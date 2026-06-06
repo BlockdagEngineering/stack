@@ -167,7 +167,6 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             ".github/workflows/build-cpu.yml",
             ".github/workflows/build.yml",
             ".github/workflows/rc-hardening.yml",
-            "ops/monitor-fastsync-peers.sh",
             "docker-compose.yml",
             "scripts/check-doc-consistency.py",
             "scripts/release/installers/install-unix-common.sh",
@@ -193,14 +192,8 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
     def test_live_runtime_validator_keeps_release_packaging_source_only(self) -> None:
         validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
 
-        self.assertRegex(
-            validator,
-            r'if \[\[ "\$mode" == "source" \]\]; then\n'
-            r'(?:  need_grep .*\n)+'
-            r'  need_grep .if ! command -v jq. "ops/monitor-fastsync-peers.sh"\n'
-            r'fi',
-        )
-        self.assertIn('need_grep \'BDAG_FASTSYNC_PEER_ORDERING=p2p-latency\' ".env.cpu.example"', validator)
+        self.assertIn('need_grep \'check-release-archive.py\' ".github/workflows/build.yml"', validator)
+        self.assertIn('need_grep \'check-release-archive.py\' ".github/workflows/build-cpu.yml"', validator)
         self.assertIn('reject_grep \'BDAG_P2P_LAN_PEERS=\' ".env.cpu.example"', validator)
 
     def test_live_deploy_rollback_validates_manifest_not_new_rc_contract(self) -> None:
@@ -272,6 +265,19 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("Fresh installs assume zero miner sources", agents)
         self.assertIn("Fresh installs assume zero miner sources", readme)
         self.assertIn("0..N ASIC or Stratum miners", agents)
+
+    def test_p2p_firewall_uses_single_compose_port(self) -> None:
+        env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
+        firewall = (ROOT_DIR / "ops" / "allow-p2p-iptables.sh").read_text(encoding="utf-8")
+        installer = (ROOT_DIR / "ops" / "install-p2p-services.sh").read_text(encoding="utf-8")
+        unit = (ROOT_DIR / "ops" / "systemd" / "bdag-p2p-firewall.service").read_text(encoding="utf-8")
+
+        combined = "\n".join([env_example, firewall, installer, unit])
+        self.assertIn("P2P_PORT=8150", env_example)
+        self.assertIn('PORT="${P2P_PORT:-8150}"', firewall)
+        self.assertIn("Environment=P2P_PORT=8150", unit)
+        self.assertNotIn("BDAG_P2P_PORTS", combined)
+        self.assertNotIn("--dports", firewall)
 
 
 if __name__ == "__main__":

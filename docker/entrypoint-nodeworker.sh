@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Fix ownership of persisted paths on every container start (named/bind volumes
-# are often populated as root → bdagStack cannot open bdageth/chaindata/ancient/*).
+# Fix ownership of persisted paths on every container start. Docker volumes are
+# often populated as root, which prevents bdagStack from opening chain data.
 set -euo pipefail
 
 log() {
@@ -56,21 +56,6 @@ fix_ownership_if_needed() {
     log "repairing ownership below $path due to ${mismatched#$path/}"
     chown -R bdagStack:bdagStack "$path" || true
   done
-}
-
-nodeworker_arg_value() {
-  local key="$1"
-  shift
-  local arg
-  for arg in "$@"; do
-    case "$arg" in
-      --"$key"=*)
-        printf '%s\n' "${arg#*=}"
-        return 0
-        ;;
-    esac
-  done
-  return 1
 }
 
 nodeworker_arg_present() {
@@ -719,13 +704,7 @@ if [ "$(basename "${1:-}")" = "nodeworker" ] && ! nodeworker_arg_present "health
   set -- "${args[@]}"
 fi
 
-if [ "${BDAG_FASTSYNC_PRINT_ORDERED_PEERS:-0}" = "1" ]; then
-  printf '%s\n' "${BDAG_FASTSNAP_PEERS:-}"
-  exit 0
-fi
-
 if [ "${BDAG_ENTRYPOINT_PRINT_NODE_FLAGS:-0}" = "1" ]; then
-  printf 'BDAG_FASTARTIFACTSYNC_ENABLED=%s\n' "${BDAG_FASTARTIFACTSYNC_ENABLED:-}"
   printf 'NODE_ARGS_APPEND=%s\n' "${NODE_ARGS_APPEND:-}"
   exit 0
 fi
@@ -733,13 +712,6 @@ fi
 if [ "$(id -u)" = 0 ]; then
   ensure_owned_runtime_dirs
   fix_ownership_if_needed
-  maybe_fastsnap_bootstrap "$@"
-  configure_directory_artifact_serving "$@"
-  if [ "$FASTSNAP_BOOTSTRAP_MUTATED" = "1" ]; then
-    fix_ownership_if_needed
-  fi
   exec runuser -u bdagStack -g bdagStack -- "$@"
 fi
-maybe_fastsnap_bootstrap "$@"
-configure_directory_artifact_serving "$@"
 exec "$@"

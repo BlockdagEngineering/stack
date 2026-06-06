@@ -97,16 +97,10 @@ the selected leader must receive the highest Docker CPU shares and block IO
 weight available on the host. Do not weaken this behavior or reintroduce a
 productive-mining exception without a measured release-candidate test.
 
-Until the FastSync nil-preprocessed-block fix is deployed in the node image,
-prefer `BDAG_FASTSYNC_PREPROCESS_WORKERS=1` on Pi catch-up hosts. The parallel
-preprocessor has previously panicked in `processFastBlockRange`; uptime and
-steady catch-up beat the small parallel precheck speedup.
-
-Startup seed freshness must have operational slack. If a sidecar, raw datadir
-artifact, or remote seed is within `BDAG_SYNC_ACCEPTABLE_STARTUP_LAG_BLOCKS`
-(default 4000 blocks), start the node and let P2P/FastSync catch the tail.
-Use the recorded copy duration allowance to avoid repeated full copies; do not
-recopy just to close an already-acceptable lag.
+Startup seed freshness must have operational slack. If a remote seed is within
+`BDAG_SYNC_ACCEPTABLE_STARTUP_LAG_BLOCKS` (default 4000 blocks), start the node
+and let P2P catch the tail. Use the recorded copy duration allowance to avoid
+repeated full copies; do not recopy just to close an already-acceptable lag.
 
 ## Five ASIC Template Conversion Invariant
 
@@ -172,7 +166,7 @@ RPC at the same time. Hard diagnostic paths can force a direct sample with
 
 The node entrypoint must not recursively `chown` the full chain datadir on every
 start. Keep ownership repair conditional through `BDAG_ENTRYPOINT_CHOWN_MODE`
-and only run the second repair pass after FastSnap import has actually mutated
+and only run the second repair pass after snapshot import has actually mutated
 the datadir.
 
 The stack sentinel must be single-flight and must never build or pull images as
@@ -203,10 +197,10 @@ peer-discovery work do not wake together and stampede Docker/RPC on constrained
 hosts.
 
 Optional background work must respect `background_maintenance_decision()`.
-Hourly snapshot staging, FastSnap seed builds, and global dashboard blockchain
-scans must defer while the node is catching up or host IO/CPU pressure is above
-the configured release thresholds. Chain import and live mining are the primary
-jobs; background freshness work is allowed to lag until the host is healthy.
+Hourly snapshot staging and global dashboard blockchain scans must defer while
+the node is catching up or host IO/CPU pressure is above the configured release
+thresholds. Chain import and live mining are the primary jobs; background
+freshness work is allowed to lag until the host is healthy.
 
 Runtime limits must be platform-adaptive. Do not hard-code Pi-only worker
 counts as universal behavior: the stack must support Linux AMD64 and ARM64
@@ -247,39 +241,12 @@ Docker access for the stack being watched. Do not report a source checkout
 healthy until `8088/api/status` points at the intended project root and returns
 `overall=ok` or the expected no-miner mode.
 
-## FastSync Candidate Ordering
-
-New nodes must use P2P evidence, not address class, to choose FastSync sources.
-The release default is `BDAG_FASTSYNC_PEER_ORDERING=p2p-latency`.
+## P2P Peer Configuration
 
 Peer candidates must be complete P2P multiaddrs with peer IDs. Address class is
-not a sync mode, priority class, or eligibility signal. The downloader should
-receive the full deduplicated P2P candidate set and select useful sources by
-measured P2P ping/manifest/chunk response, artifact availability, and sustained
-transfer performance.
+not a sync mode, priority class, or eligibility signal.
 
-Old installations may still contain legacy address-bucket variable names.
-Treat them only as migration input: normalize complete P2P multiaddrs into
-`BDAG_FASTSYNC_PEERS` and clear the bucket values. Do not add new LAN, VPN, or
-public sync options, and do not reintroduce LAN-first, VPN-second, public-last
-ordering.
-
-## Fast Artifact Sync V2 Directory Mode
-
-Directory artifacts are the preferred Fast Artifact Sync V2 bootstrap primitive.
-Keep `BDAG_FASTSNAP_DIRECTORY_MODE=1` as the release default so new nodes use
-verified file chunks and atomic directory install when peers offer it, while
-retaining `.bdsnap` archive fallback for older seeds. Serving a hot-stage
-directory artifact is opt-in through `BDAG_FASTSYNC_ARTIFACT_DIRECTORY` and
-`BDAG_FASTSYNC_ARTIFACT_MANIFEST`; nodes bootstrapped from a directory artifact
-auto-serve that verified checkpoint from `artifact.manifest.json`. Do not make
-future changes that force archive assembly back into the default fast path.
-
-Raw datadir FastArtifact source serving is the preferred sync-source design.
-The live node datadir must never be served or exported directly. Use
-`ops/fastartifact_source_eligibility.py`,
-`ops/maintain-rawdatadir-sidecar.sh`, and `ops/publish-rawdatadir-artifact.sh`
-so source serving fails closed on USB/removable storage and publishes only a
-signed `raw_datadir_checkpoint` generation from a finalized sidecar. Keep
-`BDAG_FASTSNAP_SEED_TIMER_ENABLED=0` in release defaults; IPFS segments and
-finalized raw-datadir sidecars own content publication.
+Old installations may still contain legacy address-bucket variable names. Treat
+them only as migration input and clear the bucket values. Do not add new LAN,
+VPN, or public sync options, and do not reintroduce LAN-first, VPN-second,
+public-last ordering.

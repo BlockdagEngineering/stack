@@ -217,11 +217,7 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         ), mock.patch.object(
             watchdog, "status_payload_has_tracking_gap", return_value=False
         ), mock.patch.object(
-            watchdog, "constrained_fastartifact_should_repair", return_value=False
-        ), mock.patch.object(
             watchdog, "node_mining_template_support_should_repair", return_value=False
-        ), mock.patch.object(
-            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
         ), mock.patch.object(
             watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
         ), mock.patch.object(
@@ -287,11 +283,7 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         ), mock.patch.object(
             watchdog, "status_payload_has_tracking_gap", return_value=False
         ), mock.patch.object(
-            watchdog, "constrained_fastartifact_should_repair", return_value=False
-        ), mock.patch.object(
             watchdog, "node_mining_template_support_should_repair", return_value=False
-        ), mock.patch.object(
-            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
         ), mock.patch.object(
             watchdog, "record_efficiency_event", side_effect=record
         ), mock.patch.object(

@@ -143,8 +143,6 @@ services:
       BDAG_FASTSYNC_ARTIFACT_DIRECTORY: ${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}
       BDAG_FASTSYNC_ARTIFACT_MANIFEST: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}
       SYNC_SOURCE_NODE: ${SYNC_SOURCE_NODE:-0}
-      BDAG_RAWDATADIR_SOURCE_MODE: ${BDAG_RAWDATADIR_SOURCE_MODE:-auto}
-      BDAG_RAWDATADIR_ARTIFACT_BASE: ${BDAG_RAWDATADIR_ARTIFACT_BASE:-./data-restore/rawdatadir}
       BDAG_STORAGE_PROFILE: ${BDAG_STORAGE_PROFILE:-auto}
       BDAG_NETWORK_TOPOLOGY: ${BDAG_NETWORK_TOPOLOGY:-auto}
       BDAG_DETECTED_NETWORK_TOPOLOGY: ${BDAG_DETECTED_NETWORK_TOPOLOGY:-}
@@ -152,10 +150,6 @@ services:
       BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-}
       BDAG_P2P_ADVERTISE_IP: ${BDAG_P2P_ADVERTISE_IP:-}
       BDAG_P2P_INTERFACE: ${BDAG_P2P_INTERFACE:-}
-      BDAG_FASTSYNC_PEER_ORDERING: ${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}
-      BDAG_FASTSYNC_APPEND_ADDPEERS: ${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}
-      BDAG_NO_FASTSYNC_SERVE: ${BDAG_NO_FASTSYNC_SERVE:-auto}
-      BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
       BOOTSTRAP_PEER_ADDRESSES: ${BOOTSTRAP_PEER_ADDRESSES:-}
       BDAG_FASTSYNC_PEERS: ${BDAG_FASTSYNC_PEERS:-}
       BDAG_FASTSYNC_RANGE_BLOCKS: ${BDAG_FASTSYNC_RANGE_BLOCKS:-1024}
@@ -174,7 +168,6 @@ services:
       - ${BDAG_NODEWORKER_DATA_DIR:-./data/nodeworker}:/var/lib/bdagStack/nodeworker
       # node.conf in project root (copy from node.conf.example). gitignored.
       - ./node.conf:/etc/bdagStack/node.conf:ro
-      - ${BDAG_RAWDATADIR_ARTIFACT_BASE:-./data-restore/rawdatadir}:/fastartifact/rawdatadir:ro
 
   # --------------------------------------------------------------------------
   # Mining pool. Connects to node RPC and Postgres.
@@ -245,8 +238,8 @@ services:
       METRICS_ADDR:       ${METRICS_ADDR:-0.0.0.0:9090}
       POOL_INSTANCE_ID:   ${POOL_INSTANCE_ID:-}
     ports:
-      - "${POOL_BIND_PORT:-3334}:3334"
-      - "${POOL_API_PORT:-9090}:9090"
+      - "0.0.0.0:${POOL_BIND_PORT:-3334}:3334"
+      - "0.0.0.0:${POOL_API_PORT:-9090}:9090"
 
 
 

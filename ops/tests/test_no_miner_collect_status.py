@@ -660,8 +660,8 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
 
     def test_lazy_archive_task_defers_until_pool_is_ready(self) -> None:
         pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
-        pool_ops.BACKGROUND_MAINTENANCE_LAZY_TASKS = {"rawdatadir_sidecar"}
-        pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = {"rawdatadir_sidecar"}
+        pool_ops.BACKGROUND_MAINTENANCE_LAZY_TASKS = {"history_compaction"}
+        pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = {"history_compaction"}
         pool_ops.host_runtime_profile = lambda: {"cpu_count": 8}
         status = {
             "overall": "ok",
@@ -678,7 +678,7 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
             },
         }
 
-        decision = pool_ops.background_maintenance_decision("rawdatadir_sidecar", status)
+        decision = pool_ops.background_maintenance_decision("history_compaction", status)
 
         self.assertFalse(decision["allowed"])
         self.assertTrue(decision["task_is_lazy"])
@@ -719,8 +719,8 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
 
     def test_lazy_archive_task_defers_on_load_pressure(self) -> None:
         pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
-        pool_ops.BACKGROUND_MAINTENANCE_LAZY_TASKS = {"ipfs_segment_writer"}
-        pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = {"ipfs_segment_writer"}
+        pool_ops.BACKGROUND_MAINTENANCE_LAZY_TASKS = {"global_scan"}
+        pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = {"global_scan"}
         pool_ops.BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN = 1.25
         pool_ops.host_runtime_profile = lambda: {"cpu_count": 8}
         status = {
@@ -738,7 +738,7 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
             },
         }
 
-        decision = pool_ops.background_maintenance_decision("ipfs_segment_writer", status)
+        decision = pool_ops.background_maintenance_decision("global_scan", status)
 
         self.assertFalse(decision["allowed"])
         self.assertEqual(decision["loadavg_1m_warn"], 10.0)

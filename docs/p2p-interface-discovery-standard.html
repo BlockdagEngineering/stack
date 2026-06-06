@@ -58,7 +58,7 @@
       <article class="card">
         <p class="label">Firewall</p>
         <p class="good">All configured interfaces eligible</p>
-        <p><code>bdag-p2p-firewall.service</code> accepts configured BlockDAG P2P ports in host <code>INPUT</code> and Docker <code>DOCKER-USER</code> without an interface filter.</p>
+        <p><code>bdag-p2p-firewall.service</code> accepts the configured BlockDAG P2P port in host <code>INPUT</code> and Docker <code>DOCKER-USER</code> without an interface filter.</p>
       </article>
       <article class="card">
         <p class="label">Local node</p>
@@ -68,7 +68,7 @@
       <article class="card">
         <p class="label">Operator peers</p>
         <p class="good">P2P multiaddrs only</p>
-        <p>Known sync peers must be supplied through <code>BDAG_FASTSYNC_PEERS</code> as complete P2P multiaddrs. Legacy address-bucket variables are migration input only and must be normalized away.</p>
+        <p>Known peers must be supplied as complete P2P multiaddrs. Legacy address-bucket variables are migration input only and must be normalized away.</p>
       </article>
       <article class="card">
         <p class="label">Upgrade peerstore</p>
@@ -78,8 +78,8 @@
     </section>
 
     <h2>Firewall Contract</h2>
-    <p>The P2P firewall helper is intentionally broad over interfaces and narrow over ports. This lets reachability change without editing firewall unit files, while sync peer selection remains based on measured P2P usefulness.</p>
-    <pre>BDAG_P2P_PORTS=8151,8152
+    <p>The P2P firewall helper is intentionally broad over interfaces and narrow over the single published P2P port. This lets reachability change without editing firewall unit files, while sync peer selection remains based on measured P2P usefulness.</p>
+    <pre>P2P_PORT=8150
 BDAG_P2P_PROTOCOLS=tcp
 systemctl enable --now bdag-p2p-firewall.service</pre>
     <p>If a future node build enables UDP-based discovery, set <code>BDAG_P2P_PROTOCOLS=tcp,udp</code> in <code>/etc/default/bdag-p2p-firewall</code> and publish matching Docker UDP ports.</p>
