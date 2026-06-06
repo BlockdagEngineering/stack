@@ -332,6 +332,14 @@ GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS = env_int("BDAG_GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS"
 GLOBAL_EVM_FALLBACK_ENABLED = env_bool("BDAG_GLOBAL_EVM_FALLBACK_ENABLED", False)
 NODE_EVM_RPC_PORT = int(os.environ.get("BDAG_NODE_EVM_RPC_PORT", "18545"))
 EVM_SYNC_LAG_THRESHOLD_BLOCKS = env_int("BDAG_EVM_SYNC_LAG_THRESHOLD_BLOCKS", 1000, minimum=0)
+EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS = env_int("BDAG_EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS", 3, minimum=1)
+EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES = env_int("BDAG_EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES", 2, minimum=1)
+EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG = env_int(
+    "BDAG_EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG",
+    EVM_SYNC_LAG_THRESHOLD_BLOCKS,
+    minimum=0,
+)
+EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE = env_bool("BDAG_EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE", False)
 EARNINGS_HISTORY_RETENTION_SECONDS = int(os.environ.get("BDAG_EARNINGS_HISTORY_RETENTION_SECONDS", str(35 * 86400)))
 EARNINGS_DASHBOARD_HISTORY_SECONDS = int(os.environ.get("BDAG_EARNINGS_DASHBOARD_HISTORY_SECONDS", str(31 * 86400)))
 EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_EARNINGS_SNAPSHOT_INTERVAL_SECONDS", "60"))
@@ -5486,6 +5494,42 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         if sync_progress.get("status") == "syncing" and not failures and not pool_health["needs_fast_repair"]:
             sync_health["needs_fast_sync_repair"] = False
     sync_health["sync_progress_health"] = sync_progress_health
+    public_chain_divergence_nodes: dict[str, Any] = {}
+    for node, progress in (sync_progress.get("nodes") or {}).items():
+        if not isinstance(progress, dict):
+            continue
+        alignment = progress.get("public_chain_alignment")
+        if not isinstance(alignment, dict):
+            alignment = {}
+        if progress.get("public_chain_diverged") or progress.get("solo_mining_suspected"):
+            public_chain_divergence_nodes[str(node)] = alignment
+            node_details.setdefault(str(node), {})
+            node_details[str(node)]["public_chain_diverged"] = True
+            node_details[str(node)]["solo_mining_suspected"] = bool(progress.get("solo_mining_suspected"))
+            node_details[str(node)]["public_chain_alignment"] = alignment
+    sync_health["public_chain_divergence"] = bool(public_chain_divergence_nodes)
+    sync_health["public_chain_divergence_nodes"] = public_chain_divergence_nodes
+    if public_chain_divergence_nodes:
+        summaries = []
+        for node, alignment in public_chain_divergence_nodes.items():
+            if isinstance(alignment, dict):
+                reference = alignment.get("reference_source") or "public reference"
+                lag = alignment.get("reference_lag_blocks")
+                reason = alignment.get("reason") or "local EVM headers differ from public references"
+                hash_mismatches = alignment.get("hash_mismatch_count")
+                local_miner = alignment.get("local_only_miner") or "unknown-local-miner"
+                summaries.append(
+                    f"{node}: {reason}; local_miner={local_miner}; reference={reference}; "
+                    f"EVM lag={lag}; hash_mismatches={hash_mismatches}"
+                )
+        message = (
+            "public-chain divergence suspected: local node EVM headers do not match public references"
+            + (f" ({'; '.join(summaries[:2])})" if summaries else "")
+        )
+        add_sync_warning(message)
+        pool_health["public_chain_divergence"] = True
+        pool_health["needs_fast_repair"] = True
+        sync_health["needs_fast_sync_repair"] = True
 
     overall = "ok"
     if failures:
@@ -6096,6 +6140,205 @@ def eth_syncing_details(url: str, timeout: float) -> dict[str, Any]:
     return {"eth_syncing": result, "chain_syncing": bool(result)}
 
 
+def normalize_eth_address(value: Any) -> str:
+    address = str(value or "").strip().lower()
+    return address if valid_eth_address(address) else ""
+
+
+def evm_block_miner(header: Mapping[str, Any] | None) -> str:
+    if not isinstance(header, Mapping):
+        return ""
+    for key in ("miner", "author", "coinbase"):
+        address = normalize_eth_address(header.get(key))
+        if address:
+            return address
+    return ""
+
+
+def evm_block_hash(header: Mapping[str, Any] | None) -> str:
+    if not isinstance(header, Mapping):
+        return ""
+    value = str(header.get("hash") or "").strip().lower()
+    return value if value.startswith("0x") else ""
+
+
+def evm_block_header_summary(height: int, header: Mapping[str, Any] | None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "height": height,
+        "miner": evm_block_miner(header),
+        "hash": evm_block_hash(header),
+        "timestamp": None,
+    }
+    if isinstance(header, Mapping):
+        try:
+            payload["timestamp"] = parse_rpc_quantity(header.get("timestamp"))
+        except Exception:
+            payload["timestamp"] = None
+    return payload
+
+
+def evm_public_alignment_sample_heights(local_block: int, reference_block: int, sample_count: int) -> list[int]:
+    highest = min(int(local_block), int(reference_block))
+    if highest < 0:
+        return []
+    offsets = [0, 1, 2, 5, 10, 25, 50, 100]
+    heights: list[int] = []
+    for offset in offsets:
+        if len(heights) >= sample_count:
+            break
+        height = highest - offset
+        if height >= 0 and height not in heights:
+            heights.append(height)
+    next_height = highest - 1
+    while len(heights) < sample_count and next_height >= 0:
+        if next_height not in heights:
+            heights.append(next_height)
+        next_height -= 1
+    return heights
+
+
+def evm_public_chain_alignment(
+    *,
+    local_url: str,
+    reference_source: str,
+    reference_url: str,
+    local_block: int,
+    reference_block: int,
+    reference_lag: int,
+    mining_address: str,
+    timeout: float,
+) -> dict[str, Any]:
+    alignment: dict[str, Any] = {
+        "enabled": bool(reference_url and reference_url != local_url),
+        "local_url": local_url,
+        "reference_source": reference_source,
+        "reference_url": reference_url,
+        "local_block": local_block,
+        "reference_block": reference_block,
+        "reference_lag_blocks": reference_lag,
+        "min_reference_lag_blocks": EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG,
+        "min_samples": EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES,
+        "sample_heights": [],
+        "local_samples": [],
+        "reference_samples": [],
+        "sample_errors": [],
+        "compared_count": 0,
+        "reference_sample_count": 0,
+        "hash_mismatch_count": 0,
+        "miner_mismatch_count": 0,
+        "local_miners": [],
+        "reference_miners": [],
+        "local_solo_miner": False,
+        "local_only_miner": "",
+        "reference_has_other_miners": False,
+        "hash_divergence_suspected": False,
+        "solo_mining_suspected": False,
+        "public_chain_diverged": False,
+        "reason": "",
+    }
+    pool_address = normalize_eth_address(mining_address)
+    if not alignment["enabled"]:
+        alignment["reason"] = "no independent public EVM reference was available"
+        return alignment
+
+    heights = evm_public_alignment_sample_heights(
+        int(local_block),
+        int(reference_block),
+        EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS,
+    )
+    alignment["sample_heights"] = heights
+    local_samples: list[dict[str, Any]] = []
+    reference_samples: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for height in heights:
+        local_summary: dict[str, Any] | None = None
+        reference_summary: dict[str, Any] | None = None
+        try:
+            local_summary = evm_block_header_summary(height, fetch_block_header(local_url, height, timeout=timeout))
+            local_samples.append(local_summary)
+        except Exception as exc:  # noqa: BLE001 - alignment is a safety diagnostic.
+            errors.append(f"local:{height}: {exc}")
+        try:
+            reference_summary = evm_block_header_summary(height, fetch_block_header(reference_url, height, timeout=timeout))
+            reference_samples.append(reference_summary)
+        except Exception as exc:  # noqa: BLE001 - public references are best-effort.
+            errors.append(f"{reference_source}:{height}: {exc}")
+        if local_summary and reference_summary:
+            if local_summary.get("hash") and reference_summary.get("hash") and local_summary["hash"] != reference_summary["hash"]:
+                alignment["hash_mismatch_count"] += 1
+            if (
+                local_summary.get("miner")
+                and reference_summary.get("miner")
+                and local_summary["miner"] != reference_summary["miner"]
+            ):
+                alignment["miner_mismatch_count"] += 1
+    alignment["local_samples"] = local_samples
+    alignment["reference_samples"] = reference_samples
+    alignment["sample_errors"] = errors[:6]
+    local_miners = sorted({str(item.get("miner") or "") for item in local_samples if item.get("miner")})
+    reference_miners = sorted({str(item.get("miner") or "") for item in reference_samples if item.get("miner")})
+    alignment["local_miners"] = local_miners
+    alignment["reference_miners"] = reference_miners
+    compared_heights = {
+        int(item.get("height"))
+        for item in local_samples
+        if isinstance(item.get("height"), int)
+    } & {
+        int(item.get("height"))
+        for item in reference_samples
+        if isinstance(item.get("height"), int)
+    }
+    compared_count = len(compared_heights)
+    alignment["compared_count"] = compared_count
+    alignment["reference_sample_count"] = len(reference_samples)
+    local_only_miner = local_miners[0] if len(local_miners) == 1 else ""
+    local_solo_miner = bool(pool_address and local_only_miner and local_only_miner == pool_address)
+    reference_has_other_miners = bool(local_only_miner and any(miner != local_only_miner for miner in reference_miners))
+    alignment["local_solo_miner"] = local_solo_miner
+    alignment["local_only_miner"] = local_only_miner
+    alignment["reference_has_other_miners"] = reference_has_other_miners
+    enough_samples = compared_count >= min(EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES, max(1, len(heights))) or (
+        len(local_samples) >= min(EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES, max(1, len(heights)))
+        and len(reference_samples) >= 1
+        and reference_has_other_miners
+    )
+    lag_is_unsafe = int(reference_lag) >= EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG
+    hash_divergence_threshold = min(EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES, max(1, compared_count))
+    hash_divergence_suspected = bool(
+        compared_count > 0
+        and lag_is_unsafe
+        and int(alignment["hash_mismatch_count"]) >= hash_divergence_threshold
+    )
+    solo_mining_suspected = bool(
+        enough_samples
+        and lag_is_unsafe
+        and local_solo_miner
+        and reference_has_other_miners
+    )
+    alignment["hash_divergence_suspected"] = hash_divergence_suspected
+    alignment["solo_mining_suspected"] = solo_mining_suspected
+    alignment["public_chain_diverged"] = bool(hash_divergence_suspected or solo_mining_suspected)
+    if hash_divergence_suspected:
+        alignment["reason"] = (
+            "same-height local EVM block hashes differ from an ahead public reference; "
+            "the local node must not mine until it rejoins the public chain"
+        )
+    elif solo_mining_suspected:
+        alignment["reason"] = (
+            "local EVM headers are only from the configured mining address while "
+            "an ahead public reference shows other miners at the sampled heights"
+        )
+    elif not enough_samples:
+        alignment["reason"] = "not enough comparable local/public EVM headers"
+    elif not lag_is_unsafe:
+        alignment["reason"] = "public EVM reference lag is below the unsafe threshold"
+    elif not local_solo_miner:
+        alignment["reason"] = "local sampled EVM headers are not a solo signature for the configured mining address"
+    elif not reference_has_other_miners:
+        alignment["reason"] = "public sampled EVM headers did not show other miners"
+    return alignment
+
+
 def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int, timeout: float) -> dict[str, Any]:
     evm_url = node_rpc_url if rpc_url_port(node_rpc_url) == NODE_EVM_RPC_PORT else sibling_evm_rpc_url(node_rpc_url)
     snapshot: dict[str, Any] = {
@@ -6110,6 +6353,9 @@ def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int,
         "evm_lag_to_reference": None,
         "evm_lag_to_chain": None,
         "evm_rpc_error": "",
+        "public_chain_alignment": {},
+        "public_chain_diverged": False,
+        "solo_mining_suspected": False,
     }
     try:
         evm_block = parse_rpc_quantity(json_rpc_call(evm_url, "eth_blockNumber", [], timeout=timeout))
@@ -6143,6 +6389,39 @@ def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int,
     # Compatibility field for older dashboard consumers. The DAG/order gap is
     # exposed as evm_gap_to_chain_count; readiness uses EVM-to-EVM reference lag.
     snapshot["evm_lag_to_chain"] = snapshot["evm_lag_to_reference"]
+    reference_lag = safe_int(snapshot.get("evm_lag_to_reference"), 0)
+    if best_url and best_url != evm_url:
+        if reference_lag >= EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG or EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE:
+            alignment = evm_public_chain_alignment(
+                local_url=evm_url,
+                reference_source=best_source,
+                reference_url=best_url,
+                local_block=evm_block,
+                reference_block=best_block,
+                reference_lag=reference_lag,
+                mining_address=read_env_value("MINING_ADDRESS") or "",
+                timeout=timeout,
+            )
+        else:
+            alignment = {
+                "enabled": True,
+                "local_url": evm_url,
+                "reference_source": best_source,
+                "reference_url": best_url,
+                "local_block": evm_block,
+                "reference_block": best_block,
+                "reference_lag_blocks": reference_lag,
+                "min_reference_lag_blocks": EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG,
+                "sample_heights": [],
+                "local_samples": [],
+                "reference_samples": [],
+                "solo_mining_suspected": False,
+                "public_chain_diverged": False,
+                "reason": "public EVM reference lag is below the unsafe threshold",
+            }
+        snapshot["public_chain_alignment"] = alignment
+        snapshot["public_chain_diverged"] = bool(alignment.get("public_chain_diverged"))
+        snapshot["solo_mining_suspected"] = bool(alignment.get("solo_mining_suspected"))
     return snapshot
 
 
@@ -6333,7 +6612,9 @@ def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TI
         evm_block = safe_int(evm_lag.get("evm_block_count"), None)
         evm_reference = safe_int(evm_lag.get("evm_reference_block_count"), None)
         evm_remaining = safe_int(evm_lag.get("evm_lag_to_reference"), 0)
-        if evm_block is not None and evm_reference is not None and evm_remaining > EVM_SYNC_LAG_THRESHOLD_BLOCKS:
+        if evm_block is not None and evm_reference is not None and (
+            evm_remaining > EVM_SYNC_LAG_THRESHOLD_BLOCKS or evm_lag.get("public_chain_diverged")
+        ):
             return {
                 "status": "syncing",
                 "percent": round(max(0.0, min(100.0, (evm_block / max(1, evm_reference)) * 100)), 2),

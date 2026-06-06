@@ -313,6 +313,193 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         self.assertTrue(events[0][3]["expired_job_reconnect_failed"])
         self.assertTrue(written)
 
+    def test_public_chain_divergence_stops_pool_and_restarts_node(self) -> None:
+        state: dict[str, object] = {}
+        events: list[tuple[str, str, str, dict[str, object]]] = []
+        stops: list[str] = []
+        restarts: list[tuple[str, str]] = []
+        written: list[dict[str, object]] = []
+        node = watchdog.NODES[0] if watchdog.NODES else "bdag-miner-node-1"
+        alignment = {
+            "reference_source": "reference",
+            "reference_lag_blocks": 745,
+            "local_only_miner": ADDRESS,
+            "reference_miners": ["0xd72c6af6bbd4929a33a0cfcaf5f6d3ec98d85556"],
+        }
+        status = {
+            "overall": "syncing",
+            "can_mine": False,
+            "can_submit_blocks": False,
+            "failures": [],
+            "stack_failures": [],
+            "miner_failures": [],
+            "mining_address": ADDRESS,
+            "nodes": {},
+            "containers": {watchdog.POOL_CONTAINER: {"running": True}},
+            "sync_health": {
+                "public_chain_divergence": True,
+                "public_chain_divergence_nodes": {node: alignment},
+            },
+            "sync_progress": {"status": "syncing", "remaining_blocks": 745, "nodes": {}},
+            "pool_health": {},
+            "miner_health": {"connected_count": 4, "connected_count_effective": 4, "miners": []},
+        }
+
+        def record(event_type: str, severity: str, message: str, details=None) -> None:
+            events.append((event_type, severity, message, details or {}))
+
+        with mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_status_cached", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", side_effect=record
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_pool_stop", side_effect=lambda reason: stops.append(reason) or True
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=lambda target, reason: restarts.append((target, reason)) or True
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("public_chain_divergence", result["watchdog_state"]["last_status"])
+        self.assertEqual(1, len(stops))
+        self.assertIn("public-chain divergence containment", stops[0])
+        self.assertEqual(node, restarts[0][0])
+        self.assertIn("public-chain divergence self-heal", restarts[0][1])
+        self.assertEqual("public_chain_divergence", events[0][0])
+        self.assertEqual("critical", events[0][1])
+        self.assertTrue(written)
+
+    def test_public_chain_divergence_keeps_stopped_pool_from_stack_start_repair(self) -> None:
+        state: dict[str, object] = {}
+        starts: list[tuple[str, str]] = []
+        restarts: list[tuple[str, str]] = []
+        node = watchdog.NODES[0] if watchdog.NODES else "bdag-miner-node-1"
+        status = {
+            "overall": "down",
+            "can_mine": False,
+            "can_submit_blocks": False,
+            "failures": [f"{watchdog.POOL_CONTAINER} is not running"],
+            "stack_failures": [f"{watchdog.POOL_CONTAINER} is not running"],
+            "miner_failures": [],
+            "mining_address": ADDRESS,
+            "nodes": {},
+            "containers": {watchdog.POOL_CONTAINER: {"running": False}},
+            "sync_health": {
+                "public_chain_divergence": True,
+                "public_chain_divergence_nodes": {
+                    node: {
+                        "reference_source": "reference",
+                        "reference_lag_blocks": 745,
+                        "local_only_miner": ADDRESS,
+                        "reference_miners": ["0xd72c6af6bbd4929a33a0cfcaf5f6d3ec98d85556"],
+                    }
+                },
+            },
+            "sync_progress": {"status": "syncing", "remaining_blocks": 745, "nodes": {}},
+            "pool_health": {},
+            "miner_health": {"connected_count": 4, "connected_count_effective": 4, "miners": []},
+        }
+
+        with mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", lambda _payload: None
+        ), mock.patch.object(
+            watchdog, "collect_status_cached", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_repair", side_effect=lambda mode, reason: starts.append((mode, reason)) or True
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=lambda target, reason: restarts.append((target, reason)) or True
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("public_chain_divergence", result["watchdog_state"]["last_status"])
+        self.assertEqual([], starts)
+        self.assertEqual(1, len(restarts))
+
+    def test_public_chain_divergence_waits_for_active_import(self) -> None:
+        state: dict[str, object] = {}
+        restarts: list[tuple[str, str]] = []
+        events: list[tuple[str, str, str, dict[str, object]]] = []
+        node = watchdog.NODES[0] if watchdog.NODES else "bdag-miner-node-1"
+        status = {
+            "overall": "syncing",
+            "can_mine": False,
+            "can_submit_blocks": False,
+            "failures": [f"{watchdog.POOL_CONTAINER} is not running"],
+            "stack_failures": [f"{watchdog.POOL_CONTAINER} is not running"],
+            "miner_failures": [],
+            "mining_address": ADDRESS,
+            "nodes": {},
+            "containers": {watchdog.POOL_CONTAINER: {"running": False}},
+            "sync_health": {
+                "public_chain_divergence": True,
+                "public_chain_divergence_nodes": {
+                    node: {
+                        "reference_source": "reference",
+                        "reference_lag_blocks": 70000,
+                        "hash_divergence_suspected": True,
+                        "hash_mismatch_count": 3,
+                    }
+                },
+            },
+            "sync_progress": {"status": "syncing", "remaining_blocks": 70000, "nodes": {}},
+            "pool_health": {},
+            "miner_health": {"connected_count": 4, "connected_count_effective": 4, "miners": []},
+        }
+
+        def record(event_type: str, severity: str, message: str, details=None) -> None:
+            events.append((event_type, severity, message, details or {}))
+
+        with mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", lambda _payload: None
+        ), mock.patch.object(
+            watchdog, "collect_status_cached", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "active_sync_import_nodes", return_value=[node]
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", side_effect=record
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=lambda target, reason: restarts.append((target, reason)) or True
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("public_chain_divergence", result["watchdog_state"]["last_status"])
+        self.assertEqual([], restarts)
+        self.assertEqual("active block import", result["watchdog_state"]["last_public_chain_divergence_restart_suppressed_reason"])
+        self.assertTrue(any(event[0] == "repair_suppressed" for event in events))
+
 
 if __name__ == "__main__":
     unittest.main()

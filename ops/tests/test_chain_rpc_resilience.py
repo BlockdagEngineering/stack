@@ -18,6 +18,10 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.old_mining_rpc_call = pool_ops.mining_rpc_call
         self.old_json_rpc_call = pool_ops.json_rpc_call
         self.old_evm_reference_rpc_urls = pool_ops.evm_reference_rpc_urls
+        self.old_read_env_value = pool_ops.read_env_value
+        self.old_alignment_sample_blocks = pool_ops.EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS
+        self.old_alignment_min_samples = pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES
+        self.old_alignment_min_reference_lag = pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG
         self.old_sleep = pool_ops.time.sleep
         self.old_time = pool_ops.time.time
         self.addCleanup(self.restore_globals)
@@ -28,6 +32,10 @@ class ChainRpcResilienceTests(unittest.TestCase):
         pool_ops.mining_rpc_call = self.old_mining_rpc_call
         pool_ops.json_rpc_call = self.old_json_rpc_call
         pool_ops.evm_reference_rpc_urls = self.old_evm_reference_rpc_urls
+        pool_ops.read_env_value = self.old_read_env_value
+        pool_ops.EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS = self.old_alignment_sample_blocks
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES = self.old_alignment_min_samples
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG = self.old_alignment_min_reference_lag
         pool_ops.time.sleep = self.old_sleep
         pool_ops.time.time = self.old_time
 
@@ -146,6 +154,231 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.assertEqual(progress["evm_lag_to_reference"], 2000)
         self.assertEqual(progress["evm_gap_to_chain_count"], 2000)
         self.assertEqual(progress["current_block_source"], "eth_blockNumber")
+
+    def test_evm_public_alignment_flags_local_solo_branch(self) -> None:
+        pool_ops.NODE_CHAIN_RPC_RETRIES = 1
+        pool_ops.EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS = 3
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES = 2
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG = 300
+        local_miner = "0x05518e03e148c56e426ff9e1cbdb962b4fc5250a"
+        public_miner = "0xd72c6af6bbd4929a33a0cfcaf5f6d3ec98d85556"
+
+        def fake_mining_rpc(_url, method, _params, timeout):
+            if method == "getBlockCount":
+                return "12000"
+            if method == "getMainChainHeight":
+                return "12000"
+            raise AssertionError(method)
+
+        def fake_json_rpc(url, method, params, timeout):
+            if method == "eth_blockNumber":
+                if url == "http://reference:18545":
+                    return "0x2ee0"
+                return "0x2af7"
+            if method == "eth_getBlockByNumber":
+                height = int(params[0], 16)
+                miner = public_miner if url == "http://reference:18545" else local_miner
+                prefix = "22" if url == "http://reference:18545" else "11"
+                return {
+                    "number": params[0],
+                    "miner": miner,
+                    "hash": "0x" + (prefix * 32),
+                    "timestamp": hex(1_779_180_000 + height),
+                }
+            raise AssertionError(method)
+
+        pool_ops.mining_rpc_call = fake_mining_rpc
+        pool_ops.json_rpc_call = fake_json_rpc
+        pool_ops.evm_reference_rpc_urls = lambda: [("reference", "http://reference:18545")]
+        pool_ops.read_env_value = lambda name: local_miner if name == "MINING_ADDRESS" else None
+
+        progress = pool_ops.node_sync_progress("node1", "http://127.0.0.1:38131", timeout=8.0)
+
+        self.assertEqual(progress["status"], "syncing")
+        self.assertTrue(progress["solo_mining_suspected"])
+        self.assertTrue(progress["public_chain_diverged"])
+        alignment = progress["public_chain_alignment"]
+        self.assertEqual(local_miner, alignment["local_only_miner"])
+        self.assertTrue(alignment["reference_has_other_miners"])
+        self.assertGreaterEqual(alignment["compared_count"], 2)
+
+    def test_evm_public_alignment_flags_sparse_public_reference_samples(self) -> None:
+        pool_ops.NODE_CHAIN_RPC_RETRIES = 1
+        pool_ops.EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS = 3
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES = 2
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG = 300
+        local_miner = "0x05518e03e148c56e426ff9e1cbdb962b4fc5250a"
+        public_miner = "0x12d8377d571cebf2da043fbcad94f4bd85157a78"
+
+        def fake_mining_rpc(_url, method, _params, timeout):
+            if method == "getBlockCount":
+                return "12000"
+            if method == "getMainChainHeight":
+                return "12000"
+            raise AssertionError(method)
+
+        def fake_json_rpc(url, method, params, timeout):
+            if method == "eth_blockNumber":
+                if url == "http://reference:18545":
+                    return "0x2ee0"
+                return "0x2af7"
+            if method == "eth_getBlockByNumber":
+                height = int(params[0], 16)
+                if url == "http://reference:18545" and height != 0x2af5:
+                    raise RuntimeError("HTTP Error 403: Forbidden")
+                miner = public_miner if url == "http://reference:18545" else local_miner
+                prefix = "22" if url == "http://reference:18545" else "11"
+                return {
+                    "number": params[0],
+                    "miner": miner,
+                    "hash": "0x" + (prefix * 32),
+                    "timestamp": hex(1_779_180_000 + height),
+                }
+            raise AssertionError(method)
+
+        pool_ops.mining_rpc_call = fake_mining_rpc
+        pool_ops.json_rpc_call = fake_json_rpc
+        pool_ops.evm_reference_rpc_urls = lambda: [("reference", "http://reference:18545")]
+        pool_ops.read_env_value = lambda name: local_miner if name == "MINING_ADDRESS" else None
+
+        progress = pool_ops.node_sync_progress("node1", "http://127.0.0.1:38131", timeout=8.0)
+
+        self.assertTrue(progress["solo_mining_suspected"])
+        self.assertTrue(progress["public_chain_diverged"])
+        alignment = progress["public_chain_alignment"]
+        self.assertEqual(1, alignment["compared_count"])
+        self.assertEqual(1, alignment["reference_sample_count"])
+        self.assertTrue(alignment["sample_errors"])
+
+    def test_evm_public_alignment_flags_same_miner_hash_mismatch(self) -> None:
+        pool_ops.NODE_CHAIN_RPC_RETRIES = 1
+        pool_ops.EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS = 3
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES = 2
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG = 300
+        local_miner = "0x05518e03e148c56e426ff9e1cbdb962b4fc5250a"
+
+        def fake_mining_rpc(_url, method, _params, timeout):
+            if method == "getBlockCount":
+                return "12000"
+            if method == "getMainChainHeight":
+                return "12000"
+            raise AssertionError(method)
+
+        def fake_json_rpc(url, method, params, timeout):
+            if method == "eth_blockNumber":
+                if url == "http://reference:18545":
+                    return "0x2ee0"
+                return "0x2af7"
+            if method == "eth_getBlockByNumber":
+                height = int(params[0], 16)
+                prefix = "22" if url == "http://reference:18545" else "11"
+                return {
+                    "number": params[0],
+                    "miner": local_miner,
+                    "hash": "0x" + (prefix * 32),
+                    "timestamp": hex(1_779_180_000 + height),
+                }
+            raise AssertionError(method)
+
+        pool_ops.mining_rpc_call = fake_mining_rpc
+        pool_ops.json_rpc_call = fake_json_rpc
+        pool_ops.evm_reference_rpc_urls = lambda: [("reference", "http://reference:18545")]
+        pool_ops.read_env_value = lambda name: local_miner if name == "MINING_ADDRESS" else None
+
+        progress = pool_ops.node_sync_progress("node1", "http://127.0.0.1:38131", timeout=8.0)
+
+        self.assertEqual(progress["status"], "syncing")
+        self.assertFalse(progress["solo_mining_suspected"])
+        self.assertTrue(progress["public_chain_diverged"])
+        self.assertTrue(progress["public_chain_alignment"]["hash_divergence_suspected"])
+        self.assertGreaterEqual(progress["public_chain_alignment"]["hash_mismatch_count"], 2)
+        self.assertFalse(progress["public_chain_alignment"]["reference_has_other_miners"])
+
+    def test_evm_public_alignment_hash_mismatch_does_not_require_mining_address(self) -> None:
+        pool_ops.NODE_CHAIN_RPC_RETRIES = 1
+        pool_ops.EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS = 3
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES = 2
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG = 300
+        miner = "0x05518e03e148c56e426ff9e1cbdb962b4fc5250a"
+
+        def fake_mining_rpc(_url, method, _params, timeout):
+            if method == "getBlockCount":
+                return "12000"
+            if method == "getMainChainHeight":
+                return "12000"
+            raise AssertionError(method)
+
+        def fake_json_rpc(url, method, params, timeout):
+            if method == "eth_blockNumber":
+                if url == "http://reference:18545":
+                    return "0x2ee0"
+                return "0x2af7"
+            if method == "eth_getBlockByNumber":
+                height = int(params[0], 16)
+                prefix = "22" if url == "http://reference:18545" else "11"
+                return {
+                    "number": params[0],
+                    "miner": miner,
+                    "hash": "0x" + (prefix * 32),
+                    "timestamp": hex(1_779_180_000 + height),
+                }
+            raise AssertionError(method)
+
+        pool_ops.mining_rpc_call = fake_mining_rpc
+        pool_ops.json_rpc_call = fake_json_rpc
+        pool_ops.evm_reference_rpc_urls = lambda: [("reference", "http://reference:18545")]
+        pool_ops.read_env_value = lambda _name: None
+
+        progress = pool_ops.node_sync_progress("node1", "http://127.0.0.1:38131", timeout=8.0)
+
+        self.assertTrue(progress["public_chain_diverged"])
+        alignment = progress["public_chain_alignment"]
+        self.assertTrue(alignment["hash_divergence_suspected"])
+        self.assertFalse(alignment["solo_mining_suspected"])
+        self.assertFalse(alignment["local_solo_miner"])
+        self.assertEqual(miner, alignment["local_only_miner"])
+
+    def test_evm_public_alignment_does_not_flag_matching_public_headers(self) -> None:
+        pool_ops.NODE_CHAIN_RPC_RETRIES = 1
+        pool_ops.EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS = 3
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES = 2
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG = 300
+        local_miner = "0x05518e03e148c56e426ff9e1cbdb962b4fc5250a"
+
+        def fake_mining_rpc(_url, method, _params, timeout):
+            if method == "getBlockCount":
+                return "12000"
+            if method == "getMainChainHeight":
+                return "12000"
+            raise AssertionError(method)
+
+        def fake_json_rpc(url, method, params, timeout):
+            if method == "eth_blockNumber":
+                if url == "http://reference:18545":
+                    return "0x2ee0"
+                return "0x2af7"
+            if method == "eth_getBlockByNumber":
+                height = int(params[0], 16)
+                return {
+                    "number": params[0],
+                    "miner": local_miner,
+                    "hash": "0x" + ("11" * 32),
+                    "timestamp": hex(1_779_180_000 + height),
+                }
+            raise AssertionError(method)
+
+        pool_ops.mining_rpc_call = fake_mining_rpc
+        pool_ops.json_rpc_call = fake_json_rpc
+        pool_ops.evm_reference_rpc_urls = lambda: [("reference", "http://reference:18545")]
+        pool_ops.read_env_value = lambda name: local_miner if name == "MINING_ADDRESS" else None
+
+        progress = pool_ops.node_sync_progress("node1", "http://127.0.0.1:38131", timeout=8.0)
+
+        self.assertEqual(progress["status"], "syncing")
+        self.assertFalse(progress["solo_mining_suspected"])
+        self.assertFalse(progress["public_chain_diverged"])
+        self.assertFalse(progress["public_chain_alignment"]["hash_divergence_suspected"])
+        self.assertFalse(progress["public_chain_alignment"]["reference_has_other_miners"])
 
     def test_rpc_refused_is_recent_only_inside_warning_window(self) -> None:
         now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()
