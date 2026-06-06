@@ -381,16 +381,15 @@ def env_path(env: dict[str, str], key: str, default: str | Path) -> Path:
 
 
 def node_data_dir(env: dict[str, str], service: str) -> Path:
-    if service.endswith("node-1") or service == "node1":
-        return env_path(env, "BDAG_NODE1_DATA_DIR", "./data/node1")
-    if service == "node":
-        return env_path(env, "BDAG_NODE_DATA_DIR", env.get("BDAG_NODE1_DATA_DIR") or env.get("BDAG_DATA_DIR") or "./data/node")
+    if service == "node" or service.endswith("node-1"):
+        return env_path(env, "BDAG_NODE_DATA_DIR", env.get("BDAG_DATA_DIR") or "./data/node")
     return env_path(env, "BDAG_NODE_DATA_DIR", env.get("BDAG_DATA_DIR") or "./data/node")
 
 
 def build_payload(full: bool) -> dict[str, Any]:
     env = load_env()
-    network = env.get("BDAG_RAWDATADIR_NETWORK") or env.get("BDAG_FASTSNAP_NETWORK") or "mainnet"
+    requested_network = (env.get("BDAG_RAWDATADIR_NETWORK") or env.get("BDAG_FASTSNAP_NETWORK") or "mainnet").strip().lower()
+    network = "mainnet"
     service = active_node_service(env)
     data_dir = node_data_dir(env, service)
     source_dir = env_path(env, "BDAG_RAWDATADIR_SIDECAR_SOURCE", data_dir / network)
@@ -413,6 +412,8 @@ def build_payload(full: bool) -> dict[str, Any]:
         classify_path("docker_root", Path("/var/lib/docker")),
     ]
     reasons: list[str] = []
+    if requested_network != "mainnet":
+        reasons.append(f"non-mainnet raw datadir network is unsupported:{requested_network}")
     if not source_node_enabled:
         reasons.append("source_mode_disabled")
     if storage_profile in LOW_IO_USB_STORAGE_PROFILES:

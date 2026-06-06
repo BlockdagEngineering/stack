@@ -193,40 +193,40 @@ no_miner_mode() {
 
 if sync_priority_mode; then
   say "sync-priority-mode: active"
-  for container in bdag-miner-node-1 node; do
+  for container in node; do
     boost_container "${container}" -15 0 8192 1000 -950
   done
 
   if no_miner_mode; then
     say "sync-priority-mode: no miners present; idling mining services"
-    for container in asic-pool pool; do
+    for container in pool; do
       idle_container "${container}" 15 128 100 300
     done
 
-    for container in pool-db postgres; do
+    for container in postgres; do
       idle_container "${container}" 10 256 100 200
     done
 
   else
-    for container in asic-pool pool; do
+    for container in pool; do
       boost_container "${container}" -5 1 2048 700 -700
     done
 
-    for container in pool-db postgres; do
+    for container in postgres; do
       boost_container "${container}" -5 1 2048 700 -700
     done
 
   fi
 else
-  for container in bdag-miner-node-1 node; do
+  for container in node; do
     boost_container "${container}" -10 0 4096 1000 -900
   done
 
-  for container in asic-pool pool; do
+  for container in pool; do
     boost_container "${container}" -10 0 3072 900 -800
   done
 
-  for container in pool-db postgres; do
+  for container in postgres; do
     boost_container "${container}" -8 0 3072 900 -800
   done
 

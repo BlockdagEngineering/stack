@@ -16,7 +16,9 @@ OPS_DIR = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OPS_DIR))
 
 import automation_control  # noqa: E402
+import pool_ops  # noqa: E402
 import stack_sentinel  # noqa: E402
+import status_sampler  # noqa: E402
 import watchdog  # noqa: E402
 
 
@@ -303,6 +305,68 @@ class AutomationControlTests(unittest.TestCase):
         self.assertEqual(1, len(self.event_lines()))
         self.assertEqual("automation_control_suppressed", events[0][0])
 
+    def test_status_sampler_suppresses_config_edit_when_control_missing(self) -> None:
+        incidents: list[tuple[str, str, str]] = []
+
+        with self.patch_default_control_paths(), unittest.mock.patch.object(
+            status_sampler, "log", lambda _message: None
+        ), unittest.mock.patch.object(
+            status_sampler,
+            "record_incident",
+            side_effect=lambda event_type, severity, message, *_args, **_kwargs: incidents.append(
+                (event_type, severity, message)
+            ),
+        ), unittest.mock.patch.object(
+            status_sampler,
+            "set_runtime_env_value",
+            side_effect=AssertionError("config edit must not run"),
+        ), unittest.mock.patch.object(
+            status_sampler,
+            "recreate_node_services",
+            side_effect=AssertionError("node recreate must not run"),
+        ):
+            ok = status_sampler.repair_constrained_fastartifact({})
+
+        self.assertFalse(ok)
+        self.assertEqual(1, len(self.event_lines()))
+        self.assertEqual("mining_imperative_config_edit_blocked", incidents[0][0])
+
+    def test_status_sampler_suppresses_systemd_start_when_control_missing(self) -> None:
+        incidents: list[tuple[str, str, str]] = []
+        commands: list[list[str]] = []
+
+        def fake_run(command: list[str], timeout: int = 20):
+            commands.append(command)
+            if command[:3] == ["systemctl", "--user", "is-enabled"]:
+                return pool_ops.CommandResult(command, 1, "disabled\n", "", 0.0)
+            if command[:3] == ["systemctl", "--user", "is-active"]:
+                return pool_ops.CommandResult(command, 3, "inactive\n", "", 0.0)
+            raise AssertionError("systemd start must not run when automation control is missing")
+
+        with self.patch_default_control_paths(), unittest.mock.patch.object(
+            status_sampler, "run", fake_run
+        ), unittest.mock.patch.object(
+            status_sampler, "log", lambda _message: None
+        ), unittest.mock.patch.object(
+            status_sampler,
+            "record_incident",
+            side_effect=lambda event_type, severity, message, *_args, **_kwargs: incidents.append(
+                (event_type, severity, message)
+            ),
+        ):
+            ok = status_sampler.ensure_user_unit("bdag-stack-sentinel.timer", {})
+
+        self.assertFalse(ok)
+        self.assertEqual(
+            [
+                ["systemctl", "--user", "is-enabled", "bdag-stack-sentinel.timer"],
+                ["systemctl", "--user", "is-active", "bdag-stack-sentinel.timer"],
+            ],
+            commands,
+        )
+        self.assertEqual(1, len(self.event_lines()))
+        self.assertEqual("mining_imperative_user_unit_start_blocked", incidents[0][0])
+
     def test_watchdog_api_stall_miner_restart_uses_open_restart_before_configure(self) -> None:
         self.write_state(
             self.control_state(
@@ -387,6 +451,85 @@ class AutomationControlTests(unittest.TestCase):
         self.assertGreaterEqual(len(self.event_lines()), 3)
         self.assertTrue(all(item[0] == "automation_control_suppressed" for item in incidents))
 
+    def test_sentinel_blocks_pool_start_when_status_cannot_prove_safe(self) -> None:
+        blocked, reason = stack_sentinel.pool_start_blocked_by_status(None)
+        self.assertTrue(blocked)
+        self.assertIn("status unavailable", reason)
+
+        blocked, reason = stack_sentinel.pool_start_blocked_by_status({"fresh": False})
+        self.assertTrue(blocked)
+        self.assertIn("status is stale", reason)
+
+    def test_sentinel_leaves_pool_stopped_during_catchup_pause(self) -> None:
+        state: dict[str, object] = {}
+        starts: list[str] = []
+        incidents: list[tuple[str, str, str, str]] = []
+        inspected = {
+            stack_sentinel.POOL_DB_CONTAINER: {"running": True, "status": "running"},
+            "node-a": {"running": True, "status": "running"},
+            stack_sentinel.POOL_CONTAINER: {"running": False, "status": "exited"},
+        }
+        status = {
+            "fresh": True,
+            "catchup_policy": {"active": True},
+            "sync_health": {"catchup_pause_active": True},
+        }
+
+        def fake_incident(event_type: str, severity: str, component: str, message: str, details=None) -> None:
+            incidents.append((event_type, severity, component, message))
+
+        def fake_start(service: str, reason: str, state_obj: dict[str, object], now: int) -> bool:
+            starts.append(service)
+            return True
+
+        with unittest.mock.patch.object(stack_sentinel, "NODES", ["node-a"]), unittest.mock.patch.object(
+            stack_sentinel, "docker_inspect", return_value=inspected
+        ), unittest.mock.patch.object(
+            stack_sentinel, "start_container", side_effect=fake_start
+        ), unittest.mock.patch.object(
+            stack_sentinel, "append_incident", fake_incident
+        ), unittest.mock.patch.object(
+            stack_sentinel, "notify_user", lambda _title, _body: None
+        ), unittest.mock.patch.object(
+            stack_sentinel, "log", lambda _message: None
+        ):
+            stack_sentinel.inspect_and_repair_containers(status, state, 100)
+
+        self.assertEqual([], starts)
+        self.assertIn("chain catch-up pause is active", state["pool_start_blocked_reason"])
+        self.assertNotIn(stack_sentinel.POOL_CONTAINER, state["actionable_stopped_containers"])
+        self.assertTrue(any(item[0] == "sentinel_pool_start_blocked" for item in incidents))
+
+    def test_sentinel_leaves_pool_stopped_during_public_chain_divergence(self) -> None:
+        state: dict[str, object] = {}
+        starts: list[str] = []
+        inspected = {
+            stack_sentinel.POOL_DB_CONTAINER: {"running": True, "status": "running"},
+            "node-a": {"running": True, "status": "running"},
+            stack_sentinel.POOL_CONTAINER: {"running": False, "status": "exited"},
+        }
+        status = {
+            "fresh": True,
+            "sync_health": {"public_chain_divergence": True},
+        }
+
+        with unittest.mock.patch.object(stack_sentinel, "NODES", ["node-a"]), unittest.mock.patch.object(
+            stack_sentinel, "docker_inspect", return_value=inspected
+        ), unittest.mock.patch.object(
+            stack_sentinel, "start_container", side_effect=lambda service, *_args: starts.append(service) or True
+        ), unittest.mock.patch.object(
+            stack_sentinel, "append_incident", lambda *_args, **_kwargs: None
+        ), unittest.mock.patch.object(
+            stack_sentinel, "notify_user", lambda _title, _body: None
+        ), unittest.mock.patch.object(
+            stack_sentinel, "log", lambda _message: None
+        ):
+            stack_sentinel.inspect_and_repair_containers(status, state, 100)
+
+        self.assertEqual([], starts)
+        self.assertIn("public-chain divergence containment is active", state["pool_start_blocked_reason"])
+        self.assertNotIn(stack_sentinel.POOL_CONTAINER, state["actionable_stopped_containers"])
+
     def test_sentinel_suppresses_systemd_start_when_control_missing(self) -> None:
         incidents: list[tuple[str, str, str, str]] = []
 
@@ -421,7 +564,7 @@ class AutomationControlTests(unittest.TestCase):
             stderr=b"partial stderr",
         )
 
-        with unittest.mock.patch.object(stack_sentinel, "NODES", ["bdag-miner-node-1"]), unittest.mock.patch.object(
+        with unittest.mock.patch.object(stack_sentinel, "NODES", ["node"]), unittest.mock.patch.object(
             stack_sentinel.subprocess, "run", side_effect=timeout
         ), unittest.mock.patch.object(
             stack_sentinel, "append_incident", fake_incident

@@ -326,9 +326,8 @@ def env_path(root: Path, env: dict[str, str], key: str, default: str | Path) -> 
     return path if path.is_absolute() else root / path
 
 
-def env_node_data_dir(root: Path, env: dict[str, str], node_name: str) -> Path:
-    key = "BDAG_NODE1_DATA_DIR"
-    return env_path(root, env, key, env_data_dir(root, env) / node_name)
+def env_node_data_dir(root: Path, env: dict[str, str]) -> Path:
+    return env_path(root, env, "BDAG_NODE_DATA_DIR", env_data_dir(root, env) / "node")
 
 
 def env_postgres_dir(root: Path, env: dict[str, str]) -> Path:
@@ -498,7 +497,7 @@ def check_storage_profile(checks: list[Check], root: Path, env: dict[str, str], 
     selected = (env.get("BDAG_STORAGE_PROFILE") or "auto").strip().lower() or "auto"
     known_profiles = {"auto", "single-device", "single-usb-constrained", "usb-chain-internal-runtime", "split-ssd", "dev"}
     chain_base = env_data_dir(root, env)
-    active_node_dir = env_node_data_dir(root, env, "node1")
+    active_node_dir = env_node_data_dir(root, env)
     postgres_dir = env_postgres_dir(root, env)
     runtime_dir = env_runtime_dir(root, env)
 
@@ -779,9 +778,9 @@ def chain_marker_exists(path: Path) -> bool:
 
 def check_node_data_layout(checks: list[Check], root: Path, env: dict[str, str]) -> None:
     data_dir = env_data_dir(root, env)
-    node1 = data_dir / "node1"
-    node1_has = chain_marker_exists(node1 / "mainnet") or chain_marker_exists(node1)
-    evidence = {"data_dir": str(data_dir), "active_node_has_chain_markers": node1_has}
+    node_dir = env_node_data_dir(root, env)
+    node_has = chain_marker_exists(node_dir / "mainnet") or chain_marker_exists(node_dir)
+    evidence = {"data_dir": str(data_dir), "active_node_has_chain_markers": node_has}
     add(checks, "pass", "active_node_data_layout", "active node data layout is inspectable", evidence=evidence)
 
     backup_like = []
@@ -1000,10 +999,99 @@ def check_swap(checks: list[Check], profile: HostProfile) -> None:
         add(checks, "pass", "swap_budget", f"swap total={round(total / GIB, 2)}GiB used={round(used / GIB, 2)}GiB", evidence=evidence)
 
 
-def check_network(checks: list[Check]) -> None:
+def route_policy_script(root: Path | None = None) -> Path | None:
+    candidates = []
+    if root is not None:
+        candidates.extend(
+            [
+                root / "scripts" / "validate-network-route-policy.py",
+                root / "validate-network-route-policy.py",
+            ]
+        )
+    candidates.append(Path(__file__).resolve().with_name("validate-network-route-policy.py"))
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def check_route_policy_validator(checks: list[Check], root: Path | None = None) -> None:
+    script = route_policy_script(root)
+    if script is None:
+        add(
+            checks,
+            "warn",
+            "wired_route_policy",
+            "wired-first route policy validator is missing from this package.",
+            "Include scripts/validate-network-route-policy.py in releases so installers can verify Ethernet remains preferred over Wi-Fi.",
+        )
+        return
+    proc = run(["python3", str(script), "--json", "--warn-only"], timeout=8)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        add(
+            checks,
+            "warn",
+            "wired_route_policy",
+            "wired-first route policy validator could not run.",
+            "Run scripts/validate-network-route-policy.py on the host and correct any route or DNS priority drift.",
+            {"stdout": proc.stdout.strip(), "stderr": proc.stderr.strip()},
+        )
+        return
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        add(
+            checks,
+            "warn",
+            "wired_route_policy",
+            "wired-first route policy validator returned invalid JSON.",
+            "Run scripts/validate-network-route-policy.py directly and inspect its output.",
+            {"stdout": proc.stdout.strip()[:2000]},
+        )
+        return
+    issues = payload.get("issues") if isinstance(payload.get("issues"), list) else []
+    failure_count = safe_int(payload.get("failure_count"), 0) or 0
+    warning_count = safe_int(payload.get("warning_count"), 0) or 0
+    evidence = {
+        "selected_default_route": payload.get("selected_default_route", ""),
+        "route_get": payload.get("route_get", ""),
+        "failure_count": failure_count,
+        "warning_count": warning_count,
+        "issues": issues,
+    }
+    if failure_count:
+        add(
+            checks,
+            "fail",
+            "wired_route_policy",
+            f"wired-first route policy has {failure_count} failure(s).",
+            "Apply scripts/validate-network-route-policy.py --apply so Ethernet is the preferred route and Wi-Fi remains fallback-only.",
+            evidence,
+        )
+    elif warning_count:
+        add(
+            checks,
+            "warn",
+            "wired_route_policy",
+            f"wired-first route policy has {warning_count} warning(s).",
+            "Apply scripts/validate-network-route-policy.py --apply to persist Ethernet route and DNS priority.",
+            evidence,
+        )
+    else:
+        add(
+            checks,
+            "pass",
+            "wired_route_policy",
+            "Ethernet route and DNS priority are preferred over Wi-Fi fallback.",
+            evidence=evidence,
+        )
+
+
+def check_network(checks: list[Check], root: Path | None = None) -> None:
     proc = run(["ip", "-o", "-4", "route", "get", "1.1.1.1"], timeout=3)
     if proc.returncode != 0 or not proc.stdout.strip():
         add(checks, "warn", "default_route", "no IPv4 default route was detected.", "Configure networking before FastSnap peer discovery or ASIC setup.", {"stderr": proc.stderr.strip()})
+        check_route_policy_validator(checks, root)
         return
     line = proc.stdout.strip().splitlines()[0]
     parts = line.split()
@@ -1014,6 +1102,7 @@ def check_network(checks: list[Check]) -> None:
         add(checks, "warn", "default_route", f"default route uses Wi-Fi interface {dev} with source {src}.", "Keep ASIC and trusted FastSnap peers on the same low-latency LAN; prefer wired Ethernet if shares or submits stall.", evidence)
     else:
         add(checks, "pass", "default_route", f"default route uses {dev or 'unknown'} source {src or 'unknown'}", evidence=evidence)
+    check_route_policy_validator(checks, root)
 
 
 def docker_root_dir() -> str:
@@ -1121,7 +1210,7 @@ def run_preflight(root: Path, env_file: Path) -> dict[str, Any]:
     check_node_data_layout(checks, root, env)
     check_env_defaults(checks, env, profile)
     check_swap(checks, profile)
-    check_network(checks)
+    check_network(checks, root)
     check_docker_storage(checks, root, env, profile)
     check_live_node_child(checks, root)
     check_schema_file(checks, root)

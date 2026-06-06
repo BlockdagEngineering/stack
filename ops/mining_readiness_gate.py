@@ -174,11 +174,8 @@ def parse_backend_list(value: str | None) -> list[str]:
 
 def canonical_node_name(value: str) -> str:
     value = value.strip()
-    if value in {"node1", "bdag-miner-node-1"}:
-        return "node1"
-    match = re.fullmatch(r"bdag-miner-node-(\d+)", value)
-    if match:
-        return f"node{match.group(1)}"
+    if value == "node" or re.fullmatch(r".*[-_]node[-_]1", value):
+        return "node"
     return value
 
 
@@ -729,12 +726,12 @@ def validate_topology(
         ("eligible_backend", normalized_eligible),
     ):
         for node in values:
-            if node != "node1" and node not in normalized_excluded:
+            if node != "node" and node not in normalized_excluded:
                 failures.append(f"unexpected_extra_{label}:{node}")
 
     if running_containers is not None:
         for node in normalized_running:
-            if node == "node1" and node not in normalized_services and node not in normalized_excluded:
+            if node == "node" and node not in normalized_services and node not in normalized_excluded:
                 failures.append(f"running_container_not_declared:{node}")
 
     if strict_routing and normalized_eligible:

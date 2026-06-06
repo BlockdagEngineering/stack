@@ -55,6 +55,31 @@ class IPFSContentSidecarTest(unittest.TestCase):
 
         self.assertIn("manifest_unsigned", blockers)
 
+    def test_non_mainnet_manifest_network_blocks_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = Path(tmp) / "artifact"
+            artifact.mkdir()
+            manifest = artifact / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "artifact_type": "raw_datadir_checkpoint",
+                        "network": "not-mainnet",
+                        "signatures": [{"key_id": "test", "signature": "abcd"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            blockers = ipfs_content_sidecar.artifact_publish_blockers(
+                artifact,
+                manifest,
+                json.loads(manifest.read_text(encoding="utf-8")),
+                {},
+            )
+
+        self.assertIn("manifest_non_mainnet_network:not-mainnet", blockers)
+
     def test_dry_run_ready_requires_publish_allowed_source_and_signed_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

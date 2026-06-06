@@ -16,7 +16,6 @@ tar -czf "$OUT" \
   --exclude='./ops/runtime' \
   --exclude='./ops/runtime-*' \
   --exclude='./ops/__pycache__' \
-  --exclude='./asic-pool/.env' \
   --exclude='*.pyc' \
   -C "$PROJECT_ROOT" .
 

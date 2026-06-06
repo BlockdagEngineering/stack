@@ -14,7 +14,7 @@ On the current pool host:
 ```
 
 The bundle excludes runtime logs, miner admin passwords, chain data, database
-data, snapshots, and `.env` or `asic-pool/.env`.
+data, snapshots, and `.env`.
 
 ## Install on Another Pool Host
 

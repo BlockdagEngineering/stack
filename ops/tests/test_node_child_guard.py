@@ -109,8 +109,8 @@ class NodeChildGuardTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn(["docker", "restart", "node"], calls)
 
-    def test_default_guard_nodes_cover_current_and_legacy_names(self) -> None:
-        self.assertEqual(node_child_guard.DEFAULT_NODE_CHILD_GUARD_NODES, "node,bdag-miner-node-1")
+    def test_default_guard_nodes_cover_current_service_name(self) -> None:
+        self.assertEqual(node_child_guard.DEFAULT_NODE_CHILD_GUARD_NODES, "node")
 
 
 if __name__ == "__main__":

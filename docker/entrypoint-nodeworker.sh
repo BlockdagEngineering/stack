@@ -9,6 +9,22 @@ log() {
 
 FASTSNAP_BOOTSTRAP_MUTATED=0
 
+mainnet_only_network() {
+  local requested="${1:-mainnet}"
+  if [ -z "$requested" ]; then
+    requested="mainnet"
+  fi
+  case "${requested,,}" in
+    mainnet)
+      printf 'mainnet\n'
+      ;;
+    *)
+      log "refusing non-mainnet FastSnap network: $requested"
+      exit 2
+      ;;
+  esac
+}
+
 ensure_owned_runtime_dirs() {
   mkdir -p /var/lib/bdagStack/node /var/lib/bdagStack/nodeworker /var/log/bdagStack
   chown bdagStack:bdagStack /var/lib/bdagStack/node /var/lib/bdagStack/nodeworker /var/log/bdagStack || true
@@ -323,7 +339,11 @@ apply_node_mining_runtime_args() {
   node_args="$(node_args_from_argv "$@" || true)"
   modules="${BDAG_NODE_MODULES:-}"
   if [ -n "$modules" ]; then
-    append_node_arg_prefix_once "--modules=${modules}" "$node_args ${NODE_ARGS_APPEND:-}"
+    modules="$(printf '%s' "$modules" | tr ',' ' ')"
+    for word in $modules; do
+      [ -n "$word" ] || continue
+      append_node_arg_prefix_once "--modules=${word}" "$node_args ${NODE_ARGS_APPEND:-}"
+    done
   fi
   for word in ${BDAG_NODE_MINING_ARGS:-}; do
     case "$word" in
@@ -520,7 +540,8 @@ maybe_fastsnap_bootstrap() {
 
   local node_args
   node_args="$(node_args_from_argv "$@" || true)"
-  local network="${BDAG_FASTSNAP_NETWORK:-mainnet}"
+  local network
+  network="$(mainnet_only_network "${BDAG_FASTSNAP_NETWORK:-mainnet}")"
   local config_file data_parent data_dir archive min_tip timeout peers peer tmp_archive tmp_dir directory_mode
   config_file="$(node_arg_value configfile "$node_args" || true)"
   data_parent="${BDAG_FASTSNAP_DATADIR:-$(node_arg_value datadir "$node_args" || true)}"
@@ -653,7 +674,7 @@ configure_directory_artifact_serving() {
   fi
   local node_args network config_file data_parent data_dir manifest
   node_args="$(node_args_from_argv "$@" || true)"
-  network="${BDAG_FASTSNAP_NETWORK:-mainnet}"
+  network="$(mainnet_only_network "${BDAG_FASTSNAP_NETWORK:-mainnet}")"
   config_file="$(node_arg_value configfile "$node_args" || true)"
   data_parent="${BDAG_FASTSNAP_DATADIR:-$(node_arg_value datadir "$node_args" || true)}"
   if [ -z "$data_parent" ] && [ -n "$config_file" ]; then

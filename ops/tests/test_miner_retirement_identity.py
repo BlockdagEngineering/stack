@@ -239,6 +239,115 @@ class MinerRegistryIdentityTests(unittest.TestCase):
         self.assertEqual(miner["device_type"], "asic")
         self.assertIn("lan-hint", miner["sources"])
 
+    def test_registry_ignores_docker_bridge_neighbor_hints(self) -> None:
+        old_target = os.environ.get("BDAG_MINER_SCAN_TARGET")
+        old_read_neighbor_macs = pool_ops.read_neighbor_macs
+        os.environ["BDAG_MINER_SCAN_TARGET"] = "192.168.1.0/24"
+        self.addCleanup(lambda: os.environ.pop("BDAG_MINER_SCAN_TARGET", None) if old_target is None else os.environ.__setitem__("BDAG_MINER_SCAN_TARGET", old_target))
+        self.addCleanup(lambda: setattr(pool_ops, "read_neighbor_macs", old_read_neighbor_macs))
+        pool_ops.read_neighbor_macs = lambda: {
+            "172.18.0.3": "42:da:59:7c:fc:5d",
+            "192.168.1.107": "28:e2:97:1e:c0:b5",
+        }
+
+        registry = pool_ops.read_miner_registry()
+
+        self.assertEqual([item["ip"] for item in registry["miners"]], ["192.168.1.107"])
+        self.assertEqual(registry["miners"][0]["mac"], "28:e2:97:1e:c0:b5")
+
+    def test_scan_targets_reject_docker_bridge_cidrs(self) -> None:
+        with self.assertRaises(ValueError):
+            pool_ops.parse_scan_targets("172.18.0.0/30")
+
+    def test_pool_activity_upsert_prunes_existing_docker_bridge_pseudo_miner(self) -> None:
+        self.registry_file.write_text(
+            json.dumps(
+                {
+                    "updated_at": "2026-06-05T05:02:41+0000",
+                    "miners": [
+                        {
+                            "ip": "172.18.0.1",
+                            "mac": "4e:bc:c0:90:6a:aa",
+                            "device_type": "stratum",
+                            "discovered_by": "pool-log",
+                            "sources": ["pool-log"],
+                            "last_workers": ["0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"],
+                        },
+                        {
+                            "ip": "192.168.1.107",
+                            "mac": "28:e2:97:1e:c0:b5",
+                            "device_type": "asic",
+                            "discovered_by": "asic-api",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        registry = pool_ops.upsert_pool_activity_miners({"miners": []})
+
+        self.assertEqual([item["ip"] for item in registry["miners"]], ["192.168.1.107"])
+
+    def test_save_registry_rejects_recent_docker_bridge_pseudo_miner(self) -> None:
+        registry = pool_ops.save_miner_registry(
+            [
+                {
+                    "ip": "172.18.0.1",
+                    "mac": "4e:bc:c0:90:6a:aa",
+                    "device_id": "mac:4e:bc:c0:90:6a:aa",
+                    "device_type": "stratum",
+                    "discovered_by": "pool-log",
+                    "sources": ["pool-log"],
+                    "last_pool_seen_epoch": 1780638628,
+                    "last_pool_seen_at": "2026/06/05 05:02:41",
+                    "last_workers": ["0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"],
+                },
+                {
+                    "ip": "192.168.1.107",
+                    "mac": "28:e2:97:1e:c0:b5",
+                    "device_type": "asic",
+                    "discovered_by": "asic-api",
+                },
+            ]
+        )
+
+        self.assertEqual([item["ip"] for item in registry["miners"]], ["192.168.1.107"])
+        self.assertFalse(any(pool_ops.is_docker_bridge_ipv4(item["ip"]) for item in registry["miners"]))
+
+    def test_pool_endpoint_fallback_uses_host_lan_not_docker_bridge(self) -> None:
+        old_run = pool_ops.run
+        old_pool_url = os.environ.get("BDAG_POOL_URL")
+        old_pool_host = os.environ.get("BDAG_POOL_HOST")
+        os.environ.pop("BDAG_POOL_URL", None)
+        os.environ.pop("BDAG_POOL_HOST", None)
+        self.addCleanup(lambda: setattr(pool_ops, "run", old_run))
+        self.addCleanup(lambda: os.environ.pop("BDAG_POOL_URL", None) if old_pool_url is None else os.environ.__setitem__("BDAG_POOL_URL", old_pool_url))
+        self.addCleanup(lambda: os.environ.pop("BDAG_POOL_HOST", None) if old_pool_host is None else os.environ.__setitem__("BDAG_POOL_HOST", old_pool_host))
+
+        def fake_run(command, timeout=20):
+            text = " ".join(command)
+            if text.startswith("ip -4 route get"):
+                return pool_ops.CommandResult(command, 0, "1.1.1.1 via 172.18.0.1 dev eth0 src 172.18.0.4\n", "", 0.0)
+            if text.startswith("hostname -I"):
+                return pool_ops.CommandResult(command, 0, "172.18.0.4 192.168.1.120\n", "", 0.0)
+            if text.startswith("ip -4 -o addr"):
+                return pool_ops.CommandResult(
+                    command,
+                    0,
+                    "2: eth0    inet 172.18.0.4/16 brd 172.18.255.255 scope global eth0\n"
+                    "3: enx0    inet 192.168.1.120/24 brd 192.168.1.255 scope global enx0\n",
+                    "",
+                    0.0,
+                )
+            return pool_ops.CommandResult(command, 0, "", "", 0.0)
+
+        pool_ops.run = fake_run
+
+        defaults = pool_ops.default_miner_pool_settings()
+
+        self.assertEqual(defaults["pool_url"], "stratum+tcp://192.168.1.120:3334")
+
     def test_pool_log_dhcp_change_uses_asic_api_mac_when_arp_is_empty(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
         mac = "28:e2:97:2e:00:1b"
@@ -926,6 +1035,14 @@ class MinerHealthConfiguredScopeTests(unittest.TestCase):
         self.assertEqual(health["failures"], [])
         self.assertEqual(health["miners"][0]["configured"], True)
         self.assertEqual(health["miners"][0]["status"], "ok")
+
+    def test_pool_worker_user_matches_hex_address_case_insensitively(self) -> None:
+        self.assertTrue(
+            pool_ops.pool_worker_user_matches(
+                "0x05518e03e148c56e426ff9e1cbdb962b4fc5250a",
+                "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A",
+            )
+        )
 
     def test_managed_pool_log_stratum_miner_remains_expected_lane_when_down(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"

@@ -87,7 +87,7 @@ EOF
 }
 
 install_fastsnap_seed_timer() {
-  warn "FastSnap archive seed timer is retired for this stack; raw datadir and IPFS segment sidecars own content publication"
+  warn "FastSnap archive seed timer is not part of this stack; raw datadir and IPFS segment sidecars own content publication"
   return 0
 }
 
@@ -110,12 +110,14 @@ install_rawdatadir_source_timer() {
   local sidecar_content_base
 
   network="$(env_value BDAG_FASTSNAP_NETWORK mainnet)"
+  if [[ "${network,,}" != "mainnet" ]]; then
+    warn "Raw datadir services refuse non-mainnet BDAG_FASTSNAP_NETWORK=$network"
+    return 1
+  fi
+  network="mainnet"
   active_service="$(env_value BDAG_NODE_SERVICES node)"
   active_service="${active_service%%,*}"
-  case "$active_service" in
-    bdag-miner-node-1|node1) source_dir="$(env_value BDAG_NODE1_DATA_DIR ./data/node1)/$network" ;;
-    *) source_dir="$(env_value BDAG_NODE_DATA_DIR ./data/node)/$network" ;;
-  esac
+  source_dir="$(env_value BDAG_NODE_DATA_DIR ./data/node)/$network"
   sidecar_dir="$(env_value BDAG_RAWDATADIR_SIDECAR_DIR ./data-restore/rawdatadir-sidecar/$network)"
   artifact_base="$(env_value BDAG_RAWDATADIR_ARTIFACT_BASE ./data-restore/rawdatadir)"
   sidecar_content_base="$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE ./data-restore/rawdatadir-sidecar-content)"

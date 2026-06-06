@@ -38,6 +38,7 @@ FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 DEFAULT_CHUNK_SIZE = 64 * 1024 * 1024
 ZERO_HASH = "0x" + ("0" * 64)
+MAINNET_NETWORK = "mainnet"
 
 
 def load_env(path: Path = ENV_FILE) -> dict[str, str]:
@@ -72,6 +73,14 @@ def env_int(env: dict[str, str], key: str, default: int) -> int:
         return int(value)
     except ValueError:
         return default
+
+
+def mainnet_network(env: dict[str, str]) -> str:
+    requested = str(env.get("BDAG_RAWDATADIR_NETWORK") or env.get("BDAG_FASTSNAP_NETWORK") or MAINNET_NETWORK)
+    requested = requested.strip().lower()
+    if requested != MAINNET_NETWORK:
+        raise RuntimeError(f"raw datadir sidecar content refuses non-mainnet network: {requested}")
+    return MAINNET_NETWORK
 
 
 def resolve_path(value: str | None, default: Path) -> Path:
@@ -353,7 +362,7 @@ def collect_anchor(env: dict[str, str], require_state_root: bool = True) -> dict
     password = env.get("NODE_RPC_PASS", "test")
     anchor: dict[str, Any] = {
         "chain_id": quantity(env.get("BDAG_RAWDATADIR_CHAIN_ID") or 1404),
-        "network": env.get("BDAG_RAWDATADIR_NETWORK") or env.get("BDAG_FASTSNAP_NETWORK") or "mainnet",
+        "network": mainnet_network(env),
         "block_total": env_quantity(env, "BDAG_RAWDATADIR_BLOCK_TOTAL"),
         "tip_order": env_quantity(env, "BDAG_RAWDATADIR_TIP_ORDER"),
         "tip_hash": env.get("BDAG_RAWDATADIR_TIP_HASH") or "",
@@ -461,7 +470,7 @@ def write_status(env: dict[str, str], payload: dict[str, Any]) -> None:
 
 
 def seal_sidecar(env: dict[str, str]) -> dict[str, Any]:
-    network = env.get("BDAG_RAWDATADIR_NETWORK") or env.get("BDAG_FASTSNAP_NETWORK") or "mainnet"
+    network = mainnet_network(env)
     sidecar = resolve_path(env.get("BDAG_RAWDATADIR_SIDECAR_DIR"), ROOT / "data-restore/rawdatadir-sidecar" / network)
     artifact_base = resolve_path(
         env.get("BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE"),

@@ -60,11 +60,12 @@ services:
   # PostgreSQL for the mining pool. Schema is applied automatically on first
   # boot via /docker-entrypoint-initdb.d.
   # --------------------------------------------------------------------------
-  pool-db:
+  postgres:
     <<: *pool-critical
     image: postgres:15-bookworm
     restart: unless-stopped
     logging: *mining-logging
+    cpu_shares: ${BDAG_POOL_DB_CPU_SHARES:-4096}
     shm_size: ${BDAG_POOL_DB_SHM_SIZE:-256m}
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
@@ -111,7 +112,7 @@ services:
       TMPDIR: /tmp
       TMP: /tmp
       TEMP: /tmp
-      BDAG_NETWORK: ${BDAG_NETWORK:-${NETWORK:-mainnet}}
+      BDAG_NETWORK: mainnet
       BDAG_EPHEMERAL_DIR: /run/bdag-ephemeral
       NODE_ARGS_APPEND: ${NODE_ARGS_APPEND:-}
       BDAG_FASTSYNC_SNAPSHOT_PATH: ${BDAG_FASTSYNC_SNAPSHOT_PATH:-}
@@ -123,7 +124,7 @@ services:
       BDAG_FASTSNAP_PEERS_FILE: ${BDAG_FASTSNAP_PEERS_FILE:-/etc/bdagStack/node.conf}
       BDAG_FASTSNAP_AUTO_MAX_PEERS: ${BDAG_FASTSNAP_AUTO_MAX_PEERS:-3}
       BDAG_FASTSNAP_LEGACY_FALLBACK: ${BDAG_FASTSNAP_LEGACY_FALLBACK:-0}
-      BDAG_FASTSNAP_NETWORK: ${BDAG_FASTSNAP_NETWORK:-mainnet}
+      BDAG_FASTSNAP_NETWORK: mainnet
       BDAG_FASTSNAP_PEERS: ${BDAG_FASTSNAP_PEERS:-}
       BDAG_FASTSNAP_MIN_TIP: ${BDAG_FASTSNAP_MIN_TIP:-0}
       BDAG_FASTSNAP_TIMEOUT: ${BDAG_FASTSNAP_TIMEOUT:-90s}
@@ -157,6 +158,7 @@ services:
       BDAG_FASTARTIFACTSYNC_ENABLED: ${BDAG_FASTARTIFACTSYNC_ENABLED:-1}
       BOOTSTRAP_PEER_ADDRESSES: ${BOOTSTRAP_PEER_ADDRESSES:-}
       BDAG_FASTSYNC_PEERS: ${BDAG_FASTSYNC_PEERS:-}
+      BDAG_FASTSYNC_RANGE_BLOCKS: ${BDAG_FASTSYNC_RANGE_BLOCKS:-1024}
       BDAG_FASTSYNC_PREPROCESS_WORKERS: ${BDAG_FASTSYNC_PREPROCESS_WORKERS:-1}
       BDAG_ENABLE_NODE_MINING: ${BDAG_ENABLE_NODE_MINING:-0}
       BDAG_NODE_MODULES: ${BDAG_NODE_MODULES:-Blockdag}
@@ -164,12 +166,11 @@ services:
       BDAG_ENTRYPOINT_CHOWN_MODE: ${BDAG_ENTRYPOINT_CHOWN_MODE:-needed}
       BDAG_NODEWORKER_LIVENESS_TIMEOUT: ${BDAG_NODEWORKER_LIVENESS_TIMEOUT:-5m}
     volumes:
-    # Note: The default behaviour is to keep any DB state from a previous run, 
-    # to prevent unintentional loss of synced chain data.
-    # so if you want to start fresh, you need to delete the volume explicity.
-    # `docker compose down && docker volume rm <project>_node-data`\
+      # Host-path data is preserved across container rebuilds. To start from an
+      # empty chain, stop the stack and move the configured BDAG_NODE_DATA_DIR
+      # aside deliberately.
 
-      - ${BDAG_NODE1_DATA_DIR:-./data/node1}:/var/lib/bdagStack/node
+      - ${BDAG_NODE_DATA_DIR:-./data/node}:/var/lib/bdagStack/node
       - ${BDAG_NODEWORKER_DATA_DIR:-./data/nodeworker}:/var/lib/bdagStack/nodeworker
       # node.conf in project root (copy from node.conf.example). gitignored.
       - ./node.conf:/etc/bdagStack/node.conf:ro
@@ -196,7 +197,7 @@ services:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
       - /var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     depends_on:
-      pool-db: { condition: service_healthy }
+      postgres: { condition: service_healthy }
     environment:
       TMPDIR: /tmp
       TMP: /tmp
@@ -207,7 +208,7 @@ services:
       POOL_SUBMIT_RPC_URLS: ${POOL_SUBMIT_RPC_URLS:-}
       POOL_RPC_BACKENDS: ${POOL_RPC_BACKENDS:-}
       POOL_RUNTIME_ADMIN_ENABLED: ${POOL_RUNTIME_ADMIN_ENABLED:-false}
-      PG_URL:       postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@pool-db:5432/${POSTGRES_DB:-bdagpool}?sslmode=disable
+      PG_URL:       postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bdagpool}?sslmode=disable
       # Stratum listen (inside container) — from root .env
       POOL_BIND_ADDR:     ${POOL_BIND_ADDR:-0.0.0.0:3334}
       NODE_RPC_USER:      ${NODE_RPC_USER:-test}
@@ -278,8 +279,8 @@ services:
       TMPDIR: /tmp
       TMP: /tmp
       TEMP: /tmp
-      # The dashboard should observe current container names; watchdog code keeps
-      # legacy Compose service-label fallback for migrated installs.
+      # The dashboard observes canonical service names. Compose-generated
+      # concrete container names may include project and ordinal suffixes.
       BDAG_NODE_SERVICES: node
       BDAG_STACK_SERVICES: postgres,node,pool
       BDAG_POOL_CONTAINER: pool
@@ -298,7 +299,6 @@ services:
       BDAG_GLOBAL_CATCHUP_PASSES: ${BDAG_GLOBAL_CATCHUP_PASSES:-2}
       BDAG_GLOBAL_DEFERRED_RPC_WORKERS: ${BDAG_GLOBAL_DEFERRED_RPC_WORKERS:-12}
       BDAG_GLOBAL_RPC_MIN_WORKERS: ${BDAG_GLOBAL_RPC_MIN_WORKERS:-12}
-      BDAG_RPC_URL: http://node:38131
       # Must match node.conf rpcuser / rpcpass (same as pool service).
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
@@ -318,6 +318,9 @@ services:
       BDAG_POOL_HOST: ${BDAG_POOL_HOST:-}
       BDAG_POOL_URL: ${BDAG_POOL_URL:-}
       BDAG_MINER_SCAN_TARGET: ${BDAG_MINER_SCAN_TARGET:-}
+      BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-}
+      BDAG_DOCKER_BRIDGE_CIDRS: ${BDAG_DOCKER_BRIDGE_CIDRS:-172.16.0.0/12}
+      BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS: ${BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS:-0}
       BDAG_MINER_WORKER_USER: ${BDAG_MINER_WORKER_USER:-}
       BDAG_MINER_POOL_PASSWORD: ${BDAG_MINER_POOL_PASSWORD:-1234}
       MINING_POOL_ADDRESS: ${MINING_POOL_ADDRESS:?set MINING_POOL_ADDRESS to a non-zero payout address}
@@ -364,7 +367,4 @@ secrets:
     environment: GITHUB_TOKEN
 
 volumes:
-  postgres-data:
-  node-data:
-  nodeworker-data:
   dashboard-runtime:

@@ -7,7 +7,12 @@ set -Eeuo pipefail
 # BDAG_RAWDATADIR_FINALIZE=1 is set for that run.
 
 PROJECT_ROOT="${BDAG_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-NETWORK="${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}"
+REQUESTED_NETWORK="${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}"
+if [[ "${REQUESTED_NETWORK,,}" != "mainnet" ]]; then
+  printf '[%s] raw datadir artifact publish refuses non-mainnet network: %s\n' "$(date -Is)" "$REQUESTED_NETWORK" >&2
+  exit 2
+fi
+NETWORK="mainnet"
 STATUS_FILE="${BDAG_RAWDATADIR_SOURCE_STATUS:-$PROJECT_ROOT/ops/runtime/rawdatadir-source-status.json}"
 LOCK_FILE="${BDAG_RAWDATADIR_PUBLISH_LOCK:-$PROJECT_ROOT/ops/runtime/rawdatadir-publish.lock}"
 LOG_FILE="${BDAG_RAWDATADIR_PUBLISH_LOG:-$PROJECT_ROOT/ops/runtime/logs/rawdatadir-publish-$(date +%Y%m%d).log}"

@@ -194,6 +194,10 @@ def artifact_publish_blockers(artifact_dir: Path, manifest_path: Path, manifest:
         blockers.append("artifact_dir_missing")
     if not manifest_path.exists():
         blockers.append("manifest_missing")
+    if manifest:
+        network = str(manifest.get("network") or "").strip()
+        if network.lower() != "mainnet":
+            blockers.append(f"manifest_non_mainnet_network:{network or 'missing'}")
     for marker_dir in (artifact_dir, artifact_dir.parent):
         if (marker_dir / "DO_NOT_PUBLISH.txt").exists() or (marker_dir / "DO_NOT_PUBLISH").exists():
             blockers.append(f"do_not_publish_marker:{marker_dir}")

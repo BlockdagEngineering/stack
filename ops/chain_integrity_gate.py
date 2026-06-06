@@ -834,7 +834,7 @@ def evaluate_chain_integrity(
         canonical_payload = {
             "document_type": "bdag_chain_integrity_preflight_segment_v1",
             "workflow": workflow,
-            "network": env.get("BDAG_NETWORK", "mainnet"),
+            "network": "mainnet",
             "genesis_hash": source_genesis,
             "start_order": start_order,
             "end_order": end_order,

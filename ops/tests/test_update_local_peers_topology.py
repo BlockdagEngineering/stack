@@ -191,7 +191,7 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
             peers = [
                 "/ip4/192.168.1.120/tcp/8151/p2p/oldLocalSelf",
                 "/ip4/10.207.244.12/tcp/8151/p2p/oldLocalVpn",
-                "/dns4/bdag-miner-node-1/tcp/8151/p2p/oldLocalDns",
+                "/dns4/node/tcp/8151/p2p/oldLocalDns",
                 "/ip4/10.207.244.83/tcp/8152/p2p/remoteNode",
             ]
 
@@ -199,7 +199,7 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
                 peers,
                 update_local_peers.without_inactive_local_node_peers(
                     peers,
-                    ["bdag-miner-node-1"],
+                    ["node"],
                     "192.168.1.120",
                 ),
             )

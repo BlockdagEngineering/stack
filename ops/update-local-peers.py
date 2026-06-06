@@ -18,25 +18,28 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-ENV_FILE = PROJECT_ROOT / ".env" if (PROJECT_ROOT / ".env").exists() else PROJECT_ROOT / "asic-pool" / ".env"
+ENV_FILE = PROJECT_ROOT / ".env"
 RUNTIME_DIR = Path(os.environ.get("BDAG_RUNTIME_DIR", PROJECT_ROOT / "ops" / "runtime"))
 RUNTIME_ENV_FILE = RUNTIME_DIR / "ops.env"
 SYNC_COORDINATOR_STATE_FILE = RUNTIME_DIR / "sync-coordinator-state.json"
 DEFERRED_APPLY_FILE = RUNTIME_DIR / "local-peers-deferred-apply"
+CHAIN_PEERSTORE_CANDIDATES_FILE = RUNTIME_DIR / "chain-peerstore-candidates.txt"
+LIVE_PEERS_FILE = RUNTIME_DIR / "live-peers-current.txt"
+PEER_DISCOVERY_FILE = RUNTIME_DIR / "peer-discovery-current.json"
 DEFAULT_ACTIVE_NODE_SERVICES = ["node"]
 NODE_SPECS = {
-    "node": {"port": 8151, "env": "NODE1_PEER_ADDRESSES"},
-    "bdag-miner-node-1": {"port": 8151, "env": "NODE1_PEER_ADDRESSES"},
+    "node": {"port": 8151, "env": "BDAG_NODE_PEER_ADDRESSES"},
 }
 NODE_PEER_ID_ENV = {
-    "node": ("BDAG_LOCAL_NODE_PEER_ID", "BDAG_NODE_PEER_ID", "BDAG_LOCAL_NODE1_PEER_ID", "BDAG_NODE1_PEER_ID"),
-    "bdag-miner-node-1": ("BDAG_LOCAL_NODE1_PEER_ID", "BDAG_NODE1_PEER_ID"),
+    "node": ("BDAG_LOCAL_NODE_PEER_ID", "BDAG_NODE_PEER_ID"),
 }
 PEER_RE = re.compile(r"Node started p2p server.*?/p2p/([A-Za-z0-9]+)")
 ADDR_RE = re.compile(r"/ip4/[^,\s]+/tcp/(\d+)/p2p/([A-Za-z0-9]+)")
 PEER_RE_FULL = re.compile(r"/(?:ip4|ip6|dns|dns4|dns6)/([^/]+)/tcp/(\d+)/p2p/([^,\s]+)")
+PEERSTORE_LOG_RE = re.compile(r"Try to connect from peer store:\{([^:]+): \[([^\]]*)\]}")
 PEER_LATENCY_TIMEOUT = float(os.environ.get("BDAG_LOCAL_PEER_LATENCY_TIMEOUT", "0.75"))
 PEER_LATENCY_WORKERS = int(os.environ.get("BDAG_LOCAL_PEER_LATENCY_WORKERS", "16"))
+CHAIN_PEERSTORE_LOG_TAIL = os.environ.get("BDAG_CHAIN_PEERSTORE_LOG_TAIL", "8000")
 DASHBOARD_STATUS_URL = os.environ.get("BDAG_DASHBOARD_STATUS_URL", "http://127.0.0.1:8088/api/status")
 ACTIVE_MINING_RECENT_SECONDS = int(os.environ.get("BDAG_LOCAL_PEERS_ACTIVE_MINING_RECENT_SECONDS", "300"))
 DEFAULT_ASIC_LAN_CIDRS = ""
@@ -66,14 +69,24 @@ GENERIC_PEER_KEYS = (
     "BDAG_FASTSYNC_PEERS",
     "BDAG_FASTSNAP_PEERS",
     "LOCAL_PEER_ADDRESSES",
-    "NODE1_PEER_ADDRESSES",
+    "BDAG_NODE_PEER_ADDRESSES",
 )
 
 
 class PeerCandidates:
-    def __init__(self, peers: list[str], rejected_non_p2p: list[str]) -> None:
+    def __init__(
+        self,
+        peers: list[str],
+        rejected_non_p2p: list[str],
+        source_peers: dict[str, list[str]] | None = None,
+    ) -> None:
         self.peers = peers
         self.rejected_non_p2p = rejected_non_p2p
+        self.source_peers = source_peers or {}
+
+    @property
+    def source_counts(self) -> dict[str, int]:
+        return {source: len(peers) for source, peers in sorted(self.source_peers.items())}
 
 
 def docker_top_has_bdag_child(output: str) -> bool:
@@ -101,12 +114,64 @@ def run(command: list[str], timeout: int = 20) -> str:
     return proc.stdout
 
 
+def docker_compose_container_id(service: str) -> str:
+    proc = subprocess.run(
+        ["docker", "compose", "ps", "-q", service],
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    return proc.stdout.strip().splitlines()[-1] if proc.returncode == 0 and proc.stdout.strip() else ""
+
+
+def docker_targets(container_or_service: str) -> list[str]:
+    targets = [container_or_service]
+    compose_id = docker_compose_container_id(container_or_service)
+    if compose_id and compose_id not in targets:
+        targets.append(compose_id)
+    return targets
+
+
+def docker_logs(container_or_service: str, tail: str = "5000", timeout: int = 20) -> str:
+    errors: list[str] = []
+    for target in docker_targets(container_or_service):
+        proc = subprocess.run(
+            ["docker", "logs", "--tail", tail, target],
+            cwd=PROJECT_ROOT,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return proc.stdout + proc.stderr
+        errors.append((proc.stderr or proc.stdout or f"docker logs failed for {target}").strip())
+
+    proc = subprocess.run(
+        ["docker", "compose", "logs", "--no-color", "--tail", tail, container_or_service],
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+    if proc.returncode == 0:
+        return proc.stdout + proc.stderr
+    errors.append((proc.stderr or proc.stdout or f"docker compose logs failed for {container_or_service}").strip())
+    raise RuntimeError("; ".join(error for error in errors if error))
+
+
 def node_process_running(container: str) -> bool:
-    try:
-        output = run(["docker", "top", container, "-eo", "pid,comm,args"], timeout=10)
-    except Exception:
-        return False
-    return docker_top_has_bdag_child(output)
+    for target in docker_targets(container):
+        try:
+            output = run(["docker", "top", target, "-eo", "pid,comm,args"], timeout=10)
+        except Exception:
+            continue
+        if docker_top_has_bdag_child(output):
+            return True
+    return False
 
 
 def wait_for_node(container: str, timeout: int = 90) -> None:
@@ -119,15 +184,18 @@ def wait_for_node(container: str, timeout: int = 90) -> None:
 
 
 def container_running(container: str) -> bool:
-    proc = subprocess.run(
-        ["docker", "inspect", "-f", "{{.State.Running}}", container],
-        cwd=PROJECT_ROOT,
-        text=True,
-        capture_output=True,
-        timeout=10,
-        check=False,
-    )
-    return proc.returncode == 0 and proc.stdout.strip() == "true"
+    for target in docker_targets(container):
+        proc = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", target],
+            cwd=PROJECT_ROOT,
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout.strip() == "true":
+            return True
+    return False
 
 
 def stop_inactive_nodes(active_nodes: list[str]) -> None:
@@ -198,6 +266,54 @@ def peer_values(values: dict[str, str], keys: tuple[str, ...]) -> list[str]:
     peers: list[str] = []
     for key in keys:
         peers.extend(split_peer_csv(env_value(values, key)))
+    return peers
+
+
+def read_peer_file(path: Path) -> list[str]:
+    try:
+        text = path.read_text(errors="replace")
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return []
+    return split_peer_csv(text.replace("\n", ","))
+
+
+def extract_peerstore_log_peers(logs: str) -> list[str]:
+    peers: list[str] = []
+    seen: set[str] = set()
+    for match in PEERSTORE_LOG_RE.finditer(logs):
+        peer_id = match.group(1).strip()
+        raw_addrs = match.group(2)
+        if not peer_id:
+            continue
+        for addr in raw_addrs.split():
+            if not addr.startswith(("/ip4/", "/ip6/", "/dns/", "/dns4/", "/dns6/")):
+                continue
+            full = f"{addr}/p2p/{peer_id}"
+            if peer_parts(full) and full not in seen:
+                seen.add(full)
+                peers.append(full)
+    return peers
+
+
+def node_peerstore_log_candidates(values: dict[str, str], active_nodes: list[str] | None = None) -> list[str]:
+    if not env_enabled("BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED", True):
+        return []
+    nodes = active_nodes or configured_active_nodes(values)
+    peers: list[str] = []
+    seen: set[str] = set()
+    for node in nodes:
+        if node not in NODE_SPECS:
+            continue
+        try:
+            logs = docker_logs(node, tail=CHAIN_PEERSTORE_LOG_TAIL, timeout=20)
+        except Exception:
+            continue
+        for peer in extract_peerstore_log_peers(logs):
+            if peer not in seen:
+                seen.add(peer)
+                peers.append(peer)
     return peers
 
 
@@ -378,8 +494,9 @@ def p2p_peer_candidates(values: dict[str, str]) -> PeerCandidates:
     seen: set[str] = set()
     peers: list[str] = []
     rejected_non_p2p: list[str] = []
+    source_peers: dict[str, list[str]] = {}
 
-    def add(peer: str) -> None:
+    def add(peer: str, source: str) -> None:
         peer = peer.strip()
         if not peer or peer in seen:
             return
@@ -388,12 +505,27 @@ def p2p_peer_candidates(values: dict[str, str]) -> PeerCandidates:
             rejected_non_p2p.append(peer)
             return
         peers.append(peer)
+        source_peers.setdefault(source, []).append(peer)
 
-    for key_group in (GENERIC_PEER_KEYS, LEGACY_PEER_SOURCE_KEYS):
-        for peer in peer_values(values, key_group):
-            add(peer)
+    for key in GENERIC_PEER_KEYS:
+        for peer in split_peer_csv(env_value(values, key)):
+            add(peer, key)
 
-    return PeerCandidates(sort_peers_by_latency(peers), rejected_non_p2p)
+    for key in LEGACY_PEER_SOURCE_KEYS:
+        for peer in split_peer_csv(env_value(values, key)):
+            add(peer, key)
+
+    for peer in read_peer_file(LIVE_PEERS_FILE):
+        add(peer, "runtime-live-peers")
+
+    for peer in read_peer_file(CHAIN_PEERSTORE_CANDIDATES_FILE):
+        add(peer, "chain-peerstore-candidate-file")
+
+    for peer in node_peerstore_log_candidates(values):
+        add(peer, "chain-peerstore-startup-log")
+
+    sorted_peers = sort_peers_by_latency(peers)
+    return PeerCandidates(sorted_peers, rejected_non_p2p, source_peers)
 
 
 def write_deferred_apply(reason: str) -> None:
@@ -446,22 +578,72 @@ def peer_tcp_latency(peer: str) -> tuple[bool, float]:
         return False, float("inf")
 
 
+def peer_reachability_results(peers: list[str]) -> list[dict[str, object]]:
+    unique = unique_csv(peers).split(",") if peers else []
+
+    def probe(peer: str) -> dict[str, object]:
+        parts = peer_parts(peer)
+        if not parts:
+            return {"multiaddr": peer, "status": "unparsed"}
+        host, port, peer_id = parts
+        live, latency = peer_tcp_latency(peer)
+        result: dict[str, object] = {
+            "multiaddr": peer,
+            "host": host,
+            "port": port,
+            "peer_id": peer_id,
+            "status": "tcp-open" if live else "closed",
+        }
+        if live:
+            result["rtt_ms"] = round(latency, 1)
+        return result
+
+    with ThreadPoolExecutor(max_workers=max(1, PEER_LATENCY_WORKERS)) as executor:
+        return list(executor.map(probe, unique))
+
+
+def write_peer_discovery_artifacts(peer_candidates: PeerCandidates, remote_candidate_peers: list[str]) -> None:
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    chain_sources = [
+        "chain-peerstore-startup-log",
+        "chain-peerstore-candidate-file",
+    ]
+    chain_peers: list[str] = []
+    for source in chain_sources:
+        chain_peers.extend(peer_candidates.source_peers.get(source, []))
+    chain_peer_text = "\n".join(unique_csv(chain_peers).split(",")) if chain_peers else ""
+    CHAIN_PEERSTORE_CANDIDATES_FILE.write_text((chain_peer_text + "\n") if chain_peer_text else "")
+
+    reachability = peer_reachability_results(remote_candidate_peers)
+    live_peers = [str(item["multiaddr"]) for item in reachability if item.get("status") == "tcp-open"]
+    LIVE_PEERS_FILE.write_text(("\n".join(live_peers) + "\n") if live_peers else "")
+
+    manifest = {
+        "document_type": "bdag_peer_discovery_manifest_v1",
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "chain_peerstore_extraction": env_enabled("BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED", True),
+        "source_counts": peer_candidates.source_counts,
+        "candidate_count": len(peer_candidates.peers),
+        "remote_candidate_count": len(remote_candidate_peers),
+        "rejected_non_p2p_count": len(peer_candidates.rejected_non_p2p),
+        "live_tcp_open_count": len(live_peers),
+        "live_peers_file": str(LIVE_PEERS_FILE),
+        "chain_peerstore_candidates_file": str(CHAIN_PEERSTORE_CANDIDATES_FILE),
+        "note": "tcp-open proves reachability only; startup readiness must still verify node peer handshakes, sync freshness, and mining template health.",
+        "peers": sorted(reachability, key=lambda item: (item.get("status") != "tcp-open", str(item.get("host", "")), int(item.get("port", 0) or 0), str(item.get("multiaddr", "")))),
+    }
+    PEER_DISCOVERY_FILE.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
+
 def latest_peer_id(container: str, fallback: str | None = None) -> str:
     if fallback:
         return fallback
-    proc = subprocess.run(
-        ["docker", "logs", "--tail", "5000", container],
-        cwd=PROJECT_ROOT,
-        text=True,
-        capture_output=True,
-        timeout=20,
-        check=False,
-    )
-    if proc.returncode != 0:
+    try:
+        logs = docker_logs(container, tail="5000", timeout=20)
+    except Exception as exc:
         if fallback:
             return fallback
-        raise RuntimeError((proc.stderr or proc.stdout or f"docker logs failed for {container}").strip())
-    logs = proc.stdout + proc.stderr
+        raise RuntimeError(str(exc)) from exc
     matches = PEER_RE.findall(logs)
     if not matches:
         if fallback:
@@ -666,6 +848,7 @@ def main() -> int:
         active_nodes,
         host_ip,
     )
+    write_peer_discovery_artifacts(peer_candidates, remote_candidate_peers)
 
     local_addrs = {
         node: f"/ip4/{host_ip}/tcp/{spec['port']}/p2p/{peers[node]}"
@@ -673,9 +856,9 @@ def main() -> int:
         if node in peers
     }
     updates: dict[str, str] = {}
-    primary_node = "node" if "node" in active_nodes else "bdag-miner-node-1" if "bdag-miner-node-1" in active_nodes else ""
+    primary_node = "node" if "node" in active_nodes else ""
     if primary_node:
-        node1_peers = without_inactive_local_node_peers(
+        node_peers = without_inactive_local_node_peers(
             without_peer_ids(
                 list(candidate_peers),
                 inactive_local_peer_ids | {peers.get(primary_node, "")},
@@ -683,7 +866,7 @@ def main() -> int:
             active_nodes,
             host_ip,
         )
-        updates["NODE1_PEER_ADDRESSES"] = unique_csv(node1_peers)
+        updates["BDAG_NODE_PEER_ADDRESSES"] = unique_csv(node_peers)
     if local_addrs:
         updates["LOCAL_PEER_ADDRESSES"] = unique_csv([local_addrs[node] for node in active_nodes if node in local_addrs])
     for node, peer_id in peers.items():
@@ -730,6 +913,8 @@ def main() -> int:
     print(f"network_topology={topology}")
     print(f"active_nodes={','.join(active_nodes)}")
     print(f"p2p_candidates={len(candidate_peers)} remote_p2p_candidates={len(remote_candidate_peers)} rejected_non_p2p={len(peer_candidates.rejected_non_p2p)}")
+    print(f"peer_source_counts={json.dumps(peer_candidates.source_counts, sort_keys=True)}")
+    print(f"peer_discovery_manifest={PEER_DISCOVERY_FILE}")
     for node, addr in local_addrs.items():
         print(f"{node}={addr}")
 

@@ -46,14 +46,65 @@ class MiningHostTuningTests(unittest.TestCase):
         for name in (
             "BDAG_NODE_CPU_SHARES=6144",
             "BDAG_POOL_CPU_SHARES=5120",
+            "BDAG_POOL_DB_CPU_SHARES=4096",
             "BDAG_DASHBOARD_CPU_SHARES=128",
             "BDAG_NODE_MEMORY_LOW=768M",
             "BDAG_POOL_MEMORY_LOW=256M",
             "BDAG_POOL_DB_MEMORY_LOW=512M",
             "BDAG_DASHBOARD_MEMORY_LOW=64M",
             "BDAG_TUNE_NET_QDISC=1",
+            "BDAG_INSTALL_APPLIANCE_HOST_PROFILE=1",
+            "BDAG_INSTALL_STACK_SUPPORT_SERVICES=1",
         ):
             self.assertIn(name, env_example)
+
+    def test_release_installer_persists_priority_knobs(self) -> None:
+        installer = read("ops/release-install.sh")
+
+        for snippet in (
+            "set_env_value .env BDAG_NODE_CPU_SHARES",
+            "set_env_value .env BDAG_POOL_CPU_SHARES",
+            "set_env_value .env BDAG_POOL_DB_CPU_SHARES",
+            "set_env_value .env BDAG_DASHBOARD_CPU_SHARES",
+            "set_env_value .env BDAG_NODE_MEMORY_LOW",
+            "set_env_value .env BDAG_POOL_MEMORY_LOW",
+            "set_env_value .env BDAG_POOL_DB_MEMORY_LOW",
+            "set_env_value .env BDAG_DASHBOARD_MEMORY_LOW",
+            "set_env_value .env BDAG_TUNE_NET_QDISC",
+            "set_env_value .env BDAG_NODE_TMPFS_SIZE",
+            "set_env_value .env BDAG_CONTAINER_TMPFS_SIZE",
+            "install_appliance_host_profile",
+            "install_stack_support_services",
+            "BDAG_INSTALL_APPLIANCE_PROFILE_STRICT",
+            "BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT",
+        ):
+            self.assertIn(snippet, installer)
+
+    def test_host_profile_installer_preserves_invalid_docker_daemon_config(self) -> None:
+        installer = read("scripts/install-mining-appliance-profile.sh")
+
+        self.assertIn("dst.parent.mkdir(parents=True, exist_ok=True)", installer)
+        self.assertIn("except json.JSONDecodeError", installer)
+        self.assertIn(".invalid", installer)
+        self.assertIn("WARNING: moved invalid Docker daemon config", installer)
+
+    def test_dashboard_installer_persists_priority_env_for_upgrades(self) -> None:
+        installer = read("ops/install-dashboard.sh")
+
+        for snippet in (
+            "ensure_env_value BDAG_CONTAINER_TMPFS_SIZE 128m",
+            "ensure_env_value BDAG_NODE_TMPFS_SIZE 512m",
+            "ensure_env_value BDAG_NODE_CPU_SHARES 6144",
+            "ensure_env_value BDAG_POOL_CPU_SHARES 5120",
+            "ensure_env_value BDAG_POOL_DB_CPU_SHARES 4096",
+            "ensure_env_value BDAG_DASHBOARD_CPU_SHARES 128",
+            "ensure_env_value BDAG_NODE_MEMORY_LOW 768M",
+            "ensure_env_value BDAG_POOL_MEMORY_LOW 256M",
+            "ensure_env_value BDAG_POOL_DB_MEMORY_LOW 512M",
+            "ensure_env_value BDAG_DASHBOARD_MEMORY_LOW 64M",
+            "ensure_env_value BDAG_TUNE_NET_QDISC 1",
+        ):
+            self.assertIn(snippet, installer)
 
 
 if __name__ == "__main__":

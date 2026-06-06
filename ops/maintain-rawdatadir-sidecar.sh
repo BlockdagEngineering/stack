@@ -6,15 +6,16 @@ set -Eeuo pipefail
 # guarded final sync window and build from the sidecar.
 
 PROJECT_ROOT="${BDAG_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-NETWORK="${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}"
+REQUESTED_NETWORK="${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}"
+if [[ "${REQUESTED_NETWORK,,}" != "mainnet" ]]; then
+  printf '[%s] raw datadir sidecar refuses non-mainnet network: %s\n' "$(date -Is)" "$REQUESTED_NETWORK" >&2
+  exit 2
+fi
+NETWORK="mainnet"
 NODE_SERVICES_CSV="${BDAG_NODE_SERVICES:-node}"
 ACTIVE_NODE_SERVICE="${BDAG_RAWDATADIR_ACTIVE_SERVICE:-${NODE_SERVICES_CSV%%,*}}"
 ACTIVE_NODE_SERVICE="${ACTIVE_NODE_SERVICE:-node}"
-case "$ACTIVE_NODE_SERVICE" in
-  bdag-miner-node-1|node1) DEFAULT_NODE_DIR="${BDAG_NODE1_DATA_DIR:-$PROJECT_ROOT/data/node1}" ;;
-  node) DEFAULT_NODE_DIR="${BDAG_NODE_DATA_DIR:-${BDAG_NODE1_DATA_DIR:-$PROJECT_ROOT/data/node}}" ;;
-  *) DEFAULT_NODE_DIR="${BDAG_NODE_DATA_DIR:-$PROJECT_ROOT/data/node}" ;;
-esac
+DEFAULT_NODE_DIR="${BDAG_NODE_DATA_DIR:-$PROJECT_ROOT/data/node}"
 SOURCE_DIR="${BDAG_RAWDATADIR_SIDECAR_SOURCE:-$DEFAULT_NODE_DIR/$NETWORK}"
 SIDECAR_DIR="${BDAG_RAWDATADIR_SIDECAR_DIR:-$PROJECT_ROOT/data-restore/rawdatadir-sidecar/$NETWORK}"
 LOCK_FILE="${BDAG_RAWDATADIR_SIDECAR_LOCK:-$PROJECT_ROOT/ops/runtime/rawdatadir-sidecar.lock}"
@@ -22,13 +23,18 @@ LOG_FILE="${BDAG_RAWDATADIR_SIDECAR_LOG:-$PROJECT_ROOT/ops/runtime/logs/rawdatad
 STATUS_FILE="${BDAG_RAWDATADIR_SOURCE_STATUS:-$PROJECT_ROOT/ops/runtime/rawdatadir-source-status.json}"
 SAFE_STATUS_FILE="${BDAG_RAWDATADIR_SIDECAR_SAFE_STATUS:-$PROJECT_ROOT/ops/runtime/rawdatadir-sidecar-safe-status.json}"
 DELETE_MODE="${BDAG_RAWDATADIR_SIDECAR_DELETE:-1}"
-BWLIMIT="${BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT:-}"
+BWLIMIT="${BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT:-4096}"
+DELAY_UPDATES="${BDAG_RAWDATADIR_SIDECAR_DELAY_UPDATES:-0}"
 USE_SUDO="${BDAG_RAWDATADIR_SIDECAR_USE_SUDO:-auto}"
 SIDECAR_MODE="${BDAG_RAWDATADIR_SIDECAR_MODE:-${BDAG_RAWDATADIR_SOURCE_MODE:-auto}}"
 SYNC_SOURCE_NODE_VALUE="${SYNC_SOURCE_NODE:-}"
 FINAL_STOPPED_SYNC="${BDAG_RAWDATADIR_SIDECAR_FINAL_STOPPED_SYNC:-0}"
 CONTENT_MODE="${BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE:-auto}"
 CONTENT_SCRIPT="$PROJECT_ROOT/ops/seal_rawdatadir_sidecar_content.py"
+OPEN_RESTORE_ENABLED="${BDAG_RAWDATADIR_OPEN_SIDECAR_ENABLED:-1}"
+OPEN_RESTORE_BASE="${BDAG_RAWDATADIR_OPEN_SIDECAR_BASE:-$PROJECT_ROOT/data-restore/rawdatadir-sidecar-open/$NETWORK}"
+OPEN_RESTORE_KEEP="${BDAG_RAWDATADIR_OPEN_SIDECAR_KEEP:-12}"
+LOCAL_SIDECAR_COPY="${BDAG_RAWDATADIR_LOCAL_SIDECAR_COPY:-1}"
 
 mkdir -p "$(dirname "$LOCK_FILE")" "$(dirname "$LOG_FILE")" "$SIDECAR_DIR"
 
@@ -63,6 +69,106 @@ run_low_priority() {
     command=(nice -n 19 "${command[@]}")
   fi
   "${command[@]}"
+}
+
+create_open_restore_point() {
+  case "${OPEN_RESTORE_ENABLED,,}" in
+    0|false|no|off|disabled)
+      log "open sidecar restore-point preservation disabled by BDAG_RAWDATADIR_OPEN_SIDECAR_ENABLED=$OPEN_RESTORE_ENABLED"
+      return 0
+      ;;
+  esac
+  if [[ ! -d "$SIDECAR_DIR/BdagChain" || ! -f "$SIDECAR_DIR/BdagChain/CURRENT" ]]; then
+    log "open sidecar restore point skipped: current sidecar is not yet usable"
+    return 0
+  fi
+  local stamp tmp target current_manifest
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  target="$OPEN_RESTORE_BASE/$stamp"
+  tmp="$target.tmp.$$"
+  mkdir -p "$OPEN_RESTORE_BASE"
+  local copy_status=0
+  mkdir "$tmp" || {
+    log "open sidecar restore point preservation failed: could not create $tmp"
+    return 0
+  }
+  if [[ "$(id -u)" != "0" ]] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    sudo -n cp -al "$SIDECAR_DIR/." "$tmp/" || copy_status=$?
+  else
+    cp -al "$SIDECAR_DIR/." "$tmp/" || copy_status=$?
+  fi
+  if [[ "$copy_status" -eq 0 ]] &&
+    [[ -d "$tmp/BdagChain" && -f "$tmp/BdagChain/CURRENT" ]] &&
+    current_manifest="$(tr -d '\r\n' < "$SIDECAR_DIR/BdagChain/CURRENT" 2>/dev/null || true)" &&
+    cat > "$tmp/open-sidecar-restore-point.json" <<EOF
+{
+  "document_type": "bdag_open_sidecar_restore_point_v1",
+  "generated_at": "$(date -Is)",
+  "network": "$NETWORK",
+  "source_sidecar_dir": "$SIDECAR_DIR",
+  "restore_point_dir": "$target",
+  "bdagchain_current": "$current_manifest",
+  "policy": "Hard-linked open restore point captured before the mutable sidecar is refreshed. Consensus validity must still be checked before restore."
+}
+EOF
+    mv "$tmp" "$target"; then
+    log "open sidecar restore point preserved: $target"
+  else
+    rm -rf "$tmp" 2>/dev/null || {
+      if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        sudo -n rm -rf "$tmp" || true
+      fi
+    }
+    log "open sidecar restore point preservation failed; copy_status=$copy_status; continuing with sidecar refresh"
+  fi
+  if [[ "$OPEN_RESTORE_KEEP" =~ ^[0-9]+$ && "$OPEN_RESTORE_KEEP" -gt 0 ]]; then
+    find "$OPEN_RESTORE_BASE" -mindepth 1 -maxdepth 1 -type d -name '20*Z' -printf '%T@ %p\n' 2>/dev/null |
+      sort -nr |
+      awk -v keep="$OPEN_RESTORE_KEEP" 'NR > keep {sub(/^[^ ]+ /, ""); print}' |
+      while IFS= read -r stale; do
+        rm -rf "$stale"
+        log "pruned old open sidecar restore point: $stale"
+      done
+  fi
+}
+
+sidecar_safety_reasons() {
+  local status_file="$1"
+  python3 - "$status_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    print("status_unavailable")
+    raise SystemExit(0)
+for reason in payload.get("reasons") or []:
+    print(str(reason))
+PY
+}
+
+local_sidecar_copy_can_ignore_reasons() {
+  case "${LOCAL_SIDECAR_COPY,,}" in
+    0|false|no|off|disabled)
+      return 1
+      ;;
+  esac
+  local reason saw_reason=0
+  while IFS= read -r reason; do
+    [[ -n "$reason" ]] || continue
+    saw_reason=1
+    case "$reason" in
+      source_mode_disabled)
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  done < <(sidecar_safety_reasons "$STATUS_FILE")
+  [[ "$saw_reason" -eq 1 ]]
 }
 
 source_datadir_exists() {
@@ -130,17 +236,20 @@ if ! SYNC_SOURCE_NODE="${SYNC_SOURCE_NODE_VALUE:-0}" \
   BDAG_RAWDATADIR_SOURCE_MODE="$SIDECAR_MODE" \
   BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH="$eligibility_require_evm_reference_fresh" \
   "$PROJECT_ROOT/ops/fastartifact_source_eligibility.py" --status-file "$STATUS_FILE" >/dev/null; then
-  log "raw datadir sidecar safety check deferred sync; see $STATUS_FILE"
-  exit 0
+  if local_sidecar_copy_can_ignore_reasons; then
+    log "raw datadir sidecar local copy continuing despite source-only eligibility reason: source_mode_disabled"
+  else
+    log "raw datadir sidecar safety check deferred sync; see $STATUS_FILE"
+    exit 0
+  fi
 fi
 
 rsync_args=(
-  -aH
+  -a
   --numeric-ids
   --one-file-system
   --partial
   --partial-dir=.rsync-partial
-  --delay-updates
   "--exclude=/network.key*"
   "--exclude=/bdageth/nodekey*"
   "--exclude=/bdageth/LOCK"
@@ -159,6 +268,11 @@ rsync_args=(
   "--exclude=*.ipc"
   "--exclude=*.sock"
 )
+case "${DELAY_UPDATES,,}" in
+  1|true|yes|on)
+    rsync_args+=(--delay-updates)
+    ;;
+esac
 if [[ "$DELETE_MODE" == "1" ]]; then
   rsync_args+=(--delete --delete-excluded)
 fi
@@ -189,6 +303,7 @@ case "${USE_SUDO,,}" in
 esac
 
 log "syncing raw datadir sidecar source=$SOURCE_DIR target=$SIDECAR_DIR"
+create_open_restore_point
 set +e
 run_low_priority "${rsync_command[@]}" "${rsync_args[@]}" "$SOURCE_DIR/" "$SIDECAR_DIR/" 2>&1 | tee -a "$LOG_FILE"
 rsync_status="${PIPESTATUS[0]}"

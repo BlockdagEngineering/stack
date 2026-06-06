@@ -47,7 +47,6 @@ INCIDENT_COOLDOWN_SECONDS = int(os.environ.get("BDAG_P2P_GUARD_INCIDENT_COOLDOWN
 
 NODE_METRIC_PORTS = {
     "node": int(os.environ.get("BDAG_NODE_METRICS_PORT", "6060")),
-    "bdag-miner-node-1": int(os.environ.get("BDAG_NODE1_METRICS_PORT", "6061")),
 }
 
 NATIVE_METRICS = {

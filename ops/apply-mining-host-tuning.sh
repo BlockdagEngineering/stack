@@ -32,7 +32,7 @@ env_value() {
   key="$1"
   fallback="${2:-}"
   value=""
-  for env_file in "$ROOT/.env" "$ROOT/asic-pool/.env"; do
+  for env_file in "$ROOT/.env"; do
     [ -f "$env_file" ] || continue
     value="$(sed -n "s/^${key}=//p" "$env_file" | tail -n1 || true)"
     [ -n "$value" ] && break
@@ -144,7 +144,7 @@ service_container() {
   case "$service" in
     node) configured="${BDAG_NODE_CONTAINER:-$(env_value BDAG_NODE_CONTAINER "")}" ;;
     pool) configured="${BDAG_POOL_CONTAINER:-$(env_value BDAG_POOL_CONTAINER "")}" ;;
-    pool-db|postgres) configured="${BDAG_POOL_DB_CONTAINER:-${BDAG_POSTGRES_CONTAINER:-$(env_value BDAG_POOL_DB_CONTAINER "")}}" ;;
+    postgres) configured="${BDAG_POOL_DB_CONTAINER:-${BDAG_POSTGRES_CONTAINER:-$(env_value BDAG_POOL_DB_CONTAINER "")}}" ;;
     dashboard) configured="${BDAG_DASHBOARD_CONTAINER:-$(env_value BDAG_DASHBOARD_CONTAINER "")}" ;;
   esac
 
@@ -243,7 +243,7 @@ selected_backend_from_metrics() {
 }
 
 selected_backend_from_env() {
-  for env_file in "$ROOT/.env" "$ROOT/asic-pool/.env"; do
+  for env_file in "$ROOT/.env"; do
     [ -f "$env_file" ] || continue
     sed -n 's/^POOL_RPC_BACKENDS=//p' "$env_file" |
       awk -F'[=,]' 'NF { print $1; exit }'
@@ -256,16 +256,15 @@ selected_backend() {
     backend="$(selected_backend_from_env || true)"
   fi
   case "$backend" in
-    node1|node|primary) printf '%s\n' "node" ;;
-    bdag-miner-node-1) printf '%s\n' "bdag-miner-node-1" ;;
+    node|primary) printf '%s\n' "node" ;;
     *) printf '%s\n' "node" ;;
   esac
 }
 
 node_container_for_backend() {
   case "$1" in
-    node1|node) printf '%s\n' "node" ;;
-    bdag-miner-node-1) printf '%s\n' "bdag-miner-node-1" ;;
+    node) printf '%s\n' "node" ;;
+    *) printf '%s\n' "node" ;;
   esac
 }
 
@@ -286,8 +285,6 @@ if state.get("mode") != "active_node_catchup":
 
 leader = str(state.get("active_node") or "")
 mapping = {
-    "node1": "bdag-miner-node-1",
-    "bdag-miner-node-1": "bdag-miner-node-1",
     "node": "node",
 }
 if leader in mapping:
@@ -298,19 +295,19 @@ PY
 tune_processes() {
   active_backend="$(selected_backend)"
   active_node="$(node_container_for_backend "$active_backend")"
-  active_node="$(first_live_container "$active_node" "$(service_container node node bdag-miner-node-1)")"
+  active_node="$(first_live_container "$active_node" "$(service_container node node)")"
   catchup_node="$(sync_coordinator_leader_node || true)"
   if [ -n "$catchup_node" ]; then
     active_node="$(first_live_container "$catchup_node" "$active_node")"
   fi
 
-  for container in "$active_node" "$(service_container node node bdag-miner-node-1)"; do
+  for container in "$active_node" "$(service_container node node)"; do
     [ -n "$container" ] || continue
     pids="$(docker_container_pids "$container")"
     [ -n "$pids" ] && tune_pids "$active_node_nice" 2 0 -950 $pids
   done
 
-  for container in "$(service_container pool pool asic-pool)" "$(service_container pool-db pool-db postgres)"; do
+  for container in "$(service_container pool pool)" "$(service_container postgres postgres)"; do
     [ -n "$container" ] || continue
     pids="$(docker_container_pids "$container")"
     [ -n "$pids" ] && tune_pids "$pool_nice" 2 0 -900 $pids
@@ -342,7 +339,7 @@ tune_docker_weights() {
   docker info >/dev/null 2>&1 || return 0
   active_backend="$(selected_backend)"
   active_node="$(node_container_for_backend "$active_backend")"
-  active_node="$(first_live_container "$active_node" "$(service_container node node bdag-miner-node-1)")"
+  active_node="$(first_live_container "$active_node" "$(service_container node node)")"
   catchup_node="$(sync_coordinator_leader_node || true)"
   if [ -n "$catchup_node" ]; then
     active_node="$(first_live_container "$catchup_node" "$active_node")"
@@ -353,14 +350,14 @@ tune_docker_weights() {
   else
     docker_update_one "$active_node" 6144 1000
   fi
-  for container in "$(service_container node node bdag-miner-node-1)"; do
+  for container in "$(service_container node node)"; do
     [ -n "$container" ] || continue
     [ "$container" = "$active_node" ] && continue
     docker_update_one "$container" 6144 1000
   done
 
-  docker_update_one "$(service_container pool pool asic-pool)" 5120 950
-  docker_update_one "$(service_container pool-db pool-db postgres)" 4096 950
+  docker_update_one "$(service_container pool pool)" 5120 950
+  docker_update_one "$(service_container postgres postgres)" 4096 950
   for container in \
     "$(service_container dashboard dashboard bdag-dashboard)" \
     bdag-prometheus bdag-grafana bdag-loki \
@@ -380,9 +377,9 @@ tune_docker_weights() {
 tune_cgroups() {
   command -v docker >/dev/null 2>&1 || return 0
   docker info >/dev/null 2>&1 || return 0
-  node_container="$(service_container node node bdag-miner-node-1)"
-  pool_container="$(service_container pool pool asic-pool)"
-  pool_db_container="$(service_container pool-db pool-db postgres)"
+  node_container="$(service_container node node)"
+  pool_container="$(service_container pool pool)"
+  pool_db_container="$(service_container postgres postgres)"
   dashboard_container="$(service_container dashboard dashboard bdag-dashboard)"
 
   [ -n "$node_container" ] && apply_cgroup_policy "$node_container" 10000 10000 "$node_memory_low"

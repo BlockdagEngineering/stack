@@ -6,7 +6,12 @@ SOURCE_CONTAINER="${BDAG_FASTARTIFACT_SOURCE_CONTAINER:-pool-stack-docker-node-1
 SOURCE_P2P_PORT="${BDAG_FASTARTIFACT_SOURCE_P2P_PORT:-8150}"
 RECEIVER_PROJECT="${BDAG_FASTARTIFACT_RECEIVER_PROJECT:-bdag-v2-receiver}"
 SIM_ROOT="${BDAG_FASTARTIFACT_SIM_ROOT:-${TMPDIR:-/tmp}/bdag-fastartifact-receiver}"
-NETWORK="${BDAG_FASTARTIFACT_NETWORK:-mainnet}"
+REQUESTED_NETWORK="${BDAG_FASTARTIFACT_NETWORK:-mainnet}"
+if [[ "${REQUESTED_NETWORK,,}" != "mainnet" ]]; then
+  printf 'fastartifact local receiver refuses non-mainnet network: %s\n' "$REQUESTED_NETWORK" >&2
+  exit 2
+fi
+NETWORK="mainnet"
 HOST_GW="${BDAG_FASTARTIFACT_HOST_GW:-$(ip -4 addr show docker0 | awk '/inet /{print $2}' | cut -d/ -f1)}"
 COMPOSE_FILE="${BDAG_FASTARTIFACT_COMPOSE_FILE:-$ROOT/docker-compose.yml}"
 DOCKERFILE="${BDAG_FASTARTIFACT_DOCKERFILE:-dockerfile-dev}"

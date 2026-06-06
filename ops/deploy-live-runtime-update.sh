@@ -35,6 +35,7 @@ FILES=(
   "ops/apply-mining-host-tuning.sh"
   "ops/automation_control.py"
   "ops/build-rawdatadir-artifact.sh"
+  "ops/chain-state-self-heal.sh"
   "ops/fastartifact_source_eligibility.py"
   "ops/fetch-rawdatadir-artifact.sh"
   "ops/maintain-rawdatadir-sidecar.sh"
@@ -80,6 +81,7 @@ FILES=(
   "ops/update-local-peers.py"
   "ops/watchdog.py"
   "ops/systemd/user-bdag-chain-restore-guard.timer"
+  "ops/systemd/user-bdag-chain-state-self-heal.service"
   "ops/systemd/user-bdag-hourly-snapshot.timer"
   "ops/systemd/user-bdag-incident-reporter.timer"
   "ops/systemd/user-bdag-mining-30min-guard.service"
@@ -132,7 +134,7 @@ Options:
   --rollback BACKUP_DIR     Restore files from a previous backup manifest.
   -h, --help                Show this help.
 
-The script never copies .env, asic-pool/.env, data/, ops/runtime, chain data,
+The script never copies .env, data/, ops/runtime, chain data,
 or Docker images. It refuses runtime compose files with build/dockerfile entries.
 USAGE
 }
@@ -211,7 +213,7 @@ preflight_copy_contract() {
     rel="$(normalize_file "$raw_rel")"
     src="$SOURCE_ROOT/$rel"
     [[ -f "$src" ]] || die "source file missing: $rel"
-    if [[ "$rel" == ".env" || "$rel" == "asic-pool/.env" || "$rel" == data/* || "$rel" == ops/runtime* || "$rel" == chain-data/* ]]; then
+    if [[ "$rel" == ".env" || "$rel" == data/* || "$rel" == ops/runtime* || "$rel" == chain-data/* ]]; then
       die "refusing unsafe live-runtime file path: $rel"
     fi
   done
@@ -516,7 +518,7 @@ for raw_rel in "${FILES[@]}"; do
   src="$SOURCE_ROOT/$rel"
   dst="$TARGET_ROOT/$rel"
   [[ -f "$src" ]] || die "source file missing: $rel"
-  if [[ "$rel" == ".env" || "$rel" == "asic-pool/.env" || "$rel" == data/* || "$rel" == ops/runtime* || "$rel" == chain-data/* ]]; then
+  if [[ "$rel" == ".env" || "$rel" == data/* || "$rel" == ops/runtime* || "$rel" == chain-data/* ]]; then
     die "refusing unsafe live-runtime file path: $rel"
   fi
   if [[ "$DRY_RUN" -eq 1 ]]; then

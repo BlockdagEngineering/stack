@@ -23,6 +23,7 @@ from typing import Any, Mapping
 ROOT = Path(os.environ.get("BDAG_PROJECT_ROOT") or Path(__file__).resolve().parents[1]).resolve()
 ENV_FILE = Path(os.environ.get("BDAG_ENV_FILE") or ROOT / ".env")
 OPS_DIR = ROOT / "ops"
+MAINNET_NETWORK = "mainnet"
 
 FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
@@ -64,6 +65,13 @@ def env_int(env: Mapping[str, str], key: str, default: int) -> int:
         return int(value)
     except ValueError:
         return default
+
+
+def mainnet_network(env: Mapping[str, str]) -> str:
+    requested = str(env.get("BDAG_NETWORK") or MAINNET_NETWORK).strip().lower()
+    if requested != MAINNET_NETWORK:
+        raise RuntimeError(f"IPFS segment writer refuses non-mainnet network: {requested}")
+    return MAINNET_NETWORK
 
 
 def resolve_path(value: str | None, default: Path) -> Path:
@@ -494,7 +502,7 @@ def build_segment(
 
     payload = {
         "document_type": "bdag_chain_order_segment_payload_v1",
-        "network": env.get("BDAG_NETWORK", "mainnet"),
+        "network": mainnet_network(env),
         "segment_id": seg_id,
         "start_order": start,
         "end_order": end,
@@ -520,7 +528,7 @@ def build_segment(
 
     manifest = {
         "document_type": "bdag_ipfs_segment_manifest_v1",
-        "network": env.get("BDAG_NETWORK", "mainnet"),
+        "network": mainnet_network(env),
         "generated_at": now_iso(),
         "segment_id": seg_id,
         "start_order": start,
@@ -580,7 +588,7 @@ def update_index(index: dict[str, Any], segment_record: dict[str, Any], env: Map
     if not index:
         index = {
             "document_type": "bdag_ipfs_segment_index_v1",
-            "network": env.get("BDAG_NETWORK", "mainnet"),
+            "network": mainnet_network(env),
             "append_only_model": {
                 "immutable_segments": True,
                 "old_segments_never_change": True,

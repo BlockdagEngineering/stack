@@ -37,6 +37,44 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         self.assertEqual(env["BDAG_NODE_CACHE_MB"], "1024")
         self.assertEqual(env["EMPTY"], "")
 
+    def test_network_preflight_reports_wired_route_policy(self) -> None:
+        old_run = preflight.run
+        old_route_policy_script = preflight.route_policy_script
+
+        def fake_run(command, **_kwargs):
+            if command[:5] == ["ip", "-o", "-4", "route", "get"]:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="1.1.1.1 via 192.168.1.1 dev enx207bd51aa286 src 192.168.1.120 uid 1000 cache\n",
+                    stderr="",
+                )
+            if command and command[0] == "python3":
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=(
+                        '{"ok": true, "failure_count": 0, "warning_count": 0, "issues": [], '
+                        '"selected_default_route": "default via 192.168.1.1 dev enx207bd51aa286 metric 10", '
+                        '"route_get": "1.1.1.1 via 192.168.1.1 dev enx207bd51aa286 src 192.168.1.120"}'
+                    ),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="unexpected command")
+
+        try:
+            preflight.run = fake_run
+            preflight.route_policy_script = lambda _root=None: Path("/tmp/validate-network-route-policy.py")
+            checks = []
+            preflight.check_network(checks, Path("/tmp"))
+        finally:
+            preflight.run = old_run
+            preflight.route_policy_script = old_route_policy_script
+
+        found = {check.name: check.status for check in checks}
+        self.assertEqual(found["default_route"], "pass")
+        self.assertEqual(found["wired_route_policy"], "pass")
+
     def test_constrained_env_warnings_for_large_cache_and_expensive_defaults(self) -> None:
         profile = preflight.HostProfile(
             os_name="linux",
@@ -338,7 +376,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
     def test_active_node_data_layout_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "data" / "node1" / "mainnet" / "BdagChain").mkdir(parents=True)
+            (root / "data" / "node" / "mainnet" / "BdagChain").mkdir(parents=True)
             checks = []
             preflight.check_node_data_layout(checks, root, {})
         found = {check.name: check.status for check in checks}
@@ -446,7 +484,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 {
                     "BDAG_STORAGE_PROFILE": "auto",
                     "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
-                    "BDAG_NODE1_DATA_DIR": "/mnt/usb/blockdag-chain/node1",
+                    "BDAG_NODE_DATA_DIR": "/mnt/usb/blockdag-chain/node",
                     "BDAG_POSTGRES_DATA_DIR": "/opt/blockdag-pool/runtime-data/postgres",
                     "BDAG_RUNTIME_DIR": "/opt/blockdag-pool/runtime-data/ops-runtime",
                 },
@@ -481,7 +519,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 {
                     "BDAG_STORAGE_PROFILE": "usb-chain-internal-runtime",
                     "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
-                    "BDAG_NODE1_DATA_DIR": "/mnt/usb/blockdag-chain/node1",
+                    "BDAG_NODE_DATA_DIR": "/mnt/usb/blockdag-chain/node",
                     "BDAG_POSTGRES_DATA_DIR": "/mnt/usb/blockdag-chain/runtime/postgres",
                     "BDAG_RUNTIME_DIR": "/mnt/usb/blockdag-chain/runtime/ops-runtime",
                 },
@@ -520,7 +558,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 {
                     "BDAG_STORAGE_PROFILE": "auto",
                     "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
-                    "BDAG_NODE1_DATA_DIR": "/mnt/usb/blockdag-chain/node1",
+                    "BDAG_NODE_DATA_DIR": "/mnt/usb/blockdag-chain/node",
                     "BDAG_POSTGRES_DATA_DIR": "/mnt/usb/runtime/postgres",
                     "BDAG_RUNTIME_DIR": "/mnt/usb/runtime/ops-runtime",
                 },

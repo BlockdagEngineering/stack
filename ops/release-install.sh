@@ -70,7 +70,78 @@ detect_arch() {
 }
 
 detect_lan_ip() {
-  ip -o -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i=="src") {print $(i+1); exit}}'
+  local detected
+  if [[ -n "${BDAG_POOL_HOST:-}" ]]; then
+    printf '%s\n' "$BDAG_POOL_HOST"
+    return 0
+  fi
+  if command -v ip >/dev/null 2>&1 && [[ -n "${BDAG_ASIC_LAN_INTERFACE:-}" ]]; then
+    detected="$(ip -o -4 addr show dev "$BDAG_ASIC_LAN_INTERFACE" scope global 2>/dev/null \
+      | awk '{split($4,a,"/"); if (a[1] != "") {print a[1]; exit}}' || true)"
+    if [[ -n "$detected" ]]; then
+      printf '%s\n' "$detected"
+      return 0
+    fi
+  fi
+  if command -v ip >/dev/null 2>&1; then
+    detected="$(ip -o -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i=="src") {print $(i+1); exit}}' || true)"
+    if [[ -n "$detected" && ! "$detected" =~ ^127\. && ! "$detected" =~ ^169\.254\. && ! "$detected" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]]; then
+      printf '%s\n' "$detected"
+      return 0
+    fi
+    detected="$(ip -o -4 addr show scope global 2>/dev/null \
+      | awk '
+          $2 !~ /^(docker|br-|veth|zt|wg|tun|tap|tailscale)/ {
+            split($4,a,"/")
+            if (a[1] !~ /^127\./ && a[1] !~ /^169\.254\./ && a[1] !~ /^172\.(1[6-9]|2[0-9]|3[0-1])\./) {
+              print a[1]
+              exit
+            }
+          }' || true)"
+    if [[ -n "$detected" ]]; then
+      printf '%s\n' "$detected"
+      return 0
+    fi
+    ip -o -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i=="src") {print $(i+1); exit}}' || true
+  fi
+}
+
+wired_route_policy_script() {
+  local candidate
+  for candidate in \
+    "$ROOT/scripts/validate-network-route-policy.py" \
+    "$ROOT/../scripts/validate-network-route-policy.py" \
+    "$(cd "$ROOT/.." 2>/dev/null && pwd)/scripts/validate-network-route-policy.py"; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+enforce_wired_route_policy() {
+  if [[ "$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')" != "linux" ]]; then
+    return 0
+  fi
+  if [[ "${BDAG_ENFORCE_WIRED_ROUTE_POLICY:-1}" != "1" ]]; then
+    warn "Skipping wired-first route policy because BDAG_ENFORCE_WIRED_ROUTE_POLICY=${BDAG_ENFORCE_WIRED_ROUTE_POLICY:-unset}."
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    warn "python3 is missing; cannot validate or apply wired-first route policy."
+    return 0
+  fi
+  local script
+  script="$(wired_route_policy_script || true)"
+  if [[ -z "$script" ]]; then
+    warn "Wired-first route policy script is missing from this package."
+    return 0
+  fi
+  say "Applying wired-first route policy"
+  if ! python3 "$script" --apply --warn-only; then
+    warn "Wired-first route policy application failed; continuing so preflight can report the remaining network state."
+  fi
 }
 
 default_cidr() {
@@ -79,6 +150,40 @@ default_cidr() {
     printf '%s.%s.%s.0/24\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
   else
     printf '192.168.1.0/24\n'
+  fi
+}
+
+is_default_docker_bridge_address() {
+  [[ "$1" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]]
+}
+
+validate_pool_lan_config() {
+  local pool_host pool_url pool_url_host scan_target asic_cidrs allow_bridge
+  pool_host="$(grep -E '^BDAG_POOL_HOST=' .env | tail -n 1 | cut -d= -f2- || true)"
+  pool_url="$(grep -E '^BDAG_POOL_URL=' .env | tail -n 1 | cut -d= -f2- || true)"
+  scan_target="$(grep -E '^BDAG_MINER_SCAN_TARGET=' .env | tail -n 1 | cut -d= -f2- || true)"
+  asic_cidrs="$(grep -E '^BDAG_ASIC_LAN_CIDRS=' .env | tail -n 1 | cut -d= -f2- || true)"
+  allow_bridge="$(grep -E '^BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS=' .env | tail -n 1 | cut -d= -f2- || true)"
+  pool_host="${pool_host%\"}"; pool_host="${pool_host#\"}"
+  pool_url="${pool_url%\"}"; pool_url="${pool_url#\"}"
+  scan_target="${scan_target%\"}"; scan_target="${scan_target#\"}"
+  asic_cidrs="${asic_cidrs%\"}"; asic_cidrs="${asic_cidrs#\"}"
+  allow_bridge="${allow_bridge:-0}"
+  pool_url_host="${pool_url#*://}"
+  pool_url_host="${pool_url_host%%:*}"
+  if [[ -z "$pool_host" || -z "$pool_url" || -z "$scan_target" || -z "$asic_cidrs" ]]; then
+    echo "Pool LAN configuration is incomplete. Set BDAG_POOL_HOST, BDAG_POOL_URL, BDAG_MINER_SCAN_TARGET, and BDAG_ASIC_LAN_CIDRS." >&2
+    exit 1
+  fi
+  if [[ "$allow_bridge" != "1" && "$allow_bridge" != "true" && "$allow_bridge" != "True" ]]; then
+    if is_default_docker_bridge_address "$pool_host" || is_default_docker_bridge_address "$pool_url_host"; then
+      echo "Refusing Docker bridge pool endpoint '$pool_url'. Use the host-facing ASIC LAN IP, not a 172.16.0.0/12 container address." >&2
+      exit 1
+    fi
+    if [[ "$scan_target" =~ (^|[,[:space:]])172\.(1[6-9]|2[0-9]|3[0-1])\. || "$asic_cidrs" =~ (^|[,[:space:]])172\.(1[6-9]|2[0-9]|3[0-1])\. ]]; then
+      echo "Refusing Docker bridge ASIC scan scope '$asic_cidrs'. Set BDAG_ASIC_LAN_CIDRS to the physical ASIC LAN." >&2
+      exit 1
+    fi
   fi
 }
 
@@ -259,16 +364,16 @@ select_runtime_data_base() {
 }
 
 configure_storage_profile() {
-  local chain_base runtime_base node1_dir postgres_dir runtime_dir profile existing_profile
+  local chain_base runtime_base node_dir postgres_dir runtime_dir profile existing_profile
   chain_base="$(absolute_path "$(select_chain_data_base)")"
   runtime_base="$(absolute_path "$(select_runtime_data_base "$chain_base")")"
   existing_profile="$(env_value BDAG_STORAGE_PROFILE auto)"
   if [[ "$existing_profile" == "auto" || -z "$existing_profile" ]]; then
-    node1_dir="$(env_path_value_for_auto_profile BDAG_NODE1_DATA_DIR "$chain_base/node1" "./data/node1")"
+    node_dir="$(env_path_value_for_auto_profile BDAG_NODE_DATA_DIR "$chain_base/node" "./data/node")"
     postgres_dir="$(env_path_value_for_auto_profile BDAG_POSTGRES_DATA_DIR "$runtime_base/postgres" "./data/postgres")"
     runtime_dir="$(env_path_value_for_auto_profile BDAG_RUNTIME_DIR "$runtime_base/ops-runtime" "./ops/runtime")"
   else
-    node1_dir="$(env_path_value BDAG_NODE1_DATA_DIR "$chain_base/node1")"
+    node_dir="$(env_path_value BDAG_NODE_DATA_DIR "$chain_base/node")"
     postgres_dir="$(env_path_value BDAG_POSTGRES_DATA_DIR "$runtime_base/postgres")"
     runtime_dir="$(env_path_value BDAG_RUNTIME_DIR "$runtime_base/ops-runtime")"
   fi
@@ -289,13 +394,22 @@ configure_storage_profile() {
   set_env_value .env BDAG_STORAGE_PROFILE "$profile"
   set_env_value .env BDAG_CHAIN_DATA_DIR "$chain_base"
   set_env_value .env BDAG_DATA_DIR "$chain_base"
-  set_env_value .env BDAG_NODE1_DATA_DIR "$node1_dir"
+  set_env_value .env BDAG_NODE_DATA_DIR "$node_dir"
   set_env_value .env BDAG_POSTGRES_DATA_DIR "$postgres_dir"
   set_env_value .env BDAG_RUNTIME_DIR "$runtime_dir"
   set_env_value .env BDAG_STORAGE_MIN_CHAIN_FREE_GIB "$(env_value BDAG_STORAGE_MIN_CHAIN_FREE_GIB "${BDAG_STORAGE_MIN_CHAIN_FREE_GIB:-50}")"
   set_env_value .env BDAG_STORAGE_MIN_RUNTIME_FREE_GIB "$(env_value BDAG_STORAGE_MIN_RUNTIME_FREE_GIB "${BDAG_STORAGE_MIN_RUNTIME_FREE_GIB:-4}")"
+  set_env_value .env BDAG_NODE_CPU_SHARES "$(env_value BDAG_NODE_CPU_SHARES 6144)"
+  set_env_value .env BDAG_POOL_CPU_SHARES "$(env_value BDAG_POOL_CPU_SHARES 5120)"
+  set_env_value .env BDAG_POOL_DB_CPU_SHARES "$(env_value BDAG_POOL_DB_CPU_SHARES 4096)"
+  set_env_value .env BDAG_DASHBOARD_CPU_SHARES "$(env_value BDAG_DASHBOARD_CPU_SHARES 128)"
+  set_env_value .env BDAG_NODE_MEMORY_LOW "$(env_value BDAG_NODE_MEMORY_LOW 768M)"
+  set_env_value .env BDAG_POOL_MEMORY_LOW "$(env_value BDAG_POOL_MEMORY_LOW 256M)"
+  set_env_value .env BDAG_POOL_DB_MEMORY_LOW "$(env_value BDAG_POOL_DB_MEMORY_LOW 512M)"
+  set_env_value .env BDAG_DASHBOARD_MEMORY_LOW "$(env_value BDAG_DASHBOARD_MEMORY_LOW 64M)"
+  set_env_value .env BDAG_TUNE_NET_QDISC "$(env_value BDAG_TUNE_NET_QDISC 1)"
 
-  mkdir -p asic-pool "$node1_dir" "$postgres_dir" "$runtime_dir/logs"
+  mkdir -p "$node_dir" "$postgres_dir" "$runtime_dir/logs"
   say "Storage profile: $profile"
   echo "Chain data: $chain_base"
   echo "Postgres data: $postgres_dir"
@@ -321,6 +435,7 @@ configure_ephemeral_storage() {
   set_env_value .env BDAG_EPHEMERAL_DIR "$ephemeral_dir"
   set_env_value .env BDAG_HOST_TMPDIR "$ephemeral_dir/tmp"
   set_env_value .env BDAG_CONTAINER_TMPFS_SIZE "$tmpfs_size"
+  set_env_value .env BDAG_NODE_TMPFS_SIZE "$(env_value BDAG_NODE_TMPFS_SIZE 512m)"
 
   if [[ "$enabled" == "1" ]]; then
     if ! need_sudo mkdir -p "$ephemeral_dir/tmp" ||
@@ -397,11 +512,22 @@ configure_env() {
   set_env_value .env POSTGRES_USER "$postgres_user"
   set_env_value .env POSTGRES_PASSWORD "$postgres_password"
   set_env_value .env POSTGRES_DB "$postgres_db"
-  set_env_value .env PG_URL "postgres://${postgres_user}:${postgres_password}@pool-db:5432/${postgres_db}"
+  set_env_value .env PG_URL "postgres://${postgres_user}:${postgres_password}@postgres:5432/${postgres_db}"
   set_env_value .env BDAG_POOL_HOST "$lan_ip"
   set_env_value .env BDAG_POOL_URL "stratum+tcp://$lan_ip:3334"
   set_env_value .env BDAG_MINER_SCAN_TARGET "$scan_target"
+  set_env_value .env BDAG_ASIC_LAN_CIDRS "$scan_target"
+  validate_pool_lan_config
+  set_env_value .env BDAG_FASTSYNC_RANGE_BLOCKS 1024
   set_env_value .env BDAG_FASTSYNC_PREPROCESS_WORKERS 1
+  set_env_value .env BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED 1
+  set_env_value .env BDAG_CHAIN_PEERSTORE_LOG_TAIL 8000
+  set_env_value .env BDAG_INSTALL_APPLIANCE_HOST_PROFILE "$(env_value BDAG_INSTALL_APPLIANCE_HOST_PROFILE 1)"
+  set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_DISABLE_SERVICES "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_DISABLE_SERVICES 0)"
+  set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_RELOAD_DOCKER "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_RELOAD_DOCKER 1)"
+  set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_STRICT "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_STRICT 0)"
+  set_env_value .env BDAG_INSTALL_STACK_SUPPORT_SERVICES "$(env_value BDAG_INSTALL_STACK_SUPPORT_SERVICES 1)"
+  set_env_value .env BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT "$(env_value BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT 0)"
   fastartifact_enabled=1
   if [[ "$node_mining_enabled" == "1" ]]; then
     case "$(env_value BDAG_STORAGE_PROFILE auto)" in
@@ -454,6 +580,11 @@ configure_env() {
   set_env_value .env BDAG_IPFS_SEGMENT_IPNS_LIFETIME "8760h"
   set_env_value .env BDAG_IPFS_SEGMENT_STATUS_FILE "./ops/runtime/ipfs-content/segment-writer-status.json"
   set_env_value .env BDAG_IPFS_SEGMENT_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
+  set_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOTS 1
+  set_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_HOURS 720
+  set_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS 64
+  set_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WORKERS 12
+  set_env_value .env BDAG_DASHBOARD_HISTORY_REBUILD_PRESERVE_ASIC_HISTORY 1
   set_env_value .env BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC 1
   set_env_value .env BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS 900
   set_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT 1
@@ -493,7 +624,45 @@ configure_env() {
     set_env_value .env BDAG_DASHBOARD_BIND "0.0.0.0"
   fi
 
-  cp .env asic-pool/.env
+}
+
+install_appliance_host_profile() {
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+  case "${BDAG_INSTALL_APPLIANCE_HOST_PROFILE:-1}" in
+    0|false|False|no|No|off|Off)
+      warn "Skipping appliance host profile because BDAG_INSTALL_APPLIANCE_HOST_PROFILE=${BDAG_INSTALL_APPLIANCE_HOST_PROFILE:-0}."
+      return 0
+      ;;
+  esac
+  if [[ ! -f scripts/install-mining-appliance-profile.sh ]]; then
+    warn "Cannot install appliance host profile: scripts/install-mining-appliance-profile.sh is missing."
+    return 0
+  fi
+  if ! command -v systemctl >/dev/null 2>&1; then
+    warn "Cannot install appliance host profile: systemctl is not available on this host."
+    return 0
+  fi
+
+  local args=()
+  if [[ "${BDAG_INSTALL_APPLIANCE_PROFILE_DISABLE_SERVICES:-0}" != "1" ]]; then
+    args+=(--no-disable-services)
+  fi
+  if [[ "${BDAG_INSTALL_APPLIANCE_PROFILE_RELOAD_DOCKER:-1}" != "1" ]]; then
+    args+=(--no-docker-reload)
+  fi
+
+  say "Installing non-destructive mining appliance host profile"
+  if bash scripts/install-mining-appliance-profile.sh "${args[@]}"; then
+    return 0
+  fi
+  if [[ "${BDAG_INSTALL_APPLIANCE_PROFILE_STRICT:-0}" == "1" ]]; then
+    echo "Appliance host profile installation failed and strict mode is enabled." >&2
+    exit 1
+  fi
+  warn "Appliance host profile installation failed. Continuing because BDAG_INSTALL_APPLIANCE_PROFILE_STRICT=0."
 }
 
 run_appliance_preflight() {
@@ -570,7 +739,7 @@ find_or_extract_chain_seed() {
 }
 
 seed_chain_data() {
-  local seed chain_base node1_dir template_dir
+  local seed chain_base node_dir template_dir
   if ! seed="$(find_or_extract_chain_seed)"; then
     warn "No separate chain-data seed found. The node will sync from configured P2P peers."
     warn "If you received chain-data parts, reassemble them first, then rerun ./install.sh."
@@ -578,39 +747,39 @@ seed_chain_data() {
   fi
 
   chain_base="$(env_path_value BDAG_CHAIN_DATA_DIR data)"
-  node1_dir="$(env_path_value BDAG_NODE1_DATA_DIR "$chain_base/node1")"
+  node_dir="$(env_path_value BDAG_NODE_DATA_DIR "$chain_base/node")"
   template_dir="$chain_base/chain-template"
   if [[ -z "$template_dir" || "$template_dir" == "/" ]]; then
     echo "Refusing unsafe chain template directory: $template_dir" >&2
     exit 1
   fi
 
-  if [[ -d "$node1_dir/mainnet/BdagChain" ]]; then
+  if [[ -d "$node_dir/mainnet/BdagChain" ]]; then
     if ! yes_no "Existing node chain data was found. Replace it from the chain seed?" "n"; then
       return 0
     fi
-    mv "$node1_dir" "$node1_dir.backup.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
-    mkdir -p "$node1_dir"
+    mv "$node_dir" "$node_dir.backup.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+    mkdir -p "$node_dir"
   fi
 
   say "Unpacking one chain seed for the configured node datadir"
   rm -rf "$template_dir"
-  mkdir -p "$template_dir" "$node1_dir"
+  mkdir -p "$template_dir" "$node_dir"
   unzip -q "$seed" -d "$template_dir"
   if [[ -d "$template_dir/chain-data" ]]; then
-    rsync -a "$template_dir/chain-data/" "$node1_dir/"
+    rsync -a "$template_dir/chain-data/" "$node_dir/"
   else
-    rsync -a "$template_dir/" "$node1_dir/"
+    rsync -a "$template_dir/" "$node_dir/"
   fi
 }
 
 publish_p2p_snapshot_archive() {
   local arch="$1"
   local bdag_bin="artifacts/binaries/linux-$arch/bdag"
-  local node1_dir source_datadir target_datadir
-  node1_dir="$(env_path_value BDAG_NODE1_DATA_DIR data/node1)"
-  source_datadir="$node1_dir/mainnet"
-  target_datadir="$node1_dir/mainnet"
+  local node_dir source_datadir target_datadir
+  node_dir="$(env_path_value BDAG_NODE_DATA_DIR data/node)"
+  source_datadir="$node_dir/mainnet"
+  target_datadir="$node_dir/mainnet"
   local source_archive="$source_datadir/snapshot.bdsnap"
   local target_archive="$target_datadir/snapshot.bdsnap"
   local force="${BDAG_P2P_SNAPSHOT_FORCE:-0}"
@@ -624,7 +793,7 @@ publish_p2p_snapshot_archive() {
     return 0
   fi
   if [[ ! -d "$source_datadir/BdagChain" ]]; then
-    warn "No seeded node1 chain DB found; the node will sync first, then use raw-datadir FastArtifact source serving after a finalized sidecar publish."
+    warn "No seeded node chain DB found; the node will sync first, then use raw-datadir FastArtifact source serving after a finalized sidecar publish."
     return 0
   fi
 
@@ -637,22 +806,128 @@ publish_p2p_snapshot_archive() {
       mv "$source_archive.tmp.manifest.json" "$source_archive.manifest.json"
     fi
   else
-    say "Existing node1 P2P snapshot archive found: $source_archive"
+    say "Existing node P2P snapshot archive found: $source_archive"
   fi
 
-  say "P2P snapshot archive available to node1"
+  say "P2P snapshot archive available to node"
 }
 
 start_stack() {
-  say "Starting BlockDAG pool stack"
+  say "Starting BlockDAG sync services"
   guard_runtime_compose
+  python3 ops/automation_control.py ensure-normal \
+    --owner release-installer \
+    --owner-unit release-install \
+    --reason "Provision default automation control before sync-only first start" >/dev/null
   if [[ "${BDAG_RELEASE_PULL_BASE_IMAGES:-0}" == "1" ]]; then
-    compose_cmd pull pool-db || true
+    compose_cmd pull postgres || true
   else
     warn "Skipping implicit image pulls. Set BDAG_RELEASE_PULL_BASE_IMAGES=1 for an explicit base-image refresh."
   fi
-  compose_cmd up -d --no-build --pull never
+  compose_cmd up -d --no-build --pull never postgres node dashboard
   compose_cmd ps
+}
+
+install_stack_support_services() {
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+  case "${BDAG_INSTALL_STACK_SUPPORT_SERVICES:-1}" in
+    0|false|False|no|No|off|Off)
+      warn "Skipping P2P/IPFS/mining-host support services because BDAG_INSTALL_STACK_SUPPORT_SERVICES=${BDAG_INSTALL_STACK_SUPPORT_SERVICES:-0}."
+      return 0
+      ;;
+  esac
+  if [[ ! -f ops/install-p2p-services.sh ]]; then
+    warn "Cannot install P2P/IPFS/mining-host support services: ops/install-p2p-services.sh is missing."
+    return 0
+  fi
+
+  say "Installing P2P, IPFS, and mining-host tuning services"
+  if bash ops/install-p2p-services.sh; then
+    return 0
+  fi
+  if [[ "${BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT:-0}" == "1" ]]; then
+    echo "Support service installation failed and strict mode is enabled." >&2
+    exit 1
+  fi
+  warn "Support service installation failed. Continuing because BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT=0."
+}
+
+discover_preserved_chain_peers() {
+  local runtime_dir manifest
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+  if [[ "${BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED:-1}" == "0" ]]; then
+    warn "Preserved chain peerstore extraction disabled by BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED=0."
+    return 0
+  fi
+  if [[ ! -f ops/update-local-peers.py ]]; then
+    warn "Cannot extract preserved chain peers: missing ops/update-local-peers.py."
+    return 0
+  fi
+  runtime_dir="$(env_path_value BDAG_RUNTIME_DIR "ops/runtime")"
+  manifest="$runtime_dir/peer-discovery-current.json"
+
+  say "Extracting sync peer candidates from preserved chain evidence"
+  if python3 ops/update-local-peers.py --env-file "$ROOT/.env" --force-apply; then
+    echo "Peer discovery manifest: $manifest"
+    if [[ -s "$runtime_dir/live-peers-current.txt" ]]; then
+      echo "TCP-open peer candidates:"
+      sed 's/^/  /' "$runtime_dir/live-peers-current.txt"
+    else
+      warn "No TCP-open peer candidates were discovered. Continue only if normal sync readiness later proves the node has peers and fresh templates."
+    fi
+  else
+    warn "Peer discovery from preserved chain evidence failed. Continue only after validating peer connectivity, sync freshness, and template health."
+  fi
+}
+
+rebuild_dashboard_plot_data() {
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+  if [[ "${BDAG_INSTALL_REBUILD_DASHBOARD_PLOTS:-1}" == "0" ]]; then
+    warn "Dashboard plot rebuild disabled by BDAG_INSTALL_REBUILD_DASHBOARD_PLOTS=0."
+    return 0
+  fi
+  if [[ ! -f ops/rebuild_dashboard_plot_history.py ]]; then
+    warn "Cannot rebuild dashboard plot data: missing ops/rebuild_dashboard_plot_history.py."
+    return 0
+  fi
+
+  local runtime_dir log_file hours window_blocks workers
+  runtime_dir="$(env_path_value BDAG_RUNTIME_DIR "ops/runtime")"
+  mkdir -p "$runtime_dir/logs"
+  log_file="$runtime_dir/logs/dashboard-rpc-history-rebuild-install.log"
+  hours="${BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_HOURS:-720}"
+  window_blocks="${BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS:-64}"
+  workers="${BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WORKERS:-12}"
+
+  say "Rebuilding dashboard Global and Wallet plot data from local chain RPC"
+  local cmd=(
+    python3 ops/rebuild_dashboard_plot_history.py
+    --install
+    --write-report
+    --hours "$hours"
+    --window-blocks "$window_blocks"
+    --workers "$workers"
+  )
+  if command -v ionice >/dev/null 2>&1; then
+    cmd=(ionice -c 3 nice -n 19 "${cmd[@]}")
+  else
+    cmd=(nice -n 19 "${cmd[@]}")
+  fi
+  if BDAG_DASHBOARD_HISTORY_REBUILD_LOG_FILE="$log_file" "${cmd[@]}" >"$log_file" 2>&1; then
+    echo "Dashboard plot rebuild complete: $log_file"
+  else
+    warn "Dashboard plot rebuild did not finish cleanly. See $log_file."
+    tail -n 40 "$log_file" >&2 || true
+  fi
 }
 
 install_dashboard() {
@@ -685,12 +960,17 @@ main() {
   arch="$(detect_arch)" || { echo "Unsupported architecture: $(uname -m)" >&2; exit 2; }
   install_packages
   init_docker_access
+  enforce_wired_route_policy
   configure_env
+  install_appliance_host_profile
   run_appliance_preflight
   load_or_build_images "$arch"
   seed_chain_data
   publish_p2p_snapshot_archive "$arch"
   start_stack
+  install_stack_support_services
+  discover_preserved_chain_peers
+  rebuild_dashboard_plot_data
   install_dashboard
   configure_miners
   say "Install complete"

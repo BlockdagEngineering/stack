@@ -22,7 +22,7 @@ Field report from the `/home/hpool` mining host on 2026-05-26.
    recovery window.
 3. A partial pre-V2 datadir could not be trusted as the final single source of
    node data after the V2 artifact import.
-4. The pool database initially lacked the `block_submissions` history table, so
+4. The postgres database initially lacked the `block_submissions` history table, so
    accepted blocks could be logged without being available to dashboard and
    earnings views.
 5. Dashboard top-level health briefly reported `syncing` while nested sync state
