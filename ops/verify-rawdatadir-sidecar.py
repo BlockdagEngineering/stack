@@ -15,7 +15,10 @@ from typing import Any
 
 
 ROOT = Path(os.environ.get("BDAG_PROJECT_ROOT") or Path(__file__).resolve().parents[1]).resolve()
-NETWORK = os.environ.get("BDAG_RAWDATADIR_NETWORK") or os.environ.get("BDAG_FASTSNAP_NETWORK") or "mainnet"
+REQUESTED_NETWORK = (os.environ.get("BDAG_RAWDATADIR_NETWORK") or os.environ.get("BDAG_FASTSNAP_NETWORK") or "mainnet").strip().lower()
+if REQUESTED_NETWORK != "mainnet":
+    raise SystemExit(f"raw datadir sidecar verifier refuses non-mainnet network: {REQUESTED_NETWORK}")
+NETWORK = "mainnet"
 
 
 def now_iso() -> str:
@@ -151,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     sidecar_dir = resolve_path(args.sidecar_dir, ROOT / "data-restore/rawdatadir-sidecar" / NETWORK)
-    source_dir = resolve_path(args.source_dir, ROOT / "data/node1" / NETWORK) if args.source_dir else None
+    source_dir = resolve_path(args.source_dir, ROOT / "data/node" / NETWORK) if args.source_dir else None
     status_file = resolve_path(args.status_file, ROOT / "ops/runtime/rawdatadir-sidecar-safe-status.json")
     payload = verify(sidecar_dir, source_dir, args.max_age_seconds)
     if not args.no_write:

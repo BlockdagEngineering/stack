@@ -14,7 +14,6 @@ BDAG_RELEASE_PAYLOAD_DOCKER_PLATFORM=""
 SNAPSHOT_URL="${BDAG_SNAPSHOT_URL:-https://bdagstack.bdagdev.xyz/latest.bdsnap}"
 SNAPSHOT_MIN_BYTES="${BDAG_SNAPSHOT_MIN_BYTES:-1048576}"
 BDAG_REQUIRE_SNAPSHOT="${BDAG_REQUIRE_SNAPSHOT:-1}"
-BDAG_RESET_NODE_DATA="${BDAG_RESET_NODE_DATA:-0}"
 BDAG_SNAPSHOT_DOWNLOADER="${BDAG_SNAPSHOT_DOWNLOADER:-curl}"
 BDAG_ARIA2_CONNECTIONS="${BDAG_ARIA2_CONNECTIONS:-8}"
 BDAG_INSTALL_ARIA2="${BDAG_INSTALL_ARIA2:-0}"
@@ -377,43 +376,6 @@ plan_orphan_container_cleanup() {
     fi
 }
 
-prepare_node_volume_for_snapshot() {
-    [[ "$SNAPSHOT_PATH" == "./latest.bdsnap" ]] || return 0
-
-    local project node_volume nodeworker_volume answer
-    project="$(compose_project_name || true)"
-    [[ -n "$project" ]] || return 0
-
-    node_volume="${project}_node-data"
-    nodeworker_volume="${project}_nodeworker-data"
-
-    if ! docker volume inspect "$node_volume" >/dev/null 2>&1; then
-        return 0
-    fi
-
-    echo ""
-    echo "Existing Docker node volume detected: ${node_volume}"
-    echo "Snapshot import happens when the node image is built. If this existing volume is kept,"
-    echo "Docker will continue using its current chain data instead of the newly imported snapshot."
-
-    if [[ "$BDAG_RESET_NODE_DATA" != "0" ]]; then
-        answer="yes"
-    else
-        answer="no"
-    fi
-
-    case "$answer" in
-        y|Y|yes|YES)
-            echo "Stopping existing stack and removing node data volumes..."
-            docker compose down || true
-            docker volume rm "$node_volume" "$nodeworker_volume" >/dev/null 2>&1 || true
-            ;;
-        *)
-            echo "BDAG_RESET_NODE_DATA=0; keeping existing node data. The downloaded snapshot will not replace this volume."
-            ;;
-    esac
-}
-
 clean_build_context_metadata() {
     # OS metadata files appear on macOS/Windows/external-volume workflows and can
     # make Docker Desktop fail or unnecessarily pollute the build context.
@@ -439,6 +401,178 @@ set_env_value() {
     fi
 }
 
+env_file_value() {
+    local file="$1" key="$2" value
+    value="$(grep -E "^${key}=" "$file" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)"
+    value="${value%\"}"
+    value="${value#\"}"
+    value="${value%\'}"
+    value="${value#\'}"
+    printf '%s\n' "$value"
+}
+
+package_path() {
+    local raw="$1"
+    raw="${raw:-./data/node}"
+    case "$raw" in
+        /*) printf '%s\n' "$raw" ;;
+        ./*) printf '%s/%s\n' "$PACKAGE_ROOT" "${raw#./}" ;;
+        *) printf '%s/%s\n' "$PACKAGE_ROOT" "$raw" ;;
+    esac
+}
+
+detect_lan_ip() {
+    local detected
+    if [[ -n "${BDAG_POOL_HOST:-}" ]]; then
+        printf '%s\n' "$BDAG_POOL_HOST"
+        return 0
+    fi
+    if command -v ip >/dev/null 2>&1 && [[ -n "${BDAG_ASIC_LAN_INTERFACE:-}" ]]; then
+        detected="$(ip -o -4 addr show dev "$BDAG_ASIC_LAN_INTERFACE" scope global 2>/dev/null \
+            | awk '{split($4,a,"/"); if (a[1] != "") {print a[1]; exit}}' || true)"
+        if [[ -n "$detected" ]]; then
+            printf '%s\n' "$detected"
+            return 0
+        fi
+    fi
+    if command -v ip >/dev/null 2>&1; then
+        detected="$(ip -o -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i=="src") {print $(i+1); exit}}' || true)"
+        if [[ -n "$detected" && ! "$detected" =~ ^127\. && ! "$detected" =~ ^169\.254\. && ! "$detected" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]]; then
+            printf '%s\n' "$detected"
+            return 0
+        fi
+        detected="$(ip -o -4 addr show scope global 2>/dev/null \
+            | awk '
+                $2 !~ /^(docker|br-|veth|zt|wg|tun|tap|tailscale)/ {
+                    split($4,a,"/")
+                    if (a[1] !~ /^127\./ && a[1] !~ /^169\.254\./ && a[1] !~ /^172\.(1[6-9]|2[0-9]|3[0-1])\./) {
+                        print a[1]
+                        exit
+                    }
+                }' || true)"
+        if [[ -n "$detected" ]]; then
+            printf '%s\n' "$detected"
+            return 0
+        fi
+        ip -o -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i=="src") {print $(i+1); exit}}' || true
+    fi
+}
+
+wired_route_policy_script() {
+    local candidate
+    for candidate in \
+        "$PACKAGE_ROOT/scripts/validate-network-route-policy.py" \
+        "$PACKAGE_ROOT/../scripts/validate-network-route-policy.py" \
+        "$PACKAGE_ROOT/validate-network-route-policy.py"; do
+        if [[ -f "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+enforce_wired_route_policy() {
+    if [[ "$OS_NAME" != "linux" ]]; then
+        return 0
+    fi
+    if [[ "${BDAG_ENFORCE_WIRED_ROUTE_POLICY:-1}" != "1" ]]; then
+        echo "Skipping wired-first route policy because BDAG_ENFORCE_WIRED_ROUTE_POLICY=${BDAG_ENFORCE_WIRED_ROUTE_POLICY:-unset}."
+        return 0
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "Warning: python3 is missing; cannot validate or apply wired-first route policy." >&2
+        return 0
+    fi
+    local script
+    script="$(wired_route_policy_script || true)"
+    if [[ -z "$script" ]]; then
+        echo "Warning: wired-first route policy script is missing from this package." >&2
+        return 0
+    fi
+    echo "=== Applying wired-first route policy ==="
+    if ! python3 "$script" --apply --warn-only; then
+        echo "Warning: wired-first route policy application failed; continuing so later checks can report the remaining network state." >&2
+    fi
+    echo ""
+}
+
+default_cidr() {
+    local ipaddr="$1"
+    if [[ "$ipaddr" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+        printf '%s.%s.%s.0/24\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+    else
+        printf '192.168.1.0/24\n'
+    fi
+}
+
+is_default_docker_bridge_address() {
+    [[ "$1" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]]
+}
+
+validate_pool_lan_config() {
+    local pool_host pool_url pool_url_host scan_target asic_cidrs allow_bridge
+    pool_host="$(env_file_value .env BDAG_POOL_HOST)"
+    pool_url="$(env_file_value .env BDAG_POOL_URL)"
+    scan_target="$(env_file_value .env BDAG_MINER_SCAN_TARGET)"
+    asic_cidrs="$(env_file_value .env BDAG_ASIC_LAN_CIDRS)"
+    allow_bridge="$(env_file_value .env BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS)"
+    allow_bridge="${allow_bridge:-0}"
+    pool_url_host="${pool_url#*://}"
+    pool_url_host="${pool_url_host%%:*}"
+    if [[ -z "$pool_host" || -z "$pool_url" || -z "$scan_target" || -z "$asic_cidrs" ]]; then
+        echo "Error: pool LAN configuration is incomplete. Set BDAG_POOL_HOST, BDAG_POOL_URL, BDAG_MINER_SCAN_TARGET, and BDAG_ASIC_LAN_CIDRS." >&2
+        exit 1
+    fi
+    if [[ "$allow_bridge" != "1" && "$allow_bridge" != "true" && "$allow_bridge" != "True" ]]; then
+        if is_default_docker_bridge_address "$pool_host" || is_default_docker_bridge_address "$pool_url_host"; then
+            echo "Error: refusing Docker bridge pool endpoint '$pool_url'. Use the host-facing ASIC LAN IP, not a 172.16.0.0/12 container address." >&2
+            exit 1
+        fi
+        if [[ "$scan_target" =~ (^|[,[:space:]])172\.(1[6-9]|2[0-9]|3[0-1])\. || "$asic_cidrs" =~ (^|[,[:space:]])172\.(1[6-9]|2[0-9]|3[0-1])\. ]]; then
+            echo "Error: refusing Docker bridge ASIC scan scope '$asic_cidrs'. Set BDAG_ASIC_LAN_CIDRS to the physical ASIC LAN." >&2
+            exit 1
+        fi
+    fi
+}
+
+prompt_with_default() {
+    local prompt="$1" default_value="$2" value
+    read -rp "$prompt [$default_value]: " value
+    printf '%s\n' "${value:-$default_value}"
+}
+
+chain_marker_exists() {
+    local network_dir="$1"
+    [[ -d "$network_dir/BdagChain" || -d "$network_dir/bdageth/chaindata" || -d "$network_dir/chaindata" ]]
+}
+
+stage_snapshot_for_node_datadir() {
+    [[ "$SNAPSHOT_PATH" == "./latest.bdsnap" && -f latest.bdsnap ]] || return 0
+
+    local node_dir network_dir target
+    node_dir="$(package_path "$(env_file_value .env BDAG_NODE_DATA_DIR)")"
+    network_dir="$node_dir/mainnet"
+    target="$network_dir/snapshot.bdsnap"
+
+    if chain_marker_exists "$network_dir"; then
+        echo "Existing chain markers found in $network_dir; preserving node data and skipping snapshot staging."
+        return 0
+    fi
+    if [[ -f "$target" && "${BDAG_REPLACE_STAGED_SNAPSHOT:-0}" != "1" ]]; then
+        echo "Existing staged node snapshot found: $target"
+        return 0
+    fi
+
+    mkdir -p "$network_dir"
+    if ln -f latest.bdsnap "$target" 2>/dev/null; then
+        echo "Staged snapshot for node datadir using hard link: $target"
+    else
+        cp -f latest.bdsnap "$target"
+        echo "Staged snapshot for node datadir: $target"
+    fi
+}
+
 if [[ "${BDAG_INSTALL_TEST_WRITE_ENV_ONLY:-0}" == "1" ]]; then
     cp .env.example .env
     set_env_value .env DOCKER_PLATFORM "$DOCKER_PLATFORM"
@@ -458,6 +592,7 @@ if [[ ! -f .env.example || ! -f node.conf.example || ! -f docker-compose.yml ]];
 fi
 
 run_release_preflight
+enforce_wired_route_policy
 
 SNAPSHOT_PATH="docker/no-snapshot.marker"
 SNAPSHOT_FILE=""
@@ -508,10 +643,18 @@ read -rsp "Pool operator private key (optional, hidden; press Enter to skip): " 
 echo ""
 
 cp .env.example .env
+DETECTED_POOL_LAN_IP="$(detect_lan_ip || true)"
+POOL_LAN_IP="$(prompt_with_default "Pool LAN IP miners should connect to" "${BDAG_POOL_HOST:-${DETECTED_POOL_LAN_IP:-192.168.1.10}}")"
+MINER_SCAN_TARGET="$(prompt_with_default "LAN scan range for ASIC discovery" "${BDAG_MINER_SCAN_TARGET:-${BDAG_ASIC_LAN_CIDRS:-$(default_cidr "$POOL_LAN_IP")}}")"
 set_env_value .env POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
 set_env_value .env MINING_POOL_ADDRESS "$MINING_ADDR"
 set_env_value .env DOCKER_PLATFORM "$DOCKER_PLATFORM"
 set_env_value .env SNAPSHOT_PATH "$SNAPSHOT_PATH"
+set_env_value .env BDAG_POOL_HOST "$POOL_LAN_IP"
+set_env_value .env BDAG_POOL_URL "stratum+tcp://$POOL_LAN_IP:3334"
+set_env_value .env BDAG_MINER_SCAN_TARGET "$MINER_SCAN_TARGET"
+set_env_value .env BDAG_ASIC_LAN_CIDRS "$MINER_SCAN_TARGET"
+validate_pool_lan_config
 if [[ -n "$POOL_PRIVATE_KEY" ]]; then
     set_env_value .env POOL_PRIVATE_KEY "$POOL_PRIVATE_KEY"
 fi
@@ -545,7 +688,7 @@ fi
 mkdir -p dashboard/logs
 
 clean_build_context_metadata
-prepare_node_volume_for_snapshot
+stage_snapshot_for_node_datadir
 plan_orphan_container_cleanup
 
 export DOCKER_DEFAULT_PLATFORM="$DOCKER_PLATFORM"
@@ -562,16 +705,20 @@ else
 fi
 
 echo ""
-echo "=== Starting services ==="
-docker compose up -d --no-build --pull never
+echo "=== Starting sync services ==="
+python3 ops/automation_control.py ensure-normal \
+    --owner release-installer \
+    --owner-unit install-unix-common \
+    --reason "Provision default automation control before sync-only first start" >/dev/null
+docker compose up -d --no-build --pull never postgres node dashboard
 
 cat <<'EOF'
 
 =================================================
-  BlockDAG Pool Stack is running.
+  BlockDAG Pool Stack sync services are running.
 =================================================
   Dashboard:  http://localhost:9280
-  Stratum:    stratum+tcp://localhost:3334
+  Stratum:    starts after chain safety gates pass
   EVM RPC:    http://localhost:18545
 
   View logs:  docker compose logs -f

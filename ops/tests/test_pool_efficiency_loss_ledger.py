@@ -51,8 +51,8 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
         source_health = {"node_mineable": False, "node_submit_ready": False, "node_p2p_mining_fresh": True}
         job_health = {"ok": False}
 
-        contradiction = pool_ops.selected_backend_readiness_contract("node1", source_health, job_health, True)
-        hard_unready = pool_ops.selected_backend_readiness_contract("node1", source_health, job_health, False)
+        contradiction = pool_ops.selected_backend_readiness_contract("node", source_health, job_health, True)
+        hard_unready = pool_ops.selected_backend_readiness_contract("node", source_health, job_health, False)
 
         self.assertTrue(contradiction["contradiction"])
         self.assertFalse(contradiction["hard_unready"])
@@ -78,6 +78,16 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
                 "template_build_error_blocking=true",
             ],
         )
+
+    def test_selected_backend_source_degradation_is_advisory_with_recent_paid_work(self) -> None:
+        advisory = pool_ops.selected_backend_source_degradation(True, True)
+        hard = pool_ops.selected_backend_source_degradation(True, False)
+
+        self.assertTrue(advisory["degraded"])
+        self.assertTrue(advisory["advisory"])
+        self.assertFalse(advisory["hard"])
+        self.assertTrue(hard["hard"])
+        self.assertFalse(hard["advisory"])
 
     def test_catchup_policy_pauses_pool_above_threshold(self) -> None:
         policy = pool_ops.build_catchup_policy(
@@ -164,10 +174,10 @@ class PoolPrometheusMetricsParsingTests(unittest.TestCase):
     def test_pool_metrics_parse_loss_ledger_and_source_health_contract_inputs(self) -> None:
         metrics = """
 pool_active_connections 5
-pool_rpc_backend_selected{backend="node1",pool_id="0"} 1
-pool_rpc_backend_healthy{backend="node1",pool_id="0"} 1
-pool_rpc_backend_node_health_mineable{backend="node1",pool_id="0"} 0
-pool_rpc_backend_node_health_submit_ready{backend="node1",pool_id="0"} 0
+pool_rpc_backend_selected{backend="node",pool_id="0"} 1
+pool_rpc_backend_healthy{backend="node",pool_id="0"} 1
+pool_rpc_backend_node_health_mineable{backend="node",pool_id="0"} 0
+pool_rpc_backend_node_health_submit_ready{backend="node",pool_id="0"} 0
 pool_job_health_ok{pool_id="0"} 0
 pool_job_health_ready_miners{pool_id="0"} 5
 pool_template_conversion_stall_active_miners{pool_id="0"} 5
@@ -176,7 +186,7 @@ pool_template_conversion_stall_window_candidates{kind="accepted",pool_id="0"} 2
 pool_template_conversion_stall_window_candidates{kind="failed",pool_id="0"} 3
 pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"} 10
 pool_block_submit_outcomes_total{outcome="rejected",pool_id="0",reason="tip-overdue"} 8
-pool_block_submit_backend_outcomes_total{backend="node1",outcome="rejected",pool_id="0",reason="tip-overdue"} 8
+pool_block_submit_backend_outcomes_total{backend="node",outcome="rejected",pool_id="0",reason="tip-overdue"} 8
 pool_blocks_found_total{pool_id="0"} 18
 pool_blocks_submitted_total{pool_id="0"} 18
 pool_blocks_rejected_by_node_total{pool_id="0",reason="tip-overdue"} 8
@@ -193,7 +203,7 @@ pool_shares_rejected_total{pool_id="0",reason="invalidated_job"} 15
 
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["active_connections"], 5)
-        self.assertEqual(payload["selected_backend"], "node1")
+        self.assertEqual(payload["selected_backend"], "node")
         self.assertFalse(payload["selected_backend_source_health"]["node_mineable"])
         self.assertEqual(payload["loss_ledger"]["severity"], "critical")
         self.assertEqual(payload["loss_ledger"]["share_outcomes"]["accepted_ratio_percent"], 25.0)

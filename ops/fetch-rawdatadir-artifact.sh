@@ -6,7 +6,12 @@ set -Eeuo pipefail
 # beside the target. This script never deletes the old datadir.
 
 PROJECT_ROOT="${BDAG_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-NETWORK="${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}"
+REQUESTED_NETWORK="${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}"
+if [[ "${REQUESTED_NETWORK,,}" != "mainnet" ]]; then
+  printf '[%s] raw datadir artifact fetch refuses non-mainnet network: %s\n' "$(date -Is)" "$REQUESTED_NETWORK" >&2
+  exit 2
+fi
+NETWORK="mainnet"
 PEERS="${BDAG_RAWDATADIR_PEERS:-${BDAG_FASTSNAP_PEERS:-}}"
 FASTSNAP_BIN="${BDAG_RAWDATADIR_FASTSNAP_BINARY:-fastsnap}"
 STAGING_BASE="${BDAG_RAWDATADIR_DOWNLOAD_BASE:-$PROJECT_ROOT/data-restore/rawdatadir-downloads}"

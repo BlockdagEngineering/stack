@@ -22,13 +22,13 @@ class RuntimeComposeMigrationTests(unittest.TestCase):
         compose = """services:
   asic-pool:
     environment:
-      NODE_RPC_URLS: http://bdag-miner-node-1:38131
+      NODE_RPC_URLS: http://node:38131
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
   asic-pool-hector:
     environment:
-      NODE_RPC_URLS: http://bdag-miner-node-1:38131
+      NODE_RPC_URLS: http://node:38131
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
-  bdag-miner-node-1:
+  node:
     environment:
       NODE_RPC_URLS: unused
 """
@@ -50,7 +50,7 @@ class RuntimeComposeMigrationTests(unittest.TestCase):
         self.assertIn(
             "  asic-pool-hector:\n"
             "    environment:\n"
-            "      NODE_RPC_URLS: http://bdag-miner-node-1:38131\n"
+            "      NODE_RPC_URLS: http://node:38131\n"
             "      POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}\n"
             "      POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}\n"
             "      POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD: ${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}\n"
@@ -61,7 +61,7 @@ class RuntimeComposeMigrationTests(unittest.TestCase):
             result.text,
         )
         self.assertNotIn(
-            "bdag-miner-node-1:\n"
+            "node:\n"
             "    environment:\n"
             "      POOL_SUBMIT_STALE_BLOCK_CANDIDATES",
             result.text,
@@ -71,7 +71,7 @@ class RuntimeComposeMigrationTests(unittest.TestCase):
         compose = """services:
   asic-pool:
     environment:
-      NODE_RPC_URLS: http://bdag-miner-node-1:38131
+      NODE_RPC_URLS: http://node:38131
       POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}
       POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}
       POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD: ${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}
@@ -88,7 +88,7 @@ class RuntimeComposeMigrationTests(unittest.TestCase):
 
     def test_missing_pool_service_is_reported_as_unmodified(self) -> None:
         compose = """services:
-  bdag-miner-node-1:
+  node:
     environment:
       NODE_RPC_URLS: unused
 """

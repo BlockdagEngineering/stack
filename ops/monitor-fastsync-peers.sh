@@ -4,9 +4,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STACK_DIR="${BDAG_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 ENV_FILE="${BDAG_POOL_ENV_FILE:-$STACK_DIR/.env}"
-if [[ ! -f "$ENV_FILE" && -f "$STACK_DIR/asic-pool/.env" ]]; then
-  ENV_FILE="$STACK_DIR/asic-pool/.env"
-fi
 STATE_DIR="$STACK_DIR/ops/runtime"
 LOG_DIR="$STATE_DIR/logs"
 STATE_FILE="$STATE_DIR/fastsync-peer-monitor-state.json"

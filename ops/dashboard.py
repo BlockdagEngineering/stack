@@ -39,6 +39,7 @@ from pool_ops import (
     normalize_mac,
     now_iso,
     read_latest_earnings_snapshot_info,
+    read_dashboard_plot_rebuild_state,
     read_valid_global_history,
     read_miner_registry,
     record_earnings_snapshot,
@@ -151,6 +152,7 @@ def attach_dashboard_endpoint(payload: dict[str, object]) -> dict[str, object]:
     if ":" in display_host and not display_host.startswith("["):
         display_host = f"[{display_host}]"
     payload["dashboard_url"] = f"http://{display_host}:{PORT}"
+    payload["dashboard_plot_rebuild"] = read_dashboard_plot_rebuild_state()
     return payload
 
 
@@ -1030,6 +1032,60 @@ HTML = r"""<!doctype html>
       min-width: 0;
     }
     .hidden { display: none; }
+    .holding-screen {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: color-mix(in srgb, var(--bg) 94%, transparent);
+    }
+    .holding-screen.active {
+      display: flex;
+    }
+    .holding-panel {
+      width: min(760px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: 0 12px 40px var(--shadow);
+      padding: 22px;
+    }
+    .holding-title {
+      margin: 0 0 6px;
+      font-size: 24px;
+      font-weight: 750;
+    }
+    .holding-progress {
+      width: 100%;
+      height: 12px;
+      background: var(--progress-bg);
+      border: 1px solid var(--line);
+      margin: 16px 0 8px;
+      overflow: hidden;
+    }
+    .holding-progress-fill {
+      width: 0%;
+      height: 100%;
+      background: var(--sync);
+      transition: width 0.25s ease;
+    }
+    .holding-grid {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      gap: 8px 14px;
+      margin-top: 16px;
+      font-size: 13px;
+    }
+    .holding-grid .label {
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .holding-grid .value {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
     .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; }
     .status-overview {
       display: grid;
@@ -1136,6 +1192,33 @@ HTML = r"""<!doctype html>
       font-size: 12px;
       line-height: 1.35;
       overflow-wrap: anywhere;
+    }
+    .mining-state {
+      margin-top: 10px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      background: var(--panel-alt);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    .mining-state .label {
+      color: var(--muted);
+      font-weight: 750;
+      margin-right: 8px;
+      text-transform: uppercase;
+    }
+    .mining-state .value {
+      color: var(--text);
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+    .mining-state.paused {
+      border-color: rgba(201, 90, 0, 0.35);
+      background: rgba(201, 90, 0, 0.08);
+    }
+    .mining-state.ready {
+      border-color: rgba(46, 125, 50, 0.35);
+      background: rgba(46, 125, 50, 0.08);
     }
     .sampler-alert {
       margin-top: 10px;
@@ -1473,6 +1556,24 @@ HTML = r"""<!doctype html>
   </script>
 </head>
 <body>
+  <div id="rebuildHoldingScreen" class="holding-screen" role="status" aria-live="polite" aria-hidden="true">
+    <div class="holding-panel">
+      <h2 class="holding-title">Rebuilding Dashboard Plot Data</h2>
+      <div class="subtle">Global production, wallet 24h earnings, and plot tiers are being rebuilt from the local chain RPC. Existing local ASIC plot rows are preserved by MAC address during upgrades.</div>
+      <div class="holding-progress" aria-label="Dashboard plot rebuild progress">
+        <div id="rebuildProgressFill" class="holding-progress-fill"></div>
+      </div>
+      <div id="rebuildProgressText" class="kpi-value">Starting...</div>
+      <div class="holding-grid">
+        <span class="label">Phase</span><span id="rebuildPhase" class="value">...</span>
+        <span class="label">Samples</span><span id="rebuildSamples" class="value">...</span>
+        <span class="label">Rows</span><span id="rebuildRows" class="value">...</span>
+        <span class="label">Errors</span><span id="rebuildErrors" class="value">...</span>
+        <span class="label">Log</span><span id="rebuildLogPath" class="value">...</span>
+        <span class="label">State</span><span id="rebuildStatePath" class="value">...</span>
+      </div>
+    </div>
+  </div>
   <header>
     <div>
       <h1>BlockDAG Pool Operations</h1>
@@ -1513,6 +1614,9 @@ HTML = r"""<!doctype html>
           </div>
         </div>
         <div class="status-reason" id="statusReason"></div>
+        <div class="mining-state" id="miningStateBox">
+          <span class="label">Mining</span><span class="value" id="syncMiningState">...</span>
+        </div>
         <div class="sync-progress">
           <div class="sync-progress-bar" title="Node EVM sync progress">
             <div class="sync-progress-fill" id="syncProgressFill"></div>
@@ -1847,6 +1951,7 @@ HTML = r"""<!doctype html>
     let globalLoaded = false;
     let lastGlobalData = null;
     let globalRefreshInFlight = false;
+    let rebuildPollTimer = null;
     const defaultServiceOrder = ["postgres", "node", "pool"];
     function text(id, value) { document.getElementById(id).textContent = value ?? ""; }
     function currentTheme() {
@@ -2000,6 +2105,54 @@ HTML = r"""<!doctype html>
       if (name === "miners") refreshEarnings();
       if (name === "global") refreshGlobal();
     }
+    function scheduleRebuildPoll(active) {
+      if (!active && rebuildPollTimer) {
+        clearTimeout(rebuildPollTimer);
+        rebuildPollTimer = null;
+        return;
+      }
+      if (!active || rebuildPollTimer) return;
+      rebuildPollTimer = setTimeout(() => {
+        rebuildPollTimer = null;
+        refresh();
+      }, 5000);
+    }
+    function renderRebuildHoldingScreen(state) {
+      const active = Boolean(state?.active);
+      const screen = document.getElementById("rebuildHoldingScreen");
+      if (!screen) return active;
+      screen.classList.toggle("active", active);
+      screen.setAttribute("aria-hidden", active ? "false" : "true");
+      scheduleRebuildPoll(active);
+      if (!active) return false;
+      const progress = firstNumeric(state.percent);
+      const done = firstNumeric(state.progress);
+      const total = firstNumeric(state.total);
+      const computedPercent = progress !== null ? progress : (done !== null && total ? (done / total) * 100 : null);
+      const bounded = computedPercent === null ? 0 : Math.max(0, Math.min(100, computedPercent));
+      const fill = document.getElementById("rebuildProgressFill");
+      if (fill) fill.style.width = `${bounded.toFixed(1)}%`;
+      text("rebuildProgressText", computedPercent === null ? "Planning rebuild..." : `${bounded.toFixed(1)}%`);
+      text("rebuildPhase", state.phase || "running");
+      const sampleBits = [];
+      if (done !== null || total !== null) sampleBits.push(`${fmt(done ?? 0)} / ${fmt(total ?? 0)} headers`);
+      if (state.sample_count !== undefined) sampleBits.push(`${fmt(state.sample_count)} dashboard samples`);
+      text("rebuildSamples", sampleBits.join(" | ") || "planning sample windows");
+      const preserved = state.preserved_asic_history || {};
+      const wallet24h = state.wallet_24h_rebuild || {};
+      const macs = Array.isArray(preserved.preserved_macs) ? preserved.preserved_macs : [];
+      const rowBits = [];
+      if (state.global_rows !== undefined) rowBits.push(`Global ${fmt(state.global_rows)}`);
+      if (state.earnings_rows !== undefined) rowBits.push(`Wallet/ASIC ${fmt(state.earnings_rows)}`);
+      if (wallet24h.annotated_rows !== undefined) rowBits.push(`24h earnings ${fmt(wallet24h.annotated_rows)}`);
+      if (preserved.preserved_mac_count !== undefined) rowBits.push(`ASIC MACs preserved ${fmt(preserved.preserved_mac_count)}`);
+      if (macs.length) rowBits.push(`MAC ${macs.slice(0, 8).join(", ")}${macs.length > 8 ? ` +${macs.length - 8}` : ""}`);
+      text("rebuildRows", rowBits.join(" | ") || "rebuilding chain-derived rows; preserving local ASIC plot history by MAC");
+      text("rebuildErrors", state.error || `fetch errors ${fmt(state.errors || 0)}${state.partial_samples !== undefined ? ` | partial samples ${fmt(state.partial_samples)}` : ""}`);
+      text("rebuildLogPath", state.log_file || "runtime rebuild log pending");
+      text("rebuildStatePath", state.path || "");
+      return true;
+    }
     async function refresh() {
       try {
         const response = await fetch("/api/status", {cache: "no-store"});
@@ -2013,6 +2166,7 @@ HTML = r"""<!doctype html>
       }
     }
     function render(data) {
+      renderRebuildHoldingScreen(data.dashboard_plot_rebuild || {});
       text("meta", data.generated_at + " | " + data.project_root + " | dashboard " + (data.dashboard_url || "unknown"));
       text("overall", data.overall);
       const catchupPolicy = data.catchup_policy || {};
@@ -2187,6 +2341,40 @@ HTML = r"""<!doctype html>
       }
       text("syncRate", syncRateText(estimate));
       text("syncEta", etaText(estimate.eta_seconds, estimate.eta_at));
+      const miningStateBox = document.getElementById("miningStateBox");
+      const chainStateBlocker = data.sync_health?.chain_state_blocker;
+      const chainStateBlockerNodes = data.sync_health?.chain_state_blocker_nodes || {};
+      const catchupPaused = Boolean(estimate.catchup_pause_active || data.catchup_policy?.active || data.mode === "catchup_pause");
+      if (chainStateBlocker) {
+        const firstBlocker = Object.values(chainStateBlockerNodes)[0] || {};
+        const blockerHash = firstBlocker.hash || "unknown block";
+        text("syncMiningState", `Stopped: node chain state is stuck on irreparable sync block ${blockerHash}. Restore or resync node data before mining.`);
+        if (miningStateBox) {
+          miningStateBox.classList.add("paused");
+          miningStateBox.classList.remove("ready");
+        }
+      } else if (catchupPaused) {
+        const lag = firstPresent(estimate.catchup_pause_lag_blocks, data.catchup_policy?.lag_blocks, remaining);
+        const pauseText = hasValue(lag)
+          ? `Paused for chain catch-up; node is ${fmt(lag)} block(s) behind peers and the pool is not mining.`
+          : "Paused for chain catch-up; the pool is not mining until the node catches up.";
+        text("syncMiningState", pauseText);
+        if (miningStateBox) {
+          miningStateBox.classList.add("paused");
+          miningStateBox.classList.remove("ready");
+        }
+      } else if (progress.status === "synced") {
+        text("syncMiningState", "Ready once backend template checks are healthy.");
+        if (miningStateBox) {
+          miningStateBox.classList.add("ready");
+          miningStateBox.classList.remove("paused");
+        }
+      } else {
+        text("syncMiningState", "Waiting for node sync before mining jobs are sent.");
+        if (miningStateBox) {
+          miningStateBox.classList.remove("paused", "ready");
+        }
+      }
       if (estimate.next_step) {
         text("syncNextStep", estimate.next_step);
       } else if (progress.status === "synced") {
@@ -2378,18 +2566,22 @@ HTML = r"""<!doctype html>
         || (miner.lane_status && miner.lane_status !== "not-tracked")
       );
     }
+    function localAsicMinerLaneRow(miner) {
+      if (!activeMinerLaneRow(miner)) return false;
+      return String(miner.device_type || "").toLowerCase() === "asic";
+    }
     function renderManagedMiners(health) {
       const tbody = document.getElementById("managedMinersTable");
       if (!tbody) return;
       tbody.innerHTML = "";
       const lane = health.lane_balance || {};
       const allRows = health.miners || [];
-      const rows = allRows.filter(activeMinerLaneRow);
+      const rows = allRows.filter(localAsicMinerLaneRow);
       const hiddenRows = Math.max(0, allRows.length - rows.length);
-      text("minerHealthSummary", `active=${fmt(rows.length)} hidden-inactive=${fmt(hiddenRows)} tracked=${fmt(health.tracked_count || 0)} connected=${fmt(health.connected_count || 0)} managed=${fmt(health.managed_count || 0)} ok=${fmt(health.ok_count || 0)} stratum=${fmt(health.stratum_count || 0)} lanes=${fmt(lane.expected_lane_count || 0)} expected=${escapeHtml(lane.expected_work_percent || "0.00")}% imbalanced=${fmt(lane.imbalanced_count || 0)}`);
+      text("minerHealthSummary", `active-asics=${fmt(rows.length)} hidden-non-asic-or-inactive=${fmt(hiddenRows)} tracked=${fmt(health.tracked_count || 0)} connected=${fmt(health.connected_count || 0)} managed=${fmt(health.managed_count || 0)} ok=${fmt(health.ok_count || 0)} stratum-hidden=${fmt(health.stratum_count || 0)} lanes=${fmt(lane.expected_lane_count || 0)} expected=${escapeHtml(lane.expected_work_percent || "0.00")}% imbalanced=${fmt(lane.imbalanced_count || 0)}`);
       if (!rows.length) {
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td colspan="14" class="subtle">No active miner lanes are currently present.</td>`;
+        tr.innerHTML = `<td colspan="14" class="subtle">No active local ASIC lanes are currently present.</td>`;
         tbody.appendChild(tr);
         return;
       }
@@ -3555,16 +3747,33 @@ HTML = r"""<!doctype html>
       const paymentWallet = data.payment_wallet_balance || data.wallet_balance || {};
       const creditWallet = data.credit_wallet_balance || data.wallet?.aggregate || null;
       const walletBdag = hasValue(paymentWallet.total_bdag) ? paymentWallet.total_bdag : (data.credit_balance_check?.actual_wallet_bdag || "n/a");
-      const avgIncomeHour = hourly.wallet_24h_avg_bdag_hour || hourly.recent_bdag_hour || hourly.tracked_avg_bdag_hour || hourly.wallet_tracked_avg_bdag_hour || hourly.wallet_avg_bdag_hour_since_pool_start || "n/a";
-      const walletAvgHour = hourly.wallet_24h_avg_bdag_hour || "n/a";
       const priceOk = data.price?.status === "ok" && data.price?.source === "exchange-average";
       const usdPrice = priceOk ? numberValue(data.price?.usd) : null;
       const zarPrice = priceOk ? numberValue(data.price?.zar) : null;
+      const wallet24hBdagValue = firstNumeric(
+        data.earnings_24h?.bdag,
+        data.earnings_24h?.db_credit_diagnostic_bdag,
+        data.credits?.recent_24h?.wallet_total_bdag,
+        data.credits?.recent_24h?.total_bdag,
+        hourly.wallet_24h_bdag
+      );
+      const wallet24hAvgValue = wallet24hBdagValue !== null ? wallet24hBdagValue / 24 : firstNumeric(hourly.wallet_24h_avg_bdag_hour);
+      const walletAvgHour = wallet24hAvgValue !== null ? wallet24hAvgValue.toFixed(2) : "n/a";
+      const avgIncomeHourValue = firstNumeric(
+        wallet24hAvgValue,
+        hourly.recent_bdag_hour,
+        hourly.tracked_avg_bdag_hour,
+        hourly.wallet_tracked_avg_bdag_hour,
+        hourly.wallet_avg_bdag_hour_since_pool_start
+      );
+      const avgIncomeHour = avgIncomeHourValue !== null ? avgIncomeHourValue.toFixed(2) : "n/a";
       const avgIncomeUsdHour = numberValue(avgIncomeHour) !== null && usdPrice !== null ? currency(numberValue(avgIncomeHour) * usdPrice, "$") : "n/a";
       const walletRecentHour = hourly.wallet_recent_bdag_hour || data.onchain_earnings?.last_1h?.earned_bdag || "n/a";
-      const wallet24hBdag = data.earnings_24h?.bdag || hourly.wallet_24h_bdag || "n/a";
-      const wallet24hUsd = currency(data.earnings_24h?.usd || data.wallet_24h_usd, "$");
-      const wallet24hZar = currency(data.earnings_24h?.zar || data.wallet_24h_zar, "R");
+      const wallet24hBdag = wallet24hBdagValue !== null ? wallet24hBdagValue.toFixed(2) : "n/a";
+      const wallet24hUsdValue = firstNumeric(data.earnings_24h?.usd, wallet24hBdagValue !== null && usdPrice !== null ? wallet24hBdagValue * usdPrice : null, data.wallet_24h_usd);
+      const wallet24hZarValue = firstNumeric(data.earnings_24h?.zar, wallet24hBdagValue !== null && zarPrice !== null ? wallet24hBdagValue * zarPrice : null, data.wallet_24h_zar);
+      const wallet24hUsd = wallet24hUsdValue !== null ? currency(wallet24hUsdValue, "$") : "n/a";
+      const wallet24hZar = wallet24hZarValue !== null ? currency(wallet24hZarValue, "R") : "n/a";
       const currentPriceUsd = priceQuote(usdPrice, "$");
       const currentPriceZar = priceQuote(zarPrice, "R");
       text("earnWalletBdag", walletBdag);
@@ -3628,10 +3837,12 @@ HTML = r"""<!doctype html>
         const identity = minerIdentity(row);
         const color = minerColor(identity);
         const name = minerDisplayLabel(row);
+        const mac = minerMac(row);
+        const identityDetail = mac ? `MAC ${mac}` : (row.device_type || "");
         tr.className = "miner-row";
         tr.style.setProperty("--miner-row-color", transparentColor(color, 0.08));
         tr.style.setProperty("--miner-color", color);
-        tr.innerHTML = `<td class="nowrap miner-name"><span class="miner-dot"></span>${escapeHtml(name)} <span class="subtle">${escapeHtml(row.device_type || "")}</span></td><td class="nowrap" title="${escapeHtml(workers)}">${escapeShortEth(workers)}${workerNote ? ` <span class="subtle">${escapeHtml(workerNote)}</span>` : ""}</td><td class="right">${fmt(row.shares)}</td><td class="right">${escapeHtml(row.work_percent)}</td><td class="right">${fmt(row.credited_blocks || 0)}</td><td class="right">${escapeHtml(row.credited_bdag_total || "0")}</td><td class="right">${fmt(row.blocks_found)}</td><td class="right">${escapeHtml(row.estimated_wallet_bdag_total || row.estimated_bdag_total || "")}</td><td class="right">${escapeHtml(row.estimated_wallet_bdag_recent_hour || row.estimated_bdag_avg_hour || row.estimated_bdag_1h || "")}</td><td class="right">${escapeHtml(row.estimated_wallet_bdag_avg_hour || row.tracked_avg_bdag_hour || "")}</td><td class="right">${currency(row.estimated_wallet_usd_total || row.estimated_usd_total, "$")}</td><td class="right">${currency(row.estimated_wallet_zar_total || row.estimated_zar_total, "R")}</td><td>${escapeHtml(row.last_share_at || "")}</td>`;
+        tr.innerHTML = `<td class="nowrap miner-name"><span class="miner-dot"></span>${escapeHtml(name)} <span class="subtle">${escapeHtml(identityDetail)}</span></td><td class="nowrap" title="${escapeHtml(workers)}">${escapeShortEth(workers)}${workerNote ? ` <span class="subtle">${escapeHtml(workerNote)}</span>` : ""}</td><td class="right">${fmt(row.shares)}</td><td class="right">${escapeHtml(row.work_percent)}</td><td class="right">${fmt(row.credited_blocks || 0)}</td><td class="right">${escapeHtml(row.credited_bdag_total || "0")}</td><td class="right">${fmt(row.blocks_found)}</td><td class="right">${escapeHtml(row.estimated_wallet_bdag_total || row.estimated_bdag_total || "")}</td><td class="right">${escapeHtml(row.estimated_wallet_bdag_recent_hour || row.estimated_bdag_avg_hour || row.estimated_bdag_1h || "")}</td><td class="right">${escapeHtml(row.estimated_wallet_bdag_avg_hour || row.tracked_avg_bdag_hour || "")}</td><td class="right">${currency(row.estimated_wallet_usd_total || row.estimated_usd_total, "$")}</td><td class="right">${currency(row.estimated_wallet_zar_total || row.estimated_zar_total, "R")}</td><td>${escapeHtml(row.last_share_at || "")}</td>`;
         minerBody.appendChild(tr);
       }
 

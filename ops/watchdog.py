@@ -17,6 +17,7 @@ from typing import Any
 
 import automation_control
 from incident_journal import append_incident
+import pool_start_gate
 from pool_ops import (
     LOG_DIR,
     NODES,
@@ -706,6 +707,20 @@ def orphan_storm_nodes(status: dict[str, Any]) -> list[str]:
     ]
 
 
+def pool_start_blocked_by_status(status: dict[str, Any]) -> tuple[bool, str]:
+    decision = pool_start_gate.pool_start_decision(status)
+    return (not decision.allowed), decision.reason
+
+
+def pool_stopped_is_only_stack_failure(stack_failures: list[Any]) -> bool:
+    if not stack_failures:
+        return False
+    return all(
+        POOL_CONTAINER in str(item) and "not running" in str(item)
+        for item in stack_failures
+    )
+
+
 def active_rpc_template_failing(status: dict[str, Any]) -> bool:
     return False
 
@@ -1047,6 +1062,16 @@ docker start "$node"
 
 def run_pool_restart(reason: str) -> bool:
     if not automation_mutation_allowed(automation_control.ACTION_ASIC_POOL_RESTART, POOL_CONTAINER, reason):
+        return False
+    gate = pool_start_gate.pool_start_decision(pool_start_gate.read_latest_status_payload())
+    if not gate.allowed:
+        log(f"pool restart blocked by pool start gate: {gate.reason}; reason={reason}")
+        record_efficiency_event(
+            "pool_restart_blocked",
+            "warning",
+            "pool restart blocked by pool start gate",
+            {"reason": reason, "blocked_reason": gate.reason, "pool_container": POOL_CONTAINER},
+        )
         return False
 
     lock_handle = acquire_lock(blocking=False)
@@ -1854,18 +1879,36 @@ def check_once(
         }
         log("stack repair suppressed during hourly snapshot: " + "; ".join(stack_failures))
     elif stack_failures:
-        state["consecutive_failures"] = int(state.get("consecutive_failures", 0) or 0) + 1
-        state["consecutive_syncing"] = 0
-        state["last_status"] = "down"
-        state["last_failures"] = stack_failures
-        log(f"stack=down consecutive={state['consecutive_failures']} failures={'; '.join(stack_failures)}")
-        record_efficiency_event(
-            "stack_down",
-            "critical",
-            "; ".join(stack_failures),
-            {"consecutive_failures": state["consecutive_failures"]},
-        )
-        if repair:
+        pool_start_blocked, pool_start_blocked_reason = pool_start_blocked_by_status(status)
+        if pool_start_blocked and pool_stopped_is_only_stack_failure(stack_failures):
+            state["consecutive_failures"] = 0
+            state["consecutive_syncing"] = 0
+            state["last_status"] = "pool_start_blocked"
+            state["last_failures"] = []
+            state["last_sync_warnings"] = [pool_start_blocked_reason]
+            log(
+                "stack start suppressed for stopped pool: "
+                f"{pool_start_blocked_reason}; failures={'; '.join(stack_failures)}"
+            )
+            record_efficiency_event(
+                "pool_start_blocked",
+                "warning",
+                f"Watchdog left {POOL_CONTAINER} stopped: {pool_start_blocked_reason}",
+                {"failures": stack_failures, "reason": pool_start_blocked_reason},
+            )
+        else:
+            state["consecutive_failures"] = int(state.get("consecutive_failures", 0) or 0) + 1
+            state["consecutive_syncing"] = 0
+            state["last_status"] = "down"
+            state["last_failures"] = stack_failures
+            log(f"stack=down consecutive={state['consecutive_failures']} failures={'; '.join(stack_failures)}")
+            record_efficiency_event(
+                "stack_down",
+                "critical",
+                "; ".join(stack_failures),
+                {"consecutive_failures": state["consecutive_failures"]},
+            )
+        if repair and not (pool_start_blocked and pool_stopped_is_only_stack_failure(stack_failures)):
             dag_tip_node = dag_tip_nodes[0] if dag_tip_nodes else ""
             if dag_tip_node and should_cleanup_dag_tips(state, dag_tip_node):
                 reason = (

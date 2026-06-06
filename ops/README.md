@@ -43,6 +43,14 @@ Default miner settings are derived from the running pool:
 
 - Pool URL: `stratum+tcp://<pool-lan-ip>:3334`
 - Worker/wallet: the `MINING_ADDRESS` in `.env`
+
+The pool LAN IP and ASIC LAN scope must be explicit in `.env`:
+`BDAG_POOL_HOST`, `BDAG_POOL_URL`, `BDAG_MINER_SCAN_TARGET`, and
+`BDAG_ASIC_LAN_CIDRS`. Dashboard code runs inside Docker, so it must not infer a
+public Stratum endpoint from its container address. Docker bridge networks
+default to `172.16.0.0/12`; those IPs are filtered from ARP/DHCP hints, miner
+scan targets, pool-log pseudo-miners, and displayed pool endpoints unless an
+operator intentionally disables the bridge filter.
 - Pool password: `1234`
 
 Managed miners are stored in:
@@ -64,13 +72,13 @@ Two checks are used for miner health:
 
 ## Earnings
 
-The Earnings tab reads the pool database for authoritative address credits, parses recent pool logs to estimate per-ASIC contribution, and records snapshots to:
+The Earnings tab reads the postgres database for authoritative address credits, parses recent pool logs to estimate per-ASIC contribution, and records snapshots to:
 
 ```text
 ops/runtime/earnings-snapshots.jsonl
 ```
 
-The pool database credits the wallet/worker address, not the ASIC IP. Per-miner earnings are therefore estimated from accepted share work in the recent pool log window. The dashboard shows estimated per-miner totals, average BDAG per hour, and a USD/ZAR bar plot when a live price is available.
+The postgres database credits the wallet/worker address, not the ASIC IP. Per-miner earnings are therefore estimated from accepted share work in the recent pool log window. The dashboard shows estimated per-miner totals, average BDAG per hour, and a USD/ZAR bar plot when a live price is available.
 
 The dashboard checks wallet balance from the local BlockDAG nodes and attempts best-effort cross-checks against public explorer/API endpoints. Some explorer endpoints may block server-side requests or may not expose an Etherscan-compatible API; those failures are shown in the Wallet Cross-Check table without stopping local monitoring.
 
@@ -124,6 +132,28 @@ miner demand is visible, an ASIC LAN neighbor is present, or the chain is synced
 and ready to mine, it starts the pool container without recreating dependencies.
 Set `BDAG_MINING_IMPERATIVE_REPAIR_ENABLED=0` only for an intentional maintenance
 window where mining must remain stopped.
+
+It also owns automatic chain-state self-heal. When status reports
+`needs_chain_data_restore`, `chain_data_restore_required`, an irreparable sync
+block, DAG tip/block damage, or repeated missing-trie state warnings, the sampler
+stops `pool` and starts `bdag-chain-state-self-heal.service`. The repair script
+quarantines damaged chain data, restores from a configured trusted source or
+snapshot, restarts `node` and `dashboard`, and leaves `pool` stopped until normal
+readiness gates make mining safe again. A stateful adjacent detector watches for
+height staying frozen while peer lag grows; after the configured sustained
+threshold it follows the same flow instead of leaving the dashboard stuck in a
+misleading syncing state.
+
+Run the chain-state self-heal manually only for an approved data repair:
+
+```bash
+BDAG_CHAIN_STATE_RESTORE_SOURCE=/path/to/known-good/mainnet \
+  ops/chain-state-self-heal.sh --force
+```
+
+For remote restores, use key-based SSH through
+`BDAG_CHAIN_STATE_RESTORE_SSH_COMMAND`; do not save passwords in `.env`,
+documentation, memory, or source.
 
 ## Thirty-Minute Mining Guard
 
@@ -326,7 +356,7 @@ Avoid exposing the dashboard directly to the public internet.
 
 The dashboard is now configurable through `ops/runtime/ops.env`, so it can be copied to another pool host or run as multiple named instances on one management machine.
 
-Create a clean bundle that excludes runtime logs, passwords, chain data, database data, snapshots, `.env`, and `asic-pool/.env`:
+Create a clean bundle that excludes runtime logs, passwords, chain data, database data, snapshots, and `.env`:
 
 ```bash
 ./ops/package-dashboard.sh

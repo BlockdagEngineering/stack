@@ -18,24 +18,24 @@ spec.loader.exec_module(eligibility)
 
 
 class FastArtifactSourceEligibilityTest(unittest.TestCase):
-    def test_active_node_defaults_to_node1(self) -> None:
-        env = {"BDAG_NODE_SERVICES": "bdag-miner-node-1", "BDAG_NODE1_DATA_DIR": "./data/node1"}
+    def test_active_node_defaults_to_node(self) -> None:
+        env = {"BDAG_NODE_SERVICES": "node", "BDAG_NODE_DATA_DIR": "./data/node"}
 
-        self.assertEqual(eligibility.active_node_service(env), "bdag-miner-node-1")
-        self.assertTrue(str(eligibility.node_data_dir(env, "bdag-miner-node-1")).endswith("data/node1"))
+        self.assertEqual(eligibility.active_node_service(env), "node")
+        self.assertTrue(str(eligibility.node_data_dir(env, "node")).endswith("data/node"))
 
     def test_empty_path_env_values_use_defaults(self) -> None:
         env = {
-            "BDAG_NODE1_DATA_DIR": "",
+            "BDAG_NODE_DATA_DIR": "",
             "BDAG_RAWDATADIR_SIDECAR_SOURCE": "",
             "BDAG_RAWDATADIR_SIDECAR_DIR": "",
             "BDAG_RAWDATADIR_ARTIFACT_BASE": "",
         }
 
-        self.assertEqual(eligibility.node_data_dir(env, "bdag-miner-node-1"), eligibility.resolve_path("./data/node1"))
+        self.assertEqual(eligibility.node_data_dir(env, "node"), eligibility.resolve_path("./data/node"))
         self.assertEqual(
-            eligibility.env_path(env, "BDAG_RAWDATADIR_SIDECAR_SOURCE", "./data/node1/mainnet"),
-            eligibility.resolve_path("./data/node1/mainnet"),
+            eligibility.env_path(env, "BDAG_RAWDATADIR_SIDECAR_SOURCE", "./data/node/mainnet"),
+            eligibility.resolve_path("./data/node/mainnet"),
         )
         self.assertEqual(
             eligibility.env_path(env, "BDAG_RAWDATADIR_SIDECAR_DIR", "./data-restore/rawdatadir-sidecar/mainnet"),
@@ -151,7 +151,7 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
         ):
             payload = eligibility.source_evm_sync_sample(
                 {
-                    "BDAG_NODE_SERVICES": "bdag-miner-node-1",
+                    "BDAG_NODE_SERVICES": "node",
                     "BDAG_RAWDATADIR_EVM_RPC_URL": "http://127.0.0.1:18545",
                     "BDAG_RAWDATADIR_EVM_REFERENCE_RPC_URLS": "reference=http://reference:18545",
                     "BDAG_RAWDATADIR_MAX_EVM_REFERENCE_LAG": "1000",
@@ -167,9 +167,9 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
             env = {
-                "BDAG_NODE_SERVICES": "bdag-miner-node-1",
-                "BDAG_NODE1_DATA_DIR": str(tmp_path / "node1"),
-                "BDAG_RAWDATADIR_SIDECAR_SOURCE": str(tmp_path / "node1" / "mainnet"),
+                "BDAG_NODE_SERVICES": "node",
+                "BDAG_NODE_DATA_DIR": str(tmp_path / "node"),
+                "BDAG_RAWDATADIR_SIDECAR_SOURCE": str(tmp_path / "node" / "mainnet"),
                 "BDAG_RAWDATADIR_SIDECAR_DIR": str(tmp_path / "sidecar"),
                 "BDAG_RAWDATADIR_ARTIFACT_BASE": str(tmp_path / "artifact"),
                 "BDAG_STORAGE_PROFILE": "single-usb-constrained",
@@ -192,9 +192,9 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
             tmp_path = Path(tmpdir)
             env = {
                 "SYNC_SOURCE_NODE": "0",
-                "BDAG_NODE_SERVICES": "bdag-miner-node-1",
-                "BDAG_NODE1_DATA_DIR": str(tmp_path / "node1"),
-                "BDAG_RAWDATADIR_SIDECAR_SOURCE": str(tmp_path / "node1" / "mainnet"),
+                "BDAG_NODE_SERVICES": "node",
+                "BDAG_NODE_DATA_DIR": str(tmp_path / "node"),
+                "BDAG_RAWDATADIR_SIDECAR_SOURCE": str(tmp_path / "node" / "mainnet"),
                 "BDAG_RAWDATADIR_SIDECAR_DIR": str(tmp_path / "sidecar"),
                 "BDAG_RAWDATADIR_ARTIFACT_BASE": str(tmp_path / "artifact"),
                 "BDAG_RAWDATADIR_MIN_FREE_GIB": "0",
@@ -215,9 +215,9 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
             env = {
                 "SYNC_SOURCE_NODE": "1",
                 "BDAG_NO_FASTSYNC_SERVE": "1",
-                "BDAG_NODE_SERVICES": "bdag-miner-node-1",
-                "BDAG_NODE1_DATA_DIR": str(tmp_path / "node1"),
-                "BDAG_RAWDATADIR_SIDECAR_SOURCE": str(tmp_path / "node1" / "mainnet"),
+                "BDAG_NODE_SERVICES": "node",
+                "BDAG_NODE_DATA_DIR": str(tmp_path / "node"),
+                "BDAG_RAWDATADIR_SIDECAR_SOURCE": str(tmp_path / "node" / "mainnet"),
                 "BDAG_RAWDATADIR_SIDECAR_DIR": str(tmp_path / "sidecar"),
                 "BDAG_RAWDATADIR_ARTIFACT_BASE": str(tmp_path / "artifact"),
                 "BDAG_RAWDATADIR_MIN_FREE_GIB": "0",
@@ -230,6 +230,29 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
 
         self.assertTrue(payload["eligible"])
         self.assertTrue(payload["sync_source_node"])
+
+    def test_non_mainnet_rawdatadir_network_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            env = {
+                "SYNC_SOURCE_NODE": "1",
+                "BDAG_FASTSNAP_NETWORK": "not-mainnet",
+                "BDAG_NODE_SERVICES": "node",
+                "BDAG_NODE_DATA_DIR": str(tmp_path / "node"),
+                "BDAG_RAWDATADIR_SIDECAR_SOURCE": str(tmp_path / "node" / "mainnet"),
+                "BDAG_RAWDATADIR_SIDECAR_DIR": str(tmp_path / "sidecar"),
+                "BDAG_RAWDATADIR_ARTIFACT_BASE": str(tmp_path / "artifact"),
+                "BDAG_RAWDATADIR_MIN_FREE_GIB": "0",
+                "BDAG_RAWDATADIR_MIN_RAM_GIB": "0",
+                "BDAG_RAWDATADIR_MIN_CPU_COUNT": "1",
+            }
+            (tmp_path / "artifact").mkdir()
+
+            payload = self._build_payload_with_safe_paths(tmp_path, env)
+
+        self.assertFalse(payload["eligible"])
+        self.assertEqual(payload["network"], "mainnet")
+        self.assertIn("non-mainnet raw datadir network is unsupported:not-mainnet", payload["reasons"])
 
     def _build_payload_with_safe_paths(self, tmp_path: Path, env: dict[str, str]) -> dict[str, object]:
         def safe_classification(name: str, path: Path) -> dict[str, object]:

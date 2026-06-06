@@ -18,6 +18,23 @@ class RawdatadirSidecarFinalizationPipelineTest(unittest.TestCase):
         self.assertIn("BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH=0 \\", script)
         self.assertIn(finalized_env, script)
 
+    def test_mutable_sidecar_preserves_open_restore_point_before_refresh(self) -> None:
+        script = (ROOT / "ops" / "maintain-rawdatadir-sidecar.sh").read_text(encoding="utf-8")
+
+        self.assertIn("OPEN_RESTORE_ENABLED=", script)
+        self.assertIn("create_open_restore_point", script)
+        self.assertLess(script.index("create_open_restore_point"), script.index('run_low_priority "${rsync_command[@]}"'))
+        self.assertIn("cp -al", script)
+        self.assertIn("bdag_open_sidecar_restore_point_v1", script)
+
+    def test_local_sidecar_copy_ignores_only_source_mode_disabled(self) -> None:
+        script = (ROOT / "ops" / "maintain-rawdatadir-sidecar.sh").read_text(encoding="utf-8")
+
+        self.assertIn("LOCAL_SIDECAR_COPY=", script)
+        self.assertIn("local_sidecar_copy_can_ignore_reasons", script)
+        self.assertIn("source_mode_disabled", script)
+        self.assertIn("raw datadir sidecar local copy continuing", script)
+
     def test_final_stopped_sync_keeps_storage_safety_but_disables_live_freshness(self) -> None:
         script = (ROOT / "ops" / "maintain-rawdatadir-sidecar.sh").read_text(encoding="utf-8")
 

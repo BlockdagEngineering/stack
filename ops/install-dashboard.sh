@@ -133,8 +133,11 @@ BDAG_NODE_RPC_URLS=node=http://127.0.0.1:38131
 BDAG_GLOBAL_CHAIN_RPC_URLS=node=http://127.0.0.1:38131
 BDAG_ENABLE_NODE_MINING=0
 SYNC_SOURCE_NODE=0
+BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED=1
+BDAG_CHAIN_PEERSTORE_LOG_TAIL=8000
 BDAG_NO_FASTSYNC_SERVE=auto
 BDAG_FASTARTIFACTSYNC_ENABLED=1
+BDAG_FASTSYNC_RANGE_BLOCKS=1024
 BDAG_FASTSYNC_PREPROCESS_WORKERS=1
 BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC=1
 BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS=900
@@ -151,6 +154,14 @@ BDAG_CATCHUP_NODE_RECREATE_ENABLED=1
 BDAG_CATCHUP_NODE_CACHE_MB=6144
 BDAG_CATCHUP_NODE_CACHE_MIN_MB=1024
 BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT=40
+BDAG_CHAIN_STATE_SELF_HEAL_ENABLED=1
+BDAG_CHAIN_STATE_SELF_HEAL_UNIT=${INSTANCE}-chain-state-self-heal.service
+BDAG_MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED=1
+BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_ENABLED=1
+BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_SECONDS=900
+BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_PEER_AHEAD_BLOCKS=1000
+BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_GAP_GROWTH_BLOCKS=60
+BDAG_CHAIN_STATE_REUSE_EXISTING_SNAPSHOT=1
 BDAG_FAST_CATCHUP_ARTIFACT_MODE=auto
 BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS=300
 BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS=1000
@@ -177,6 +188,22 @@ BDAG_DASHBOARD_EARNINGS_SAMPLER_INTERVAL_SECONDS=60
 BDAG_DASHBOARD_GLOBAL_SAMPLER_INTERVAL_SECONDS=60
 BDAG_GLOBAL_RPC_WORKERS=24
 BDAG_GLOBAL_BLOCK_WINDOW=128
+BDAG_INSTALL_REBUILD_DASHBOARD_PLOTS=1
+BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_HOURS=720
+BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS=64
+BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WORKERS=12
+BDAG_DASHBOARD_HISTORY_REBUILD_PRESERVE_ASIC_HISTORY=1
+BDAG_CONTAINER_TMPFS_SIZE=128m
+BDAG_NODE_TMPFS_SIZE=512m
+BDAG_NODE_CPU_SHARES=6144
+BDAG_POOL_CPU_SHARES=5120
+BDAG_POOL_DB_CPU_SHARES=4096
+BDAG_DASHBOARD_CPU_SHARES=128
+BDAG_NODE_MEMORY_LOW=768M
+BDAG_POOL_MEMORY_LOW=256M
+BDAG_POOL_DB_MEMORY_LOW=512M
+BDAG_DASHBOARD_MEMORY_LOW=64M
+BDAG_TUNE_NET_QDISC=1
 BDAG_MINER_SCAN_WORKERS=64
 BDAG_MINER_HASHRATE_PROBE_WORKERS=8
 BDAG_BACKGROUND_MAINTENANCE_BACKOFF_ENABLED=1
@@ -212,32 +239,6 @@ ensure_env_value() {
   fi
 }
 
-migrate_legacy_env_value() {
-  local key="$1" old="$2" value="$3" tmp
-  if ! grep -qxF "${key}=${old}" "$ENV_FILE"; then
-    return 0
-  fi
-  tmp="$(mktemp)"
-  awk -v key="$key" -v value="$value" '
-    BEGIN { prefix = key "=" }
-    index($0, prefix) == 1 { $0 = prefix value }
-    { print }
-  ' "$ENV_FILE" > "$tmp"
-  cat "$tmp" > "$ENV_FILE"
-  rm -f "$tmp"
-}
-
-migrate_legacy_env_value BDAG_POOL_ENV_FILE "$PROJECT_ROOT/asic-pool/.env" "$PROJECT_ROOT/.env"
-migrate_legacy_env_value BDAG_POOL_CONTAINER asic-pool pool
-migrate_legacy_env_value BDAG_POOL_CONTAINERS asic-pool pool
-migrate_legacy_env_value BDAG_POOL_DB_CONTAINER pool-db postgres
-migrate_legacy_env_value BDAG_NODE_SERVICES bdag-miner-node-1 node
-migrate_legacy_env_value BDAG_STACK_SERVICES "pool-db,bdag-miner-node-1,asic-pool" "postgres,node,pool"
-migrate_legacy_env_value BDAG_NODE_RPC_URLS "bdag-miner-node-1=http://bdag-miner-node-1:38131" "node=http://127.0.0.1:38131"
-migrate_legacy_env_value BDAG_NODE_RPC_URLS "node=http://node:38131" "node=http://127.0.0.1:38131"
-migrate_legacy_env_value BDAG_GLOBAL_CHAIN_RPC_URLS "bdag-miner-node-1=http://bdag-miner-node-1:38131" "node=http://127.0.0.1:38131"
-migrate_legacy_env_value BDAG_GLOBAL_CHAIN_RPC_URLS "node=http://node:38131" "node=http://127.0.0.1:38131"
-
 ensure_env_value BDAG_PROJECT_ROOT "$PROJECT_ROOT"
 ensure_env_value BDAG_RUNTIME_DIR "$RUNTIME_DIR"
 ensure_env_value BDAG_POOL_ENV_FILE "$PROJECT_ROOT/.env"
@@ -251,8 +252,11 @@ ensure_env_value BDAG_NODE_RPC_URLS "node=http://127.0.0.1:38131"
 ensure_env_value BDAG_GLOBAL_CHAIN_RPC_URLS "node=http://127.0.0.1:38131"
 ensure_env_value BDAG_ENABLE_NODE_MINING 0
 ensure_env_value SYNC_SOURCE_NODE 0
+ensure_env_value BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED 1
+ensure_env_value BDAG_CHAIN_PEERSTORE_LOG_TAIL 8000
 ensure_env_value BDAG_NO_FASTSYNC_SERVE auto
 ensure_env_value BDAG_FASTARTIFACTSYNC_ENABLED 1
+ensure_env_value BDAG_FASTSYNC_RANGE_BLOCKS 1024
 ensure_env_value BDAG_FASTSYNC_PREPROCESS_WORKERS 1
 ensure_env_value BDAG_FASTSNAP_SEED_TIMER_ENABLED 0
 ensure_env_value BDAG_RAWDATADIR_SOURCE_MODE auto
@@ -308,6 +312,14 @@ ensure_env_value BDAG_CATCHUP_NODE_RECREATE_ENABLED 1
 ensure_env_value BDAG_CATCHUP_NODE_CACHE_MB 6144
 ensure_env_value BDAG_CATCHUP_NODE_CACHE_MIN_MB 1024
 ensure_env_value BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT 40
+ensure_env_value BDAG_CHAIN_STATE_SELF_HEAL_ENABLED 1
+ensure_env_value BDAG_CHAIN_STATE_SELF_HEAL_UNIT "${INSTANCE}-chain-state-self-heal.service"
+ensure_env_value BDAG_MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED 1
+ensure_env_value BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_ENABLED 1
+ensure_env_value BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_SECONDS 900
+ensure_env_value BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_PEER_AHEAD_BLOCKS 1000
+ensure_env_value BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_GAP_GROWTH_BLOCKS 60
+ensure_env_value BDAG_CHAIN_STATE_REUSE_EXISTING_SNAPSHOT 1
 ensure_env_value BDAG_FAST_CATCHUP_ARTIFACT_MODE auto
 ensure_env_value BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS 300
 ensure_env_value BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS 1000
@@ -337,6 +349,22 @@ ensure_env_value BDAG_DASHBOARD_EARNINGS_SAMPLER_INTERVAL_SECONDS 60
 ensure_env_value BDAG_DASHBOARD_GLOBAL_SAMPLER_INTERVAL_SECONDS 60
 ensure_env_value BDAG_GLOBAL_RPC_WORKERS 24
 ensure_env_value BDAG_GLOBAL_BLOCK_WINDOW 128
+ensure_env_value BDAG_INSTALL_REBUILD_DASHBOARD_PLOTS 1
+ensure_env_value BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_HOURS 720
+ensure_env_value BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS 64
+ensure_env_value BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WORKERS 12
+ensure_env_value BDAG_DASHBOARD_HISTORY_REBUILD_PRESERVE_ASIC_HISTORY 1
+ensure_env_value BDAG_CONTAINER_TMPFS_SIZE 128m
+ensure_env_value BDAG_NODE_TMPFS_SIZE 512m
+ensure_env_value BDAG_NODE_CPU_SHARES 6144
+ensure_env_value BDAG_POOL_CPU_SHARES 5120
+ensure_env_value BDAG_POOL_DB_CPU_SHARES 4096
+ensure_env_value BDAG_DASHBOARD_CPU_SHARES 128
+ensure_env_value BDAG_NODE_MEMORY_LOW 768M
+ensure_env_value BDAG_POOL_MEMORY_LOW 256M
+ensure_env_value BDAG_POOL_DB_MEMORY_LOW 512M
+ensure_env_value BDAG_DASHBOARD_MEMORY_LOW 64M
+ensure_env_value BDAG_TUNE_NET_QDISC 1
 ensure_env_value BDAG_MINER_SCAN_WORKERS 64
 ensure_env_value BDAG_MINER_HASHRATE_PROBE_WORKERS 8
 ensure_env_value BDAG_BACKGROUND_MAINTENANCE_BACKOFF_ENABLED 1
@@ -369,6 +397,7 @@ NODE_CHILD_GUARD_TIMER="$HOME/.config/systemd/user/${INSTANCE}-node-child-guard.
 P2P_GUARD_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-p2p-guard.service"
 LOCAL_PEERS_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-local-peers.service"
 LOCAL_PEERS_TIMER="$HOME/.config/systemd/user/${INSTANCE}-local-peers.timer"
+CHAIN_STATE_SELF_HEAL_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-chain-state-self-heal.service"
 CHAIN_RESTORE_GUARD_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-chain-restore-guard.service"
 CHAIN_RESTORE_GUARD_TIMER="$HOME/.config/systemd/user/${INSTANCE}-chain-restore-guard.timer"
 CHAIN_PRESYNC_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-chain-presync.service"
@@ -377,6 +406,25 @@ HOURLY_SNAPSHOT_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-hourly-snapshot.
 HOURLY_SNAPSHOT_TIMER="$HOME/.config/systemd/user/${INSTANCE}-hourly-snapshot.timer"
 INCIDENT_REPORTER_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-incident-reporter.service"
 INCIDENT_REPORTER_TIMER="$HOME/.config/systemd/user/${INSTANCE}-incident-reporter.timer"
+
+cleanup_obsolete_user_units() {
+  local units=(
+    "${INSTANCE}-watchdog-guard.service"
+    "${INSTANCE}-watchdog-guard.timer"
+    "${INSTANCE}-miner-15min-supervisor.service"
+    "${INSTANCE}-miner-15min-supervisor.timer"
+    "${INSTANCE}-today-3asic-optimum-watch.service"
+    "${INSTANCE}-today-3asic-optimum-watch.timer"
+  )
+  local unit
+  for unit in "${units[@]}"; do
+    systemctl --user disable --now "$unit" >/dev/null 2>&1 || true
+    systemctl --user reset-failed "$unit" >/dev/null 2>&1 || true
+    rm -f "$HOME/.config/systemd/user/$unit"
+  done
+}
+
+cleanup_obsolete_user_units
 
 cat > "$DASHBOARD_SERVICE" <<EOF
 [Unit]
@@ -674,6 +722,27 @@ Unit=${INSTANCE}-local-peers.service
 WantedBy=timers.target
 EOF
 
+  cat > "$CHAIN_STATE_SELF_HEAL_SERVICE" <<EOF
+[Unit]
+Description=BlockDAG chain-state self-heal restore ($INSTANCE)
+After=default.target docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=$PROJECT_ROOT
+Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
+Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
+EnvironmentFile=-$ENV_FILE
+TimeoutStartSec=12h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=50
+IOWeight=50
+ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do docker info >/dev/null 2>&1 && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
+ExecStart=$PROJECT_ROOT/ops/chain-state-self-heal.sh --from-systemd
+EOF
+
   cat > "$CHAIN_RESTORE_GUARD_SERVICE" <<EOF
 [Unit]
 Description=BlockDAG chain restore-point freshness guard ($INSTANCE)
@@ -870,6 +939,7 @@ if [[ "$INSTALL_GUARDS" -eq 1 ]]; then
   echo "  $P2P_GUARD_SERVICE"
   echo "  $LOCAL_PEERS_SERVICE"
   echo "  $LOCAL_PEERS_TIMER"
+  echo "  $CHAIN_STATE_SELF_HEAL_SERVICE"
   echo "  $CHAIN_RESTORE_GUARD_SERVICE"
   echo "  $CHAIN_RESTORE_GUARD_TIMER"
   echo "  $CHAIN_PRESYNC_SERVICE"

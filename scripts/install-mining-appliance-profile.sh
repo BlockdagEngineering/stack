@@ -53,8 +53,17 @@ src = Path(sys.argv[1])
 dst = Path(sys.argv[2])
 desired = json.loads(src.read_text())
 current = {}
+dst.parent.mkdir(parents=True, exist_ok=True)
 if dst.exists() and dst.stat().st_size:
-    current = json.loads(dst.read_text())
+    try:
+        current = json.loads(dst.read_text())
+    except json.JSONDecodeError:
+        backup = dst.with_name(dst.name + ".invalid")
+        if backup.exists():
+            backup = dst.with_name(dst.name + f".invalid.{os.getpid()}")
+        dst.rename(backup)
+        print(f"WARNING: moved invalid Docker daemon config to {backup}", file=sys.stderr)
+        current = {}
 current.update(desired)
 tmp = dst.with_suffix(dst.suffix + ".tmp")
 tmp.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")

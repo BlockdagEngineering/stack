@@ -148,6 +148,15 @@ Normal shares must not fan out, and valid block candidates should return to the
 miner as soon as the active endpoint accepts them. Keep release defaults pinned
 to one endpoint.
 
+Installers and dashboards must publish the host-facing ASIC LAN endpoint, not a
+Docker bridge address. `BDAG_POOL_HOST`, `BDAG_POOL_URL`,
+`BDAG_MINER_SCAN_TARGET`, and `BDAG_ASIC_LAN_CIDRS` must be written during
+install/upgrade and passed into the dashboard container. Docker bridge CIDRs
+default to `172.16.0.0/12`; those addresses are infrastructure and must not be
+used as ASIC identities, miner scan targets, unmanaged miner rows, or the
+displayed Stratum endpoint unless an operator explicitly overrides the bridge
+filter for a nonstandard real ASIC LAN.
+
 Keep Issue #26 final release mitigations in
 `docs/final-release-issue-26-checklist.md` current when changing source repo
 pins, installer reset behavior, V2 sync defaults, or release packaging.
@@ -176,6 +185,13 @@ success. Keep `ops/deploy-live-runtime-update.sh` waiting for dashboard API
 recovery, fresh watchdog state when the watchdog is restarted, and running
 critical containers. If that post-deploy health gate fails, copied files must be
 rolled back from the backup manifest.
+
+After any full rebuild plus redeploy, always restart every affected stack
+container before declaring the work complete. For this mining stack that means
+`node`, `pool`, `postgres`, and `dashboard`; then verify container uptime, node
+RPC height, pool miner readiness, and accepted block-submit activity. Do not
+report a full rebuild/redeploy as complete before this restart and evidence
+exist.
 
 JSONL histories used by the dashboard should append each sample and compact only
 at a bounded threshold. Do not reintroduce full-history rewrite loops for every

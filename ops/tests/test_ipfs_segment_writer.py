@@ -76,6 +76,19 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         self.assertNotIn("signatures", index)
         self.assertNotIn("index_root", index)
 
+    def test_update_index_rejects_non_mainnet_network(self) -> None:
+        record = {
+            "segment_id": 1,
+            "start_order": 100,
+            "end_order": 399,
+            "end_hash": "0xend",
+            "manifest_cid": "baf-manifest",
+            "payload_cid": "baf-payload",
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "refuses non-mainnet"):
+            ipfs_segment_writer.update_index({}, record, {"BDAG_NETWORK": "not-mainnet"})
+
     def test_build_segment_publishes_unsigned_manifest_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             captured: dict[str, dict] = {}
@@ -292,7 +305,7 @@ class IPFSSegmentWriterTest(unittest.TestCase):
                 side_effect=AssertionError("normal publish must not publish IPNS before trusted preflight"),
             ):
                 pool_ops = mock.Mock()
-                pool_ops.mining_rpc_urls.return_value = [("node1", "http://source:38131")]
+                pool_ops.mining_rpc_urls.return_value = [("node", "http://source:38131")]
                 pool_ops.fetch_chain_order_tip.return_value = (2, "test-tip")
                 import_pool_ops.return_value = pool_ops
                 rc = ipfs_segment_writer.main(["--index", str(index)])
@@ -356,7 +369,7 @@ class IPFSSegmentWriterTest(unittest.TestCase):
                 return_value={"published": False, "reason": "disabled"},
             ):
                 pool_ops = mock.Mock()
-                pool_ops.mining_rpc_urls.return_value = [("node1", "http://source:38131")]
+                pool_ops.mining_rpc_urls.return_value = [("node", "http://source:38131")]
                 pool_ops.fetch_chain_order_tip.return_value = (2, "test-tip")
                 import_pool_ops.return_value = pool_ops
                 rc = ipfs_segment_writer.main(["--index", str(index)])
@@ -428,7 +441,7 @@ class IPFSSegmentWriterTest(unittest.TestCase):
                 return_value={"published": False, "reason": "disabled"},
             ):
                 pool_ops = mock.Mock()
-                pool_ops.mining_rpc_urls.return_value = [("node1", "http://source:38131")]
+                pool_ops.mining_rpc_urls.return_value = [("node", "http://source:38131")]
                 pool_ops.fetch_chain_order_tip.return_value = (4, "test-tip")
                 import_pool_ops.return_value = pool_ops
                 rc = ipfs_segment_writer.main(["--index", str(index)])

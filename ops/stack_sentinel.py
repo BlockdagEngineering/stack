@@ -16,6 +16,7 @@ from typing import Any
 
 import automation_control
 from incident_journal import append_incident
+import pool_start_gate
 from pool_ops import (
     LOG_DIR,
     NODES,
@@ -248,6 +249,19 @@ def start_container(service: str, reason: str, state: dict[str, Any], now: int) 
     action = automation_action_for_container(service, recreate=False)
     if not automation_mutation_allowed(action, service, reason, state, now):
         return False
+    if pool_start_gate.is_pool_target(service, POOL_CONTAINER):
+        decision = pool_start_gate.pool_start_decision(pool_start_gate.read_latest_status_payload())
+        if not decision.allowed:
+            state["pool_start_blocked_reason"] = decision.reason
+            append_incident(
+                "sentinel_pool_start_blocked",
+                "warning",
+                "stack-sentinel",
+                f"Stack sentinel left {service} stopped: {decision.reason}",
+                {"pool_container": service, "reason": decision.reason},
+            )
+            log(f"left {service} stopped by pool start gate: {decision.reason}")
+            return False
 
     log_path = LOG_DIR / f"sentinel-start-{service}-{now}.log"
     compose_target = compose_service_name(service)
@@ -282,6 +296,19 @@ def recreate_container(service: str, reason: str, state: dict[str, Any], now: in
     action = automation_action_for_container(service, recreate=True)
     if not automation_mutation_allowed(action, service, reason, state, now):
         return False
+    if pool_start_gate.is_pool_target(service, POOL_CONTAINER):
+        decision = pool_start_gate.pool_start_decision(pool_start_gate.read_latest_status_payload())
+        if not decision.allowed:
+            state["pool_start_blocked_reason"] = decision.reason
+            append_incident(
+                "sentinel_pool_start_blocked",
+                "warning",
+                "stack-sentinel",
+                f"Stack sentinel left {service} stopped: {decision.reason}",
+                {"pool_container": service, "reason": decision.reason},
+            )
+            log(f"left {service} stopped by pool start gate: {decision.reason}")
+            return False
 
     log_path = LOG_DIR / f"sentinel-recreate-{service}-{now}.log"
     compose_target = compose_service_name(service)
@@ -327,6 +354,11 @@ def notify_user(title: str, body: str) -> None:
     subprocess.run(command, env=env, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def pool_start_blocked_by_status(status: dict[str, Any] | None) -> tuple[bool, str]:
+    decision = pool_start_gate.pool_start_decision(status)
+    return (not decision.allowed), decision.reason
+
+
 def inspect_and_repair_containers(status: dict[str, Any] | None, state: dict[str, Any], now: int) -> None:
     inspected = docker_inspect(SERVICES)
     critical_services = unique_names(
@@ -340,7 +372,23 @@ def inspect_and_repair_containers(status: dict[str, Any] | None, state: dict[str
     ]
     state["stopped_containers"] = stopped
     state["restarting_containers"] = restarting
-    state["actionable_stopped_containers"] = stopped
+    pool_start_blocked, pool_start_blocked_reason = pool_start_blocked_by_status(status)
+    actionable_stopped = list(stopped)
+    if pool_start_blocked and POOL_CONTAINER in actionable_stopped:
+        actionable_stopped.remove(POOL_CONTAINER)
+        state["pool_start_blocked_reason"] = pool_start_blocked_reason
+        if should_emit(state, "pool_start_blocked", pool_start_blocked_reason, now):
+            append_incident(
+                "sentinel_pool_start_blocked",
+                "warning",
+                "stack-sentinel",
+                f"Stack sentinel left {POOL_CONTAINER} stopped: {pool_start_blocked_reason}",
+                {"pool_container": POOL_CONTAINER, "reason": pool_start_blocked_reason},
+            )
+        log(f"left {POOL_CONTAINER} stopped: {pool_start_blocked_reason}")
+    else:
+        state.pop("pool_start_blocked_reason", None)
+    state["actionable_stopped_containers"] = actionable_stopped
     if stopped and should_emit(state, "stopped_containers", ",".join(stopped), now):
         append_incident(
             "sentinel_stopped_containers",
@@ -360,7 +408,10 @@ def inspect_and_repair_containers(status: dict[str, Any] | None, state: dict[str
         if node in stopped:
             start_container(node, "node container is stopped", state, now)
     if POOL_CONTAINER in stopped:
-        start_container(POOL_CONTAINER, "ASIC pool container is stopped", state, now)
+        if pool_start_blocked:
+            log(f"skipping pool start for {POOL_CONTAINER}: {pool_start_blocked_reason}")
+        else:
+            start_container(POOL_CONTAINER, "ASIC pool container is stopped", state, now)
 
     if not status:
         return

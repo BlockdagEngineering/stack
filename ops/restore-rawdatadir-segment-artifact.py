@@ -644,6 +644,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--progress-every", type=int, default=25)
     parser.add_argument("--max-files", type=int, default=0, help="test-only limit")
     args = parser.parse_args(argv)
+    if str(args.network or "").strip().lower() != "mainnet":
+        raise RestoreError(f"raw datadir restore refuses non-mainnet network: {args.network!r}")
 
     started = time.time()
     manifest, raw = read_manifest(args)

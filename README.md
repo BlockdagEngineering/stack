@@ -51,7 +51,7 @@ The payload installer writes `.env` and `node.conf`, generates a strong Postgres
 password unless `POSTGRES_PASSWORD` is already set, downloads `latest.bdsnap`
 when needed, sets `DOCKER_PLATFORM` from the downloaded payload's
 `release-payload.env`, and runs
-`docker compose build && docker compose up -d --no-build --pull never`.
+`docker compose build && docker compose up -d --no-build --pull never postgres node dashboard`.
 
 Fresh installs assume zero miner sources. Initial install and chain sync must
 work with no ASICs or Stratum miners configured; operators can opt in to the
@@ -60,11 +60,12 @@ treat this host's five X100 devices as a release default.
 
 On macOS, the installer uses `aria2c` for faster, resumable snapshot downloads and installs it with Homebrew when missing. If that path fails, it opens a browser download link and Finder at the installer folder, then waits for `latest.bdsnap` to appear there. Browsers may still save to Downloads unless you choose the installer folder. To skip the dependency install, force curl with `BDAG_SNAPSHOT_DOWNLOADER=curl bash install.sh`; to go straight to the browser helper, use `BDAG_SNAPSHOT_DOWNLOADER=browser bash install.sh`. On Windows, the installer uses `aria2c` when available, tries to install it with `winget`, then falls back to BITS and PowerShell download.
 
-Snapshot import happens while the node image is built. If you re-run the installer against an existing Docker `node-data` volume, Docker will keep using the old volume and the newly imported snapshot will be hidden. The installer resets the local node data volume by default so the snapshot is used. To keep existing node data instead, use:
-
-```bash
-BDAG_RESET_NODE_DATA=0 bash install.sh
-```
+The installer uses host-path chain storage at `BDAG_NODE_DATA_DIR` and preserves
+existing chain data. When a valid `latest.bdsnap` is available and the configured
+node datadir has no chain markers, the installer stages that snapshot into the
+host datadir so the container can import it on first start. To replace existing
+chain data, stop the stack and move the configured datadir aside deliberately
+before running the installer.
 
 If the default snapshot host is unavailable, point the installer at the snapshot URL you want to use:
 
@@ -113,10 +114,10 @@ services win contention without reserving or wasting idle CPU:
 
 | Service | CPU shares | Block IO weight | OOM score | Reason |
 | --- | ---: | ---: | ---: | --- |
-| `node` | `4096` | `1000` | `-900` | Block templates, validation, and P2P propagation are consensus-critical. |
-| `pool` | `3072` | `900` | `-800` | ASIC submits must reach the selected node with the lowest possible tail latency. |
-| `postgres` | `3072` | `900` | `-800` | Accounting writes matter, but source code keeps them off the solved-block submit path. |
-| `dashboard` | `256` | `100` | `300` | Operator visibility must not compete with paid block production. |
+| `node` | `6144` | `1000` | `-900` | Block templates, validation, and P2P propagation are consensus-critical. |
+| `pool` | `5120` | `950` | `-800` | ASIC submits must reach the selected node with the lowest possible tail latency. |
+| `postgres` | `4096` | `950` | `-800` | Accounting writes matter, but source code keeps them off the solved-block submit path. |
+| `dashboard` | `128` | `100` | `300` | Operator visibility must not compete with paid block production. |
 
 Do not replace these weights with hard CPU quotas or realtime priority unless a
 profile proves normal cgroup weighting is insufficient. The goal is maximum paid
@@ -160,10 +161,19 @@ receiver or remote node is inside that window, start it and let normal P2P or
 Fast Artifact Sync catch the tail. Do not recopy solely to reduce an
 already-acceptable lag.
 
-Old installations may still contain legacy address-bucket variable names.
-`ops/update-local-peers.py` treats them only as migration input, normalizes
-complete P2P multiaddrs into `BDAG_FASTSYNC_PEERS`, and clears the bucket
-values. Do not add new LAN, VPN, or public sync options.
+During upgrades, `ops/update-local-peers.py` imports any existing
+address-bucket values only long enough to normalize complete P2P multiaddrs
+into `BDAG_FASTSYNC_PEERS`, then clears those bucket values. Do not add new LAN,
+VPN, or public sync options.
+
+Upgrades that keep existing chain data should also mine that data for peer
+evidence. After the node starts, the release installer runs
+`ops/update-local-peers.py --force-apply`, parses preserved chain peerstore
+startup logs, probes candidate multiaddrs for TCP reachability, writes
+`ops/runtime/peer-discovery-current.json`, and applies the resulting
+`BDAG_FASTSYNC_PEERS` to the active single node. TCP-open status is only a
+bootstrap hint; install completion and mining readiness still require normal
+peer handshakes, sync freshness, RPC health, and template checks.
 
 ## Fast Artifact Sync V2 Directory Mode
 
@@ -210,9 +220,9 @@ mining bypass flags; readiness gates must fail closed until node sync and P2P
 freshness are healthy. The dashboard,
 watchdog, stack sentinel, P2P guard, peer refresh, chain restore guard, and
 snapshot timers are installed by `ops/install-dashboard.sh` unless explicitly
-disabled. Runtime tooling defaults to the current single-node stack names
-`node`, `pool`, and `postgres`, while retaining compatibility with legacy
-Compose labels during migration.
+disabled. Runtime tooling uses the current stack service names: `node`, `pool`,
+and `postgres`. Concrete Compose container names may include project and ordinal
+suffixes.
 
 Catch-up has priority over mining when a production node is I/O-bound while it
 is behind peers or while the selected backend is not mineable/submit-ready.
@@ -252,6 +262,21 @@ Docker, node RPC, pool metrics, and miner state while the node is catching up.
 Direct repair diagnostics can still force a live collection with
 `max_age_seconds=0`.
 
+If a node stops importing while peers continue advancing, the dashboard must not
+describe the state as ordinary catch-up. Node logs that contain `Irreparable
+error`, `Not DAG block`, DAG tip/block damage, or repeated `missing trie node`
+warnings are chain-data restore triggers. The status sampler fails mining closed,
+starts the one-shot `${INSTANCE}-chain-state-self-heal.service`, and the script
+`ops/chain-state-self-heal.sh` quarantines the damaged node datadir, restores
+from `BDAG_CHAIN_STATE_RESTORE_SOURCE` or `BDAG_CHAIN_STATE_RESTORE_SNAPSHOT`,
+restarts `node` and `dashboard` with `--no-build --pull never`, and leaves
+`pool` stopped until readiness gates pass. A softer adjacent detector records
+sustained stuck height while peer lag grows; by default it requires 900 seconds,
+at least 1000 blocks of peer lead, and 60 blocks of gap growth before it triggers
+the same fail-closed self-heal flow. Remote restore sources should use key-based
+SSH via `BDAG_CHAIN_STATE_RESTORE_SSH_COMMAND`; do not put passwords in source or
+checked-in env files.
+
 The Pi5 release builder marks generated runtime compose files with
 `BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1` and rejects `build:`/`dockerfile:`
 entries in runtime packages. Runtime starts use `--no-build --pull never` by
@@ -281,12 +306,21 @@ explicitly. The field report behind these checks is in
 `docs/t430-appliance-hardening.md`.
 
 Mining hosts install `bdag-mining-host-tuning.service` and timer through
-`ops/install-p2p-services.sh`. The tuning script discovers the active Compose
-containers, raises node/pool/Postgres CPU and block I/O weights, applies
-process `nice`/`ionice`, writes cgroup v2 `memory.low` protection, and keeps the
-default network interface on `fq_codel`. The policy is safe to reapply and uses
-the `BDAG_*_CPU_SHARES`, `BDAG_*_MEMORY_LOW`, and `BDAG_TUNE_NET_QDISC` knobs
-from `.env`.
+`ops/install-p2p-services.sh`; fresh release installs run that support-service
+installer after the stack starts. The release installer also applies
+`scripts/install-mining-appliance-profile.sh` in non-destructive mode by
+default, which installs sysctl/tmpfiles/Docker log defaults and a recurring
+runtime-priority timer without masking common background services unless
+`BDAG_INSTALL_APPLIANCE_PROFILE_DISABLE_SERVICES=1` is set. The tuning script
+discovers the active Compose containers, raises node/pool/Postgres CPU and
+block I/O weights, applies process `nice`/`ionice`, writes cgroup v2
+`memory.low` protection, and keeps selected host interfaces on `fq_codel` when
+`tc` is available. Docker does not provide a portable per-container network
+priority control in this release path; network protection is host qdisc tuning
+plus keeping mining-critical process, CPU, and disk I/O scheduling ahead of
+dashboard and maintenance work. The policy is safe to reapply and uses the
+`BDAG_*_CPU_SHARES`, `BDAG_*_MEMORY_LOW`, and `BDAG_TUNE_NET_QDISC` knobs from
+`.env`.
 
 The release builder also runs `scripts/verify-release-architecture.py` before
 image assembly so ARM64 packages cannot silently receive AMD64 binaries; the
@@ -298,8 +332,9 @@ of truth, normally exposed on `BDAG_DASHBOARD_PORT`/`8088`. Its tabs separate
 pool status, miners, earnings, and global chain production, and each global
 production view must be sourced from native BlockDAG chain RPC
 `getBlockCount`/ordered block/coinbase calls. EVM RPC belongs to wallet balance
-views only. The Compose dashboard on `DASHBOARD_HOST_PORT`/`9280` is a legacy
-lightweight chart and must not be treated as the authoritative mining dashboard.
+views only. The packaged web dashboard on `DASHBOARD_HOST_PORT`/`9280` is a
+diagnostic chart view and must not be treated as the authoritative mining
+dashboard.
 
 When testing directly from a source checkout, start the Python operations
 dashboard with environment that matches the actual container names for the stack
@@ -370,9 +405,17 @@ service; leave `COMPOSE_PROFILES` empty to disable it.
 Once everything is running:
 
 - Operations dashboard, authoritative interface: `http://localhost:8088`
-- Legacy lightweight chart, non-authoritative diagnostics only: `http://localhost:9280`
+- Diagnostic chart view, non-authoritative: `http://localhost:9280`
 - Mining pool Stratum endpoint: `stratum+tcp://localhost:3334`
 - RPC endpoint: `http://localhost:38131`
+
+For ASIC deployments, the installer records the host-facing pool address and
+ASIC LAN scope in `.env` as `BDAG_POOL_HOST`, `BDAG_POOL_URL`,
+`BDAG_MINER_SCAN_TARGET`, and `BDAG_ASIC_LAN_CIDRS`. The dashboard and repair
+tools use those values instead of guessing from inside Docker. Docker bridge
+networks default to `172.16.0.0/12` and are filtered from ASIC discovery and
+displayed Stratum endpoints; seeing `172.*` as a miner IP or pool endpoint is a
+configuration failure, not a valid physical miner.
 
 ## Default V2 Sync Source
 
@@ -388,8 +431,8 @@ The artifact publisher does not stop the live node automatically. Set
 `BDAG_RAWDATADIR_FINALIZE=1` only for an operator-approved
 finalization window.
 
-The old archive seed timer has been removed because IPFS segments and finalized
-raw-datadir sidecars now own source publication.
+The archive seed timer is not part of this stack because IPFS segments and
+finalized raw-datadir sidecars now own source publication.
 
 Check source eligibility and status with:
 
@@ -406,9 +449,9 @@ Refresh/publish the raw datadir source path with:
 See `docs/rawdatadir-libp2p-sync.md` and
 `docs/ipfs-append-only-segment-protocol.html`.
 
-The retired archive-seed script is no longer part of this stack. IPFS segments
-and finalized raw-datadir sidecars are the supported content-publication paths.
-Published files must be manifest-indexed and consensus-validated before use.
+IPFS segments and finalized raw-datadir sidecars are the supported
+content-publication paths. Published files must be manifest-indexed and
+consensus-validated before use.
 
 ## Release readiness
 

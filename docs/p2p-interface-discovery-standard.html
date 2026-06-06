@@ -70,6 +70,11 @@
         <p class="good">P2P multiaddrs only</p>
         <p>Known sync peers must be supplied through <code>BDAG_FASTSYNC_PEERS</code> as complete P2P multiaddrs. Legacy address-bucket variables are migration input only and must be normalized away.</p>
       </article>
+      <article class="card">
+        <p class="label">Upgrade peerstore</p>
+        <p class="good">Preserved chain evidence</p>
+        <p>Upgrade installs parse preserved chain startup logs, write a peer discovery manifest, and apply TCP-open candidates before miner setup.</p>
+      </article>
     </section>
 
     <h2>Firewall Contract</h2>
@@ -85,9 +90,10 @@ systemctl enable --now bdag-p2p-firewall.service</pre>
         <tr><th>Source</th><th>Purpose</th></tr>
       </thead>
       <tbody>
-        <tr><td><code>/dns4/bdag-miner-node-1</code></td><td>Stable same-compose node path that does not depend on host interface state.</td></tr>
+        <tr><td><code>/dns4/node</code></td><td>Stable same-compose node path that does not depend on host interface state.</td></tr>
         <tr><td>Complete P2P multiaddrs</td><td>Only sync candidate format; every candidate must include a peer ID.</td></tr>
         <tr><td><code>BDAG_FASTSYNC_PEERS</code></td><td>Operator-supplied sync candidates for FastArtifact probing.</td></tr>
+        <tr><td><code>ops/runtime/peer-discovery-current.json</code></td><td>Installer/watchdog evidence file showing candidate sources and TCP-open probes from preserved chain peerstore logs and configured peers.</td></tr>
         <tr><td>Measured P2P usefulness</td><td>P2P ping, manifest response, chunk response, artifact availability, and sustained transfer determine source quality.</td></tr>
       </tbody>
     </table>

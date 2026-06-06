@@ -66,7 +66,7 @@ Default host:
 1. Keep a local sidecar copy close to tip:
 
 ```bash
-BDAG_RAWDATADIR_SIDECAR_SOURCE=./data/node1/mainnet \
+BDAG_RAWDATADIR_SIDECAR_SOURCE=./data/node/mainnet \
 BDAG_RAWDATADIR_SIDECAR_DIR=./data-restore/rawdatadir-sidecar/mainnet \
 ./ops/maintain-rawdatadir-sidecar.sh
 ```
@@ -168,7 +168,7 @@ Fetch and install into a stopped receiver datadir:
 ```bash
 BDAG_RAWDATADIR_PEERS='/ip4/10.0.0.5/tcp/8151/p2p/16U...' \
 BDAG_RAWDATADIR_TRUSTED_SIGNERS='ops-rawdatadir:<ed25519-public-key-hex>' \
-BDAG_RAWDATADIR_IMPORT_TARGET=./data/node1/mainnet \
+BDAG_RAWDATADIR_IMPORT_TARGET=./data/node/mainnet \
 BDAG_RAWDATADIR_IMPORT_REPLACE=1 \
 ./ops/fetch-rawdatadir-artifact.sh
 ```

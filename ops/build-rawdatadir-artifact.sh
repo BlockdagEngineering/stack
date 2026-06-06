@@ -10,7 +10,12 @@ ENV_FILE="${BDAG_ENV_FILE:-$PROJECT_ROOT/.env}"
 COMPOSE_FILE="${BDAG_COMPOSE_FILE:-$PROJECT_ROOT/docker-compose.yml}"
 ARTIFACT_BASE="${BDAG_RAWDATADIR_ARTIFACT_BASE:-$PROJECT_ROOT/data-restore/rawdatadir}"
 ARTIFACT_KEEP="${BDAG_RAWDATADIR_ARTIFACT_KEEP:-3}"
-NETWORK="${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}"
+REQUESTED_NETWORK="${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}"
+if [[ "${REQUESTED_NETWORK,,}" != "mainnet" ]]; then
+  printf '[%s] raw datadir artifact builder refuses non-mainnet network: %s\n' "$(date -Is)" "$REQUESTED_NETWORK" >&2
+  exit 2
+fi
+NETWORK="mainnet"
 CHAIN_ID="${BDAG_RAWDATADIR_CHAIN_ID:-1404}"
 NODE_IMAGE="${BDAG_RAWDATADIR_NODE_IMAGE:-${BDAG_FASTSNAP_NODE_IMAGE:-${BLOCKDAG_NODE_IMAGE:-}}}"
 FASTSNAP_BIN="${BDAG_RAWDATADIR_FASTSNAP_BINARY:-}"
@@ -85,9 +90,6 @@ resolve_node_image() {
   fi
   local image_id
   image_id="$(compose images -q node 2>/dev/null | head -n1 || true)"
-  if [[ -z "$image_id" ]]; then
-    image_id="$(compose images -q bdag-miner-node-1 2>/dev/null | head -n1 || true)"
-  fi
   if [[ -n "$image_id" ]]; then
     printf '%s\n' "$image_id"
     return
@@ -345,10 +347,9 @@ if [[ -n "$SOURCE_DIR" ]]; then
     log "source dir does not look like a $NETWORK datadir: $SOURCE_MAINNET"
     exit 1
   fi
-  LIVE_NODE1_MAINNET="$(readlink -m "${BDAG_RAWDATADIR_NODE1_DATADIR:-$PROJECT_ROOT/data/node1}/$NETWORK")"
   LIVE_NODE_MAINNET="$(readlink -m "${BDAG_RAWDATADIR_NODE_DATADIR:-$PROJECT_ROOT/data/node}/$NETWORK")"
   SOURCE_MAINNET_REAL="$(readlink -m "$SOURCE_MAINNET")"
-  if [[ "${BDAG_RAWDATADIR_ALLOW_LIVE_SOURCE:-0}" != "1" && ( "$SOURCE_MAINNET_REAL" == "$LIVE_NODE1_MAINNET" || "$SOURCE_MAINNET_REAL" == "$LIVE_NODE_MAINNET" ) ]]; then
+  if [[ "${BDAG_RAWDATADIR_ALLOW_LIVE_SOURCE:-0}" != "1" && "$SOURCE_MAINNET_REAL" == "$LIVE_NODE_MAINNET" ]]; then
     log "refusing raw datadir artifact from live node datadir: $SOURCE_MAINNET_REAL"
     log "use ops/publish-rawdatadir-artifact.sh to refresh/finalize a sidecar first"
     exit 1

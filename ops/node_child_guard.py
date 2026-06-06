@@ -20,7 +20,7 @@ LOG_DIR = RUNTIME_DIR / "logs"
 STATE_FILE = RUNTIME_DIR / "node-child-guard-state.json"
 LOCK_FILE = RUNTIME_DIR / "node-child-guard.lock"
 LOG_FILE = LOG_DIR / "node-child-guard.log"
-DEFAULT_NODE_CHILD_GUARD_NODES = "node,bdag-miner-node-1"
+DEFAULT_NODE_CHILD_GUARD_NODES = "node"
 
 
 def default_pool_env_file() -> Path:

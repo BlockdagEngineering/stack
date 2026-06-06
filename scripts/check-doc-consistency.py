@@ -10,9 +10,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 RELEASE_DOWNLOADS = ROOT / "release-downloads" / "index.html"
-INSTALL_COMMAND = "docker compose build && docker compose up -d --no-build --pull never"
+INSTALL_COMMAND = "docker compose build && docker compose up -d --no-build --pull never postgres node dashboard"
 INSTALL_COMMAND_HTML = INSTALL_COMMAND.replace("&", "&amp;")
-STALE_INSTALL_RE = re.compile(r"docker compose build (?:&&|&amp;&amp;) docker compose up -d(?! --no-build --pull never)")
+STALE_INSTALL_RE = re.compile(
+    r"docker compose build (?:&&|&amp;&amp;) docker compose up -d --no-build --pull never(?! postgres node dashboard)"
+)
 
 
 def fail(message: str) -> None:

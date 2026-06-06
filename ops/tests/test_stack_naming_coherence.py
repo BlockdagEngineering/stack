@@ -16,7 +16,7 @@ class StackNamingCoherenceTests(unittest.TestCase):
         compose = read("docker-compose.yml")
 
         self.assertNotIn("container_name:", compose)
-        self.assertIn("  pool-db:", compose)
+        self.assertIn("  postgres:", compose)
         self.assertIn("  node:", compose)
         self.assertIn("  pool:", compose)
         self.assertIn("BDAG_NODE_SERVICES: node", compose)
@@ -46,6 +46,7 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("POOL_GBT_PRESSURE_WINDOW_SECONDS=10", env_example)
         self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS=15", env_example)
         self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS=30", env_example)
+        self.assertIn("BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED=1", env_example)
         self.assertIn("NODE_RPC_URLS=http://node:38131", env_example)
         self.assertIn("NODE_RPC_URLS=http://127.0.0.1:38131", portable)
 
@@ -57,13 +58,11 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("BDAG_DASHBOARD_STATUS_CACHE_SECONDS=120", installer)
         self.assertIn("BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS=120", installer)
         self.assertIn("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=120", installer)
+        self.assertIn("BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED=1", installer)
         self.assertIn("ensure_env_value BDAG_STACK_SERVICES \"postgres,node,pool\"", installer)
+        self.assertIn("ensure_env_value BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED 1", installer)
         self.assertIn("ensure_env_value BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS 120", installer)
         self.assertIn("ensure_env_value BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK 0", installer)
-        self.assertIn(
-            'migrate_legacy_env_value BDAG_STACK_SERVICES "pool-db,bdag-miner-node-1,asic-pool" "postgres,node,pool"',
-            installer,
-        )
 
     def test_release_installer_generates_current_runtime_topology(self) -> None:
         compose = read("docker-compose.yml")
@@ -71,7 +70,7 @@ class StackNamingCoherenceTests(unittest.TestCase):
 
         self.assertIn("  pool:", compose)
         self.assertIn("  node:", compose)
-        self.assertIn("  pool-db:", compose)
+        self.assertIn("  postgres:", compose)
         self.assertNotIn("container_name:", compose)
         self.assertIn("NODE_RPC_URLS: ${NODE_RPC_URLS:-http://node:38131}", compose)
         self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool", compose)
@@ -87,7 +86,7 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("set_env_value .env POOL_GBT_PRESSURE_INTERVAL_MS 500", installer)
         self.assertIn("set_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS 15", installer)
 
-    def test_watchdogs_default_to_current_names_with_legacy_compatibility(self) -> None:
+    def test_watchdogs_default_to_current_names(self) -> None:
         pool_ops = read("ops/pool_ops.py")
         sampler = read("ops/status_sampler.py")
         node_guard = read("ops/node_child_guard.py")
@@ -99,8 +98,8 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn('NODES = split_env_list("BDAG_NODE_SERVICES", "node")', pool_ops)
         self.assertIn('"postgres,node,pool"', pool_ops)
         self.assertIn('config_value("BDAG_NODE_SERVICES", "node")', sampler)
-        self.assertIn('DEFAULT_NODE_CHILD_GUARD_NODES = "node,bdag-miner-node-1"', node_guard)
-        self.assertIn('DEFAULT_NODE_CHILD_GUARD_NODES = "node,bdag-miner-node-1"', host_guard)
+        self.assertIn('DEFAULT_NODE_CHILD_GUARD_NODES = "node"', node_guard)
+        self.assertIn('DEFAULT_NODE_CHILD_GUARD_NODES = "node"', host_guard)
         self.assertIn("blockdag-node", node_guard)
         self.assertIn("blockdag-node", host_guard)
         self.assertIn('DEFAULT_ACTIVE_NODE_SERVICES = ["node"]', peer_refresh)

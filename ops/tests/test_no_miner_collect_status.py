@@ -52,12 +52,32 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             setattr(pool_ops, name, value)
         pool_ops.time.time = self.old_time
 
+    def test_node_log_irreparable_sync_block_is_chain_state_blocker(self) -> None:
+        log = "\n".join(
+            [
+                "2026-06-05|05:49:27.543 [INFO ] Syncing graph state module=SYNC cur=(10033359,7876980,7885776,10106135,1) target=(10051752,7882760,7891667,10089568,2)",
+                "2026-06-05|05:49:29.401 [ERROR] Not DAG block:0x96189eff2f19849e6b8cb34f207718bf4603a28489a50df85931f1768fb048be module=DAG",
+                "2026-06-05|05:49:29.401 [ERROR] Failed to process block:hash=0x96189eff2f19849e6b8cb34f207718bf4603a28489a50df85931f1768fb048be err=Irreparable error![0x96189eff2f19849e6b8cb34f207718bf4603a28489a50df85931f1768fb048be] module=SYNC processID=1",
+                "2026-06-05|05:49:31.515 [WARN ] Served eth_getBalance err=\"missing trie node b48ba7aceb59341ed40c9cd5d086f06d6ebc73213392efa8e94b885c1e9a9481 (path ) state 0xb48ba7aceb59341ed40c9cd5d086f06d6ebc73213392efa8e94b885c1e9a9481 is not available\"",
+            ]
+        )
+
+        parsed = pool_ops.parse_node_log(log)
+
+        self.assertTrue(parsed["chain_state_blocker"])
+        self.assertEqual(
+            parsed["chain_state_blocker_hash"],
+            "0x96189eff2f19849e6b8cb34f207718bf4603a28489a50df85931f1768fb048be",
+        )
+        self.assertTrue(parsed["critical"])
+        self.assertEqual(parsed["missing_trie_node_warnings"], 1)
+
     def test_no_miner_status_suppresses_template_and_rpc_noise(self) -> None:
         now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()
         pool_ops.time.time = lambda: now
-        pool_ops.NODES = ["bdag-miner-node-1"]
+        pool_ops.NODES = ["node"]
         pool_ops.OBSERVER_NODES = []
-        pool_ops.STACK_SERVICES = ["pool-db", "bdag-miner-node-1", "asic-pool", "asic-pool"]
+        pool_ops.STACK_SERVICES = ["postgres", "node", "asic-pool", "asic-pool"]
         pool_ops.SERVICES = list(pool_ops.STACK_SERVICES)
         pool_ops.POOL_CONTAINER = "asic-pool"
         pool_ops.POOL_CONTAINERS = ["asic-pool"]
@@ -110,7 +130,7 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             "generated_at": "2026-05-25T12:00:00+0000",
             "status": "ok",
             "active_connections": 0,
-            "selected_backend": "node1",
+            "selected_backend": "node",
             "source_job_health": {},
             "source_backend_health": {},
             "selected_backend_source_health": {},
@@ -133,13 +153,13 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             "source": "nodes",
             "error": "",
             "nodes": {
-                "bdag-miner-node-1": {
+                "node": {
                     "status": "synced",
                     "percent": 100.0,
                     "current_block": 8_658_598,
                     "highest_block": 8_658_598,
                     "remaining_blocks": 0,
-                    "source": "bdag-miner-node-1",
+                    "source": "node",
                     "error": "",
                     "chain_block_count": 8_658_598,
                     "chain_main_height": 7_001_831,
@@ -168,8 +188,8 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertTrue(status["pool_health"]["rpc_refused_raw"])
         self.assertTrue(status["rpc_template_health"]["suppressed_for_no_miners"])
         self.assertEqual(status["rpc_template_health"]["suppressed_reason"], "no managed or connected miners")
-        self.assertEqual(status["nodes"]["bdag-miner-node-1"]["template_probe_sample_count"], 0)
-        self.assertFalse(status["nodes"]["bdag-miner-node-1"]["template_probe_failing"])
+        self.assertEqual(status["nodes"]["node"]["template_probe_sample_count"], 0)
+        self.assertFalse(status["nodes"]["node"]["template_probe_failing"])
         self.assertEqual(status["sync_warnings"], [])
         joined_warnings = "\n".join(status["warnings"])
         self.assertNotIn("live mining template probes", joined_warnings)
@@ -198,9 +218,9 @@ class NoMinerCollectStatusTests(unittest.TestCase):
     def test_recent_paid_work_keeps_template_probe_noise_advisory_during_sync_progress(self) -> None:
         now = datetime(2026, 5, 27, 8, 30, 0, tzinfo=timezone.utc).timestamp()
         pool_ops.time.time = lambda: now
-        pool_ops.NODES = ["bdag-miner-node-1"]
+        pool_ops.NODES = ["node"]
         pool_ops.OBSERVER_NODES = []
-        pool_ops.STACK_SERVICES = ["pool-db", "bdag-miner-node-1", "asic-pool", "asic-pool"]
+        pool_ops.STACK_SERVICES = ["postgres", "node", "asic-pool", "asic-pool"]
         pool_ops.SERVICES = list(pool_ops.STACK_SERVICES)
         pool_ops.POOL_CONTAINER = "asic-pool"
         pool_ops.POOL_CONTAINERS = ["asic-pool"]
@@ -269,7 +289,7 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             "generated_at": "2026-05-27T08:30:00+0000",
             "cached": False,
             "nodes": {
-                "bdag-miner-node-1": {
+                "node": {
                     "sample_count": 1,
                     "ok_count": 0,
                     "error_count": 1,
@@ -286,14 +306,14 @@ class NoMinerCollectStatusTests(unittest.TestCase):
                 "failing": True,
                 "last_error": "timed out",
             },
-            "failing_nodes": ["bdag-miner-node-1"],
+            "failing_nodes": ["node"],
             "all_nodes_failing": True,
         }
         pool_ops.collect_pool_prometheus_metrics = lambda _containers: {
             "generated_at": "2026-05-27T08:30:00+0000",
             "status": "ok",
             "active_connections": 1.0,
-            "selected_backend": "node1",
+            "selected_backend": "node",
             "source_job_health": {"ok": True, "authorized_miners": 1, "ready_miners": 1},
             "source_backend_health": {},
             "selected_backend_source_health": {
@@ -326,13 +346,13 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             "source": "nodes",
             "error": "",
             "nodes": {
-                "bdag-miner-node-1": {
+                "node": {
                     "status": "syncing",
                     "percent": 99.9,
                     "current_block": 8_658_580,
                     "highest_block": 8_658_598,
                     "remaining_blocks": 18,
-                    "source": "bdag-miner-node-1",
+                    "source": "node",
                     "error": "",
                     "chain_block_count": 8_658_580,
                     "chain_main_height": 7_001_812,
@@ -345,9 +365,9 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             },
         }
         pool_ops.observe_sync_progress_health = lambda _sync_progress: {
-            "active_nodes": ["bdag-miner-node-1"],
+            "active_nodes": ["node"],
             "active_node_count": 1,
-            "node_rates_blocks_per_second": {"bdag-miner-node-1": 2.0},
+            "node_rates_blocks_per_second": {"node": 2.0},
             "lookback_seconds": 2700,
         }
         pool_ops.read_sync_coordinator_state = lambda: {}
@@ -628,7 +648,7 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
             "sync_progress": {
                 "status": "synced",
                 "remaining_blocks": 0,
-                "nodes": {"node1": {"chain_rpc_latency_ms": 1500.0}},
+                "nodes": {"node": {"chain_rpc_latency_ms": 1500.0}},
             },
             "host_pressure": {"iowait_percent": 1.0, "io_some_avg10": 0.0, "cpu_some_avg10": 0.0},
         }
@@ -665,6 +685,37 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
         self.assertTrue(decision["pool_ready_required"])
         self.assertTrue(any("mode=ready_no_miners" in reason for reason in decision["reasons"]))
         self.assertTrue(any("pool can_mine=false" in reason for reason in decision["reasons"]))
+
+    def test_rawdatadir_sidecar_can_run_when_pool_is_intentionally_not_ready(self) -> None:
+        pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
+        pool_ops.BACKGROUND_MAINTENANCE_LAZY_TASKS = {"rawdatadir_sidecar"}
+        pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = {
+            "rawdatadir_publish",
+            "ipfs_content_sidecar",
+            "ipfs_segment_writer",
+        }
+        pool_ops.host_runtime_profile = lambda: {"cpu_count": 8}
+        status = {
+            "overall": "syncing",
+            "mode": "catchup_pause",
+            "can_mine": False,
+            "can_accept_shares": False,
+            "can_submit_blocks": False,
+            "sync_progress": {"status": "synced", "remaining_blocks": 0},
+            "host_pressure": {
+                "iowait_percent": 1.0,
+                "io_some_avg10": 0.0,
+                "cpu_some_avg10": 0.0,
+                "loadavg_1m": 1.0,
+            },
+        }
+
+        decision = pool_ops.background_maintenance_decision("rawdatadir_sidecar", status)
+
+        self.assertTrue(decision["allowed"])
+        self.assertTrue(decision["task_is_lazy"])
+        self.assertFalse(decision["pool_ready_required"])
+        self.assertEqual([], decision["reasons"])
 
     def test_lazy_archive_task_defers_on_load_pressure(self) -> None:
         pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
