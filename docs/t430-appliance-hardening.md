@@ -12,7 +12,7 @@ Field report from the `/home/hpool` mining host on 2026-05-26.
 - Chain disk: 128 GB USB flash, F2FS, mounted with `noatime,lazytime`.
 - Network: default route over Wi-Fi on `wlp2s0`, pool host `192.168.49.193`.
 - ASIC: single X100 at `192.168.49.179`.
-- FastSnap V2 source: low-latency trusted peer on `192.168.49.186`.
+- Snapshot source: low-latency trusted peer on `192.168.49.186`.
 
 ## Adverse Conditions
 
@@ -45,26 +45,22 @@ Field report from the `/home/hpool` mining host on 2026-05-26.
    filesystem, then split small frequent writes back to internal storage where
    there was enough free space.
 2. Used the default one-node stack for the appliance.
-3. Downloaded and verified the FastSnap V2 artifact before import.
+3. Downloaded and verified the snapshot artifact before import.
 4. Parked old datadirs with timestamped names instead of deleting them, then
    imported the verified V2 snapshot into a clean datadir.
 5. Applied `sql/pool-schema.sql` so `block_submissions` and credit idempotency
    indexes existed before relying on dashboard earnings.
 6. Verified health through node RPC, pool accepted-share and accepted-block logs,
    and Postgres counts rather than one dashboard aggregate field.
-7. Kept the node cache small, peer count bounded, FastSync preprocessing at one
-   worker, shared status sampling enabled, and adaptive concurrency enabled.
+7. Kept the node cache small, peer count bounded, shared status sampling
+   enabled, and adaptive concurrency enabled.
 8. Kept disk-backed swap small and avoided repeated chown scans on node volumes.
 9. Restarted the node container when the wrapper/child-process split was
    detected, then let the node catch up before trusting pool mining readiness.
-10. Treated any running node more than 1000 blocks behind as a fastest-sync
-    condition rather than normal background drift. The release default now
-    enables `--fastartifactsync`, applies leader CPU/IO catch-up weights, and
-    allows a cooldown-bound restart if the importer is stale or missing the V2
-    artifact flag.
-11. Added a `fastsnap` feature check so directory-mode V2 bootstrap is used only
-    when the packaged binary supports the directory install flags; otherwise it
-    falls back to the V2 archive path instead of skipping fast bootstrap.
+10. Treated any running node more than 1000 blocks behind as a catch-up
+    condition rather than normal background drift. The release default applies
+    leader CPU/IO catch-up weights and allows a cooldown-bound restart if the
+    importer is stale.
 
 ## Release Hardening Added
 
@@ -86,13 +82,13 @@ The preflight checks:
 - USB chain filesystem suitability.
 - duplicate node datadirs.
 - old parked chain backups that should be cleaned only after stable mining.
-- node mode, cache, peer count, FastSync preprocess workers, status sampler,
-  adaptive concurrency, and chown policy.
+- node mode, cache, peer count, status sampler, adaptive concurrency, and chown
+  policy.
 - swap sizing on constrained hosts.
 - default route and Wi-Fi latency risk.
 - Docker root placement and free space.
 - live node wrapper versus `blockdag-node` child-process consistency.
-- automatic fastest-sync acceleration once a running node is more than 1000
+- automatic sync acceleration once a running node is more than 1000
   blocks behind.
 - pool schema presence for block submissions and credit idempotency.
 - reward wallet presence before mining is enabled.

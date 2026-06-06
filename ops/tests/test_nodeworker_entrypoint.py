@@ -17,8 +17,6 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         env = {
             "PATH": os.environ.get("PATH", ""),
             "BDAG_ENTRYPOINT_PRINT_NODE_FLAGS": "1",
-            "BDAG_FASTSYNC_PEER_ORDERING": "off",
-            "BDAG_FASTARTIFACTSYNC_ENABLED": "1",
         }
         env.update(extra_env)
         with tempfile.TemporaryDirectory() as tmp:
@@ -40,44 +38,28 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(needle, result.stdout)
 
-    def test_sync_source_node_zero_keeps_fastartifact_startup_on_single_device(self) -> None:
-        result = self.run_entrypoint(
-            {
-                "SYNC_SOURCE_NODE": "0",
-                "BDAG_NO_FASTSYNC_SERVE": "auto",
-                "BDAG_STORAGE_PROFILE": "single-device",
-            }
-        )
+    def test_print_mode_reports_node_args_append(self) -> None:
+        result = self.run_entrypoint({"NODE_ARGS_APPEND": "--miner --maxpeers=160"})
 
-        self.assert_stdout_contains(result, "BDAG_FASTARTIFACTSYNC_ENABLED=1")
-        self.assert_stdout_contains(result, "NODE_ARGS_APPEND=--fastartifactsync")
-        self.assertIn("disables raw datadir source publishing only", result.stderr)
+        self.assert_stdout_contains(result, "NODE_ARGS_APPEND=--miner --maxpeers=160")
 
-    def test_usb_storage_profile_disables_fastartifact_startup_by_default(self) -> None:
+    def test_print_mode_reports_empty_node_args_append(self) -> None:
+        result = self.run_entrypoint({})
+
+        self.assert_stdout_contains(result, "NODE_ARGS_APPEND=")
+
+    def test_print_mode_does_not_emit_removed_sync_flags(self) -> None:
         result = self.run_entrypoint(
             {
                 "SYNC_SOURCE_NODE": "1",
-                "BDAG_NO_FASTSYNC_SERVE": "auto",
-                "BDAG_STORAGE_PROFILE": "single-usb-constrained",
-                "NODE_ARGS_APPEND": "--fastartifactsync",
+                "NODE_ARGS_APPEND": "--cache=1024",
             }
         )
 
-        self.assert_stdout_contains(result, "BDAG_FASTARTIFACTSYNC_ENABLED=0")
-        self.assert_stdout_contains(result, "NODE_ARGS_APPEND=")
-        self.assertIn("BDAG_STORAGE_PROFILE=single-usb-constrained", result.stderr)
-
-    def test_explicit_no_serve_zero_overrides_auto_usb_storage_guard(self) -> None:
-        result = self.run_entrypoint(
-            {
-                "SYNC_SOURCE_NODE": "0",
-                "BDAG_NO_FASTSYNC_SERVE": "0",
-                "BDAG_STORAGE_PROFILE": "single-usb-constrained",
-            }
-        )
-
-        self.assert_stdout_contains(result, "BDAG_FASTARTIFACTSYNC_ENABLED=1")
-        self.assert_stdout_contains(result, "NODE_ARGS_APPEND=--fastartifactsync")
+        self.assert_stdout_contains(result, "NODE_ARGS_APPEND=--cache=1024")
+        combined = result.stdout + result.stderr
+        self.assertNotIn("FAST", combined.upper())
+        self.assertEqual("", result.stderr)
 
     def test_node_mining_env_appends_guard_args_without_forcing_rpc_module(self) -> None:
         result = self.run_entrypoint(

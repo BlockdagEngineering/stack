@@ -499,7 +499,7 @@ configure_env() {
     node_mining_enabled=1
   fi
 
-  local node_rpc_pass postgres_password postgres_user postgres_db fastartifact_enabled
+  local node_rpc_pass postgres_password postgres_user postgres_db
   node_rpc_pass="$(random_secret)"
   postgres_password="$(random_secret)"
   postgres_user="$(grep -E '^POSTGRES_USER=' .env | cut -d= -f2-)"
@@ -538,7 +538,6 @@ configure_env() {
   fi
   set_env_value .env BDAG_FASTARTIFACTSYNC_ENABLED "$fastartifact_enabled"
   set_env_value .env SYNC_SOURCE_NODE "0"
-  set_env_value .env BDAG_NO_FASTSYNC_SERVE "auto"
   set_env_value .env NODE_ARGS_APPEND ""
   set_env_value .env BDAG_FASTSNAP_SEED_TIMER_ENABLED 0
   set_env_value .env BDAG_RAWDATADIR_SOURCE_MODE auto
@@ -587,7 +586,6 @@ configure_env() {
   set_env_value .env BDAG_DASHBOARD_HISTORY_REBUILD_PRESERVE_ASIC_HISTORY 1
   set_env_value .env BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC 1
   set_env_value .env BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS 900
-  set_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_MISSING_FASTARTIFACT 1
   set_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT 1
   set_env_value .env BDAG_CATCHUP_PAUSE_ENABLED 1
   set_env_value .env BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS 300

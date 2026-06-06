@@ -2,42 +2,10 @@
 set -euo pipefail
 
 ROOT="${BDAG_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-P2P_PORTS="${BDAG_P2P_PORTS:-8151,8152}"
+P2P_PORT="${P2P_PORT:-8150}"
 P2P_PROTOCOLS="${BDAG_P2P_PROTOCOLS:-tcp}"
 
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
-
-env_value() {
-  local key="$1"
-  local default_value="${2:-}"
-  local value=""
-  if [[ -v "$key" ]]; then
-    printf '%s\n' "${!key}"
-    return
-  fi
-  if [[ -f "$ROOT/.env" ]]; then
-    value="$(sed -n "s/^${key}=//p" "$ROOT/.env" | tail -n1 | tr -d '\r' || true)"
-    value="${value%\"}"
-    value="${value#\"}"
-    value="${value%\'}"
-    value="${value#\'}"
-  fi
-  if [[ -n "$value" ]]; then
-    printf '%s\n' "$value"
-  else
-    printf '%s\n' "$default_value"
-  fi
-}
-
-set_env_value() {
-  local file="$1" key="$2" value="$3"
-  touch "$file"
-  if grep -qE "^${key}=" "$file"; then
-    sed -i "s|^${key}=.*|${key}=${value}|" "$file"
-  else
-    printf '%s=%s\n' "$key" "$value" >> "$file"
-  fi
-}
 
 need_sudo() {
   if [[ "$(id -u)" == "0" ]]; then
@@ -54,7 +22,7 @@ install_firewall() {
   fi
   need_sudo install -m 0755 "$ROOT/ops/allow-p2p-iptables.sh" /usr/local/sbin/bdag-allow-p2p-iptables
   need_sudo install -m 0644 "$ROOT/ops/systemd/bdag-p2p-firewall.service" /etc/systemd/system/bdag-p2p-firewall.service
-  printf 'BDAG_P2P_PORTS=%s\nBDAG_P2P_PROTOCOLS=%s\n' "$P2P_PORTS" "$P2P_PROTOCOLS" | need_sudo tee /etc/default/bdag-p2p-firewall >/dev/null
+  printf 'P2P_PORT=%s\nBDAG_P2P_PROTOCOLS=%s\n' "$P2P_PORT" "$P2P_PROTOCOLS" | need_sudo tee /etc/default/bdag-p2p-firewall >/dev/null
   need_sudo systemctl daemon-reload
   need_sudo systemctl enable --now bdag-p2p-firewall.service
 }
@@ -296,8 +264,4 @@ install_mining_host_tuning() {
 
 install_firewall
 install_local_peer_timer
-install_fastsnap_seed_timer
-install_rawdatadir_source_timer
-install_ipfs_content_sidecar_timer
-install_ipfs_segment_writer_timer
 install_mining_host_tuning

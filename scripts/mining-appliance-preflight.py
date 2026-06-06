@@ -115,15 +115,6 @@ def bool_enabled(value: str | None, default: bool = False) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
-def node_args_enable_fastartifact(value: str | None) -> bool:
-    for word in (value or "").split():
-        if word == "--fastartifactsync":
-            return True
-        if word.startswith("--fastartifactsync="):
-            return word.split("=", 1)[1].strip().lower() not in {"0", "false", "no", "off"}
-    return False
-
-
 def memory_total_bytes() -> int:
     try:
         for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
@@ -442,7 +433,7 @@ def check_storage(checks: list[Check], root: Path, env: dict[str, str], profile:
     if data_usage["free_bytes"] < 10 * GIB:
         add(checks, "fail", "chain_data_free_space", f"chain data filesystem has only {data_usage['free_gib']}GiB free.", "Move chain data to a larger disk before initial sync or snapshot import.", evidence)
     elif data_usage["free_bytes"] < 50 * GIB:
-        add(checks, "warn", "chain_data_free_space", f"chain data filesystem has {data_usage['free_gib']}GiB free.", "Allow headroom for chain growth, FastSnap artifacts, Postgres, and rollback backups.", evidence)
+        add(checks, "warn", "chain_data_free_space", f"chain data filesystem has {data_usage['free_gib']}GiB free.", "Allow headroom for chain growth, Postgres, and rollback backups.", evidence)
     else:
         add(checks, "pass", "chain_data_free_space", f"{data_usage['free_gib']}GiB free", evidence=evidence)
 
@@ -472,25 +463,6 @@ def check_storage(checks: list[Check], root: Path, env: dict[str, str], profile:
     usb_chain_data = is_usb_source(str(data_mount.get("source") or ""))
     if usb_chain_data and data_fstype not in {"f2fs", "ext4"}:
         add(checks, "warn", "usb_chain_filesystem", f"USB chain device uses {data_fstype or 'unknown'} filesystem.", "Use F2FS for USB flash or ext4 for USB SSD.", evidence)
-
-    mining_address = (env.get("MINING_ADDRESS") or env.get("MINING_POOL_ADDRESS") or "").strip()
-    topology = (env.get("BDAG_DETECTED_NETWORK_TOPOLOGY") or env.get("BDAG_NETWORK_TOPOLOGY") or "").strip().lower()
-    mining_appliance = (
-        mining_address and mining_address.lower() != ZERO_ETH_ADDRESS
-    ) or topology == "asic-router"
-    sync_source_node = bool_enabled(env.get("SYNC_SOURCE_NODE"), False)
-    no_fastsync_serve = not sync_source_node
-    if usb_chain_data and mining_appliance and sync_source_node:
-        add(
-            checks,
-            "fail",
-            "usb_mining_fastsync_serving",
-            "USB-backed mining node is configured to serve bulk FastSync data.",
-            "Set SYNC_SOURCE_NODE=0 so the node can consume sync and relay blocks without serving range, snapshot, or artifact traffic from USB while mining.",
-            evidence,
-        )
-    elif usb_chain_data and mining_appliance:
-        add(checks, "pass", "usb_mining_fastsync_serving", "USB-backed mining node will not serve bulk FastSync data", evidence=evidence)
 
 
 def check_storage_profile(checks: list[Check], root: Path, env: dict[str, str], profile: HostProfile) -> None:
@@ -622,9 +594,6 @@ def check_ephemeral_storage(checks: list[Check], root: Path, env: dict[str, str]
     tmpdir = env_path(root, env, "TMPDIR", ephemeral_dir / "tmp")
     ephemeral_device = storage_device(ephemeral_dir)
     tmpdir_device = storage_device(tmpdir)
-    staging_raw = (env.get("BDAG_FASTSNAP_DIRECTORY_STAGING") or "").strip()
-    staging_path = env_path(root, env, "BDAG_FASTSNAP_DIRECTORY_STAGING", staging_raw) if staging_raw else None
-    staging_device = storage_device(staging_path) if staging_path else None
     evidence = {
         "BDAG_EPHEMERAL_TMPFS_ENABLED": env.get("BDAG_EPHEMERAL_TMPFS_ENABLED"),
         "BDAG_EPHEMERAL_DIR": str(ephemeral_dir),
@@ -634,8 +603,6 @@ def check_ephemeral_storage(checks: list[Check], root: Path, env: dict[str, str]
         "BDAG_NODE_SHM_SIZE": env.get("BDAG_NODE_SHM_SIZE"),
         "ephemeral_device": ephemeral_device,
         "tmpdir_device": tmpdir_device,
-        "BDAG_FASTSNAP_DIRECTORY_STAGING": str(staging_path) if staging_path else "",
-        "fastsnap_staging_device": staging_device,
     }
     if not enabled:
         add(
@@ -665,17 +632,6 @@ def check_ephemeral_storage(checks: list[Check], root: Path, env: dict[str, str]
             "Prefer /run/bdag-pool or container tmpfs mounts for small temporary files, transient caches, and scratch state that can be lost on reboot.",
             evidence,
         )
-
-    if staging_device and str(staging_device.get("fstype") or "") in RAM_BACKED_FS:
-        add(
-            checks,
-            "warn",
-            "fastsnap_staging_tmpfs",
-            "FastSnap directory staging is on RAM-backed storage.",
-            "Only small ephemeral scratch belongs on tmpfs. Keep large FastSnap artifact staging on chain/capacity storage unless the host has deliberately provisioned enough RAM.",
-            evidence,
-        )
-
 
 def docker_system_df() -> list[dict[str, Any]]:
     try:
@@ -797,13 +753,9 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     evidence = {
         "BDAG_NODE_CACHE_MB": env.get("BDAG_NODE_CACHE_MB"),
         "NODE_MAX_PEERS": env.get("NODE_MAX_PEERS"),
-        "BDAG_FASTSYNC_PREPROCESS_WORKERS": env.get("BDAG_FASTSYNC_PREPROCESS_WORKERS"),
         "SYNC_SOURCE_NODE": env.get("SYNC_SOURCE_NODE"),
-        "BDAG_NO_FASTSYNC_SERVE": env.get("BDAG_NO_FASTSYNC_SERVE"),
-        "BDAG_FASTARTIFACTSYNC_ENABLED": env.get("BDAG_FASTARTIFACTSYNC_ENABLED"),
         "BDAG_STORAGE_PROFILE": env.get("BDAG_STORAGE_PROFILE"),
         "BDAG_DETECTED_NETWORK_TOPOLOGY": env.get("BDAG_DETECTED_NETWORK_TOPOLOGY"),
-        "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": env.get("BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC"),
         "BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS": env.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS"),
         "BDAG_CATCHUP_PAUSE_ENABLED": env.get("BDAG_CATCHUP_PAUSE_ENABLED"),
         "BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS": env.get("BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS"),
@@ -834,39 +786,13 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     else:
         add(checks, "pass", "peer_budget", f"NODE_MAX_PEERS={max_peers}", evidence=evidence)
 
-    preprocess = safe_int(env.get("BDAG_FASTSYNC_PREPROCESS_WORKERS"), 1)
-    if profile.profile == "constrained" and preprocess and preprocess > 1:
-        add(checks, "warn", "fastsync_preprocess_workers", f"BDAG_FASTSYNC_PREPROCESS_WORKERS={preprocess} can contend with mining.", "Use one preprocess worker on slow disks and two-core hosts.", evidence)
-    else:
-        add(checks, "pass", "fastsync_preprocess_workers", f"BDAG_FASTSYNC_PREPROCESS_WORKERS={preprocess}", evidence=evidence)
-
     storage_profile = (env.get("BDAG_STORAGE_PROFILE") or "").strip().lower()
     topology = (env.get("BDAG_DETECTED_NETWORK_TOPOLOGY") or env.get("BDAG_NETWORK_TOPOLOGY") or "").strip().lower()
     constrained_mining_profile = (
         storage_profile in {"usb-chain-internal-runtime", "single-usb-constrained"}
         or topology == "asic-router"
     )
-    node_args_append_enables_fastartifact = node_args_enable_fastartifact(env.get("NODE_ARGS_APPEND"))
     evidence["NODE_ARGS_APPEND"] = env.get("NODE_ARGS_APPEND")
-    append_args_enable_fastartifact = node_args_append_enables_fastartifact
-    no_fastsync_serve_value = (env.get("BDAG_NO_FASTSYNC_SERVE") or "auto").strip().lower()
-    explicit_no_fastsync_serve = bool_enabled(no_fastsync_serve_value, False) and no_fastsync_serve_value != "auto"
-    auto_no_fastsync_serve = constrained_mining_profile and no_fastsync_serve_value in {"", "auto"}
-    no_fastsync_serve = explicit_no_fastsync_serve or auto_no_fastsync_serve
-    if constrained_mining_profile and no_fastsync_serve and append_args_enable_fastartifact:
-        add(checks, "fail", "fastartifactsync", "FastSync serving is suppressed, but node args still add --fastartifactsync.", "Clear NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
-    elif constrained_mining_profile and not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True) and append_args_enable_fastartifact:
-        add(checks, "fail", "fastartifactsync", "BDAG_FASTARTIFACTSYNC_ENABLED is disabled, but node args still add --fastartifactsync.", "Clear NODE_ARGS_APPEND so constrained USB/router profiles do not serve FastArtifact while mining.", evidence)
-    elif constrained_mining_profile and no_fastsync_serve:
-        add(checks, "pass", "fastartifactsync", "Bulk FastSync/FastArtifact serving is suppressed for constrained mining profile", evidence=evidence)
-    elif not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True) and constrained_mining_profile:
-        add(checks, "pass", "fastartifactsync", "Fast Artifact node startup flag is disabled for constrained mining profile", evidence=evidence)
-    elif not bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), True):
-        add(checks, "warn", "fastartifactsync", "BDAG_FASTARTIFACTSYNC_ENABLED is disabled.", "Enable Fast Artifact Sync V2 so nodes can advertise and use the fastest sync path.", evidence)
-    elif constrained_mining_profile:
-        add(checks, "warn", "fastartifactsync", "Fast Artifact node startup flag is enabled on a constrained ASIC-router/storage profile.", "Disable continuous node FastArtifact mode while synced and mining; keep raw-datadir catch-up acceleration available through the sync coordinator.", evidence)
-    else:
-        add(checks, "pass", "fastartifactsync", "Fast Artifact Sync V2 startup flag is enabled", evidence=evidence)
 
     node_mining_enabled = bool_enabled(env.get("BDAG_ENABLE_NODE_MINING"), False)
     node_modules = {item.strip().lower() for item in (env.get("BDAG_NODE_MODULES") or "").split(",") if item.strip()}
@@ -942,9 +868,9 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
 
     fast_restart_cooldown = safe_int(env.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS"), 900)
     if fast_restart_cooldown and fast_restart_cooldown > 1800:
-        add(checks, "warn", "fastsync_restart_cooldown", f"fast restart cooldown is {fast_restart_cooldown}s.", "Use 900s so a stale or unaccelerated importer does not remain down-level for too long.", evidence)
+        add(checks, "warn", "sync_restart_cooldown", f"sync restart cooldown is {fast_restart_cooldown}s.", "Use 900s so a stale importer does not remain down-level for too long.", evidence)
     else:
-        add(checks, "pass", "fastsync_restart_cooldown", f"fast restart cooldown={fast_restart_cooldown}s", evidence=evidence)
+        add(checks, "pass", "sync_restart_cooldown", f"sync restart cooldown={fast_restart_cooldown}s", evidence=evidence)
 
     catchup_pause_threshold = safe_int(env.get("BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS"), 300)
     catchup_io_min_lag = safe_int(env.get("BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS"), 25)
@@ -1099,7 +1025,7 @@ def check_network(checks: list[Check], root: Path | None = None) -> None:
     dev = next((parts[i + 1] for i, part in enumerate(parts[:-1]) if part == "dev"), "")
     evidence = {"route": line, "src": src, "dev": dev, "hostname": socket.gethostname()}
     if dev.startswith("wl"):
-        add(checks, "warn", "default_route", f"default route uses Wi-Fi interface {dev} with source {src}.", "Keep ASIC and trusted FastSnap peers on the same low-latency LAN; prefer wired Ethernet if shares or submits stall.", evidence)
+        add(checks, "warn", "default_route", f"default route uses Wi-Fi interface {dev} with source {src}.", "Keep ASIC and trusted peers on the same low-latency LAN; prefer wired Ethernet if shares or submits stall.", evidence)
     else:
         add(checks, "pass", "default_route", f"default route uses {dev or 'unknown'} source {src or 'unknown'}", evidence=evidence)
     check_route_policy_validator(checks, root)

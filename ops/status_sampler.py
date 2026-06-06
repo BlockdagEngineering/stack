@@ -334,7 +334,7 @@ def node_mining_runtime_args(address: str) -> str:
         *NODE_MINING_REQUIRED_BOOL_FLAGS,
         f"--miningaddr={address}",
     ]
-    if constrained_fastartifact_profile():
+    if constrained_storage_profile():
         # A USB-backed ASIC router should mine and relay blocks, not serve as a
         # catch-up source for other peers while it is trying to convert shares
         # into accepted blocks. Keep one inbound slot because this node build
@@ -352,7 +352,7 @@ def node_mining_args_are_safe_and_complete(args: str, address: str) -> bool:
     for flag in NODE_MINING_REQUIRED_BOOL_FLAGS:
         if not node_args_have_bool_flag(args, flag):
             return False
-    if constrained_fastartifact_profile():
+    if constrained_storage_profile():
         for flag, wanted in NODE_MINING_CONSTRAINED_ASSIGNMENTS.items():
             if node_args_assignment_value(args, flag) != wanted:
                 return False
@@ -845,12 +845,23 @@ def asic_lan_neighbor_present() -> bool:
     return False
 
 
+def constrained_storage_profile() -> bool:
+    topology = (config_value("BDAG_DETECTED_NETWORK_TOPOLOGY") or config_value("BDAG_NETWORK_TOPOLOGY")).strip().lower()
+    storage_profile = config_value("BDAG_STORAGE_PROFILE").strip().lower()
+    return bool(
+        topology == "asic-router"
+        or storage_profile == "usb-chain-internal-runtime"
+        or storage_profile == "single-usb-constrained"
+    )
+
+
 def constrained_fastartifact_profile() -> bool:
     topology = (config_value("BDAG_DETECTED_NETWORK_TOPOLOGY") or config_value("BDAG_NETWORK_TOPOLOGY")).strip().lower()
     storage_profile = config_value("BDAG_STORAGE_PROFILE").strip().lower()
     return bool(
         topology in CONSTRAINED_FASTARTIFACT_TOPOLOGIES
         or storage_profile in CONSTRAINED_FASTARTIFACT_STORAGE_PROFILES
+        or constrained_storage_profile()
     )
 
 

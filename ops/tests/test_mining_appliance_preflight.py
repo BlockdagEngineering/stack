@@ -90,9 +90,6 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             {
                 "BDAG_NODE_CACHE_MB": "4096",
                 "NODE_MAX_PEERS": "512",
-                "BDAG_FASTSYNC_PREPROCESS_WORKERS": "4",
-                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
-                "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": "0",
                 "BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS": "3600",
                 "BDAG_STATUS_SAMPLER_ENABLED": "0",
                 "BDAG_ADAPTIVE_CONCURRENCY_ENABLED": "0",
@@ -105,10 +102,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         self.assertIn("active_node_topology", passes)
         self.assertIn("node_cache_budget", warnings)
         self.assertIn("peer_budget", warnings)
-        self.assertIn("fastsync_preprocess_workers", warnings)
-        self.assertIn("fastartifactsync", warnings)
-        self.assertIn("fastsync_acceleration", warnings)
-        self.assertIn("fastsync_restart_cooldown", warnings)
+        self.assertIn("sync_restart_cooldown", warnings)
         self.assertIn("status_sampler", warnings)
         self.assertIn("adaptive_concurrency", warnings)
         self.assertIn("entrypoint_chown_mode", warnings)
@@ -278,10 +272,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             checks,
             {
                 "SYNC_SOURCE_NODE": "0",
-                "BDAG_NO_FASTSYNC_SERVE": "auto",
-                "BDAG_FASTARTIFACTSYNC_ENABLED": "1",
                 "BDAG_STORAGE_PROFILE": "single-device",
-                "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": "1",
             },
             profile,
         )
@@ -610,30 +601,6 @@ class MiningAppliancePreflightTest(unittest.TestCase):
 
         found = {check.name: check.status for check in checks}
         self.assertEqual(found["ephemeral_tmpfs"], "warn")
-
-    def test_fastsnap_large_staging_on_tmpfs_warns(self) -> None:
-        old_mount_info = preflight.mount_info
-        old_is_usb_source = preflight.is_usb_source
-
-        def fake_mount_info(path: Path) -> dict[str, str]:
-            return {"target": "/run", "source": "tmpfs", "fstype": "tmpfs", "options": "rw,nosuid,nodev"}
-
-        try:
-            preflight.mount_info = fake_mount_info
-            preflight.is_usb_source = lambda source: False
-            checks = []
-            preflight.check_ephemeral_storage(
-                checks,
-                Path("/opt/blockdag-pool"),
-                {"BDAG_EPHEMERAL_DIR": "/run/bdag-pool", "BDAG_FASTSNAP_DIRECTORY_STAGING": "/run/bdag-pool/staging"},
-            )
-        finally:
-            preflight.mount_info = old_mount_info
-            preflight.is_usb_source = old_is_usb_source
-
-        found = {check.name: check.status for check in checks}
-        self.assertEqual(found["ephemeral_tmpfs"], "pass")
-        self.assertEqual(found["fastsnap_staging_tmpfs"], "warn")
 
     def test_disk_io_guard_warns_for_tmpfs_build_tmpdir_and_large_cache(self) -> None:
         old_disk_usage = preflight.disk_usage

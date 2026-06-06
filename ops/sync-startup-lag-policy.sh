@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
-# Shared seed/startup acceptance policy for chain pre-sync and raw-datadir
-# receiver imports. A recently copied seed should be close enough to start, then
-# normal P2P/FastSync should catch the tail instead of redoing the copy loop.
+# Shared seed/startup acceptance policy for chain pre-sync. A recently copied
+# seed should be close enough to start, then normal P2P sync should catch the
+# tail instead of redoing the copy loop.
 
 bdag_sync_nonnegative_int_or_default() {
   local value="${1:-}"
