@@ -585,6 +585,7 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
                 "BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS",
                 "BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT",
                 "BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN",
+                "BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN",
                 "BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN",
                 "BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS",
                 "BACKGROUND_MAINTENANCE_LAZY_TASKS",
@@ -604,10 +605,16 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
         pool_ops.BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS = 0
         pool_ops.BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT = 25.0
         pool_ops.BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN = 20.0
+        pool_ops.BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN = 10.0
         pool_ops.BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN = 80.0
         status = {
             "sync_progress": {"status": "syncing", "remaining_blocks": 12},
-            "host_pressure": {"iowait_percent": 30.0, "io_some_avg10": 2.0, "cpu_some_avg10": 3.0},
+            "host_pressure": {
+                "iowait_percent": 30.0,
+                "io_some_avg10": 2.0,
+                "io_full_avg10": 0.0,
+                "cpu_some_avg10": 3.0,
+            },
         }
 
         decision = pool_ops.background_maintenance_decision("snapshot", status)
@@ -627,6 +634,32 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
 
         self.assertTrue(decision["allowed"])
         self.assertEqual(decision["reasons"], [])
+
+    def test_background_maintenance_defers_on_io_full_pressure(self) -> None:
+        pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
+        pool_ops.BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT = 25.0
+        pool_ops.BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN = 20.0
+        pool_ops.BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN = 10.0
+        status = {
+            "overall": "ok",
+            "mode": "mining",
+            "can_mine": True,
+            "can_accept_shares": True,
+            "can_submit_blocks": True,
+            "sync_progress": {"status": "synced", "remaining_blocks": 0},
+            "host_pressure": {
+                "iowait_percent": 4.0,
+                "io_some_avg10": 5.0,
+                "io_full_avg10": 14.0,
+                "cpu_some_avg10": 0.0,
+            },
+        }
+
+        decision = pool_ops.background_maintenance_decision("rawdatadir_content_seal", status)
+
+        self.assertFalse(decision["allowed"])
+        self.assertTrue(decision["pool_ready_required"])
+        self.assertTrue(any("host io full pressure" in reason for reason in decision["reasons"]))
 
     def test_background_maintenance_defers_when_sync_remaining_is_unknown(self) -> None:
         pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
@@ -691,6 +724,7 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
         pool_ops.BACKGROUND_MAINTENANCE_LAZY_TASKS = {"rawdatadir_sidecar"}
         pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = {
             "rawdatadir_publish",
+            "rawdatadir_content_seal",
             "ipfs_content_sidecar",
             "ipfs_segment_writer",
         }

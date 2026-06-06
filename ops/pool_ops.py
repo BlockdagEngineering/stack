@@ -505,6 +505,11 @@ BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN = env_float(
     20.0,
     minimum=0.0,
 )
+BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN = env_float(
+    "BDAG_BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN",
+    CATCHUP_IO_FULL_AVG10_WARN,
+    minimum=0.0,
+)
 BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN = env_float(
     "BDAG_BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN",
     80.0,
@@ -524,7 +529,7 @@ BACKGROUND_MAINTENANCE_LAZY_TASKS = set(
 BACKGROUND_MAINTENANCE_POOL_READY_TASKS = set(
     split_env_list(
         "BDAG_BACKGROUND_MAINTENANCE_POOL_READY_TASKS",
-        "rawdatadir_publish,ipfs_content_sidecar,ipfs_segment_writer",
+        "rawdatadir_publish,rawdatadir_content_seal,ipfs_content_sidecar,ipfs_segment_writer",
     )
 )
 BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN = env_float(
@@ -6236,6 +6241,12 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
             f"host io pressure avg10 {io_some:.2f} >= {BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN:.2f}"
         )
 
+    io_full = safe_float(host_pressure.get("io_full_avg10"))
+    if io_full is not None and io_full >= BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN:
+        reasons.append(
+            f"host io full pressure avg10 {io_full:.2f} >= {BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN:.2f}"
+        )
+
     cpu_some = safe_float(host_pressure.get("cpu_some_avg10"))
     if cpu_some is not None and cpu_some >= BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN:
         reasons.append(
@@ -6277,6 +6288,8 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
         "iowait_warn_percent": BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT,
         "io_some_avg10": io_some,
         "io_some_avg10_warn": BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN,
+        "io_full_avg10": io_full,
+        "io_full_avg10_warn": BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN,
         "cpu_some_avg10": cpu_some,
         "cpu_some_avg10_warn": BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN,
         "chain_rpc_latency_ms": chain_rpc_latency_ms,

@@ -360,6 +360,21 @@ case "${CONTENT_MODE,,}" in
     ;;
   *)
     if [[ -x "$CONTENT_SCRIPT" ]]; then
+      case "${FINAL_STOPPED_SYNC,,}" in
+        1|true|yes|on)
+          log "final stopped sidecar sync: skipping content-seal live pressure gate"
+          ;;
+        *)
+          if ! seal_pressure_reason="$(maintenance_backoff_reason rawdatadir_content_seal 2>>"$LOG_FILE")"; then
+            log "deferring raw datadir sidecar content sealing: background maintenance gate unavailable"
+            exit 0
+          fi
+          if [[ -n "$seal_pressure_reason" ]]; then
+            log "deferring raw datadir sidecar content sealing: background maintenance backoff active: $seal_pressure_reason"
+            exit 0
+          fi
+          ;;
+      esac
       log "sealing raw datadir sidecar content artifact"
       seal_env=(
         "BDAG_PROJECT_ROOT=$PROJECT_ROOT"
