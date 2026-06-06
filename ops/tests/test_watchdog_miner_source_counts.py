@@ -64,6 +64,7 @@ def api_stalled_asic_row(
     managed: bool = True,
     mac: str = "28:e2:97:4d:44:3a",
     stale_age: int = 600,
+    status: str = "down",
 ) -> dict[str, object]:
     return {
         "configured": False,
@@ -80,8 +81,9 @@ def api_stalled_asic_row(
         "last_pool_seen_age_seconds": stale_age,
         "mac": mac,
         "managed": managed,
+        "model": "X100",
         "pool_active": False,
-        "status": "down",
+        "status": status,
         "work_pool_active": False,
         "workers": [ADDRESS],
     }
@@ -164,7 +166,7 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
 
         self.assertEqual({}, since)
 
-    def test_api_stall_detector_requires_managed_primary_asic_and_clear_pool_faults(self) -> None:
+    def test_api_stall_detector_accepts_mac_identified_primary_asic_and_clear_pool_faults(self) -> None:
         status = status_for([api_stalled_asic_row()], expected=1, imbalanced=0)
 
         affected = watchdog.asic_api_stall_primary_miners(status, stale_seconds=180)
@@ -173,19 +175,29 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         self.assertEqual("192.168.1.16", affected[0]["ip"])
         self.assertTrue(affected[0]["restart_open_first"])
 
-        unmanaged_status = status_for([api_stalled_asic_row(managed=False)], expected=1, imbalanced=0)
-        self.assertEqual([], watchdog.asic_api_stall_primary_miners(unmanaged_status, stale_seconds=180))
+        unmanaged_inactive_status = status_for(
+            [api_stalled_asic_row(ip="192.168.1.105", managed=False, status="inactive")],
+            expected=1,
+            imbalanced=0,
+        )
+        affected = watchdog.asic_api_stall_primary_miners(unmanaged_inactive_status, stale_seconds=180)
+        self.assertEqual(1, len(affected))
+        self.assertEqual("192.168.1.105", affected[0]["ip"])
+        self.assertTrue(affected[0]["restart_open_first"])
+
+        unknown_mac_status = status_for([api_stalled_asic_row(managed=False, mac="")], expected=1, imbalanced=0)
+        self.assertEqual([], watchdog.asic_api_stall_primary_miners(unknown_mac_status, stale_seconds=180))
 
         pool_fault_status = status_for([api_stalled_asic_row()], expected=1, imbalanced=0)
         pool_fault_status["pool_health"]["expired_job_reconnect_failed_no_share"] = True
         self.assertEqual([], watchdog.asic_api_stall_primary_miners(pool_fault_status, stale_seconds=180))
 
-    def test_api_stall_watchdog_restarts_one_asic_open_first_after_confirmation(self) -> None:
-        row = api_stalled_asic_row()
+    def test_api_stall_watchdog_restarts_unmanaged_inactive_asic_open_first_after_confirmation(self) -> None:
+        row = api_stalled_asic_row(ip="192.168.1.105", managed=False, status="inactive")
         status = {
             "failures": [],
             "stack_failures": [],
-            "miner_failures": ["miner request failed for 192.168.1.16/mcb/cgminer?cgminercmd=devs: timed out"],
+            "miner_failures": ["miner request failed for 192.168.1.105/mcb/cgminer?cgminercmd=devs: timed out"],
             "mining_address": ADDRESS,
             "nodes": {},
             "sync_health": {},
@@ -196,9 +208,9 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
                 "valid_share_count": 20,
             },
             "miner_health": {
-                "connected_count": 1,
-                "connected_count_effective": 1,
-                "managed_count": 1,
+                "connected_count": 0,
+                "connected_count_effective": 0,
+                "managed_count": 0,
                 "miners": [row],
             },
         }
@@ -233,9 +245,9 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         self.assertEqual("asic_api_stall", result["watchdog_state"]["last_status"])
         self.assertEqual(1, len(restarts))
         self.assertIn("ASIC API-stall watchdog", restarts[0][1])
-        self.assertEqual("192.168.1.16", restarts[0][0][0]["ip"])
+        self.assertEqual("192.168.1.105", restarts[0][0][0]["ip"])
         self.assertTrue(restarts[0][0][0]["restart_open_first"])
-        self.assertEqual({"192.168.1.16": self.now}, result["watchdog_state"]["last_miner_restart_at_by_ip"])
+        self.assertEqual({"192.168.1.105": self.now}, result["watchdog_state"]["last_miner_restart_at_by_ip"])
         self.assertEqual({}, result["watchdog_state"]["asic_api_stall_since"])
         self.assertTrue(written)
 

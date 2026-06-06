@@ -55,6 +55,7 @@ LOCK_FILE = RUNTIME_DIR / "repair.lock"
 DIRTY_SHUTDOWN_MARKER = RUNTIME_DIR / "dirty-shutdown.marker"
 HOURLY_SNAPSHOT_LOCK_FILE = RUNTIME_DIR / "hourly-chain-snapshot.lock"
 AUTONOMOUS_STACK_LAB_LOCK_FILE = RUNTIME_DIR / "autonomous-stack-lab.lock"
+MAC_ADDRESS_RE = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$", re.IGNORECASE)
 
 DEFAULT_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_INTERVAL", "60"))
 DEFAULT_FAILURE_THRESHOLD = int(os.environ.get("BDAG_WATCHDOG_FAILURE_THRESHOLD", "3"))
@@ -257,6 +258,14 @@ def miner_stall_identity_key(row: dict[str, Any]) -> str:
     if ip:
         return f"ip:{ip}"
     return ""
+
+
+def has_stable_asic_mac(row: dict[str, Any]) -> bool:
+    device_id = str(row.get("device_id") or "").strip().lower()
+    mac = str(row.get("mac") or "").strip().lower()
+    if device_id.startswith("mac:"):
+        mac = device_id[4:]
+    return bool(MAC_ADDRESS_RE.fullmatch(mac))
 
 
 def update_useful_work_stall_since(
@@ -557,15 +566,17 @@ def asic_api_stall_primary_miners(
     miners = ((status.get("miner_health") or {}).get("miners") or [])
     affected: list[dict[str, Any]] = []
     for row in miners:
-        if not isinstance(row, dict) or not row.get("managed"):
+        if not isinstance(row, dict):
             continue
         if row.get("device_type") != "asic" or not is_lan_ipv4(str(row.get("ip", ""))):
+            continue
+        if not has_stable_asic_mac(row):
             continue
         if not is_primary_pool_identity(row, mining_address):
             continue
         if row.get("connected") or row.get("pool_active") is True or row.get("work_pool_active") is True:
             continue
-        if row.get("status") not in {"down", "degraded"}:
+        if row.get("status") not in {"down", "degraded", "inactive"}:
             continue
         stale_age = (
             int_or_none(row.get("last_pool_seen_age_seconds"))
@@ -1867,7 +1878,7 @@ def check_once(
                     f"cooldown_remaining={max(cooldown_remaining, 0)}s"
                 )
         reason = (
-            f"{len(api_stall_asics)} managed ASIC miner(s) have a sustained local API/cgminer stall "
+            f"{len(api_stall_asics)} MAC-identified ASIC miner(s) have a sustained local API/cgminer stall "
             "while pool-wide backend/template failure checks are clear"
         )
         state["consecutive_failures"] = 0
