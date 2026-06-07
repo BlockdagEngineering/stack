@@ -70,7 +70,13 @@ def bootstrap_stack_env() -> None:
     if not ops_env.is_absolute():
         ops_env = project_root / ops_env
 
-    for path in (ops_env, pool_env, project_root / ".env"):
+    stack_defaults = Path(
+        os.environ.get("BDAG_STACK_DEFAULTS_FILE") or project_root / "ops" / "config" / "stack-defaults.env"
+    )
+    if not stack_defaults.is_absolute():
+        stack_defaults = project_root / stack_defaults
+
+    for path in (stack_defaults, ops_env, pool_env, project_root / ".env"):
         if path is None or not path.exists():
             continue
         for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():

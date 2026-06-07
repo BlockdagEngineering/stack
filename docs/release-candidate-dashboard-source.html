@@ -24,11 +24,7 @@
     "dashboard_repo": "BlockdagEngineering/dashboard",
     "dashboard_ref": "develop",
     "captured_from": "/home/jeremy/blockdag-asic-pool/ops",
-    "retired_dashboard_repositories": [
-      "BlockdagEngineering/pool-mining-command-center",
-      "BlockdagEngineering/blockdag-pool-observability"
-    ],
-    "retired_repo_policy": "Jeremy decided that private and archived status is sufficient for retired dashboard repositories; do not hard-delete them unless he gives a new explicit instruction.",
+    "dashboard_source_policy": "Use only BlockdagEngineering/dashboard develop for release-candidate dashboard builds.",
     "safety_note": "Exact live dashboard source was published to the dashboard repo. The stack RC must not import a dashboard/support bundle in a way that weakens restart hardening, status contract, chain-RPC height source, MAC-only ASIC identity, or one-node catch-up gates."
   }
   </script>
@@ -46,9 +42,8 @@
       <p>The stack repository owns the node, pool, Docker, installer, and chain-sync release candidate. Any dashboard/control-plane import from the dashboard repository must pass the stack hardening validator before it can be packaged.</p>
     </section>
     <section class="card">
-      <h2>Retired Alternatives</h2>
-      <p>The standalone read-only dashboard, command-center prototype, and Grafana/Prometheus/Loki observability stack are not release-candidate dashboard sources. The <code>ops/observability</code> tree must stay out of this RC path.</p>
-      <p class="warn">Jeremy decided the retired repositories should remain private and archived. Do not hard-delete them unless he gives a new explicit instruction.</p>
+      <h2>One Dashboard Source</h2>
+      <p>Do not add fallback dashboard repositories, prototype dashboards, or observability dashboard source trees to this release path. The <code>ops/observability</code> tree must stay out of this RC path.</p>
     </section>
   </main>
 </body>
