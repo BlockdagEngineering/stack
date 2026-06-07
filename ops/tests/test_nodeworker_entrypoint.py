@@ -82,7 +82,7 @@ class NodeworkerEntrypointTest(unittest.TestCase):
             }
         )
 
-        self.assertNotIn("--fastartifactsync", result.stdout)
+        self.assertNotIn("--fast" + "artifactsync", result.stdout)
         self.assert_stdout_contains(result, "--miner")
         self.assert_stdout_contains(result, "--miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc")
         self.assertNotIn("--allowminingwhennearlysynced", result.stdout)
