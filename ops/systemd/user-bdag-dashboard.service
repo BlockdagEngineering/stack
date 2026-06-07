@@ -4,7 +4,7 @@ After=bdag-boot-repair.service bdag-status-sampler.service default.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/jeremy/blockdag-asic-pool
+WorkingDirectory=/home/jeremy/blockdag-mining-pool/stack
 Environment=BDAG_DASHBOARD_BIND=127.0.0.1
 Environment=BDAG_DASHBOARD_PORT=8088
 Environment=BDAG_POOL_ACTIVITY_LOG_LINES=1200
@@ -17,14 +17,14 @@ Environment=BDAG_DASHBOARD_STATUS_CACHE_SECONDS=120
 Environment=BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS=120
 Environment=BDAG_DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS=60
 Environment=BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=120
-EnvironmentFile=-/home/jeremy/blockdag-asic-pool/ops/runtime/ops.env
+EnvironmentFile=-/home/jeremy/blockdag-mining-pool/stack/ops/runtime/ops.env
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 CPUWeight=50
 IOWeight=50
-ExecStartPre=/bin/sh -c 'i=0; while [ "$i" -lt 60 ]; do docker info >/dev/null 2>&1 && exit 0; i=$((i+1)); sleep 5; done; exit 1'
-ExecStart=/usr/bin/python3 /home/jeremy/blockdag-asic-pool/ops/dashboard.py
+ExecStartPre=/bin/sh -c 'i=0; while [ "$i" -lt 60 ]; do (docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1) && exit 0; i=$((i+1)); sleep 5; done; exit 1'
+ExecStart=/usr/bin/python3 /home/jeremy/blockdag-mining-pool/stack/ops/dashboard.py
 Restart=always
 RestartSec=5
 

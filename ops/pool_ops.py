@@ -615,7 +615,37 @@ def redact_sensitive_text(value: str) -> str:
     return text
 
 
-def run(command: list[str], timeout: int = 20) -> CommandResult:
+_DOCKER_USE_SUDO_CACHE: bool | None = None
+DOCKER_ACCESS_ERROR_MARKERS = (
+    "permission denied while trying to connect to the docker api",
+    "cannot connect to the docker daemon",
+    "is the docker daemon running",
+    "connect: permission denied",
+)
+
+
+def command_uses_docker(command: list[str]) -> bool:
+    return bool(command) and command[0] == "docker"
+
+
+def sudo_docker_command(command: list[str]) -> list[str]:
+    return ["sudo", "-n", *command]
+
+
+def docker_result_looks_like_access_error(result: CommandResult) -> bool:
+    text = f"{result.stderr}\n{result.stdout}".lower()
+    return result.returncode == 127 or any(marker in text for marker in DOCKER_ACCESS_ERROR_MARKERS)
+
+
+def docker_sudo_fallback_enabled() -> bool:
+    return env_bool("BDAG_DOCKER_SUDO_FALLBACK", True)
+
+
+def docker_use_sudo_requested() -> bool:
+    return env_bool("BDAG_DOCKER_USE_SUDO", False)
+
+
+def run_subprocess_capture(command: list[str], timeout: int) -> CommandResult:
     start = time.time()
     try:
         proc = subprocess.run(
@@ -654,6 +684,25 @@ def run(command: list[str], timeout: int = 20) -> CommandResult:
             stderr=str(exc),
             elapsed=round(time.time() - start, 3),
         )
+
+
+def run(command: list[str], timeout: int = 20) -> CommandResult:
+    global _DOCKER_USE_SUDO_CACHE
+    if command_uses_docker(command) and docker_sudo_fallback_enabled():
+        if docker_use_sudo_requested() or _DOCKER_USE_SUDO_CACHE is True:
+            return run_subprocess_capture(sudo_docker_command(command), timeout)
+        direct = run_subprocess_capture(command, timeout)
+        if direct.ok:
+            _DOCKER_USE_SUDO_CACHE = False
+            return direct
+        if docker_result_looks_like_access_error(direct):
+            sudo_result = run_subprocess_capture(sudo_docker_command(command), timeout)
+            if sudo_result.ok:
+                _DOCKER_USE_SUDO_CACHE = True
+                return sudo_result
+        return direct
+
+    return run_subprocess_capture(command, timeout)
 
 
 def read_env_file_value(path: Path, name: str) -> str | None:
@@ -1208,19 +1257,8 @@ def docker_compose_command(*args: str) -> list[str]:
 
 
 def compose_service_name(name: str) -> str:
-    try:
-        result = subprocess.run(
-            ["docker", "inspect", "-f", '{{ index .Config.Labels "com.docker.compose.service" }}', name],
-            cwd=PROJECT_ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=10,
-            check=False,
-        )
-        service = result.stdout.strip() if result.returncode == 0 else ""
-    except (OSError, subprocess.SubprocessError):
-        service = ""
+    result = run(["docker", "inspect", "-f", '{{ index .Config.Labels "com.docker.compose.service" }}', name], timeout=10)
+    service = result.stdout.strip() if result.ok else ""
     if service and service != "<no value>":
         return service
     container_to_service = {
@@ -1240,6 +1278,45 @@ def compose_service_name(name: str) -> str:
                 candidate = name[len(prefix) : -len(suffix)]
                 if candidate:
                     return candidate
+    return name
+
+
+_COMPOSE_CONTAINER_NAME_CACHE: dict[str, str] = {}
+
+
+def compose_container_name(name: str) -> str:
+    cached = _COMPOSE_CONTAINER_NAME_CACHE.get(name)
+    if cached:
+        return cached
+    project_names = unique_names([docker_compose_project_name(), "pool-stack-docker"])
+    for project in project_names:
+        result = run(
+            [
+                "docker",
+                "ps",
+                "-a",
+                "--filter",
+                f"label=com.docker.compose.project={project}",
+                "--filter",
+                f"label=com.docker.compose.service={name}",
+                "--format",
+                "{{.Names}}\t{{.Status}}",
+            ],
+            timeout=8,
+        )
+        if not result.ok:
+            continue
+        rows = []
+        for line in result.stdout.splitlines():
+            parts = line.split("\t", 1)
+            container_name = parts[0].strip()
+            status = parts[1].strip() if len(parts) > 1 else ""
+            if container_name:
+                rows.append((container_name, status))
+        if rows:
+            chosen = next((container for container, status in rows if status.startswith("Up ")), rows[0][0])
+            _COMPOSE_CONTAINER_NAME_CACHE[name] = chosen
+            return chosen
     return name
 
 
@@ -2781,7 +2858,9 @@ def configure_miners(
 
 
 def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
-    result = run(["docker", "inspect", *names], timeout=12)
+    requested_to_actual = {name: compose_container_name(name) for name in names}
+    actual_names = unique_names(list(requested_to_actual.values()))
+    result = run(["docker", "inspect", *actual_names], timeout=12)
     payload: list[dict[str, Any]] = []
     if result.ok:
         try:
@@ -2789,7 +2868,7 @@ def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
         except json.JSONDecodeError:
             payload = []
     else:
-        for name in names:
+        for name in actual_names:
             single = run(["docker", "inspect", name], timeout=8)
             if not single.ok:
                 continue
@@ -2798,11 +2877,33 @@ def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
             except json.JSONDecodeError:
                 continue
 
+    payload_names = {str(item.get("Name", "")).lstrip("/") for item in payload}
+    for requested, actual in list(requested_to_actual.items()):
+        if actual in payload_names:
+            continue
+        if _COMPOSE_CONTAINER_NAME_CACHE.get(requested) == actual:
+            _COMPOSE_CONTAINER_NAME_CACHE.pop(requested, None)
+        refreshed_actual = compose_container_name(requested)
+        requested_to_actual[requested] = refreshed_actual
+        if refreshed_actual in payload_names or refreshed_actual in actual_names:
+            continue
+        refreshed = run(["docker", "inspect", refreshed_actual], timeout=8)
+        actual_names.append(refreshed_actual)
+        if not refreshed.ok:
+            continue
+        try:
+            refreshed_payload = json.loads(refreshed.stdout)
+        except json.JSONDecodeError:
+            continue
+        payload.extend(refreshed_payload)
+        payload_names.update(str(item.get("Name", "")).lstrip("/") for item in refreshed_payload)
+
     inspected: dict[str, dict[str, Any]] = {}
     for item in payload:
         name = str(item.get("Name", "")).lstrip("/")
         state = item.get("State") or {}
         config = item.get("Config") or {}
+        labels = config.get("Labels") if isinstance(config.get("Labels"), dict) else {}
         network_settings = item.get("NetworkSettings") or {}
         networks = network_settings.get("Networks") or {}
         network_rows = {
@@ -2813,7 +2914,7 @@ def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
             for network_name, network_info in networks.items()
             if isinstance(network_info, dict)
         }
-        inspected[name] = {
+        record = {
             "name": name,
             "image": config.get("Image", ""),
             "running": bool(state.get("Running")),
@@ -2827,11 +2928,16 @@ def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
             "networks": network_rows,
             "network_ips": [row["ip_address"] for row in network_rows.values() if row.get("ip_address")],
         }
+        inspected[name] = record
+        service_label = str(labels.get("com.docker.compose.service") or "")
+        for requested, actual in requested_to_actual.items():
+            if actual == name or requested == service_label:
+                inspected[requested] = dict(record)
     return inspected
 
 
 def docker_top(name: str) -> str:
-    return run(["docker", "top", name], timeout=8).stdout
+    return run(["docker", "top", compose_container_name(name)], timeout=8).stdout
 
 
 def bdag_child_running_from_top(top: str) -> bool:
@@ -2849,7 +2955,7 @@ def bdag_child_running_from_top(top: str) -> bool:
 
 
 def docker_logs(name: str, lines: int = 160) -> str:
-    result = run(["docker", "logs", "-n", str(lines), name], timeout=12)
+    result = run(["docker", "logs", "-n", str(lines), compose_container_name(name)], timeout=12)
     return redact_sensitive_text(result.stdout + "\n" + result.stderr).strip()
 
 
@@ -3342,10 +3448,7 @@ PROMETHEUS_LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:\\.|[^"\\])*)"'
 def mining_rpc_urls() -> list[tuple[str, str]]:
     urls: list[tuple[str, str]] = []
     for name in NODES:
-        ip = run(
-            ["docker", "inspect", name, "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"],
-            timeout=8,
-        ).stdout.strip()
+        ip = docker_container_ip(name)
         if valid_ipv4(ip):
             urls.append((name, f"http://{ip}:{NODE_MINING_RPC_PORT}"))
     return urls
@@ -6344,7 +6447,20 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
 
 def pool_db_json(sql: str) -> Any:
     result = run(
-        ["docker", "exec", POOL_DB_CONTAINER, "psql", "-U", POOL_DB_USER, "-d", POOL_DB_NAME, "-t", "-A", "-c", sql],
+        [
+            "docker",
+            "exec",
+            compose_container_name(POOL_DB_CONTAINER),
+            "psql",
+            "-U",
+            POOL_DB_USER,
+            "-d",
+            POOL_DB_NAME,
+            "-t",
+            "-A",
+            "-c",
+            sql,
+        ],
         timeout=20,
     )
     if not result.ok:
@@ -6522,7 +6638,7 @@ def node_rpc_urls() -> list[tuple[str, str]]:
 
 def docker_container_ip(name: str) -> str:
     ip = run(
-        ["docker", "inspect", name, "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"],
+        ["docker", "inspect", compose_container_name(name), "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"],
         timeout=8,
     ).stdout.strip()
     return ip if valid_ipv4(ip) else ""
@@ -8563,8 +8679,9 @@ def _parse_proc_net_peer_ips(text: str) -> list[str]:
 
 def container_peer_ips(name: str) -> list[str]:
     ips: list[str] = []
+    container_name = compose_container_name(name)
     for path in ("/proc/net/tcp", "/proc/net/tcp6"):
-        result = run(["docker", "exec", name, "cat", path], timeout=8)
+        result = run(["docker", "exec", container_name, "cat", path], timeout=8)
         for ip in _parse_proc_net_peer_ips(result.stdout):
             if ip not in ips:
                 ips.append(ip)
@@ -11769,13 +11886,19 @@ def read_latest_action() -> dict[str, Any] | None:
 
 def run_logged(command: list[str], log_path: Path, timeout: int | None = None) -> CommandResult:
     ensure_runtime()
+    global _DOCKER_USE_SUDO_CACHE
+    effective_command = command
+    if command_uses_docker(command) and docker_sudo_fallback_enabled() and (
+        docker_use_sudo_requested() or _DOCKER_USE_SUDO_CACHE is True
+    ):
+        effective_command = sudo_docker_command(command)
     start = time.time()
     with log_path.open("a", encoding="utf-8") as log:
-        log.write(f"\n[{now_iso()}] $ {' '.join(command)}\n")
+        log.write(f"\n[{now_iso()}] $ {' '.join(effective_command)}\n")
         log.flush()
         try:
             proc = subprocess.run(
-                command,
+                effective_command,
                 cwd=PROJECT_ROOT,
                 text=True,
                 stdout=log,
@@ -11787,9 +11910,36 @@ def run_logged(command: list[str], log_path: Path, timeout: int | None = None) -
         except subprocess.TimeoutExpired:
             code = 124
             log.write(f"\n[{now_iso()}] timed out after {timeout}s\n")
+        if (
+            command_uses_docker(command)
+            and effective_command == command
+            and code != 0
+            and docker_sudo_fallback_enabled()
+        ):
+            fallback_command = sudo_docker_command(command)
+            log.write(f"\n[{now_iso()}] retry with sudo fallback: {' '.join(fallback_command)}\n")
+            log.flush()
+            try:
+                proc = subprocess.run(
+                    fallback_command,
+                    cwd=PROJECT_ROOT,
+                    text=True,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    timeout=timeout,
+                    check=False,
+                )
+                fallback_code = proc.returncode
+            except subprocess.TimeoutExpired:
+                fallback_code = 124
+                log.write(f"\n[{now_iso()}] sudo fallback timed out after {timeout}s\n")
+            if fallback_code == 0:
+                _DOCKER_USE_SUDO_CACHE = True
+                effective_command = fallback_command
+                code = fallback_code
         elapsed = round(time.time() - start, 3)
         log.write(f"\n[{now_iso()}] exit={code} elapsed={elapsed}s\n")
-    return CommandResult(command=command, returncode=code, stdout="", stderr="", elapsed=elapsed)
+    return CommandResult(command=effective_command, returncode=code, stdout="", stderr="", elapsed=elapsed)
 
 
 def backup_node_dir(node_name: str, log_path: Path) -> None:

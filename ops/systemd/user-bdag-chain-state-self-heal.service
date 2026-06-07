@@ -14,5 +14,5 @@ IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 CPUWeight=50
 IOWeight=50
-ExecStartPre=/bin/sh -c 'i=0; while [ "$i" -lt 60 ]; do docker info >/dev/null 2>&1 && exit 0; i=$((i+1)); sleep 5; done; exit 1'
+ExecStartPre=/bin/sh -c 'i=0; while [ "$i" -lt 60 ]; do (docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1) && exit 0; i=$((i+1)); sleep 5; done; exit 1'
 ExecStart=%h/blockdag-asic-pool/ops/chain-state-self-heal.sh --from-systemd

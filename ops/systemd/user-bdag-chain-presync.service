@@ -4,12 +4,12 @@ After=default.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/jeremy/blockdag-asic-pool
-Environment=BDAG_PROJECT_ROOT=/home/jeremy/blockdag-asic-pool
+WorkingDirectory=/home/jeremy/blockdag-mining-pool/stack
+Environment=BDAG_PROJECT_ROOT=/home/jeremy/blockdag-mining-pool/stack
 Environment=BDAG_PRESYNC_ONE_NODE=1
-EnvironmentFile=-/home/jeremy/blockdag-asic-pool/ops/runtime/ops.env
+EnvironmentFile=-/home/jeremy/blockdag-mining-pool/stack/ops/runtime/ops.env
 Nice=19
 IOSchedulingClass=idle
 CPUWeight=10
 IOWeight=10
-ExecStart=/home/jeremy/blockdag-asic-pool/ops/chain-presync.sh
+ExecStart=/home/jeremy/blockdag-mining-pool/stack/ops/chain-presync.sh

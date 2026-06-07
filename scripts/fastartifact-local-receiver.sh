@@ -26,8 +26,11 @@ TRUSTED_SIGNERS="${BDAG_FASTSNAP_TRUSTED_SIGNERS:-${BDAG_FASTSNAP_TRUSTED_SIGNER
 
 if docker info >/dev/null 2>&1; then
   DOCKER=(docker)
+elif command -v sudo >/dev/null 2>&1 && sudo -n docker info >/dev/null 2>&1; then
+  DOCKER=(sudo -n docker)
 else
-  DOCKER=(sudo docker)
+  echo "docker is unavailable; install Docker or enable passwordless sudo for docker" >&2
+  exit 1
 fi
 
 compose_receiver() {

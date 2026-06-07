@@ -379,11 +379,16 @@ ensure_env_value BDAG_BOOT_REPAIR_DIRTY_POLICY start
 ensure_env_value BDAG_BOOT_REPAIR_CRITICAL_POLICY restart
 ensure_env_value BDAG_INCIDENT_REPORT_ENABLED 0
 ensure_env_value BDAG_INCIDENT_REPORT_REPO ""
+ensure_env_value BDAG_CODEX_RESUME_SESSION_ID ""
+ensure_env_value BDAG_CODEX_AUTO_RESUME_VISIBLE 1
+ensure_env_value BDAG_CODEX_AUTO_RESUME_BACKEND ptyxis
 
 DASHBOARD_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-dashboard.service"
 STATUS_SAMPLER_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-status-sampler.service"
 WATCHDOG_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-watchdog.service"
 BOOT_REPAIR_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-boot-repair.service"
+CODEX_BOOT_HANDOFF_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-codex-boot-handoff.service"
+CODEX_AUTO_RESUME_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-codex-auto-resume.service"
 SYNC_COORDINATOR_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-sync-coordinator.service"
 SYNC_COORDINATOR_TIMER="$HOME/.config/systemd/user/${INSTANCE}-sync-coordinator.timer"
 STACK_SENTINEL_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-stack-sentinel.service"
@@ -404,6 +409,7 @@ HOURLY_SNAPSHOT_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-hourly-snapshot.
 HOURLY_SNAPSHOT_TIMER="$HOME/.config/systemd/user/${INSTANCE}-hourly-snapshot.timer"
 INCIDENT_REPORTER_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-incident-reporter.service"
 INCIDENT_REPORTER_TIMER="$HOME/.config/systemd/user/${INSTANCE}-incident-reporter.timer"
+DOCKER_READY_TEST='(docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1)'
 
 cleanup_obsolete_user_units() {
   local units=(
@@ -484,7 +490,7 @@ Environment=BDAG_WATCHDOG_INTERVAL=30
 Environment=BDAG_WATCHDOG_FAILURE_THRESHOLD=3
 Environment=BDAG_CLEAN_RESTORE_COOLDOWN=1800
 EnvironmentFile=-$ENV_FILE
-ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do docker info >/dev/null 2>&1 && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
+ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do $DOCKER_READY_TEST && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
 ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/watchdog.py --loop
 ExecStopPost=/bin/sh -c 'rm -f "\$BDAG_RUNTIME_DIR/dirty-shutdown.marker"'
 Restart=always
@@ -550,13 +556,61 @@ Environment=BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE=0
 Environment=BDAG_BOOT_REPAIR_DIRTY_POLICY=start
 Environment=BDAG_BOOT_REPAIR_CRITICAL_POLICY=restart
 EnvironmentFile=-$ENV_FILE
-ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do docker info >/dev/null 2>&1 && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
+ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do $DOCKER_READY_TEST && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
 ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/watchdog.py --boot-repair
 
 [Install]
 WantedBy=default.target
 EOF
 fi
+
+cat > "$CODEX_BOOT_HANDOFF_SERVICE" <<EOF
+[Unit]
+Description=BlockDAG Codex boot handoff verifier ($INSTANCE)
+After=${INSTANCE}-boot-repair.service ${INSTANCE}-dashboard.service ${INSTANCE}-watchdog.service default.target
+Wants=${INSTANCE}-boot-repair.service ${INSTANCE}-dashboard.service ${INSTANCE}-watchdog.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=$PROJECT_ROOT
+Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
+Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
+Environment=BDAG_CODEX_BOOT_DASHBOARD_URL=http://$BIND:$PORT/api/status
+EnvironmentFile=-$ENV_FILE
+ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/codex_boot_handoff.py --repair
+Nice=15
+IOSchedulingClass=idle
+CPUWeight=10
+IOWeight=10
+
+[Install]
+WantedBy=default.target
+EOF
+
+cat > "$CODEX_AUTO_RESUME_SERVICE" <<EOF
+[Unit]
+Description=BlockDAG visible Codex auto-resume terminal ($INSTANCE)
+After=graphical-session.target ${INSTANCE}-codex-boot-handoff.service ${INSTANCE}-dashboard.service
+Wants=${INSTANCE}-codex-boot-handoff.service ${INSTANCE}-dashboard.service
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=$PROJECT_ROOT
+Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
+Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
+EnvironmentFile=-$ENV_FILE
+ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/codex_auto_resume.py
+Nice=15
+IOSchedulingClass=idle
+CPUWeight=10
+IOWeight=10
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=graphical-session.target
+EOF
 
 if [[ "$INSTALL_GUARDS" -eq 1 ]]; then
   cat > "$STACK_SENTINEL_SERVICE" <<EOF
@@ -672,7 +726,7 @@ Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
 Environment=BDAG_P2P_GUARD_INTERVAL=300
 Environment=BDAG_POOL_ACTIVITY_LOG_LINES=1200
 EnvironmentFile=-$ENV_FILE
-ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do docker info >/dev/null 2>&1 && curl -fsS http://127.0.0.1:$PORT/api/status >/dev/null 2>&1 && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
+ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do $DOCKER_READY_TEST && curl -fsS http://127.0.0.1:$PORT/api/status >/dev/null 2>&1 && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
 ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/p2p_guard.py --loop
 Restart=always
 RestartSec=15
@@ -737,7 +791,7 @@ IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 CPUWeight=50
 IOWeight=50
-ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do docker info >/dev/null 2>&1 && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
+ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do $DOCKER_READY_TEST && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
 ExecStart=$PROJECT_ROOT/ops/chain-state-self-heal.sh --from-systemd
 EOF
 
@@ -892,6 +946,8 @@ if [[ "$START_SERVICES" -eq 1 ]]; then
   if [[ "$INSTALL_WATCHDOG" -eq 1 ]]; then
     systemctl --user enable --now "${INSTANCE}-watchdog.service"
   fi
+  systemctl --user enable --now "${INSTANCE}-codex-boot-handoff.service"
+  systemctl --user enable "${INSTANCE}-codex-auto-resume.service"
   if [[ "$INSTALL_SYNC_COORDINATOR" -eq 1 ]]; then
     systemctl --user enable --now "${INSTANCE}-sync-coordinator.timer"
   fi

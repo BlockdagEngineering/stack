@@ -4,11 +4,11 @@ After=bdag-watchdog.service bdag-dashboard.service default.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/jeremy/blockdag-asic-pool
-Environment=BDAG_PROJECT_ROOT=/home/jeremy/blockdag-asic-pool
-EnvironmentFile=-/home/jeremy/blockdag-asic-pool/ops/runtime/ops.env
+WorkingDirectory=/home/jeremy/blockdag-mining-pool/stack
+Environment=BDAG_PROJECT_ROOT=/home/jeremy/blockdag-mining-pool/stack
+EnvironmentFile=-/home/jeremy/blockdag-mining-pool/stack/ops/runtime/ops.env
 Nice=19
 IOSchedulingClass=idle
 CPUWeight=10
 IOWeight=10
-ExecStart=/home/jeremy/blockdag-asic-pool/ops/hourly-chain-snapshot.sh
+ExecStart=/home/jeremy/blockdag-mining-pool/stack/ops/hourly-chain-snapshot.sh

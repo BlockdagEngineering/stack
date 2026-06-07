@@ -51,8 +51,8 @@ init_docker_access() {
     export BDAG_DOCKER_USE_SUDO=0
     return 0
   fi
-  if command -v sudo >/dev/null 2>&1 && sudo docker info >/dev/null 2>&1; then
-    DOCKER=(sudo docker)
+  if command -v sudo >/dev/null 2>&1 && sudo -n docker info >/dev/null 2>&1; then
+    DOCKER=(sudo -n docker)
     export BDAG_DOCKER_USE_SUDO=1
     return 0
   fi

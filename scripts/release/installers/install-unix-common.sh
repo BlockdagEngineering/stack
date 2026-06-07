@@ -22,6 +22,8 @@ BDAG_INSTALL_MIN_FREE_KB="${BDAG_INSTALL_MIN_FREE_KB:-10485760}"
 BDAG_INSTALL_CHECK_PORTS="${BDAG_INSTALL_CHECK_PORTS:-3334 9280 18545 18546 38131}"
 BDAG_INSTALL_STRICT_PORTS="${BDAG_INSTALL_STRICT_PORTS:-0}"
 BDAG_CLEAN_ORPHAN_CONTAINERS="${BDAG_CLEAN_ORPHAN_CONTAINERS:-0}"
+BDAG_LINUX_DOCKER_BOOTSTRAP="${BDAG_LINUX_DOCKER_BOOTSTRAP:-auto}"
+DOCKER=(docker)
 
 echo "=== BlockDAG Pool Stack Installer (${OS_NAME}/${ARCH_NAME}) ==="
 echo ""
@@ -33,6 +35,85 @@ require_command() {
         echo "Error: $name is required. $hint" >&2
         exit 1
     fi
+}
+
+docker_cli() {
+    "${DOCKER[@]}" "$@"
+}
+
+docker_direct_ready() {
+    command -v docker >/dev/null 2>&1 \
+        && docker compose version >/dev/null 2>&1 \
+        && docker info >/dev/null 2>&1
+}
+
+docker_sudo_ready() {
+    command -v sudo >/dev/null 2>&1 \
+        && sudo -n docker compose version >/dev/null 2>&1 \
+        && sudo -n docker info >/dev/null 2>&1
+}
+
+linux_docker_bootstrap_script() {
+    local candidate
+    for candidate in \
+        "$INSTALLER_DIR/bootstrap-docker-passwordless-sudo.sh" \
+        "$PACKAGE_ROOT/installers/bootstrap-docker-passwordless-sudo.sh"; do
+        if [[ -f "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+bootstrap_linux_docker_host() {
+    [[ "$OS_NAME" == "linux" ]] || return 0
+    case "$BDAG_LINUX_DOCKER_BOOTSTRAP" in
+        0|false|False|no|No|off|Off) return 0 ;;
+    esac
+    if docker_direct_ready || docker_sudo_ready; then
+        return 0
+    fi
+
+    local script bootstrap_user
+    script="$(linux_docker_bootstrap_script || true)"
+    if [[ -z "$script" ]]; then
+        return 0
+    fi
+
+    echo "Docker Engine/Compose is missing or inaccessible. Running Linux host bootstrap..."
+    if [[ "$(id -u)" -eq 0 ]]; then
+        bootstrap_user="${BDAG_BOOTSTRAP_USER:-${SUDO_USER:-$(logname 2>/dev/null || id -un)}}"
+        env BDAG_BOOTSTRAP_USER="$bootstrap_user" bash "$script"
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+        sudo -n env BDAG_BOOTSTRAP_USER="$(id -un)" bash "$script"
+    else
+        echo "Error: Docker is not ready and non-interactive sudo is unavailable." >&2
+        echo "Run this once, then re-run the stack installer:" >&2
+        echo "  sudo $script" >&2
+        exit 1
+    fi
+}
+
+configure_docker_command() {
+    require_command docker "Install Docker Desktop or Docker Engine, then re-run this installer."
+
+    DOCKER=(docker)
+    if docker_direct_ready; then
+        return 0
+    fi
+    if docker_sudo_ready; then
+        DOCKER=(sudo -n docker)
+        echo "Using sudo -n docker for this installer session; the docker group will apply after a new login or reboot."
+        return 0
+    fi
+
+    if ! docker compose version >/dev/null 2>&1 && ! sudo -n docker compose version >/dev/null 2>&1; then
+        echo "Error: Docker Compose v2 is required. Install docker-compose-v2 or docker-compose-plugin." >&2
+    else
+        echo "Error: Docker daemon is unavailable to this session." >&2
+    fi
+    exit 1
 }
 
 read_payload_metadata() {
@@ -284,7 +365,7 @@ continue_without_snapshot_or_exit() {
 }
 
 compose_project_name() {
-    docker compose config --format json 2>/dev/null \
+    docker_cli compose config --format json 2>/dev/null \
         | sed -n 's/^[[:space:]]*"name":[[:space:]]*"\([^"]*\)".*/\1/p' \
         | head -n 1
 }
@@ -362,7 +443,7 @@ plan_orphan_container_cleanup() {
     [[ -n "$project" ]] || return 0
 
     local containers
-    containers="$(docker ps -a --filter "label=com.docker.compose.project=${project}" --format '{{.Names}}\t{{.Status}}' 2>/dev/null || true)"
+    containers="$(docker_cli ps -a --filter "label=com.docker.compose.project=${project}" --format '{{.Names}}\t{{.Status}}' 2>/dev/null || true)"
     [[ -n "$containers" ]] || return 0
 
     echo ""
@@ -370,7 +451,7 @@ plan_orphan_container_cleanup() {
     printf '%s\n' "$containers" | sed 's/^/  /'
     if [[ "$BDAG_CLEAN_ORPHAN_CONTAINERS" == "1" ]]; then
         echo "BDAG_CLEAN_ORPHAN_CONTAINERS=1; running docker compose down --remove-orphans before start."
-        docker compose down --remove-orphans || true
+        docker_cli compose down --remove-orphans || true
     else
         echo "Dry-run cleanup only. Set BDAG_CLEAN_ORPHAN_CONTAINERS=1 to remove old/orphan compose containers during install."
     fi
@@ -579,8 +660,9 @@ if [[ "${BDAG_INSTALL_TEST_WRITE_ENV_ONLY:-0}" == "1" ]]; then
     exit 0
 fi
 
-require_command docker "Install Docker Desktop or Docker Engine, then re-run this installer."
-docker compose version >/dev/null 2>&1 || {
+bootstrap_linux_docker_host
+configure_docker_command
+docker_cli compose version >/dev/null 2>&1 || {
     echo "Error: Docker Compose v2 is required. Install/update Docker Desktop or the docker compose plugin." >&2
     exit 1
 }
@@ -697,11 +779,11 @@ echo ""
 echo "=== Building Docker images (${DOCKER_PLATFORM}) ==="
 echo ""
 if [[ -x ./scripts/bdag-low-io-build.sh ]]; then
-    ./scripts/bdag-low-io-build.sh docker compose build
+    ./scripts/bdag-low-io-build.sh "${DOCKER[@]}" compose build
 elif command -v ionice >/dev/null 2>&1; then
-    ionice -c 3 nice -n 19 docker compose build
+    ionice -c 3 nice -n 19 "${DOCKER[@]}" compose build
 else
-    nice -n 19 docker compose build
+    nice -n 19 "${DOCKER[@]}" compose build
 fi
 
 echo ""
@@ -710,7 +792,7 @@ python3 ops/automation_control.py ensure-normal \
     --owner release-installer \
     --owner-unit install-unix-common \
     --reason "Provision default automation control before sync-only first start" >/dev/null
-docker compose up -d --no-build --pull never postgres node dashboard
+docker_cli compose up -d --no-build --pull never postgres node dashboard
 
 cat <<'EOF'
 

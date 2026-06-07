@@ -4,7 +4,7 @@ After=bdag-boot-repair.service bdag-status-sampler.service default.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/jeremy/blockdag-asic-pool
+WorkingDirectory=/home/jeremy/blockdag-mining-pool/stack
 Environment=BDAG_WATCHDOG_INTERVAL=30
 Environment=BDAG_WATCHDOG_FAILURE_THRESHOLD=3
 Environment=BDAG_CLEAN_RESTORE_COOLDOWN=1800
@@ -15,14 +15,14 @@ Environment=BDAG_POOL_CONTAINER=pool
 Environment=BDAG_POOL_DB_CONTAINER=postgres
 Environment=BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS=120
 Environment=BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=120
-EnvironmentFile=-/home/jeremy/blockdag-asic-pool/ops/runtime/ops.env
+EnvironmentFile=-/home/jeremy/blockdag-mining-pool/stack/ops/runtime/ops.env
 Nice=5
 IOSchedulingClass=best-effort
 IOSchedulingPriority=6
 CPUWeight=80
 IOWeight=50
-ExecStartPre=/bin/sh -c 'i=0; while [ "$i" -lt 60 ]; do docker info >/dev/null 2>&1 && exit 0; i=$((i+1)); sleep 5; done; exit 1'
-ExecStart=/usr/bin/python3 /home/jeremy/blockdag-asic-pool/ops/watchdog.py --loop
+ExecStartPre=/bin/sh -c 'i=0; while [ "$i" -lt 60 ]; do (docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1) && exit 0; i=$((i+1)); sleep 5; done; exit 1'
+ExecStart=/usr/bin/python3 /home/jeremy/blockdag-mining-pool/stack/ops/watchdog.py --loop
 ExecStopPost=/bin/sh -c 'rm -f "$BDAG_RUNTIME_DIR/dirty-shutdown.marker"'
 Restart=always
 RestartSec=10

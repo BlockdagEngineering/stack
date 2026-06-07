@@ -111,6 +111,8 @@ class StackNamingCoherenceTests(unittest.TestCase):
         user_dashboard = read("ops/systemd/user-bdag-dashboard.service")
         user_watchdog = read("ops/systemd/user-bdag-watchdog.service")
         user_sampler = read("ops/systemd/user-bdag-status-sampler.service")
+        user_codex_handoff = read("ops/systemd/user-bdag-codex-boot-handoff.service")
+        user_codex_auto_resume = read("ops/systemd/user-bdag-codex-auto-resume.service")
 
         for unit in (root_dashboard, root_watchdog, root_sampler, user_dashboard, user_watchdog, user_sampler):
             self.assertIn("BDAG_NODE_SERVICES=node", unit)
@@ -126,9 +128,18 @@ class StackNamingCoherenceTests(unittest.TestCase):
 
         for unit in (user_dashboard, user_watchdog):
             self.assertIn("bdag-status-sampler.service", unit)
-            self.assertIn("EnvironmentFile=-/home/jeremy/blockdag-asic-pool/ops/runtime/ops.env", unit)
+            self.assertIn("EnvironmentFile=-/home/jeremy/blockdag-mining-pool/stack/ops/runtime/ops.env", unit)
         self.assertIn("BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS=120", user_sampler)
         self.assertIn("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=120", user_sampler)
+        self.assertIn("bdag-boot-repair.service", user_codex_handoff)
+        self.assertIn("bdag-dashboard.service", user_codex_handoff)
+        self.assertIn("codex_boot_handoff.py --repair", user_codex_handoff)
+        self.assertIn("EnvironmentFile=-/home/jeremy/blockdag-mining-pool/stack/ops/runtime/ops.env", user_codex_handoff)
+        self.assertIn("graphical-session.target", user_codex_auto_resume)
+        self.assertIn("bdag-codex-boot-handoff.service", user_codex_auto_resume)
+        self.assertIn("codex_auto_resume.py", user_codex_auto_resume)
+        self.assertIn("WantedBy=graphical-session.target", user_codex_auto_resume)
+        self.assertIn("EnvironmentFile=-/home/jeremy/blockdag-mining-pool/stack/ops/runtime/ops.env", user_codex_auto_resume)
 
     def test_validator_locks_current_topology_into_build_checks(self) -> None:
         validator = read("scripts/validate-pi5-restart-hardening.sh")
@@ -137,6 +148,8 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn('need_grep \'BDAG_NODE_SERVICES: node\' "docker-compose.yml"', validator)
         self.assertIn('reject_grep \'container_name:\' "docker-compose.yml"', validator)
         self.assertIn('need_file "ops/tests/test_stack_naming_coherence.py"', validator)
+        self.assertIn('need_file "ops/systemd/user-bdag-codex-boot-handoff.service"', validator)
+        self.assertIn('need_file "ops/systemd/user-bdag-codex-auto-resume.service"', validator)
         self.assertIn('need_file "ops/systemd/bdag-status-sampler.service"', validator)
         self.assertIn('need_grep \'BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS=120\' ".env.example"', validator)
         self.assertIn('need_grep \'BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=120\' ".env.example"', validator)

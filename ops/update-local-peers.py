@@ -45,6 +45,13 @@ ACTIVE_MINING_RECENT_SECONDS = int(os.environ.get("BDAG_LOCAL_PEERS_ACTIVE_MININ
 DEFAULT_ASIC_LAN_CIDRS = ""
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 AUTO_VALUES = {"", "auto", "detect"}
+DOCKER_ACCESS_ERROR_MARKERS = (
+    "permission denied while trying to connect to the docker api",
+    "cannot connect to the docker daemon",
+    "is the docker daemon running",
+    "connect: permission denied",
+)
+_DOCKER_USE_SUDO_CACHE: bool | None = None
 # Migration input only. New releases should configure ordinary node peer
 # variables with complete P2P multiaddrs.
 LEGACY_PEER_SOURCE_KEYS = (
@@ -93,28 +100,76 @@ def docker_top_has_bdag_child(output: str) -> bool:
     return False
 
 
-def run(command: list[str], timeout: int = 20) -> str:
+def command_uses_docker(command: list[str]) -> bool:
+    return bool(command) and command[0] == "docker"
+
+
+def sudo_docker_command(command: list[str]) -> list[str]:
+    return ["sudo", "-n", *command]
+
+
+def docker_sudo_fallback_enabled() -> bool:
+    return os.environ.get("BDAG_DOCKER_SUDO_FALLBACK", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def docker_use_sudo_requested() -> bool:
+    return os.environ.get("BDAG_DOCKER_USE_SUDO", "0").strip().lower() in TRUE_VALUES
+
+
+def docker_result_looks_like_access_error(proc: subprocess.CompletedProcess[str]) -> bool:
+    text = f"{proc.stderr or ''}\n{proc.stdout or ''}".lower()
+    return proc.returncode == 127 or any(marker in text for marker in DOCKER_ACCESS_ERROR_MARKERS)
+
+
+def run_process(command: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
+    global _DOCKER_USE_SUDO_CACHE
+    effective = command
+    if command_uses_docker(command) and docker_sudo_fallback_enabled() and (
+        docker_use_sudo_requested() or _DOCKER_USE_SUDO_CACHE is True
+    ):
+        effective = sudo_docker_command(command)
     proc = subprocess.run(
-        command,
+        effective,
         cwd=PROJECT_ROOT,
         text=True,
         capture_output=True,
         timeout=timeout,
         check=False,
     )
+    if (
+        command_uses_docker(command)
+        and effective == command
+        and proc.returncode != 0
+        and docker_sudo_fallback_enabled()
+        and docker_result_looks_like_access_error(proc)
+    ):
+        fallback = subprocess.run(
+            sudo_docker_command(command),
+            cwd=PROJECT_ROOT,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+        if fallback.returncode == 0:
+            _DOCKER_USE_SUDO_CACHE = True
+            return fallback
+    elif command_uses_docker(command) and proc.returncode == 0:
+        _DOCKER_USE_SUDO_CACHE = effective[0] == "sudo"
+    return proc
+
+
+def run(command: list[str], timeout: int = 20) -> str:
+    proc = run_process(command, timeout=timeout)
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or proc.stdout or f"{command[0]} failed").strip())
     return proc.stdout
 
 
 def docker_compose_container_id(service: str) -> str:
-    proc = subprocess.run(
+    proc = run_process(
         ["docker", "compose", "ps", "-q", service],
-        cwd=PROJECT_ROOT,
-        text=True,
-        capture_output=True,
         timeout=10,
-        check=False,
     )
     return proc.stdout.strip().splitlines()[-1] if proc.returncode == 0 and proc.stdout.strip() else ""
 
@@ -130,25 +185,17 @@ def docker_targets(container_or_service: str) -> list[str]:
 def docker_logs(container_or_service: str, tail: str = "5000", timeout: int = 20) -> str:
     errors: list[str] = []
     for target in docker_targets(container_or_service):
-        proc = subprocess.run(
+        proc = run_process(
             ["docker", "logs", "--tail", tail, target],
-            cwd=PROJECT_ROOT,
-            text=True,
-            capture_output=True,
             timeout=timeout,
-            check=False,
         )
         if proc.returncode == 0:
             return proc.stdout + proc.stderr
         errors.append((proc.stderr or proc.stdout or f"docker logs failed for {target}").strip())
 
-    proc = subprocess.run(
+    proc = run_process(
         ["docker", "compose", "logs", "--no-color", "--tail", tail, container_or_service],
-        cwd=PROJECT_ROOT,
-        text=True,
-        capture_output=True,
         timeout=timeout,
-        check=False,
     )
     if proc.returncode == 0:
         return proc.stdout + proc.stderr
@@ -178,13 +225,9 @@ def wait_for_node(container: str, timeout: int = 90) -> None:
 
 def container_running(container: str) -> bool:
     for target in docker_targets(container):
-        proc = subprocess.run(
+        proc = run_process(
             ["docker", "inspect", "-f", "{{.State.Running}}", target],
-            cwd=PROJECT_ROOT,
-            text=True,
-            capture_output=True,
             timeout=10,
-            check=False,
         )
         if proc.returncode == 0 and proc.stdout.strip() == "true":
             return True
