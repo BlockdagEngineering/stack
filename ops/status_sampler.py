@@ -85,6 +85,15 @@ MINING_IMPERATIVE_MINER_TRACKING_REPAIR_ENABLED = env_bool(
     "BDAG_MINING_IMPERATIVE_MINER_TRACKING_REPAIR_ENABLED",
     True,
 )
+MINING_IMPERATIVE_MINER_ACTIVITY_REPAIR_ENABLED = env_bool(
+    "BDAG_MINING_IMPERATIVE_MINER_ACTIVITY_REPAIR_ENABLED",
+    True,
+)
+MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS = env_int(
+    "BDAG_MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS",
+    180,
+    minimum=30,
+)
 MINING_IMPERATIVE_CONSTRAINED_FASTARTIFACT_REPAIR_ENABLED = env_bool(
     "BDAG_MINING_IMPERATIVE_CONSTRAINED_FASTARTIFACT_REPAIR_ENABLED",
     True,
@@ -819,6 +828,60 @@ def status_payload_has_tracking_gap(payload: dict[str, Any]) -> bool:
     return status_payload_has_miner_demand(payload) or asic_lan_neighbor_present()
 
 
+def recent_age_seconds(value: Any, max_age: int = MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS) -> bool:
+    if value in (None, ""):
+        return False
+    return safe_float(value, default=max_age + 1) <= max_age
+
+
+def pool_has_recent_share_evidence(payload: dict[str, Any]) -> bool:
+    pool = dict_value(payload.get("pool"))
+    pool_health = dict_value(payload.get("pool_health"))
+    pool_metrics = dict_value(payload.get("pool_metrics")) or dict_value(pool.get("metrics"))
+    source_job_health = dict_value(pool.get("source_job_health")) or dict_value(pool_metrics.get("source_job_health"))
+    if (
+        safe_int(pool_health.get("valid_share_count")) > 0
+        or safe_int(pool.get("valid_share_count")) > 0
+        or safe_int(pool_metrics.get("valid_share_count")) > 0
+        or safe_int(source_job_health.get("valid_share_count")) > 0
+    ):
+        return True
+    for key in ("last_valid_share_age_seconds", "valid_share_age_seconds", "last_share_age_seconds"):
+        if recent_age_seconds(pool_health.get(key)) or recent_age_seconds(pool.get(key)) or recent_age_seconds(pool_metrics.get(key)):
+            return True
+    return False
+
+
+def miner_row_has_visible_share_evidence(row: dict[str, Any]) -> bool:
+    if safe_int(row.get("shares")) > 0 or safe_int(row.get("share_work")) > 0:
+        return True
+    if safe_int(row.get("last_shares_window")) > 0 or safe_int(row.get("last_share_work_window")) > 0:
+        return recent_age_seconds(row.get("last_share_age_seconds"))
+    return False
+
+
+def status_payload_has_miner_activity_visibility_gap(payload: dict[str, Any]) -> bool:
+    if not MINING_IMPERATIVE_MINER_ACTIVITY_REPAIR_ENABLED:
+        return False
+    miner_health = dict_value(payload.get("miner_health"))
+    if safe_int(miner_health.get("tracked_count")) <= 0:
+        return False
+    miners = miner_health.get("miners") if isinstance(miner_health.get("miners"), list) else []
+    managed_connected = [
+        row
+        for row in miners
+        if isinstance(row, dict)
+        and row.get("managed")
+        and row.get("connected")
+        and str(row.get("device_type") or "").lower() != "stratum"
+    ]
+    if not managed_connected:
+        return False
+    if any(miner_row_has_visible_share_evidence(row) for row in managed_connected):
+        return False
+    return status_payload_has_miner_demand(payload) and pool_has_recent_share_evidence(payload)
+
+
 def asic_lan_neighbor_present() -> bool:
     cidrs = split_env_list("BDAG_ASIC_LAN_CIDRS", "")
     if not cidrs:
@@ -1073,6 +1136,66 @@ def repair_missing_tracked_miners(payload: dict[str, Any]) -> bool:
         "mining_imperative_tracked_miners_repair_failed",
         "critical",
         "Mining imperative could not repair missing tracked miners despite miner demand",
+        action,
+        payload,
+    )
+    return False
+
+
+def repair_miner_activity_visibility(payload: dict[str, Any]) -> bool:
+    activity = collect_pool_activity(lines=POOL_ACTIVITY_BOOTSTRAP_LOG_LINES)
+    registry = upsert_pool_activity_miners(activity)
+    miners = registry.get("miners") if isinstance(registry.get("miners"), list) else []
+    now_epoch = time.time()
+    fresh_rows = [
+        row
+        for row in miners
+        if isinstance(row, dict)
+        and (
+            safe_int(row.get("last_shares_window")) > 0
+            or safe_int(row.get("last_share_work_window")) > 0
+            or safe_int(row.get("last_submits_window")) > 0
+        )
+        and (
+            (
+                safe_int(row.get("last_share_epoch")) > 0
+                and now_epoch - safe_int(row.get("last_share_epoch")) <= MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS
+            )
+            or (
+                safe_int(row.get("last_submit_epoch")) > 0
+                and now_epoch - safe_int(row.get("last_submit_epoch")) <= MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS
+            )
+            or (
+                safe_int(row.get("last_pool_seen_epoch")) > 0
+                and now_epoch - safe_int(row.get("last_pool_seen_epoch")) <= MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS
+            )
+        )
+    ]
+    action = {
+        "tracked_count_after": len(miners),
+        "activity_miners": len(activity.get("miners") or []),
+        "fresh_registry_activity_rows": len(fresh_rows),
+        "unattributed_valid_shares": activity.get("unattributed_valid_shares"),
+        "unattributed_blocks": activity.get("unattributed_blocks"),
+    }
+    if action["activity_miners"] > 0 or action["fresh_registry_activity_rows"] > 0:
+        log(
+            "mining imperative repaired miner activity visibility "
+            f"activity_miners={action['activity_miners']} fresh_rows={action['fresh_registry_activity_rows']}"
+        )
+        record_incident(
+            "mining_imperative_miner_activity_visibility_repaired",
+            "warning",
+            "Mining imperative refreshed miner share attribution after tracked miners had no visible share rows",
+            action,
+            payload,
+        )
+        return True
+    log("mining imperative could not repair miner activity visibility")
+    record_incident(
+        "mining_imperative_miner_activity_visibility_repair_failed",
+        "warning",
+        "Mining imperative found pool share evidence but could not refresh per-miner share attribution",
         action,
         payload,
     )
@@ -1568,6 +1691,10 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
         if repair_missing_tracked_miners(payload):
             actions.append("repaired_tracked_miners")
 
+    if status_payload_has_miner_activity_visibility_gap(payload):
+        if repair_miner_activity_visibility(payload):
+            actions.append("repaired_miner_activity_visibility")
+
     if constrained_fastartifact_should_repair(payload):
         if repair_constrained_fastartifact(payload):
             actions.append("disabled_constrained_fastartifact")
@@ -1693,6 +1820,11 @@ def run_loop(interval_seconds: float, include_logs: bool, earnings_snapshot_inte
                 repair = mining_imperative_repair(payload)
                 if repair.get("actions"):
                     log(f"mining imperative repair actions={','.join(repair['actions'])}")
+                    if any(
+                        action in repair["actions"]
+                        for action in ("repaired_tracked_miners", "repaired_miner_activity_visibility")
+                    ):
+                        payload = sample_once(include_logs=include_logs)
                 last_mining_repair_epoch = now_epoch
             last_earnings_attempt_epoch = maybe_record_earnings_snapshot(
                 time.time(),

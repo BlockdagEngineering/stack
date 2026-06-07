@@ -964,6 +964,45 @@ class MinerHealthConfiguredScopeTests(unittest.TestCase):
         self.assertEqual(health["miners"], [])
         self.assertEqual(health["lane_balance"]["expected_lane_count"], 0)
 
+    def test_fresh_registry_windows_display_after_short_log_window_misses_miner(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.collect_pool_activity = lambda lines=0: {"miners": []}
+        pool_ops.upsert_pool_activity_miners = lambda activity: {
+            "updated_at": "2026-06-07T14:30:00+0200",
+            "miners": [
+                {
+                    "ip": "192.168.1.102",
+                    "mac": "28:e2:97:4d:44:3a",
+                    "device_id": "mac:28:e2:97:4d:44:3a",
+                    "device_type": "asic",
+                    "expected_pool_url": pool_ops.default_miner_pool_settings()["pool_url"],
+                    "expected_worker_user": worker,
+                    "last_workers": [worker],
+                    "last_pool_seen_epoch": 100,
+                    "last_submit_epoch": 100,
+                    "last_share_epoch": 100,
+                    "last_jobs_window": 11,
+                    "last_shares_window": 8,
+                    "last_share_work_window": 700,
+                    "last_share_difficulty_window": 0.8,
+                    "last_blocks_window": 9,
+                    "last_submits_window": 10,
+                    "managed": True,
+                }
+            ],
+        }
+        pool_ops.seconds_since_epoch = lambda: 110
+
+        miner = pool_ops.collect_miner_health()["miners"][0]
+
+        self.assertTrue(miner["connected"])
+        self.assertEqual(miner["shares"], 8)
+        self.assertEqual(miner["share_work"], 700)
+        self.assertEqual(miner["blocks_found"], 9)
+        self.assertEqual(miner["submits"], 10)
+        self.assertEqual(miner["jobs"], 11)
+        self.assertTrue(miner["work_pool_active"])
+
     def test_stale_registry_windows_do_not_display_as_current_work(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
         pool_ops.collect_pool_activity = lambda lines=0: {"miners": []}
@@ -1097,7 +1136,7 @@ class MinerHealthConfiguredScopeTests(unittest.TestCase):
         self.assertEqual(miners["2a:71:c7:f5:1f:1e"]["lane_status"], "low")
         self.assertEqual(miners["2a:71:c7:f5:1f:1e"]["status"], "down")
 
-    def test_inactive_stale_share_window_does_not_receive_active_work_percent(self) -> None:
+    def test_inactive_stale_share_window_is_not_rendered_as_current_miner(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
         pool_ops.collect_pool_activity = lambda lines=0: {
             "miners": [
@@ -1149,8 +1188,7 @@ class MinerHealthConfiguredScopeTests(unittest.TestCase):
         miners = {item["ip"]: item for item in health["miners"]}
 
         self.assertEqual(miners["192.168.1.14"]["work_percent"], "100.00")
-        self.assertEqual(miners["192.168.1.109"]["status"], "inactive")
-        self.assertEqual(miners["192.168.1.109"]["work_percent"], "0.00")
+        self.assertNotIn("192.168.1.109", miners)
 
     def test_unmanaged_pool_log_stratum_miner_is_not_marked_configured(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
