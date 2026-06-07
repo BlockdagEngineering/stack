@@ -9304,32 +9304,61 @@ def miner_worker_identity_score(miner: dict[str, Any]) -> tuple[int, int, int, i
     )
 
 
+def local_worker_identity_for_shared_miners(miners: list[dict[str, Any]]) -> dict[str, Any]:
+    identities: dict[str, dict[str, Any]] = {}
+    for miner in miners:
+        identity = miner_identity_key(miner) or f"ip:{miner.get('ip', '')}"
+        identities.setdefault(identity, miner)
+    unique_miners = list(identities.values())
+    if len(unique_miners) <= 1:
+        miner = unique_miners[0] if unique_miners else {}
+        label = miner_display_label(miner) if miner else "Local pool"
+        return {
+            "pool_name": label,
+            "display_name": miner.get("display_name") or miner.get("name") or "",
+            "display_label": label,
+            "device_type": miner.get("device_type") or "",
+            "ip": miner.get("ip") or "",
+            "mac": normalize_mac(miner.get("mac")),
+            "identity_key": miner_identity_key(miner),
+            "local_miner_count": len(unique_miners),
+            "local_asic_count": 1 if str(miner.get("device_type") or "").lower() == "asic" else 0,
+        }
+
+    asic_count = sum(1 for miner in unique_miners if str(miner.get("device_type") or "").lower() == "asic")
+    count_label = f"{asic_count} ASICs" if asic_count == len(unique_miners) else f"{len(unique_miners)} miners"
+    return {
+        "pool_name": f"Local pool ({count_label})",
+        "display_name": "Local pool",
+        "display_label": f"Local pool ({count_label})",
+        "device_type": "pool",
+        "ip": "",
+        "mac": "",
+        "identity_key": "",
+        "local_miner_count": len(unique_miners),
+        "local_asic_count": asic_count,
+        "local_macs": sorted(
+            mac for mac in (normalize_mac(miner.get("mac")) for miner in unique_miners) if mac
+        ),
+    }
+
+
 def local_worker_identity_map() -> dict[str, dict[str, Any]]:
     registry = read_miner_registry()
-    workers: dict[str, dict[str, Any]] = {}
-    scores: dict[str, tuple[int, int, int, int, int, int]] = {}
+    worker_miners: dict[str, list[dict[str, Any]]] = {}
     for miner in registry.get("miners", []) or []:
         if not isinstance(miner, dict):
             continue
         worker_values = merge_unique_strings(miner.get("last_workers"), miner.get("workers"))
-        label = miner_display_label(miner)
-        score = miner_worker_identity_score(miner)
         for worker in worker_values:
             if not is_spendable_eth_address(worker):
                 continue
-            worker_key = str(worker).lower()
-            if worker_key in workers and score <= scores.get(worker_key, (0, 0, 0, 0, 0, 0)):
-                continue
-            scores[worker_key] = score
-            workers[worker_key] = {
-                "pool_name": label,
-                "display_name": miner.get("display_name") or miner.get("name") or "",
-                "display_label": label,
-                "device_type": miner.get("device_type") or "",
-                "ip": miner.get("ip") or "",
-                "mac": normalize_mac(miner.get("mac")),
-                "identity_key": miner_identity_key(miner),
-            }
+            worker_miners.setdefault(str(worker).lower(), []).append(miner)
+    workers: dict[str, dict[str, Any]] = {}
+    for worker_key, miners in worker_miners.items():
+        workers[worker_key] = local_worker_identity_for_shared_miners(
+            sorted(miners, key=miner_worker_identity_score, reverse=True)
+        )
     return workers
 
 
@@ -9343,7 +9372,7 @@ def collect_local_pool_global_clusters(
     sql = f"""
     SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json)
     FROM (
-      SELECT c.miner_address,
+      SELECT lower(c.miner_address) AS miner_address,
              count(*) AS credit_count,
              count(DISTINCT c.block_hash) AS found_blocks,
              COALESCE(sum(c.amount), 0)::text AS total_wei,
@@ -9356,7 +9385,7 @@ def collect_local_pool_global_clusters(
       FROM credits c
       LEFT JOIN blocks b ON b.hash = c.block_hash
       WHERE c.created_at >= now() - ({seconds} * interval '1 second')
-      GROUP BY c.miner_address
+      GROUP BY lower(c.miner_address)
       ORDER BY count(DISTINCT c.block_hash) DESC, sum(c.amount) DESC
     ) t;
     """
@@ -9419,6 +9448,9 @@ def collect_local_pool_global_clusters(
                 "ip": identity.get("ip") or "",
                 "mac": identity.get("mac") or "",
                 "device_type": identity.get("device_type") or "",
+                "local_miner_count": identity.get("local_miner_count") or 0,
+                "local_asic_count": identity.get("local_asic_count") or 0,
+                "local_macs": identity.get("local_macs") or [],
             }
         )
     return clusters
@@ -9451,6 +9483,9 @@ def merge_global_local_pool_clusters(
             "ip",
             "mac",
             "device_type",
+            "local_miner_count",
+            "local_asic_count",
+            "local_macs",
         ):
             if local.get(key) not in (None, "", []):
                 existing[key] = local[key]
