@@ -26,6 +26,7 @@ from pool_ops import (
     GLOBAL_STATS_SOURCE_TRUTH,
     PROJECT_ROOT,
     RUNTIME_DIR,
+    background_maintenance_decision,
     collect_global_blockchain,
     collect_earnings,
     collect_status_cached,
@@ -46,6 +47,7 @@ from pool_ops import (
     refresh_global_chain_head,
     save_miner_admin_password,
     scan_miners,
+    sync_priority_decision,
     upsert_miner_registry,
     warm_dashboard_history_caches,
     write_action_state,
@@ -92,6 +94,16 @@ GLOBAL_SAMPLER_INTERVAL_SECONDS = max(
     15.0,
     float(os.environ.get("BDAG_DASHBOARD_GLOBAL_SAMPLER_INTERVAL_SECONDS", "60")),
 )
+_DASHBOARD_TARGET_MINER_FILTERS_RAW = os.environ.get(
+    "BDAG_DASHBOARD_TARGET_MINER_MACS",
+    os.environ.get("BDAG_TARGET_MINER_MACS", ""),
+)
+DASHBOARD_TARGET_MINER_FILTERS = [
+    item.strip().lower()
+    for item in re.split(r"[\s,;]+", _DASHBOARD_TARGET_MINER_FILTERS_RAW)
+    if item.strip()
+]
+DASHBOARD_TARGET_MINER_FILTERS_JSON = json.dumps(DASHBOARD_TARGET_MINER_FILTERS)
 GLOBAL_SAMPLER_STATE_FILE = RUNTIME_DIR / "dashboard-global-sampler-state.json"
 PROMETHEUS_SAMPLE_RE = re.compile(
     r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|[-+]?Inf|NaN)$"
@@ -113,6 +125,15 @@ def cached_payload(key: str, ttl: float, factory):
     with API_CACHE_LOCK:
         API_CACHE[key] = (now, payload)
     return payload
+
+
+def cached_payload_if_fresh(key: str, ttl: float):
+    now = time.time()
+    with API_CACHE_LOCK:
+        cached = API_CACHE.get(key)
+        if cached and now - cached[0] < ttl:
+            return cached[1]
+    return None
 
 
 def clear_api_cache(*keys: str) -> None:
@@ -348,8 +369,44 @@ def latest_earnings_snapshot_age() -> float | None:
         return None
 
 
+def dashboard_sync_priority(task: str) -> dict[str, object]:
+    try:
+        return sync_priority_decision(task)
+    except Exception as exc:  # noqa: BLE001 - dashboard must keep serving.
+        return {"enabled": True, "active": False, "task": task, "reasons": [], "error": str(exc)}
+
+
+def deferred_earnings_payload(sync_priority: dict[str, object]) -> dict[str, object]:
+    return {
+        "generated_at": now_iso(),
+        "status": "deferred",
+        "source": "dashboard-sync-priority",
+        "sync_priority": sync_priority,
+        "credits": {"totals": {"total_wei": "0", "total_bdag": "0"}},
+        "price": {},
+        "wallet": {"sources": []},
+        "miner_estimates": [],
+        "history": [],
+        "history_sample_count": 0,
+        "history_total_sample_count": 0,
+        "history_stale": True,
+        "history_stale_reason": "sync priority active; live earnings collection is deferred",
+    }
+
+
 def record_dashboard_earnings_sample(reason: str) -> bool:
     ensure_runtime()
+    sync_priority = dashboard_sync_priority("dashboard_earnings_sampler")
+    if sync_priority.get("defer_dashboard_samplers") or sync_priority.get("active"):
+        write_earnings_sampler_state(
+            {
+                "updated_at": now_iso(),
+                "status": "deferred",
+                "reason": reason,
+                "sync_priority": sync_priority,
+            }
+        )
+        return False
     age = latest_earnings_snapshot_age()
     if age is not None and age < EARNINGS_SAMPLER_INTERVAL_SECONDS * 0.8:
         return False
@@ -406,6 +463,19 @@ def write_global_sampler_state(payload: dict[str, object]) -> None:
 def run_global_refresh(reason: str) -> None:
     started = time.time()
     try:
+        maintenance_decision = background_maintenance_decision("dashboard_global_sampler")
+        if not maintenance_decision.get("allowed", True):
+            write_global_sampler_state(
+                {
+                    "updated_at": now_iso(),
+                    "status": "deferred",
+                    "reason": reason,
+                    "duration_seconds": round(time.time() - started, 3),
+                    "maintenance_decision": maintenance_decision,
+                    "error": "; ".join(str(item) for item in maintenance_decision.get("reasons", []) if item),
+                }
+            )
+            return
         payload = collect_global_blockchain()
         clear_api_cache("global", "sampler")
         write_global_sampler_state(
@@ -2526,19 +2596,21 @@ HTML = r"""<!doctype html>
     function renderMiners() {
       const tbody = document.getElementById("minersTable");
       tbody.innerHTML = "";
-      if (!miners.length) {
+      const rows = miners.filter(primaryMinerLaneRow);
+      if (!rows.length) {
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td colspan="7" class="subtle">No miners discovered yet.</td>`;
+        const emptyText = primaryMinerFilteringEnabled() ? "No target ASIC miners discovered yet." : "No miners discovered yet.";
+        tr.innerHTML = `<td colspan="7" class="subtle">${emptyText}</td>`;
         tbody.appendChild(tr);
         return;
       }
-      for (const miner of miners) {
+      for (const miner of rows) {
         const result = minerResults[miner.ip];
         const pool = miner.current_pool || {};
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td class="checkbox-cell"><input type="checkbox" class="miner-select" value="${escapeHtml(miner.ip)}" checked></td>
-          <td class="nowrap miner-name"><span class="miner-dot"></span>${escapeHtml(minerDisplayLabel(miner))}<br><span class="subtle">${escapeHtml(miner.ip ? `observed ${miner.ip}` : "")}</span></td>
+          <td class="nowrap miner-name"><span class="miner-dot"></span>${escapeHtml(minerMacLabel(miner))}</td>
           <td>${escapeHtml(miner.model || miner.hardware || "unknown")}</td>
           <td>${escapeHtml(miner.firmware || miner.mcbversion || "")}</td>
           <td>${escapeHtml(pool.url || "")}<br><span class="subtle">${escapeShortEth(pool.user || "")}</span></td>
@@ -2570,18 +2642,49 @@ HTML = r"""<!doctype html>
       if (!activeMinerLaneRow(miner)) return false;
       return String(miner.device_type || "").toLowerCase() === "asic";
     }
+    const configuredTargetMinerFilters = __BDAG_DASHBOARD_TARGET_MINER_FILTERS__;
+    function normalizedMinerFilterSuffix(value) {
+      const mac = normalizedMac(value);
+      if (mac) return mac.split(":").slice(-2).join(":");
+      const text = String(value || "").trim().toLowerCase().replaceAll("-", ":");
+      return /^[0-9a-f]{2}:[0-9a-f]{2}$/.test(text) ? text : "";
+    }
+    const primaryMinerMacs = new Set(configuredTargetMinerFilters.map(normalizedMac).filter(Boolean));
+    const primaryMinerSuffixes = new Set(configuredTargetMinerFilters.map(normalizedMinerFilterSuffix).filter(Boolean));
+    function primaryMinerFilteringEnabled() {
+      return primaryMinerMacs.size > 0 || primaryMinerSuffixes.size > 0;
+    }
+    function primaryMinerTargetCount() {
+      return Math.max(primaryMinerMacs.size, primaryMinerSuffixes.size);
+    }
+    function primaryMinerLaneRow(miner) {
+      if (!primaryMinerFilteringEnabled()) return true;
+      const mac = minerMac(miner);
+      if (!mac) return false;
+      if (primaryMinerMacs.has(mac)) return true;
+      return primaryMinerSuffixes.has(mac.split(":").slice(-2).join(":"));
+    }
+    function primaryActiveAsicMinerLaneRow(miner) {
+      return primaryMinerLaneRow(miner) && localAsicMinerLaneRow(miner);
+    }
+    function minerMacLabel(miner) {
+      return minerMac(miner) || "unknown-mac";
+    }
     function renderManagedMiners(health) {
       const tbody = document.getElementById("managedMinersTable");
       if (!tbody) return;
       tbody.innerHTML = "";
       const lane = health.lane_balance || {};
       const allRows = health.miners || [];
-      const rows = allRows.filter(localAsicMinerLaneRow);
-      const hiddenRows = Math.max(0, allRows.length - rows.length);
-      text("minerHealthSummary", `active-asics=${fmt(rows.length)} hidden-non-asic-or-inactive=${fmt(hiddenRows)} tracked=${fmt(health.tracked_count || 0)} connected=${fmt(health.connected_count || 0)} managed=${fmt(health.managed_count || 0)} ok=${fmt(health.ok_count || 0)} stratum-hidden=${fmt(health.stratum_count || 0)} lanes=${fmt(lane.expected_lane_count || 0)} expected=${escapeHtml(lane.expected_work_percent || "0.00")}% imbalanced=${fmt(lane.imbalanced_count || 0)}`);
+      const rows = allRows.filter(primaryActiveAsicMinerLaneRow);
+      const activeLabel = primaryMinerFilteringEnabled() ? `target-active-asics=${fmt(rows.length)}/${fmt(primaryMinerTargetCount())}` : `active-asics=${fmt(rows.length)}`;
+      const summaryConnected = primaryMinerFilteringEnabled() ? rows.filter(miner => miner.connected).length : (health.connected_count || 0);
+      const summaryManaged = primaryMinerFilteringEnabled() ? rows.filter(miner => miner.managed).length : (health.managed_count || 0);
+      text("minerHealthSummary", `${activeLabel} connected=${fmt(summaryConnected)} managed=${fmt(summaryManaged)} lanes=${fmt(lane.expected_lane_count || 0)} expected=${escapeHtml(lane.expected_work_percent || "0.00")}% imbalanced=${fmt(lane.imbalanced_count || 0)}`);
       if (!rows.length) {
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td colspan="14" class="subtle">No active local ASIC lanes are currently present.</td>`;
+        const emptyText = primaryMinerFilteringEnabled() ? "No active target ASIC lanes are currently present." : "No active local ASIC lanes are currently present.";
+        tr.innerHTML = `<td colspan="14" class="subtle">${emptyText}</td>`;
         tbody.appendChild(tr);
         return;
       }
@@ -2591,7 +2694,7 @@ HTML = r"""<!doctype html>
         const issue = miner.issue || miner.api_error || "";
         const identity = minerIdentity(miner);
         const color = minerColor(identity);
-        const name = minerDisplayLabel(miner);
+        const name = minerMacLabel(miner);
         const tr = document.createElement("tr");
         tr.className = "miner-row";
         tr.style.setProperty("--miner-row-color", transparentColor(color, 0.08));
@@ -3153,7 +3256,7 @@ HTML = r"""<!doctype html>
       const timestamped = snapshots
         .map(snapshot => ({
           at: parseDashboardTime(snapshot.generated_at),
-          miners: snapshot.miner_estimates || [],
+          miners: visibleMinerRows(snapshot.miner_estimates).filter(primaryMinerLaneRow),
         }))
         .filter(snapshot => snapshot.at !== null)
         .sort((a, b) => a.at - b.at);
@@ -3169,9 +3272,9 @@ HTML = r"""<!doctype html>
           const key = minerIdentity(row);
           if (!key) continue;
           if (!seriesMap.has(key)) {
-            seriesMap.set(key, {key, label: minerDisplayLabel(row), points: []});
+            seriesMap.set(key, {key, label: minerMacLabel(row), points: []});
           }
-          seriesMap.get(key).label = minerDisplayLabel(row);
+          seriesMap.get(key).label = minerMacLabel(row);
           seriesMap.get(key).points.push({t: snapshot.at, v: value});
         }
       }
@@ -3341,7 +3444,7 @@ HTML = r"""<!doctype html>
       const timestamped = snapshots
         .map(snapshot => ({
           at: parseDashboardTime(snapshot.generated_at),
-          miners: snapshot.miner_estimates || [],
+          miners: visibleMinerRows(snapshot.miner_estimates).filter(primaryMinerLaneRow),
         }))
         .filter(snapshot => snapshot.at !== null)
         .sort((a, b) => a.at - b.at);
@@ -3356,9 +3459,9 @@ HTML = r"""<!doctype html>
           const key = minerIdentity(row);
           if (!key) continue;
           if (!seriesMap.has(key)) {
-            seriesMap.set(key, {key, label: minerDisplayLabel(row), points: []});
+            seriesMap.set(key, {key, label: minerMacLabel(row), points: []});
           }
-          seriesMap.get(key).label = minerDisplayLabel(row);
+          seriesMap.get(key).label = minerMacLabel(row);
           seriesMap.get(key).points.push({t: snapshot.at, v: value});
         }
       }
@@ -3974,6 +4077,8 @@ HTML = r"""<!doctype html>
 </html>
 """
 
+HTML = HTML.replace("__BDAG_DASHBOARD_TARGET_MINER_FILTERS__", DASHBOARD_TARGET_MINER_FILTERS_JSON)
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "BDAGDashboard/1.0"
@@ -4059,6 +4164,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/earnings":
             record_dashboard_earnings_sample("api-earnings")
+            sync_priority = dashboard_sync_priority("dashboard_api_earnings")
+            if sync_priority.get("defer_dashboard_samplers") or sync_priority.get("active"):
+                cached = cached_payload_if_fresh("earnings", EARNINGS_CACHE_SECONDS)
+                self.send_json(cached if cached is not None else deferred_earnings_payload(sync_priority))
+                return
             self.send_json(cached_payload("earnings", EARNINGS_CACHE_SECONDS, lambda: collect_earnings(include_history=True)))
             return
         if path == "/api/sampler":
@@ -4195,14 +4305,21 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> int:
     ensure_runtime()
-    history_warmup = warm_dashboard_history_caches()
-    warmed = history_warmup.get("histories", {}) if isinstance(history_warmup, dict) else {}
-    if warmed:
-        summary = ", ".join(
-            f"{name}:{payload.get('chart_rows', 0) if isinstance(payload, dict) else 0}"
-            for name, payload in warmed.items()
+    warmup_priority = dashboard_sync_priority("dashboard_history_warmup")
+    if warmup_priority.get("defer_dashboard_samplers") or warmup_priority.get("active"):
+        print(
+            "Dashboard history warmup deferred: "
+            f"sync priority active lag={warmup_priority.get('lag_blocks')}"
         )
-        print(f"Dashboard history warmup {history_warmup.get('status', 'unknown')}: {summary}")
+    else:
+        history_warmup = warm_dashboard_history_caches()
+        warmed = history_warmup.get("histories", {}) if isinstance(history_warmup, dict) else {}
+        if warmed:
+            summary = ", ".join(
+                f"{name}:{payload.get('chart_rows', 0) if isinstance(payload, dict) else 0}"
+                for name, payload in warmed.items()
+            )
+            print(f"Dashboard history warmup {history_warmup.get('status', 'unknown')}: {summary}")
     if token_required():
         token = get_action_token()
         print(f"Action token file: {RUNTIME_DIR / 'dashboard-token.txt'}")

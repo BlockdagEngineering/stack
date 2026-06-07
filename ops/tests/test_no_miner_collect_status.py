@@ -591,6 +591,9 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
                 "BACKGROUND_MAINTENANCE_LAZY_TASKS",
                 "BACKGROUND_MAINTENANCE_POOL_READY_TASKS",
                 "BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN",
+                "SYNC_PRIORITY_ENABLED",
+                "SYNC_PRIORITY_MIN_LAG_BLOCKS",
+                "SYNC_PRIORITY_DEFER_DASHBOARD_SAMPLERS",
                 "host_runtime_profile",
             )
         }
@@ -622,6 +625,24 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
         self.assertFalse(decision["allowed"])
         self.assertTrue(any("chain catch-up has priority" in reason for reason in decision["reasons"]))
         self.assertTrue(any("host iowait" in reason for reason in decision["reasons"]))
+        self.assertTrue(decision["sync_priority"]["active"])
+
+    def test_background_maintenance_defers_when_sync_priority_is_active(self) -> None:
+        pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
+        pool_ops.SYNC_PRIORITY_ENABLED = True
+        pool_ops.SYNC_PRIORITY_MIN_LAG_BLOCKS = 25
+        status = {
+            "mode": "catchup_pause",
+            "catchup_policy": {"active": True, "trigger": "lag_threshold", "lag_blocks": 1000},
+            "sync_progress": {"status": "unknown", "remaining_blocks": None},
+            "host_pressure": {"iowait_percent": 1.0, "io_some_avg10": 0.0, "cpu_some_avg10": 0.0},
+        }
+
+        decision = pool_ops.background_maintenance_decision("dashboard_global_sampler", status)
+
+        self.assertFalse(decision["allowed"])
+        self.assertTrue(decision["sync_priority"]["active"])
+        self.assertTrue(any("sync priority active" in reason for reason in decision["reasons"]))
 
     def test_background_maintenance_allows_idle_synced_host(self) -> None:
         pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
@@ -640,6 +661,12 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
         pool_ops.BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT = 25.0
         pool_ops.BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN = 20.0
         pool_ops.BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN = 10.0
+        pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = {
+            "rawdatadir_publish",
+            "rawdatadir_content_seal",
+            "ipfs_content_sidecar",
+            "ipfs_segment_writer",
+        }
         status = {
             "overall": "ok",
             "mode": "mining",
@@ -730,8 +757,8 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
         }
         pool_ops.host_runtime_profile = lambda: {"cpu_count": 8}
         status = {
-            "overall": "syncing",
-            "mode": "catchup_pause",
+            "overall": "ok",
+            "mode": "ready_no_miners",
             "can_mine": False,
             "can_accept_shares": False,
             "can_submit_blocks": False,

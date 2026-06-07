@@ -37,6 +37,7 @@ from pool_ops import (
     run,
     save_miner_registry,
     split_env_list,
+    sync_priority_decision,
     upsert_pool_activity_miners,
     write_json_file,
     write_status_sampler_payload,
@@ -1683,6 +1684,7 @@ def maybe_record_earnings_snapshot(
     last_attempt_epoch: float,
     interval_seconds: float,
     enabled: bool,
+    status: dict[str, Any] | None = None,
 ) -> float:
     if not enabled or interval_seconds <= 0:
         return last_attempt_epoch
@@ -1697,6 +1699,15 @@ def maybe_record_earnings_snapshot(
         latest_age = None
     if latest_age is not None and latest_age < interval_seconds:
         return last_attempt_epoch
+
+    sync_priority = sync_priority_decision("status_sampler_earnings_snapshot", status)
+    if sync_priority.get("defer_dashboard_samplers") or sync_priority.get("active"):
+        reason = "; ".join(str(item) for item in sync_priority.get("reasons", []) if item)
+        log(
+            "earnings snapshot deferred for sync priority "
+            f"lag={sync_priority.get('lag_blocks')} reason={reason or 'chain catch-up active'}"
+        )
+        return now_epoch
 
     try:
         snapshot = record_earnings_snapshot()
@@ -1733,6 +1744,7 @@ def run_loop(interval_seconds: float, include_logs: bool, earnings_snapshot_inte
                 last_earnings_attempt_epoch,
                 earnings_snapshot_interval_seconds,
                 record_earnings,
+                payload,
             )
         except Exception as exc:  # noqa: BLE001 - sampler must keep trying.
             log(f"sample failed: {exc}")

@@ -259,6 +259,9 @@ CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS = env_int("BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_B
 CATCHUP_IOWAIT_WARN_PERCENT = env_float("BDAG_CATCHUP_IOWAIT_WARN_PERCENT", 15.0, minimum=0.0)
 CATCHUP_IO_SOME_AVG10_WARN = env_float("BDAG_CATCHUP_IO_SOME_AVG10_WARN", 20.0, minimum=0.0)
 CATCHUP_IO_FULL_AVG10_WARN = env_float("BDAG_CATCHUP_IO_FULL_AVG10_WARN", 10.0, minimum=0.0)
+SYNC_PRIORITY_ENABLED = env_bool("BDAG_SYNC_PRIORITY_ENABLED", True)
+SYNC_PRIORITY_MIN_LAG_BLOCKS = env_int("BDAG_SYNC_PRIORITY_MIN_LAG_BLOCKS", 25, minimum=0)
+SYNC_PRIORITY_DEFER_DASHBOARD_SAMPLERS = env_bool("BDAG_SYNC_PRIORITY_DEFER_DASHBOARD_SAMPLERS", True)
 SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS = int(os.environ.get("BDAG_SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS", "2700"))
 DEFAULT_POOL_ENV_FILE = PROJECT_ROOT / ".env"
 POOL_ENV_FILE = path_from_env("BDAG_POOL_ENV_FILE", DEFAULT_POOL_ENV_FILE, PROJECT_ROOT)
@@ -331,6 +334,11 @@ MINER_HASHRATE_PROBE_WORKERS = env_int("BDAG_MINER_HASHRATE_PROBE_WORKERS", 8, m
 MINER_SCAN_TIMEOUT = env_float("BDAG_MINER_SCAN_TIMEOUT", 0.8, minimum=0.1)
 MINER_SCAN_WORKERS = env_int("BDAG_MINER_SCAN_WORKERS", 64, minimum=1)
 MINER_SCAN_MAX_TARGETS = env_int("BDAG_MINER_SCAN_MAX_TARGETS", 1024, minimum=1)
+ASIC_ARP_REFRESH_ENABLED = env_bool("BDAG_ASIC_ARP_REFRESH_ENABLED", True)
+ASIC_ARP_REFRESH_MIN_SECONDS = env_float("BDAG_ASIC_ARP_REFRESH_MIN_SECONDS", 5.0, minimum=0.0)
+ASIC_ARP_REFRESH_TIMEOUT_SECONDS = env_int("BDAG_ASIC_ARP_REFRESH_TIMEOUT_SECONDS", 1, minimum=1)
+ASIC_ARP_REFRESH_WORKERS = env_int("BDAG_ASIC_ARP_REFRESH_WORKERS", 64, minimum=1)
+ASIC_ARP_REFRESH_MAX_TARGETS = env_int("BDAG_ASIC_ARP_REFRESH_MAX_TARGETS", 256, minimum=1)
 DEFAULT_DOCKER_BRIDGE_CIDRS = "172.16.0.0/12"
 MINER_DHCP_LEASE_FILE_PATTERNS = split_env_list(
     "BDAG_MINER_DHCP_LEASE_FILES",
@@ -384,13 +392,13 @@ GLOBAL_EVM_FALLBACK_ENABLED = env_bool("BDAG_GLOBAL_EVM_FALLBACK_ENABLED", False
 NODE_EVM_RPC_PORT = int(os.environ.get("BDAG_NODE_EVM_RPC_PORT", "18545"))
 EVM_SYNC_LAG_THRESHOLD_BLOCKS = env_int("BDAG_EVM_SYNC_LAG_THRESHOLD_BLOCKS", 1000, minimum=0)
 EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS = env_int("BDAG_EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS", 3, minimum=1)
-EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES = env_int("BDAG_EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES", 1, minimum=1)
+EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES = env_int("BDAG_EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES", 2, minimum=1)
 EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG = env_int(
     "BDAG_EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG",
     EVM_SYNC_LAG_THRESHOLD_BLOCKS,
     minimum=0,
 )
-EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE = env_bool("BDAG_EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE", True)
+EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE = env_bool("BDAG_EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE", False)
 EARNINGS_HISTORY_RETENTION_SECONDS = int(os.environ.get("BDAG_EARNINGS_HISTORY_RETENTION_SECONDS", str(35 * 86400)))
 EARNINGS_DASHBOARD_HISTORY_SECONDS = int(os.environ.get("BDAG_EARNINGS_DASHBOARD_HISTORY_SECONDS", str(31 * 86400)))
 EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_EARNINGS_SNAPSHOT_INTERVAL_SECONDS", "60"))
@@ -1198,6 +1206,21 @@ def docker_compose_project_name() -> str:
     return PROJECT_ROOT.name
 
 
+def docker_compose_files() -> list[Path]:
+    raw = os.environ.get("BDAG_COMPOSE_FILES") or os.environ.get("COMPOSE_FILE") or "docker-compose.yml"
+    separator = os.environ.get("COMPOSE_PATH_SEPARATOR") or os.pathsep
+    files: list[Path] = []
+    for item in raw.split(separator):
+        item = item.strip()
+        if not item:
+            continue
+        path = Path(item).expanduser()
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        files.append(path)
+    return files or [PROJECT_ROOT / "docker-compose.yml"]
+
+
 def docker_compose_command(*args: str) -> list[str]:
     command = [
         "docker",
@@ -1207,11 +1230,9 @@ def docker_compose_command(*args: str) -> list[str]:
     ]
     if POOL_ENV_FILE.exists():
         command.extend(["--env-file", str(POOL_ENV_FILE)])
-    command.extend([
-        "-f",
-        str(PROJECT_ROOT / "docker-compose.yml"),
-        *args,
-    ])
+    for compose_file in docker_compose_files():
+        command.extend(["-f", str(compose_file)])
+    command.extend(args)
     return command
 
 
@@ -1809,6 +1830,8 @@ def is_ipv4(value: str) -> bool:
 
 
 MAC_RE = re.compile(r"\b(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b")
+MAC_SUFFIX_RE = re.compile(r"^[0-9a-f]{2}:[0-9a-f]{2}$")
+_LAST_ASIC_ARP_REFRESH_AT = 0.0
 
 
 def normalize_mac(value: Any) -> str:
@@ -1820,7 +1843,84 @@ def normalize_mac(value: Any) -> str:
     return text if MAC_RE.fullmatch(text) else ""
 
 
+def configured_target_miner_filters() -> tuple[set[str], set[str]]:
+    raw = os.environ.get("BDAG_DASHBOARD_TARGET_MINER_MACS") or os.environ.get("BDAG_TARGET_MINER_MACS", "")
+    macs: set[str] = set()
+    suffixes: set[str] = set()
+    for item in re.split(r"[\s,;]+", raw):
+        value = item.strip().lower().replace("-", ":")
+        if not value:
+            continue
+        mac = normalize_mac(value)
+        if mac:
+            macs.add(mac)
+            suffixes.add(":".join(mac.split(":")[-2:]))
+        elif MAC_SUFFIX_RE.fullmatch(value):
+            suffixes.add(value)
+    return macs, suffixes
+
+
+def target_miner_filter_enabled() -> bool:
+    macs, suffixes = configured_target_miner_filters()
+    return bool(macs or suffixes)
+
+
+def target_miner_mac_match(mac: Any) -> bool:
+    normalized = normalize_mac(mac)
+    if not normalized:
+        return False
+    macs, suffixes = configured_target_miner_filters()
+    if not macs and not suffixes:
+        return True
+    return normalized in macs or ":".join(normalized.split(":")[-2:]) in suffixes
+
+
+def refresh_asic_arp_neighbors(force: bool = False) -> None:
+    """Seed the kernel neighbour table from the configured ASIC LAN target."""
+    global _LAST_ASIC_ARP_REFRESH_AT
+    if not ASIC_ARP_REFRESH_ENABLED:
+        return
+    now = time.time()
+    if not force and now - _LAST_ASIC_ARP_REFRESH_AT < ASIC_ARP_REFRESH_MIN_SECONDS:
+        return
+    _LAST_ASIC_ARP_REFRESH_AT = now
+
+    ping = shutil.which("ping")
+    if not ping:
+        return
+    try:
+        targets = parse_scan_targets(default_miner_scan_target())
+    except Exception:
+        return
+    targets = [
+        ip
+        for ip in targets[:ASIC_ARP_REFRESH_MAX_TARGETS]
+        if is_lan_ipv4(ip) and not is_docker_bridge_ipv4(ip)
+    ]
+    if not targets:
+        return
+
+    timeout = max(1, ASIC_ARP_REFRESH_TIMEOUT_SECONDS)
+
+    def probe(ip: str) -> None:
+        try:
+            subprocess.run(
+                [ping, "-c", "1", "-W", str(timeout), ip],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout + 1,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return
+
+    worker_count = max(1, min(ASIC_ARP_REFRESH_WORKERS, len(targets)))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        list(executor.map(probe, targets))
+
+
 def read_neighbor_macs() -> dict[str, str]:
+    refresh_asic_arp_neighbors()
     result = run(["ip", "neigh", "show"], timeout=5)
     if not result.ok:
         return {}
@@ -1977,6 +2077,8 @@ def augment_miner_registry_with_lan_hints(registry: dict[str, Any]) -> dict[str,
                 item[key] = hint[key]
         before_sources = list(item.get("sources") or [])
         item["sources"] = merge_unique_strings(item.get("sources"), hint.get("sources"), "lan-hint")
+        if "arp-neighbor" in {str(source).lower() for source in merge_unique_strings(hint.get("sources"))}:
+            item["ip"] = ip
         item["ip_history"] = merge_unique_strings(item.get("ip_history"), ip)
         item["expected_pool_url"] = item.get("expected_pool_url") or defaults["pool_url"]
         item["expected_worker_user"] = item.get("expected_worker_user") or defaults["worker_user"]
@@ -2286,15 +2388,23 @@ def read_miner_registry() -> dict[str, Any]:
 
 def save_miner_registry(miners: list[dict[str, Any]]) -> dict[str, Any]:
     neighbors = read_neighbor_macs()
+    current_ip_by_mac: dict[str, str] = {}
+    for neighbor_ip, neighbor_mac in sorted(neighbors.items(), key=lambda item: int(ipaddress.ip_address(item[0]))):
+        current_ip_by_mac.setdefault(neighbor_mac, neighbor_ip)
     by_identity: dict[str, dict[str, Any]] = {}
     for miner in sorted(miners, key=miner_observation_epoch):
         ip = str(miner.get("ip", ""))
         if not is_ipv4(ip):
             continue
+        observed_ip = ip
         item = dict(miner)
         if is_docker_bridge_ipv4(ip):
             continue
         mac = miner_mac_from_payload(item, ip, neighbors)
+        current_ip = current_ip_by_mac.get(mac)
+        if current_ip:
+            ip = current_ip
+            item["ip"] = current_ip
         retirement_decision = retired_miner_identity_decision(item, ip, mac)
         if retirement_decision.get("retired"):
             continue
@@ -2306,7 +2416,7 @@ def save_miner_registry(miners: list[dict[str, Any]]) -> dict[str, Any]:
         if mac:
             item["mac"] = mac
             item["device_id"] = f"mac:{mac}"
-        item["ip_history"] = merge_unique_strings(item.get("ip_history"), ip)
+        item["ip_history"] = merge_unique_strings(item.get("ip_history"), observed_ip, ip)
         key = f"mac:{mac}" if mac else f"ip:{ip}"
         by_identity[key] = merge_miner_records(by_identity[key], item) if key in by_identity else item
 
@@ -4645,6 +4755,7 @@ def collect_miner_health() -> dict[str, Any]:
     failures: list[str] = []
     warnings: list[str] = []
     now_epoch = seconds_since_epoch()
+    target_scope_enabled = target_miner_filter_enabled()
 
     for registered in miners:
         ip = str(registered.get("ip", ""))
@@ -4862,6 +4973,7 @@ def collect_miner_health() -> dict[str, Any]:
 
         sources = registered.get("sources") if isinstance(registered.get("sources"), list) else []
         discovered_by_value = discovered_by or (str(sources[0]) if sources else "")
+        target_miner = target_miner_mac_match(mac)
         health.append(
             {
                 "ip": ip,
@@ -4874,6 +4986,7 @@ def collect_miner_health() -> dict[str, Any]:
                 "device_type": device_type,
                 "discovered_by": discovered_by_value,
                 "auto_discovered": bool(registered.get("auto_discovered")),
+                "target_miner": target_miner,
                 "status": status,
                 "configured": configured,
                 "connected": connected,
@@ -4928,31 +5041,38 @@ def collect_miner_health() -> dict[str, Any]:
             }
         )
 
-    total_work = sum(item["share_work"] for item in health if item.get("relevant_for_work_share") and item.get("share_work", 0) > 0)
-    total_work_includes_all_rows = False
-    if not total_work:
-        total_work = sum(item["share_work"] for item in health if item.get("share_work", 0) > 0)
-        total_work_includes_all_rows = True
-    expected_lane_rows = [
-        item
-        for item in health
-        if item.get("relevant_for_work_share")
-        and (item.get("configured") or item.get("managed"))
-    ]
+    if target_scope_enabled:
+        expected_lane_rows = [
+            item
+            for item in health
+            if item.get("target_miner")
+            and str(item.get("device_type") or "").lower() == "asic"
+            and (item.get("configured") or item.get("managed") or item.get("connected") or item.get("work_pool_active"))
+        ]
+        lane_scope = "target_asic_macs"
+    else:
+        expected_lane_rows = [
+            item
+            for item in health
+            if item.get("relevant_for_work_share")
+            and (item.get("configured") or item.get("managed"))
+        ]
+        lane_scope = "managed_or_configured"
     expected_lane_ids = {
         str(item.get("identity_key") or item.get("device_id") or item.get("mac") or item.get("ip") or "")
         for item in expected_lane_rows
     }
     expected_lane_count = len(expected_lane_rows)
     expected_lane_percent = Decimal("100") / Decimal(expected_lane_count) if expected_lane_count > 0 else Decimal("0")
+    total_work = sum(item["share_work"] for item in expected_lane_rows if item.get("share_work", 0) > 0)
     imbalanced_lanes: list[str] = []
     for item in health:
         share_work_int = int(item.get("share_work", 0) or 0)
-        include_in_work_percent = bool(item.get("relevant_for_work_share") or total_work_includes_all_rows)
-        if total_work > 0 and share_work_int > 0 and include_in_work_percent:
-            item["work_percent"] = percent_to_str((Decimal(share_work_int) / Decimal(total_work)) * Decimal("100"))
         lane_id = str(item.get("identity_key") or item.get("device_id") or item.get("mac") or item.get("ip") or "")
         expected_lane = bool(lane_id and lane_id in expected_lane_ids)
+        include_in_work_percent = bool(expected_lane)
+        if total_work > 0 and share_work_int > 0 and include_in_work_percent:
+            item["work_percent"] = percent_to_str((Decimal(share_work_int) / Decimal(total_work)) * Decimal("100"))
         item["expected_work_lane"] = expected_lane
         item["expected_work_percent"] = percent_to_str(expected_lane_percent) if expected_lane_count > 0 and expected_lane else "0.00"
         item["work_ratio_to_expected"] = None
@@ -4989,6 +5109,8 @@ def collect_miner_health() -> dict[str, Any]:
         **counts,
         "lane_balance": {
             "identity_basis": "mac",
+            "scope": lane_scope,
+            "target_filter_enabled": target_scope_enabled,
             "expected_lane_count": expected_lane_count,
             "expected_work_percent": percent_to_str(expected_lane_percent) if expected_lane_count > 0 else "0.00",
             "imbalanced_count": len(imbalanced_lanes),
@@ -6139,6 +6261,42 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         if sync_progress.get("status") == "syncing" and not failures and not pool_health["needs_fast_repair"]:
             sync_health["needs_fast_sync_repair"] = False
     sync_health["sync_progress_health"] = sync_progress_health
+    public_chain_divergence_nodes: dict[str, Any] = {}
+    for node, progress in (sync_progress.get("nodes") or {}).items():
+        if not isinstance(progress, dict):
+            continue
+        alignment = progress.get("public_chain_alignment")
+        if not isinstance(alignment, dict):
+            alignment = {}
+        if progress.get("public_chain_diverged") or progress.get("solo_mining_suspected"):
+            public_chain_divergence_nodes[str(node)] = alignment
+            node_details.setdefault(str(node), {})
+            node_details[str(node)]["public_chain_diverged"] = True
+            node_details[str(node)]["solo_mining_suspected"] = bool(progress.get("solo_mining_suspected"))
+            node_details[str(node)]["public_chain_alignment"] = alignment
+    sync_health["public_chain_divergence"] = bool(public_chain_divergence_nodes)
+    sync_health["public_chain_divergence_nodes"] = public_chain_divergence_nodes
+    if public_chain_divergence_nodes:
+        summaries = []
+        for node, alignment in public_chain_divergence_nodes.items():
+            if isinstance(alignment, dict):
+                reference = alignment.get("reference_source") or "public reference"
+                lag = alignment.get("reference_lag_blocks")
+                reason = alignment.get("reason") or "local EVM headers differ from public references"
+                hash_mismatches = alignment.get("hash_mismatch_count")
+                local_miner = alignment.get("local_only_miner") or "unknown-local-miner"
+                summaries.append(
+                    f"{node}: {reason}; local_miner={local_miner}; reference={reference}; "
+                    f"EVM lag={lag}; hash_mismatches={hash_mismatches}"
+                )
+        message = (
+            "public-chain divergence suspected: local node EVM headers do not match public references"
+            + (f" ({'; '.join(summaries[:2])})" if summaries else "")
+        )
+        add_sync_warning(message)
+        pool_health["public_chain_divergence"] = True
+        pool_health["needs_fast_repair"] = True
+        sync_health["needs_fast_sync_repair"] = True
 
     overall = "ok"
     if failures:
@@ -6310,6 +6468,146 @@ def _sync_chain_rpc_latency_ms(sync_progress: dict[str, Any]) -> float | None:
     return max(values) if values else None
 
 
+def _sync_priority_add_lag(values: list[int], value: Any) -> None:
+    parsed = safe_int(value, -1)
+    if parsed >= 0:
+        values.append(parsed)
+
+
+def _sync_priority_block_gap(info: Mapping[str, Any]) -> int:
+    current = safe_int(
+        info.get("evm_block_count")
+        if info.get("evm_block_count") is not None
+        else info.get("current_block")
+        if info.get("current_block") is not None
+        else info.get("latest_block"),
+        -1,
+    )
+    highest = safe_int(
+        info.get("evm_reference_block_count")
+        if info.get("evm_reference_block_count") is not None
+        else info.get("highest_block"),
+        -1,
+    )
+    if current >= 0 and highest >= current:
+        return highest - current
+    return -1
+
+
+def _sync_priority_lag_blocks(payload: Mapping[str, Any], sync_progress: Mapping[str, Any]) -> int:
+    values: list[int] = []
+    policy = payload.get("catchup_policy") if isinstance(payload.get("catchup_policy"), Mapping) else {}
+    if isinstance(policy, Mapping):
+        _sync_priority_add_lag(values, policy.get("lag_blocks"))
+    for key in (
+        "remaining_blocks",
+        "peer_ahead_blocks",
+        "evm_lag_to_reference",
+        "evm_lag_to_chain",
+        "reference_lag_blocks",
+        "chain_tip_lag_blocks",
+    ):
+        _sync_priority_add_lag(values, sync_progress.get(key))
+    _sync_priority_add_lag(values, _sync_priority_block_gap(sync_progress))
+    for group in (sync_progress.get("nodes"), payload.get("nodes")):
+        if not isinstance(group, Mapping):
+            continue
+        for info in group.values():
+            if not isinstance(info, Mapping):
+                continue
+            for key in (
+                "remaining_blocks",
+                "peer_ahead_blocks",
+                "evm_lag_to_reference",
+                "evm_lag_to_chain",
+                "reference_lag_blocks",
+                "node_p2p_best_peer_lead_blocks",
+            ):
+                _sync_priority_add_lag(values, info.get(key))
+            alignment = info.get("public_chain_alignment")
+            if isinstance(alignment, Mapping):
+                _sync_priority_add_lag(values, alignment.get("reference_lag_blocks"))
+            _sync_priority_add_lag(values, _sync_priority_block_gap(info))
+    return max(values) if values else -1
+
+
+def sync_priority_decision(task: str, status: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return whether chain catch-up should preempt optional local work."""
+    if not SYNC_PRIORITY_ENABLED:
+        return {
+            "enabled": False,
+            "active": False,
+            "task": task,
+            "reasons": [],
+            "lag_blocks": -1,
+            "min_lag_blocks": SYNC_PRIORITY_MIN_LAG_BLOCKS,
+            "defer_dashboard_samplers": False,
+        }
+
+    try:
+        payload = status if isinstance(status, dict) else collect_status_cached(include_logs=False)
+    except Exception as exc:  # noqa: BLE001 - never let priority probing take down callers.
+        return {
+            "enabled": True,
+            "active": False,
+            "task": task,
+            "reasons": [],
+            "lag_blocks": -1,
+            "min_lag_blocks": SYNC_PRIORITY_MIN_LAG_BLOCKS,
+            "defer_dashboard_samplers": False,
+            "error": str(exc),
+        }
+
+    sync_progress = payload.get("sync_progress") if isinstance(payload.get("sync_progress"), dict) else {}
+    host_pressure = payload.get("host_pressure") if isinstance(payload.get("host_pressure"), dict) else {}
+    catchup_policy = payload.get("catchup_policy") if isinstance(payload.get("catchup_policy"), dict) else {}
+    sync_status = str(sync_progress.get("status") or "unknown").strip().lower()
+    mode = str(payload.get("mode") or "unknown").strip().lower()
+    lag_blocks = _sync_priority_lag_blocks(payload, sync_progress)
+    payload_nodes = payload.get("nodes") if isinstance(payload.get("nodes"), Mapping) else {}
+    importing = sync_status == "syncing" or any(
+        isinstance(info, Mapping) and bool(info.get("importing"))
+        for info in payload_nodes.values()
+    )
+    io_pressure_reasons = catchup_policy.get("io_pressure_reasons")
+    if not isinstance(io_pressure_reasons, list):
+        io_pressure_reasons = catchup_io_pressure_reasons(host_pressure)
+
+    reasons: list[str] = []
+    if bool(catchup_policy.get("active")):
+        reasons.append(f"catchup_policy_active:{catchup_policy.get('trigger') or 'active'}")
+    if mode == "catchup_pause":
+        reasons.append("stack_mode=catchup_pause")
+    if sync_status == "syncing":
+        lag_text = "unknown" if lag_blocks < 0 else str(lag_blocks)
+        reasons.append(f"sync_status=syncing lag={lag_text}")
+    if lag_blocks >= SYNC_PRIORITY_MIN_LAG_BLOCKS and sync_status != "synced":
+        reasons.append(f"lag_blocks={lag_blocks}>={SYNC_PRIORITY_MIN_LAG_BLOCKS}")
+    if importing and lag_blocks >= SYNC_PRIORITY_MIN_LAG_BLOCKS:
+        reasons.append("node_importing_while_behind")
+    if bool(catchup_policy.get("io_pressure_active")) and lag_blocks >= SYNC_PRIORITY_MIN_LAG_BLOCKS:
+        reasons.append("catchup_io_pressure_active")
+    elif io_pressure_reasons and importing and lag_blocks >= SYNC_PRIORITY_MIN_LAG_BLOCKS:
+        reasons.append("catchup_io_pressure:" + ",".join(str(item) for item in io_pressure_reasons[:3]))
+
+    active = bool(reasons)
+    return {
+        "enabled": True,
+        "active": active,
+        "task": task,
+        "reasons": reasons,
+        "lag_blocks": lag_blocks,
+        "min_lag_blocks": SYNC_PRIORITY_MIN_LAG_BLOCKS,
+        "sync_status": sync_status,
+        "mode": mode,
+        "importing": importing,
+        "catchup_policy_active": bool(catchup_policy.get("active")),
+        "io_pressure_reasons": io_pressure_reasons,
+        "defer_dashboard_samplers": bool(active and SYNC_PRIORITY_DEFER_DASHBOARD_SAMPLERS),
+        "shared_status_cache": payload.get("shared_status_cache"),
+    }
+
+
 def _background_task_selected(task: str, selected: set[str]) -> bool:
     normalized = str(task or "").strip()
     return "*" in selected or normalized in selected
@@ -6335,6 +6633,10 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
     sync_progress = payload.get("sync_progress") if isinstance(payload.get("sync_progress"), dict) else {}
     host_pressure = payload.get("host_pressure") if isinstance(payload.get("host_pressure"), dict) else {}
     reasons: list[str] = []
+    sync_priority = sync_priority_decision(task, payload)
+    if sync_priority.get("active"):
+        priority_reason = "; ".join(str(item) for item in sync_priority.get("reasons", []) if item)
+        reasons.append(f"sync priority active: {priority_reason or 'chain catch-up needs host capacity'}")
     sync_status = str(sync_progress.get("status") or "unknown")
     remaining_blocks = _sync_remaining_blocks(sync_progress)
     chain_rpc_latency_ms = _sync_chain_rpc_latency_ms(sync_progress)
@@ -6422,6 +6724,7 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
         "host_profile": profile,
         "adaptive_concurrency": adaptive_worker_budgets({**host_pressure, "chain_rpc_latency_ms": chain_rpc_latency_ms}),
         "shared_status_cache": payload.get("shared_status_cache"),
+        "sync_priority": sync_priority,
     }
 
 
@@ -7058,14 +7361,14 @@ def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int,
     snapshot["evm_lag_to_chain"] = snapshot["evm_lag_to_reference"]
     reference_lag = safe_int(snapshot.get("evm_lag_to_reference"), 0)
     alignment: dict[str, Any] = {}
-    if external_url:
+    if best_url and best_url != evm_url:
         if reference_lag >= EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG or EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE:
             alignment = evm_public_chain_alignment(
                 local_url=evm_url,
-                reference_source=external_source,
-                reference_url=external_url,
+                reference_source=best_source,
+                reference_url=best_url,
                 local_block=evm_block,
-                reference_block=int(external_block),
+                reference_block=best_block,
                 reference_lag=reference_lag,
                 mining_address=read_env_value("MINING_ADDRESS") or "",
                 timeout=timeout,
@@ -7074,10 +7377,10 @@ def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int,
             alignment = {
                 "enabled": True,
                 "local_url": evm_url,
-                "reference_source": external_source,
-                "reference_url": external_url,
+                "reference_source": best_source,
+                "reference_url": best_url,
                 "local_block": evm_block,
-                "reference_block": external_block,
+                "reference_block": best_block,
                 "reference_lag_blocks": reference_lag,
                 "min_reference_lag_blocks": EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG,
                 "sample_heights": [],
@@ -7086,6 +7389,8 @@ def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int,
                 "compared_count": 0,
                 "reference_sample_count": 0,
                 "hash_mismatch_count": 0,
+                "miner_mismatch_count": 0,
+                "hash_divergence_suspected": False,
                 "solo_mining_suspected": False,
                 "public_chain_diverged": False,
                 "reason": "public EVM reference lag is below the unsafe threshold",
@@ -7337,7 +7642,9 @@ def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TI
         evm_block = safe_int(evm_lag.get("evm_block_count"), None)
         evm_reference = safe_int(evm_lag.get("evm_reference_block_count"), None)
         evm_remaining = safe_int(evm_lag.get("evm_lag_to_reference"), 0)
-        if evm_block is not None and evm_reference is not None and evm_remaining > EVM_SYNC_LAG_THRESHOLD_BLOCKS:
+        if evm_block is not None and evm_reference is not None and (
+            evm_remaining > EVM_SYNC_LAG_THRESHOLD_BLOCKS or evm_lag.get("public_chain_diverged")
+        ):
             return {
                 "status": "syncing",
                 "percent": round(max(0.0, min(100.0, (evm_block / max(1, evm_reference)) * 100)), 2),

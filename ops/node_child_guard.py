@@ -137,6 +137,21 @@ def docker_compose_project_name() -> str:
     return PROJECT_ROOT.name
 
 
+def docker_compose_files() -> list[Path]:
+    raw = os.environ.get("BDAG_COMPOSE_FILES") or os.environ.get("COMPOSE_FILE") or "docker-compose.yml"
+    separator = os.environ.get("COMPOSE_PATH_SEPARATOR") or os.pathsep
+    files: list[Path] = []
+    for item in raw.split(separator):
+        item = item.strip()
+        if not item:
+            continue
+        path = Path(item).expanduser()
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        files.append(path)
+    return files or [PROJECT_ROOT / "docker-compose.yml"]
+
+
 def compose_command(*args: str) -> list[str]:
     command = [
         "docker",
@@ -151,11 +166,9 @@ def compose_command(*args: str) -> list[str]:
                 str(POOL_ENV_FILE),
             ]
         )
-    command.extend([
-        "-f",
-        str(PROJECT_ROOT / "docker-compose.yml"),
-        *args,
-    ])
+    for compose_file in docker_compose_files():
+        command.extend(["-f", str(compose_file)])
+    command.extend(args)
     return command
 
 

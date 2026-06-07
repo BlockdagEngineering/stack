@@ -625,10 +625,34 @@ configure_env() {
   set_stack_default_env_value .env BDAG_CATCHUP_IOWAIT_WARN_PERCENT
   set_stack_default_env_value .env BDAG_CATCHUP_IO_SOME_AVG10_WARN
   set_stack_default_env_value .env BDAG_CATCHUP_IO_FULL_AVG10_WARN
+  set_stack_default_env_value .env BDAG_SYNC_PRIORITY_ENABLED
+  set_stack_default_env_value .env BDAG_SYNC_PRIORITY_MIN_LAG_BLOCKS
+  set_stack_default_env_value .env BDAG_SYNC_PRIORITY_DEFER_DASHBOARD_SAMPLERS
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_RECREATE_ENABLED
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MB
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MIN_MB
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT
+  set_stack_default_env_value .env BDAG_SHARED_STATUS_CACHE_ENABLED
+  set_stack_default_env_value .env BDAG_SHARED_STATUS_CACHE_SECONDS
+  set_stack_default_env_value .env BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS
+  set_stack_default_env_value .env BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK
+  set_stack_default_env_value .env BDAG_DASHBOARD_STATUS_CACHE_SECONDS
+  set_stack_default_env_value .env BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS
+  set_stack_default_env_value .env BDAG_DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS
+  set_stack_default_env_value .env BDAG_WATCHDOG_EARNINGS_SNAPSHOT_INTERVAL_SECONDS
+  set_stack_default_env_value .env BDAG_STATUS_SAMPLER_EARNINGS_SNAPSHOT_INTERVAL_SECONDS
+  set_stack_default_env_value .env BDAG_DASHBOARD_EARNINGS_SAMPLER_INTERVAL_SECONDS
+  set_stack_default_env_value .env BDAG_DASHBOARD_GLOBAL_SAMPLER_INTERVAL_SECONDS
+  set_stack_default_env_value .env BDAG_GLOBAL_RPC_WORKERS
+  set_stack_default_env_value .env BDAG_GLOBAL_BLOCK_WINDOW
+  set_stack_default_env_value .env BDAG_GLOBAL_DEFERRED_BLOCK_WINDOW
+  set_stack_default_env_value .env BDAG_GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS
+  set_stack_default_env_value .env BDAG_BACKGROUND_MAINTENANCE_BACKOFF_ENABLED
+  set_stack_default_env_value .env BDAG_BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS
+  set_stack_default_env_value .env BDAG_BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT
+  set_stack_default_env_value .env BDAG_BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN
+  set_stack_default_env_value .env BDAG_BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN
+  set_stack_default_env_value .env BDAG_BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS
   configure_active_node_env
   configure_node_mining_env "$node_mining_enabled" "$mining_address"
 

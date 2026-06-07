@@ -57,6 +57,7 @@ LOCK_FILE = RUNTIME_DIR / "repair.lock"
 DIRTY_SHUTDOWN_MARKER = RUNTIME_DIR / "dirty-shutdown.marker"
 RAWDATADIR_SIDECAR_LOCK_FILE = RUNTIME_DIR / "rawdatadir-sidecar.lock"
 AUTONOMOUS_STACK_LAB_LOCK_FILE = RUNTIME_DIR / "autonomous-stack-lab.lock"
+MAC_ADDRESS_RE = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$", re.IGNORECASE)
 
 DEFAULT_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_INTERVAL", "60"))
 DEFAULT_FAILURE_THRESHOLD = int(os.environ.get("BDAG_WATCHDOG_FAILURE_THRESHOLD", "3"))
@@ -118,6 +119,9 @@ DEFAULT_NODE_ORPHAN_STORM_RESTART_COOLDOWN = int(
 )
 DEFAULT_NODE_DAG_TIP_CLEANUP_COOLDOWN = int(
     os.environ.get("BDAG_WATCHDOG_NODE_DAG_TIP_CLEANUP_COOLDOWN", "1800")
+)
+DEFAULT_PUBLIC_CHAIN_DIVERGENCE_NODE_RESTART_COOLDOWN = int(
+    os.environ.get("BDAG_WATCHDOG_PUBLIC_CHAIN_DIVERGENCE_NODE_RESTART_COOLDOWN", "300")
 )
 DEFAULT_OPTIMUM_STATE_EVENT_COOLDOWN = int(os.environ.get("BDAG_WATCHDOG_OPTIMUM_STATE_EVENT_COOLDOWN", "300"))
 
@@ -262,6 +266,14 @@ def miner_stall_identity_key(row: dict[str, Any]) -> str:
     if ip:
         return f"ip:{ip}"
     return ""
+
+
+def has_stable_asic_mac(row: dict[str, Any]) -> bool:
+    device_id = str(row.get("device_id") or "").strip().lower()
+    mac = str(row.get("mac") or "").strip().lower()
+    if device_id.startswith("mac:"):
+        mac = device_id[4:]
+    return bool(MAC_ADDRESS_RE.fullmatch(mac))
 
 
 def update_useful_work_stall_since(
@@ -562,15 +574,17 @@ def asic_api_stall_primary_miners(
     miners = ((status.get("miner_health") or {}).get("miners") or [])
     affected: list[dict[str, Any]] = []
     for row in miners:
-        if not isinstance(row, dict) or not row.get("managed"):
+        if not isinstance(row, dict):
             continue
         if row.get("device_type") != "asic" or not is_lan_ipv4(str(row.get("ip", ""))):
+            continue
+        if not has_stable_asic_mac(row):
             continue
         if not is_primary_pool_identity(row, mining_address):
             continue
         if row.get("connected") or row.get("pool_active") is True or row.get("work_pool_active") is True:
             continue
-        if row.get("status") not in {"down", "degraded"}:
+        if row.get("status") not in {"down", "degraded", "inactive"}:
             continue
         stale_age = (
             int_or_none(row.get("last_pool_seen_age_seconds"))
@@ -702,7 +716,6 @@ def orphan_storm_nodes(status: dict[str, Any]) -> list[str]:
         if (nodes.get(node, {}) or {}).get("orphan_block_error_storm")
     ]
 
-
 def pool_start_blocked_by_status(status: dict[str, Any]) -> tuple[bool, str]:
     decision = pool_start_gate.pool_start_decision(status)
     return (not decision.allowed), decision.reason
@@ -714,6 +727,44 @@ def pool_stopped_is_only_stack_failure(stack_failures: list[Any]) -> bool:
     return all(
         POOL_CONTAINER in str(item) and "not running" in str(item)
         for item in stack_failures
+    )
+
+
+def public_chain_divergence_nodes(status: dict[str, Any]) -> dict[str, Any]:
+    sync_health = status.get("sync_health") if isinstance(status.get("sync_health"), dict) else {}
+    from_sync_health = sync_health.get("public_chain_divergence_nodes") if isinstance(sync_health, dict) else {}
+    if isinstance(from_sync_health, dict) and from_sync_health:
+        return {str(node): details for node, details in from_sync_health.items()}
+    progress = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
+    progress_nodes = progress.get("nodes") if isinstance(progress.get("nodes"), dict) else {}
+    result: dict[str, Any] = {}
+    for node, item in progress_nodes.items():
+        if not isinstance(item, dict):
+            continue
+        if item.get("public_chain_diverged") or item.get("solo_mining_suspected"):
+            alignment = item.get("public_chain_alignment")
+            result[str(node)] = alignment if isinstance(alignment, dict) else {}
+    return result
+
+
+def public_chain_divergence_reason(nodes: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for node, details in nodes.items():
+        alignment = details if isinstance(details, dict) else {}
+        reference = alignment.get("reference_source") or "public reference"
+        lag = alignment.get("reference_lag_blocks")
+        reason = alignment.get("reason") or "local EVM headers do not match public references"
+        hash_mismatches = alignment.get("hash_mismatch_count")
+        local_miner = alignment.get("local_only_miner") or "unknown-local-miner"
+        reference_miners = alignment.get("reference_miners") if isinstance(alignment.get("reference_miners"), list) else []
+        reference_sample = ",".join(str(item) for item in reference_miners[:3]) or "unknown-public-miners"
+        parts.append(
+            f"{node}: {reason}; local_miner={local_miner}; {reference} miners={reference_sample}; "
+            f"EVM lag={lag}; hash_mismatches={hash_mismatches}"
+        )
+    return (
+        "public-chain divergence suspected; local node EVM headers do not match the public chain "
+        + ("; ".join(parts) if parts else "with no detailed alignment payload")
     )
 
 
@@ -1115,6 +1166,59 @@ def run_pool_restart(reason: str) -> bool:
     log(f"finished targeted pool restart status={state_payload['status']} elapsed={state_payload['elapsed']}s")
     if not ok:
         record_failed_repair("targeted pool restart", reason, {"service": POOL_CONTAINER, "log_path": str(log_path)})
+    lock_handle.close()
+    return ok
+
+
+def run_pool_stop(reason: str) -> bool:
+    if not automation_mutation_allowed(automation_control.ACTION_CONTAINMENT_STOP, POOL_CONTAINER, reason):
+        return False
+
+    lock_handle = acquire_lock(blocking=False)
+    if lock_handle is None:
+        log(f"pool containment stop skipped because another repair is running; reason={reason}")
+        return False
+
+    started = time.time()
+    action_name = f"stop-{POOL_CONTAINER}"
+    log_path = action_log_path(action_name)
+    state_payload = {
+        "name": action_name,
+        "mode": "stop-pool-containment",
+        "service": POOL_CONTAINER,
+        "reason": reason,
+        "status": "running",
+        "started_at": now_iso(),
+        "finished_at": None,
+        "log_path": str(log_path),
+    }
+    write_action_state(state_payload)
+    log(f"starting targeted pool containment stop: {reason}; log={log_path}")
+
+    command = [
+        "docker",
+        "compose",
+        "--env-file",
+        str(POOL_ENV_FILE),
+        "-f",
+        str(PROJECT_ROOT / "docker-compose.yml"),
+        "stop",
+        POOL_CONTAINER,
+    ]
+    result = run_logged(command, log_path, timeout=180)
+    ok = result.ok
+
+    state_payload.update(
+        {
+            "status": "ok" if ok else "failed",
+            "finished_at": now_iso(),
+            "elapsed": round(time.time() - started, 3),
+        }
+    )
+    write_action_state(state_payload)
+    log(f"finished targeted pool containment stop status={state_payload['status']} elapsed={state_payload['elapsed']}s")
+    if not ok:
+        record_failed_repair("targeted pool containment stop", reason, {"service": POOL_CONTAINER, "log_path": str(log_path)})
     lock_handle.close()
     return ok
 
@@ -1729,6 +1833,7 @@ def check_once(
         for item in miner_rows
         if isinstance(item, dict) and is_primary_pool_miner(item, mining_address)
     )
+    chain_divergence_nodes = public_chain_divergence_nodes(status)
     template_nodes = template_failing_nodes(status)
     orphan_nodes = orphan_storm_nodes(status)
     dag_tip_nodes = dag_tip_damage_nodes(status)
@@ -1740,6 +1845,11 @@ def check_once(
     node_orphan_restart_by_node = (
         state.get("last_node_orphan_restart_at_by_node")
         if isinstance(state.get("last_node_orphan_restart_at_by_node"), dict)
+        else {}
+    )
+    public_chain_divergence_restart_by_node = (
+        state.get("last_public_chain_divergence_restart_at_by_node")
+        if isinstance(state.get("last_public_chain_divergence_restart_at_by_node"), dict)
         else {}
     )
     docker_access_error = status.get("docker_access_error")
@@ -1822,7 +1932,122 @@ def check_once(
         elif repair:
             record_failed_repair("watchdog_enable_node_mining_template_support", message)
 
-    if stack_failures and restore_sidecar_active:
+    if chain_divergence_nodes:
+        reason = public_chain_divergence_reason(chain_divergence_nodes)
+        containers = status.get("containers") if isinstance(status.get("containers"), dict) else {}
+        pool_running = bool((containers.get(POOL_CONTAINER) or {}).get("running"))
+        target_node = next((node for node in NODES if node in chain_divergence_nodes), None)
+        target_node = target_node or choose_lagging_node(status) or (NODES[0] if NODES else "")
+        state["consecutive_failures"] = 0
+        state["consecutive_syncing"] = 0
+        state["consecutive_node_orphan_storm"] = 0
+        state["consecutive_public_chain_divergence"] = int(
+            state.get("consecutive_public_chain_divergence", 0) or 0
+        ) + 1
+        state["consecutive_share_stalls"] = 0
+        state["consecutive_submit_path_stalls"] = 0
+        state["last_status"] = "public_chain_divergence"
+        state["last_failures"] = []
+        state["last_sync_warnings"] = [reason]
+        state["last_public_chain_divergence"] = {
+            "nodes": chain_divergence_nodes,
+            "target_node": target_node,
+            "pool_running": pool_running,
+        }
+        log(
+            "public_chain_divergence "
+            f"consecutive={state['consecutive_public_chain_divergence']} "
+            f"target_node={target_node or 'unknown'} pool_running={pool_running} reason={reason}"
+        )
+        record_efficiency_event(
+            "public_chain_divergence",
+            "critical",
+            reason,
+            {
+                "affected_nodes": chain_divergence_nodes,
+                "target_node": target_node,
+                "pool_running": pool_running,
+                "can_mine": status.get("can_mine"),
+                "can_submit_blocks": status.get("can_submit_blocks"),
+                "overall": status.get("overall"),
+            },
+        )
+        if repair:
+            pool_safe = not pool_running
+            if pool_running:
+                stopped = run_pool_stop("public-chain divergence containment: " + reason)
+                state["last_public_chain_divergence_pool_stop_at"] = int(time.time())
+                state["last_repair_at"] = int(time.time())
+                pool_safe = bool(stopped)
+            else:
+                log("public-chain divergence containment: pool already stopped")
+            if target_node and pool_safe:
+                active_import_nodes = active_sync_import_nodes(status, state=state)
+                cooldown_remaining = DEFAULT_PUBLIC_CHAIN_DIVERGENCE_NODE_RESTART_COOLDOWN - (
+                    now - int(public_chain_divergence_restart_by_node.get(target_node, 0) or 0)
+                )
+                if restore_sidecar_active:
+                    log(f"public-chain divergence node restart for {target_node} suppressed during raw-datadir sidecar refresh")
+                    record_efficiency_event(
+                        "repair_suppressed",
+                        "warning",
+                        f"public-chain divergence node restart for {target_node} suppressed during raw-datadir sidecar refresh",
+                        {"reason": reason, "target_node": target_node},
+                    )
+                elif autonomous_lab_active:
+                    log(f"public-chain divergence node restart for {target_node} suppressed during autonomous stack lab")
+                    record_efficiency_event(
+                        "repair_suppressed",
+                        "warning",
+                        f"public-chain divergence node restart for {target_node} suppressed during autonomous stack lab",
+                        {"reason": reason, "target_node": target_node},
+                    )
+                elif target_node in active_import_nodes:
+                    message = (
+                        f"public-chain divergence node restart for {target_node} suppressed while "
+                        "block import is active"
+                    )
+                    log(message)
+                    state["last_public_chain_divergence_restart_suppressed_at"] = now_iso()
+                    state["last_public_chain_divergence_restart_suppressed_reason"] = "active block import"
+                    record_efficiency_event(
+                        "repair_suppressed",
+                        "warning",
+                        message,
+                        {
+                            "reason": reason,
+                            "target_node": target_node,
+                            "active_import_nodes": active_import_nodes,
+                        },
+                    )
+                elif cooldown_remaining > 0:
+                    log(
+                        f"public-chain divergence node restart for {target_node} suppressed by "
+                        f"cooldown_remaining={cooldown_remaining}s"
+                    )
+                    record_efficiency_event(
+                        "repair_suppressed",
+                        "warning",
+                        f"public-chain divergence node restart for {target_node} suppressed by cooldown",
+                        {"cooldown_remaining_seconds": cooldown_remaining, "reason": reason},
+                    )
+                else:
+                    ok = run_node_restart(target_node, "public-chain divergence self-heal: " + reason)
+                    public_chain_divergence_restart_by_node[target_node] = int(time.time())
+                    state["last_public_chain_divergence_restart_at_by_node"] = public_chain_divergence_restart_by_node
+                    state["last_repair_at"] = int(time.time())
+                    state["last_sync_repair_at"] = int(time.time())
+                    if ok:
+                        state["consecutive_public_chain_divergence"] = 0
+            elif target_node and not pool_safe:
+                log("public-chain divergence node restart skipped because pool containment stop did not complete")
+                record_efficiency_event(
+                    "repair_suppressed",
+                    "critical",
+                    "public-chain divergence node restart skipped because pool containment stop did not complete",
+                    {"reason": reason, "target_node": target_node, "pool_running": pool_running},
+                )
+    elif stack_failures and restore_sidecar_active:
         state["consecutive_failures"] = 0
         state["consecutive_syncing"] = 0
         state["consecutive_share_stalls"] = 0
@@ -2028,7 +2253,7 @@ def check_once(
                     f"cooldown_remaining={max(cooldown_remaining, 0)}s"
                 )
         reason = (
-            f"{len(api_stall_asics)} managed ASIC miner(s) have a sustained local API/cgminer stall "
+            f"{len(api_stall_asics)} MAC-identified ASIC miner(s) have a sustained local API/cgminer stall "
             "while pool-wide backend/template failure checks are clear"
         )
         state["consecutive_failures"] = 0
@@ -2808,6 +3033,7 @@ def loop(
         f"asic_api_stall_stale={DEFAULT_ASIC_API_STALL_STALE_SECONDS}s "
         f"asic_api_stall_confirm={DEFAULT_ASIC_API_STALL_CONFIRM_SECONDS}s "
         f"asic_api_stall_cooldown={DEFAULT_ASIC_API_STALL_REPAIR_COOLDOWN}s "
+        f"public_chain_divergence_node_cooldown={DEFAULT_PUBLIC_CHAIN_DIVERGENCE_NODE_RESTART_COOLDOWN}s "
         f"earnings_snapshot_interval={DEFAULT_EARNINGS_SNAPSHOT_INTERVAL_SECONDS}s"
     )
     while True:
