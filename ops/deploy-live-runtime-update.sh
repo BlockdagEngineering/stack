@@ -65,6 +65,7 @@ FILES=(
   "ops/tests/test_mining_appliance_preflight.py"
   "ops/tests/test_optimization_measurement.py"
   "ops/tests/test_compose_migrations.py"
+  "ops/tests/test_stack_naming_coherence.py"
   "ops/tests/test_status_sampler_mining_imperative.py"
   "ops/tests/test_node_child_guard.py"
   "ops/tests/test_sync_coordinator_fast_catchup.py"

@@ -456,6 +456,10 @@ WorkingDirectory=$PROJECT_ROOT
 Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
 Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
 EnvironmentFile=-$ENV_FILE
+Environment=BDAG_RPC_URL=http://127.0.0.1:38131
+Environment=BDAG_NODE_RPC_URLS=node=http://127.0.0.1:38131
+Environment=BDAG_GLOBAL_CHAIN_RPC_URLS=node=http://127.0.0.1:38131
+Environment=DASHBOARD_EVM_RPC_URL=http://127.0.0.1:18545
 Nice=12
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7

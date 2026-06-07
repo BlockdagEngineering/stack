@@ -124,6 +124,12 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=120", root_sampler)
         self.assertIn("BDAG_MINING_IMPERATIVE_GUARD_UNITS=", root_sampler)
 
+        for unit in (root_sampler, user_sampler):
+            self.assertIn("BDAG_RPC_URL=http://127.0.0.1:38131", unit)
+            self.assertIn("BDAG_NODE_RPC_URLS=node=http://127.0.0.1:38131", unit)
+            self.assertIn("BDAG_GLOBAL_CHAIN_RPC_URLS=node=http://127.0.0.1:38131", unit)
+            self.assertIn("DASHBOARD_EVM_RPC_URL=http://127.0.0.1:18545", unit)
+
         for unit in (user_dashboard, user_watchdog):
             self.assertIn("bdag-status-sampler.service", unit)
             self.assertIn("EnvironmentFile=-/home/jeremy/blockdag-asic-pool/ops/runtime/ops.env", unit)
