@@ -26,6 +26,7 @@ from pool_ops import (
     PROJECT_ROOT,
     RUNTIME_DIR,
     SERVICES,
+    docker_compose_command,
     docker_inspect,
     ensure_runtime,
     now_iso,
@@ -220,15 +221,7 @@ def status_api() -> tuple[dict[str, Any] | None, str]:
 
 
 def compose_command(*args: str) -> list[str]:
-    return [
-        "docker",
-        "compose",
-        "--env-file",
-        str(POOL_ENV_FILE),
-        "-f",
-        str(PROJECT_ROOT / "docker-compose.yml"),
-        *args,
-    ]
+    return docker_compose_command(*args)
 
 
 def compose_service_name(name: str) -> str:

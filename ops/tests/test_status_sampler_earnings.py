@@ -17,8 +17,15 @@ class StatusSamplerEarningsSnapshotTests(unittest.TestCase):
             for name in (
                 "read_latest_earnings_snapshot_info",
                 "record_earnings_snapshot",
+                "sync_priority_decision",
                 "log",
             )
+        }
+        status_sampler.sync_priority_decision = lambda _task, _status=None: {
+            "active": False,
+            "defer_dashboard_samplers": False,
+            "lag_blocks": 0,
+            "reasons": [],
         }
         self.addCleanup(self.restore)
 
@@ -69,6 +76,37 @@ class StatusSamplerEarningsSnapshotTests(unittest.TestCase):
 
         self.assertEqual(calls, [])
         self.assertEqual(last_attempt, 950.0)
+
+    def test_sync_priority_defers_snapshot_write(self) -> None:
+        calls = []
+        logs = []
+        status_sampler.read_latest_earnings_snapshot_info = lambda: {
+            "latest_epoch": 100.0,
+            "latest_any_epoch": 995.0,
+        }
+        status_sampler.record_earnings_snapshot = lambda: calls.append("recorded") or {
+            "generated_at": "2026-05-27T00:00:00+0200",
+            "miner_estimates": [{"ip": "192.168.1.107"}],
+        }
+        status_sampler.sync_priority_decision = lambda _task, _status=None: {
+            "active": True,
+            "defer_dashboard_samplers": True,
+            "lag_blocks": 1000,
+            "reasons": ["catchup_policy_active:lag_threshold"],
+        }
+        status_sampler.log = logs.append
+
+        last_attempt = status_sampler.maybe_record_earnings_snapshot(
+            now_epoch=1000.0,
+            last_attempt_epoch=0.0,
+            interval_seconds=120.0,
+            enabled=True,
+            status={"mode": "catchup_pause"},
+        )
+
+        self.assertEqual(calls, [])
+        self.assertEqual(last_attempt, 1000.0)
+        self.assertTrue(any("earnings snapshot deferred" in message for message in logs))
 
 
 if __name__ == "__main__":

@@ -62,11 +62,13 @@ class DashboardGlobalRenderingTests(unittest.TestCase):
         self.assertIn("Active Miner Lanes", html)
         self.assertIn("function activeMinerLaneRow(miner)", html)
         self.assertIn("function localAsicMinerLaneRow(miner)", html)
+        self.assertIn("function primaryMinerLaneRow(miner)", html)
+        self.assertIn("const configuredTargetMinerFilters = ", html)
+        self.assertIn("function primaryMinerFilteringEnabled()", html)
         self.assertIn('String(miner.device_type || "").toLowerCase() === "asic"', html)
-        self.assertIn("const rows = allRows.filter(localAsicMinerLaneRow);", html)
-        self.assertIn("hidden-non-asic-or-inactive=", html)
-        self.assertIn("stratum-hidden=", html)
-        self.assertIn("No active local ASIC lanes are currently present.", html)
+        self.assertIn("const rows = allRows.filter(primaryActiveAsicMinerLaneRow);", html)
+        self.assertIn("target-active-asics=", html)
+        self.assertIn("No active target ASIC lanes are currently present.", html)
         self.assertNotIn("Tracked Miner Health", html)
 
     def test_status_tab_keeps_single_backend_header_in_one_row(self) -> None:
