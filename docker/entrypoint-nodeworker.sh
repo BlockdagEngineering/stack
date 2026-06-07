@@ -314,12 +314,7 @@ append_node_arg_prefix_once() {
   export NODE_ARGS_APPEND
 }
 
-apply_node_mining_runtime_args() {
-  case "${BDAG_ENABLE_NODE_MINING:-0}" in
-    1|true|TRUE|yes|YES|on|ON) ;;
-    *) return 0 ;;
-  esac
-
+apply_node_rpc_module_args() {
   local node_args modules word
   node_args="$(node_args_from_argv "$@" || true)"
   modules="${BDAG_NODE_MODULES:-}"
@@ -330,6 +325,16 @@ apply_node_mining_runtime_args() {
       append_node_arg_prefix_once "--modules=${word}" "$node_args ${NODE_ARGS_APPEND:-}"
     done
   fi
+}
+
+apply_node_mining_runtime_args() {
+  case "${BDAG_ENABLE_NODE_MINING:-0}" in
+    1|true|TRUE|yes|YES|on|ON) ;;
+    *) return 0 ;;
+  esac
+
+  local node_args word
+  node_args="$(node_args_from_argv "$@" || true)"
   for word in ${BDAG_NODE_MINING_ARGS:-}; do
     case "$word" in
       --miningaddr=*) append_node_arg_prefix_once "$word" "$node_args ${NODE_ARGS_APPEND:-}" ;;
@@ -680,6 +685,7 @@ configure_directory_artifact_serving() {
 apply_ordered_fastsync_peers "$@"
 apply_no_fastsync_serve_guard "$@"
 apply_default_fastsync_flags "$@"
+apply_node_rpc_module_args "$@"
 apply_node_mining_runtime_args "$@"
 
 if [ -n "${NODE_ARGS_APPEND:-}" ]; then

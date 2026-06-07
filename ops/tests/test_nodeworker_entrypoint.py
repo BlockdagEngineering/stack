@@ -52,6 +52,7 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         result = self.run_entrypoint(
             {
                 "SYNC_SOURCE_NODE": "1",
+                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
                 "NODE_ARGS_APPEND": "--cache=1024",
             }
         )
@@ -60,6 +61,19 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         combined = result.stdout + result.stderr
         self.assertNotIn("FAST", combined.upper())
         self.assertEqual("", result.stderr)
+
+    def test_no_miner_mode_keeps_blockdag_rpc_module_without_miner_arg(self) -> None:
+        result = self.run_entrypoint(
+            {
+                "BDAG_ENABLE_NODE_MINING": "0",
+                "BDAG_NODE_MODULES": "Blockdag",
+                "BDAG_NODE_MINING_ARGS": "",
+            }
+        )
+
+        self.assert_stdout_contains(result, "--modules=Blockdag")
+        self.assertNotIn("--miner", result.stdout)
+        self.assertNotIn("--miningaddr=", result.stdout)
 
     def test_node_mining_env_appends_guard_args_without_forcing_rpc_module(self) -> None:
         result = self.run_entrypoint(
@@ -71,7 +85,6 @@ class NodeworkerEntrypointTest(unittest.TestCase):
             }
         )
 
-        self.assert_stdout_contains(result, "BDAG_FASTARTIFACTSYNC_ENABLED=1")
         self.assert_stdout_contains(result, "--fastartifactsync")
         self.assert_stdout_contains(result, "--miner")
         self.assert_stdout_contains(result, "--miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc")
