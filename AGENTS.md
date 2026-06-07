@@ -28,6 +28,16 @@ and chain-sync packaging. The dashboard repository owns the dashboard/control
 plane source, and any dashboard code imported into this RC must preserve the
 release build gates in `scripts/validate-release-build.sh`.
 
+## Stack Configuration Source Of Truth
+
+Stack-owned deployment defaults live in `ops/config/stack-defaults.env`.
+Examples, compose fallback expressions, release installers, dashboard runtime
+helpers, watchdogs, and validators are projections of those defaults and must
+stay coherent through `scripts/validate-stack-defaults.py`. Do not reintroduce
+hard-coded copies of values such as dashboard scan windows, status cache
+durations, sidecar rsync bandwidth caps, catch-up thresholds, or pool template
+pressure defaults in installer or validation code.
+
 ## No-Miner Sync-Only Invariant
 
 When a deployment has no managed or connected miners, node services must run as

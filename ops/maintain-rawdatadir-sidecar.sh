@@ -6,6 +6,13 @@ set -Eeuo pipefail
 # guarded final sync window and build from the sidecar.
 
 PROJECT_ROOT="${BDAG_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+BDAG_STACK_DEFAULTS_FILE="${BDAG_STACK_DEFAULTS_FILE:-$PROJECT_ROOT/ops/config/stack-defaults.env}"
+if [[ -f "$BDAG_STACK_DEFAULTS_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$BDAG_STACK_DEFAULTS_FILE"
+  set +a
+fi
 REQUESTED_NETWORK="${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}"
 if [[ "${REQUESTED_NETWORK,,}" != "mainnet" ]]; then
   printf '[%s] raw datadir sidecar refuses non-mainnet network: %s\n' "$(date -Is)" "$REQUESTED_NETWORK" >&2
