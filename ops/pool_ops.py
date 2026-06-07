@@ -386,13 +386,13 @@ GLOBAL_EVM_FALLBACK_ENABLED = env_bool("BDAG_GLOBAL_EVM_FALLBACK_ENABLED", False
 NODE_EVM_RPC_PORT = int(os.environ.get("BDAG_NODE_EVM_RPC_PORT", "18545"))
 EVM_SYNC_LAG_THRESHOLD_BLOCKS = env_int("BDAG_EVM_SYNC_LAG_THRESHOLD_BLOCKS", 1000, minimum=0)
 EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS = env_int("BDAG_EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS", 3, minimum=1)
-EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES = env_int("BDAG_EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES", 1, minimum=1)
+EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES = env_int("BDAG_EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES", 2, minimum=1)
 EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG = env_int(
     "BDAG_EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG",
     EVM_SYNC_LAG_THRESHOLD_BLOCKS,
     minimum=0,
 )
-EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE = env_bool("BDAG_EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE", True)
+EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE = env_bool("BDAG_EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE", False)
 EARNINGS_HISTORY_RETENTION_SECONDS = int(os.environ.get("BDAG_EARNINGS_HISTORY_RETENTION_SECONDS", str(35 * 86400)))
 EARNINGS_DASHBOARD_HISTORY_SECONDS = int(os.environ.get("BDAG_EARNINGS_DASHBOARD_HISTORY_SECONDS", str(31 * 86400)))
 EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_EARNINGS_SNAPSHOT_INTERVAL_SECONDS", "60"))
@@ -6140,6 +6140,42 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         if sync_progress.get("status") == "syncing" and not failures and not pool_health["needs_fast_repair"]:
             sync_health["needs_fast_sync_repair"] = False
     sync_health["sync_progress_health"] = sync_progress_health
+    public_chain_divergence_nodes: dict[str, Any] = {}
+    for node, progress in (sync_progress.get("nodes") or {}).items():
+        if not isinstance(progress, dict):
+            continue
+        alignment = progress.get("public_chain_alignment")
+        if not isinstance(alignment, dict):
+            alignment = {}
+        if progress.get("public_chain_diverged") or progress.get("solo_mining_suspected"):
+            public_chain_divergence_nodes[str(node)] = alignment
+            node_details.setdefault(str(node), {})
+            node_details[str(node)]["public_chain_diverged"] = True
+            node_details[str(node)]["solo_mining_suspected"] = bool(progress.get("solo_mining_suspected"))
+            node_details[str(node)]["public_chain_alignment"] = alignment
+    sync_health["public_chain_divergence"] = bool(public_chain_divergence_nodes)
+    sync_health["public_chain_divergence_nodes"] = public_chain_divergence_nodes
+    if public_chain_divergence_nodes:
+        summaries = []
+        for node, alignment in public_chain_divergence_nodes.items():
+            if isinstance(alignment, dict):
+                reference = alignment.get("reference_source") or "public reference"
+                lag = alignment.get("reference_lag_blocks")
+                reason = alignment.get("reason") or "local EVM headers differ from public references"
+                hash_mismatches = alignment.get("hash_mismatch_count")
+                local_miner = alignment.get("local_only_miner") or "unknown-local-miner"
+                summaries.append(
+                    f"{node}: {reason}; local_miner={local_miner}; reference={reference}; "
+                    f"EVM lag={lag}; hash_mismatches={hash_mismatches}"
+                )
+        message = (
+            "public-chain divergence suspected: local node EVM headers do not match public references"
+            + (f" ({'; '.join(summaries[:2])})" if summaries else "")
+        )
+        add_sync_warning(message)
+        pool_health["public_chain_divergence"] = True
+        pool_health["needs_fast_repair"] = True
+        sync_health["needs_fast_sync_repair"] = True
 
     overall = "ok"
     if failures:
@@ -7185,14 +7221,14 @@ def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int,
     snapshot["evm_lag_to_chain"] = snapshot["evm_lag_to_reference"]
     reference_lag = safe_int(snapshot.get("evm_lag_to_reference"), 0)
     alignment: dict[str, Any] = {}
-    if external_url:
+    if best_url and best_url != evm_url:
         if reference_lag >= EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG or EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE:
             alignment = evm_public_chain_alignment(
                 local_url=evm_url,
-                reference_source=external_source,
-                reference_url=external_url,
+                reference_source=best_source,
+                reference_url=best_url,
                 local_block=evm_block,
-                reference_block=int(external_block),
+                reference_block=best_block,
                 reference_lag=reference_lag,
                 mining_address=read_env_value("MINING_ADDRESS") or "",
                 timeout=timeout,
@@ -7201,10 +7237,10 @@ def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int,
             alignment = {
                 "enabled": True,
                 "local_url": evm_url,
-                "reference_source": external_source,
-                "reference_url": external_url,
+                "reference_source": best_source,
+                "reference_url": best_url,
                 "local_block": evm_block,
-                "reference_block": external_block,
+                "reference_block": best_block,
                 "reference_lag_blocks": reference_lag,
                 "min_reference_lag_blocks": EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG,
                 "sample_heights": [],
@@ -7213,6 +7249,8 @@ def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int,
                 "compared_count": 0,
                 "reference_sample_count": 0,
                 "hash_mismatch_count": 0,
+                "miner_mismatch_count": 0,
+                "hash_divergence_suspected": False,
                 "solo_mining_suspected": False,
                 "public_chain_diverged": False,
                 "reason": "public EVM reference lag is below the unsafe threshold",
@@ -7464,7 +7502,9 @@ def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TI
         evm_block = safe_int(evm_lag.get("evm_block_count"), None)
         evm_reference = safe_int(evm_lag.get("evm_reference_block_count"), None)
         evm_remaining = safe_int(evm_lag.get("evm_lag_to_reference"), 0)
-        if evm_block is not None and evm_reference is not None and evm_remaining > EVM_SYNC_LAG_THRESHOLD_BLOCKS:
+        if evm_block is not None and evm_reference is not None and (
+            evm_remaining > EVM_SYNC_LAG_THRESHOLD_BLOCKS or evm_lag.get("public_chain_diverged")
+        ):
             return {
                 "status": "syncing",
                 "percent": round(max(0.0, min(100.0, (evm_block / max(1, evm_reference)) * 100)), 2),
