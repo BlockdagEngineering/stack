@@ -24,6 +24,8 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "MINING_IMPERATIVE_START_POOL_ENABLED",
                 "MINING_IMPERATIVE_START_IDLE_SYNCED_POOL",
                 "MINING_IMPERATIVE_MINER_TRACKING_REPAIR_ENABLED",
+                "MINING_IMPERATIVE_MINER_ACTIVITY_REPAIR_ENABLED",
+                "MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS",
                 "MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED",
                 "MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED",
                 "CATCHUP_PAUSE_ENABLED",
@@ -64,6 +66,8 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         status_sampler.MINING_IMPERATIVE_START_POOL_ENABLED = True
         status_sampler.MINING_IMPERATIVE_START_IDLE_SYNCED_POOL = False
         status_sampler.MINING_IMPERATIVE_MINER_TRACKING_REPAIR_ENABLED = True
+        status_sampler.MINING_IMPERATIVE_MINER_ACTIVITY_REPAIR_ENABLED = True
+        status_sampler.MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS = 180
         status_sampler.MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED = True
         status_sampler.MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED = True
         status_sampler.POOL_ENV_FILE = pathlib.Path("/nonexistent/status-sampler-test.env")
@@ -382,6 +386,98 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         repair = status_sampler.mining_imperative_repair(payload)
 
         self.assertIn("repaired_tracked_miners", repair["actions"])
+
+    def test_detects_miner_activity_visibility_gap_after_power_cycle(self) -> None:
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["miner_health"] = {
+            "tracked_count": 4,
+            "connected_count": 4,
+            "managed_count": 4,
+            "miners": [
+                {
+                    "mac": "28:e2:97:4d:44:3a",
+                    "device_type": "asic",
+                    "managed": True,
+                    "connected": True,
+                    "shares": 0,
+                    "share_work": 0,
+                    "last_share_epoch": 1000,
+                    "last_share_age_seconds": 12,
+                }
+            ],
+        }
+        payload["pool_health"] = {"valid_share_count": 8, "last_valid_share_age_seconds": 10}
+
+        self.assertTrue(status_sampler.status_payload_has_miner_activity_visibility_gap(payload))
+
+    def test_visible_miner_shares_do_not_trigger_activity_visibility_repair(self) -> None:
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["miner_health"] = {
+            "tracked_count": 4,
+            "connected_count": 4,
+            "managed_count": 4,
+            "miners": [
+                {
+                    "mac": "28:e2:97:4d:44:3a",
+                    "device_type": "asic",
+                    "managed": True,
+                    "connected": True,
+                    "shares": 3,
+                    "share_work": 99,
+                }
+            ],
+        }
+        payload["pool_health"] = {"valid_share_count": 8, "last_valid_share_age_seconds": 10}
+
+        self.assertFalse(status_sampler.status_payload_has_miner_activity_visibility_gap(payload))
+
+    def test_repairs_miner_activity_visibility_from_deep_pool_activity(self) -> None:
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["miner_health"] = {
+            "tracked_count": 4,
+            "connected_count": 4,
+            "managed_count": 4,
+            "miners": [
+                {
+                    "mac": "28:e2:97:4d:44:3a",
+                    "device_type": "asic",
+                    "managed": True,
+                    "connected": True,
+                    "shares": 0,
+                    "share_work": 0,
+                }
+            ],
+        }
+        payload["pool_health"] = {"valid_share_count": 8, "last_valid_share_age_seconds": 10}
+        activity_calls = []
+        activity = {
+            "miners": [{"ip": "192.168.1.102", "shares": 5, "share_work": 12345}],
+            "unattributed_valid_shares": 0,
+            "unattributed_blocks": 0,
+        }
+        status_sampler.collect_pool_activity = lambda lines=0: activity_calls.append(lines) or activity
+        status_sampler.upsert_pool_activity_miners = lambda _activity: {
+            "miners": [
+                {
+                    "ip": "192.168.1.102",
+                    "mac": "28:e2:97:4d:44:3a",
+                    "last_pool_seen_epoch": 1_000_000,
+                    "last_share_epoch": 1_000_000,
+                    "last_shares_window": 5,
+                    "last_share_work_window": 12345,
+                }
+            ]
+        }
+        old_time = status_sampler.time.time
+        status_sampler.time.time = lambda: 1_000_010
+        self.addCleanup(lambda: setattr(status_sampler.time, "time", old_time))
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertIn(status_sampler.POOL_ACTIVITY_BOOTSTRAP_LOG_LINES, activity_calls)
+        self.assertIn("repaired_miner_activity_visibility", repair["actions"])
 
     def test_disables_fastartifact_on_constrained_synced_mining_profile(self) -> None:
         commands = []
