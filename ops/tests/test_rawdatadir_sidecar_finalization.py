@@ -33,7 +33,21 @@ class RawdatadirSidecarFinalizationPipelineTest(unittest.TestCase):
         self.assertIn("LOCAL_SIDECAR_COPY=", script)
         self.assertIn("local_sidecar_copy_can_ignore_reasons", script)
         self.assertIn("source_mode_disabled", script)
+        self.assertIn("local recovery copy only", script)
         self.assertIn("raw datadir sidecar local copy continuing", script)
+        self.assertIn('"--exclude=/BdagChain/.*"', script)
+        self.assertIn('"--exclude=/.shutdown.lock.tmp-*"', script)
+        self.assertIn("safe_status_allows_open_restore", script)
+        self.assertIn("sidecar safe status is not usable", script)
+
+    def test_installer_keeps_local_sidecar_when_source_serving_disabled(self) -> None:
+        script = (ROOT / "ops" / "install-p2p-services.sh").read_text(encoding="utf-8")
+
+        self.assertIn("BDAG_RAWDATADIR_LOCAL_SIDECAR_COPY", script)
+        self.assertIn("local recovery sidecar and verifier remain active", script)
+        self.assertIn("systemctl --user enable --now bdag-rawdatadir-sidecar.timer", script)
+        self.assertIn("systemctl --user enable --now bdag-rawdatadir-sidecar-verify.timer", script)
+        self.assertIn("systemctl --user disable --now bdag-rawdatadir-source.timer", script)
 
     def test_content_seal_rechecks_background_pressure_after_sync(self) -> None:
         script = (ROOT / "ops" / "maintain-rawdatadir-sidecar.sh").read_text(encoding="utf-8")

@@ -169,6 +169,13 @@ need_grep 'BDAG_MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED 1' "ops/install-da
 need_grep 'chain-state-self-heal.service' "ops/install-dashboard.sh"
 need_grep 'chain-state-self-heal.sh --from-systemd' "ops/install-dashboard.sh"
 need_grep 'OnCalendar=hourly' "ops/install-dashboard.sh"
+need_grep 'local recovery copy only' "ops/maintain-rawdatadir-sidecar.sh"
+need_grep 'BDAG_RAWDATADIR_LOCAL_SIDECAR_COPY' "ops/install-p2p-services.sh"
+need_grep 'local recovery sidecar and verifier remain active' "ops/install-p2p-services.sh"
+need_grep 'safe_status_restore_source' "ops/chain-state-self-heal.sh"
+need_grep 'open_restore_point_source' "ops/chain-state-self-heal.sh"
+need_grep 'preserve_node_identity' "ops/chain-state-self-heal.sh"
+need_grep 'restore_node_identity' "ops/chain-state-self-heal.sh"
 
 need_grep 'run_appliance_preflight' "ops/release-install.sh"
 need_grep 'BDAG_APPLIANCE_PREFLIGHT_STRICT' "ops/release-install.sh"

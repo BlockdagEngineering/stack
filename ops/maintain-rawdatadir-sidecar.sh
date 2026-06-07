@@ -71,6 +71,24 @@ run_low_priority() {
   "${command[@]}"
 }
 
+safe_status_allows_open_restore() {
+  local status_file="$1"
+  python3 - "$status_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+if payload.get("usable") is True and payload.get("safe") is True:
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 create_open_restore_point() {
   case "${OPEN_RESTORE_ENABLED,,}" in
     0|false|no|off|disabled)
@@ -80,6 +98,10 @@ create_open_restore_point() {
   esac
   if [[ ! -d "$SIDECAR_DIR/BdagChain" || ! -f "$SIDECAR_DIR/BdagChain/CURRENT" ]]; then
     log "open sidecar restore point skipped: current sidecar is not yet usable"
+    return 0
+  fi
+  if ! safe_status_allows_open_restore "$SAFE_STATUS_FILE"; then
+    log "open sidecar restore point skipped: sidecar safe status is not usable"
     return 0
   fi
   local stamp tmp target current_manifest
@@ -200,8 +222,15 @@ case "${SIDECAR_MODE,,}" in
 esac
 case "${SYNC_SOURCE_NODE_VALUE,,}" in
   0|false|no|off|disabled)
-    log "raw datadir sidecar sync disabled by SYNC_SOURCE_NODE=$SYNC_SOURCE_NODE_VALUE"
-    exit 0
+    case "${LOCAL_SIDECAR_COPY,,}" in
+      0|false|no|off|disabled)
+        log "raw datadir sidecar sync disabled by SYNC_SOURCE_NODE=$SYNC_SOURCE_NODE_VALUE and BDAG_RAWDATADIR_LOCAL_SIDECAR_COPY=$LOCAL_SIDECAR_COPY"
+        exit 0
+        ;;
+      *)
+        log "raw datadir sidecar running as local recovery copy only; source publishing disabled by SYNC_SOURCE_NODE=$SYNC_SOURCE_NODE_VALUE"
+        ;;
+    esac
     ;;
 esac
 
@@ -265,6 +294,8 @@ rsync_args=(
   "--exclude=/artifact.manifest.json"
   "--exclude=/LOCK"
   "--exclude=/BdagChain/LOCK"
+  "--exclude=/.shutdown.lock.tmp-*"
+  "--exclude=/BdagChain/.*"
   "--exclude=*.ipc"
   "--exclude=*.sock"
 )

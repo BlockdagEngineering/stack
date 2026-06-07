@@ -1149,8 +1149,7 @@ class MinerHealthConfiguredScopeTests(unittest.TestCase):
         miners = {item["ip"]: item for item in health["miners"]}
 
         self.assertEqual(miners["192.168.1.14"]["work_percent"], "100.00")
-        self.assertEqual(miners["192.168.1.109"]["status"], "inactive")
-        self.assertEqual(miners["192.168.1.109"]["work_percent"], "0.00")
+        self.assertNotIn("192.168.1.109", miners)
 
     def test_unmanaged_pool_log_stratum_miner_is_not_marked_configured(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"

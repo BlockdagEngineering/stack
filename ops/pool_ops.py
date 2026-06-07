@@ -4585,7 +4585,33 @@ def collect_miner_health() -> dict[str, Any]:
         cgminer_devs: dict[str, Any] = {}
         configured = False
         pool_active = False
-        if api_expected:
+        last_pool_seen_epoch = int(registered.get("last_pool_seen_epoch", 0) or 0)
+        last_submit_epoch = int(registered.get("last_submit_epoch", 0) or 0)
+        last_share_epoch = int(registered.get("last_share_epoch", 0) or 0)
+        workers = merge_unique_strings(activity_item.get("workers"), registered.get("last_workers"))
+        ports = merge_unique_strings(activity_item.get("ports"), registered.get("last_ports"))
+        connected = bool(activity_item) or bool(last_pool_seen_epoch and now_epoch - last_pool_seen_epoch <= POOL_CONNECTED_STALE_SECONDS)
+        managed = bool(registered.get("managed"))
+        configured_record = bool(registered.get("configured") or registered.get("managed") or registered.get("last_configured_ok"))
+        current_submits = int(activity_item.get("submits", 0) or 0)
+        current_shares = int(activity_item.get("shares", 0) or 0)
+        current_blocks_found = int(activity_item.get("blocks_found", 0) or 0)
+        has_recent_shares = current_shares > 0
+        has_recent_blocks = current_blocks_found > 0
+        expected_worker_seen = str(expected_user).lower() in {str(worker).lower() for worker in workers}
+        current_pool_activity = bool(activity_item) and expected_url == defaults["pool_url"] and (
+            expected_worker_seen or current_submits > 0 or has_recent_shares or has_recent_blocks
+        )
+        primary_pool_log = configured_record and is_known_primary_pool_log_miner({**registered, "last_workers": workers})
+        pre_api_relevant = (
+            managed
+            or configured_record
+            or current_pool_activity
+            or has_recent_shares
+            or has_recent_blocks
+            or primary_pool_log
+        )
+        if api_expected and pre_api_relevant:
             try:
                 discovered = discover_miner(ip, timeout=MINER_HTTP_TIMEOUT)
                 if discovered and discovered.get("model"):
@@ -4614,9 +4640,6 @@ def collect_miner_health() -> dict[str, Any]:
             # Docker bridge clients can appear in pool logs during local health/API calls.
             # They are not physical ASICs and should not affect miner counts or repairs.
             continue
-        last_pool_seen_epoch = int(registered.get("last_pool_seen_epoch", 0) or 0)
-        last_submit_epoch = int(registered.get("last_submit_epoch", 0) or 0)
-        last_share_epoch = int(registered.get("last_share_epoch", 0) or 0)
         pool_log_recent = bool(
             activity_item or (last_pool_seen_epoch and now_epoch - last_pool_seen_epoch <= POOL_CONNECTED_STALE_SECONDS)
         )
@@ -4629,21 +4652,11 @@ def collect_miner_health() -> dict[str, Any]:
                 f"an observed retired-miner IP for {retired_name}; "
                 "keeping it active because only MAC address can retire an ASIC"
             )
-        workers = merge_unique_strings(activity_item.get("workers"), registered.get("last_workers"))
-        ports = merge_unique_strings(activity_item.get("ports"), registered.get("last_ports"))
-        connected = bool(activity_item) or bool(last_pool_seen_epoch and now_epoch - last_pool_seen_epoch <= POOL_CONNECTED_STALE_SECONDS)
-        managed = bool(registered.get("managed"))
-        configured_record = bool(registered.get("configured") or registered.get("managed") or registered.get("last_configured_ok"))
         if is_pool_log_only_miner(registered) or device_type == "stratum" or discovered_by == "pool-log":
             expected_worker_seen = str(expected_user).lower() in {str(worker).lower() for worker in workers}
             if connected and expected_url == defaults["pool_url"] and expected_worker_seen:
                 configured = bool(configured or configured_record)
                 pool_active = True
-        current_submits = int(activity_item.get("submits", 0) or 0)
-        current_shares = int(activity_item.get("shares", 0) or 0)
-        current_blocks_found = int(activity_item.get("blocks_found", 0) or 0)
-        has_recent_shares = current_shares > 0
-        has_recent_blocks = current_blocks_found > 0
         pool_seen_age = now_epoch - last_pool_seen_epoch if last_pool_seen_epoch else None
         submit_age = now_epoch - last_submit_epoch if last_submit_epoch else None
         share_age = now_epoch - last_share_epoch if last_share_epoch else None
@@ -4657,7 +4670,7 @@ def collect_miner_health() -> dict[str, Any]:
         )
         primary_pool_log = configured_record and is_known_primary_pool_log_miner({**registered, "last_workers": workers})
         relevant = managed or configured_record or work_pool_active or has_recent_shares or has_recent_blocks or primary_pool_log
-        if not relevant and is_pool_log_only_miner(registered):
+        if not relevant:
             continue
         shares = current_shares
         share_work = activity_item.get("share_work", 0) if activity_item else 0

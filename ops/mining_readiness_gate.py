@@ -48,6 +48,13 @@ HARD_TEMPLATE_ERROR_CODES = {
     "unknown_ancestor",
 }
 
+TRANSIENT_TEMPLATE_PROBE_ERROR_PATTERNS = (
+    re.compile(r"client in initial download", re.IGNORECASE),
+    re.compile(r"blockdag is downloading tx", re.IGNORECASE),
+    re.compile(r"parent[_ -]?changed", re.IGNORECASE),
+    re.compile(r"template (?:not|un)available", re.IGNORECASE),
+)
+
 HARD_LOG_PATTERNS = (
     re.compile(r"BAD BLOCK", re.IGNORECASE),
     re.compile(r"unknown ancestor", re.IGNORECASE),
@@ -394,6 +401,35 @@ def add_bool_predicate(
         warnings.append(f"{normalize_key(key)}_missing")
 
 
+def health_allows_transient_template_probe_race(health: dict[str, Any]) -> bool:
+    if not health:
+        return False
+    required = (
+        ("is_current", ("chain_current",)),
+        ("mineable_now", ()),
+        ("submit_ready", ()),
+        ("get_block_template_ready", ()),
+    )
+    for key, aliases in required:
+        if get_health_bool(health, key, *aliases) is not True:
+            return False
+    for optional_key in ("template_usable", "sync_allowed"):
+        if get_health_bool(health, optional_key) is False:
+            return False
+    for code in template_error_codes(health):
+        if code in HARD_TEMPLATE_ERROR_CODES:
+            return False
+    return True
+
+
+def transient_template_probe_error(exc: RpcCallError, health: dict[str, Any]) -> bool:
+    if exc.kind != "jsonrpc_error":
+        return False
+    if not health_allows_transient_template_probe_race(health):
+        return False
+    return any(pattern.search(exc.detail) for pattern in TRANSIENT_TEMPLATE_PROBE_ERROR_PATTERNS)
+
+
 def template_error_codes(health: dict[str, Any]) -> list[str]:
     codes: list[str] = []
     for key in (
@@ -600,7 +636,10 @@ def probe_backend_once(
             if health_parent and template_parent and str(health_parent) != str(template_parent):
                 failures.append("getBlockTemplate_parent_mismatch")
     except RpcCallError as exc:
-        failures.append(f"getBlockTemplate failed: {exc.kind}")
+        if transient_template_probe_error(exc, health):
+            warnings.append(f"getBlockTemplate transient probe race: {exc.kind}")
+        else:
+            failures.append(f"getBlockTemplate failed: {exc.kind}")
 
     reference = probe_reference(reference_rpc_url, timeout=timeout)
     sample["reference"] = reference

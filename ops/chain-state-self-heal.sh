@@ -276,6 +276,137 @@ copy_existing_snapshot() {
   fi
 }
 
+run_low_priority() {
+  local command=("$@")
+  if command -v ionice >/dev/null 2>&1; then
+    command=(ionice -c3 "${command[@]}")
+  fi
+  if command -v nice >/dev/null 2>&1; then
+    command=(nice -n 19 "${command[@]}")
+  fi
+  "${command[@]}"
+}
+
+copy_path_best_effort() {
+  local source="$1" target="$2"
+  mkdir -p "$(dirname "$target")"
+  if [[ "$(id -u)" != "0" ]] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    sudo -n cp -a "$source" "$target"
+  else
+    cp -a "$source" "$target"
+  fi
+}
+
+path_exists_best_effort() {
+  local path="$1"
+  [[ -e "$path" ]] && return 0
+  if [[ "$(id -u)" != "0" ]] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    sudo -n test -e "$path"
+    return
+  fi
+  return 1
+}
+
+preserve_node_identity() {
+  IDENTITY_TMP_DIR="$TMP_DIR/node-identity"
+  local rel source target copied=0
+  for rel in network.key bdageth/nodekey keystore bdageth/keystore; do
+    source="$NODE_NETWORK_DIR/$rel"
+    if path_exists_best_effort "$source"; then
+      target="$IDENTITY_TMP_DIR/$rel"
+      if copy_path_best_effort "$source" "$target" >>"$LOG_FILE" 2>&1; then
+        copied=$((copied + 1))
+      else
+        log "failed to preserve node identity path $rel"
+      fi
+    fi
+  done
+  if [[ "$copied" -gt 0 ]]; then
+    log "preserved $copied node identity path(s) before chain-state restore"
+  else
+    log "no node identity paths were found to preserve before chain-state restore"
+  fi
+}
+
+restore_node_identity() {
+  local identity_dir="${IDENTITY_TMP_DIR:-}"
+  if [[ -z "$identity_dir" || ! -d "$identity_dir" ]]; then
+    log "no preserved node identity paths to restore"
+    return 0
+  fi
+  mkdir -p "$NODE_NETWORK_DIR"
+  if [[ "$(id -u)" != "0" ]] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    sudo -n cp -a "$identity_dir/." "$NODE_NETWORK_DIR/"
+  else
+    cp -a "$identity_dir/." "$NODE_NETWORK_DIR/"
+  fi
+  log "restored preserved node identity paths after chain-state restore"
+}
+
+candidate_has_bdagchain() {
+  local candidate="$1"
+  [[ -d "$candidate/BdagChain" && -f "$candidate/BdagChain/CURRENT" ]]
+}
+
+verify_sidecar_candidate() {
+  local candidate="$1"
+  [[ -x "$ROOT/ops/verify-rawdatadir-sidecar.py" ]] || return 1
+  candidate_has_bdagchain "$candidate" || return 1
+  "$ROOT/ops/verify-rawdatadir-sidecar.py" \
+    --sidecar-dir "$candidate" \
+    --source-dir "$NODE_NETWORK_DIR" \
+    --no-write \
+    --json >/dev/null 2>>"$LOG_FILE"
+}
+
+safe_status_restore_source() {
+  local status_file="${BDAG_RAWDATADIR_SIDECAR_SAFE_STATUS:-$RUNTIME_DIR/rawdatadir-sidecar-safe-status.json}"
+  python3 - "$status_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+if not (payload.get("safe") and payload.get("usable")):
+    raise SystemExit(1)
+latest = payload.get("latest_safe_dir") or payload.get("sidecar_dir")
+if not latest:
+    raise SystemExit(1)
+candidate = Path(str(latest)).expanduser()
+if not candidate.is_dir():
+    raise SystemExit(1)
+print(candidate)
+PY
+}
+
+open_restore_point_source() {
+  local base="${BDAG_RAWDATADIR_OPEN_SIDECAR_BASE:-$ROOT/data-restore/rawdatadir-sidecar-open/$NETWORK}"
+  [[ -d "$base" ]] || return 1
+  local candidate
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    if verify_sidecar_candidate "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done < <(find "$base" -mindepth 1 -maxdepth 1 -type d -name '20*Z' -printf '%T@ %p\n' 2>/dev/null | sort -nr | sed 's/^[^ ]* //')
+  return 1
+}
+
+raw_sidecar_restore_source() {
+  local candidate="${BDAG_RAWDATADIR_SIDECAR_DIR:-$ROOT/data-restore/rawdatadir-sidecar/$NETWORK}"
+  candidate="$(abs_path "$candidate")"
+  if verify_sidecar_candidate "$candidate"; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  return 1
+}
+
 choose_restore_source() {
   RESTORE_MODE_USED=""
   RESTORE_SOURCE_USED=""
@@ -289,9 +420,23 @@ choose_restore_source() {
     RESTORE_SOURCE_USED="$BDAG_CHAIN_STATE_RESTORE_SNAPSHOT"
     return 0
   fi
+  local sidecar_candidate
+  if sidecar_candidate="$(safe_status_restore_source 2>/dev/null)" && verify_sidecar_candidate "$sidecar_candidate"; then
+    RESTORE_MODE_USED="verified_sidecar"
+    RESTORE_SOURCE_USED="$sidecar_candidate"
+    return 0
+  fi
+  if sidecar_candidate="$(open_restore_point_source 2>/dev/null)"; then
+    RESTORE_MODE_USED="open_sidecar_restore_point"
+    RESTORE_SOURCE_USED="$sidecar_candidate"
+    return 0
+  fi
+  if sidecar_candidate="$(raw_sidecar_restore_source 2>/dev/null)"; then
+    RESTORE_MODE_USED="raw_sidecar"
+    RESTORE_SOURCE_USED="$sidecar_candidate"
+    return 0
+  fi
   local candidates=(
-    "$ROOT/data-restore/rawdatadir-sidecar-content/current/mainnet"
-    "$ROOT/data-restore/rawdatadir-sidecar-content/current"
     "$ROOT/data-restore/rawdatadir/current/mainnet"
     "$ROOT/data-restore/rawdatadir/current"
     "$ROOT/data-restore/latest/mainnet"
@@ -318,7 +463,7 @@ restore_from_source() {
   if [[ "$source" == *:* && "$source" != /* ]]; then
     local ssh_command="${BDAG_CHAIN_STATE_RESTORE_SSH_COMMAND:-ssh -o BatchMode=yes}"
     log "restoring chain data from remote rsync source $source"
-    rsync -a --delete -e "$ssh_command" "${source%/}/" "$NODE_NETWORK_DIR/"
+    run_low_priority rsync -a --delete --numeric-ids -e "$ssh_command" "${source%/}/" "$NODE_NETWORK_DIR/"
   else
     local local_source
     local_source="$(abs_path "$source")"
@@ -326,7 +471,11 @@ restore_from_source() {
       local_source="$local_source/mainnet"
     fi
     log "restoring chain data from local source $local_source"
-    rsync -a --delete "$local_source/" "$NODE_NETWORK_DIR/"
+    if [[ "$(id -u)" != "0" ]] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+      run_low_priority sudo -n rsync -a --delete --numeric-ids "$local_source/" "$NODE_NETWORK_DIR/"
+    else
+      run_low_priority rsync -a --delete --numeric-ids "$local_source/" "$NODE_NETWORK_DIR/"
+    fi
   fi
 }
 
@@ -354,6 +503,7 @@ json_state "started" "chain-state restore started"
 stop_service_best_effort "$POOL_SERVICE" || true
 stop_service_best_effort "$NODE_SERVICE" || true
 
+preserve_node_identity
 if [[ -d "$NODE_DATA_DIR" ]]; then
   mkdir -p "$(dirname "$QUARANTINE_PATH")"
   mv "$NODE_DATA_DIR" "$QUARANTINE_PATH"
@@ -362,7 +512,7 @@ fi
 mkdir -p "$NODE_DATA_DIR"
 
 case "$RESTORE_MODE_USED" in
-  source) restore_from_source "$RESTORE_SOURCE_USED" ;;
+  source|verified_sidecar|open_sidecar_restore_point|raw_sidecar) restore_from_source "$RESTORE_SOURCE_USED" ;;
   snapshot) restore_from_snapshot "$RESTORE_SOURCE_USED" ;;
   *)
     log "internal error: unknown restore mode $RESTORE_MODE_USED"
@@ -370,6 +520,7 @@ case "$RESTORE_MODE_USED" in
     exit 1
     ;;
 esac
+restore_node_identity
 
 if compose up -d --no-build --pull never "$NODE_SERVICE" "$DASHBOARD_SERVICE" >>"$LOG_FILE" 2>&1; then
   log "restarted node/dashboard after chain-state restore"

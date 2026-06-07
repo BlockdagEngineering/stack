@@ -107,6 +107,15 @@ on the next tick; the service self-defers when host pressure or unsafe storage
 would affect mining. USB-backed chain data is never a publishable default
 source.
 
+Local recovery copy is separate from public source serving. `SYNC_SOURCE_NODE=0`
+disables raw datadir publication, but
+`BDAG_RAWDATADIR_LOCAL_SIDECAR_COPY=1` still lets eligible non-USB hosts keep a
+low-priority rsync mirror plus verified open restore points for local
+chain-state recovery. Storage eligibility still fails closed for
+USB/removable/hotplug paths, so a USB-backed appliance does not create a second
+large hot copy or serve bulk data unless an operator explicitly changes that
+policy on proven hardware.
+
 ## Receiver Flow
 
 Default release behavior:

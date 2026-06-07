@@ -7,6 +7,22 @@ P2P_PROTOCOLS="${BDAG_P2P_PROTOCOLS:-tcp}"
 
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
 
+env_value() {
+  local key="$1" fallback="${2:-}" value
+  value="$(grep -E "^${key}=" "$ROOT/.env" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
+  printf '%s\n' "${value:-$fallback}"
+}
+
+set_env_value() {
+  local file="$1" key="$2" value="$3"
+  touch "$file"
+  if grep -q "^${key}=" "$file"; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "$file"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$file"
+  fi
+}
+
 need_sudo() {
   if [[ "$(id -u)" == "0" ]]; then
     "$@"
@@ -63,10 +79,6 @@ install_rawdatadir_source_timer() {
   local source_node mode
   source_node="$(env_value SYNC_SOURCE_NODE 0)"
   mode="$(env_value BDAG_RAWDATADIR_SOURCE_MODE auto)"
-  if [[ "$source_node" =~ ^(0|false|no|off|disabled)$ ]]; then
-    warn "Raw datadir FastArtifact source disabled by SYNC_SOURCE_NODE=$source_node"
-    return 0
-  fi
   if [[ ! -x "$ROOT/ops/fastartifact_source_eligibility.py" || ! -x "$ROOT/ops/maintain-rawdatadir-sidecar.sh" || ! -x "$ROOT/ops/verify-rawdatadir-sidecar.py" || ! -x "$ROOT/ops/publish-rawdatadir-artifact.sh" ]]; then
     warn "Raw datadir source files are missing under $ROOT/ops"
     return 0
@@ -104,6 +116,7 @@ BDAG_RAWDATADIR_ACTIVE_SERVICE=$active_service
 BDAG_RAWDATADIR_SIDECAR_SOURCE=$source_dir
 BDAG_RAWDATADIR_SIDECAR_DIR=$sidecar_dir
 BDAG_RAWDATADIR_SIDECAR_SAFE_STATUS=$ROOT/ops/runtime/rawdatadir-sidecar-safe-status.json
+BDAG_RAWDATADIR_LOCAL_SIDECAR_COPY=$(env_value BDAG_RAWDATADIR_LOCAL_SIDECAR_COPY 1)
 BDAG_RAWDATADIR_ARTIFACT_BASE=$artifact_base
 BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE=$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE auto)
 BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE=$sidecar_content_base
@@ -153,8 +166,13 @@ EOF
   systemctl --user daemon-reload
   systemctl --user enable --now bdag-rawdatadir-sidecar.timer
   systemctl --user enable --now bdag-rawdatadir-sidecar-verify.timer
-  systemctl --user enable --now bdag-rawdatadir-source.timer
-  if [[ "$publish_allowed" != "true" ]]; then
+  if [[ "$source_node" =~ ^(0|false|no|off|disabled)$ ]]; then
+    warn "Raw datadir FastArtifact publisher disabled by SYNC_SOURCE_NODE=$source_node; local recovery sidecar and verifier remain active"
+    systemctl --user disable --now bdag-rawdatadir-source.timer >/dev/null 2>&1 || true
+  else
+    systemctl --user enable --now bdag-rawdatadir-source.timer
+  fi
+  if [[ ! "$source_node" =~ ^(0|false|no|off|disabled)$ && "$publish_allowed" != "true" ]]; then
     warn "Raw datadir artifact publisher is not allowed yet; timer remains active and the service will retry/defer safely"
   fi
 }
@@ -264,4 +282,7 @@ install_mining_host_tuning() {
 
 install_firewall
 install_local_peer_timer
+install_rawdatadir_source_timer
+install_ipfs_content_sidecar_timer
+install_ipfs_segment_writer_timer
 install_mining_host_tuning

@@ -164,6 +164,56 @@ class MiningReadinessGateTests(unittest.TestCase):
         failures = result["backends"]["node"]["samples"][0]["failures"]
         self.assertIn("getBlockTemplate_empty", failures)
 
+    def test_transient_block_template_probe_race_is_warning_when_health_ready(self) -> None:
+        def handler(method: str, _params: list[Any] | dict[str, Any], _calls: dict[str, int]) -> Any:
+            if method == "getBlockCount":
+                return rpc_result(1000)
+            if method == "getTemplateHealth":
+                return rpc_result(healthy_health(2000))
+            if method == "getBlockTemplate":
+                return rpc_error(-32000, "Blockdag is downloading tx... : Client in initial download")
+            return rpc_error(-32601, "method not found")
+
+        with FakeJsonRpcServer(handler) as server:
+            result = gate.evaluate_gate(
+                [gate.Backend("node", server.url)],
+                timeout=0.5,
+                sample_count=1,
+                sample_interval_seconds=0,
+                after_chain_incident=True,
+            )
+
+        self.assertTrue(result["ok"], result["failures"])
+        sample = result["backends"]["node"]["samples"][0]
+        self.assertFalse(sample["get_block_template_ok"])
+        self.assertIn("getBlockTemplate transient probe race: jsonrpc_error", sample["warnings"])
+
+    def test_transient_block_template_probe_race_still_fails_when_health_not_ready(self) -> None:
+        def handler(method: str, _params: list[Any] | dict[str, Any], _calls: dict[str, int]) -> Any:
+            if method == "getBlockCount":
+                return rpc_result(1000)
+            if method == "getTemplateHealth":
+                health = healthy_health(2000)
+                health["submit_ready"] = False
+                return rpc_result(health)
+            if method == "getBlockTemplate":
+                return rpc_error(-32000, "Blockdag is downloading tx... : Client in initial download")
+            return rpc_error(-32601, "method not found")
+
+        with FakeJsonRpcServer(handler) as server:
+            result = gate.evaluate_gate(
+                [gate.Backend("node", server.url)],
+                timeout=0.5,
+                sample_count=1,
+                sample_interval_seconds=0,
+                after_chain_incident=True,
+            )
+
+        self.assertFalse(result["ok"])
+        failures = result["backends"]["node"]["samples"][0]["failures"]
+        self.assertIn("submit_ready_false", failures)
+        self.assertIn("getBlockTemplate failed: jsonrpc_error", failures)
+
     def test_block_template_probe_uses_current_node_rpc_signature(self) -> None:
         mining_address = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
 

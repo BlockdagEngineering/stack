@@ -84,14 +84,22 @@ def collect_unsafe_paths(sidecar_dir: Path) -> list[str]:
     for rel in exact:
         if (sidecar_dir / rel).exists():
             unsafe.append(rel)
-    for pattern in ("LOCK", "*.ipc", "*.sock", ".rsync-partial"):
+    for pattern in ("LOCK", "*.ipc", "*.sock", ".rsync-partial", ".*"):
         for path in sidecar_dir.rglob(pattern):
             unsafe.append(path.relative_to(sidecar_dir).as_posix())
     return sorted(set(unsafe))
 
 
-def verify(sidecar_dir: Path, source_dir: Path | None, max_age_seconds: int | None) -> dict[str, Any]:
+def verify(
+    sidecar_dir: Path,
+    source_dir: Path | None,
+    max_age_seconds: int | None,
+    lock_file: Path | None = None,
+) -> dict[str, Any]:
     reasons: list[str] = []
+    copy_in_progress = bool(lock_file and fuser_holds(lock_file))
+    if copy_in_progress:
+        reasons.append("sidecar_sync_in_progress")
     if not sidecar_dir.exists():
         reasons.append("sidecar_dir_missing")
     if not (sidecar_dir / "BdagChain").is_dir():
@@ -134,6 +142,7 @@ def verify(sidecar_dir: Path, source_dir: Path | None, max_age_seconds: int | No
         "source_dir": str(source_dir) if source_dir else None,
         "latest_safe_dir": str(sidecar_dir) if safe else None,
         "reasons": reasons,
+        "copy_in_progress": copy_in_progress,
         "unsafe_paths": unsafe_paths[:200],
         "unsafe_path_count": len(unsafe_paths),
         "sidecar_newest_mtime": sidecar_newest,
@@ -148,7 +157,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sidecar-dir", default=os.environ.get("BDAG_RAWDATADIR_SIDECAR_DIR"))
     parser.add_argument("--source-dir", default=os.environ.get("BDAG_RAWDATADIR_SIDECAR_SOURCE"))
     parser.add_argument("--status-file", default=os.environ.get("BDAG_RAWDATADIR_SIDECAR_SAFE_STATUS"))
+    parser.add_argument("--lock-file", default=os.environ.get("BDAG_RAWDATADIR_SIDECAR_LOCK"))
     parser.add_argument("--max-age-seconds", type=int, default=None)
+    parser.add_argument(
+        "--exit-zero-while-syncing",
+        action="store_true",
+        default=os.environ.get("BDAG_RAWDATADIR_VERIFY_EXIT_ZERO_WHILE_SYNCING", "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        help="Return success while a sidecar copy holds the lock, but still write usable=false status.",
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--no-write", action="store_true")
     args = parser.parse_args(argv)
@@ -156,12 +173,17 @@ def main(argv: list[str] | None = None) -> int:
     sidecar_dir = resolve_path(args.sidecar_dir, ROOT / "data-restore/rawdatadir-sidecar" / NETWORK)
     source_dir = resolve_path(args.source_dir, ROOT / "data/node" / NETWORK) if args.source_dir else None
     status_file = resolve_path(args.status_file, ROOT / "ops/runtime/rawdatadir-sidecar-safe-status.json")
-    payload = verify(sidecar_dir, source_dir, args.max_age_seconds)
+    lock_file = resolve_path(args.lock_file, ROOT / "ops/runtime/rawdatadir-sidecar.lock") if args.lock_file else None
+    payload = verify(sidecar_dir, source_dir, args.max_age_seconds, lock_file)
     if not args.no_write:
         atomic_write_json(status_file, payload)
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
-    return 0 if payload["safe"] else 1
+    if payload["safe"]:
+        return 0
+    if payload.get("copy_in_progress") and args.exit_zero_while_syncing:
+        return 0
+    return 1
 
 
 if __name__ == "__main__":
