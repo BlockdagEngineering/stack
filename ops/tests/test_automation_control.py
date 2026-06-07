@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -307,6 +308,18 @@ class AutomationControlTests(unittest.TestCase):
 
     def test_status_sampler_suppresses_config_edit_when_control_missing(self) -> None:
         incidents: list[tuple[str, str, str]] = []
+        peer_id = "16Uiu2HAkvvmkRJXJAZAWq3bFDzBAFQwQJ88PQqMedULsrv4t3XCD"
+        os.environ["BDAG_NODE_PEER_ADDRESSES"] = f"/ip4/10.0.0.2/tcp/8151/p2p/{peer_id}"
+        payload = {
+            "nodes": {
+                "node": {
+                    "tail": [
+                        "sync range returned only orphan blocks; "
+                        f"module=SYNC peer={peer_id} processID=54"
+                    ]
+                }
+            }
+        }
 
         with self.patch_default_control_paths(), unittest.mock.patch.object(
             status_sampler, "log", lambda _message: None
@@ -325,7 +338,7 @@ class AutomationControlTests(unittest.TestCase):
             "recreate_node_services",
             side_effect=AssertionError("node recreate must not run"),
         ):
-            ok = status_sampler.repair_constrained_fastartifact({})
+            ok = status_sampler.repair_orphan_peers(payload)
 
         self.assertFalse(ok)
         self.assertEqual(1, len(self.event_lines()))

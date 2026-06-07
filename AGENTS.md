@@ -73,13 +73,13 @@ override `POOL_GBT_MIN_INTERVAL_MS` below `1000`, do not override
 least `10` seconds apart unless a measured soak test proves the node can absorb
 more frequent RPC traffic while importing and mining.
 
-Any system with USB-backed blockchain data is a FastSync/FastArtifact consumer,
+Any system with USB-backed blockchain data is a raw-datadir/IPFS recovery consumer,
 not a source, by default. Keep `SYNC_SOURCE_NODE=0`; do not reintroduce
-`NODE_ARGS_APPEND=--fastartifactsync` or artifact serving on low-IO USB hosts.
+node startup bulk-sync flags or recovery serving on low-IO USB hosts.
 These nodes must still do normal outbound sync and block relay, but must not
-serve bulk range, snapshot, or artifact traffic from the USB chain path unless a
-human deliberately overrides the policy for a proven
-high-IO source host.
+serve bulk range or legacy restore traffic from the USB chain path unless a
+human deliberately overrides the policy for a proven high-IO source host. The
+managed recovery publication path is the conservative raw-datadir/IPFS sidecar.
 
 Fresh installs assume zero miner sources. Do not hard-code one, four, five, or
 any other miner count into release defaults, installers, watchdog repairs,
@@ -175,9 +175,8 @@ RPC at the same time. Hard diagnostic paths can force a direct sample with
 `max_age_seconds=0`; routine loops should not.
 
 The node entrypoint must not recursively `chown` the full chain datadir on every
-start. Keep ownership repair conditional through `BDAG_ENTRYPOINT_CHOWN_MODE`
-and only run the second repair pass after snapshot import has actually mutated
-the datadir.
+start. Keep ownership repair conditional through `BDAG_ENTRYPOINT_CHOWN_MODE`;
+do not reintroduce legacy startup import mutation paths.
 
 The stack sentinel must be single-flight and must never build or pull images as
 part of automatic repair. Recreate repairs must use Compose with
@@ -202,13 +201,13 @@ at a bounded threshold. Do not reintroduce full-history rewrite loops for every
 sample on the Pi USB data path.
 
 Recurring timers must include modest `RandomizedDelaySec` jitter so node-child
-guard, sync coordinator, incident reporter, runtime priority, snapshot, and
-peer-discovery work do not wake together and stampede Docker/RPC on constrained
-hosts.
+guard, sync coordinator, incident reporter, runtime priority, IPFS/raw-datadir
+sidecar, and peer-discovery work do not wake together and stampede Docker/RPC on
+constrained hosts.
 
 Optional background work must respect `background_maintenance_decision()`.
-Hourly snapshot staging and global dashboard blockchain scans must defer while
-the node is catching up or host IO/CPU pressure is above the configured release
+Raw-datadir/IPFS sidecar refresh and global dashboard blockchain scans must defer
+while the node is catching up or host IO/CPU pressure is above the configured release
 thresholds. Chain import and live mining are the primary jobs; background
 freshness work is allowed to lag until the host is healthy.
 
@@ -244,12 +243,10 @@ status. Use Python's standard HTTP client for local pool metrics and public
 enrichment calls so Linux AMD64, Linux ARM64/Pi5, macOS Docker Desktop, and
 Windows Docker Desktop behave consistently once Docker and Python are present.
 
-When operating from source, keep dashboard surfaces explicit: Compose owns the
-container dashboard on `9280`; the Python operations dashboard owns the `8088`
-control-plane view and must be configured with the real container names and
-Docker access for the stack being watched. Do not report a source checkout
-healthy until `8088/api/status` points at the intended project root and returns
-`overall=ok` or the expected no-miner mode.
+When operating from source, keep dashboard surfaces explicit: the compose
+`dashboard` service owns the `8088` control-plane view. Do not report a source checkout healthy until
+`8088/api/status` points at the intended project root and returns `overall=ok`
+or the expected no-miner mode.
 
 ## P2P Peer Configuration
 

@@ -314,7 +314,7 @@ tune_processes() {
   done
 
   for container in \
-    "$(service_container dashboard dashboard bdag-dashboard)" \
+    "$(service_container dashboard dashboard)" \
     bdag-prometheus bdag-grafana bdag-loki \
     bdag-alertmanager bdag-cadvisor bdag-alloy bdag-blackbox-exporter \
     bdag-exporter bdag-node-exporter bdag-postgres-exporter; do
@@ -359,7 +359,7 @@ tune_docker_weights() {
   docker_update_one "$(service_container pool pool)" 5120 950
   docker_update_one "$(service_container postgres postgres)" 4096 950
   for container in \
-    "$(service_container dashboard dashboard bdag-dashboard)" \
+    "$(service_container dashboard dashboard)" \
     bdag-prometheus bdag-grafana bdag-loki \
     bdag-alertmanager bdag-cadvisor bdag-alloy bdag-blackbox-exporter \
     bdag-exporter bdag-node-exporter bdag-postgres-exporter; do
@@ -380,7 +380,7 @@ tune_cgroups() {
   node_container="$(service_container node node)"
   pool_container="$(service_container pool pool)"
   pool_db_container="$(service_container postgres postgres)"
-  dashboard_container="$(service_container dashboard dashboard bdag-dashboard)"
+  dashboard_container="$(service_container dashboard dashboard)"
 
   [ -n "$node_container" ] && apply_cgroup_policy "$node_container" 10000 10000 "$node_memory_low"
   [ -n "$pool_container" ] && apply_cgroup_policy "$pool_container" 8500 9500 "$pool_memory_low"

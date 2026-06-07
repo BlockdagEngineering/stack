@@ -273,7 +273,7 @@ NODES = split_env_list("BDAG_NODE_SERVICES", "node")
 OBSERVER_NODES = unique_names(split_env_list("BDAG_OBSERVER_NODE_SERVICES", ""))
 STACK_SERVICES = split_env_list(
     "BDAG_STACK_SERVICES",
-    "postgres,node,pool",
+    "postgres,node,pool,dashboard",
 )
 SERVICES = unique_names([*STACK_SERVICES, POOL_DB_CONTAINER, *NODES, *POOL_CONTAINERS])
 NODE_DATA_DIRS = split_env_list("BDAG_NODE_DATA_DIRS", "node")
@@ -574,6 +574,8 @@ def is_recent_mining_sync_noise(item: Any) -> bool:
 
 
 DEFAULT_GLOBAL_POOL_LABELS = {}
+_DOCKER_COMPOSE_SERVICE_CONTAINER_CACHE: tuple[float, dict[str, str]] = (0.0, {})
+DOCKER_COMPOSE_SERVICE_CONTAINER_CACHE_SECONDS = 2.0
 
 
 @dataclass
@@ -1247,6 +1249,58 @@ def compose_service_name(name: str) -> str:
                 if candidate:
                     return candidate
     return name
+
+
+def clear_docker_compose_service_container_cache() -> None:
+    global _DOCKER_COMPOSE_SERVICE_CONTAINER_CACHE
+    _DOCKER_COMPOSE_SERVICE_CONTAINER_CACHE = (0.0, {})
+
+
+def docker_compose_service_container_names(*, force_refresh: bool = False) -> dict[str, str]:
+    """Return compose service -> concrete container name, preferring running containers."""
+    global _DOCKER_COMPOSE_SERVICE_CONTAINER_CACHE
+    now = time.monotonic()
+    cached_at, cached = _DOCKER_COMPOSE_SERVICE_CONTAINER_CACHE
+    if not force_refresh and cached and now - cached_at <= DOCKER_COMPOSE_SERVICE_CONTAINER_CACHE_SECONDS:
+        return dict(cached)
+
+    project = docker_compose_project_name()
+    service_to_container: dict[str, str] = {}
+    format_arg = '{{.Names}}\t{{.Label "com.docker.compose.service"}}'
+    for include_stopped in (False, True):
+        command = ["docker", "ps"]
+        if include_stopped:
+            command.append("-a")
+        command.extend(
+            [
+                "--filter",
+                f"label=com.docker.compose.project={project}",
+                "--format",
+                format_arg,
+            ]
+        )
+        result = run(command, timeout=8)
+        if not result.ok:
+            continue
+        for raw_line in result.stdout.splitlines():
+            parts = raw_line.split("\t", 1)
+            if len(parts) != 2:
+                continue
+            container_name = parts[0].strip()
+            service = parts[1].strip()
+            if not container_name or not service or service == "<no value>":
+                continue
+            service_to_container.setdefault(service, container_name)
+
+    _DOCKER_COMPOSE_SERVICE_CONTAINER_CACHE = (now, dict(service_to_container))
+    return service_to_container
+
+
+def docker_target_name(container_or_service: str) -> str:
+    name = str(container_or_service or "").strip()
+    if not name:
+        return name
+    return docker_compose_service_container_names().get(name, name)
 
 
 def stack_start_services(*, include_pool: bool = True) -> list[str]:
@@ -2787,7 +2841,18 @@ def configure_miners(
 
 
 def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
-    result = run(["docker", "inspect", *names], timeout=12)
+    requested_names = unique_names(names)
+    target_to_aliases: dict[str, list[str]] = {}
+    for requested in requested_names:
+        target = docker_target_name(requested)
+        if not target:
+            continue
+        target_to_aliases.setdefault(target, []).append(requested)
+    targets = list(target_to_aliases)
+    if not targets:
+        return {}
+
+    result = run(["docker", "inspect", *targets], timeout=12)
     payload: list[dict[str, Any]] = []
     if result.ok:
         try:
@@ -2795,8 +2860,8 @@ def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
         except json.JSONDecodeError:
             payload = []
     else:
-        for name in names:
-            single = run(["docker", "inspect", name], timeout=8)
+        for target in targets:
+            single = run(["docker", "inspect", target], timeout=8)
             if not single.ok:
                 continue
             try:
@@ -2809,6 +2874,8 @@ def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
         name = str(item.get("Name", "")).lstrip("/")
         state = item.get("State") or {}
         config = item.get("Config") or {}
+        labels = config.get("Labels") or {}
+        compose_service = labels.get("com.docker.compose.service", "") if isinstance(labels, dict) else ""
         network_settings = item.get("NetworkSettings") or {}
         networks = network_settings.get("Networks") or {}
         network_rows = {
@@ -2819,25 +2886,35 @@ def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
             for network_name, network_info in networks.items()
             if isinstance(network_info, dict)
         }
-        inspected[name] = {
-            "name": name,
-            "image": config.get("Image", ""),
-            "running": bool(state.get("Running")),
-            "status": state.get("Status", "unknown"),
-            "started_at": state.get("StartedAt", ""),
-            "finished_at": state.get("FinishedAt", ""),
-            "restart_count": int(item.get("RestartCount", 0) or 0),
-            "exit_code": state.get("ExitCode", 0),
-            "error": state.get("Error", ""),
-            "ports": network_settings.get("Ports") or {},
-            "networks": network_rows,
-            "network_ips": [row["ip_address"] for row in network_rows.values() if row.get("ip_address")],
-        }
+        aliases = list(target_to_aliases.get(name, []))
+        if compose_service and compose_service in requested_names and compose_service not in aliases:
+            aliases.append(compose_service)
+        if name in requested_names and name not in aliases:
+            aliases.append(name)
+        if not aliases:
+            aliases = [compose_service or name]
+        for alias in aliases:
+            inspected[alias] = {
+                "name": alias,
+                "container_name": name,
+                "compose_service": compose_service,
+                "image": config.get("Image", ""),
+                "running": bool(state.get("Running")),
+                "status": state.get("Status", "unknown"),
+                "started_at": state.get("StartedAt", ""),
+                "finished_at": state.get("FinishedAt", ""),
+                "restart_count": int(item.get("RestartCount", 0) or 0),
+                "exit_code": state.get("ExitCode", 0),
+                "error": state.get("Error", ""),
+                "ports": network_settings.get("Ports") or {},
+                "networks": network_rows,
+                "network_ips": [row["ip_address"] for row in network_rows.values() if row.get("ip_address")],
+            }
     return inspected
 
 
 def docker_top(name: str) -> str:
-    return run(["docker", "top", name], timeout=8).stdout
+    return run(["docker", "top", docker_target_name(name)], timeout=8).stdout
 
 
 def bdag_child_running_from_top(top: str) -> bool:
@@ -2855,7 +2932,7 @@ def bdag_child_running_from_top(top: str) -> bool:
 
 
 def docker_logs(name: str, lines: int = 160) -> str:
-    result = run(["docker", "logs", "-n", str(lines), name], timeout=12)
+    result = run(["docker", "logs", "-n", str(lines), docker_target_name(name)], timeout=12)
     return redact_sensitive_text(result.stdout + "\n" + result.stderr).strip()
 
 
@@ -6350,7 +6427,20 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
 
 def pool_db_json(sql: str) -> Any:
     result = run(
-        ["docker", "exec", POOL_DB_CONTAINER, "psql", "-U", POOL_DB_USER, "-d", POOL_DB_NAME, "-t", "-A", "-c", sql],
+        [
+            "docker",
+            "exec",
+            docker_target_name(POOL_DB_CONTAINER),
+            "psql",
+            "-U",
+            POOL_DB_USER,
+            "-d",
+            POOL_DB_NAME,
+            "-t",
+            "-A",
+            "-c",
+            sql,
+        ],
         timeout=20,
     )
     if not result.ok:
@@ -6528,7 +6618,13 @@ def node_rpc_urls() -> list[tuple[str, str]]:
 
 def docker_container_ip(name: str) -> str:
     ip = run(
-        ["docker", "inspect", name, "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"],
+        [
+            "docker",
+            "inspect",
+            docker_target_name(name),
+            "--format",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+        ],
         timeout=8,
     ).stdout.strip()
     return ip if valid_ipv4(ip) else ""
@@ -8568,9 +8664,10 @@ def _parse_proc_net_peer_ips(text: str) -> list[str]:
 
 
 def container_peer_ips(name: str) -> list[str]:
+    target = docker_target_name(name)
     ips: list[str] = []
     for path in ("/proc/net/tcp", "/proc/net/tcp6"):
-        result = run(["docker", "exec", name, "cat", path], timeout=8)
+        result = run(["docker", "exec", target, "cat", path], timeout=8)
         for ip in _parse_proc_net_peer_ips(result.stdout):
             if ip not in ips:
                 ips.append(ip)
@@ -11862,7 +11959,7 @@ def restore_clean(log_path: Path) -> bool:
         backup_node_dir(node_dir, log_path)
 
     for step in (
-        configured_command("BDAG_RESTORE_NODE_COMMAND", ["make", "restore-node-snapshot"]),
+        configured_command("BDAG_RESTORE_NODE_COMMAND", ["bash", "ops/chain-state-self-heal.sh", "--force"]),
         gated_stack_start_command(log_path),
     ):
         if not step:

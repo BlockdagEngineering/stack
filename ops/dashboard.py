@@ -3935,7 +3935,7 @@ HTML = r"""<!doctype html>
     }
     async function action(name) {
       if (busy) return;
-      if (name === "clean_restore" && !confirm("This stops the stack, backs up node data, restores the latest snapshot, and starts again. Continue?")) return;
+      if (name === "clean_restore" && !confirm("This stops the stack, backs up node data, restores from the latest IPFS/raw-datadir restore point, and starts again. Continue?")) return;
       busy = true;
       for (const btn of document.querySelectorAll("button")) btn.disabled = true;
       try {

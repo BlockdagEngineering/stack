@@ -8,16 +8,16 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MODULE_PATH = ROOT / "ops" / "fastartifact_source_eligibility.py"
+MODULE_PATH = ROOT / "ops" / "rawdatadir_source_eligibility.py"
 
 
-spec = importlib.util.spec_from_file_location("fastartifact_source_eligibility", MODULE_PATH)
+spec = importlib.util.spec_from_file_location("rawdatadir_source_eligibility", MODULE_PATH)
 eligibility = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
 spec.loader.exec_module(eligibility)
 
 
-class FastArtifactSourceEligibilityTest(unittest.TestCase):
+class RawdatadirSourceEligibilityTest(unittest.TestCase):
     def test_active_node_defaults_to_node(self) -> None:
         env = {"BDAG_NODE_SERVICES": "node", "BDAG_NODE_DATA_DIR": "./data/node"}
 
@@ -209,12 +209,12 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
         self.assertFalse(payload["sync_source_node"])
         self.assertIn("source_mode_disabled", payload["reasons"])
 
-    def test_sync_source_node_enabled_overrides_legacy_no_fastsync_serve(self) -> None:
+    def test_sync_source_node_enabled_with_auto_source_mode_is_eligible(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
             env = {
                 "SYNC_SOURCE_NODE": "1",
-                "BDAG_NO_FASTSYNC_SERVE": "1",
+                "BDAG_RAWDATADIR_SOURCE_MODE": "auto",
                 "BDAG_NODE_SERVICES": "node",
                 "BDAG_NODE_DATA_DIR": str(tmp_path / "node"),
                 "BDAG_RAWDATADIR_SIDECAR_SOURCE": str(tmp_path / "node" / "mainnet"),
@@ -236,7 +236,7 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
             tmp_path = Path(tmpdir)
             env = {
                 "SYNC_SOURCE_NODE": "1",
-                "BDAG_FASTSNAP_NETWORK": "not-mainnet",
+                "BDAG_RAWDATADIR_NETWORK": "not-mainnet",
                 "BDAG_NODE_SERVICES": "node",
                 "BDAG_NODE_DATA_DIR": str(tmp_path / "node"),
                 "BDAG_RAWDATADIR_SIDECAR_SOURCE": str(tmp_path / "node" / "mainnet"),

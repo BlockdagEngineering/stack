@@ -13,7 +13,7 @@ if [[ -f "$BDAG_STACK_DEFAULTS_FILE" ]]; then
   . "$BDAG_STACK_DEFAULTS_FILE"
   set +a
 fi
-REQUESTED_NETWORK="${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}"
+REQUESTED_NETWORK="${BDAG_RAWDATADIR_NETWORK:-mainnet}"
 if [[ "${REQUESTED_NETWORK,,}" != "mainnet" ]]; then
   printf '[%s] raw datadir sidecar refuses non-mainnet network: %s\n' "$(date -Is)" "$REQUESTED_NETWORK" >&2
   exit 2
@@ -242,7 +242,7 @@ esac
 if ! SYNC_SOURCE_NODE="${SYNC_SOURCE_NODE_VALUE:-0}" \
   BDAG_RAWDATADIR_SOURCE_MODE="$SIDECAR_MODE" \
   BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH="$eligibility_require_evm_reference_fresh" \
-  "$PROJECT_ROOT/ops/fastartifact_source_eligibility.py" --status-file "$STATUS_FILE" >/dev/null; then
+  "$PROJECT_ROOT/ops/rawdatadir_source_eligibility.py" --status-file "$STATUS_FILE" >/dev/null; then
   if local_sidecar_copy_can_ignore_reasons; then
     log "raw datadir sidecar local copy continuing despite source-only eligibility reason: source_mode_disabled"
   else

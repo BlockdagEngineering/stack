@@ -12,16 +12,16 @@ Field report from the `/home/hpool` mining host on 2026-05-26.
 - Chain disk: 128 GB USB flash, F2FS, mounted with `noatime,lazytime`.
 - Network: default route over Wi-Fi on `wlp2s0`, pool host `192.168.49.193`.
 - ASIC: single X100 at `192.168.49.179`.
-- Snapshot source: low-latency trusted peer on `192.168.49.186`.
+- Restore source used during the incident: low-latency trusted peer on `192.168.49.186`.
 
 ## Adverse Conditions
 
-1. The internal eMMC was too small for chain data, Docker churn, old snapshots,
+1. The internal eMMC was too small for chain data, Docker churn, old restore backups,
    package archives, and rollback backups at the same time.
 2. Normal peer sync from an old local chain state was too slow for a practical
    recovery window.
 3. A partial pre-V2 datadir could not be trusted as the final single source of
-   node data after the V2 artifact import.
+   node data after recovery.
 4. The postgres database initially lacked the `block_submissions` history table, so
    accepted blocks could be logged without being available to dashboard and
    earnings views.
@@ -45,9 +45,9 @@ Field report from the `/home/hpool` mining host on 2026-05-26.
    filesystem, then split small frequent writes back to internal storage where
    there was enough free space.
 2. Used the default one-node stack for the appliance.
-3. Downloaded and verified the snapshot artifact before import.
+3. Downloaded and verified the restore content before import.
 4. Parked old datadirs with timestamped names instead of deleting them, then
-   imported the verified V2 snapshot into a clean datadir.
+   imported the verified restore content into a clean datadir.
 5. Applied `sql/pool-schema.sql` so `block_submissions` and credit idempotency
    indexes existed before relying on dashboard earnings.
 6. Verified health through node RPC, pool accepted-share and accepted-block logs,

@@ -1,5 +1,5 @@
 [Unit]
-Description=BlockDAG raw datadir FastArtifact source publisher
+Description=BlockDAG raw datadir IPFS source publisher
 After=default.target docker.service
 
 [Service]

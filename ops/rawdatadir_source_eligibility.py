@@ -388,7 +388,7 @@ def node_data_dir(env: dict[str, str], service: str) -> Path:
 
 def build_payload(full: bool) -> dict[str, Any]:
     env = load_env()
-    requested_network = (env.get("BDAG_RAWDATADIR_NETWORK") or env.get("BDAG_FASTSNAP_NETWORK") or "mainnet").strip().lower()
+    requested_network = (env.get("BDAG_RAWDATADIR_NETWORK") or "mainnet").strip().lower()
     network = "mainnet"
     service = active_node_service(env)
     data_dir = node_data_dir(env, service)
@@ -399,7 +399,7 @@ def build_payload(full: bool) -> dict[str, Any]:
     artifact_base = env_path(env, "BDAG_RAWDATADIR_ARTIFACT_BASE", ROOT / "data-restore" / "rawdatadir")
     tmp_dir = env_path(env, "BDAG_RAWDATADIR_TMPDIR", artifact_base / "tmp")
     source_node_enabled = bool_mode(env.get("SYNC_SOURCE_NODE")) is True
-    legacy_mode = (env.get("BDAG_RAWDATADIR_SOURCE_MODE") or env.get("BDAG_FASTARTIFACT_SOURCE_MODE") or "auto").lower()
+    source_mode = (env.get("BDAG_RAWDATADIR_SOURCE_MODE") or "auto").lower()
     storage_profile = (env.get("BDAG_STORAGE_PROFILE") or "").strip().lower()
     network_topology = (env.get("BDAG_DETECTED_NETWORK_TOPOLOGY") or env.get("BDAG_NETWORK_TOPOLOGY") or "").strip().lower()
 
@@ -414,7 +414,7 @@ def build_payload(full: bool) -> dict[str, Any]:
     reasons: list[str] = []
     if requested_network != "mainnet":
         reasons.append(f"non-mainnet raw datadir network is unsupported:{requested_network}")
-    if not source_node_enabled:
+    if not source_node_enabled or source_mode in {"0", "false", "no", "off", "disabled"}:
         reasons.append("source_mode_disabled")
     if storage_profile in LOW_IO_USB_STORAGE_PROFILES:
         reasons.append(f"storage_profile_usb_low_io:{storage_profile}")
@@ -461,7 +461,7 @@ def build_payload(full: bool) -> dict[str, Any]:
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "project_root": str(ROOT),
-        "mode": legacy_mode,
+        "mode": source_mode,
         "sync_source_node": source_node_enabled,
         "storage_profile": storage_profile,
         "network_topology": network_topology,

@@ -1,5 +1,5 @@
 [Unit]
-Description=Publish BlockDAG raw datadir FastArtifact source when eligible
+Description=Publish BlockDAG raw datadir IPFS source when eligible
 
 [Timer]
 OnBootSec=45m

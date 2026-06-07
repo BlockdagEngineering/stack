@@ -174,7 +174,7 @@ def canonical_manifest_value(field: str, value: Any) -> Any:
 def signable_manifest_payload(manifest: dict[str, Any]) -> bytes:
     """Return the canonical bytes used for artifact_root and Ed25519 signing.
 
-    This mirrors corechain FastArtifact V2's Go manifest canonicalization:
+    This mirrors the raw-datadir signed manifest canonicalization:
     signatures and artifact_root are excluded, struct fields are serialized in
     manifest order, optional empty fields are omitted, and maps are stable.
     """
@@ -242,6 +242,29 @@ def remote_cat_command(remote: str, control_socket: str | None, path: str) -> li
     return [*ssh_base(remote, control_socket), "cat " + shlex.quote(path)]
 
 
+def safe_ipfs_root_cid(value: str) -> str:
+    cid = str(value or "").strip()
+    if not cid:
+        raise RestoreError("empty IPFS artifact CID")
+    if cid.startswith("-") or "/" in cid or "\\" in cid or ".." in cid:
+        raise RestoreError(f"unsafe IPFS artifact CID: {cid!r}")
+    return cid
+
+
+def ipfs_binary(args: argparse.Namespace) -> str:
+    return str(args.ipfs_binary or os.environ.get("BDAG_IPFS_BINARY") or "ipfs")
+
+
+def ipfs_artifact_path(args: argparse.Namespace, rel: str) -> str:
+    cid = safe_ipfs_root_cid(args.ipfs_artifact_cid)
+    safe = safe_relative_path(rel).as_posix()
+    return f"/ipfs/{cid}/{safe}"
+
+
+def ipfs_cat_command(args: argparse.Namespace, rel: str) -> list[str]:
+    return [ipfs_binary(args), "cat", ipfs_artifact_path(args, rel)]
+
+
 def remote_marker_test_command(remote: str, control_socket: str | None, artifact_dir: str) -> list[str]:
     quoted = [shlex.quote(str(Path(artifact_dir) / name)) for name in UNSAFE_MARKERS]
     script = " || ".join(f"test -e {path}" for path in quoted)
@@ -252,9 +275,19 @@ def read_manifest(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
     if args.local_artifact_dir:
         path = Path(args.local_artifact_dir).resolve() / "manifest.json"
         raw = path.read_bytes()
+    elif args.ipfs_artifact_cid:
+        result = subprocess.run(
+            ipfs_cat_command(args, "manifest.json"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RestoreError(f"failed to fetch IPFS manifest: {result.stderr.decode(errors='replace')[-500:]}")
+        raw = result.stdout
     else:
         if not args.remote or not args.remote_artifact_dir:
-            raise RestoreError("set --local-artifact-dir or both --remote and --remote-artifact-dir")
+            raise RestoreError("set --local-artifact-dir, --ipfs-artifact-cid, or both --remote and --remote-artifact-dir")
         path = str(Path(args.remote_artifact_dir) / "manifest.json")
         result = subprocess.run(
             remote_cat_command(args.remote, args.ssh_control_socket, path),
@@ -296,6 +329,23 @@ def unsafe_marker_blockers(args: argparse.Namespace) -> list[str]:
     if args.local_artifact_dir:
         artifact_dir = Path(args.local_artifact_dir).resolve()
         return [f"do_not_publish_marker:{name}" for name in UNSAFE_MARKERS if (artifact_dir / name).exists()]
+    if args.ipfs_artifact_cid:
+        blockers: list[str] = []
+        for name in UNSAFE_MARKERS:
+            result = subprocess.run(
+                ipfs_cat_command(args, name),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            if result.returncode == 0:
+                blockers.append(f"do_not_publish_marker:ipfs:{name}")
+                continue
+            stderr = result.stderr.decode(errors="replace").lower()
+            if "no link named" in stderr or "not found" in stderr or "no such file" in stderr:
+                continue
+            raise RestoreError(f"failed to check IPFS DO_NOT_PUBLISH marker {name}: {stderr[-500:]}")
+        return blockers
     if not args.remote_artifact_dir:
         return []
     if not args.remote:
@@ -447,6 +497,15 @@ def open_chunk(args: argparse.Namespace, chunk_path: str) -> tuple[BinaryIO, sub
     if args.local_artifact_dir:
         path = Path(args.local_artifact_dir).resolve() / chunk_path
         return path.open("rb"), None
+    if args.ipfs_artifact_cid:
+        proc = subprocess.Popen(
+            ipfs_cat_command(args, chunk_path),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if proc.stdout is None:
+            raise RestoreError("failed to open IPFS chunk pipe")
+        return proc.stdout, proc
     assert args.remote and args.remote_artifact_dir
     remote_path = str(Path(args.remote_artifact_dir) / chunk_path)
     proc = subprocess.Popen(
@@ -626,9 +685,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--local-artifact-dir")
+    source.add_argument("--ipfs-artifact-cid", help="root CID for an IPFS artifact directory containing manifest.json and chunks")
     source.add_argument("--remote-artifact-dir")
     parser.add_argument("--remote", help="SSH remote, for example jeremy@192.168.68.65")
     parser.add_argument("--ssh-control-socket")
+    parser.add_argument("--ipfs-binary", default=os.environ.get("BDAG_IPFS_BINARY", "ipfs"))
     parser.add_argument("--target-dir", required=True)
     parser.add_argument("--preserve-from")
     parser.add_argument("--status-file", required=True)
@@ -659,9 +720,10 @@ def main(argv: list[str] | None = None) -> int:
         "duration_seconds": round(time.time() - started, 3),
         "project_root": str(ROOT),
         "source": {
-            "mode": "local" if args.local_artifact_dir else "ssh_segment_fetch",
+            "mode": "local" if args.local_artifact_dir else ("ipfs" if args.ipfs_artifact_cid else "ssh_segment_fetch"),
             "remote": args.remote if args.remote_artifact_dir else None,
             "artifact_dir": args.local_artifact_dir or args.remote_artifact_dir,
+            "ipfs_artifact_cid": args.ipfs_artifact_cid or None,
         },
         "manifest": {
             "sha256": manifest_sha,

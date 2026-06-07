@@ -426,12 +426,12 @@ def check_storage(checks: list[Check], root: Path, env: dict[str, str], profile:
     if project_usage["free_bytes"] < 2 * GIB:
         add(checks, "fail", "project_filesystem_free_space", f"project filesystem has only {project_usage['free_gib']}GiB free.", "Free space or move the release root before starting Docker and Postgres.", evidence)
     elif project_usage["free_bytes"] < 6 * GIB:
-        add(checks, "warn", "project_filesystem_free_space", f"project filesystem has {project_usage['free_gib']}GiB free.", "Keep chain data, Docker root, archives, and old snapshots off the boot filesystem.", evidence)
+        add(checks, "warn", "project_filesystem_free_space", f"project filesystem has {project_usage['free_gib']}GiB free.", "Keep chain data, Docker root, archives, and old restore material off the boot filesystem.", evidence)
     else:
         add(checks, "pass", "project_filesystem_free_space", f"{project_usage['free_gib']}GiB free", evidence=evidence)
 
     if data_usage["free_bytes"] < 10 * GIB:
-        add(checks, "fail", "chain_data_free_space", f"chain data filesystem has only {data_usage['free_gib']}GiB free.", "Move chain data to a larger disk before initial sync or snapshot import.", evidence)
+        add(checks, "fail", "chain_data_free_space", f"chain data filesystem has only {data_usage['free_gib']}GiB free.", "Move chain data to a larger disk before initial sync or IPFS/raw-datadir restore.", evidence)
     elif data_usage["free_bytes"] < 50 * GIB:
         add(checks, "warn", "chain_data_free_space", f"chain data filesystem has {data_usage['free_gib']}GiB free.", "Allow headroom for chain growth, Postgres, and rollback backups.", evidence)
     else:
@@ -771,6 +771,10 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         "BDAG_ENABLE_NODE_MINING": env.get("BDAG_ENABLE_NODE_MINING"),
         "BDAG_NODE_MODULES": env.get("BDAG_NODE_MODULES"),
         "BDAG_NODE_MINING_ARGS": env.get("BDAG_NODE_MINING_ARGS"),
+        "BDAG_IPFS_CONTENT_SIDECAR_MODE": env.get("BDAG_IPFS_CONTENT_SIDECAR_MODE"),
+        "BDAG_IPFS_SEGMENT_WRITER_MODE": env.get("BDAG_IPFS_SEGMENT_WRITER_MODE"),
+        "BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT": env.get("BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT"),
+        "BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS": env.get("BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS"),
     }
     add(checks, "pass", "active_node_topology", "release topology uses one production node", evidence=evidence)
 
@@ -793,6 +797,30 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         or topology == "asic-router"
     )
     evidence["NODE_ARGS_APPEND"] = env.get("NODE_ARGS_APPEND")
+
+    ipfs_mode = (env.get("BDAG_IPFS_CONTENT_SIDECAR_MODE") or "auto").strip().lower()
+    segment_mode = (env.get("BDAG_IPFS_SEGMENT_WRITER_MODE") or "auto").strip().lower()
+    ipfs_failures = []
+    if ipfs_mode in {"0", "false", "no", "off", "disabled"}:
+        ipfs_failures.append("BDAG_IPFS_CONTENT_SIDECAR_MODE is disabled")
+    if segment_mode in {"0", "false", "no", "off", "disabled"}:
+        ipfs_failures.append("BDAG_IPFS_SEGMENT_WRITER_MODE is disabled")
+    if bool_enabled(env.get("BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT"), False):
+        ipfs_failures.append("unsigned IPFS/raw-datadir artifacts are allowed")
+    finality_lag = safe_int(env.get("BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS"), 600)
+    if finality_lag is not None and finality_lag < 300:
+        ipfs_failures.append(f"BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS={finality_lag} is below 300")
+    if ipfs_failures:
+        add(
+            checks,
+            "fail",
+            "ipfs_recovery_defaults",
+            "IPFS recovery defaults are unsafe: " + ", ".join(ipfs_failures),
+            "Keep IPFS content sidecar and segment writer in auto mode, require signed artifacts, and keep a conservative finality lag.",
+            evidence,
+        )
+    else:
+        add(checks, "pass", "ipfs_recovery_defaults", "IPFS recovery sidecar and segment writer defaults are enabled and signed", evidence=evidence)
 
     node_mining_enabled = bool_enabled(env.get("BDAG_ENABLE_NODE_MINING"), False)
     node_modules = {item.strip().lower() for item in (env.get("BDAG_NODE_MODULES") or "").split(",") if item.strip()}
@@ -861,11 +889,6 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     else:
         add(checks, "pass", "pool_template_rpc_pressure", "pool template RPC pressure stays within constrained-node defaults", evidence=pool_rpc_pressure)
 
-    if not bool_enabled(env.get("BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC"), True):
-        add(checks, "warn", "fastsync_acceleration", "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC is disabled.", "Enable coordinator acceleration so nodes more than 1000 blocks behind use fastest catch-up defaults.", evidence)
-    else:
-        add(checks, "pass", "fastsync_acceleration", "sync coordinator fastest catch-up is enabled", evidence=evidence)
-
     fast_restart_cooldown = safe_int(env.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS"), 900)
     if fast_restart_cooldown and fast_restart_cooldown > 1800:
         add(checks, "warn", "sync_restart_cooldown", f"sync restart cooldown is {fast_restart_cooldown}s.", "Use 900s so a stale importer does not remain down-level for too long.", evidence)
@@ -920,7 +943,7 @@ def check_swap(checks: list[Check], profile: HostProfile) -> None:
     if profile.profile == "constrained" and non_zram_total > 2 * GIB:
         add(checks, "warn", "swap_budget", f"non-zram swap is {round(non_zram_total / GIB, 2)}GiB.", "Keep disk-backed swap small on flash appliances; large swap can hide memory pressure as disk write latency.", evidence)
     elif profile.profile == "constrained" and total == 0:
-        add(checks, "warn", "swap_budget", "no swap is configured on a constrained host.", "A small emergency swap file or zram device is safer than OOM kills during snapshot import.", evidence)
+        add(checks, "warn", "swap_budget", "no swap is configured on a constrained host.", "A small emergency swap file or zram device is safer than OOM kills during chain restore.", evidence)
     else:
         add(checks, "pass", "swap_budget", f"swap total={round(total / GIB, 2)}GiB used={round(used / GIB, 2)}GiB", evidence=evidence)
 
@@ -1016,7 +1039,7 @@ def check_route_policy_validator(checks: list[Check], root: Path | None = None) 
 def check_network(checks: list[Check], root: Path | None = None) -> None:
     proc = run(["ip", "-o", "-4", "route", "get", "1.1.1.1"], timeout=3)
     if proc.returncode != 0 or not proc.stdout.strip():
-        add(checks, "warn", "default_route", "no IPv4 default route was detected.", "Configure networking before FastSnap peer discovery or ASIC setup.", {"stderr": proc.stderr.strip()})
+        add(checks, "warn", "default_route", "no IPv4 default route was detected.", "Configure networking before peer discovery or ASIC setup.", {"stderr": proc.stderr.strip()})
         check_route_policy_validator(checks, root)
         return
     line = proc.stdout.strip().splitlines()[0]

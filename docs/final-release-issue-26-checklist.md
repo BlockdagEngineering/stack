@@ -7,9 +7,8 @@ while removing local assumptions that caused install or sync drift.
 ## Source Manifest
 
 - `pool-stack-docker`: `release/pool-stack-20260524-rc4-sre`
-- `blockdag-corechain`: raw-datadir V2 sync source commit `c74f88b9c1b4fbf4213e15272d3bf1f63943e839`
-  or newer, including directory V2 artifact support, latency-first artifact
-  peer preference, and the zero-state-root `HasState` guard.
+- `blockdag-corechain`: source commit `c74f88b9c1b4fbf4213e15272d3bf1f63943e839`
+  or newer, including the zero-state-root `HasState` guard.
 - `pool`: `develop` at `61b231c0501b32338f4ad47561a09e03e5933adc` or newer,
   pinned to a single backend submit path.
 - `dashboard`: `develop`; release builds always use this branch.
@@ -22,26 +21,27 @@ while removing local assumptions that caused install or sync drift.
   runtime payload zips and generate pinned bootstrap scripts for the same tag.
 - Release archives are audited by `scripts/check-release-archive.py` so `.git`,
   package metadata, mutable data directories, local `.env`, `node.conf`, and
-  transient snapshot files do not ship.
+  transient legacy snapshot files do not ship.
 - Payload installers preserve existing node data, peer identity, signer
-  material, and runtime state. When a valid snapshot is available and the
-  configured node datadir has no chain markers, installers stage the snapshot
-  into that host datadir for first start. They set `DOCKER_PLATFORM` from
-  `release-payload.env`, not from a universal AMD64 assumption.
+  material, and runtime state. When verified IPFS/raw-datadir restore content is
+  available and the configured node datadir has no chain markers, installers can
+  stage that content into the host datadir for first start after validation.
+  They set `DOCKER_PLATFORM` from `release-payload.env`, not from a universal
+  AMD64 assumption.
 - Installers preflight architecture, Docker Compose, disk, port occupancy, time
   sync, optional `jq`, and seed reachability. Old/orphan Compose cleanup is a
   dry-run unless `BDAG_CLEAN_ORPHAN_CONTAINERS=1` is set.
 - Installs configure one direct submit endpoint and do not enable endpoint
   fanout by default.
-- Fast Artifact Sync V2 is default. When more than 1000 blocks behind, the sync
-  coordinator accelerates the leader and restarts stale or non-V2 catch-up after
-  the cooldown.
-- V2 peer selection is latency/usefulness-first over libp2p. Address class is
-  not a sync option or priority signal; complete P2P multiaddrs are the only
-  sync candidates.
-- Directory artifact serving must use a valid `artifact.manifest.json`; otherwise
-  startup reports archive fallback instead of silently pretending directory mode
-  is active.
+- IPFS/raw-datadir recovery is the only managed restore publication path. When
+  more than 1000 blocks behind, the sync coordinator accelerates the leader and
+  keeps background restore work low priority until chain import is healthy.
+- Peer selection is latency/usefulness-first over libp2p. Address class is not
+  a sync option or priority signal; complete P2P multiaddrs are the only sync
+  candidates.
+- IPFS restore content must use signed manifests and verified CIDs; otherwise
+  startup must continue with normal P2P sync instead of silently trusting staged
+  bytes.
 - Scripts that still need `jq` preflight it explicitly. Release installers avoid
   `jq` for required JSON parsing.
 - Live data scans must avoid mutable Postgres/node paths; release packaging uses

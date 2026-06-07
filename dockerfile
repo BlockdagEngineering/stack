@@ -5,12 +5,9 @@
 #
 #   ./
 #   ├── bin/blockdag-node, bin/nodeworker, bin/mining-pool, bin/dashboard-api
-#   ├── docker/             (e.g. no-snapshot.marker; see SNAPSHOT_PATH)
+#   ├── docker/
 #   ├── .env.example, docker-compose.yml, …
 #
-# Optional snapshot import: SNAPSHOT_PATH copies a .bdsnap from the build context
-# (see compose / Makefile). No URL download. Datadir matches node.conf.
-
 # ----------------------------------------------------------------------------
 # Common base
 # ----------------------------------------------------------------------------
@@ -44,38 +41,9 @@ RUN set -eu; mkdir -p /out; \
     chmod +x /out/mining-pool 
 
 # ----------------------------------------------------------------------------
-# Dashboard Source Stage (canonical dashboard repo)
-# ----------------------------------------------------------------------------
-FROM alpine:3.20 AS dashboard-source
-ARG DASHBOARD_REPO
-ARG DASHBOARD_REF=develop
-RUN apk add --no-cache ca-certificates git
-RUN --mount=type=secret,id=github_token,required=false set -eu; \
-    repo="${DASHBOARD_REPO:-https://github.com/BlockdagEngineering/dashboard.git}"; \
-    ref="${DASHBOARD_REF:-develop}"; \
-    token="$(cat /run/secrets/github_token 2>/dev/null || true)"; \
-    if [ -n "$token" ]; then \
-      auth="$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"; \
-      export GIT_CONFIG_COUNT=1; \
-      export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader; \
-      export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"; \
-    fi; \
-    git clone --depth 1 "$repo" /src/dashboard; \
-    cd /src/dashboard; \
-    if git rev-parse --verify "$ref^{commit}" >/dev/null 2>&1; then \
-      git checkout --detach "$ref"; \
-    else \
-      git fetch --depth 1 origin "$ref"; \
-      git checkout --detach FETCH_HEAD; \
-    fi; \
-    rm -rf .git
-
-# ----------------------------------------------------------------------------
-# Node Runtime Stage (with optional snapshot import)
+# Node Runtime Stage
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS node
-# Git dev compose passes SNAPSHOT_PATH; release tarball defaults to marker under ./docker/.
-ARG SNAPSHOT_PATH=docker/no-snapshot.marker
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates tzdata \
@@ -91,23 +59,6 @@ RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker
 
 COPY docker/entrypoint-nodeworker.sh /usr/local/bin/docker-entrypoint-nodeworker.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh
-
-# Snapshot path is relative to build context (Compose sets this in .env for dev vs release).
-COPY ${SNAPSHOT_PATH} /tmp/snapshot-candidate.bdsnap
-
-RUN set -eu; \
-    if [ "$(stat -c%s /tmp/snapshot-candidate.bdsnap)" -ge 1024 ]; then \
-      echo "Importing local snapshot ($(stat -c%s /tmp/snapshot-candidate.bdsnap) bytes)"; \
-      /usr/local/bin/blockdag-node snap import \
-        --datadir /var/lib/bdagStack/node/mainnet \
-        --path /tmp/snapshot-candidate.bdsnap; \
-      cp -f /tmp/snapshot-candidate.bdsnap /var/lib/bdagStack/node/mainnet/snapshot.bdsnap; \
-      chown -R bdagStack:bdagStack /var/lib/bdagStack/node /var/log/bdagStack; \
-      echo "Snapshot import finished and P2P snapshot archive published"; \
-    else \
-      echo "No snapshot file (marker or tiny file); node will sync from genesis or P2P and cannot serve a P2P snapshot until snapshot.bdsnap exists in its datadir"; \
-    fi; \
-    rm -f /tmp/snapshot-candidate.bdsnap
 
 WORKDIR /var/lib/bdagStack/node
 EXPOSE 8150 38131 38132 18545 18546 6060
@@ -149,7 +100,7 @@ EXPOSE 3334 8080
 ENTRYPOINT ["/usr/local/bin/mining-pool"]
 
 # ----------------------------------------------------------------------------
-# Dashboard Runtime Stage (Python operations dashboard/control plane)
+# Dashboard Runtime Stage (compose operations control plane)
 # ----------------------------------------------------------------------------
 FROM docker:27-cli AS dashboard
 
@@ -166,9 +117,8 @@ RUN apk add --no-cache \
     shadow \
     tzdata
 
-COPY --from=dashboard-source /src/dashboard /opt/dashboard
-# Compose supplies dashboard_src from DASHBOARD_SRC_CONTEXT so local fresh builds
-# run the checked-out dashboard code instead of silently cloning an older ref.
+# Compose supplies dashboard_src from DASHBOARD_SRC_CONTEXT; this is the only
+# dashboard source path for the release image.
 COPY --from=dashboard_src . /opt/dashboard
 COPY docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
 RUN chmod +x /usr/local/bin/entrypoint-dashboard.sh \
@@ -182,9 +132,9 @@ ENV PYTHONUNBUFFERED=1 \
     BDAG_RUNTIME_DIR=/var/lib/bdag-dashboard/runtime \
     BDAG_POOL_ENV_FILE=/workspace/.env \
     BDAG_DASHBOARD_BIND=0.0.0.0 \
-    BDAG_DASHBOARD_PORT=9280 \
+    BDAG_DASHBOARD_PORT=8088 \
     BDAG_DASHBOARD_REQUIRE_TOKEN=auto
 
 WORKDIR /opt/dashboard
-EXPOSE 9280
+EXPOSE 8088
 ENTRYPOINT ["/usr/local/bin/entrypoint-dashboard.sh"]

@@ -5,7 +5,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 POLICY = ROOT / "ops" / "sync-startup-lag-policy.sh"
-CHAIN_PRESYNC = ROOT / "ops" / "chain-presync.sh"
 
 
 def bash_eval(script: str) -> str:
@@ -43,10 +42,3 @@ def test_copy_duration_file_is_recorded_and_read() -> None:
         )
     assert output == "80"
 
-
-def test_presync_uses_shared_policy() -> None:
-    presync = CHAIN_PRESYNC.read_text(encoding="utf-8")
-
-    assert "sync-startup-lag-policy.sh" in presync
-    assert "PRESYNC_ACCEPTABLE_BLOCK_LAG_FLOOR" in presync
-    assert "bdag_sync_record_copy_seconds" in presync

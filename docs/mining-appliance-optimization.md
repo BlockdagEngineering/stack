@@ -103,7 +103,7 @@ BDAG_POSTGRES_DATA_DIR=/opt/blockdag-pool/runtime-data/postgres
 BDAG_RUNTIME_DIR=/opt/blockdag-pool/runtime-data/ops-runtime
 ```
 
-Leave old parked chain snapshots on the SD card unless the USB has enough spare
+Leave old parked chain restore backups on the SD card unless the USB has enough spare
 space. This keeps the USB focused on the hot node chain
 while the OS disk absorbs Postgres WAL, dashboard history, guard state, and
 small log churn. If the internal disk is too small, the installer falls back to
@@ -126,7 +126,7 @@ BDAG_CONTAINER_TMPFS_SIZE=128m
 ```
 
 Compose services that generate small temporary files get a bounded `/tmp`
-tmpfs. Do not put large chain snapshots or import artifacts on this RAM-backed
+tmpfs. Do not put large IPFS/raw-datadir restore content on this RAM-backed
 path unless the host has been sized for it.
 
 The installer disables common non-mining timers and services such as apt daily

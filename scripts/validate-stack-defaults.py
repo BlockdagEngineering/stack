@@ -128,11 +128,6 @@ def assert_shell_defaults_match(
 
 def assert_required_hooks(errors: list[str], root: Path) -> None:
     hooks = {
-        "ops/install-dashboard.sh": (
-            "BDAG_STACK_DEFAULTS_FILE",
-            "append_stack_defaults_to_env_file",
-            "ensure_stack_default_env_value",
-        ),
         "ops/release-install.sh": (
             "BDAG_STACK_DEFAULTS_FILE",
             "stack_default",
@@ -172,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     for rel_path in (".env.example", ".env.cpu.example", "ops/portable.env.example"):
         assert_projection_matches(errors=errors, defaults=defaults, root=root, rel_path=rel_path)
     assert_compose_fallbacks_match(errors, defaults, root)
-    for rel_path in ("ops/install-dashboard.sh", "ops/release-install.sh"):
+    for rel_path in ("ops/release-install.sh",):
         assert_shell_defaults_match(errors=errors, defaults=defaults, root=root, rel_path=rel_path)
     assert_required_hooks(errors, root)
 

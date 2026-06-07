@@ -2,12 +2,12 @@
 set -Eeuo pipefail
 
 # Refresh the raw-datadir sidecar and, when an operator-approved finalization
-# window is active, publish a signed immutable FastArtifact V2 generation from
+# window is active, publish a signed immutable raw-datadir generation from
 # the finalized sidecar. The live node is never stopped unless
 # BDAG_RAWDATADIR_FINALIZE=1 is set for that run.
 
 PROJECT_ROOT="${BDAG_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-REQUESTED_NETWORK="${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}"
+REQUESTED_NETWORK="${BDAG_RAWDATADIR_NETWORK:-mainnet}"
 if [[ "${REQUESTED_NETWORK,,}" != "mainnet" ]]; then
   printf '[%s] raw datadir artifact publish refuses non-mainnet network: %s\n' "$(date -Is)" "$REQUESTED_NETWORK" >&2
   exit 2
@@ -74,7 +74,7 @@ PY
 }
 
 run_eligibility() {
-  if ! "$PROJECT_ROOT/ops/fastartifact_source_eligibility.py" --full --json --status-file "$STATUS_FILE" 2>&1 | tee -a "$LOG_FILE"; then
+  if ! "$PROJECT_ROOT/ops/rawdatadir_source_eligibility.py" --full --json --status-file "$STATUS_FILE" 2>&1 | tee -a "$LOG_FILE"; then
     log "raw datadir source eligibility denied; see $STATUS_FILE"
     exit 0
   fi
@@ -272,8 +272,27 @@ if [[ ! -d "$SIDECAR_DIR/BdagChain" ]]; then
   exit 1
 fi
 
-log "building raw datadir artifact from finalized sidecar $SIDECAR_DIR"
-BDAG_RAWDATADIR_SOURCE_DIR="$SIDECAR_DIR" \
-BDAG_RAWDATADIR_SOURCE_LABEL="${BDAG_RAWDATADIR_SOURCE_LABEL:-finalized-sidecar}" \
-  "$PROJECT_ROOT/ops/build-rawdatadir-artifact.sh" 2>&1 | tee -a "$LOG_FILE"
+content_base="${BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE:-$PROJECT_ROOT/data-restore/rawdatadir-sidecar-content}"
+case "$content_base" in
+  /*) ;;
+  *) content_base="$PROJECT_ROOT/$content_base" ;;
+esac
+current_manifest="$content_base/current/manifest.json"
+if [[ ! -s "$current_manifest" ]]; then
+  log "sealing finalized raw datadir sidecar content from $SIDECAR_DIR"
+  BDAG_PROJECT_ROOT="$PROJECT_ROOT" \
+  BDAG_ENV_FILE="${BDAG_ENV_FILE:-$PROJECT_ROOT/.env}" \
+  BDAG_RAWDATADIR_NETWORK="$NETWORK" \
+  BDAG_RAWDATADIR_SIDECAR_DIR="$SIDECAR_DIR" \
+  BDAG_RAWDATADIR_SOURCE_STATUS="$STATUS_FILE" \
+  BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE="${BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE:-auto}" \
+  BDAG_RAWDATADIR_SIDECAR_CONTENT_FINALIZED=1 \
+    python3 "$PROJECT_ROOT/ops/seal_rawdatadir_sidecar_content.py" 2>&1 | tee -a "$LOG_FILE"
+fi
+if [[ ! -s "$current_manifest" ]]; then
+  log "raw datadir content manifest was not created: $current_manifest"
+  write_status_note "publish failed: content manifest missing"
+  exit 1
+fi
+log "raw datadir content generation ready for IPFS: $current_manifest"
 write_status_note "publish complete"

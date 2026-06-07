@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Lazy IPFS publisher for finalized BlockDAG FastArtifact content.
+"""Lazy IPFS publisher for finalized BlockDAG raw-datadir artifact content.
 
 This process is deliberately not a snapshot builder. It only advertises an
-already-finalized, signed FastArtifact generation after resource pressure clears.
+already-finalized, signed raw-datadir artifact generation after resource pressure clears.
 IPFS is treated as an untrusted byte distribution plane; the signed
-FastArtifact manifest and normal consensus validation remain authoritative.
+raw-datadir artifact manifest and normal consensus validation remain authoritative.
 """
 
 from __future__ import annotations
@@ -137,9 +137,9 @@ def background_maintenance_allowed(env: dict[str, str]) -> dict[str, Any]:
 
 
 def source_eligibility(env: dict[str, str]) -> dict[str, Any]:
-    script = OPS_DIR / "fastartifact_source_eligibility.py"
+    script = OPS_DIR / "rawdatadir_source_eligibility.py"
     if not script.exists():
-        return {"eligible": False, "publish_allowed": False, "reasons": ["missing_fastartifact_source_eligibility"]}
+        return {"eligible": False, "publish_allowed": False, "reasons": ["missing_rawdatadir_source_eligibility"]}
     command = [
         str(script),
         "--full",

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Fail-closed chain integrity gate for IPFS/rawdatadir publication paths.
 
-IPFS and rawdatadir artifacts are byte transport only. This gate checks a
+IPFS and rawdatadir restore content is byte transport only. This gate checks a
 bounded chain-order range against a direct source backend and an independent
-reference before any caller is allowed to mutate Kubo, IPNS, or public artifact
+reference before any caller is allowed to mutate Kubo, IPNS, or public restore
 state.
 """
 
@@ -55,7 +55,6 @@ DEFAULT_LOCK_RELATIVE_PATHS = (
     "ops/runtime/rawdatadir-artifact.lock",
     "ops/runtime/rawdatadir-publish.lock",
     "ops/runtime/repair.lock",
-    "ops/runtime/hourly-chain-snapshot.lock",
 )
 
 RpcCall = Callable[[str, str, list[Any], float, Mapping[str, str]], Any]

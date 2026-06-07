@@ -88,23 +88,14 @@ class MiningHostTuningTests(unittest.TestCase):
         self.assertIn(".invalid", installer)
         self.assertIn("WARNING: moved invalid Docker daemon config", installer)
 
-    def test_dashboard_installer_persists_priority_env_for_upgrades(self) -> None:
-        installer = read("ops/install-dashboard.sh")
+    def test_compose_dashboard_priority_is_stack_owned_for_upgrades(self) -> None:
+        defaults = read("ops/config/stack-defaults.env")
+        compose = read("docker-compose.yml")
 
-        for snippet in (
-            "ensure_env_value BDAG_CONTAINER_TMPFS_SIZE 128m",
-            "ensure_env_value BDAG_NODE_TMPFS_SIZE 512m",
-            "ensure_env_value BDAG_NODE_CPU_SHARES 6144",
-            "ensure_env_value BDAG_POOL_CPU_SHARES 5120",
-            "ensure_env_value BDAG_POOL_DB_CPU_SHARES 4096",
-            "ensure_env_value BDAG_DASHBOARD_CPU_SHARES 128",
-            "ensure_env_value BDAG_NODE_MEMORY_LOW 768M",
-            "ensure_env_value BDAG_POOL_MEMORY_LOW 256M",
-            "ensure_env_value BDAG_POOL_DB_MEMORY_LOW 512M",
-            "ensure_env_value BDAG_DASHBOARD_MEMORY_LOW 64M",
-            "ensure_env_value BDAG_TUNE_NET_QDISC 1",
-        ):
-            self.assertIn(snippet, installer)
+        self.assertIn("BDAG_DASHBOARD_CPU_SHARES=128", defaults)
+        self.assertIn("BDAG_DASHBOARD_MEMORY_LOW=64M", defaults)
+        self.assertIn("cpu_shares: ${BDAG_DASHBOARD_CPU_SHARES:-128}", compose)
+        self.assertIn("oom_score_adj: 300", compose)
 
 
 if __name__ == "__main__":

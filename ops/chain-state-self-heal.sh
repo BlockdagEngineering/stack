@@ -23,13 +23,12 @@ Usage: ops/chain-state-self-heal.sh [--force] [--from-systemd]
 
 Fail-closed repair for BlockDAG node chain-state corruption. The script checks
 dashboard status for needs_chain_data_restore / chain_state_blocker, stops the
-pool, stops the node, quarantines the damaged node datadir, restores from a
-configured trusted source or local snapshot, restarts node/dashboard, and leaves
-the pool stopped until normal readiness gates pass.
+  pool, stops the node, quarantines the damaged node datadir, restores from a
+  configured trusted raw-datadir/IPFS source, restarts node/dashboard, and leaves
+  the pool stopped until normal readiness gates pass.
 
 Configure trusted restore input with one of:
   BDAG_CHAIN_STATE_RESTORE_SOURCE=/local/path/or/user@host:/path/to/mainnet
-  BDAG_CHAIN_STATE_RESTORE_SNAPSHOT=/path/to/latest.bdsnap
 
 Remote restore uses rsync and can set:
   BDAG_CHAIN_STATE_RESTORE_SSH_COMMAND='ssh -i /path/to/key -o BatchMode=yes'
@@ -115,7 +114,7 @@ if [[ "$enabled" != "1" && "$FORCE" != "1" ]]; then
   exit 0
 fi
 
-REQUESTED_NETWORK="${BDAG_CHAIN_STATE_NETWORK:-${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}}"
+REQUESTED_NETWORK="${BDAG_CHAIN_STATE_NETWORK:-${BDAG_RAWDATADIR_NETWORK:-mainnet}}"
 if [[ "${REQUESTED_NETWORK,,}" != "mainnet" ]]; then
   log "chain-state self-heal refuses non-mainnet network: $REQUESTED_NETWORK"
   json_state "blocked" "non-mainnet chain-state restore network is unsupported:$REQUESTED_NETWORK"
@@ -226,8 +225,6 @@ abs_path() {
 CHAIN_DATA_DIR="$(abs_path "${BDAG_CHAIN_DATA_DIR:-${BDAG_DATA_DIR:-./data}}")"
 if [[ -n "${BDAG_NODE_DATA_DIR:-}" ]]; then
   NODE_DATA_DIR="$(abs_path "$BDAG_NODE_DATA_DIR")"
-elif [[ -d "$CHAIN_DATA_DIR/node1/mainnet" ]]; then
-  NODE_DATA_DIR="$CHAIN_DATA_DIR/node1"
 else
   NODE_DATA_DIR="$CHAIN_DATA_DIR/node"
 fi
@@ -265,28 +262,12 @@ stop_service_best_effort() {
   return 1
 }
 
-copy_existing_snapshot() {
-  local snapshot="$NODE_NETWORK_DIR/snapshot.bdsnap"
-  if [[ "${BDAG_CHAIN_STATE_REUSE_EXISTING_SNAPSHOT:-1}" == "1" && -s "$snapshot" ]]; then
-    cp -a "$snapshot" "$TMP_DIR/snapshot.bdsnap"
-    for companion in "$NODE_NETWORK_DIR/snapshot.bdsnap.manifest" "$NODE_NETWORK_DIR/snapshot.bdsnap.json" "$NODE_NETWORK_DIR/manifest.json"; do
-      [[ -f "$companion" ]] && cp -a "$companion" "$TMP_DIR/$(basename "$companion")"
-    done
-    log "staged existing local snapshot for fallback restore"
-  fi
-}
-
 choose_restore_source() {
   RESTORE_MODE_USED=""
   RESTORE_SOURCE_USED=""
   if [[ -n "${BDAG_CHAIN_STATE_RESTORE_SOURCE:-}" ]]; then
     RESTORE_MODE_USED="source"
     RESTORE_SOURCE_USED="$BDAG_CHAIN_STATE_RESTORE_SOURCE"
-    return 0
-  fi
-  if [[ -n "${BDAG_CHAIN_STATE_RESTORE_SNAPSHOT:-}" ]]; then
-    RESTORE_MODE_USED="snapshot"
-    RESTORE_SOURCE_USED="$BDAG_CHAIN_STATE_RESTORE_SNAPSHOT"
     return 0
   fi
   local candidates=(
@@ -304,11 +285,6 @@ choose_restore_source() {
       return 0
     fi
   done
-  if [[ -s "$TMP_DIR/snapshot.bdsnap" ]]; then
-    RESTORE_MODE_USED="snapshot"
-    RESTORE_SOURCE_USED="$TMP_DIR/snapshot.bdsnap"
-    return 0
-  fi
   return 1
 }
 
@@ -330,23 +306,10 @@ restore_from_source() {
   fi
 }
 
-restore_from_snapshot() {
-  local snapshot="$1"
-  local snapshot_path
-  snapshot_path="$(abs_path "$snapshot")"
-  mkdir -p "$NODE_NETWORK_DIR"
-  log "restoring chain data from snapshot $snapshot_path"
-  cp -a "$snapshot_path" "$NODE_NETWORK_DIR/snapshot.bdsnap"
-  for companion in "${snapshot_path}.manifest" "${snapshot_path}.json" "$(dirname "$snapshot_path")/manifest.json"; do
-    [[ -f "$companion" ]] && cp -a "$companion" "$NODE_NETWORK_DIR/$(basename "$companion")"
-  done
-}
-
-copy_existing_snapshot
 if ! choose_restore_source; then
-  log "no trusted restore source or local snapshot was found"
+  log "no trusted raw-datadir/IPFS restore source was found"
   stop_service_best_effort "$POOL_SERVICE" || true
-  json_state "blocked" "chain-state restore needed but no restore source/snapshot is configured"
+  json_state "blocked" "chain-state restore needed but no raw-datadir/IPFS restore source is configured"
   exit 1
 fi
 
@@ -363,7 +326,6 @@ mkdir -p "$NODE_DATA_DIR"
 
 case "$RESTORE_MODE_USED" in
   source) restore_from_source "$RESTORE_SOURCE_USED" ;;
-  snapshot) restore_from_snapshot "$RESTORE_SOURCE_USED" ;;
   *)
     log "internal error: unknown restore mode $RESTORE_MODE_USED"
     json_state "failed" "unknown restore mode"

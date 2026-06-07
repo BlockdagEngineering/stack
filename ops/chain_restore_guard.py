@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Restore-point freshness guard for BlockDAG chain data."""
+"""IPFS/raw-datadir restore-point freshness guard for BlockDAG chain data."""
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,15 +19,36 @@ from pool_ops import LOG_DIR, PROJECT_ROOT, RUNTIME_DIR, ensure_runtime, now_iso
 STATE_FILE = RUNTIME_DIR / "chain-restore-guard-state.json"
 HEALTH_FILE = RUNTIME_DIR / "chain-restore-health.json"
 LOG_FILE = LOG_DIR / "chain-restore-guard.log"
-SNAPSHOT_ROOT = PROJECT_ROOT / "data-restore"
-LATEST_SNAPSHOT = SNAPSHOT_ROOT / "latest-hourly"
+RESTORE_ROOT = Path(os.environ.get("BDAG_RESTORE_GUARD_ROOT", str(PROJECT_ROOT / "data-restore")))
+CONTENT_CURRENT = Path(
+    os.environ.get(
+        "BDAG_RESTORE_GUARD_CONTENT_CURRENT",
+        str(RESTORE_ROOT / "rawdatadir-sidecar-content" / "current"),
+    )
+)
+MIRROR_CURRENT = Path(
+    os.environ.get(
+        "BDAG_RESTORE_GUARD_MIRROR_CURRENT",
+        str(RESTORE_ROOT / "rawdatadir" / "current"),
+    )
+)
 DASHBOARD_URL = os.environ.get("BDAG_RESTORE_GUARD_STATUS_URL", "http://127.0.0.1:8088/api/status")
 DASHBOARD_TIMEOUT = float(os.environ.get("BDAG_RESTORE_GUARD_STATUS_TIMEOUT", "20"))
 MAX_PUBLISHED_AGE_SECONDS = int(os.environ.get("BDAG_RESTORE_POINT_MAX_AGE_SECONDS", str(6 * 3600)))
 MAX_STAGE_AGE_SECONDS = int(os.environ.get("BDAG_RESTORE_STAGE_MAX_AGE_SECONDS", str(90 * 60)))
 INCIDENT_COOLDOWN_SECONDS = int(os.environ.get("BDAG_RESTORE_GUARD_INCIDENT_COOLDOWN_SECONDS", "1800"))
-SNAPSHOT_START_COOLDOWN_SECONDS = int(os.environ.get("BDAG_RESTORE_GUARD_SNAPSHOT_START_COOLDOWN_SECONDS", "3600"))
-STAMP_RE = re.compile(r"bdag-(node[12])-hourly-(\d{8}T\d{6}Z)")
+RESTORE_REFRESH_COOLDOWN_SECONDS = int(os.environ.get("BDAG_RESTORE_GUARD_REFRESH_COOLDOWN_SECONDS", "3600"))
+IPFS_CONTENT_UNIT = os.environ.get("BDAG_RESTORE_GUARD_IPFS_CONTENT_UNIT", "bdag-ipfs-content-sidecar.service")
+RAWDATADIR_SIDECAR_UNIT = os.environ.get("BDAG_RESTORE_GUARD_RAWDATADIR_UNIT", "bdag-rawdatadir-sidecar.service")
+REQUIRED_TIMERS = tuple(
+    item.strip()
+    for item in os.environ.get(
+        "BDAG_RESTORE_GUARD_REQUIRED_TIMERS",
+        "bdag-rawdatadir-sidecar.timer,bdag-rawdatadir-source.timer,"
+        "bdag-ipfs-content-sidecar.timer,bdag-ipfs-segment-writer.timer",
+    ).split(",")
+    if item.strip()
+)
 
 
 def log(message: str) -> None:
@@ -92,18 +111,6 @@ def status_api() -> tuple[dict[str, Any] | None, str]:
         return None, str(exc)
 
 
-def snapshot_stamp(path: Path) -> tuple[str, int | None]:
-    match = STAMP_RE.search(path.name)
-    if not match:
-        return "", None
-    stamp = match.group(2)
-    try:
-        parsed = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
-    except ValueError:
-        return stamp, None
-    return stamp, int(parsed.timestamp())
-
-
 def newest_file_mtime(path: Path) -> int | None:
     if not path.exists():
         return None
@@ -119,30 +126,27 @@ def newest_file_mtime(path: Path) -> int | None:
     return newest
 
 
-def published_snapshot_info(now: int) -> dict[str, Any]:
-    if not LATEST_SNAPSHOT.exists():
+def published_restore_info(now: int) -> dict[str, Any]:
+    if not CONTENT_CURRENT.exists():
         target = ""
-        if LATEST_SNAPSHOT.is_symlink():
+        if CONTENT_CURRENT.is_symlink():
             try:
-                target = os.readlink(LATEST_SNAPSHOT)
+                target = os.readlink(CONTENT_CURRENT)
             except OSError:
                 target = ""
         return {
             "exists": False,
-            "path": str(LATEST_SNAPSHOT),
-            "broken_symlink": bool(LATEST_SNAPSHOT.is_symlink()),
+            "path": str(CONTENT_CURRENT),
+            "broken_symlink": bool(CONTENT_CURRENT.is_symlink()),
             "target": target,
         }
-    resolved = LATEST_SNAPSHOT.resolve()
-    stamp, stamp_epoch = snapshot_stamp(resolved)
-    manifest_path = Path(str(resolved) + ".manifest.json")
+    resolved = CONTENT_CURRENT.resolve()
+    manifest_path = resolved / "manifest.json"
     manifest = read_json(manifest_path)
-    source_epoch = stamp_epoch or int(resolved.stat().st_mtime)
+    source_epoch = newest_file_mtime(resolved) or int(resolved.stat().st_mtime)
     return {
         "exists": True,
         "path": str(resolved),
-        "stamp": stamp,
-        "stamp_epoch": stamp_epoch,
         "age_seconds": max(0, now - source_epoch),
         "manifest_path": str(manifest_path),
         "manifest_exists": manifest_path.exists(),
@@ -151,22 +155,18 @@ def published_snapshot_info(now: int) -> dict[str, Any]:
 
 
 def stage_info(now: int) -> dict[str, Any]:
-    root = SNAPSHOT_ROOT / ".hourly-stage"
-    result: dict[str, Any] = {}
-    nodes = [item.strip() for item in os.environ.get("BDAG_CHAIN_RESTORE_STAGE_NODES", "node").split(",") if item.strip()]
-    for node in nodes:
-        path = root / node
-        mtime = newest_file_mtime(path)
-        result[node] = {
-            "exists": path.exists(),
-            "path": str(path),
+    mtime = newest_file_mtime(MIRROR_CURRENT)
+    return {
+        "rawdatadir_mirror": {
+            "exists": MIRROR_CURRENT.exists(),
+            "path": str(MIRROR_CURRENT),
             "latest_file_epoch": mtime,
             "latest_file_age_seconds": max(0, now - mtime) if mtime else None,
         }
-    return result
+    }
 
 
-def stack_is_safe_for_snapshot(status: dict[str, Any] | None) -> tuple[bool, str]:
+def stack_is_safe_for_restore_refresh(status: dict[str, Any] | None) -> tuple[bool, str]:
     if not isinstance(status, dict):
         return False, "status API unavailable"
     failures = status.get("failures")
@@ -186,7 +186,7 @@ def stack_is_safe_for_snapshot(status: dict[str, Any] | None) -> tuple[bool, str
     return True, "stack synced and safe"
 
 
-def maybe_start_snapshot(
+def maybe_start_restore_refresh(
     state: dict[str, Any],
     now: int,
     published: dict[str, Any],
@@ -195,45 +195,54 @@ def maybe_start_snapshot(
     latest_age = published.get("age_seconds")
     if isinstance(latest_age, int) and latest_age <= MAX_PUBLISHED_AGE_SECONDS:
         return {"started": False, "reason": "published restore point is fresh"}
-    safe, reason = stack_is_safe_for_snapshot(status)
+    safe, reason = stack_is_safe_for_restore_refresh(status)
     if not safe:
-        return {"started": False, "reason": f"snapshot not safe now: {reason}"}
-    if unit_active("bdag-hourly-snapshot.service"):
-        return {"started": False, "reason": "snapshot service already active"}
-    last_start = int(state.get("last_snapshot_start_epoch", 0) or 0)
-    if now - last_start < SNAPSHOT_START_COOLDOWN_SECONDS:
+        return {"started": False, "reason": f"restore refresh not safe now: {reason}"}
+    if unit_active(RAWDATADIR_SIDECAR_UNIT) or unit_active(IPFS_CONTENT_UNIT):
+        return {"started": False, "reason": "restore refresh service already active"}
+    last_start = int(state.get("last_restore_refresh_start_epoch", 0) or 0)
+    if now - last_start < RESTORE_REFRESH_COOLDOWN_SECONDS:
         return {
             "started": False,
-            "reason": f"snapshot start cooldown {SNAPSHOT_START_COOLDOWN_SECONDS - (now - last_start)}s",
+            "reason": f"restore refresh cooldown {RESTORE_REFRESH_COOLDOWN_SECONDS - (now - last_start)}s",
         }
-    result = start_unit_no_block("bdag-hourly-snapshot.service")
-    state["last_snapshot_start_epoch"] = now
-    state["last_snapshot_start_at"] = now_iso()
+    sidecar_result = start_unit_no_block(RAWDATADIR_SIDECAR_UNIT)
+    content_result = start_unit_no_block(IPFS_CONTENT_UNIT)
+    state["last_restore_refresh_start_epoch"] = now
+    state["last_restore_refresh_start_at"] = now_iso()
     details = {
         "latest_age_seconds": latest_age,
-        "returncode": result.returncode,
-        "stdout": result.stdout.strip(),
-        "stderr": result.stderr.strip(),
+        "rawdatadir_unit": RAWDATADIR_SIDECAR_UNIT,
+        "rawdatadir_returncode": sidecar_result.returncode,
+        "rawdatadir_stdout": sidecar_result.stdout.strip(),
+        "rawdatadir_stderr": sidecar_result.stderr.strip(),
+        "ipfs_content_unit": IPFS_CONTENT_UNIT,
+        "ipfs_content_returncode": content_result.returncode,
+        "ipfs_content_stdout": content_result.stdout.strip(),
+        "ipfs_content_stderr": content_result.stderr.strip(),
     }
-    if result.returncode == 0:
+    if sidecar_result.returncode == 0 and content_result.returncode == 0:
         append_incident(
-            "restore_guard_started_snapshot",
+            "restore_guard_started_ipfs_refresh",
             "warning",
             "chain-restore-guard",
-            "Restore guard started a chain snapshot because the latest published restore point is stale",
+            "Restore guard started IPFS/raw-datadir refresh because the latest published restore point is stale",
             details,
         )
-        log("started bdag-hourly-snapshot.service because restore point is stale")
+        log(f"started {RAWDATADIR_SIDECAR_UNIT} and {IPFS_CONTENT_UNIT} because restore point is stale")
         return {"started": True, "reason": "latest published restore point stale", **details}
     append_incident(
-        "restore_guard_snapshot_start_failed",
+        "restore_guard_ipfs_refresh_start_failed",
         "critical",
         "chain-restore-guard",
-        "Restore guard could not start chain snapshot service",
+        "Restore guard could not start IPFS/raw-datadir refresh services",
         details,
     )
-    log(f"failed to start bdag-hourly-snapshot.service rc={result.returncode}")
-    return {"started": False, "reason": "snapshot start failed", **details}
+    log(
+        f"failed to start restore refresh services rawdatadir_rc={sidecar_result.returncode} "
+        f"ipfs_content_rc={content_result.returncode}"
+    )
+    return {"started": False, "reason": "restore refresh start failed", **details}
 
 
 def main() -> int:
@@ -241,7 +250,7 @@ def main() -> int:
     now = int(time.time())
     state = read_json(STATE_FILE)
 
-    for timer in ("bdag-chain-presync.timer", "bdag-hourly-snapshot.timer"):
+    for timer in REQUIRED_TIMERS:
         if not unit_active(timer):
             result = start_unit(timer)
             if should_emit(state, f"{timer}_inactive", str(result.returncode), now):
@@ -254,11 +263,13 @@ def main() -> int:
                 )
 
     status, status_error = status_api()
-    published = published_snapshot_info(now)
+    published = published_restore_info(now)
     stage = stage_info(now)
-    action = maybe_start_snapshot(state, now, published, status)
+    action = maybe_start_restore_refresh(state, now, published, status)
 
-    if published.get("broken_symlink") and should_emit(state, "published_snapshot_broken", str(published.get("target") or ""), now):
+    if published.get("broken_symlink") and should_emit(
+        state, "published_restore_point_broken", str(published.get("target") or ""), now
+    ):
         append_incident(
             "restore_point_broken",
             "critical",
@@ -277,7 +288,7 @@ def main() -> int:
     latest_age = published.get("age_seconds")
     if isinstance(latest_age, int) and latest_age > MAX_PUBLISHED_AGE_SECONDS:
         hours = round(latest_age / 3600, 2)
-        if should_emit(state, "published_snapshot_stale", str(published.get("stamp") or published.get("path")), now):
+        if should_emit(state, "published_restore_point_stale", str(published.get("path") or ""), now):
             append_incident(
                 "restore_point_stale",
                 "critical",

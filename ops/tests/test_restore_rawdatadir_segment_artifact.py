@@ -6,9 +6,11 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -32,6 +34,8 @@ class RestoreRawdatadirSegmentArtifactTest(unittest.TestCase):
     ) -> argparse.Namespace:
         return argparse.Namespace(
             local_artifact_dir=str(artifact),
+            ipfs_artifact_cid=None,
+            ipfs_binary="ipfs",
             remote_artifact_dir=None,
             remote=None,
             ssh_control_socket=None,
@@ -147,6 +151,64 @@ class RestoreRawdatadirSegmentArtifactTest(unittest.TestCase):
             self.assertEqual((target / "BdagChain/data.bin").read_bytes(), b"abcdefghi")
             self.assertEqual(payload["manifest"]["artifact_root"], manifest["artifact_root"])
             self.assertEqual(payload["manifest"]["verified_signature_key_ids"], ["unit-test"])
+
+    def test_signed_ipfs_restore_reconstructs_file_through_ipfs_cat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            artifact, manifest = self.write_signed_artifact(base)
+            target = base / "target"
+            status = base / "status.json"
+            fake_ipfs = base / "fake-ipfs"
+            fake_ipfs.write_text(
+                """#!/usr/bin/env python3
+import os
+import pathlib
+import sys
+
+root = pathlib.Path(os.environ["FAKE_IPFS_ARTIFACT_ROOT"])
+args = sys.argv[1:]
+if len(args) != 2 or args[0] != "cat":
+    print("unsupported fake ipfs command", file=sys.stderr)
+    raise SystemExit(64)
+path = args[1]
+prefix = "/ipfs/fake-root/"
+if not path.startswith(prefix):
+    print("unexpected fake cid", file=sys.stderr)
+    raise SystemExit(65)
+rel = path[len(prefix):]
+target = root / rel
+if not target.exists():
+    print("no link named " + rel, file=sys.stderr)
+    raise SystemExit(1)
+sys.stdout.buffer.write(target.read_bytes())
+""",
+                encoding="utf-8",
+            )
+            fake_ipfs.chmod(0o755)
+
+            with mock.patch.dict(os.environ, {"FAKE_IPFS_ARTIFACT_ROOT": str(artifact)}, clear=False), contextlib.redirect_stdout(io.StringIO()):
+                rc = restore_rawdatadir_segment_artifact.main(
+                    [
+                        "--ipfs-artifact-cid",
+                        "fake-root",
+                        "--ipfs-binary",
+                        str(fake_ipfs),
+                        "--target-dir",
+                        str(target),
+                        "--status-file",
+                        str(status),
+                        "--progress-every",
+                        "0",
+                    ]
+                )
+
+            payload = json.loads(status.read_text(encoding="utf-8"))
+
+            self.assertEqual(rc, 0)
+            self.assertEqual((target / "BdagChain/data.bin").read_bytes(), b"abcdefghi")
+            self.assertEqual(payload["source"]["mode"], "ipfs")
+            self.assertEqual(payload["source"]["ipfs_artifact_cid"], "fake-root")
+            self.assertEqual(payload["manifest"]["artifact_root"], manifest["artifact_root"])
 
     def test_canonical_artifact_root_mismatch_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Record the newest available BlockDAG chain snapshot candidate.
+"""Record the newest available BlockDAG chain restore candidate.
 
 This checker is intentionally read-only. It makes recovery prefer the newest
-available data only when the manifest says the data is restore-safe; unsafe warm
-copies are recorded and rejected instead of being retried against live nodes.
+chain data only after the manifest is restore-safe; reject unsafe warm copies
+instead of retrying them against live nodes.
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ from typing import Any
 from pool_ops import LOG_DIR, PROJECT_ROOT, RUNTIME_DIR, ensure_runtime, now_iso
 
 
-STATE_FILE = RUNTIME_DIR / "latest-chain-candidate-state.json"
-LOG_FILE = LOG_DIR / "latest-chain-candidate.log"
+STATE_FILE = RUNTIME_DIR / "latest-restore-candidate-state.json"
+LOG_FILE = LOG_DIR / "latest-restore-candidate.log"
 DEFAULT_PATTERNS = [
-    str(Path.home() / "Downloads" / "blockdag-chain-snapshots" / "*.manifest.json"),
+    str(Path.home() / "Downloads" / "blockdag-chain-restore" / "*.manifest.json"),
     str(PROJECT_ROOT / "data-restore" / "hourly" / "*.manifest.json"),
     str(PROJECT_ROOT / "data-restore" / "*.manifest.json"),
 ]

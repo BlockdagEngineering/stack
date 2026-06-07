@@ -1,6 +1,6 @@
 [Unit]
 Description=BlockDAG P2P and mining network health guard
-After=bdag-dashboard.service default.target
+After=default.target
 
 [Service]
 Type=simple

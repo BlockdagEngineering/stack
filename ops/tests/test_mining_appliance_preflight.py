@@ -107,7 +107,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         self.assertIn("adaptive_concurrency", warnings)
         self.assertIn("entrypoint_chown_mode", warnings)
 
-    def test_constrained_mining_profile_accepts_disabled_fastartifact_startup_flag(self) -> None:
+    def test_constrained_mining_profile_accepts_safe_ipfs_recovery_defaults(self) -> None:
         profile = preflight.HostProfile(
             os_name="linux",
             arch="aarch64",
@@ -120,18 +120,20 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         preflight.check_env_defaults(
             checks,
             {
-                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
                 "BDAG_STORAGE_PROFILE": "usb-chain-internal-runtime",
                 "BDAG_DETECTED_NETWORK_TOPOLOGY": "asic-router",
-                "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": "1",
+                "BDAG_IPFS_CONTENT_SIDECAR_MODE": "auto",
+                "BDAG_IPFS_SEGMENT_WRITER_MODE": "auto",
+                "BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT": "0",
+                "BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS": "600",
             },
             profile,
         )
 
         statuses = {check.name: check.status for check in checks}
-        self.assertEqual(statuses["fastartifactsync"], "pass")
+        self.assertEqual(statuses["ipfs_recovery_defaults"], "pass")
 
-    def test_constrained_mining_profile_rejects_fastartifact_append_override(self) -> None:
+    def test_constrained_mining_profile_rejects_disabled_ipfs_recovery(self) -> None:
         profile = preflight.HostProfile(
             os_name="linux",
             arch="aarch64",
@@ -144,16 +146,19 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         preflight.check_env_defaults(
             checks,
             {
-                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
                 "BDAG_STORAGE_PROFILE": "single-usb-constrained",
                 "BDAG_DETECTED_NETWORK_TOPOLOGY": "asic-router",
-                "NODE_ARGS_APPEND": "--fastartifactsync",
+                "BDAG_IPFS_CONTENT_SIDECAR_MODE": "off",
+                "BDAG_IPFS_SEGMENT_WRITER_MODE": "auto",
+                "BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT": "0",
+                "BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS": "600",
             },
             profile,
         )
 
         found = {check.name: check for check in checks}
-        self.assertEqual(found["fastartifactsync"].status, "fail")
+        self.assertEqual(found["ipfs_recovery_defaults"].status, "fail")
+        self.assertIn("BDAG_IPFS_CONTENT_SIDECAR_MODE is disabled", found["ipfs_recovery_defaults"].detail)
 
     def test_pool_template_rpc_pressure_rejects_unsafe_overrides(self) -> None:
         profile = preflight.HostProfile(
@@ -234,7 +239,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         self.assertEqual(found["node_mining_runtime"].status, "fail")
         self.assertIn("unsafe sync bypass args", found["node_mining_runtime"].detail)
 
-    def test_constrained_mining_profile_accepts_no_fastsync_serve_policy(self) -> None:
+    def test_constrained_mining_profile_rejects_unsigned_ipfs_recovery(self) -> None:
         profile = preflight.HostProfile(
             os_name="linux",
             arch="aarch64",
@@ -248,15 +253,19 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             checks,
             {
                 "SYNC_SOURCE_NODE": "0",
-                "BDAG_FASTARTIFACTSYNC_ENABLED": "1",
                 "BDAG_STORAGE_PROFILE": "single-usb-constrained",
                 "BDAG_DETECTED_NETWORK_TOPOLOGY": "asic-router",
+                "BDAG_IPFS_CONTENT_SIDECAR_MODE": "auto",
+                "BDAG_IPFS_SEGMENT_WRITER_MODE": "auto",
+                "BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT": "1",
+                "BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS": "600",
             },
             profile,
         )
 
         found = {check.name: check for check in checks}
-        self.assertEqual(found["fastartifactsync"].status, "pass")
+        self.assertEqual(found["ipfs_recovery_defaults"].status, "fail")
+        self.assertIn("unsigned IPFS/raw-datadir artifacts are allowed", found["ipfs_recovery_defaults"].detail)
 
     def test_sync_source_zero_does_not_make_single_device_receiver_constrained(self) -> None:
         profile = preflight.HostProfile(
@@ -278,8 +287,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         )
 
         found = {check.name: check for check in checks}
-        self.assertEqual(found["fastartifactsync"].status, "pass")
-        self.assertEqual(found["fastartifactsync"].detail, "Fast Artifact Sync V2 startup flag is enabled")
+        self.assertEqual(found["ipfs_recovery_defaults"].status, "pass")
 
     def test_node_mining_runtime_accepts_safe_main_chain_args(self) -> None:
         profile = preflight.HostProfile(
@@ -362,7 +370,8 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             preflight.is_usb_source = old_is_usb_source
 
         found = {check.name: check for check in checks}
-        self.assertEqual(found["usb_mining_fastsync_serving"].status, "fail")
+        self.assertEqual(found["chain_data_filesystem"].status, "pass")
+        self.assertEqual(found["chain_data_mount_options"].status, "pass")
 
     def test_active_node_data_layout_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

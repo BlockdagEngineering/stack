@@ -11,7 +11,7 @@
     "priority": "P0 production hardening",
     "goal": "Favor paid block production during CPU, RAM, and disk I/O contention without hard-capping useful idle capacity.",
     "critical_services": ["mining node", "asic-pool", "postgres"],
-    "deprioritized_services": ["observability", "dashboard", "release seeding", "browser/desktop background work", "snapshots", "presync"],
+    "deprioritized_services": ["observability", "dashboard", "release seeding", "browser/desktop background work", "IPFS restore maintenance"],
     "implementation_files": [
       "ops/apply-mining-host-tuning.sh",
       "ops/systemd/bdag-mining-host-tuning.service",
@@ -55,7 +55,7 @@
     <tr><th>Class</th><th>Examples</th><th>Runtime Treatment</th></tr>
     <tr><td>Active mining lane</td><td><code>node</code></td><td>Highest Docker CPU/blkio weight, highest process priority, best-effort I/O priority 0.</td></tr>
     <tr><td>Pool and accounting</td><td><code>asic-pool</code>, <code>postgres</code>, Postgres worker processes</td><td>High Docker CPU/blkio weight, elevated process priority, best-effort I/O priority 0.</td></tr>
-    <tr><td>Observability and support</td><td>Grafana, Prometheus, Loki, exporters, dashboard, release seeder, snapshots, browser</td><td>Low CPU/IO weights or idle I/O so they yield under contention.</td></tr>
+    <tr><td>Observability and support</td><td>Grafana, Prometheus, Loki, exporters, dashboard, release seeder, IPFS restore maintenance, browser</td><td>Low CPU/IO weights or idle I/O so they yield under contention.</td></tr>
   </table>
 
   <h2>Implementation</h2>

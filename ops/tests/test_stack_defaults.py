@@ -24,9 +24,23 @@ class StackDefaultsTests(unittest.TestCase):
         defaults = parse_env(ROOT_DIR / "ops/config/stack-defaults.env")
         self.assertEqual(defaults["BDAG_GLOBAL_BLOCK_WINDOW"], "600")
 
-        installer = (ROOT_DIR / "ops/install-dashboard.sh").read_text(encoding="utf-8")
-        self.assertIn("BDAG_GLOBAL_BLOCK_WINDOW=$(stack_default BDAG_GLOBAL_BLOCK_WINDOW)", installer)
-        self.assertIn("ensure_stack_default_env_value BDAG_GLOBAL_BLOCK_WINDOW", installer)
+        compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            f"BDAG_GLOBAL_BLOCK_WINDOW: ${{BDAG_GLOBAL_BLOCK_WINDOW:-{defaults['BDAG_GLOBAL_BLOCK_WINDOW']}}}",
+            compose,
+        )
+
+    def test_compose_dashboard_is_authoritative_by_default(self) -> None:
+        defaults = parse_env(ROOT_DIR / "ops/config/stack-defaults.env")
+        self.assertEqual(defaults["DASHBOARD_HOST_PORT"], "8088")
+        self.assertEqual(defaults["BDAG_DASHBOARD_PORT"], "8088")
+        self.assertEqual(defaults["BDAG_STATUS_SAMPLER_ENABLED"], "0")
+        self.assertEqual(defaults["BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK"], "1")
+
+        compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn('${DASHBOARD_HOST_BIND:-127.0.0.1}:${DASHBOARD_HOST_PORT:-8088}:${BDAG_DASHBOARD_PORT:-8088}', compose)
+        self.assertIn("BDAG_STATUS_SAMPLER_ENABLED: ${BDAG_STATUS_SAMPLER_ENABLED:-0}", compose)
+        self.assertIn("BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK: ${BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK:-1}", compose)
 
     def test_compose_tip_lag_fallback_matches_stack_default(self) -> None:
         defaults = parse_env(ROOT_DIR / "ops/config/stack-defaults.env")

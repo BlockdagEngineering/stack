@@ -23,14 +23,14 @@
       "ops/systemd/user-bdag-ipfs-content-sidecar.service",
       "ops/systemd/user-bdag-ipfs-content-sidecar.timer"
     ],
-    "trust_model": "IPFS is untrusted byte transport; signed FastArtifact manifests and consensus validation are authoritative."
+    "trust_model": "IPFS is untrusted byte transport; signed raw-datadir manifests and consensus validation are authoritative."
   }
   </script>
 </head>
 <body>
 <main>
   <h1>BlockDAG IPFS Content Sidecar</h1>
-  <p class="callout">The IPFS content sidecar makes finalized BlockDAG FastArtifact generations easier to find and fetch. The raw datadir sidecar now seals immutable file/chunk generations with signed manifest roots; IPFS still must never decide chain trust from a CID alone.</p>
+  <p class="callout">The IPFS content sidecar makes finalized BlockDAG raw-datadir generations easier to find and fetch. The raw datadir sidecar now seals immutable file/chunk generations with signed manifest roots; IPFS still must never decide chain trust from a CID alone.</p>
 
   <h2>Design Rules</h2>
   <ul>
@@ -39,7 +39,7 @@
     <li>Raw datadir artifact generation remains owned by <code>ops/publish-rawdatadir-artifact.sh</code> and is retried separately.</li>
     <li>Final publishability remains gated by artifact finalization, sidecar content sealing, manifest signatures, and consensus validation.</li>
     <li>Background work runs only after <code>background_maintenance_decision()</code> allows it; pressure defers the tick rather than disabling future attempts.</li>
-    <li>FastArtifact source eligibility is recorded with each attempt, but it is not a permanent gate that blocks pinning an already-finalized safe artifact.</li>
+    <li>Raw-datadir source eligibility is recorded with each attempt, but it is not a permanent gate that blocks pinning an already-finalized safe artifact.</li>
     <li><code>DO_NOT_PUBLISH</code> markers and unsigned manifests fail closed by default.</li>
     <li>The generated latest index records the artifact CID and manifest hash, but receivers must still verify the signed manifest root, chunk/file hashes, network, genesis, tip, state root, and then catch up through normal consensus.</li>
   </ul>
@@ -58,7 +58,7 @@
   <p>The sidecar writes <code>ops/runtime/ipfs-content-sidecar-status.json</code> and <code>ops/runtime/ipfs-content/latest-index.json</code>. Dashboard/watchdog code can consume those files without probing IPFS on every refresh.</p>
 
   <h2>Permanent Discovery</h2>
-  <p>Future systems should read <code>ops/ipfs-content-discovery.json</code> first. It records the durable latest pointer <code>/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk</code> and the current immutable segment-index CID. At the first live segment publish on 2026-05-31, that CID was <code>bafkreifvqj7qhkoifykybbvlxxmq3jhydgzq2kjxuq5fznjizjjogzgthi</code> with one live-tail segment ending at order <code>9502204</code>. The stale monolithic FastSnap seed has been deprecated; the append-only segment writer now owns current chain-data publication. The protocol design is recorded in <code>docs/ipfs-append-only-segment-protocol.html</code>.</p>
+  <p>Future systems should read <code>ops/ipfs-content-discovery.json</code> first. It records the durable latest pointer <code>/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk</code> and the current immutable segment-index CID. At the first live segment publish on 2026-05-31, that CID was <code>bafkreifvqj7qhkoifykybbvlxxmq3jhydgzq2kjxuq5fznjizjjogzgthi</code> with one live-tail segment ending at order <code>9502204</code>. The stale monolithic snapshot seed has been deprecated; the append-only segment writer now owns current chain-data publication. The protocol design is recorded in <code>docs/ipfs-append-only-segment-protocol.html</code>.</p>
 </main>
 </body>
 </html>

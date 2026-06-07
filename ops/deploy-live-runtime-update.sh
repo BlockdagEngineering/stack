@@ -5,7 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TARGET_ROOT="${BDAG_LIVE_RUNTIME_ROOT:-}"
 BACKUP_ROOT="${BDAG_DEPLOY_BACKUP_ROOT:-/home/jeremy/blockdag-deploy-backups}"
-RESTART_SERVICES="${BDAG_DEPLOY_RESTART_SERVICES:-bdag-dashboard.service bdag-watchdog.service}"
+RESTART_SERVICES="${BDAG_DEPLOY_RESTART_SERVICES:-bdag-watchdog.service}"
+RESTART_COMPOSE_SERVICES="${BDAG_DEPLOY_RESTART_COMPOSE_SERVICES:-dashboard}"
 POST_DEPLOY_HEALTH_CHECK="${BDAG_DEPLOY_HEALTH_CHECK:-1}"
 POST_DEPLOY_HEALTH_TIMEOUT="${BDAG_DEPLOY_HEALTH_TIMEOUT_SECONDS:-120}"
 POST_DEPLOY_HEALTH_INTERVAL="${BDAG_DEPLOY_HEALTH_INTERVAL_SECONDS:-3}"
@@ -32,23 +33,24 @@ FILES=(
   "ops/README.md"
   "ops/apply-mining-host-tuning.sh"
   "ops/automation_control.py"
-  "ops/build-rawdatadir-artifact.sh"
   "ops/chain-state-self-heal.sh"
-  "ops/fastartifact_source_eligibility.py"
-  "ops/fetch-rawdatadir-artifact.sh"
+  "ops/config/stack-defaults.env"
+  "ops/rawdatadir_source_eligibility.py"
   "ops/maintain-rawdatadir-sidecar.sh"
   "ops/publish-rawdatadir-artifact.sh"
+  "ops/restore-rawdatadir-segment-artifact.py"
+  "ops/seal_rawdatadir_sidecar_content.py"
   "ops/verify-rawdatadir-sidecar.py"
+  "ops/ipfs_content_sidecar.py"
+  "ops/ipfs_segment_writer.py"
   "ops/pool_ops.py"
   "ops/status_sampler.py"
   "ops/dashboard.py"
   "ops/deploy-live-runtime-update.sh"
-  "ops/hourly-chain-snapshot.sh"
   "ops/incident_journal.py"
   "ops/incident_reporter.py"
-  "ops/install-dashboard.sh"
   "ops/install-p2p-services.sh"
-  "ops/latest_chain_candidate.py"
+  "ops/latest_restore_candidate.py"
   "ops/node_child_guard.py"
   "ops/optimization_measurement.py"
   "ops/p2p_guard.py"
@@ -65,6 +67,8 @@ FILES=(
   "ops/tests/test_mining_appliance_preflight.py"
   "ops/tests/test_optimization_measurement.py"
   "ops/tests/test_compose_migrations.py"
+  "ops/tests/test_stack_defaults.py"
+  "ops/tests/test_stack_naming_coherence.py"
   "ops/tests/test_status_sampler_mining_imperative.py"
   "ops/tests/test_node_child_guard.py"
   "ops/tests/test_sync_coordinator_fast_catchup.py"
@@ -73,17 +77,19 @@ FILES=(
   "ops/watchdog.py"
   "ops/systemd/user-bdag-chain-restore-guard.timer"
   "ops/systemd/user-bdag-chain-state-self-heal.service"
-  "ops/systemd/user-bdag-hourly-snapshot.timer"
   "ops/systemd/user-bdag-incident-reporter.timer"
   "ops/systemd/user-bdag-rawdatadir-sidecar.service"
   "ops/systemd/user-bdag-rawdatadir-sidecar.timer"
   "ops/systemd/user-bdag-rawdatadir-source.service"
   "ops/systemd/user-bdag-rawdatadir-source.timer"
+  "ops/systemd/user-bdag-ipfs-content-sidecar.service"
+  "ops/systemd/user-bdag-ipfs-content-sidecar.timer"
+  "ops/systemd/user-bdag-ipfs-segment-writer.service"
+  "ops/systemd/user-bdag-ipfs-segment-writer.timer"
   "ops/systemd/user-bdag-mining-30min-guard.service"
   "ops/systemd/user-bdag-mining-30min-guard.timer"
   "ops/systemd/user-bdag-node-child-guard.timer"
   "ops/systemd/user-bdag-stack-sentinel.timer"
-  "ops/systemd/bdag-dashboard.service"
   "ops/systemd/bdag-mining-host-tuning.service"
   "ops/systemd/bdag-mining-host-tuning.timer"
   "ops/systemd/bdag-status-sampler.service"
@@ -91,6 +97,7 @@ FILES=(
   "ops/systemd/user-bdag-status-sampler.service"
   "ops/systemd/user-bdag-sync-coordinator.timer"
   "scripts/validate-rc-local.sh"
+  "scripts/validate-stack-defaults.py"
   "scripts/install-mining-appliance-profile.sh"
   "scripts/mining-appliance-preflight.py"
   "scripts/verify-release-architecture.py"
@@ -101,7 +108,7 @@ FILES=(
 
 usage() {
   cat <<'USAGE'
-Deploy a safe dashboard/watchdog runtime update into an installed stack.
+Deploy a safe Compose-dashboard/watchdog runtime update into an installed stack.
 
 Usage:
   ops/deploy-live-runtime-update.sh --target DIR [options]
@@ -112,7 +119,10 @@ Options:
   --target DIR              Installed runtime root to update.
   --file PATH               Add one source-relative path to the copy whitelist.
   --restart-services LIST   Space-separated user services to restart.
-                            Default: bdag-dashboard.service bdag-watchdog.service
+                            Default: bdag-watchdog.service
+  --restart-compose-services LIST
+                            Space-separated Compose services to restart.
+                            Default: dashboard
   --health-check            Wait for dashboard/watchdog/container health after restart (default).
   --no-health-check         Skip post-restart health wait.
   --mark-runtime-compose    Add the generated-runtime compose marker if missing.
@@ -146,6 +156,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --restart-services)
       RESTART_SERVICES="${2:-}"
+      shift 2
+      ;;
+    --restart-compose-services)
+      RESTART_COMPOSE_SERVICES="${2:-}"
       shift 2
       ;;
     --health-check)
@@ -359,11 +373,12 @@ PY
 
 critical_containers_ready() {
   local failed=0
-  local container
-  for container in $(post_deploy_critical_containers); do
-    [[ -n "$container" ]] || continue
-    if [[ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || true)" != "true" ]]; then
-      printf 'container not running: %s\n' "$container"
+  local service status
+  for service in $(post_deploy_critical_containers); do
+    [[ -n "$service" ]] || continue
+    status="$(cd "$TARGET_ROOT" && docker compose ps --status running --services "$service" 2>/dev/null || true)"
+    if [[ "$status" != "$service" ]]; then
+      printf 'compose service not running: %s\n' "$service"
       failed=1
     fi
   done
@@ -449,6 +464,14 @@ post_deploy_health_check() {
   done
 }
 
+restart_compose_services() {
+  if [[ -z "$RESTART_COMPOSE_SERVICES" ]]; then
+    return 0
+  fi
+  say "Restarting Compose services: $RESTART_COMPOSE_SERVICES"
+  (cd "$TARGET_ROOT" && docker compose up -d --no-build --pull never $RESTART_COMPOSE_SERVICES)
+}
+
 rollback_from_backup() {
   local manifest="$ROLLBACK_DIR/manifest.tsv"
   [[ -f "$manifest" ]] || die "rollback manifest not found: $manifest"
@@ -531,9 +554,11 @@ fi
 
 ensure_target_automation_control
 
+restart_started_at="$(date +%s)"
+restart_compose_services
+
 if [[ -n "$RESTART_SERVICES" ]]; then
   say "Restarting user services: $RESTART_SERVICES"
-  restart_started_at="$(date +%s)"
   if ! systemctl --user restart $RESTART_SERVICES; then
     warn "Service restart failed; rolling back copied files"
     ROLLBACK_DIR="$backup_dir"
@@ -547,13 +572,17 @@ if [[ -n "$RESTART_SERVICES" ]]; then
     systemctl --user restart $RESTART_SERVICES || warn "Service restart after rollback failed; inspect $backup_dir"
     exit 1
   fi
-  if ! post_deploy_health_check "$restart_started_at"; then
-    warn "Post-deploy health check failed; rolling back copied files"
-    ROLLBACK_DIR="$backup_dir"
-    rollback_from_backup
+fi
+
+if ! post_deploy_health_check "$restart_started_at"; then
+  warn "Post-deploy health check failed; rolling back copied files"
+  ROLLBACK_DIR="$backup_dir"
+  rollback_from_backup
+  restart_compose_services || warn "Compose restart after rollback failed; inspect $backup_dir"
+  if [[ -n "$RESTART_SERVICES" ]]; then
     systemctl --user restart $RESTART_SERVICES || warn "Service restart after rollback failed; inspect $backup_dir"
-    exit 1
   fi
+  exit 1
 fi
 
 say "Live runtime update complete"
