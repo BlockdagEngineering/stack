@@ -368,6 +368,7 @@ need_grep 'normal desktop boot is live; checking pool and stack now' "ops/codex_
 need_grep 'BDAG_CODEX_AUTO_RESUME_CHECK_WAIT_SECONDS' "ops/codex_auto_resume.py"
 need_grep 'codex-auto-resume-launch.json' "ops/codex_auto_resume.py"
 need_grep '"already_launched_this_boot"' "ops/codex_auto_resume.py"
+need_grep 'subprocess.Popen' "ops/codex_auto_resume.py"
 reject_grep 'codex_bin.*tee -a|resume .*tee -a' "ops/codex_auto_resume.py"
 need_grep '"--no-deps"' "ops/pool_ops.py"
 need_grep 'rsync-friendly' "docs/portable-usb-chain-restore-human.md"

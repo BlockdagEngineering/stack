@@ -218,6 +218,27 @@ def start_terminal_backend(
         command = ["screen", "-dmS", session_name, "bash", "-lc", shell_command]
     else:
         raise ValueError(f"unsupported terminal backend: {backend}")
+    if backend in {"ptyxis", "gnome-terminal", "kgx", "xterm"}:
+        try:
+            proc = subprocess.Popen(
+                command,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            return subprocess.CompletedProcess(command, 127, "", str(exc))
+        try:
+            stdout, stderr = proc.communicate(timeout=2)
+            return subprocess.CompletedProcess(command, proc.returncode or 0, stdout or "", stderr or "")
+        except subprocess.TimeoutExpired:
+            if proc.stdout:
+                proc.stdout.close()
+            if proc.stderr:
+                proc.stderr.close()
+            return subprocess.CompletedProcess(command, 0, "", "")
     return subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, check=False)
 
 
