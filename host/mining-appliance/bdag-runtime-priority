@@ -163,7 +163,7 @@ load_dashboard_status() {
   command -v jq >/dev/null 2>&1 || return 1
 
   if [ -z "${dashboard_status_json}" ]; then
-    dashboard_status_json="$(curl -fsS --max-time 2 http://127.0.0.1:8088/api/status 2>/dev/null)" || return 1
+    dashboard_status_json="$(curl -fsS --max-time 2 http://127.0.0.1:9280/api/status 2>/dev/null)" || return 1
   fi
 }
 

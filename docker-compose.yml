@@ -8,15 +8,16 @@ x-mining-logging: &mining-logging
 x-build-args: &build-args
   SNAPSHOT_PATH: ${SNAPSHOT_PATH:-docker/no-snapshot.marker}
 
-x-dashboard-build-args: &dashboard-build-args
-  DASHBOARD_REPO: ${DASHBOARD_REPO:-https://github.com/BlockdagEngineering/dashboard.git}
-  DASHBOARD_REF: develop
+x-collector-build-args: &collector-build-args
+  COLLECTOR_REPO: ${COLLECTOR_REPO:-https://github.com/BlockdagEngineering/collector.git}
+  COLLECTOR_REF: develop
 
 x-dev-source-contexts: &dev-source-contexts
   stack_src: ${STACK_SRC_CONTEXT:-.}
   blockdag_corechain: ${BLOCKDAG_CORECHAIN_CONTEXT:-.}
   pool_src: ${POOL_SRC_CONTEXT:-.}
   cpu_miner_src: ${CPU_MINER_SRC_CONTEXT:-.}
+  collector_src: ${COLLECTOR_SRC_CONTEXT:-../collector}
   dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../dashboard}
 
 x-node-critical: &node-critical
@@ -36,7 +37,7 @@ x-pool-critical: &pool-critical
     weight: 900
   oom_score_adj: -800
 
-x-dashboard-low: &dashboard-low
+x-ops-low: &ops-low
   cpu_shares: 256
   blkio_config:
     weight: 100
@@ -190,20 +191,20 @@ services:
 
 
   # --------------------------------------------------------------------------
-  # Canonical operations dashboard/control plane from BlockdagEngineering/dashboard.
+  # Read-only collector API from BlockdagEngineering/collector.
   # --------------------------------------------------------------------------
 
-  dashboard:
-    <<: *dashboard-low
+  collector:
+    <<: *ops-low
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
-      target: dashboard
+      target: collector
       additional_contexts:
         <<: *dev-source-contexts
       args:
-        <<: *dashboard-build-args
+        <<: *collector-build-args
       secrets:
         - github_token
     restart: unless-stopped
@@ -218,8 +219,7 @@ services:
       TMPDIR: /tmp
       TMP: /tmp
       TEMP: /tmp
-      # The dashboard should observe current container names; watchdog code keeps
-      # legacy Compose service-label fallback for migrated installs.
+      # The collector observes current container names and exposes read-only JSON.
       BDAG_NODE_SERVICES: node
       BDAG_STACK_SERVICES: postgres,node,pool
       BDAG_POOL_CONTAINER: pool
@@ -234,24 +234,56 @@ services:
       # Must match node.conf rpcuser / rpcpass (same as pool service).
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
-      DASHBOARD_EVM_RPC_URL: http://node:18545
-      DASHBOARD_LISTEN: ${DASHBOARD_LISTEN:-0.0.0.0:9280}
-      DASHBOARD_RPC_POLL_SECONDS: 5
-      DASHBOARD_MAX_POINTS: 120
-      DASHBOARD_MINING_MAX_BARS: 48
-      DASHBOARD_MINING_POLL_INTERVAL: 10m
-      BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK: ${BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK:-0}
-      BDAG_DASHBOARD_STATUS_CACHE_SECONDS: ${BDAG_DASHBOARD_STATUS_CACHE_SECONDS:-120}
-      BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS: ${BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS:-120}
-      BDAG_DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS: ${BDAG_DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS:-60}
+      BDAG_COLLECTOR_BIND: 0.0.0.0
+      BDAG_COLLECTOR_PORT: 9280
+      BDAG_COLLECTOR_NODE_LOG_CONTAINER: ${BDAG_COLLECTOR_NODE_LOG_CONTAINER:-stack-node-1}
+      BDAG_COLLECTOR_POOL_LOG_CONTAINER: ${BDAG_COLLECTOR_POOL_LOG_CONTAINER:-stack-pool-1}
+      BDAG_COLLECTOR_DIRECT_STATUS_FALLBACK: ${BDAG_COLLECTOR_DIRECT_STATUS_FALLBACK:-0}
+      BDAG_COLLECTOR_STATUS_CACHE_SECONDS: ${BDAG_COLLECTOR_STATUS_CACHE_SECONDS:-120}
+      BDAG_COLLECTOR_SAMPLER_CACHE_SECONDS: ${BDAG_COLLECTOR_SAMPLER_CACHE_SECONDS:-120}
+      BDAG_COLLECTOR_STATUS_SAMPLE_WAIT_SECONDS: ${BDAG_COLLECTOR_STATUS_SAMPLE_WAIT_SECONDS:-60}
       BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS: ${BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS:-120}
+      BDAG_COLLECTOR_GLOBAL_SAMPLER_INTERVAL_SECONDS: ${BDAG_COLLECTOR_GLOBAL_SAMPLER_INTERVAL_SECONDS:-60}
+      BDAG_GLOBAL_CACHE_TTL_SECONDS: ${BDAG_GLOBAL_CACHE_TTL_SECONDS:-60}
+      BDAG_GLOBAL_RPC_WORKERS: ${BDAG_GLOBAL_RPC_WORKERS:-24}
+      BDAG_GLOBAL_BLOCK_WINDOW: ${BDAG_GLOBAL_BLOCK_WINDOW:-128}
+      BDAG_GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS: ${BDAG_GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS:-30}
       MINING_POOL_ADDRESS: ${MINING_POOL_ADDRESS:?set MINING_POOL_ADDRESS to a non-zero payout address}
     ports:
-      - "${DASHBOARD_HOST_PORT:-9280}:9280"
+      - "127.0.0.1:${COLLECTOR_HOST_PORT:-9280}:9280"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./:/workspace:ro
-      - dashboard-runtime:/var/lib/bdag-dashboard
+      - collector-runtime:/var/lib/bdag-collector
+
+  # --------------------------------------------------------------------------
+  # Dashboard UI over the collector API.
+  # --------------------------------------------------------------------------
+  dashboard:
+    <<: *ops-low
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    build:
+      context: .
+      dockerfile: ${DOCKERFILE:-dockerfile}
+      target: dashboard
+      additional_contexts:
+        <<: *dev-source-contexts
+    restart: unless-stopped
+    logging: *mining-logging
+    tmpfs:
+      - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
+      - /var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
+    depends_on:
+      collector: { condition: service_started }
+    environment:
+      TMPDIR: /tmp
+      TMP: /tmp
+      TEMP: /tmp
+      ADDR: ${DASHBOARD_LISTEN:-0.0.0.0:9290}
+      BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://collector:9280}
+      DASHBOARD_TIMEZONE: ${DASHBOARD_TIMEZONE:-Africa/Johannesburg}
+    ports:
+      - "${DASHBOARD_BIND:-0.0.0.0}:${DASHBOARD_HOST_PORT:-8080}:9290"
 
   # --------------------------------------------------------------------------
   # Optional CPU miner (dockerfile-dev target only). Enable with:
@@ -292,4 +324,4 @@ volumes:
   postgres-data:
   node-data:
   nodeworker-data:
-  dashboard-runtime:
+  collector-runtime:

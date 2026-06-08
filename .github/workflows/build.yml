@@ -66,6 +66,14 @@ jobs:
           path: src/pool
           ref: 61b231c0501b32338f4ad47561a09e03e5933adc
 
+      - name: Checkout dashboard repo
+        uses: actions/checkout@v4
+        with:
+          repository: BlockdagEngineering/dashboard
+          token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
+          path: src/dashboard
+          ref: main
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -120,8 +128,16 @@ jobs:
           cp -f ./build/bin/pool ../../bin/mining-pool
           cp -f ./build/bin/dashboard-api ../../bin/dashboard-api
 
+      - name: Build dashboard
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd src/dashboard
+          env GOOS=linux GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 GOFLAGS=-buildvcs=false \
+            go build -trimpath -o ../../bin/dashboard .
+
       - name: Ensure executables
-        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api
+        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api bin/dashboard
 
       - name: Verify release architecture
         shell: bash
@@ -130,12 +146,13 @@ jobs:
             bin/blockdag-node \
             bin/nodeworker \
             bin/mining-pool \
-            bin/dashboard-api
+            bin/dashboard-api \
+            bin/dashboard
 
       - name: Generate checksums
         shell: bash
         run: |
-          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api > checksums.txt
+          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api bin/dashboard > checksums.txt
 
       - name: Validate compose (pool Dockerfile)
         shell: bash

@@ -15,6 +15,6 @@ fi
 
 "${COMPOSE[@]}" ps
 echo
-echo "Pool status API:"
-curl -fsS "http://127.0.0.1:${BDAG_DASHBOARD_PORT:-8088}/api/status" || true
+echo "Collector status API:"
+curl -fsS "http://127.0.0.1:${COLLECTOR_HOST_PORT:-9280}/api/status" || true
 echo
