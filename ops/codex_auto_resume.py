@@ -253,16 +253,32 @@ def write_summary(runtime_dir: Path, summary: dict) -> None:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Auto-start Codex resume in a visible desktop terminal after boot")
     parser.add_argument("--session-id", default="")
-    parser.add_argument("--backend", default=os.environ.get("BDAG_CODEX_AUTO_RESUME_BACKEND", "ptyxis"))
+    parser.add_argument("--backend", default="")
     parser.add_argument("--detached", action="store_true", default=os.environ.get("BDAG_CODEX_AUTO_RESUME_VISIBLE", "1").lower() in {"0", "false", "no", "off"})
-    parser.add_argument("--wait-seconds", type=float, default=float(os.environ.get("BDAG_CODEX_BOOT_VERIFY_WAIT_SECONDS", "300")))
-    parser.add_argument("--interval-seconds", type=float, default=float(os.environ.get("BDAG_CODEX_BOOT_VERIFY_INTERVAL_SECONDS", "10")))
+    parser.add_argument("--wait-seconds", type=float, default=None)
+    parser.add_argument("--interval-seconds", type=float, default=None)
     parser.add_argument("--skip-pool-check", action="store_true")
     args = parser.parse_args(argv)
 
     project_root = Path(os.environ.get("BDAG_PROJECT_ROOT", DEFAULT_PROJECT_ROOT)).expanduser()
     runtime_dir = Path(os.environ.get("BDAG_RUNTIME_DIR", DEFAULT_RUNTIME_DIR)).expanduser()
     read_env_file(runtime_dir / "ops.env")
+    if not args.backend:
+        args.backend = os.environ.get("BDAG_CODEX_AUTO_RESUME_BACKEND", "ptyxis")
+    if args.wait_seconds is None:
+        args.wait_seconds = float(
+            os.environ.get(
+                "BDAG_CODEX_AUTO_RESUME_CHECK_WAIT_SECONDS",
+                os.environ.get("BDAG_CODEX_BOOT_VERIFY_WAIT_SECONDS", "60"),
+            )
+        )
+    if args.interval_seconds is None:
+        args.interval_seconds = float(
+            os.environ.get(
+                "BDAG_CODEX_AUTO_RESUME_CHECK_INTERVAL_SECONDS",
+                os.environ.get("BDAG_CODEX_BOOT_VERIFY_INTERVAL_SECONDS", "10"),
+            )
+        )
     env = terminal_environment(dict(os.environ))
     env["PATH"] = f"{Path.home() / '.npm-global/bin'}:{env.get('PATH') or '/usr/local/bin:/usr/bin:/bin'}"
     env.setdefault("BDAG_PROJECT_ROOT", str(project_root))
