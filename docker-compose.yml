@@ -275,6 +275,7 @@ services:
       # concrete container names may include project and ordinal suffixes.
       BDAG_NODE_SERVICES: node
       BDAG_STACK_SERVICES: postgres,node,pool
+      BDAG_START_SERVICES: postgres,node,pool
       BDAG_POOL_CONTAINER: pool
       BDAG_POOL_CONTAINERS: pool
       BDAG_POOL_DB_CONTAINER: postgres

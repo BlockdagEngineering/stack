@@ -169,6 +169,7 @@ BDAG_POOL_DB_NAME=$(stack_default BDAG_POOL_DB_NAME)
 BDAG_NODE_MODE=$(stack_default BDAG_NODE_MODE)
 BDAG_NODE_SERVICES=$(stack_default BDAG_NODE_SERVICES)
 BDAG_STACK_SERVICES=$(stack_default BDAG_STACK_SERVICES)
+BDAG_START_SERVICES=$(stack_default BDAG_START_SERVICES)
 BDAG_NODE_RPC_URLS=node=http://127.0.0.1:38131
 BDAG_GLOBAL_CHAIN_RPC_URLS=node=http://127.0.0.1:38131
 BDAG_ENABLE_NODE_MINING=0
@@ -331,6 +332,7 @@ ensure_stack_default_env_value BDAG_POOL_DB_CONTAINER
 ensure_stack_default_env_value BDAG_NODE_MODE
 ensure_stack_default_env_value BDAG_NODE_SERVICES
 ensure_stack_default_env_value BDAG_STACK_SERVICES
+ensure_stack_default_env_value BDAG_START_SERVICES
 ensure_env_value BDAG_NODE_RPC_URLS "node=http://127.0.0.1:38131"
 ensure_env_value BDAG_GLOBAL_CHAIN_RPC_URLS "node=http://127.0.0.1:38131"
 ensure_env_value BDAG_ENABLE_NODE_MINING 0
