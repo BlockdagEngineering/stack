@@ -147,7 +147,7 @@ This is not a failure. It means mining is intentionally paused until the node is
 
 ## Boot Recovery Requirements
 
-After any reboot, verify:
+If the host has already rebooted, verify:
 
 ```bash
 cat /proc/sys/kernel/random/boot_id
@@ -155,6 +155,8 @@ systemctl --user status bdag-boot-repair.service bdag-codex-boot-handoff.service
 cat ops/runtime/codex-auto-resume.json | python3 -m json.tool
 curl -s http://127.0.0.1:8088/api/status | python3 -m json.tool
 ```
+
+Do not initiate host reboots for this verification. Reboot-loop testing was a one-off appliance validation exercise and must not be propagated into source code, installers, timers, watchdogs, or agent runbooks.
 
 `bdag-codex-auto-resume.service` should open a visible desktop terminal and run:
 

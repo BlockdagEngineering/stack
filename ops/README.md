@@ -245,6 +245,8 @@ Clean restore stops the stack, moves existing active chain data to a timestamped
 
 Boot-time recovery is handled by `bdag-boot-repair.service`, which waits for Docker, checks the dirty-shutdown marker, and preserves existing chain data by default. A dirty marker now triggers a conservative start/restart path; automatic clean restore is disabled unless `BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE=1` is set explicitly.
 
+Boot recovery is verification and service repair only. Do not add automation that initiates host reboots, shutdowns, poweroffs, kexec, or reboot-until-healthy loops. Reboot testing is an operator-controlled validation activity, not a behavior that should propagate into installers, watchdogs, Codex handoff, or background timers.
+
 ## P2P Guard
 
 The P2P guard is a passive network-health sampler. It does not restart nodes, pools, or miners. It records whether the active RPC path is healthy enough for mining and whether the local network path is still low-latency.

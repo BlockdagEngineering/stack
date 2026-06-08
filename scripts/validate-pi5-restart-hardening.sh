@@ -41,6 +41,23 @@ reject_grep() {
   fi
 }
 
+reject_host_reboot_automation() {
+  local pattern='systemctl[[:space:]][^;&|]*\breboot\b|shutdown[[:space:]]+(-r|now)|(^|[[:space:]])(/sbin/|/bin/)?reboot[[:space:]]+(-f|--force)|(^|[[:space:]])poweroff([[:space:]]|$)|(^|[[:space:]])kexec([[:space:]]|$)'
+  local path
+  while IFS= read -r path; do
+    if grep -Eq "$pattern" "$path"; then
+      fail "${path#$root/} contains host reboot/shutdown automation; reboot testing must remain operator-controlled"
+    fi
+  done < <(
+    find "$root/ops" "$root/scripts" "$root/host" "$root/docker" "$root/.github" \
+      -type f \
+      ! -path '*/runtime/*' \
+      ! -path '*/__pycache__/*' \
+      ! -name '*.pyc' \
+      2>/dev/null
+  )
+}
+
 validate_runtime_compose() {
   need_file "docker-compose.yml"
   if [[ "$mode" != "live-runtime" ]]; then
@@ -83,6 +100,7 @@ need_file "scripts/mining-appliance-preflight.py"
 need_file "scripts/install-mining-appliance-profile.sh"
 need_file "host/mining-appliance/bdag-node-child-guard"
 need_file "docker-compose.yml"
+reject_host_reboot_automation
 need_file "ops/systemd/user-bdag-stack-sentinel.timer"
 need_file "ops/systemd/user-bdag-codex-boot-handoff.service"
 need_file "ops/systemd/user-bdag-codex-auto-resume.service"
