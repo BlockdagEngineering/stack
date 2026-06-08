@@ -159,7 +159,7 @@ curl -s http://127.0.0.1:8088/api/status | python3 -m json.tool
 `bdag-codex-auto-resume.service` should open a visible desktop terminal and run:
 
 ```bash
-codex resume <session-id>
+codex resume --cd /home/jeremy/blockdag-mining-pool/stack --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-approvals-and-sandbox <session-id>
 ```
 
 It must run `ops/codex_boot_handoff.py --repair` first, which checks the pool and writes:

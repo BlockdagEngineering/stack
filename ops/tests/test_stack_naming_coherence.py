@@ -68,6 +68,8 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("detect_codex_resume_session_id", installer)
         self.assertIn("ensure_env_value BDAG_CODEX_AUTO_RESUME_CHECK_WAIT_SECONDS 60", installer)
         self.assertIn("ensure_env_value BDAG_CODEX_AUTO_RESUME_CHECK_INTERVAL_SECONDS 10", installer)
+        self.assertIn("ensure_codex_trusted_project", installer)
+        self.assertIn('trust_level = "trusted"', installer)
 
     def test_release_installer_generates_current_runtime_topology(self) -> None:
         compose = read("docker-compose.yml")
@@ -159,6 +161,8 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("codex-auto-resume.desktop", validator)
         self.assertIn('"--no-deps"', validator)
         self.assertIn("BDAG_CODEX_AUTO_RESUME_CHECK_WAIT_SECONDS", validator)
+        self.assertIn("ask-for-approval", validator)
+        self.assertIn("danger-full-access", validator)
         self.assertIn('need_file "ops/systemd/bdag-status-sampler.service"', validator)
         self.assertIn('need_grep \'BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS=120\' ".env.example"', validator)
         self.assertIn('need_grep \'BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=120\' ".env.example"', validator)

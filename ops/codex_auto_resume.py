@@ -83,6 +83,82 @@ def session_slug(session_id: str) -> str:
     return cleaned[:48] or "unknown"
 
 
+def codex_resume_args(codex_bin: str, project_root: Path, session_id: str) -> list[str]:
+    return [
+        codex_bin,
+        "resume",
+        "--cd",
+        str(project_root),
+        "--ask-for-approval",
+        "never",
+        "--sandbox",
+        "danger-full-access",
+        "--dangerously-bypass-approvals-and-sandbox",
+        session_id,
+    ]
+
+
+def display_codex_resume_command(project_root: Path, session_id: str) -> str:
+    if not session_id:
+        return ""
+    return " ".join(
+        shlex.quote(part)
+        for part in [
+            "codex",
+            "resume",
+            "--cd",
+            str(project_root),
+            "--ask-for-approval",
+            "never",
+            "--sandbox",
+            "danger-full-access",
+            "--dangerously-bypass-approvals-and-sandbox",
+            session_id,
+        ]
+    )
+
+
+def extract_resume_session_id(parts: list[str]) -> str:
+    options_with_values = {
+        "-a",
+        "-C",
+        "-c",
+        "-i",
+        "-m",
+        "-p",
+        "-s",
+        "--add-dir",
+        "--ask-for-approval",
+        "--cd",
+        "--config",
+        "--image",
+        "--local-provider",
+        "--model",
+        "--profile",
+        "--remote",
+        "--remote-auth-token-env",
+        "--sandbox",
+    }
+    long_options_with_values = {item for item in options_with_values if item.startswith("--")}
+    try:
+        index = parts.index("resume") + 1
+    except ValueError:
+        return ""
+    while index < len(parts):
+        part = parts[index]
+        if part in options_with_values:
+            index += 2
+            continue
+        if any(part.startswith(f"{option}=") for option in long_options_with_values):
+            index += 1
+            continue
+        if part.startswith("-"):
+            index += 1
+            continue
+        return part
+    return ""
+
+
 def matching_codex_processes(session_id: str) -> list[str]:
     result = subprocess.run(
         ["pgrep", "-af", "codex"],
@@ -91,14 +167,13 @@ def matching_codex_processes(session_id: str) -> list[str]:
         stderr=subprocess.DEVNULL,
         check=False,
     )
-    needle = f"resume {session_id}"
     current_pid = str(os.getpid())
     matches = []
     for line in result.stdout.splitlines():
         fields = line.split(maxsplit=1)
         if fields and fields[0] == current_pid:
             continue
-        if needle in line:
+        if " resume " in f" {line} " and session_id in line:
             matches.append(line)
     return matches
 
@@ -112,10 +187,9 @@ def discover_codex_session_id() -> str:
         check=False,
     )
     for line in result.stdout.splitlines():
-        parts = line.split()
-        for index, part in enumerate(parts):
-            if part == "resume" and index + 1 < len(parts):
-                return parts[index + 1]
+        session_id = extract_resume_session_id(line.split())
+        if session_id:
+            return session_id
     return ""
 
 
@@ -180,17 +254,20 @@ def start_terminal_backend(
     interval_seconds: float = 10.0,
 ) -> subprocess.CompletedProcess[str]:
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    resume_args = codex_resume_args(codex_bin, project_root, session_id)
+    resume_command = " ".join(shlex.quote(part) for part in resume_args)
     pool_check_command = ""
     if run_check_in_terminal:
         handoff = project_root / "ops" / "codex_boot_handoff.py"
         pool_check_command = (
             "echo '[bdag] normal desktop boot is live; checking pool and stack now' | "
             f"tee -a {shlex.quote(str(log_path))}; "
+            "set -o pipefail; "
             f"{shlex.quote(sys.executable)} {shlex.quote(str(handoff))} --repair "
             f"--wait-seconds {shlex.quote(str(wait_seconds))} "
             f"--interval-seconds {shlex.quote(str(interval_seconds))} 2>&1 | "
             f"tee -a {shlex.quote(str(log_path))}; "
-            "pool_check_rc=${PIPESTATUS[0]}; "
+            "pool_check_rc=$?; set +o pipefail; "
             f"echo \"[bdag] pool check return code: ${{pool_check_rc}}\" | tee -a {shlex.quote(str(log_path))}; "
         )
     shell_command = (
@@ -198,8 +275,8 @@ def start_terminal_backend(
         f"export BDAG_PROJECT_ROOT={shlex.quote(str(project_root))} "
         f"BDAG_RUNTIME_DIR={shlex.quote(env.get('BDAG_RUNTIME_DIR', str(DEFAULT_RUNTIME_DIR)))} && "
         f"{pool_check_command}"
-        f"echo '[bdag] resuming Codex session {shlex.quote(session_id)}'; "
-        f"{shlex.quote(codex_bin)} resume {shlex.quote(session_id)}; "
+        f"echo '[bdag] resuming Codex session {shlex.quote(session_id)} from {shlex.quote(str(project_root))}'; "
+        f"{resume_command}; "
         "codex_rc=$?; "
         f"echo \"[bdag] Codex exited with return code ${{codex_rc}}\" | tee -a {shlex.quote(str(log_path))}; "
         "echo; echo '[bdag] Codex exited. Press Enter to close this terminal.'; read -r _"
@@ -330,7 +407,7 @@ def main(argv: list[str]) -> int:
         "boot_id": current_boot_id,
         "status": "pending",
         "session_id": session_id,
-        "codex_resume_command": f"codex resume {session_id}" if session_id else "",
+        "codex_resume_command": display_codex_resume_command(project_root, session_id),
         "codex_bin": codex_bin,
         "terminal_backend": "",
         "terminal_session": "",

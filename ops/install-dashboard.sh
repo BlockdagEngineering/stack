@@ -255,16 +255,26 @@ ensure_env_value_if_empty() {
 }
 
 detect_codex_resume_session_id() {
-  pgrep -af 'codex' 2>/dev/null | awk '
+  pgrep -af 'codex' 2>/dev/null \
+    | grep -Eo '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' \
+    | head -n 1
+}
+
+ensure_codex_trusted_project() {
+  local project="$1" config_dir config_file escaped
+  [[ -n "$project" ]] || return 0
+  config_dir="${CODEX_HOME:-$HOME/.codex}"
+  config_file="$config_dir/config.toml"
+  mkdir -p "$config_dir"
+  touch "$config_file"
+  escaped="${project//\\/\\\\}"
+  escaped="${escaped//\"/\\\"}"
+  if ! grep -Fqx "[projects.\"$escaped\"]" "$config_file"; then
     {
-      for (i = 1; i < NF; i++) {
-        if ($i == "resume") {
-          print $(i + 1)
-          exit
-        }
-      }
-    }
-  '
+      printf '\n[projects."%s"]\n' "$escaped"
+      printf 'trust_level = "trusted"\n'
+    } >> "$config_file"
+  fi
 }
 
 ensure_env_value BDAG_PROJECT_ROOT "$PROJECT_ROOT"
@@ -414,6 +424,8 @@ ensure_env_value BDAG_CODEX_AUTO_RESUME_VISIBLE 1
 ensure_env_value BDAG_CODEX_AUTO_RESUME_BACKEND ptyxis
 ensure_env_value BDAG_CODEX_AUTO_RESUME_CHECK_WAIT_SECONDS 60
 ensure_env_value BDAG_CODEX_AUTO_RESUME_CHECK_INTERVAL_SECONDS 10
+ensure_codex_trusted_project "$PROJECT_ROOT"
+ensure_codex_trusted_project "$(dirname "$PROJECT_ROOT")"
 
 DASHBOARD_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-dashboard.service"
 STATUS_SAMPLER_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-status-sampler.service"

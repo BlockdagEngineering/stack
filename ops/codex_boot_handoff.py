@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -87,21 +88,81 @@ def run_boot_repair(project_root: Path, reason: str) -> dict:
     }
 
 
-def discover_codex_resume_command(session_id: str) -> str:
+def codex_resume_command(project_root: Path, session_id: str) -> str:
+    if not session_id:
+        return ""
+    return " ".join(
+        shlex.quote(part)
+        for part in [
+            "codex",
+            "resume",
+            "--cd",
+            str(project_root),
+            "--ask-for-approval",
+            "never",
+            "--sandbox",
+            "danger-full-access",
+            "--dangerously-bypass-approvals-and-sandbox",
+            session_id,
+        ]
+    )
+
+
+def extract_resume_session_id(parts: list[str]) -> str:
+    options_with_values = {
+        "-a",
+        "-C",
+        "-c",
+        "-i",
+        "-m",
+        "-p",
+        "-s",
+        "--add-dir",
+        "--ask-for-approval",
+        "--cd",
+        "--config",
+        "--image",
+        "--local-provider",
+        "--model",
+        "--profile",
+        "--remote",
+        "--remote-auth-token-env",
+        "--sandbox",
+    }
+    long_options_with_values = {item for item in options_with_values if item.startswith("--")}
+    try:
+        index = parts.index("resume") + 1
+    except ValueError:
+        return ""
+    while index < len(parts):
+        part = parts[index]
+        if part in options_with_values:
+            index += 2
+            continue
+        if any(part.startswith(f"{option}=") for option in long_options_with_values):
+            index += 1
+            continue
+        if part.startswith("-"):
+            index += 1
+            continue
+        return part
+    return ""
+
+
+def discover_codex_resume_command(project_root: Path, session_id: str) -> str:
     if session_id:
-        return f"codex resume {session_id}"
+        return codex_resume_command(project_root, session_id)
     result = subprocess.run(
-        ["pgrep", "-af", r"codex resume"],
+        ["pgrep", "-af", r"codex"],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         check=False,
     )
     for line in result.stdout.splitlines():
-        parts = line.split()
-        for index, part in enumerate(parts):
-            if part == "resume" and index + 1 < len(parts):
-                return f"codex resume {parts[index + 1]}"
+        discovered_session_id = extract_resume_session_id(line.split())
+        if discovered_session_id:
+            return codex_resume_command(project_root, discovered_session_id)
     return ""
 
 
@@ -179,7 +240,7 @@ def main(argv: list[str]) -> int:
         "ok": ok,
         "manual_prompt_required_for_stack": not ok,
         "interactive_terminal_survives_reboot": False,
-        "codex_resume_command": discover_codex_resume_command(args.session_id),
+        "codex_resume_command": discover_codex_resume_command(project_root, args.session_id),
         "attempts": attempts,
         "repair_result": repair_result,
         "status": {
