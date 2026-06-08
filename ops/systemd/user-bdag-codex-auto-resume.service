@@ -1,7 +1,7 @@
 [Unit]
 Description=BlockDAG visible Codex auto-resume terminal
-After=graphical-session.target bdag-codex-boot-handoff.service bdag-dashboard.service
-Wants=bdag-codex-boot-handoff.service bdag-dashboard.service
+After=graphical-session.target bdag-dashboard.service
+Wants=bdag-dashboard.service
 PartOf=graphical-session.target
 
 [Service]

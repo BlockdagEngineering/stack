@@ -113,6 +113,6 @@ if [[ "$EXECUTE" == "1" ]]; then
   rm -f "$TARGET/.usb-sidecar-restore-in-progress"
   echo "restore copy complete"
   echo "Next:"
-  echo "  docker compose up -d postgres node dashboard"
+  echo "  docker compose up -d --no-deps postgres node dashboard"
   echo "  leave pool stopped until dashboard catch-up/readiness gates clear"
 fi

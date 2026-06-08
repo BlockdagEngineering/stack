@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -48,6 +49,33 @@ def atomic_write(path: Path, payload: str) -> None:
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_text(payload, encoding="utf-8")
     temp.replace(path)
+
+
+def acquire_run_lock(runtime_dir: Path):
+    lock_path = runtime_dir / "codex-auto-resume.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = lock_path.open("w", encoding="utf-8")
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    return lock_file
+
+
+def launch_marker_path(runtime_dir: Path) -> Path:
+    return runtime_dir / "codex-auto-resume-launch.json"
+
+
+def read_launch_marker(runtime_dir: Path) -> dict:
+    path = launch_marker_path(runtime_dir)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def write_launch_marker(runtime_dir: Path, payload: dict) -> None:
+    atomic_write(launch_marker_path(runtime_dir), json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
 def session_slug(session_id: str) -> str:
@@ -146,13 +174,31 @@ def start_terminal_backend(
     session_id: str,
     log_path: Path,
     env: dict[str, str],
+    *,
+    run_check_in_terminal: bool = False,
+    wait_seconds: float = 300.0,
+    interval_seconds: float = 10.0,
 ) -> subprocess.CompletedProcess[str]:
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    pool_check_command = ""
+    if run_check_in_terminal:
+        handoff = project_root / "ops" / "codex_boot_handoff.py"
+        pool_check_command = (
+            "echo '[bdag] normal desktop boot is live; checking pool and stack now' | "
+            f"tee -a {shlex.quote(str(log_path))}; "
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(handoff))} --repair "
+            f"--wait-seconds {shlex.quote(str(wait_seconds))} "
+            f"--interval-seconds {shlex.quote(str(interval_seconds))} 2>&1 | "
+            f"tee -a {shlex.quote(str(log_path))}; "
+            "pool_check_rc=${PIPESTATUS[0]}; "
+            f"echo \"[bdag] pool check return code: ${{pool_check_rc}}\" | tee -a {shlex.quote(str(log_path))}; "
+        )
     shell_command = (
         f"cd {shlex.quote(str(project_root))} && "
         f"export BDAG_PROJECT_ROOT={shlex.quote(str(project_root))} "
         f"BDAG_RUNTIME_DIR={shlex.quote(env.get('BDAG_RUNTIME_DIR', str(DEFAULT_RUNTIME_DIR)))} && "
-        f"echo '[bdag] pool checked; resuming Codex session {shlex.quote(session_id)}'; "
+        f"{pool_check_command}"
+        f"echo '[bdag] resuming Codex session {shlex.quote(session_id)}'; "
         f"{shlex.quote(codex_bin)} resume {shlex.quote(session_id)} 2>&1 | tee -a {shlex.quote(str(log_path))}; "
         "echo; echo '[bdag] Codex exited. Press Enter to close this terminal.'; read -r _"
     )
@@ -225,12 +271,24 @@ def main(argv: list[str]) -> int:
     codex_bin = env.get("BDAG_CODEX_BIN") or shutil.which("codex", path=env.get("PATH")) or ""
     session_name = f"bdag-codex-{session_slug(session_id)}"
     log_path = runtime_dir / "logs" / "codex-auto-resume.log"
-    pool_check = None if args.skip_pool_check else run_pool_check(project_root, env, args.wait_seconds, args.interval_seconds)
+    lock_file = acquire_run_lock(runtime_dir)
+    visible = not args.detached
+    if args.skip_pool_check:
+        pool_check = None
+    elif visible:
+        pool_check = {
+            "mode": "inside_visible_terminal",
+            "wait_seconds": args.wait_seconds,
+            "interval_seconds": args.interval_seconds,
+        }
+    else:
+        pool_check = run_pool_check(project_root, env, args.wait_seconds, args.interval_seconds)
     existing = matching_codex_processes(session_id) if session_id else []
+    current_boot_id = boot_id()
 
     summary = {
         "generated_at": now_iso(),
-        "boot_id": boot_id(),
+        "boot_id": current_boot_id,
         "status": "pending",
         "session_id": session_id,
         "codex_resume_command": f"codex resume {session_id}" if session_id else "",
@@ -258,6 +316,13 @@ def main(argv: list[str]) -> int:
         write_summary(runtime_dir, summary)
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 0
+    marker = read_launch_marker(runtime_dir)
+    if visible and marker.get("boot_id") == current_boot_id and marker.get("session_id") == session_id:
+        summary["status"] = "already_launched_this_boot"
+        summary["launch_marker"] = marker
+        write_summary(runtime_dir, summary)
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0
 
     backend = choose_backend(args.backend, visible=not args.detached)
     if not backend:
@@ -266,7 +331,18 @@ def main(argv: list[str]) -> int:
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 4
 
-    result = start_terminal_backend(backend, session_name, project_root, codex_bin, session_id, log_path, env)
+    result = start_terminal_backend(
+        backend,
+        session_name,
+        project_root,
+        codex_bin,
+        session_id,
+        log_path,
+        env,
+        run_check_in_terminal=visible and not args.skip_pool_check,
+        wait_seconds=args.wait_seconds,
+        interval_seconds=args.interval_seconds,
+    )
     summary.update(
         {
             "status": "started" if result.returncode == 0 else "failed_start",
@@ -277,8 +353,21 @@ def main(argv: list[str]) -> int:
             "start_stderr": result.stderr,
         }
     )
+    if result.returncode == 0:
+        write_launch_marker(
+            runtime_dir,
+            {
+                "boot_id": current_boot_id,
+                "generated_at": now_iso(),
+                "session_id": session_id,
+                "terminal_backend": backend,
+                "terminal_session": session_name,
+                "visible_terminal": visible,
+            },
+        )
     write_summary(runtime_dir, summary)
     print(json.dumps(summary, indent=2, sort_keys=True))
+    lock_file.close()
     return 0 if result.returncode == 0 else 5
 
 

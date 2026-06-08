@@ -109,7 +109,7 @@ if [[ -z "$ENV_FILE" ]]; then
   ENV_FILE="$RUNTIME_DIR/ops.env"
 fi
 
-mkdir -p "$RUNTIME_DIR/logs" "$(dirname "$ENV_FILE")" "$HOME/.config/systemd/user"
+mkdir -p "$RUNTIME_DIR/logs" "$(dirname "$ENV_FILE")" "$HOME/.config/systemd/user" "$HOME/.config/autostart" "$HOME/.local/bin"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   cat > "$ENV_FILE" <<EOF
@@ -128,7 +128,7 @@ BDAG_POOL_DB_USER=test
 BDAG_POOL_DB_NAME=pool
 BDAG_NODE_MODE=single
 BDAG_NODE_SERVICES=node
-BDAG_STACK_SERVICES=postgres,node,pool
+BDAG_STACK_SERVICES=postgres,node,pool,dashboard
 BDAG_NODE_RPC_URLS=node=http://127.0.0.1:38131
 BDAG_GLOBAL_CHAIN_RPC_URLS=node=http://127.0.0.1:38131
 BDAG_ENABLE_NODE_MINING=0
@@ -238,6 +238,33 @@ ensure_env_value() {
   fi
 }
 
+ensure_env_value_if_empty() {
+  local key="$1" value="$2" current escaped
+  [[ -n "$value" ]] || return 0
+  if grep -q "^${key}=" "$ENV_FILE"; then
+    current="$(grep "^${key}=" "$ENV_FILE" | tail -n 1 | cut -d= -f2-)"
+    if [[ -z "$current" ]]; then
+      escaped="$(printf '%s' "$value" | sed -e 's/[\/&|\\]/\\&/g')"
+      sed -i "s|^${key}=.*|${key}=${escaped}|" "$ENV_FILE"
+    fi
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+  fi
+}
+
+detect_codex_resume_session_id() {
+  pgrep -af 'codex' 2>/dev/null | awk '
+    {
+      for (i = 1; i < NF; i++) {
+        if ($i == "resume") {
+          print $(i + 1)
+          exit
+        }
+      }
+    }
+  '
+}
+
 ensure_env_value BDAG_PROJECT_ROOT "$PROJECT_ROOT"
 ensure_env_value BDAG_RUNTIME_DIR "$RUNTIME_DIR"
 ensure_env_value BDAG_POOL_ENV_FILE "$PROJECT_ROOT/.env"
@@ -246,7 +273,7 @@ ensure_env_value BDAG_POOL_CONTAINERS pool
 ensure_env_value BDAG_POOL_DB_CONTAINER postgres
 ensure_env_value BDAG_NODE_MODE single
 ensure_env_value BDAG_NODE_SERVICES node
-ensure_env_value BDAG_STACK_SERVICES "postgres,node,pool"
+ensure_env_value BDAG_STACK_SERVICES "postgres,node,pool,dashboard"
 ensure_env_value BDAG_NODE_RPC_URLS "node=http://127.0.0.1:38131"
 ensure_env_value BDAG_GLOBAL_CHAIN_RPC_URLS "node=http://127.0.0.1:38131"
 ensure_env_value BDAG_ENABLE_NODE_MINING 0
@@ -380,6 +407,7 @@ ensure_env_value BDAG_BOOT_REPAIR_CRITICAL_POLICY restart
 ensure_env_value BDAG_INCIDENT_REPORT_ENABLED 0
 ensure_env_value BDAG_INCIDENT_REPORT_REPO ""
 ensure_env_value BDAG_CODEX_RESUME_SESSION_ID ""
+ensure_env_value_if_empty BDAG_CODEX_RESUME_SESSION_ID "$(detect_codex_resume_session_id || true)"
 ensure_env_value BDAG_CODEX_AUTO_RESUME_VISIBLE 1
 ensure_env_value BDAG_CODEX_AUTO_RESUME_BACKEND ptyxis
 
@@ -389,6 +417,8 @@ WATCHDOG_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-watchdog.service"
 BOOT_REPAIR_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-boot-repair.service"
 CODEX_BOOT_HANDOFF_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-codex-boot-handoff.service"
 CODEX_AUTO_RESUME_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-codex-auto-resume.service"
+CODEX_AUTO_RESUME_WRAPPER="$HOME/.local/bin/${INSTANCE}-codex-auto-resume"
+CODEX_AUTO_RESUME_DESKTOP="$HOME/.config/autostart/${INSTANCE}-codex-auto-resume.desktop"
 SYNC_COORDINATOR_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-sync-coordinator.service"
 SYNC_COORDINATOR_TIMER="$HOME/.config/systemd/user/${INSTANCE}-sync-coordinator.timer"
 STACK_SENTINEL_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-stack-sentinel.service"
@@ -578,6 +608,7 @@ Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
 Environment=BDAG_CODEX_BOOT_DASHBOARD_URL=http://$BIND:$PORT/api/status
 EnvironmentFile=-$ENV_FILE
 ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/codex_boot_handoff.py --repair
+SuccessExitStatus=2
 Nice=15
 IOSchedulingClass=idle
 CPUWeight=10
@@ -590,8 +621,8 @@ EOF
 cat > "$CODEX_AUTO_RESUME_SERVICE" <<EOF
 [Unit]
 Description=BlockDAG visible Codex auto-resume terminal ($INSTANCE)
-After=graphical-session.target ${INSTANCE}-codex-boot-handoff.service ${INSTANCE}-dashboard.service
-Wants=${INSTANCE}-codex-boot-handoff.service ${INSTANCE}-dashboard.service
+After=graphical-session.target ${INSTANCE}-dashboard.service
+Wants=${INSTANCE}-dashboard.service
 PartOf=graphical-session.target
 
 [Service]
@@ -611,6 +642,36 @@ RestartSec=15
 [Install]
 WantedBy=graphical-session.target
 EOF
+
+printf -v PROJECT_ROOT_SHELL '%q' "$PROJECT_ROOT"
+printf -v RUNTIME_DIR_SHELL '%q' "$RUNTIME_DIR"
+cat > "$CODEX_AUTO_RESUME_WRAPPER" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export BDAG_PROJECT_ROOT=$PROJECT_ROOT_SHELL
+export BDAG_RUNTIME_DIR=$RUNTIME_DIR_SHELL
+exec /usr/bin/env python3 $PROJECT_ROOT_SHELL/ops/codex_auto_resume.py
+EOF
+chmod 0755 "$CODEX_AUTO_RESUME_WRAPPER"
+
+if [[ "$START_SERVICES" -eq 1 ]]; then
+  cat > "$CODEX_AUTO_RESUME_DESKTOP" <<EOF
+[Desktop Entry]
+Type=Application
+Name=BlockDAG Codex Resume ($INSTANCE)
+Comment=Check the BlockDAG pool after desktop login and open Codex resume
+Exec=$CODEX_AUTO_RESUME_WRAPPER
+TryExec=$CODEX_AUTO_RESUME_WRAPPER
+Path=$PROJECT_ROOT
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+OnlyShowIn=GNOME;Unity;MATE;XFCE;
+EOF
+  chmod 0644 "$CODEX_AUTO_RESUME_DESKTOP"
+else
+  rm -f "$CODEX_AUTO_RESUME_DESKTOP"
+fi
 
 if [[ "$INSTALL_GUARDS" -eq 1 ]]; then
   cat > "$STACK_SENTINEL_SERVICE" <<EOF
@@ -946,7 +1007,8 @@ if [[ "$START_SERVICES" -eq 1 ]]; then
   if [[ "$INSTALL_WATCHDOG" -eq 1 ]]; then
     systemctl --user enable --now "${INSTANCE}-watchdog.service"
   fi
-  systemctl --user enable --now "${INSTANCE}-codex-boot-handoff.service"
+  systemctl --user enable "${INSTANCE}-codex-boot-handoff.service"
+  systemctl --user start --no-block "${INSTANCE}-codex-boot-handoff.service" || true
   systemctl --user enable "${INSTANCE}-codex-auto-resume.service"
   if [[ "$INSTALL_SYNC_COORDINATOR" -eq 1 ]]; then
     systemctl --user enable --now "${INSTANCE}-sync-coordinator.timer"

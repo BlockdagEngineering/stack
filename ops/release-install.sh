@@ -210,7 +210,7 @@ configure_active_node_env() {
   set_env_value .env BDAG_POOL_CONTAINERS "pool"
   set_env_value .env BDAG_POOL_DB_CONTAINER "postgres"
   set_env_value .env BDAG_NODE_SERVICES "node"
-  set_env_value .env BDAG_STACK_SERVICES "postgres,node,pool"
+  set_env_value .env BDAG_STACK_SERVICES "postgres,node,pool,dashboard"
   set_env_value .env POOL_RPC_BACKENDS "node=http://node:38131"
   set_env_value .env POOL_SUBMIT_RPC_URLS ""
   set_env_value .env WALLET_RPC_URL "http://node:18545"
@@ -822,7 +822,7 @@ start_stack() {
   else
     warn "Skipping implicit image pulls. Set BDAG_RELEASE_PULL_BASE_IMAGES=1 for an explicit base-image refresh."
   fi
-  compose_cmd up -d --no-build --pull never postgres node dashboard
+  compose_cmd up -d --no-build --pull never --no-deps postgres node dashboard
   compose_cmd ps
 }
 

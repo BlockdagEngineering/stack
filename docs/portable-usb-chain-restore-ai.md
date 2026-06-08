@@ -121,7 +121,7 @@ Execute:
 Start only non-pool services first:
 
 ```bash
-docker compose up -d postgres node dashboard
+docker compose up -d --no-deps postgres node dashboard
 ```
 
 Verify:

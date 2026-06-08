@@ -51,7 +51,7 @@ The payload installer writes `.env` and `node.conf`, generates a strong Postgres
 password unless `POSTGRES_PASSWORD` is already set, downloads `latest.bdsnap`
 when needed, sets `DOCKER_PLATFORM` from the downloaded payload's
 `release-payload.env`, and runs
-`docker compose build && docker compose up -d --no-build --pull never postgres node dashboard`.
+`docker compose build && docker compose up -d --no-build --pull never --no-deps postgres node dashboard`.
 
 Fresh installs assume zero miner sources. Initial install and chain sync must
 work with no ASICs or Stratum miners configured; operators can opt in to the

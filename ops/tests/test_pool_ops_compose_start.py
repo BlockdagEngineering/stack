@@ -65,6 +65,13 @@ class ComposeStartCommandTests(unittest.TestCase):
         self.assertNotIn("hotsnap", command)
         self.assertNotIn("snapshot-node", command)
 
+    def test_repair_start_command_excludes_pool_dependencies_when_pool_is_unsafe(self) -> None:
+        pool_ops.STACK_SERVICES = ["postgres", "node", "pool", "dashboard"]
+        command = pool_ops.docker_compose_start_command(include_pool=False)
+
+        self.assertEqual(command[-6:], ["up", "-d", "--no-deps", "postgres", "node", "dashboard"])
+        self.assertNotIn("pool", command[-3:])
+
     def test_repair_start_command_infers_service_from_compose_container_name(self) -> None:
         pool_ops.STACK_SERVICES = ["pool-stack-docker-node-1"]
         with mock.patch.object(

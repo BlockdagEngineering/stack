@@ -79,16 +79,19 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
 
     def test_compose_dashboard_targets_stack_container_names(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+        dashboard_block = compose.split("\n  dashboard:\n", 1)[1].split("\n  # --------------------------------------------------------------------------\n  # Optional CPU miner", 1)[0]
 
         self.assertIn("BDAG_NODE_SERVICES: node", compose)
         self.assertIn("BDAG_NETWORK: mainnet", compose)
         self.assertIn("BDAG_FASTSNAP_NETWORK: mainnet", compose)
-        self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool", compose)
+        self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool,dashboard", compose)
         self.assertIn("BDAG_POOL_CONTAINER: pool", compose)
         self.assertIn("BDAG_POOL_DB_CONTAINER: postgres", compose)
         self.assertIn("BDAG_NODE_RPC_URLS: node=http://node:38131", compose)
         self.assertIn("DASHBOARD_EVM_RPC_URL: http://node:18545", compose)
         self.assertNotIn("BDAG_RPC_URL: http://node:38131", compose)
+        self.assertIn("node: { condition: service_started }", dashboard_block)
+        self.assertNotIn("pool: { condition: service_started }", dashboard_block)
 
     def test_dashboard_image_uses_checked_out_dashboard_context(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
@@ -186,7 +189,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn('if [[ "$mode" == "source" && -e "$root/ops/observability" ]]; then', validator)
         self.assertIn('need_grep \'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS\' "docker-compose.yml"', validator)
         self.assertIn('need_grep \'NODE_RPC_URLS: .*http://node:38131\' "docker-compose.yml"', validator)
-        self.assertIn('need_grep \'BDAG_STACK_SERVICES=postgres,node,pool\' ".env.example"', validator)
+        self.assertIn('need_grep \'BDAG_STACK_SERVICES=postgres,node,pool,dashboard\' ".env.example"', validator)
         self.assertIn('reject_grep \'container_name:\' "docker-compose.yml"', validator)
 
     def test_live_runtime_validator_keeps_release_packaging_source_only(self) -> None:
@@ -216,10 +219,10 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         ).read_text(encoding="utf-8")
 
         self.assertIn("automation_control.py ensure-normal", local_installer)
-        self.assertIn("compose_cmd up -d --no-build --pull never postgres node dashboard", local_installer)
+        self.assertIn("compose_cmd up -d --no-build --pull never --no-deps postgres node dashboard", local_installer)
         self.assertNotIn("compose_cmd up -d --no-build --pull never\n", local_installer)
         self.assertIn("automation_control.py ensure-normal", payload_installer)
-        self.assertIn("docker compose up -d --no-build --pull never postgres node dashboard", payload_installer)
+        self.assertIn("docker_cli compose up -d --no-build --pull never --no-deps postgres node dashboard", payload_installer)
         self.assertNotIn("docker compose up -d --no-build --pull never\n", payload_installer)
 
     def test_release_installer_extracts_preserved_chain_peer_evidence(self) -> None:

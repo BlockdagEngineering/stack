@@ -792,7 +792,7 @@ python3 ops/automation_control.py ensure-normal \
     --owner release-installer \
     --owner-unit install-unix-common \
     --reason "Provision default automation control before sync-only first start" >/dev/null
-docker_cli compose up -d --no-build --pull never postgres node dashboard
+docker_cli compose up -d --no-build --pull never --no-deps postgres node dashboard
 
 cat <<'EOF'
 

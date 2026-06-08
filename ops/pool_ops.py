@@ -267,7 +267,7 @@ NODES = split_env_list("BDAG_NODE_SERVICES", "node")
 OBSERVER_NODES = unique_names(split_env_list("BDAG_OBSERVER_NODE_SERVICES", ""))
 STACK_SERVICES = split_env_list(
     "BDAG_STACK_SERVICES",
-    "postgres,node,pool",
+    "postgres,node,pool,dashboard",
 )
 SERVICES = unique_names([*STACK_SERVICES, POOL_DB_CONTAINER, *NODES, *POOL_CONTAINERS])
 NODE_DATA_DIRS = split_env_list("BDAG_NODE_DATA_DIRS", "node")
@@ -1335,6 +1335,8 @@ def docker_compose_start_command(*, include_pool: bool = True) -> list[str]:
         if not include_pool:
             return []
         return docker_compose_command("up", "-d")
+    if not include_pool:
+        return docker_compose_command("up", "-d", "--no-deps", *services)
     return docker_compose_command("up", "-d", *services)
 
 

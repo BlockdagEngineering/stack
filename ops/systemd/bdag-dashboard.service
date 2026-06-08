@@ -13,7 +13,7 @@ Environment=BDAG_POOL_ENV_FILE=/home/jeremy/blockdag-mining-pool/stack/.env
 Environment=BDAG_DASHBOARD_BIND=127.0.0.1
 Environment=BDAG_DASHBOARD_PORT=8088
 Environment=BDAG_NODE_SERVICES=node
-Environment=BDAG_STACK_SERVICES=postgres,node,pool
+Environment=BDAG_STACK_SERVICES=postgres,node,pool,dashboard
 Environment=BDAG_POOL_CONTAINER=pool
 Environment=BDAG_POOL_DB_CONTAINER=postgres
 Environment=BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK=0

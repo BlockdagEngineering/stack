@@ -267,7 +267,6 @@ services:
       - /var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     depends_on:
       node: { condition: service_started }
-      pool: { condition: service_started }
     environment:
       TMPDIR: /tmp
       TMP: /tmp
@@ -275,7 +274,7 @@ services:
       # The dashboard observes canonical service names. Compose-generated
       # concrete container names may include project and ordinal suffixes.
       BDAG_NODE_SERVICES: node
-      BDAG_STACK_SERVICES: postgres,node,pool
+      BDAG_STACK_SERVICES: postgres,node,pool,dashboard
       BDAG_POOL_CONTAINER: pool
       BDAG_POOL_CONTAINERS: pool
       BDAG_POOL_DB_CONTAINER: postgres
