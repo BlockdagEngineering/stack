@@ -259,6 +259,9 @@ CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS = env_int("BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_B
 CATCHUP_IOWAIT_WARN_PERCENT = env_float("BDAG_CATCHUP_IOWAIT_WARN_PERCENT", 15.0, minimum=0.0)
 CATCHUP_IO_SOME_AVG10_WARN = env_float("BDAG_CATCHUP_IO_SOME_AVG10_WARN", 20.0, minimum=0.0)
 CATCHUP_IO_FULL_AVG10_WARN = env_float("BDAG_CATCHUP_IO_FULL_AVG10_WARN", 10.0, minimum=0.0)
+SYNC_PRIORITY_ENABLED = env_bool("BDAG_SYNC_PRIORITY_ENABLED", True)
+SYNC_PRIORITY_MIN_LAG_BLOCKS = env_int("BDAG_SYNC_PRIORITY_MIN_LAG_BLOCKS", 25, minimum=0)
+SYNC_PRIORITY_DEFER_DASHBOARD_SAMPLERS = env_bool("BDAG_SYNC_PRIORITY_DEFER_DASHBOARD_SAMPLERS", True)
 SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS = int(os.environ.get("BDAG_SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS", "2700"))
 DEFAULT_POOL_ENV_FILE = PROJECT_ROOT / ".env"
 POOL_ENV_FILE = path_from_env("BDAG_POOL_ENV_FILE", DEFAULT_POOL_ENV_FILE, PROJECT_ROOT)
@@ -1745,12 +1748,40 @@ class MinerAPIError(RuntimeError):
         self.body = body
 
 
+def configured_asic_lan_networks() -> list[ipaddress.IPv4Network]:
+    raw_values = [
+        os.environ.get("BDAG_ASIC_LAN_CIDRS", ""),
+        os.environ.get("BDAG_MINER_SCAN_TARGET", ""),
+    ]
+    networks: list[ipaddress.IPv4Network] = []
+    for raw in raw_values:
+        for token in re.split(r"[,;\s]+", str(raw or "")):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                if "/" in token:
+                    network = ipaddress.ip_network(token, strict=False)
+                else:
+                    network = ipaddress.ip_network(f"{token}/32", strict=False)
+            except ValueError:
+                continue
+            if network.version == 4:
+                networks.append(network)
+    return networks
+
+
 def is_lan_ipv4(value: str) -> bool:
     try:
         address = ipaddress.ip_address(value)
     except ValueError:
         return False
-    return address.version == 4 and (address.is_private or address.is_link_local) and not is_docker_bridge_ipv4(value)
+    if address.version != 4 or is_docker_bridge_ipv4(value):
+        return False
+    configured_networks = configured_asic_lan_networks()
+    if configured_networks:
+        return any(address in network for network in configured_networks)
+    return (address.is_private or address.is_link_local) and not is_docker_bridge_ipv4(value)
 
 
 def docker_bridge_networks() -> list[ipaddress.IPv4Network]:
@@ -1821,8 +1852,7 @@ def is_local_asic_earnings_miner(item: dict[str, Any]) -> bool:
     identity = str(item.get("identity_key") or item.get("device_id") or "").strip().lower()
     if identity.startswith("mac:"):
         mac = mac or normalize_mac(identity[4:])
-    device_type = str(item.get("device_type") or "").strip().lower()
-    return bool(mac) or device_type == "asic"
+    return bool(mac)
 
 
 def is_ipv4(value: str) -> bool:
@@ -2101,6 +2131,91 @@ def miner_identity_key(item: dict[str, Any]) -> str:
     return f"mac:{mac}" if mac else ""
 
 
+def asic_mac_override_entries(registry: dict[str, Any] | None = None) -> list[tuple[str, str]]:
+    """Return verified host-visible ASIC IP to MAC mappings for the pool.
+
+    The IP is only a current connection route into the ASIC. The durable lane
+    identity is the MAC, and rows without a proven MAC are excluded so the pool
+    never promotes an IP address into an ASIC identity.
+    """
+    if registry is None:
+        registry = read_miner_registry()
+    by_ip: dict[str, str] = {}
+    neighbors = read_neighbor_macs()
+    now_epoch = seconds_since_epoch()
+    miners = registry.get("miners") if isinstance(registry, dict) else []
+    for row in miners if isinstance(miners, list) else []:
+        if not isinstance(row, dict):
+            continue
+        ip = str(row.get("ip") or "")
+        if not is_lan_ipv4(ip) or is_docker_bridge_ipv4(ip):
+            continue
+        recent_pool_route = bool(
+            safe_int(row.get("last_pool_seen_epoch"), 0) > 0
+            and now_epoch - safe_int(row.get("last_pool_seen_epoch"), 0) <= POOL_CONNECTED_STALE_SECONDS
+        )
+        active_or_configured = bool(
+            row.get("managed")
+            or row.get("configured")
+            or row.get("last_configured_ok")
+            or row.get("connected")
+            or row.get("pool_active")
+            or row.get("work_pool_active")
+            or recent_pool_route
+        )
+        if not active_or_configured:
+            continue
+        mac = normalize_mac(neighbors.get(ip)) or normalize_mac(row.get("mac"))
+        if not mac:
+            continue
+        device_type = str(row.get("device_type") or "").strip().lower()
+        if device_type and device_type != "asic" and not bool(row.get("managed") or row.get("last_configured_ok")):
+            continue
+        by_ip[ip] = mac
+    return sorted(by_ip.items(), key=lambda item: ipaddress.ip_address(item[0]))
+
+
+def pool_asic_mac_overrides_value(registry: dict[str, Any] | None = None) -> str:
+    return ",".join(f"{ip}={mac}" for ip, mac in asic_mac_override_entries(registry))
+
+
+def pool_asic_mac_override_diagnostics(registry: dict[str, Any] | None = None) -> dict[str, Any]:
+    if registry is None:
+        registry = read_miner_registry()
+    override_entries = asic_mac_override_entries(registry)
+    override_ips = {ip for ip, _mac in override_entries}
+    unresolved: list[dict[str, Any]] = []
+    miners = registry.get("miners") if isinstance(registry, dict) else []
+    for row in miners if isinstance(miners, list) else []:
+        if not isinstance(row, dict):
+            continue
+        ip = str(row.get("ip") or "")
+        if not is_lan_ipv4(ip) or ip in override_ips or is_docker_bridge_ipv4(ip):
+            continue
+        device_type = str(row.get("device_type") or "").strip().lower()
+        if device_type != "asic" and not bool(row.get("managed") or row.get("last_configured_ok")):
+            continue
+        if normalize_mac(row.get("mac")):
+            continue
+        unresolved.append(
+            {
+                "ip": ip,
+                "display_label": miner_display_label(row),
+                "managed": bool(row.get("managed")),
+                "configured": bool(row.get("last_configured_ok") or row.get("configured")),
+                "issue": "asic_mac_unresolved",
+            }
+        )
+    return {
+        "override_value": ",".join(f"{ip}={mac}" for ip, mac in override_entries),
+        "override_count": len(override_entries),
+        "overrides": [{"ip": ip, "mac": mac, "lane_id": f"mac:{mac}"} for ip, mac in override_entries],
+        "unresolved_count": len(unresolved),
+        "unresolved": unresolved,
+        "identity_basis": "mac",
+    }
+
+
 def miner_display_label(item: dict[str, Any]) -> str:
     mac = normalize_mac(item.get("mac"))
     if not mac:
@@ -2180,8 +2295,8 @@ def prune_inactive_miner_records(miners: list[dict[str, Any]]) -> list[dict[str,
                 else MINER_REGISTRY_POOL_LOG_STALE_SECONDS
             )
             stale = not last_seen_epoch or now_epoch - last_seen_epoch > stale_limit
-            duplicate_old_asic_ip = ip in asic_known_ips and ip not in asic_current_ips
-            if stale or duplicate_old_asic_ip:
+            duplicate_old_asic_route = ip in asic_known_ips and ip not in asic_current_ips
+            if stale or duplicate_old_asic_route:
                 continue
         pruned.append(item)
     return pruned
@@ -2332,7 +2447,12 @@ def save_miner_registry(miners: list[dict[str, Any]]) -> dict[str, Any]:
             item["mac"] = mac
             item["device_id"] = f"mac:{mac}"
         item["ip_history"] = merge_unique_strings(item.get("ip_history"), ip)
-        key = f"mac:{mac}" if mac else f"ip:{ip}"
+        likely_asic = str(item.get("device_type") or "").lower() == "asic" or bool(
+            item.get("managed") or item.get("last_configured_ok")
+        )
+        if not mac and likely_asic:
+            continue
+        key = f"mac:{mac}" if mac else f"stratum:{ip}"
         by_identity[key] = merge_miner_records(by_identity[key], item) if key in by_identity else item
 
     cleaned = prune_inactive_miner_records(list(by_identity.values()))
@@ -2371,11 +2491,12 @@ def upsert_miner_registry(miners: list[dict[str, Any]], expected_pool_url: str |
         configured = any(str(pool.get("url", "")) == expected_url and str(pool.get("user", "")) == expected_user for pool in pools)
         item = existing_by_mac.get(mac) if mac else None
         item = dict(item or existing.get(ip, {"ip": ip}))
+        device_id = f"mac:{mac}" if mac else ""
         item.update(
             {
                 "ip": ip,
                 "mac": mac or item.get("mac", ""),
-                "device_id": f"mac:{mac}" if mac else item.get("device_id", ""),
+                "device_id": device_id,
                 "ip_history": merge_unique_strings(item.get("ip_history"), ip),
                 "device_type": "asic",
                 "discovered_by": "lan-scan",
@@ -2417,11 +2538,12 @@ def mark_configured_miners(results: list[dict[str, Any]], pool_url: str, worker_
         item = existing_by_mac.get(mac) if mac else None
         item = dict(item or existing.get(ip, {"ip": ip}))
         ok = result.get("status") in {"ok", "partial"} and not result.get("error")
+        device_id = f"mac:{mac}" if mac else ""
         item.update(
             {
                 "ip": ip,
                 "mac": mac or item.get("mac", ""),
-                "device_id": f"mac:{mac}" if mac else item.get("device_id", ""),
+                "device_id": device_id,
                 "ip_history": merge_unique_strings(item.get("ip_history"), ip),
                 "device_type": "asic",
                 "sources": merge_unique_strings(item.get("sources"), "configured"),
@@ -4108,22 +4230,31 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
             return bridge_alias_ip
         return ip
 
-    def identity_key_for_ip(ip: str) -> str:
+    def identity_key_for_route(ip: str) -> str:
         ip = canonical_client_ip(ip)
         _registered, mac = registered_for_ip(ip)
-        return f"mac:{mac}" if mac else f"ip:{ip}"
+        if mac:
+            return f"mac:{mac}"
+        if is_lan_ipv4(ip):
+            return ""
+        return f"stratum:{ip}"
 
     def client_identity_key(client: dict[str, str] | None) -> str:
         if not client:
             return ""
-        return str(client.get("identity_key") or identity_key_for_ip(str(client.get("ip") or "")))
+        return str(client.get("identity_key") or identity_key_for_route(str(client.get("ip") or "")))
 
-    def client_from_identity(ip: str, port: str = "") -> dict[str, str]:
+    def client_from_identity(ip: str, port: str = "") -> dict[str, str] | None:
         ip = canonical_client_ip(ip)
-        return {"ip": ip, "port": port, "identity_key": identity_key_for_ip(ip)}
+        identity_key = identity_key_for_route(ip)
+        if not identity_key:
+            return None
+        return {"ip": ip, "port": port, "identity_key": identity_key}
 
     def note_worker_client(worker: str, ip: str, port: str = "", priority: int = 1) -> None:
         incoming = client_from_identity(ip, port)
+        if not incoming:
+            return
         current = worker_to_client.get(worker)
         current_priority = worker_client_priority.get(worker, -1)
         if current and client_identity_key(current) != client_identity_key(incoming):
@@ -4244,6 +4375,8 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         for worker in merge_unique_strings(registered.get("last_workers"), registered.get("expected_worker_user")):
             note_worker_client(worker, ip, priority=priority)
         client = client_from_identity(ip)
+        if not client:
+            continue
         for extranonce in merge_unique_strings(registered.get("last_pool_job_extranonces")):
             if re.fullmatch(r"[0-9a-fA-F]{8}", str(extranonce or "")):
                 suffix = str(extranonce).lower()
@@ -4259,11 +4392,16 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
     for suffix, client in registry_extranonce_clients.items():
         extranonce_to_client.setdefault(suffix, client)
 
-    def miner_for_ip(ip: str) -> dict[str, Any]:
+    def miner_for_ip(ip: str) -> dict[str, Any] | None:
         ip = canonical_client_ip(ip)
         registered, mac = registered_for_ip(ip)
-        identity_key = f"mac:{mac}" if mac else ""
-        storage_key = identity_key or f"ip:{ip}"
+        if mac:
+            identity_key = f"mac:{mac}"
+        elif is_lan_ipv4(ip):
+            return None
+        else:
+            identity_key = f"stratum:{ip}"
+        storage_key = identity_key or f"stratum:{ip}"
         item = miners.setdefault(
             storage_key,
             {
@@ -4271,6 +4409,8 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
                 "mac": mac,
                 "device_id": f"mac:{mac}" if mac else "",
                 "identity_key": identity_key,
+                "identity_unresolved": bool(is_lan_ipv4(ip) and not mac),
+                "identity_issue": "asic_mac_unresolved" if is_lan_ipv4(ip) and not mac else "",
                 "display_name": registered.get("display_name") or "",
                 "display_label": miner_display_label({**registered, "mac": mac}) if mac or registered else "",
                 "ip_history": merge_unique_strings(registered.get("ip_history"), ip),
@@ -4333,6 +4473,8 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         if pushdif:
             ip, port, difficulty = pushdif.groups()
             item = miner_for_ip(ip)
+            if item is None:
+                continue
             note_port(item, port)
             item["last_difficulty"] = difficulty
             note_seen(item, line, "last_job_at")
@@ -4343,11 +4485,15 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
             ip, port, worker = auth.groups()
             note_worker_client(worker, ip, port=port, priority=1)
             legacy_client = client_from_identity(ip, port)
+            if not legacy_client:
+                continue
             if is_docker_bridge_pool_log_client(ip):
                 legacy_client = client_for_worker(worker) or legacy_client
             remember_recent_worker_client(worker, legacy_client)
             note_legacy_extranonce_client(legacy_client)
             item = miner_for_ip(ip)
+            if item is None:
+                continue
             note_port(item, port)
             note_worker(item, worker)
             note_seen(item, line)
@@ -4357,8 +4503,12 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         if subscribe:
             ip, port, extranonce = subscribe.groups()
             client = client_from_identity(ip, port)
+            if not client:
+                continue
             extranonce_to_client[extranonce.lower()] = client
             item = miner_for_ip(ip)
+            if item is None:
+                continue
             note_port(item, port)
             note_seen(item, line)
             continue
@@ -4366,8 +4516,13 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         notify = JOB_NOTIFY_DETAIL_RE.search(line)
         if notify:
             ip, port, job_id = notify.groups()
-            note_job_client(job_id, {"ip": ip, "port": port})
+            client = client_from_identity(ip, port)
+            if not client:
+                continue
+            note_job_client(job_id, client)
             item = miner_for_ip(ip)
+            if item is None:
+                continue
             note_port(item, port)
             item["jobs"] += 1
             note_seen(item, line, "last_job_at")
@@ -4376,8 +4531,13 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         legacy_notify = JOB_NOTIFY_RE.search(line)
         if legacy_notify:
             ip, job_id = legacy_notify.groups()
-            note_job_client(job_id, {"ip": ip, "port": ""})
+            client = client_from_identity(ip, "")
+            if not client:
+                continue
+            note_job_client(job_id, client)
             item = miner_for_ip(ip)
+            if item is None:
+                continue
             item["jobs"] += 1
             note_seen(item, line, "last_job_at")
             continue
@@ -4385,9 +4545,13 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         recovery_resend = RECOVERY_JOB_TO_CLIENT_RE.search(line)
         if recovery_resend:
             ip, port, job_id = recovery_resend.groups()
-            client = {"ip": ip, "port": port}
+            client = client_from_identity(ip, port)
+            if not client:
+                continue
             note_job_client(job_id, client)
             item = miner_for_ip(ip)
+            if item is None:
+                continue
             note_port(item, port)
             note_item_extranonce(item, job_id)
             item["jobs"] += 1
@@ -4405,6 +4569,8 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
                 continue
             note_job_client(job_id, client)
             item = miner_for_ip(client["ip"])
+            if item is None:
+                continue
             note_port(item, client.get("port"))
             note_worker(item, worker)
             item["submits"] += submit_line_weight(line)
@@ -4426,6 +4592,9 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
                 continue
             note_job_client(job_id, client)
             item = miner_for_ip(client["ip"])
+            if item is None:
+                unattributed_valid_shares += valid_share_line_weight(line)
+                continue
             note_port(item, client.get("port"))
             note_item_extranonce(item, job_id)
             item["shares"] += valid_share_line_weight(line)
@@ -4450,6 +4619,9 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
                 unattributed_blocks += 1
                 continue
             item = miner_for_ip(client["ip"])
+            if item is None:
+                unattributed_blocks += 1
+                continue
             note_port(item, client.get("port"))
             note_item_extranonce(item, job_id)
             item["blocks_found"] += 1
@@ -4594,7 +4766,10 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
             {
                 "ip": ip,
                 "mac": mac or item.get("mac", ""),
-                "device_id": f"mac:{mac}" if mac else item.get("device_id", ""),
+                "device_id": f"mac:{mac}" if mac else "",
+                "identity_key": f"mac:{mac}" if mac else "",
+                "identity_unresolved": bool(is_lan_ipv4(ip) and not mac),
+                "identity_issue": "asic_mac_unresolved" if is_lan_ipv4(ip) and not mac else "",
                 "ip_history": merge_unique_strings(item.get("ip_history"), previous_ip, ip),
                 "sources": merge_unique_strings(item.get("sources"), "pool-log", "asic-api" if discovered else None),
                 "auto_discovered": bool(item.get("auto_discovered", item.get("discovered_by") == "pool-log")),
@@ -4672,6 +4847,19 @@ def collect_miner_health() -> dict[str, Any]:
     health: list[dict[str, Any]] = []
     failures: list[str] = []
     warnings: list[str] = []
+    asic_identity = pool_asic_mac_override_diagnostics(registry)
+    unresolved_asic_identity = asic_identity.get("unresolved") or []
+    if unresolved_asic_identity:
+        sample = ", ".join(
+            str(item.get("ip") or "")
+            for item in unresolved_asic_identity[:4]
+            if isinstance(item, dict) and item.get("ip")
+        )
+        suffix = f"; +{len(unresolved_asic_identity) - 4} more" if len(unresolved_asic_identity) > 4 else ""
+        warnings.append(
+            "ASIC MAC identity unresolved for observed LAN miner route(s): "
+            f"{sample}{suffix}; IP addresses remain observations only and are not used as ASIC lanes"
+        )
     now_epoch = seconds_since_epoch()
 
     for registered in miners:
@@ -4894,8 +5082,10 @@ def collect_miner_health() -> dict[str, Any]:
             {
                 "ip": ip,
                 "mac": mac,
-                "device_id": f"mac:{mac}" if mac else str(registered.get("device_id") or ""),
+                "device_id": f"mac:{mac}" if mac else "",
                 "identity_key": miner_identity_key({**registered, "mac": mac}),
+                "identity_unresolved": bool(is_lan_ipv4(ip) and not mac and device_type == "asic"),
+                "identity_issue": "asic_mac_unresolved" if is_lan_ipv4(ip) and not mac and device_type == "asic" else "",
                 "display_name": registered.get("display_name") or "",
                 "display_label": miner_display_label({**registered, "mac": mac}),
                 "managed": managed,
@@ -4966,11 +5156,9 @@ def collect_miner_health() -> dict[str, Any]:
         for item in health
         if item.get("relevant_for_work_share")
         and (item.get("configured") or item.get("managed"))
+        and miner_identity_key(item)
     ]
-    expected_lane_ids = {
-        str(item.get("identity_key") or item.get("device_id") or item.get("mac") or item.get("ip") or "")
-        for item in expected_lane_rows
-    }
+    expected_lane_ids = {miner_identity_key(item) for item in expected_lane_rows}
     expected_lane_count = len(expected_lane_rows)
     expected_lane_percent = Decimal("100") / Decimal(expected_lane_count) if expected_lane_count > 0 else Decimal("0")
     imbalanced_lanes: list[str] = []
@@ -4979,7 +5167,7 @@ def collect_miner_health() -> dict[str, Any]:
         include_in_work_percent = bool(item.get("relevant_for_work_share") or total_work_includes_all_rows)
         if total_work > 0 and share_work_int > 0 and include_in_work_percent:
             item["work_percent"] = percent_to_str((Decimal(share_work_int) / Decimal(total_work)) * Decimal("100"))
-        lane_id = str(item.get("identity_key") or item.get("device_id") or item.get("mac") or item.get("ip") or "")
+        lane_id = miner_identity_key(item)
         expected_lane = bool(lane_id and lane_id in expected_lane_ids)
         item["expected_work_lane"] = expected_lane
         item["expected_work_percent"] = percent_to_str(expected_lane_percent) if expected_lane_count > 0 and expected_lane else "0.00"
@@ -5021,6 +5209,7 @@ def collect_miner_health() -> dict[str, Any]:
             "expected_work_percent": percent_to_str(expected_lane_percent) if expected_lane_count > 0 else "0.00",
             "imbalanced_count": len(imbalanced_lanes),
         },
+        "asic_identity": asic_identity,
         "failures": failures,
         "warnings": warnings,
         "miners": health,
@@ -6338,6 +6527,146 @@ def _sync_chain_rpc_latency_ms(sync_progress: dict[str, Any]) -> float | None:
     return max(values) if values else None
 
 
+def _sync_priority_add_lag(values: list[int], value: Any) -> None:
+    parsed = safe_int(value, -1)
+    if parsed >= 0:
+        values.append(parsed)
+
+
+def _sync_priority_block_gap(info: Mapping[str, Any]) -> int:
+    current = safe_int(
+        info.get("evm_block_count")
+        if info.get("evm_block_count") is not None
+        else info.get("current_block")
+        if info.get("current_block") is not None
+        else info.get("latest_block"),
+        -1,
+    )
+    highest = safe_int(
+        info.get("evm_reference_block_count")
+        if info.get("evm_reference_block_count") is not None
+        else info.get("highest_block"),
+        -1,
+    )
+    if current >= 0 and highest >= current:
+        return highest - current
+    return -1
+
+
+def _sync_priority_lag_blocks(payload: Mapping[str, Any], sync_progress: Mapping[str, Any]) -> int:
+    values: list[int] = []
+    policy = payload.get("catchup_policy") if isinstance(payload.get("catchup_policy"), Mapping) else {}
+    if isinstance(policy, Mapping):
+        _sync_priority_add_lag(values, policy.get("lag_blocks"))
+    for key in (
+        "remaining_blocks",
+        "peer_ahead_blocks",
+        "evm_lag_to_reference",
+        "evm_lag_to_chain",
+        "reference_lag_blocks",
+        "chain_tip_lag_blocks",
+    ):
+        _sync_priority_add_lag(values, sync_progress.get(key))
+    _sync_priority_add_lag(values, _sync_priority_block_gap(sync_progress))
+    for group in (sync_progress.get("nodes"), payload.get("nodes")):
+        if not isinstance(group, Mapping):
+            continue
+        for info in group.values():
+            if not isinstance(info, Mapping):
+                continue
+            for key in (
+                "remaining_blocks",
+                "peer_ahead_blocks",
+                "evm_lag_to_reference",
+                "evm_lag_to_chain",
+                "reference_lag_blocks",
+                "node_p2p_best_peer_lead_blocks",
+            ):
+                _sync_priority_add_lag(values, info.get(key))
+            alignment = info.get("public_chain_alignment")
+            if isinstance(alignment, Mapping):
+                _sync_priority_add_lag(values, alignment.get("reference_lag_blocks"))
+            _sync_priority_add_lag(values, _sync_priority_block_gap(info))
+    return max(values) if values else -1
+
+
+def sync_priority_decision(task: str, status: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return whether chain catch-up should preempt optional local work."""
+    if not SYNC_PRIORITY_ENABLED:
+        return {
+            "enabled": False,
+            "active": False,
+            "task": task,
+            "reasons": [],
+            "lag_blocks": -1,
+            "min_lag_blocks": SYNC_PRIORITY_MIN_LAG_BLOCKS,
+            "defer_dashboard_samplers": False,
+        }
+
+    try:
+        payload = status if isinstance(status, dict) else collect_status_cached(include_logs=False)
+    except Exception as exc:  # noqa: BLE001 - priority probing must not take down callers.
+        return {
+            "enabled": True,
+            "active": False,
+            "task": task,
+            "reasons": [],
+            "lag_blocks": -1,
+            "min_lag_blocks": SYNC_PRIORITY_MIN_LAG_BLOCKS,
+            "defer_dashboard_samplers": False,
+            "error": str(exc),
+        }
+
+    sync_progress = payload.get("sync_progress") if isinstance(payload.get("sync_progress"), dict) else {}
+    host_pressure = payload.get("host_pressure") if isinstance(payload.get("host_pressure"), dict) else {}
+    catchup_policy = payload.get("catchup_policy") if isinstance(payload.get("catchup_policy"), dict) else {}
+    sync_status = str(sync_progress.get("status") or "unknown").strip().lower()
+    mode = str(payload.get("mode") or "unknown").strip().lower()
+    lag_blocks = _sync_priority_lag_blocks(payload, sync_progress)
+    payload_nodes = payload.get("nodes") if isinstance(payload.get("nodes"), Mapping) else {}
+    importing = sync_status == "syncing" or any(
+        isinstance(info, Mapping) and bool(info.get("importing"))
+        for info in payload_nodes.values()
+    )
+    io_pressure_reasons = catchup_policy.get("io_pressure_reasons")
+    if not isinstance(io_pressure_reasons, list):
+        io_pressure_reasons = catchup_io_pressure_reasons(host_pressure)
+
+    reasons: list[str] = []
+    if bool(catchup_policy.get("active")):
+        reasons.append(f"catchup_policy_active:{catchup_policy.get('trigger') or 'active'}")
+    if mode == "catchup_pause":
+        reasons.append("stack_mode=catchup_pause")
+    if sync_status == "syncing":
+        lag_text = "unknown" if lag_blocks < 0 else str(lag_blocks)
+        reasons.append(f"sync_status=syncing lag={lag_text}")
+    if lag_blocks >= SYNC_PRIORITY_MIN_LAG_BLOCKS and sync_status != "synced":
+        reasons.append(f"lag_blocks={lag_blocks}>={SYNC_PRIORITY_MIN_LAG_BLOCKS}")
+    if importing and lag_blocks >= SYNC_PRIORITY_MIN_LAG_BLOCKS:
+        reasons.append("node_importing_while_behind")
+    if bool(catchup_policy.get("io_pressure_active")) and lag_blocks >= SYNC_PRIORITY_MIN_LAG_BLOCKS:
+        reasons.append("catchup_io_pressure_active")
+    elif io_pressure_reasons and importing and lag_blocks >= SYNC_PRIORITY_MIN_LAG_BLOCKS:
+        reasons.append("catchup_io_pressure:" + ",".join(str(item) for item in io_pressure_reasons[:3]))
+
+    active = bool(reasons)
+    return {
+        "enabled": True,
+        "active": active,
+        "task": task,
+        "reasons": reasons,
+        "lag_blocks": lag_blocks,
+        "min_lag_blocks": SYNC_PRIORITY_MIN_LAG_BLOCKS,
+        "sync_status": sync_status,
+        "mode": mode,
+        "importing": importing,
+        "catchup_policy_active": bool(catchup_policy.get("active")),
+        "io_pressure_reasons": io_pressure_reasons,
+        "defer_dashboard_samplers": bool(active and SYNC_PRIORITY_DEFER_DASHBOARD_SAMPLERS),
+        "shared_status_cache": payload.get("shared_status_cache"),
+    }
+
+
 def _background_task_selected(task: str, selected: set[str]) -> bool:
     normalized = str(task or "").strip()
     return "*" in selected or normalized in selected
@@ -6363,6 +6692,10 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
     sync_progress = payload.get("sync_progress") if isinstance(payload.get("sync_progress"), dict) else {}
     host_pressure = payload.get("host_pressure") if isinstance(payload.get("host_pressure"), dict) else {}
     reasons: list[str] = []
+    sync_priority = sync_priority_decision(task, payload)
+    if sync_priority.get("active"):
+        priority_reason = "; ".join(str(item) for item in sync_priority.get("reasons", []) if item)
+        reasons.append(f"sync priority active: {priority_reason or 'chain catch-up needs host capacity'}")
     sync_status = str(sync_progress.get("status") or "unknown")
     remaining_blocks = _sync_remaining_blocks(sync_progress)
     chain_rpc_latency_ms = _sync_chain_rpc_latency_ms(sync_progress)
@@ -8300,7 +8633,9 @@ def miner_history_merge_key(miner: dict[str, Any]) -> str:
     if mac:
         return f"mac:{mac}"
     identity = str(miner.get("identity_key") or miner.get("device_id") or "").strip().lower()
-    return identity or str(miner.get("ip") or "")
+    if identity.startswith("mac:") or identity.startswith("wallet:"):
+        return identity
+    return identity
 
 
 def nearest_rebuild_epoch(epoch: float, rebuild_epochs: list[float], latest_epoch: float) -> float | None:
@@ -9432,7 +9767,9 @@ def miner_worker_identity_score(miner: dict[str, Any]) -> tuple[int, int, int, i
 def local_worker_identity_for_shared_miners(miners: list[dict[str, Any]]) -> dict[str, Any]:
     identities: dict[str, dict[str, Any]] = {}
     for miner in miners:
-        identity = miner_identity_key(miner) or f"ip:{miner.get('ip', '')}"
+        identity = miner_identity_key(miner)
+        if not identity:
+            continue
         identities.setdefault(identity, miner)
     unique_miners = list(identities.values())
     if len(unique_miners) <= 1:
@@ -10967,7 +11304,9 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
         activity_mac = normalize_mac((registered or {}).get("mac")) or normalize_mac(item.get("mac"))
         if is_docker_bridge_pool_log_client(activity_ip, activity_mac):
             continue
-        identity = str(item.get("identity_key") or miner_identity_key({**registered, **item}) or f"ip:{activity_ip}")
+        identity = str(item.get("identity_key") or miner_identity_key({**registered, **item}))
+        if not identity:
+            continue
         for worker in item.get("workers", []):
             worker_to_identities.setdefault(str(worker), set()).add(identity)
     total_work = sum(int(item.get("share_work", 0) or 0) for item in earnings_activity_miners)

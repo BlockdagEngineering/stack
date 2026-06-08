@@ -29,6 +29,8 @@ from pool_ops import (
     ensure_runtime,
     env_bool,
     now_iso,
+    pool_asic_mac_override_diagnostics,
+    pool_asic_mac_overrides_value,
     read_env_file_value,
     read_miner_registry,
     read_neighbor_macs,
@@ -87,6 +89,10 @@ MINING_IMPERATIVE_MINER_TRACKING_REPAIR_ENABLED = env_bool(
 )
 MINING_IMPERATIVE_MINER_ACTIVITY_REPAIR_ENABLED = env_bool(
     "BDAG_MINING_IMPERATIVE_MINER_ACTIVITY_REPAIR_ENABLED",
+    True,
+)
+MINING_IMPERATIVE_ASIC_MAC_OVERRIDES_REPAIR_ENABLED = env_bool(
+    "BDAG_MINING_IMPERATIVE_ASIC_MAC_OVERRIDES_REPAIR_ENABLED",
     True,
 )
 MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS = env_int(
@@ -882,6 +888,69 @@ def status_payload_has_miner_activity_visibility_gap(payload: dict[str, Any]) ->
     return status_payload_has_miner_demand(payload) and pool_has_recent_share_evidence(payload)
 
 
+def pool_container_env_value(key: str) -> str | None:
+    result = run(
+        docker_compose_command(
+            "exec",
+            "-T",
+            POOL_CONTAINER,
+            "sh",
+            "-lc",
+            f'printf "%s" "${{{key}:-}}"',
+        ),
+        timeout=20,
+    )
+    if not result.ok:
+        return None
+    return result.stdout.strip()
+
+
+def desired_asic_lan_cidrs_value() -> str:
+    configured = config_value("BDAG_ASIC_LAN_CIDRS")
+    if configured:
+        return configured
+    scan_target = config_value("BDAG_MINER_SCAN_TARGET")
+    if "/" in scan_target:
+        return scan_target
+    return ""
+
+
+def status_payload_needs_asic_mac_override_repair(payload: dict[str, Any]) -> bool:
+    if not MINING_IMPERATIVE_ASIC_MAC_OVERRIDES_REPAIR_ENABLED:
+        return False
+    if not (status_payload_has_miner_demand(payload) or asic_lan_neighbor_present()):
+        return False
+    desired = pool_asic_mac_overrides_value()
+    desired_lan_cidrs = desired_asic_lan_cidrs_value()
+    if not desired:
+        diagnostics = pool_asic_mac_override_diagnostics()
+        if diagnostics.get("unresolved_count"):
+            log(
+                "mining imperative cannot derive POOL_ASIC_MAC_OVERRIDES because ASIC MAC identity is unresolved "
+                f"unresolved={diagnostics.get('unresolved')}"
+            )
+        if not desired_lan_cidrs:
+            return False
+    configured = config_value("POOL_ASIC_MAC_OVERRIDES")
+    configured_lan_cidrs = config_value("BDAG_ASIC_LAN_CIDRS")
+    if desired and configured != desired:
+        return True
+    if desired_lan_cidrs and configured_lan_cidrs != desired_lan_cidrs:
+        return True
+    if pool_container_running(payload):
+        container_value = pool_container_env_value("POOL_ASIC_MAC_OVERRIDES")
+        container_lan_cidrs = pool_container_env_value("BDAG_ASIC_LAN_CIDRS")
+        return (
+            (desired and container_value is not None and container_value != desired)
+            or (
+                desired_lan_cidrs
+                and container_lan_cidrs is not None
+                and container_lan_cidrs != desired_lan_cidrs
+            )
+        )
+    return False
+
+
 def asic_lan_neighbor_present() -> bool:
     cidrs = split_env_list("BDAG_ASIC_LAN_CIDRS", "")
     if not cidrs:
@@ -1196,6 +1265,102 @@ def repair_miner_activity_visibility(payload: dict[str, Any]) -> bool:
         "mining_imperative_miner_activity_visibility_repair_failed",
         "warning",
         "Mining imperative found pool share evidence but could not refresh per-miner share attribution",
+        action,
+        payload,
+    )
+    return False
+
+
+def repair_pool_asic_mac_overrides(payload: dict[str, Any]) -> bool:
+    diagnostics = pool_asic_mac_override_diagnostics()
+    desired = str(diagnostics.get("override_value") or "")
+    desired_lan_cidrs = desired_asic_lan_cidrs_value()
+    if not desired and not desired_lan_cidrs:
+        record_incident(
+            "mining_imperative_asic_mac_overrides_unresolved",
+            "warning",
+            "ASIC MAC override map could not be generated because one or more ASIC MAC identities are unresolved",
+            diagnostics,
+            payload,
+        )
+        return False
+    configured = config_value("POOL_ASIC_MAC_OVERRIDES")
+    configured_lan_cidrs = config_value("BDAG_ASIC_LAN_CIDRS")
+    container_value = pool_container_env_value("POOL_ASIC_MAC_OVERRIDES") if pool_container_running(payload) else None
+    container_lan_cidrs = pool_container_env_value("BDAG_ASIC_LAN_CIDRS") if pool_container_running(payload) else None
+    changed_paths: list[str] = []
+    if desired and configured != desired:
+        if not automation_repair_mutation_allowed(
+            automation_control.ACTION_CONFIG_EDIT,
+            target="POOL_ASIC_MAC_OVERRIDES",
+            reason="write MAC-only ASIC LAN lane override map for pool container",
+            payload=payload,
+            event_type="mining_imperative_config_edit_blocked",
+            message="Mining imperative could not write ASIC MAC override config because automation control blocked config edits",
+        ):
+            return False
+        changed_paths = set_runtime_env_value("POOL_ASIC_MAC_OVERRIDES", desired)
+    if desired_lan_cidrs and configured_lan_cidrs != desired_lan_cidrs:
+        if not automation_repair_mutation_allowed(
+            automation_control.ACTION_CONFIG_EDIT,
+            target="BDAG_ASIC_LAN_CIDRS",
+            reason="write ASIC LAN CIDR scope for pool MAC-only lane enforcement",
+            payload=payload,
+            event_type="mining_imperative_config_edit_blocked",
+            message="Mining imperative could not write ASIC LAN CIDR config because automation control blocked config edits",
+        ):
+            return False
+        changed_paths.extend(set_runtime_env_value("BDAG_ASIC_LAN_CIDRS", desired_lan_cidrs))
+
+    recreate_result = None
+    pool_env_stale = (
+        (desired and container_value != desired)
+        or (desired_lan_cidrs and container_lan_cidrs != desired_lan_cidrs)
+    )
+    if pool_container_running(payload) and pool_env_stale:
+        if not automation_repair_mutation_allowed(
+            automation_control.ACTION_CONTAINER_RECREATE,
+            target=POOL_CONTAINER,
+            reason="recreate pool to load MAC-only ASIC LAN identity environment",
+            payload=payload,
+            event_type="mining_imperative_pool_recreate_blocked",
+            message="Mining imperative could not recreate pool for ASIC MAC identity config because automation control blocked container recreate",
+        ):
+            return False
+        recreate_result = run(
+            docker_compose_command("up", "-d", "--no-deps", "--force-recreate", "--no-build", "--pull", "never", POOL_CONTAINER),
+            timeout=180,
+        )
+
+    action = {
+        **diagnostics,
+        "configured_value_before": configured,
+        "container_value_before": container_value,
+        "desired_lan_cidrs": desired_lan_cidrs,
+        "configured_lan_cidrs_before": configured_lan_cidrs,
+        "container_lan_cidrs_before": container_lan_cidrs,
+        "changed_env_paths": sorted(set(changed_paths)),
+        "pool_recreate": recreate_result.as_dict() if recreate_result else None,
+    }
+    if recreate_result is None or recreate_result.ok:
+        log(
+            "mining imperative reconciled ASIC MAC identity environment "
+            f"override_count={diagnostics.get('override_count')} pool_recreated={bool(recreate_result)}"
+        )
+        record_incident(
+            "mining_imperative_asic_mac_overrides_reconciled",
+            "warning",
+            "Reconciled MAC-only ASIC lane identity environment for the pool container",
+            action,
+            payload,
+        )
+        return True
+
+    log(f"mining imperative failed to recreate {POOL_CONTAINER} for ASIC MAC identity environment")
+    record_incident(
+        "mining_imperative_asic_mac_overrides_recreate_failed",
+        "critical",
+        "Could not recreate pool after writing MAC-only ASIC lane identity environment",
         action,
         payload,
     )
@@ -1691,6 +1856,10 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
         if repair_missing_tracked_miners(payload):
             actions.append("repaired_tracked_miners")
 
+    if status_payload_needs_asic_mac_override_repair(payload):
+        if repair_pool_asic_mac_overrides(payload):
+            actions.append("repaired_pool_asic_mac_overrides")
+
     if status_payload_has_miner_activity_visibility_gap(payload):
         if repair_miner_activity_visibility(payload):
             actions.append("repaired_miner_activity_visibility")
@@ -1822,7 +1991,11 @@ def run_loop(interval_seconds: float, include_logs: bool, earnings_snapshot_inte
                     log(f"mining imperative repair actions={','.join(repair['actions'])}")
                     if any(
                         action in repair["actions"]
-                        for action in ("repaired_tracked_miners", "repaired_miner_activity_visibility")
+                        for action in (
+                            "repaired_tracked_miners",
+                            "repaired_pool_asic_mac_overrides",
+                            "repaired_miner_activity_visibility",
+                        )
                     ):
                         payload = sample_once(include_logs=include_logs)
                 last_mining_repair_epoch = now_epoch

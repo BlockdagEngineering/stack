@@ -180,6 +180,40 @@ class MinerRegistryIdentityTests(unittest.TestCase):
         macs = {item["mac"] for item in registry["miners"]}
         self.assertEqual(macs, {"28:e2:97:2e:00:1b", "88:a2:9e:a8:02:79"})
 
+    def test_pool_asic_mac_overrides_are_generated_from_verified_macs_only(self) -> None:
+        old_neighbors = pool_ops.read_neighbor_macs
+        self.addCleanup(lambda: setattr(pool_ops, "read_neighbor_macs", old_neighbors))
+        pool_ops.read_neighbor_macs = lambda: {"192.168.1.103": "28:e2:97:1e:c0:b5"}
+        registry = {
+            "miners": [
+                {"ip": "192.168.1.105", "mac": "28:E2:97:4D:44:3A", "managed": True, "device_type": "asic"},
+                {"ip": "192.168.1.101", "mac": "2A:71:C7:F5:1F:1E", "managed": True, "device_type": "asic"},
+                {"ip": "192.168.1.103", "mac": "38:1f:8d:fb:ea:fc", "last_pool_seen_epoch": pool_ops.seconds_since_epoch(), "device_type": "asic"},
+                {"ip": "192.168.1.111", "mac": "10:27:f5:90:a4:2c", "device_type": "asic"},
+                {"ip": "192.168.1.112", "device_type": "stratum"},
+            ]
+        }
+
+        self.assertEqual(
+            pool_ops.pool_asic_mac_overrides_value(registry),
+            "192.168.1.101=2a:71:c7:f5:1f:1e,192.168.1.103=28:e2:97:1e:c0:b5,192.168.1.105=28:e2:97:4d:44:3a",
+        )
+        diagnostics = pool_ops.pool_asic_mac_override_diagnostics(registry)
+        self.assertEqual(diagnostics["identity_basis"], "mac")
+        self.assertEqual(diagnostics["override_count"], 3)
+        self.assertEqual(diagnostics["unresolved_count"], 0)
+        self.assertEqual(diagnostics["unresolved"], [])
+
+    def test_managed_asic_without_mac_is_not_promoted_to_ip_identity(self) -> None:
+        registry = pool_ops.save_miner_registry(
+            [
+                {"ip": "192.168.1.111", "managed": True, "last_configured_ok": True, "device_type": "asic"},
+            ]
+        )
+
+        self.assertEqual(registry["miners"], [])
+        self.assertEqual(pool_ops.pool_asic_mac_overrides_value(registry), "")
+
     def test_registry_suppresses_unknown_mac_observation_at_retired_ip(self) -> None:
         self.retirements_file.write_text(
             json.dumps(
@@ -413,11 +447,21 @@ class PoolActivityAttributionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.old_read_miner_registry = pool_ops.read_miner_registry
         self.old_read_neighbor_macs = pool_ops.read_neighbor_macs
+        self.old_asic_lan_cidrs = os.environ.get("BDAG_ASIC_LAN_CIDRS")
+        self.old_scan_target = os.environ.get("BDAG_MINER_SCAN_TARGET")
         self.addCleanup(self.restore_registry)
 
     def restore_registry(self) -> None:
         pool_ops.read_miner_registry = self.old_read_miner_registry
         pool_ops.read_neighbor_macs = self.old_read_neighbor_macs
+        if self.old_asic_lan_cidrs is None:
+            os.environ.pop("BDAG_ASIC_LAN_CIDRS", None)
+        else:
+            os.environ["BDAG_ASIC_LAN_CIDRS"] = self.old_asic_lan_cidrs
+        if self.old_scan_target is None:
+            os.environ.pop("BDAG_MINER_SCAN_TARGET", None)
+        else:
+            os.environ["BDAG_MINER_SCAN_TARGET"] = self.old_scan_target
 
     def test_shared_worker_without_job_mapping_is_not_assigned_to_one_miner(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
@@ -523,6 +567,44 @@ class PoolActivityAttributionTests(unittest.TestCase):
         self.assertEqual(miners["192.168.1.103"]["shares"], 1)
         self.assertEqual(miners["192.168.1.103"]["share_work"], 500)
         self.assertNotIn("192.168.1.14", miners)
+
+    def test_configured_asic_lan_without_mac_is_unattributed_not_ip_lane(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.1.0/24"
+        pool_ops.read_neighbor_macs = lambda: {}
+        pool_ops.read_miner_registry = lambda: {"miners": []}
+        log = "\n".join(
+            [
+                "2026/05/26 06:20:00 Sending to 192.168.1.105:40541: jobID=job-1",
+                f"2026/05/26 06:20:01 valid share accepted 100.0 -> 500 client=192.168.1.105:40541 worker={worker} job=job-1",
+            ]
+        )
+
+        activity = pool_ops.parse_pool_activity(log)
+
+        self.assertEqual(activity["miners"], [])
+        self.assertEqual(activity["unattributed_valid_shares"], 1)
+        self.assertEqual(activity["unattributed_blocks"], 0)
+
+    def test_remote_stratum_outside_configured_asic_lan_uses_ip_identity(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.1.0/24"
+        pool_ops.read_neighbor_macs = lambda: {}
+        pool_ops.read_miner_registry = lambda: {"miners": []}
+        log = "\n".join(
+            [
+                "2026/05/26 06:20:00 Sending to 198.51.100.10:40541: jobID=job-1",
+                f"2026/05/26 06:20:01 valid share accepted 100.0 -> 500 client=198.51.100.10:40541 worker={worker} job=job-1",
+            ]
+        )
+
+        activity = pool_ops.parse_pool_activity(log)
+        miners = {item["ip"]: item for item in activity["miners"]}
+
+        self.assertEqual(activity["unattributed_valid_shares"], 0)
+        self.assertEqual(miners["198.51.100.10"]["shares"], 1)
+        self.assertEqual(miners["198.51.100.10"]["identity_key"], "stratum:198.51.100.10")
+        self.assertEqual(miners["198.51.100.10"]["share_work"], 500)
 
     def test_shared_worker_with_submit_client_maps_later_share_by_extranonce(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"

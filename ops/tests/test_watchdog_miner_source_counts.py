@@ -148,14 +148,14 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
 
         self.assertEqual({"mac:28:e2:97:4d:44:3a": self.now - 180}, since)
 
-    def test_useful_work_stall_timer_migrates_legacy_ip_key_to_mac(self) -> None:
+    def test_useful_work_stall_timer_ignores_legacy_ip_key(self) -> None:
         row = miner_row("192.168.1.16", lane_status="no-work", submits=1, last_submit_epoch=self.now - 200)
         row["mac"] = "28:e2:97:4d:44:3a"
         state = {"miner_useful_work_stall_since": {"192.168.1.16": self.now - 180}}
 
         since = watchdog.update_useful_work_stall_since(state, [], [row], self.now)
 
-        self.assertEqual({"mac:28:e2:97:4d:44:3a": self.now - 180}, since)
+        self.assertEqual({"mac:28:e2:97:4d:44:3a": self.now}, since)
 
     def test_useful_work_stall_timer_clears_after_recovery(self) -> None:
         state = {"miner_useful_work_stall_since": {"mac:28:e2:97:4d:44:3a": self.now - 180}}
@@ -235,7 +235,10 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         self.assertIn("ASIC API-stall watchdog", restarts[0][1])
         self.assertEqual("192.168.1.16", restarts[0][0][0]["ip"])
         self.assertTrue(restarts[0][0][0]["restart_open_first"])
-        self.assertEqual({"192.168.1.16": self.now}, result["watchdog_state"]["last_miner_restart_at_by_ip"])
+        self.assertEqual(
+            {"mac:28:e2:97:4d:44:3a": self.now},
+            result["watchdog_state"]["last_miner_restart_at_by_identity"],
+        )
         self.assertEqual({}, result["watchdog_state"]["asic_api_stall_since"])
         self.assertTrue(written)
 

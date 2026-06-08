@@ -253,6 +253,7 @@ configure_active_node_env() {
   set_stack_default_env_value .env BDAG_NODE_SERVICES node
   set_stack_default_env_value .env BDAG_STACK_SERVICES "postgres,node,pool"
   set_stack_default_env_value .env BDAG_START_SERVICES "postgres,node,pool"
+  set_stack_default_env_value .env POOL_ASIC_MAC_OVERRIDES
   set_env_value .env POOL_RPC_BACKENDS "node=http://node:38131"
   set_env_value .env POOL_SUBMIT_RPC_URLS ""
   set_env_value .env WALLET_RPC_URL "http://node:18545"

@@ -25,7 +25,9 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "MINING_IMPERATIVE_START_IDLE_SYNCED_POOL",
                 "MINING_IMPERATIVE_MINER_TRACKING_REPAIR_ENABLED",
                 "MINING_IMPERATIVE_MINER_ACTIVITY_REPAIR_ENABLED",
+                "MINING_IMPERATIVE_ASIC_MAC_OVERRIDES_REPAIR_ENABLED",
                 "MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS",
+                "MINING_IMPERATIVE_CONSTRAINED_FASTARTIFACT_REPAIR_ENABLED",
                 "MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED",
                 "MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED",
                 "CATCHUP_PAUSE_ENABLED",
@@ -45,6 +47,9 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "log",
                 "POOL_ENV_FILE",
                 "PROJECT_ROOT",
+                "pool_asic_mac_override_diagnostics",
+                "pool_asic_mac_overrides_value",
+                "pool_container_env_value",
                 "read_neighbor_macs",
                 "read_miner_registry",
                 "run",
@@ -67,7 +72,9 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         status_sampler.MINING_IMPERATIVE_START_IDLE_SYNCED_POOL = False
         status_sampler.MINING_IMPERATIVE_MINER_TRACKING_REPAIR_ENABLED = True
         status_sampler.MINING_IMPERATIVE_MINER_ACTIVITY_REPAIR_ENABLED = True
+        status_sampler.MINING_IMPERATIVE_ASIC_MAC_OVERRIDES_REPAIR_ENABLED = False
         status_sampler.MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS = 180
+        status_sampler.MINING_IMPERATIVE_CONSTRAINED_FASTARTIFACT_REPAIR_ENABLED = False
         status_sampler.MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED = True
         status_sampler.MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED = True
         status_sampler.POOL_ENV_FILE = pathlib.Path("/nonexistent/status-sampler-test.env")
@@ -91,6 +98,21 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["MINING_POOL_ADDRESS"] = ""
         os.environ["NODE_ARGS_APPEND"] = ""
         os.environ["POOL_COINBASE_ADDRESS"] = ""
+        for key in (
+            "BDAG_ASIC_LAN_CIDRS",
+            "BDAG_DETECTED_NETWORK_TOPOLOGY",
+            "BDAG_FASTARTIFACTSYNC_ENABLED",
+            "BDAG_FASTSYNC_PEERS",
+            "BDAG_MINER_SCAN_TARGET",
+            "BDAG_NETWORK_TOPOLOGY",
+            "BDAG_NO_FASTSYNC_SERVE",
+            "BDAG_NODE_PEER_ADDRESSES",
+            "BDAG_STORAGE_PROFILE",
+            "BOOTSTRAP_PEER_ADDRESSES",
+            "POOL_ASIC_MAC_OVERRIDES",
+            "SYNC_SOURCE_NODE",
+        ):
+            os.environ.pop(key, None)
         for key in (
             "BDAG_COMPOSE_PROJECT_NAME",
             "COMPOSE_PROJECT_NAME",
@@ -387,6 +409,119 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         self.assertIn("repaired_tracked_miners", repair["actions"])
 
+    def test_repairs_pool_asic_mac_overrides_and_recreates_pool(self) -> None:
+        commands = []
+        env_updates = {}
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.MINING_IMPERATIVE_ASIC_MAC_OVERRIDES_REPAIR_ENABLED = True
+        status_sampler.pool_asic_mac_overrides_value = (
+            lambda: "192.168.1.101=2a:71:c7:f5:1f:1e,192.168.1.105=28:e2:97:4d:44:3a"
+        )
+        status_sampler.pool_asic_mac_override_diagnostics = lambda: {
+            "identity_basis": "mac",
+            "override_value": "192.168.1.101=2a:71:c7:f5:1f:1e,192.168.1.105=28:e2:97:4d:44:3a",
+            "override_count": 2,
+            "overrides": [],
+            "unresolved_count": 0,
+            "unresolved": [],
+        }
+        status_sampler.pool_container_env_value = lambda _key: ""
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["miner_health"] = {"tracked_count": 2, "connected_count": 2, "managed_count": 2}
+
+        def fake_set_runtime_env(key: str, value: str):
+            env_updates[key] = value
+            os.environ[key] = value
+            return [f"/runtime/{key}"]
+
+        def fake_run(command: list[str], timeout: int = 20):
+            commands.append(command)
+            return self.command_result(command)
+
+        status_sampler.set_runtime_env_value = fake_set_runtime_env
+        status_sampler.run = fake_run
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertIn("repaired_pool_asic_mac_overrides", repair["actions"])
+        self.assertEqual(
+            env_updates["POOL_ASIC_MAC_OVERRIDES"],
+            "192.168.1.101=2a:71:c7:f5:1f:1e,192.168.1.105=28:e2:97:4d:44:3a",
+        )
+        recreate = [command for command in commands if "--force-recreate" in command]
+        self.assertEqual(1, len(recreate))
+        self.assertIn("--no-build", recreate[0])
+        self.assertIn("--pull", recreate[0])
+        self.assertIn("never", recreate[0])
+        self.assertEqual(recreate[0][-1], status_sampler.POOL_CONTAINER)
+
+    def test_recreates_pool_when_asic_lan_cidr_container_env_is_stale(self) -> None:
+        commands = []
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.MINING_IMPERATIVE_ASIC_MAC_OVERRIDES_REPAIR_ENABLED = True
+        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.1.0/24"
+        os.environ["POOL_ASIC_MAC_OVERRIDES"] = "192.168.1.101=2a:71:c7:f5:1f:1e"
+        status_sampler.pool_asic_mac_overrides_value = lambda: "192.168.1.101=2a:71:c7:f5:1f:1e"
+        status_sampler.pool_asic_mac_override_diagnostics = lambda: {
+            "identity_basis": "mac",
+            "override_value": "192.168.1.101=2a:71:c7:f5:1f:1e",
+            "override_count": 1,
+            "overrides": [],
+            "unresolved_count": 0,
+            "unresolved": [],
+        }
+        status_sampler.pool_container_env_value = (
+            lambda key: "192.168.1.101=2a:71:c7:f5:1f:1e" if key == "POOL_ASIC_MAC_OVERRIDES" else ""
+        )
+        status_sampler.set_runtime_env_value = lambda *_args, **_kwargs: []
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
+
+        def fake_run(command: list[str], timeout: int = 20):
+            commands.append(command)
+            return self.command_result(command)
+
+        status_sampler.run = fake_run
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertIn("repaired_pool_asic_mac_overrides", repair["actions"])
+        recreate = [command for command in commands if "--force-recreate" in command]
+        self.assertEqual(1, len(recreate))
+        self.assertEqual(recreate[0][-1], status_sampler.POOL_CONTAINER)
+
+    def test_unresolved_asic_mac_does_not_repair_to_ip_lane(self) -> None:
+        incidents = []
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.MINING_IMPERATIVE_ASIC_MAC_OVERRIDES_REPAIR_ENABLED = True
+        status_sampler.pool_asic_mac_overrides_value = lambda: ""
+        status_sampler.pool_asic_mac_override_diagnostics = lambda: {
+            "identity_basis": "mac",
+            "override_value": "",
+            "override_count": 0,
+            "overrides": [],
+            "unresolved_count": 1,
+            "unresolved": [{"ip": "192.168.1.111", "issue": "asic_mac_unresolved"}],
+        }
+        status_sampler.pool_container_env_value = lambda _key: ""
+        status_sampler.set_runtime_env_value = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("must not write IP-based ASIC identity")
+        )
+        status_sampler.run = lambda command, timeout=20: self.command_result(command)
+        status_sampler.append_incident = (
+            lambda event_type, severity, *_args, **_kwargs: incidents.append((event_type, severity))
+        )
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertNotIn("repaired_pool_asic_mac_overrides", repair["actions"])
+        self.assertFalse(any(event == "mining_imperative_asic_mac_overrides_reconciled" for event, _ in incidents))
+
     def test_detects_miner_activity_visibility_gap_after_power_cycle(self) -> None:
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
         payload["miner_health"] = {
@@ -483,6 +618,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         commands = []
         env_updates = {}
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.MINING_IMPERATIVE_CONSTRAINED_FASTARTIFACT_REPAIR_ENABLED = True
         os.environ["BDAG_DETECTED_NETWORK_TOPOLOGY"] = "asic-router"
         os.environ["BDAG_STORAGE_PROFILE"] = "usb-chain-internal-runtime"
         os.environ["BDAG_FASTARTIFACTSYNC_ENABLED"] = "1"
