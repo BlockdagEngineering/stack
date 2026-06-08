@@ -13,7 +13,7 @@ Environment=BDAG_POOL_ENV_FILE=/home/jeremy/blockdag-mining-pool/stack/.env
 Environment=BDAG_WATCHDOG_INTERVAL=30
 Environment=BDAG_WATCHDOG_FAILURE_THRESHOLD=3
 Environment=BDAG_CLEAN_RESTORE_COOLDOWN=1800
-Environment=BDAG_NODE_SERVICES=node
+Environment=BDAG_NODE_SERVICE=node
 Environment=BDAG_STACK_SERVICES=postgres,node,pool
 Environment=BDAG_POOL_CONTAINER=pool
 Environment=BDAG_POOL_DB_CONTAINER=postgres

@@ -22,6 +22,7 @@ FILES=(
   "sql/pool-schema.sql"
   "docker-compose-miner.yml"
   "docker/entrypoint-nodeworker.sh"
+  "docs/asic-mac-identity-architecture.html"
   "docs/five-asic-template-conversion-guard.html"
   "docs/ipfs-content-sidecar.html"
   "docs/mining-resource-priority-policy.html"

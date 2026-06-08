@@ -14,7 +14,7 @@ run_low_priority() {
 snapshot_sync_summary() {
   local project_root="$1"
   PYTHONPATH="$project_root/ops" python3 -c '
-from pool_ops import collect_sync_progress, json_rpc_call, node_rpc_urls
+from pool_ops import collect_sync_progress, json_rpc_call, node_rpc_endpoint
 
 progress = collect_sync_progress()
 nodes = progress.get("nodes") or {}
@@ -28,7 +28,9 @@ for item in nodes.values():
         remaining.append(int(value))
 max_remaining = max(remaining) if remaining else -1
 blocks = []
-for _, url in node_rpc_urls():
+endpoint = node_rpc_endpoint()
+if endpoint:
+    _, url = endpoint
     try:
         value = json_rpc_call(url, "eth_blockNumber", [], timeout=4.0)
         blocks.append(int(str(value), 16))

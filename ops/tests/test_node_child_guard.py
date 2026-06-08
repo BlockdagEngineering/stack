@@ -109,8 +109,8 @@ class NodeChildGuardTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn(["docker", "restart", "node"], calls)
 
-    def test_default_guard_nodes_cover_current_service_name(self) -> None:
-        self.assertEqual(node_child_guard.DEFAULT_NODE_CHILD_GUARD_NODES, "node")
+    def test_default_guard_node_covers_current_service_name(self) -> None:
+        self.assertEqual(node_child_guard.DEFAULT_NODE_CHILD_GUARD_NODE, "node")
 
 
 if __name__ == "__main__":

@@ -141,7 +141,7 @@ Portable chain data: chain-sidecar/mainnet
 Safe-status manifest: manifests/rawdatadir-sidecar-safe-status.json
 
 Use this drive with:
-  ops/usb-sidecar-restore-from-drive.sh --usb-root "$USB_ROOT" --target /path/to/stack/data/node1/mainnet --dry-run
-  ops/usb-sidecar-restore-from-drive.sh --usb-root "$USB_ROOT" --target /path/to/stack/data/node1/mainnet --execute
+  ops/usb-sidecar-restore-from-drive.sh --usb-root "$USB_ROOT" --target /path/to/stack/data/node/mainnet --dry-run
+  ops/usb-sidecar-restore-from-drive.sh --usb-root "$USB_ROOT" --target /path/to/stack/data/node/mainnet --execute
 EOF
 fi

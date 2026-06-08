@@ -81,13 +81,13 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         dashboard_block = compose.split("\n  dashboard:\n", 1)[1].split("\n  # --------------------------------------------------------------------------\n  # Optional CPU miner", 1)[0]
 
-        self.assertIn("BDAG_NODE_SERVICES: node", compose)
+        self.assertIn("BDAG_NODE_SERVICE: node", compose)
         self.assertIn("BDAG_NETWORK: mainnet", compose)
         self.assertIn("BDAG_FASTSNAP_NETWORK: mainnet", compose)
         self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool", compose)
         self.assertIn("BDAG_POOL_CONTAINER: pool", compose)
         self.assertIn("BDAG_POOL_DB_CONTAINER: postgres", compose)
-        self.assertIn("BDAG_NODE_RPC_URLS: node=http://node:38131", compose)
+        self.assertIn("BDAG_NODE_RPC_URL: http://node:38131", compose)
         self.assertIn("DASHBOARD_EVM_RPC_URL: http://node:18545", compose)
         self.assertNotIn("BDAG_RPC_URL: http://node:38131", compose)
         self.assertIn("node: { condition: service_started }", dashboard_block)
@@ -114,11 +114,11 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         installer = (ROOT_DIR / "ops" / "install-dashboard.sh").read_text(encoding="utf-8")
         portable_env = (ROOT_DIR / "ops" / "portable.env.example").read_text(encoding="utf-8")
 
-        self.assertIn("BDAG_NODE_RPC_URLS=node=http://127.0.0.1:38131", installer)
+        self.assertIn("BDAG_NODE_RPC_URL=http://127.0.0.1:38131", installer)
         self.assertIn("BDAG_GLOBAL_CHAIN_RPC_URLS=node=http://127.0.0.1:38131", installer)
-        self.assertIn("BDAG_NODE_RPC_URLS=node=http://127.0.0.1:38131", portable_env)
+        self.assertIn("BDAG_NODE_RPC_URL=http://127.0.0.1:38131", portable_env)
         self.assertIn("BDAG_GLOBAL_CHAIN_RPC_URLS=node=http://127.0.0.1:38131", portable_env)
-        self.assertNotIn("NODE_RPC_URLS=http://node:38131", portable_env)
+        self.assertNotIn("NODE_RPC_URL" "S=", portable_env)
 
     def test_compose_protects_temp_paths_from_overlay_io(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
@@ -189,8 +189,8 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
 
         self.assertIn('if [[ "$mode" == "source" && -e "$root/ops/observability" ]]; then', validator)
-        self.assertIn('need_grep \'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS\' "docker-compose.yml"', validator)
-        self.assertIn('need_grep \'NODE_RPC_URLS: .*http://node:38131\' "docker-compose.yml"', validator)
+        self.assertIn('need_grep \'NODE_RPC_URL: http://node:38131\' "docker-compose.yml"', validator)
+        self.assertIn('reject_grep \'NODE_RPC_URL\'\'S\' "docker-compose.yml"', validator)
         self.assertIn('need_grep \'BDAG_STACK_SERVICES=postgres,node,pool\' ".env.example"', validator)
         self.assertIn('reject_grep \'container_name:\' "docker-compose.yml"', validator)
 

@@ -16,7 +16,6 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
-from urllib.request import Request, urlopen
 
 from incident_journal import read_recent_incidents
 from pool_ops import (
@@ -80,10 +79,6 @@ EARNINGS_SAMPLER_INTERVAL_SECONDS = max(
     30.0,
     float(os.environ.get("BDAG_DASHBOARD_EARNINGS_SAMPLER_INTERVAL_SECONDS", "60")),
 )
-DASHBOARD_POOL_METRICS_TIMEOUT = float(os.environ.get("BDAG_DASHBOARD_POOL_METRICS_TIMEOUT", "1.5"))
-TEMPLATE_BACKEND_STATE_CACHE_SECONDS = float(
-    os.environ.get("BDAG_DASHBOARD_TEMPLATE_BACKEND_STATE_CACHE_SECONDS", str(STATUS_CACHE_SECONDS))
-)
 SYNC_ESTIMATE_STATE_FILE = RUNTIME_DIR / "dashboard-sync-estimate-state.json"
 EARNINGS_SAMPLER_LOCK_FILE = RUNTIME_DIR / "dashboard-earnings-sampler.lock"
 EARNINGS_SAMPLER_STATE_FILE = RUNTIME_DIR / "dashboard-earnings-sampler-state.json"
@@ -93,10 +88,6 @@ GLOBAL_SAMPLER_INTERVAL_SECONDS = max(
     float(os.environ.get("BDAG_DASHBOARD_GLOBAL_SAMPLER_INTERVAL_SECONDS", "60")),
 )
 GLOBAL_SAMPLER_STATE_FILE = RUNTIME_DIR / "dashboard-global-sampler-state.json"
-PROMETHEUS_SAMPLE_RE = re.compile(
-    r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|[-+]?Inf|NaN)$"
-)
-PROMETHEUS_LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:\\.|[^"\\])*)"')
 PROCESSED_BLOCKS_RE = re.compile(r"Processed\s+([0-9,]+)\s+blocks\s+in\s+the\s+last\s+([0-9.]+)s")
 API_CACHE: dict[str, tuple[float, object]] = {}
 API_CACHE_LOCK = threading.Lock()
@@ -497,13 +488,6 @@ def collect_global_dashboard_payload(reason: str) -> dict[str, object]:
     )
 
 
-def parse_prometheus_labels(label_text: str) -> dict[str, str]:
-    labels: dict[str, str] = {}
-    for match in PROMETHEUS_LABEL_RE.finditer(label_text or ""):
-        labels[match.group(1)] = match.group(2).replace(r"\"", '"').replace(r"\\", "\\")
-    return labels
-
-
 def safe_int(value: object, default: int | None = None) -> int | None:
     try:
         if value is None:
@@ -717,109 +701,6 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
     return payload
 
 
-def template_backend_state_from_metrics(text: str, source: str) -> dict[str, object]:
-    state: dict[str, object] = {"source": source, "backends": {}}
-    backends = state["backends"]
-    assert isinstance(backends, dict)
-
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        match = PROMETHEUS_SAMPLE_RE.match(line)
-        if not match:
-            continue
-        metric_name, label_text, raw_value = match.groups()
-        try:
-            value = float(raw_value)
-        except ValueError:
-            continue
-        labels = parse_prometheus_labels(label_text or "")
-        if metric_name in {
-            "pool_rpc_backend_selected",
-            "pool_rpc_backend_healthy",
-            "pool_rpc_backend_score",
-            "pool_rpc_backend_template_age_seconds",
-            "pool_rpc_backend_ws_connected",
-        }:
-            backend = labels.get("backend")
-            if not backend:
-                continue
-            row = backends.setdefault(backend, {})
-            if not isinstance(row, dict):
-                continue
-            if metric_name == "pool_rpc_backend_selected":
-                row["selected"] = value > 0
-                if value > 0:
-                    state["selected_backend"] = backend
-            elif metric_name == "pool_rpc_backend_healthy":
-                row["healthy"] = value > 0
-            elif metric_name == "pool_rpc_backend_score":
-                row["score"] = value
-            elif metric_name == "pool_rpc_backend_template_age_seconds":
-                row["template_age_seconds"] = round(value, 3)
-            elif metric_name == "pool_rpc_backend_ws_connected":
-                row["ws_connected"] = value > 0
-
-    if backends:
-        state["backend_count"] = len(backends)
-        state["healthy_backend_count"] = sum(
-            1 for row in backends.values() if isinstance(row, dict) and row.get("healthy") is True
-        )
-    return state
-
-
-def collect_template_backend_states(endpoints: list[str]) -> tuple[list[dict[str, object]], list[str]]:
-    states: list[dict[str, object]] = []
-    errors: list[str] = []
-    for endpoint in endpoints:
-        url = f"http://{endpoint}/metrics"
-        request = Request(url, headers={"accept": "text/plain", "user-agent": "BDAGDashboard/1.0"})
-        try:
-            with urlopen(request, timeout=DASHBOARD_POOL_METRICS_TIMEOUT) as response:
-                metrics_text = response.read(1024 * 1024).decode("utf-8", errors="replace")
-        except Exception as exc:  # noqa: BLE001 - advisory dashboard enrichment only.
-            errors.append(f"{endpoint}: {exc}")
-            continue
-        state = template_backend_state_from_metrics(metrics_text, endpoint)
-        if state.get("fan_in") or state.get("backends"):
-            states.append(state)
-    return states, errors
-
-
-def enrich_status_with_template_backend_state(payload: dict[str, object]) -> dict[str, object]:
-    pool_metrics = payload.get("pool_metrics")
-    if not isinstance(pool_metrics, dict):
-        return payload
-    containers = pool_metrics.get("containers")
-    if not isinstance(containers, dict):
-        return payload
-
-    endpoints: list[str] = []
-    for info in containers.values():
-        if not isinstance(info, dict):
-            continue
-        endpoint = str(info.get("endpoint") or "").strip()
-        if not endpoint:
-            continue
-        endpoints.append(endpoint)
-    if not endpoints:
-        return payload
-
-    cache_key = "template_backend_state:" + ",".join(sorted(endpoints))
-    states, errors = cached_payload(
-        cache_key,
-        TEMPLATE_BACKEND_STATE_CACHE_SECONDS,
-        lambda: collect_template_backend_states(endpoints),
-    )
-
-    if states:
-        pool_metrics["template_backend_state"] = states[0] if len(states) == 1 else {"pools": states}
-    if errors:
-        pool_metrics["template_backend_state_error"] = "; ".join(errors[:2])
-    return payload
-
-
 def dashboard_status_payload() -> dict[str, object]:
     if not DASHBOARD_DIRECT_STATUS_FALLBACK:
         cached, diagnostics = cached_status_for_dashboard(include_logs=True)
@@ -827,7 +708,7 @@ def dashboard_status_payload() -> dict[str, object]:
             return attach_dashboard_endpoint(cached)
         return dashboard_status_fast_fallback(diagnostics)
 
-    payload = enrich_status_with_template_backend_state(enrich_status_with_sync_estimate(collect_status_cached(include_logs=True)))
+    payload = enrich_status_with_sync_estimate(collect_status_cached(include_logs=True))
     return attach_dashboard_endpoint(payload)
 
 
@@ -1985,24 +1866,6 @@ HTML = r"""<!doctype html>
       const textValue = String(value ?? "").toLowerCase();
       return ["true", "yes", "on", "enabled"].includes(textValue);
     }
-    function templateBackendStates(data) {
-      const metrics = data.pool_metrics || {};
-      const rawState = metrics.template_backend_state || {};
-      return Array.isArray(rawState.pools)
-        ? rawState.pools
-        : (rawState.fan_in || rawState.backends ? [rawState] : []);
-    }
-    function firstTemplateBackendState(data) {
-      return templateBackendStates(data)[0] || {};
-    }
-    function backendKeyForNode(name) {
-      const match = String(name || "").match(/(?:^|-)node-(\d+)$/) || String(name || "").match(/^node(\d+)$/);
-      return match ? `node${match[1]}` : String(name || "");
-    }
-    function backendInfoForNode(name, backends) {
-      const key = backendKeyForNode(name);
-      return backends?.[name] || backends?.[key] || null;
-    }
     function nodeRole(name, node, data) {
       if (node?.role) return String(node.role);
       const observers = data?.observer_node_services || [];
@@ -2011,27 +1874,12 @@ HTML = r"""<!doctype html>
     function nodeHealthScope(role) {
       return role === "observer" ? "advisory" : "production";
     }
-    function templateBackendStatusText(data) {
-      const metrics = data.pool_metrics || {};
-      const state = firstTemplateBackendState(data);
-      const parts = [];
-
-      const backends = state.backends || {};
-      const backendNames = Object.keys(backends).sort();
-      if (backendNames.length) {
-        const healthy = backendNames.filter(name => metricEnabled(backends[name]?.healthy)).length;
-        const wsBackends = backendNames.filter(name => metricEnabled(backends[name]?.ws_connected));
-        parts.push(`template_backends=${healthy}/${backendNames.length}`);
-        if (wsBackends.length) parts.push(`template_ws=${wsBackends.join(",")}`);
-      } else {
-        const probeNodes = data.rpc_template_health?.nodes || {};
-        const probeNames = Object.keys(probeNodes).sort();
-        if (probeNames.length) {
-          const healthy = probeNames.filter(name => !probeNodes[name]?.failing).length;
-          parts.push(`template_probes=${healthy}/${probeNames.length}`);
-        }
-      }
-      return parts.join(" ");
+    function templateProbeStatusText(data) {
+      const probeNodes = data.rpc_template_health?.nodes || {};
+      const probeNames = Object.keys(probeNodes).sort();
+      if (!probeNames.length) return "";
+      const healthy = probeNames.filter(name => !probeNodes[name]?.failing).length;
+      return `template_probes=${healthy}/${probeNames.length}`;
     }
     function sourceHealthStatusText(data) {
       const poolHealth = data.pool_health || {};
@@ -2209,8 +2057,7 @@ HTML = r"""<!doctype html>
         : (poolHealth.submit_stall_recovery_recent
           ? `submit_recovery=active recovery_age=${fmt(poolHealth.submit_stall_last_recovery_age_seconds)}s`
           : "submit_recovery=idle");
-      const selectedBackend = poolHealth.selected_backend || data.pool_metrics?.selected_backend || "unknown";
-      const templateBackendStatus = templateBackendStatusText(data);
+      const templateProbeStatus = templateProbeStatusText(data);
       const sourceHealthStatus = sourceHealthStatusText(data);
       const lossLedgerStatus = lossLedgerStatusText(data);
       const hostPressureStatus = hostPressureText(data.host_pressure || {});
@@ -2225,7 +2072,7 @@ HTML = r"""<!doctype html>
         + `stale_jobs=${fmt(poolHealth.stale_job_candidate_count)} submit_errors=${fmt(poolHealth.block_submit_error_count)} `
         + `duplicate_blocks=${fmt(poolHealth.duplicate_block_count)} `
         + `last_valid_share_age=${fmt(poolHealth.last_valid_share_age_seconds)}s share_stall=${poolHealth.share_stall ? "yes" : "no"} `
-        + `selected_backend=${selectedBackend}${templateBackendStatus ? ` ${templateBackendStatus}` : ""}`
+        + `${templateProbeStatus ? ` ${templateProbeStatus}` : ""}`
         + `${sourceHealthStatus ? ` ${sourceHealthStatus}` : ""}`
         + `${lossLedgerStatus ? ` ${lossLedgerStatus}` : ""} ${submitRecovery}`
         + `${hostPressureStatus ? ` ${hostPressureStatus}` : ""}`
@@ -2432,7 +2279,6 @@ HTML = r"""<!doctype html>
       const container = document.getElementById("nodeCards");
       container.innerHTML = "";
       const syncNodes = syncProgress.nodes || {};
-      const backendState = firstTemplateBackendState(data).backends || {};
       const managedNodeNames = data.managed_node_services || [];
       const observerNodeNames = data.observer_node_services || [];
       const singleManagedTopology = managedNodeNames.length === 1 && observerNodeNames.length === 0;
@@ -2463,12 +2309,7 @@ HTML = r"""<!doctype html>
         for (const entry of entries) {
           const {name, node, roleValue, healthScope} = entry;
           const isObserver = roleValue === "observer" || healthScope === "advisory";
-        const backend = backendInfoForNode(name, backendState) || {};
-        const fanRole = backend.fan_in_role || (backend.selected ? "selected" : "");
-        const roleHtml = `<span class="node-role">${escapeHtml(roleValue)}</span>`
-          + (fanRole ? `<span class="node-role">${escapeHtml(fanRole)}</span>` : "");
-        const wsText = hasValue(backend.ws_connected) ? ` ws=${metricEnabled(backend.ws_connected) ? "on" : "off"}` : "";
-        const templateAge = hasValue(backend.template_age_seconds) ? ` template_age=${fmt(backend.template_age_seconds)}s` : "";
+        const roleHtml = `<span class="node-role">${escapeHtml(roleValue)}</span>`;
         const syncNode = syncNodes[name] || {};
         const syncHtml = isObserver && !hasValue(syncNode.status)
           ? `<div class="subtle">Advisory observer; not included in production sync health.</div>`
@@ -2484,12 +2325,12 @@ HTML = r"""<!doctype html>
           </div>
           <div class="kpi-value">${escapeHtml(blockHeightText)}</div>
           <div class="sync-progress sync-progress-node">${syncHtml}</div>
-          <div class="subtle">${escapeHtml(healthScope)} scope | ${escapeHtml(nodeSummaryText(node))}${escapeHtml(templateAge + wsText)}</div>`;
+          <div class="subtle">${escapeHtml(healthScope)} scope | ${escapeHtml(nodeSummaryText(node))}</div>`;
           group.appendChild(div);
         }
         container.appendChild(group);
       }
-      appendGroup(managed.length === 1 ? "Managed production routing node" : "Managed production routing nodes", managed);
+      appendGroup(managed.length === 1 ? "Managed production node" : "Managed production nodes", managed);
       appendGroup("Observer nodes - advisory only", observers);
     }
     function renderNodeLogs(nodeNames, nodes, data) {

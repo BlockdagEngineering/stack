@@ -18,39 +18,22 @@ class RuntimeComposeMigrationTests(unittest.TestCase):
         self.assertIn("POOL_EXPIRED_JOB_CLIENT_RECONNECT_WINDOW_SECONDS=120\n", env_example)
         self.assertIn("POOL_EXPIRED_JOB_CLIENT_RECONNECT_COOLDOWN_SECONDS=60\n", env_example)
 
-    def test_adds_submit_hardening_flags_to_each_existing_pool_service(self) -> None:
+    def test_adds_submit_hardening_flags_to_the_single_pool_service(self) -> None:
         compose = """services:
-  asic-pool:
+  pool:
     environment:
-      NODE_RPC_URLS: http://node:38131
-      NODE_RPC_USER: ${NODE_RPC_USER:-test}
-  asic-pool-hector:
-    environment:
-      NODE_RPC_URLS: http://node:38131
+      NODE_RPC_URL: http://node:38131
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
   node:
     environment:
-      NODE_RPC_URLS: unused
+      NODE_RPC_URL: unused
 """
 
         result = compose_migrations.ensure_pool_submit_hardening_flags(compose)
 
         self.assertTrue(result.changed)
-        self.assertEqual(12, result.inserted_count)
+        self.assertEqual(6, result.inserted_count)
         self.assertIn(
-            "      POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}\n"
-            "      POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}\n"
-            "      POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD: ${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}\n"
-            "      POOL_EXPIRED_JOB_CLIENT_RECONNECT_THRESHOLD: ${POOL_EXPIRED_JOB_CLIENT_RECONNECT_THRESHOLD:-3}\n"
-            "      POOL_EXPIRED_JOB_CLIENT_RECONNECT_WINDOW_SECONDS: ${POOL_EXPIRED_JOB_CLIENT_RECONNECT_WINDOW_SECONDS:-120}\n"
-            "      POOL_EXPIRED_JOB_CLIENT_RECONNECT_COOLDOWN_SECONDS: ${POOL_EXPIRED_JOB_CLIENT_RECONNECT_COOLDOWN_SECONDS:-60}\n"
-            "      NODE_RPC_USER:",
-            result.text,
-        )
-        self.assertIn(
-            "  asic-pool-hector:\n"
-            "    environment:\n"
-            "      NODE_RPC_URLS: http://node:38131\n"
             "      POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}\n"
             "      POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}\n"
             "      POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD: ${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}\n"
@@ -69,9 +52,9 @@ class RuntimeComposeMigrationTests(unittest.TestCase):
 
     def test_existing_submit_hardening_flags_are_noop(self) -> None:
         compose = """services:
-  asic-pool:
+  pool:
     environment:
-      NODE_RPC_URLS: http://node:38131
+      NODE_RPC_URL: http://node:38131
       POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}
       POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}
       POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD: ${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}
@@ -90,7 +73,7 @@ class RuntimeComposeMigrationTests(unittest.TestCase):
         compose = """services:
   node:
     environment:
-      NODE_RPC_URLS: unused
+      NODE_RPC_URL: unused
 """
 
         result = compose_migrations.ensure_pool_submit_hardening_flags(compose)

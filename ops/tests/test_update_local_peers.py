@@ -63,7 +63,7 @@ class UpdateLocalPeersActiveMiningGuardTest(unittest.TestCase):
             with mock.patch.object(
                 update_local_peers,
                 "read_env_values",
-                return_value={"BDAG_NODE_SERVICES": "pool-stack-docker-node-1"},
+                return_value={"BDAG_NODE_SERVICE": "pool-stack-docker-node-1"},
             ):
                 self.assertEqual(update_local_peers.configured_active_nodes({}), [])
 

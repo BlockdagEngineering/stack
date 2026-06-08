@@ -20,7 +20,7 @@ LOG_DIR = RUNTIME_DIR / "logs"
 STATE_FILE = RUNTIME_DIR / "node-child-guard-state.json"
 LOCK_FILE = RUNTIME_DIR / "node-child-guard.lock"
 LOG_FILE = LOG_DIR / "node-child-guard.log"
-DEFAULT_NODE_CHILD_GUARD_NODES = "node"
+DEFAULT_NODE_CHILD_GUARD_NODE = "node"
 
 
 def default_pool_env_file() -> Path:
@@ -31,14 +31,12 @@ def default_pool_env_file() -> Path:
 
 
 POOL_ENV_FILE = Path(os.environ.get("BDAG_POOL_ENV_FILE", default_pool_env_file()))
-NODES = [
-    item.strip()
-    for item in os.environ.get(
-        "BDAG_NODE_CHILD_GUARD_NODES",
-        os.environ.get("BDAG_NODE_SERVICES", DEFAULT_NODE_CHILD_GUARD_NODES),
-    ).split(",")
-    if item.strip()
-]
+NODE = (
+    os.environ.get("BDAG_NODE_CHILD_GUARD_NODE")
+    or os.environ.get("BDAG_NODE_SERVICE")
+    or DEFAULT_NODE_CHILD_GUARD_NODE
+).strip() or DEFAULT_NODE_CHILD_GUARD_NODE
+NODES = [NODE]
 COOLDOWN_SECONDS = int(os.environ.get("BDAG_NODE_CHILD_GUARD_RESTART_COOLDOWN_SECONDS", "180"))
 RPC_REFUSED_SECONDS = int(os.environ.get("BDAG_NODE_CHILD_GUARD_RPC_REFUSED_SECONDS", "300"))
 

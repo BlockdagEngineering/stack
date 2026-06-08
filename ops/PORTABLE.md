@@ -49,7 +49,7 @@ If that pool uses different container names, update:
 BDAG_POOL_CONTAINER=pool
 BDAG_POOL_CONTAINERS=pool
 BDAG_POOL_DB_CONTAINER=postgres
-BDAG_NODE_SERVICES=node
+BDAG_NODE_SERVICE=node
 BDAG_STACK_SERVICES=postgres,node,pool,dashboard
 ```
 

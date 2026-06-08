@@ -52,7 +52,7 @@ def _service_ranges(lines: list[str]) -> list[tuple[str, int, int]]:
 
 
 def _pool_service(name: str) -> bool:
-    return name == "pool" or name.startswith("asic-pool")
+    return name in {"pool", "asic-pool"}
 
 
 def _environment_range(lines: list[str], start: int, end: int) -> tuple[int, int] | None:
@@ -105,7 +105,7 @@ def ensure_pool_env_flags(text: str, flags: tuple[tuple[str, str], ...]) -> Migr
                 insert_at = index + 1
         if insert_at == env_start:
             for index in range(env_start, env_end):
-                if _line_has_key(lines[index], "NODE_RPC_URLS"):
+                if _line_has_key(lines[index], "NODE_RPC_URL"):
                     insert_at = index + 1
                     break
         if insert_at == env_start:

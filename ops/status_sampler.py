@@ -997,10 +997,8 @@ def constrained_fastartifact_profile() -> bool:
     )
 
 
-def node_services_for_recreate() -> list[str]:
-    configured = config_value("BDAG_NODE_SERVICES", "node")
-    services = [item for item in configured.replace(" ", ",").split(",") if item]
-    return services or ["node"]
+def node_service_for_recreate() -> str:
+    return config_value("BDAG_NODE_SERVICE", "node").strip() or "node"
 
 
 def node_command_line(node_service: str) -> str | None:
@@ -1054,10 +1052,9 @@ def node_mining_template_support_should_repair(payload: dict[str, Any]) -> bool:
     append_args = config_value("NODE_ARGS_APPEND")
     if append_args and not node_mining_args_are_safe_and_complete(append_args, address):
         return True
-    for service in node_services_for_recreate():
-        command_line = node_command_line(service)
-        if command_line and not node_mining_args_are_safe_and_complete(command_line, address):
-            return True
+    command_line = node_command_line(node_service_for_recreate())
+    if command_line and not node_mining_args_are_safe_and_complete(command_line, address):
+        return True
     return False
 
 
@@ -1103,7 +1100,7 @@ def constrained_fastartifact_should_repair(payload: dict[str, Any]) -> bool:
         return False
     if env_enabled_value(config_value("BDAG_FASTARTIFACTSYNC_ENABLED"), True):
         return True
-    return any(node_command_has_fastartifact(service) for service in node_services_for_recreate())
+    return node_command_has_fastartifact(node_service_for_recreate())
 
 
 def control_decision_payload(decision: Any) -> dict[str, Any]:
@@ -1144,10 +1141,11 @@ def automation_repair_mutation_allowed(
     return False
 
 
-def recreate_node_services(payload: dict[str, Any], reason: str) -> tuple[bool, list[dict[str, Any]]]:
+def recreate_node_service(payload: dict[str, Any], reason: str) -> tuple[bool, list[dict[str, Any]]]:
     node_results = []
     ok = True
-    for service in node_services_for_recreate():
+    service = node_service_for_recreate()
+    if service:
         if not automation_repair_mutation_allowed(
             automation_control.ACTION_CONTAINER_RECREATE,
             target=service,
@@ -1157,8 +1155,7 @@ def recreate_node_services(payload: dict[str, Any], reason: str) -> tuple[bool, 
             message=f"Mining imperative left {service} unchanged because automation control blocked recreate",
         ):
             node_results.append({"service": service, "returncode": None, "ok": False, "blocked": True})
-            ok = False
-            continue
+            return False, node_results
         result = run(
             docker_compose_command("up", "-d", "--no-deps", "--force-recreate", "--no-build", "--pull", "never", service),
             timeout=240,
@@ -1402,7 +1399,7 @@ def repair_fastsync_orphan_peers(payload: dict[str, Any]) -> bool:
         )
         return False
 
-    ok, node_results = recreate_node_services(payload, "recreate node after quarantining orphan FastSync peer(s)")
+    ok, node_results = recreate_node_service(payload, "recreate node after quarantining orphan FastSync peer(s)")
     action["node_recreate_results"] = node_results
     if ok:
         log(f"mining imperative quarantined orphan FastSync peer(s): {','.join(peer_ids)}")
@@ -1439,7 +1436,7 @@ def repair_constrained_fastartifact(payload: dict[str, Any]) -> bool:
     changed_paths.extend(set_runtime_env_value("SYNC_SOURCE_NODE", "0"))
     changed_paths.extend(set_runtime_env_value("BDAG_NO_FASTSYNC_SERVE", "1"))
     changed_paths.extend(set_runtime_env_value("NODE_ARGS_APPEND", ""))
-    ok, node_results = recreate_node_services(payload, "recreate node after disabling constrained FastArtifact")
+    ok, node_results = recreate_node_service(payload, "recreate node after disabling constrained FastArtifact")
     action = {
         "changed_env_paths": changed_paths,
         "node_recreate_results": node_results,
@@ -1582,7 +1579,7 @@ def apply_catchup_node_runtime(payload: dict[str, Any], policy: dict[str, Any]) 
     node_results: list[dict[str, Any]] = []
     ok = True
     if CATCHUP_NODE_RECREATE_ENABLED:
-        ok, node_results = recreate_node_services(payload, "recreate node after catch-up runtime adjustment")
+        ok, node_results = recreate_node_service(payload, "recreate node after catch-up runtime adjustment")
     action = {
         "policy": policy,
         "changed_env": env_updates,
@@ -1665,7 +1662,7 @@ def repair_node_mining_template_support(payload: dict[str, Any]) -> bool:
     )
     changed_paths.extend(set_runtime_env_value("NODE_ARGS_APPEND", runtime_args))
     changed_paths.extend(update_node_conf_mining(True, address))
-    ok, node_results = recreate_node_services(payload, "recreate node after enabling mining/template support")
+    ok, node_results = recreate_node_service(payload, "recreate node after enabling mining/template support")
     action = {
         "changed_env_paths": sorted(set(changed_paths)),
         "node_recreate_results": node_results,

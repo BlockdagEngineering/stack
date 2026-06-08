@@ -42,7 +42,7 @@
   <section>
     <h2>Invariant</h2>
     <div class="callout">
-      Fresh installs assume zero miner sources. A deployment may later run 0..N ASIC or Stratum miner sources. Multi-miner pools, including five-X100 local pools, must have one canonical mining-template epoch at a time. Backend switches, catch-up maintenance, and clean-job broadcasts must be atomic from the miner point of view. If old-parent, duplicate, or non-current submissions rise, the pool must repair the template epoch in code instead of relying on manual restarts.
+      Fresh installs assume zero miner sources. A deployment may later run 0..N ASIC or Stratum miner sources. Multi-miner pools, including five-X100 local pools, must have one canonical mining-template epoch at a time. Template refreshes, catch-up maintenance, and clean-job broadcasts must be atomic from the miner point of view. If old-parent, duplicate, or non-current submissions rise, the pool must repair the template epoch in code instead of relying on manual restarts.
     </div>
   </section>
 

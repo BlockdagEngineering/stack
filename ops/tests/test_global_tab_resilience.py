@@ -53,7 +53,7 @@ class GlobalTabRpcSelectionTests(unittest.TestCase):
         pool_ops.docker_container_ip = self.old_docker_container_ip
 
     def test_global_chain_uses_mining_rpc_when_node_rpc_is_configured(self) -> None:
-        os.environ["BDAG_NODE_RPC_URLS"] = "node=http://127.0.0.1:38131"
+        os.environ["BDAG_NODE_RPC_URL"] = "http://127.0.0.1:38131"
         for key in ("BDAG_GLOBAL_CHAIN_RPC_URLS",):
             os.environ.pop(key, None)
 
@@ -612,7 +612,7 @@ class GlobalChainRpcCollectionTests(unittest.TestCase):
 class EarningsEvmRpcSourceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.old_global_evm_rpc_urls = pool_ops.global_evm_rpc_urls
-        self.old_node_rpc_urls = pool_ops.node_rpc_urls
+        self.old_node_rpc_endpoint = pool_ops.node_rpc_endpoint
         self.old_named_urls_from_env = pool_ops.named_urls_from_env
         self.old_json_rpc_balance = pool_ops.json_rpc_balance
         self.old_adaptive_worker_count = pool_ops.adaptive_worker_count
@@ -620,7 +620,7 @@ class EarningsEvmRpcSourceTests(unittest.TestCase):
 
     def restore_globals(self) -> None:
         pool_ops.global_evm_rpc_urls = self.old_global_evm_rpc_urls
-        pool_ops.node_rpc_urls = self.old_node_rpc_urls
+        pool_ops.node_rpc_endpoint = self.old_node_rpc_endpoint
         pool_ops.named_urls_from_env = self.old_named_urls_from_env
         pool_ops.json_rpc_balance = self.old_json_rpc_balance
         pool_ops.adaptive_worker_count = self.old_adaptive_worker_count
@@ -629,7 +629,7 @@ class EarningsEvmRpcSourceTests(unittest.TestCase):
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         called_urls: list[str] = []
         pool_ops.global_evm_rpc_urls = lambda: [("node-evm", "http://172.22.0.5:18545")]
-        pool_ops.node_rpc_urls = lambda: [("node-mining", "http://127.0.0.1:38131")]
+        pool_ops.node_rpc_endpoint = lambda: ("node-mining", "http://127.0.0.1:38131")
         pool_ops.named_urls_from_env = lambda _name, _defaults: []
         pool_ops.adaptive_worker_count = lambda *_args, **_kwargs: 1
 

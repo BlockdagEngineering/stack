@@ -197,9 +197,6 @@ services:
       TEMP: /tmp
       # Compose interpolates ${...} from the project root .env file.
       NODE_RPC_URL: http://node:38131
-      NODE_RPC_URLS: ${NODE_RPC_URLS:-http://node:38131}
-      POOL_SUBMIT_RPC_URLS: ${POOL_SUBMIT_RPC_URLS:-}
-      POOL_RPC_BACKENDS: ${POOL_RPC_BACKENDS:-}
       POOL_RUNTIME_ADMIN_ENABLED: ${POOL_RUNTIME_ADMIN_ENABLED:-false}
       PG_URL:       postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bdagpool}?sslmode=disable
       # Stratum listen (inside container) — from root .env
@@ -275,7 +272,7 @@ services:
       TEMP: /tmp
       # The dashboard observes canonical service names. Compose-generated
       # concrete container names may include project and ordinal suffixes.
-      BDAG_NODE_SERVICES: node
+      BDAG_NODE_SERVICE: node
       BDAG_STACK_SERVICES: postgres,node,pool
       BDAG_START_SERVICES: postgres,node,pool
       BDAG_POOL_CONTAINER: pool
@@ -284,7 +281,7 @@ services:
       BDAG_POOL_DB_USER: ${POSTGRES_USER:-bdag_pool}
       BDAG_POOL_DB_NAME: ${POSTGRES_DB:-bdagpool}
       BDAG_POOL_METRICS_PORT: 9090
-      BDAG_NODE_RPC_URLS: node=http://node:38131
+      BDAG_NODE_RPC_URL: http://node:38131
       BDAG_GLOBAL_CHAIN_RPC_URLS: node=http://node:38131
       BDAG_GLOBAL_RPC_URLS: ${BDAG_GLOBAL_RPC_URLS:-}
       BDAG_PUBLIC_RPC_URLS: ${BDAG_PUBLIC_RPC_URLS:-blockdag-engineering-rpc=https://rpc.blockdag.engineering,bdagscan-rpc=https://rpc.bdagscan.com}

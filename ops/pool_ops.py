@@ -102,6 +102,11 @@ def split_env_list(name: str, default: str) -> list[str]:
     return [item.strip() for item in re.split(r"[,;]", raw) if item.strip()]
 
 
+def single_env_value(name: str, default: str) -> str:
+    value = os.environ.get(name, default).strip()
+    return value or default
+
+
 def env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None:
@@ -272,8 +277,9 @@ POOL_CONTAINERS = unique_names([POOL_CONTAINER, *split_env_list("BDAG_POOL_CONTA
 POOL_DB_CONTAINER = os.environ.get("BDAG_POOL_DB_CONTAINER", "postgres")
 POOL_DB_USER = os.environ.get("BDAG_POOL_DB_USER", "test")
 POOL_DB_NAME = os.environ.get("BDAG_POOL_DB_NAME", "pool")
-NODES = split_env_list("BDAG_NODE_SERVICES", "node")
-OBSERVER_NODES = unique_names(split_env_list("BDAG_OBSERVER_NODE_SERVICES", ""))
+NODE_SERVICE = single_env_value("BDAG_NODE_SERVICE", "node")
+NODES = [NODE_SERVICE]
+OBSERVER_NODES: list[str] = []
 STACK_SERVICES = split_env_list(
     "BDAG_STACK_SERVICES",
     "postgres,node,pool",
@@ -6941,6 +6947,16 @@ def named_urls_from_env(name: str, defaults: list[tuple[str, str]]) -> list[tupl
     return urls
 
 
+def named_url_from_env(name: str, default_source: str) -> list[tuple[str, str]]:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return []
+    if "=" in value:
+        source, url = value.split("=", 1)
+        return [(source.strip() or default_source, url.strip())]
+    return [(default_source, value)]
+
+
 def valid_url(value: str) -> bool:
     if not value or any(ord(ch) < 32 or ch.isspace() for ch in value):
         return False
@@ -6963,18 +6979,18 @@ def valid_ipv4(value: str) -> bool:
         return False
 
 
-def node_rpc_urls() -> list[tuple[str, str]]:
-    configured = named_urls_from_env("BDAG_NODE_RPC_URLS", [])
+def node_rpc_endpoint() -> tuple[str, str] | None:
+    configured = named_url_from_env("BDAG_NODE_RPC_URL", NODE_SERVICE)
     if configured:
-        valid_configured = [
-            (source.strip() or "configured-node", url.strip())
-            for source, url in configured
-            if valid_url(url.strip())
-        ]
-        if valid_configured:
-            return valid_configured
+        source, url = configured[0]
+        url = url.strip()
+        if valid_url(url):
+            return source.strip() or NODE_SERVICE, url
 
-    return mining_rpc_urls()
+    for source, url in mining_rpc_urls():
+        if valid_url(url):
+            return source, url
+    return None
 
 
 def docker_container_ip(name: str) -> str:
@@ -7026,7 +7042,7 @@ def global_evm_rpc_urls() -> list[tuple[str, str]]:
 def global_chain_rpc_urls() -> list[tuple[str, str]]:
     configured = (
         named_urls_from_env("BDAG_GLOBAL_CHAIN_RPC_URLS", [])
-        or named_urls_from_env("BDAG_NODE_RPC_URLS", [])
+        or named_url_from_env("BDAG_NODE_RPC_URL", NODE_SERVICE)
     )
     urls: list[tuple[str, str]] = []
     for source, url in configured:
@@ -7734,14 +7750,15 @@ def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TI
 
 
 def collect_sync_progress() -> dict[str, Any]:
-    urls = node_rpc_urls()
-    if not urls:
+    endpoint = node_rpc_endpoint()
+    if endpoint is None:
         return {
-            **unknown_sync_progress("nodes", "no node RPC URLs available"),
+            **unknown_sync_progress(NODE_SERVICE, "node RPC URL unavailable"),
             "nodes": {node: unknown_sync_progress(node, "node RPC URL unavailable") for node in NODES},
         }
 
-    per_node = {source: node_sync_progress(source, url) for source, url in urls}
+    source, url = endpoint
+    per_node = {source: node_sync_progress(source, url)}
     known = [item for item in per_node.values() if item.get("status") != "unknown"]
     syncing = [item for item in known if item.get("status") == "syncing"]
     if syncing:

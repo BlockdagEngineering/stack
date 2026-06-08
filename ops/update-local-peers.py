@@ -26,7 +26,7 @@ DEFERRED_APPLY_FILE = RUNTIME_DIR / "local-peers-deferred-apply"
 CHAIN_PEERSTORE_CANDIDATES_FILE = RUNTIME_DIR / "chain-peerstore-candidates.txt"
 LIVE_PEERS_FILE = RUNTIME_DIR / "live-peers-current.txt"
 PEER_DISCOVERY_FILE = RUNTIME_DIR / "peer-discovery-current.json"
-DEFAULT_ACTIVE_NODE_SERVICES = ["node"]
+DEFAULT_ACTIVE_NODE_SERVICE = "node"
 NODE_SPECS = {
     "node": {"port": 8151, "env": "BDAG_NODE_PEER_ADDRESSES"},
 }
@@ -238,7 +238,7 @@ def stop_inactive_nodes(active_nodes: list[str]) -> None:
     for node in NODE_SPECS:
         if node in active_nodes or not container_running(node):
             continue
-        print(f"stopping inactive {node}; not listed in BDAG_NODE_SERVICES")
+        print(f"stopping inactive {node}; not the configured BDAG_NODE_SERVICE")
         run(["docker", "compose", "stop", node], timeout=120)
 
 
@@ -827,15 +827,15 @@ def active_mining_recreate_guard_reason() -> str:
 def configured_active_nodes(pool_values: dict[str, str]) -> list[str]:
     runtime_values = read_env_values(RUNTIME_ENV_FILE)
     raw = (
-        os.environ.get("BDAG_NODE_SERVICES")
-        or runtime_values.get("BDAG_NODE_SERVICES")
-        or pool_values.get("BDAG_NODE_SERVICES")
+        os.environ.get("BDAG_NODE_SERVICE")
+        or runtime_values.get("BDAG_NODE_SERVICE")
+        or pool_values.get("BDAG_NODE_SERVICE")
         or ""
     )
     if not raw:
-        return list(DEFAULT_ACTIVE_NODE_SERVICES)
-    nodes = [item.strip() for item in raw.split(",") if item.strip()]
-    return [node for node in nodes if node in NODE_SPECS]
+        return [DEFAULT_ACTIVE_NODE_SERVICE]
+    node = raw.strip()
+    return [node] if node in NODE_SPECS else []
 
 
 def main() -> int:

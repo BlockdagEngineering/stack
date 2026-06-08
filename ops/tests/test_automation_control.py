@@ -322,7 +322,7 @@ class AutomationControlTests(unittest.TestCase):
             side_effect=AssertionError("config edit must not run"),
         ), unittest.mock.patch.object(
             status_sampler,
-            "recreate_node_services",
+            "recreate_node_service",
             side_effect=AssertionError("node recreate must not run"),
         ):
             ok = status_sampler.repair_constrained_fastartifact({})

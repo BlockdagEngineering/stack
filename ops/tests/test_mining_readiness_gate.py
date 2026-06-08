@@ -104,7 +104,7 @@ def healthy_health(main_order: int) -> dict[str, Any]:
 class MiningReadinessGateTests(unittest.TestCase):
     def test_node_connection_refused_fails_closed(self) -> None:
         result = gate.evaluate_gate(
-            [gate.Backend("node", "http://127.0.0.1:1")],
+            gate.Backend("node", "http://127.0.0.1:1"),
             timeout=0.05,
             sample_count=1,
             sample_interval_seconds=0,
@@ -112,8 +112,8 @@ class MiningReadinessGateTests(unittest.TestCase):
         )
 
         self.assertFalse(result["ok"])
-        self.assertIn("no_ready_backend", result["failures"])
-        failures = result["backends"]["node"]["samples"][0]["failures"]
+        self.assertIn("node_not_ready", result["failures"])
+        failures = result["backend"]["samples"][0]["failures"]
         self.assertIn("getBlockCount failed: connection_refused", failures)
 
     def test_template_parent_stale_is_rejected(self) -> None:
@@ -130,7 +130,7 @@ class MiningReadinessGateTests(unittest.TestCase):
 
         with FakeJsonRpcServer(handler) as server:
             result = gate.evaluate_gate(
-                [gate.Backend("node", server.url)],
+                gate.Backend("node", server.url),
                 timeout=0.5,
                 sample_count=1,
                 sample_interval_seconds=0,
@@ -138,7 +138,7 @@ class MiningReadinessGateTests(unittest.TestCase):
             )
 
         self.assertFalse(result["ok"])
-        failures = result["backends"]["node"]["samples"][0]["failures"]
+        failures = result["backend"]["samples"][0]["failures"]
         self.assertIn("blocking_template_error:template_parent_stale", failures)
 
     def test_empty_block_template_is_rejected(self) -> None:
@@ -153,7 +153,7 @@ class MiningReadinessGateTests(unittest.TestCase):
 
         with FakeJsonRpcServer(handler) as server:
             result = gate.evaluate_gate(
-                [gate.Backend("node", server.url)],
+                gate.Backend("node", server.url),
                 timeout=0.5,
                 sample_count=1,
                 sample_interval_seconds=0,
@@ -161,7 +161,7 @@ class MiningReadinessGateTests(unittest.TestCase):
             )
 
         self.assertFalse(result["ok"])
-        failures = result["backends"]["node"]["samples"][0]["failures"]
+        failures = result["backend"]["samples"][0]["failures"]
         self.assertIn("getBlockTemplate_empty", failures)
 
     def test_block_template_probe_uses_current_node_rpc_signature(self) -> None:
@@ -183,7 +183,7 @@ class MiningReadinessGateTests(unittest.TestCase):
 
         with FakeJsonRpcServer(handler) as server:
             result = gate.evaluate_gate(
-                [gate.Backend("node", server.url)],
+                gate.Backend("node", server.url),
                 timeout=0.5,
                 sample_count=1,
                 sample_interval_seconds=0,
@@ -192,7 +192,7 @@ class MiningReadinessGateTests(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"], result["failures"])
-        self.assertEqual(["node"], result["eligible_backends"])
+        self.assertEqual("node", result["eligible_backend"])
 
     def test_old_node_without_template_health_fails_closed_after_incident(self) -> None:
         def handler(method: str, _params: list[Any] | dict[str, Any], _calls: dict[str, int]) -> Any:
@@ -206,7 +206,7 @@ class MiningReadinessGateTests(unittest.TestCase):
 
         with FakeJsonRpcServer(handler) as server:
             result = gate.evaluate_gate(
-                [gate.Backend("node", server.url)],
+                gate.Backend("node", server.url),
                 timeout=0.5,
                 sample_count=1,
                 sample_interval_seconds=0,
@@ -214,7 +214,7 @@ class MiningReadinessGateTests(unittest.TestCase):
             )
 
         self.assertFalse(result["ok"])
-        failures = result["backends"]["node"]["samples"][0]["failures"]
+        failures = result["backend"]["samples"][0]["failures"]
         self.assertIn("template_health_missing_after_chain_incident", failures)
 
     def test_healthy_backend_passes_after_three_non_regressing_samples(self) -> None:
@@ -231,7 +231,7 @@ class MiningReadinessGateTests(unittest.TestCase):
 
         with FakeJsonRpcServer(handler) as server:
             result = gate.evaluate_gate(
-                [gate.Backend("node", server.url)],
+                gate.Backend("node", server.url),
                 timeout=0.5,
                 sample_count=3,
                 sample_interval_seconds=0,
@@ -239,8 +239,8 @@ class MiningReadinessGateTests(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"], result["failures"])
-        self.assertEqual(["node"], result["eligible_backends"])
-        backend = result["backends"]["node"]
+        self.assertEqual("node", result["eligible_backend"])
+        backend = result["backend"]
         self.assertTrue(backend["ready"], backend["failures"])
         self.assertEqual(3, len(backend["samples"]))
         self.assertEqual(1002, backend["height"])
@@ -264,7 +264,7 @@ class MiningReadinessGateTests(unittest.TestCase):
             clear=False,
         ):
             result = gate.evaluate_gate(
-                [gate.Backend("node", server.url)],
+                gate.Backend("node", server.url),
                 timeout=0.5,
                 sample_count=1,
                 sample_interval_seconds=0,
@@ -272,7 +272,7 @@ class MiningReadinessGateTests(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"], result["failures"])
-        self.assertEqual(server.url, result["backends"]["node"]["url"])
+        self.assertEqual(server.url, result["backend"]["url"])
         self.assertNotIn("user:pass", json.dumps(result))
 
     def test_reference_lag_rejects_backend(self) -> None:
@@ -294,7 +294,7 @@ class MiningReadinessGateTests(unittest.TestCase):
 
         with FakeJsonRpcServer(backend_handler) as backend, FakeJsonRpcServer(reference_handler) as reference:
             result = gate.evaluate_gate(
-                [gate.Backend("node", backend.url)],
+                gate.Backend("node", backend.url),
                 reference_rpc_url=reference.url,
                 timeout=0.5,
                 sample_count=1,
@@ -304,16 +304,16 @@ class MiningReadinessGateTests(unittest.TestCase):
             )
 
         self.assertFalse(result["ok"])
-        failures = result["backends"]["node"]["samples"][0]["failures"]
+        failures = result["backend"]["samples"][0]["failures"]
         self.assertIn("reference_height_lag_121_gt_120", failures)
         self.assertIn("reference_main_order_lag_121_gt_120", failures)
 
     def test_active_node_topology_accepts_direct_backend(self) -> None:
         topology = gate.validate_topology(
-            node_services=["node"],
-            pool_rpc_backends=["node"],
+            node_service="node",
+            backend_name="node",
             running_containers=["node"],
-            eligible_backends=["node"],
+            eligible_backend="node",
         )
 
         self.assertTrue(topology["ok"])
@@ -322,17 +322,17 @@ class MiningReadinessGateTests(unittest.TestCase):
         extra_service = "unexpected-chain-service"
         extra_alias = "unexpected-backend"
         topology = gate.validate_topology(
-            node_services=["node", extra_service],
-            pool_rpc_backends=["node", extra_alias],
+            node_service=extra_service,
+            backend_name=extra_alias,
             running_containers=["node", extra_service],
-            eligible_backends=["node", extra_alias],
+            eligible_backend=extra_alias,
         )
 
         self.assertFalse(topology["ok"])
         self.assertIn(f"unexpected_extra_service:{extra_service}", topology["failures"])
-        self.assertIn(f"unexpected_extra_pool_backend:{extra_alias}", topology["failures"])
+        self.assertIn(f"unexpected_extra_backend:{extra_alias}", topology["failures"])
         self.assertIn(f"unexpected_extra_running_container:{extra_service}", topology["failures"])
-        self.assertIn(f"unexpected_extra_eligible_backend:{extra_alias}", topology["failures"])
+        self.assertIn(f"unexpected_extra_eligible_node:{extra_alias}", topology["failures"])
 
 
 if __name__ == "__main__":

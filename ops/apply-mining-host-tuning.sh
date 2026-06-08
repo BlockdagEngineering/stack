@@ -242,18 +242,10 @@ selected_backend_from_metrics() {
       }'
 }
 
-selected_backend_from_env() {
-  for env_file in "$ROOT/.env"; do
-    [ -f "$env_file" ] || continue
-    sed -n 's/^POOL_RPC_BACKENDS=//p' "$env_file" |
-      awk -F'[=,]' 'NF { print $1; exit }'
-  done
-}
-
 selected_backend() {
   backend="$(selected_backend_from_metrics || true)"
   if [ -z "$backend" ]; then
-    backend="$(selected_backend_from_env || true)"
+    backend="node"
   fi
   case "$backend" in
     node|primary) printf '%s\n' "node" ;;

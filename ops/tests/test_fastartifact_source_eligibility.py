@@ -19,7 +19,7 @@ spec.loader.exec_module(eligibility)
 
 class FastArtifactSourceEligibilityTest(unittest.TestCase):
     def test_active_node_defaults_to_node(self) -> None:
-        env = {"BDAG_NODE_SERVICES": "node", "BDAG_NODE_DATA_DIR": "./data/node"}
+        env = {"BDAG_NODE_SERVICE": "node", "BDAG_NODE_DATA_DIR": "./data/node"}
 
         self.assertEqual(eligibility.active_node_service(env), "node")
         self.assertTrue(str(eligibility.node_data_dir(env, "node")).endswith("data/node"))
@@ -151,7 +151,7 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
         ):
             payload = eligibility.source_evm_sync_sample(
                 {
-                    "BDAG_NODE_SERVICES": "node",
+                    "BDAG_NODE_SERVICE": "node",
                     "BDAG_RAWDATADIR_EVM_RPC_URL": "http://127.0.0.1:18545",
                     "BDAG_RAWDATADIR_EVM_REFERENCE_RPC_URLS": "reference=http://reference:18545",
                     "BDAG_RAWDATADIR_MAX_EVM_REFERENCE_LAG": "1000",
@@ -167,7 +167,7 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
             env = {
-                "BDAG_NODE_SERVICES": "node",
+                "BDAG_NODE_SERVICE": "node",
                 "BDAG_NODE_DATA_DIR": str(tmp_path / "node"),
                 "BDAG_RAWDATADIR_SIDECAR_SOURCE": str(tmp_path / "node" / "mainnet"),
                 "BDAG_RAWDATADIR_SIDECAR_DIR": str(tmp_path / "sidecar"),
@@ -192,7 +192,7 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
             tmp_path = Path(tmpdir)
             env = {
                 "SYNC_SOURCE_NODE": "0",
-                "BDAG_NODE_SERVICES": "node",
+                "BDAG_NODE_SERVICE": "node",
                 "BDAG_NODE_DATA_DIR": str(tmp_path / "node"),
                 "BDAG_RAWDATADIR_SIDECAR_SOURCE": str(tmp_path / "node" / "mainnet"),
                 "BDAG_RAWDATADIR_SIDECAR_DIR": str(tmp_path / "sidecar"),
@@ -215,7 +215,7 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
             env = {
                 "SYNC_SOURCE_NODE": "1",
                 "BDAG_NO_FASTSYNC_SERVE": "1",
-                "BDAG_NODE_SERVICES": "node",
+                "BDAG_NODE_SERVICE": "node",
                 "BDAG_NODE_DATA_DIR": str(tmp_path / "node"),
                 "BDAG_RAWDATADIR_SIDECAR_SOURCE": str(tmp_path / "node" / "mainnet"),
                 "BDAG_RAWDATADIR_SIDECAR_DIR": str(tmp_path / "sidecar"),
@@ -237,7 +237,7 @@ class FastArtifactSourceEligibilityTest(unittest.TestCase):
             env = {
                 "SYNC_SOURCE_NODE": "1",
                 "BDAG_FASTSNAP_NETWORK": "not-mainnet",
-                "BDAG_NODE_SERVICES": "node",
+                "BDAG_NODE_SERVICE": "node",
                 "BDAG_NODE_DATA_DIR": str(tmp_path / "node"),
                 "BDAG_RAWDATADIR_SIDECAR_SOURCE": str(tmp_path / "node" / "mainnet"),
                 "BDAG_RAWDATADIR_SIDECAR_DIR": str(tmp_path / "sidecar"),

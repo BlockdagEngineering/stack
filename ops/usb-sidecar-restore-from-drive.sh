@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 PROJECT_ROOT="${BDAG_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 USB_ROOT=""
-TARGET="${BDAG_NODE_MAINNET_DIR:-$PROJECT_ROOT/data/node1/mainnet}"
+TARGET="${BDAG_NODE_MAINNET_DIR:-$PROJECT_ROOT/data/node/mainnet}"
 EXECUTE=0
 BWLIMIT="${BDAG_USB_RSYNC_BWLIMIT:-0}"
 BACKUP_EXISTING=1
@@ -12,7 +12,7 @@ usage() {
   cat <<'USAGE'
 Usage:
   ops/usb-sidecar-restore-from-drive.sh --usb-root /path/to/usb/blockdag-portable [--dry-run]
-  ops/usb-sidecar-restore-from-drive.sh --usb-root /path/to/usb/blockdag-portable --target /path/to/stack/data/node1/mainnet --execute
+  ops/usb-sidecar-restore-from-drive.sh --usb-root /path/to/usb/blockdag-portable --target /path/to/stack/data/node/mainnet --execute
 
 Seed or restore local chain data from a portable USB raw-datadir sidecar using
 rsync deltas. The default is dry-run. Stop the node/pool before --execute:

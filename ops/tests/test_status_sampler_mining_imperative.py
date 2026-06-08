@@ -281,7 +281,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["BDAG_NODE_MODULES"] = "Blockdag,miner"
         os.environ["BDAG_NODE_MINING_ARGS"] = "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         os.environ["NODE_ARGS_APPEND"] = os.environ["BDAG_NODE_MINING_ARGS"]
-        os.environ["BDAG_NODE_SERVICES"] = "node"
+        os.environ["BDAG_NODE_SERVICE"] = "node"
         payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=450)
         payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
@@ -623,7 +623,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["BDAG_STORAGE_PROFILE"] = "usb-chain-internal-runtime"
         os.environ["BDAG_FASTARTIFACTSYNC_ENABLED"] = "1"
         os.environ["NODE_ARGS_APPEND"] = "--fastartifactsync"
-        os.environ["BDAG_NODE_SERVICES"] = "node"
+        os.environ["BDAG_NODE_SERVICE"] = "node"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
         payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
@@ -658,7 +658,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["BDAG_ENABLE_NODE_MINING"] = "0"
         os.environ["BDAG_NODE_MODULES"] = "Blockdag"
         os.environ["BDAG_NODE_MINING_ARGS"] = ""
-        os.environ["BDAG_NODE_SERVICES"] = "node"
+        os.environ["BDAG_NODE_SERVICE"] = "node"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
         payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
@@ -723,7 +723,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["BDAG_ENABLE_NODE_MINING"] = "0"
         os.environ["BDAG_NODE_MODULES"] = "Blockdag"
         os.environ["BDAG_NODE_MINING_ARGS"] = ""
-        os.environ["BDAG_NODE_SERVICES"] = "node"
+        os.environ["BDAG_NODE_SERVICE"] = "node"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
         payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
@@ -768,7 +768,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
             "--allowminingwhennearlysynced --allowsubmitwhennotsynced --miner "
             "--miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         )
-        os.environ["BDAG_NODE_SERVICES"] = "node"
+        os.environ["BDAG_NODE_SERVICE"] = "node"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
         payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
@@ -800,7 +800,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["BDAG_NODE_MINING_ARGS"] = (
             "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         )
-        os.environ["BDAG_NODE_SERVICES"] = "node"
+        os.environ["BDAG_NODE_SERVICE"] = "node"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
         payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
@@ -830,7 +830,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["BDAG_NODE_MINING_ARGS"] = (
             "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         )
-        os.environ["BDAG_NODE_SERVICES"] = "node"
+        os.environ["BDAG_NODE_SERVICE"] = "node"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
         payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
@@ -894,7 +894,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["BDAG_NODE_PEER_ADDRESSES"] = f"/ip4/10.0.0.2/tcp/8151/p2p/{peer_id},/ip4/3.3.3.3/tcp/8150/p2p/good"
         os.environ["BDAG_FASTSYNC_PEERS"] = f"/ip4/10.0.0.2/tcp/8151/p2p/{peer_id}"
         os.environ["BOOTSTRAP_PEER_ADDRESSES"] = f"/ip4/10.0.0.2/tcp/8151/p2p/{peer_id},/ip4/4.4.4.4/tcp/8150/p2p/good"
-        os.environ["BDAG_NODE_SERVICES"] = "node"
+        os.environ["BDAG_NODE_SERVICE"] = "node"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
         payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}

@@ -371,7 +371,7 @@ def total_memory_bytes() -> int | None:
 
 
 def active_node_service(env: dict[str, str]) -> str:
-    services = split_csv(env.get("BDAG_NODE_SERVICES", "node"))
+    services = split_csv(env.get("BDAG_NODE_SERVICE", "node"))
     return services[0] if services else "node"
 
 
