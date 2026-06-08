@@ -199,7 +199,9 @@ def start_terminal_backend(
         f"BDAG_RUNTIME_DIR={shlex.quote(env.get('BDAG_RUNTIME_DIR', str(DEFAULT_RUNTIME_DIR)))} && "
         f"{pool_check_command}"
         f"echo '[bdag] resuming Codex session {shlex.quote(session_id)}'; "
-        f"{shlex.quote(codex_bin)} resume {shlex.quote(session_id)} 2>&1 | tee -a {shlex.quote(str(log_path))}; "
+        f"{shlex.quote(codex_bin)} resume {shlex.quote(session_id)}; "
+        "codex_rc=$?; "
+        f"echo \"[bdag] Codex exited with return code ${{codex_rc}}\" | tee -a {shlex.quote(str(log_path))}; "
         "echo; echo '[bdag] Codex exited. Press Enter to close this terminal.'; read -r _"
     )
     if backend == "ptyxis":
