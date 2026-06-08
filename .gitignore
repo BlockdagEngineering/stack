@@ -33,3 +33,7 @@ ops/__pycache__/
 asic-pool/.env
 artifacts/
 node-data/*
+logs/
+*.log
+sidechain-monitor.log
+ASIC-tools/
