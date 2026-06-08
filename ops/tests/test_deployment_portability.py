@@ -84,7 +84,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("BDAG_NODE_SERVICES: node", compose)
         self.assertIn("BDAG_NETWORK: mainnet", compose)
         self.assertIn("BDAG_FASTSNAP_NETWORK: mainnet", compose)
-        self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool,dashboard", compose)
+        self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool", compose)
         self.assertIn("BDAG_POOL_CONTAINER: pool", compose)
         self.assertIn("BDAG_POOL_DB_CONTAINER: postgres", compose)
         self.assertIn("BDAG_NODE_RPC_URLS: node=http://node:38131", compose)
@@ -150,6 +150,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
     def test_pool_node_health_gate_is_enabled_by_default(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
+        stack_defaults = (ROOT_DIR / "ops" / "config" / "stack-defaults.env").read_text(encoding="utf-8")
         validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
 
         self.assertIn(
@@ -157,7 +158,8 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             compose,
         )
         self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true", env_example)
-        self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true", validator)
+        self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true", stack_defaults)
+        self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=", validator)
 
     def test_live_deploy_copy_contract_covers_live_validator_files(self) -> None:
         deploy = (ROOT_DIR / "ops" / "deploy-live-runtime-update.sh").read_text(encoding="utf-8")
@@ -189,7 +191,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn('if [[ "$mode" == "source" && -e "$root/ops/observability" ]]; then', validator)
         self.assertIn('need_grep \'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS\' "docker-compose.yml"', validator)
         self.assertIn('need_grep \'NODE_RPC_URLS: .*http://node:38131\' "docker-compose.yml"', validator)
-        self.assertIn('need_grep \'BDAG_STACK_SERVICES=postgres,node,pool,dashboard\' ".env.example"', validator)
+        self.assertIn('need_grep \'BDAG_STACK_SERVICES=postgres,node,pool\' ".env.example"', validator)
         self.assertIn('reject_grep \'container_name:\' "docker-compose.yml"', validator)
 
     def test_live_runtime_validator_keeps_release_packaging_source_only(self) -> None:

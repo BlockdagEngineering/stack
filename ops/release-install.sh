@@ -3,10 +3,32 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
+if [[ -z "${BDAG_STACK_DEFAULTS_FILE:-}" ]]; then
+  if [[ -f "$ROOT/ops/config/stack-defaults.env" ]]; then
+    BDAG_STACK_DEFAULTS_FILE="$ROOT/ops/config/stack-defaults.env"
+  else
+    BDAG_STACK_DEFAULTS_FILE="$ROOT/config/stack-defaults.env"
+  fi
+fi
+if [[ -f "$BDAG_STACK_DEFAULTS_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$BDAG_STACK_DEFAULTS_FILE"
+  set +a
+fi
 DOCKER=(docker)
 
 say() { printf '\n==> %s\n' "$*"; }
 warn() { printf '\nWARNING: %s\n' "$*" >&2; }
+
+stack_default() {
+  local key="$1" fallback="${2:-}"
+  if [[ ${!key+x} ]]; then
+    printf '%s' "${!key}"
+  else
+    printf '%s' "$fallback"
+  fi
+}
 
 ask() {
   local prompt="$1" default="${2:-}" value
@@ -204,23 +226,42 @@ set_env_value() {
   fi
 }
 
+set_stack_default_env_value() {
+  local file="$1" key="$2" fallback="${3:-}"
+  set_env_value "$file" "$key" "$(stack_default "$key" "$fallback")"
+}
+
+apply_stack_defaults_env() {
+  local file="$1" line key value
+  [[ -f "$BDAG_STACK_DEFAULTS_FILE" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
+    key="${line%%=*}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    value="$(stack_default "$key" "${line#*=}")"
+    set_env_value "$file" "$key" "$value"
+  done < "$BDAG_STACK_DEFAULTS_FILE"
+}
+
 configure_active_node_env() {
   set_env_value .env COMPOSE_PROFILES ""
-  set_env_value .env BDAG_POOL_CONTAINER "pool"
-  set_env_value .env BDAG_POOL_CONTAINERS "pool"
-  set_env_value .env BDAG_POOL_DB_CONTAINER "postgres"
-  set_env_value .env BDAG_NODE_SERVICES "node"
-  set_env_value .env BDAG_STACK_SERVICES "postgres,node,pool,dashboard"
+  set_stack_default_env_value .env BDAG_POOL_CONTAINER pool
+  set_stack_default_env_value .env BDAG_POOL_CONTAINERS pool
+  set_stack_default_env_value .env BDAG_POOL_DB_CONTAINER postgres
+  set_stack_default_env_value .env BDAG_NODE_SERVICES node
+  set_stack_default_env_value .env BDAG_STACK_SERVICES "postgres,node,pool"
   set_env_value .env POOL_RPC_BACKENDS "node=http://node:38131"
   set_env_value .env POOL_SUBMIT_RPC_URLS ""
   set_env_value .env WALLET_RPC_URL "http://node:18545"
   set_env_value .env WALLET_RPC_URLS "http://node:18545"
-  set_env_value .env POOL_GBT_MIN_INTERVAL_MS 1100
-  set_env_value .env POOL_GBT_PRESSURE_INTERVAL_MS 500
-  set_env_value .env POOL_GBT_PRESSURE_WINDOW_SECONDS 10
-  set_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_ENABLED true
-  set_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS 15
-  set_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS 30
+  set_stack_default_env_value .env POOL_GBT_MIN_INTERVAL_MS
+  set_stack_default_env_value .env POOL_GBT_PRESSURE_INTERVAL_MS
+  set_stack_default_env_value .env POOL_GBT_PRESSURE_WINDOW_SECONDS
+  set_stack_default_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_ENABLED
+  set_stack_default_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS
+  set_stack_default_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS
 }
 
 configure_node_mining_env() {
@@ -518,10 +559,11 @@ configure_env() {
   set_env_value .env BDAG_MINER_SCAN_TARGET "$scan_target"
   set_env_value .env BDAG_ASIC_LAN_CIDRS "$scan_target"
   validate_pool_lan_config
-  set_env_value .env BDAG_FASTSYNC_RANGE_BLOCKS 1024
-  set_env_value .env BDAG_FASTSYNC_PREPROCESS_WORKERS 1
-  set_env_value .env BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED 1
-  set_env_value .env BDAG_CHAIN_PEERSTORE_LOG_TAIL 8000
+  apply_stack_defaults_env .env
+  set_stack_default_env_value .env BDAG_FASTSYNC_RANGE_BLOCKS
+  set_stack_default_env_value .env BDAG_FASTSYNC_PREPROCESS_WORKERS
+  set_stack_default_env_value .env BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED
+  set_stack_default_env_value .env BDAG_CHAIN_PEERSTORE_LOG_TAIL
   set_env_value .env BDAG_INSTALL_APPLIANCE_HOST_PROFILE "$(env_value BDAG_INSTALL_APPLIANCE_HOST_PROFILE 1)"
   set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_DISABLE_SERVICES "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_DISABLE_SERVICES 0)"
   set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_RELOAD_DOCKER "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_RELOAD_DOCKER 1)"
@@ -537,74 +579,74 @@ configure_env() {
     esac
   fi
   set_env_value .env BDAG_FASTARTIFACTSYNC_ENABLED "$fastartifact_enabled"
-  set_env_value .env SYNC_SOURCE_NODE "0"
+  set_stack_default_env_value .env SYNC_SOURCE_NODE
   set_env_value .env NODE_ARGS_APPEND ""
-  set_env_value .env BDAG_FASTSNAP_SEED_TIMER_ENABLED 0
-  set_env_value .env BDAG_RAWDATADIR_SOURCE_MODE auto
+  set_stack_default_env_value .env BDAG_FASTSNAP_SEED_TIMER_ENABLED
+  set_stack_default_env_value .env BDAG_RAWDATADIR_SOURCE_MODE
   set_env_value .env BDAG_RAWDATADIR_ARTIFACT_BASE "./data-restore/rawdatadir"
-  set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE auto
+  set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE
   set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE "./data-restore/rawdatadir-sidecar-content"
-  set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP 2
-  set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED 1
+  set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP
+  set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED
   set_env_value .env BDAG_RAWDATADIR_ACTIVE_SERVICE "node"
-  set_env_value .env BDAG_RAWDATADIR_FINALIZE 0
+  set_stack_default_env_value .env BDAG_RAWDATADIR_FINALIZE
   set_env_value .env BDAG_RAWDATADIR_PEERS ""
   set_env_value .env BDAG_RAWDATADIR_TRUSTED_SIGNERS ""
-  set_env_value .env BDAG_IPFS_CONTENT_SIDECAR_MODE auto
+  set_stack_default_env_value .env BDAG_IPFS_CONTENT_SIDECAR_MODE
   set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_DIR "./data-restore/rawdatadir-sidecar-content/current"
   set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST "./data-restore/rawdatadir-sidecar-content/current/manifest.json"
-  set_env_value .env BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT 0
-  set_env_value .env BDAG_IPFS_CONTENT_PUBLISH_IPNS 0
+  set_stack_default_env_value .env BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT
+  set_stack_default_env_value .env BDAG_IPFS_CONTENT_PUBLISH_IPNS
   set_env_value .env BDAG_IPFS_CONTENT_IPNS_KEY ""
-  set_env_value .env BDAG_IPFS_CONTENT_REPUBLISH_IPNS_WHILE_WAITING 1
-  set_env_value .env BDAG_IPFS_CONTENT_IPNS_TTL "1m"
-  set_env_value .env BDAG_IPFS_CONTENT_IPNS_LIFETIME "8760h"
+  set_stack_default_env_value .env BDAG_IPFS_CONTENT_REPUBLISH_IPNS_WHILE_WAITING
+  set_stack_default_env_value .env BDAG_IPFS_CONTENT_IPNS_TTL
+  set_stack_default_env_value .env BDAG_IPFS_CONTENT_IPNS_LIFETIME
   set_env_value .env BDAG_IPFS_CONTENT_DISCOVERY_FILE "./ops/ipfs-content-discovery.json"
   set_env_value .env BDAG_IPFS_CONTENT_LATEST_IPNS "/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk"
   set_env_value .env BDAG_IPFS_CONTENT_DEFAULT_INDEX_CID "bafkreia7jk2ljqi3raiohugp6nw3633njfp7jmnuvqh47po52et4kupu2a"
-  set_env_value .env BDAG_IPFS_CONTENT_DEFAULT_ROOT_CID ""
+  set_stack_default_env_value .env BDAG_IPFS_CONTENT_DEFAULT_ROOT_CID
   set_env_value .env BDAG_IPFS_CONTENT_STATUS_FILE "./ops/runtime/ipfs-content-sidecar-status.json"
   set_env_value .env BDAG_IPFS_CONTENT_LATEST_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
-  set_env_value .env BDAG_IPFS_SEGMENT_WRITER_MODE auto
-  set_env_value .env BDAG_IPFS_SEGMENT_START_POLICY live_tail
-  set_env_value .env BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS 600
-  set_env_value .env BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT 300
-  set_env_value .env BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN 1
-  set_env_value .env BDAG_IPFS_SEGMENT_MAX_RPC_PER_SECOND 25
-  set_env_value .env BDAG_IPFS_SEGMENT_RPC_TIMEOUT 8
-  set_env_value .env BDAG_IPFS_SEGMENT_BLOCK_RPC_RETRIES 2
-  set_env_value .env BDAG_IPFS_SEGMENT_PUBLISH_IPNS 0
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_MODE
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_START_POLICY
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_MAX_RPC_PER_SECOND
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_RPC_TIMEOUT
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_BLOCK_RPC_RETRIES
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_PUBLISH_IPNS
   set_env_value .env BDAG_IPFS_SEGMENT_IPNS_KEY ""
-  set_env_value .env BDAG_IPFS_SEGMENT_IPNS_TTL "1m"
-  set_env_value .env BDAG_IPFS_SEGMENT_IPNS_LIFETIME "8760h"
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_IPNS_TTL
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_IPNS_LIFETIME
   set_env_value .env BDAG_IPFS_SEGMENT_STATUS_FILE "./ops/runtime/ipfs-content/segment-writer-status.json"
   set_env_value .env BDAG_IPFS_SEGMENT_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
-  set_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOTS 1
-  set_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_HOURS 720
-  set_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS 64
-  set_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WORKERS 12
-  set_env_value .env BDAG_DASHBOARD_HISTORY_REBUILD_PRESERVE_ASIC_HISTORY 1
-  set_env_value .env BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC 1
-  set_env_value .env BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS 900
-  set_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT 1
-  set_env_value .env BDAG_CATCHUP_PAUSE_ENABLED 1
-  set_env_value .env BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS 300
-  set_env_value .env BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED 1
-  set_env_value .env BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS 25
-  set_env_value .env BDAG_CATCHUP_IOWAIT_WARN_PERCENT 15
-  set_env_value .env BDAG_CATCHUP_IO_SOME_AVG10_WARN 20.0
-  set_env_value .env BDAG_CATCHUP_IO_FULL_AVG10_WARN 10.0
-  set_env_value .env BDAG_CATCHUP_NODE_RECREATE_ENABLED 1
-  set_env_value .env BDAG_CATCHUP_NODE_CACHE_MB 6144
-  set_env_value .env BDAG_CATCHUP_NODE_CACHE_MIN_MB 1024
-  set_env_value .env BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT 40
-  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MODE auto
-  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS 300
-  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS 1000
-  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MIN_GAIN_BLOCKS 1000
-  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED 1
-  set_env_value .env BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS 0
-  set_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT 21600s
+  set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOTS
+  set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_HOURS
+  set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS
+  set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WORKERS
+  set_stack_default_env_value .env BDAG_DASHBOARD_HISTORY_REBUILD_PRESERVE_ASIC_HISTORY
+  set_stack_default_env_value .env BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC
+  set_stack_default_env_value .env BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS
+  set_stack_default_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT
+  set_stack_default_env_value .env BDAG_CATCHUP_PAUSE_ENABLED
+  set_stack_default_env_value .env BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS
+  set_stack_default_env_value .env BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED
+  set_stack_default_env_value .env BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS
+  set_stack_default_env_value .env BDAG_CATCHUP_IOWAIT_WARN_PERCENT
+  set_stack_default_env_value .env BDAG_CATCHUP_IO_SOME_AVG10_WARN
+  set_stack_default_env_value .env BDAG_CATCHUP_IO_FULL_AVG10_WARN
+  set_stack_default_env_value .env BDAG_CATCHUP_NODE_RECREATE_ENABLED
+  set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MB
+  set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MIN_MB
+  set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT
+  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MODE
+  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS
+  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS
+  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MIN_GAIN_BLOCKS
+  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED
+  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS
+  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT
   configure_active_node_env
   configure_node_mining_env "$node_mining_enabled" "$mining_address"
 

@@ -9,7 +9,7 @@ Environment=BDAG_PROJECT_ROOT=/home/jeremy/blockdag-mining-pool/stack
 Environment=BDAG_RUNTIME_DIR=/home/jeremy/blockdag-mining-pool/stack/ops/runtime
 Environment=BDAG_POOL_ENV_FILE=/home/jeremy/blockdag-mining-pool/stack/.env
 Environment=BDAG_NODE_SERVICES=node
-Environment=BDAG_STACK_SERVICES=postgres,node,pool,dashboard
+Environment=BDAG_STACK_SERVICES=postgres,node,pool
 Environment=BDAG_POOL_CONTAINER=pool
 Environment=BDAG_POOL_DB_CONTAINER=postgres
 Environment=BDAG_STATUS_SAMPLER_ENABLED=1

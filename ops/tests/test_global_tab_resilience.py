@@ -660,7 +660,7 @@ class GlobalLocalPoolOverlayTests(unittest.TestCase):
         pool_ops.read_global_pool_labels = self.old_read_global_pool_labels
         pool_ops.NODES = self.old_nodes
 
-    def test_local_pool_credit_row_uses_asic_worker_identity(self) -> None:
+    def test_local_pool_credit_row_uses_single_asic_worker_identity(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         pool_ops.NODES = ["node"]
         pool_ops.pool_db_json = lambda _sql: [
@@ -684,16 +684,6 @@ class GlobalLocalPoolOverlayTests(unittest.TestCase):
                     "last_shares_window": 11,
                     "last_configured_ok": True,
                     "last_share_epoch": 200,
-                },
-                {
-                    "ip": "192.168.1.108",
-                    "mac": "28:e2:97:1e:c0:b6",
-                    "display_name": "Stale",
-                    "device_type": "asic",
-                    "last_workers": [wallet],
-                    "last_shares_window": 0,
-                    "last_blocks_window": 99,
-                    "last_share_epoch": 100,
                 }
             ]
         }
@@ -715,19 +705,90 @@ class GlobalLocalPoolOverlayTests(unittest.TestCase):
         self.assertEqual(rows[0]["found_blocks"], 7)
         self.assertEqual(rows[0]["credited_bdag"], "70.00")
 
+    def test_local_pool_shared_worker_uses_pool_aggregate_identity(self) -> None:
+        wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        captured_sql = {}
+        pool_ops.NODES = ["node"]
+
+        def fake_pool_db_json(sql: str):
+            captured_sql["sql"] = sql
+            return [
+                {
+                    "miner_address": wallet.lower(),
+                    "credit_count": 11,
+                    "found_blocks": 11,
+                    "total_wei": "110000000000000000000",
+                    "first_seen_at": "2026-05-27T00:00:00Z",
+                    "last_seen_at": "2026-05-27T00:01:00Z",
+                }
+            ]
+
+        pool_ops.pool_db_json = fake_pool_db_json
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {
+                    "ip": "192.168.1.107",
+                    "mac": "28:e2:97:1e:c0:b5",
+                    "device_type": "asic",
+                    "last_workers": [wallet],
+                    "last_shares_window": 11,
+                    "last_configured_ok": True,
+                    "last_share_epoch": 200,
+                },
+                {
+                    "ip": "192.168.1.108",
+                    "mac": "28:e2:97:1e:c0:b6",
+                    "device_type": "asic",
+                    "last_workers": [wallet.lower()],
+                    "last_shares_window": 9,
+                    "last_configured_ok": True,
+                    "last_share_epoch": 201,
+                },
+            ]
+        }
+
+        rows = pool_ops.collect_local_pool_global_clusters(
+            scan_window_seconds=120,
+            total_global_blocks=100,
+            scan_window_hours=Decimal("0.0333333333"),
+            price={"status": "ok", "usd": "0.01", "zar": "0.18"},
+        )
+
+        self.assertIn("lower(c.miner_address) AS miner_address", captured_sql["sql"])
+        self.assertIn("GROUP BY lower(c.miner_address)", captured_sql["sql"])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["address"], wallet.lower())
+        self.assertEqual(rows[0]["pool_name"], "Local pool (2 ASICs)")
+        self.assertEqual(rows[0]["pool_label"], f"Local pool (2 ASICs) ({pool_ops.short_eth_address(wallet.lower())})")
+        self.assertEqual(rows[0]["device_type"], "pool")
+        self.assertEqual(rows[0]["mac"], "")
+        self.assertEqual(rows[0]["identity_key"], "")
+        self.assertEqual(rows[0]["local_asic_count"], 2)
+        self.assertEqual(rows[0]["local_miner_count"], 2)
+        self.assertEqual(rows[0]["local_macs"], ["28:e2:97:1e:c0:b5", "28:e2:97:1e:c0:b6"])
+        self.assertEqual(rows[0]["credit_blocks"], 11)
+
     def test_local_pool_overlay_is_preserved_when_address_matches_chain_cluster(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         merged = pool_ops.merge_global_local_pool_clusters(
             [{"address": wallet, "blocks": 2, "credit_blocks": 2, "last_seen_at": "2026-05-27T00:01:00Z"}],
-            [{"address": wallet, "blocks": 3, "pool_name": "Achilles-0b5", "local_pool": True, "credit_blocks": 3}],
+            [{
+                "address": wallet,
+                "blocks": 3,
+                "pool_name": "Local pool (2 ASICs)",
+                "local_pool": True,
+                "credit_blocks": 3,
+                "local_asic_count": 2,
+            }],
         )
 
         self.assertEqual(len(merged), 1)
         self.assertTrue(merged[0]["local_pool"])
-        self.assertEqual(merged[0]["pool_name"], "Achilles-0b5")
+        self.assertEqual(merged[0]["pool_name"], "Local pool (2 ASICs)")
         self.assertEqual(merged[0]["blocks"], 2)
         self.assertEqual(merged[0]["credit_blocks"], 2)
         self.assertEqual(merged[0]["local_credit_blocks"], 3)
+        self.assertEqual(merged[0]["local_asic_count"], 2)
 
     def test_local_pool_only_rows_do_not_create_global_chain_production(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
