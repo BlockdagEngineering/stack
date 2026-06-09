@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import Any
 
 from incident_journal import append_incident
-from pool_ops import LOG_DIR, RUNTIME_DIR, collect_status_cached, ensure_runtime, normalize_mac, now_iso
+from pool_ops import LOG_DIR, RUNTIME_DIR, ensure_runtime, now_iso
+from pool_ops import normalize_mac
+from stack_status_source import StackStatusUnavailable, collect_stack_status
 
 
 def load_runtime_env_defaults() -> None:
@@ -36,7 +38,11 @@ def load_runtime_env_defaults() -> None:
 load_runtime_env_defaults()
 
 
-DASHBOARD_URL = os.environ.get("BDAG_MINING_GUARD_COLLECTOR_URL", "http://127.0.0.1:9280/api/status")
+DASHBOARD_URL = (
+    os.environ.get("BDAG_MINING_GUARD_STATUS_URL")
+    or os.environ.get("BDAG_MINING_GUARD_COLLECTOR_URL")
+    or "http://127.0.0.1:9280/api/status"
+)
 DASHBOARD_TIMEOUT = float(os.environ.get("BDAG_MINING_GUARD_DASHBOARD_TIMEOUT", "20"))
 EXPECTED_ASIC_MAC = normalize_mac(os.environ.get("BDAG_EXPECTED_ASIC_MAC", ""))
 EXPECTED_WALLET = os.environ.get("BDAG_EXPECTED_MINING_WALLET", "").strip()
@@ -182,9 +188,8 @@ def as_float(value: Any) -> float | None:
 
 def status_api() -> tuple[dict[str, Any] | None, str]:
     try:
-        with urllib.request.urlopen(DASHBOARD_URL, timeout=DASHBOARD_TIMEOUT) as response:
-            return json.loads(response.read(4_000_000).decode("utf-8", "replace")), ""
-    except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        return collect_stack_status(include_logs=True, collector_url=DASHBOARD_URL, timeout=DASHBOARD_TIMEOUT), ""
+    except (StackStatusUnavailable, OSError, TimeoutError, json.JSONDecodeError) as exc:
         return None, str(exc)
 
 
@@ -192,10 +197,7 @@ def fallback_status() -> tuple[dict[str, Any] | None, str]:
     status, error = status_api()
     if status is not None:
         return status, ""
-    try:
-        return collect_status_cached(include_logs=True), f"dashboard API unavailable; used direct status: {error}"
-    except Exception as exc:  # noqa: BLE001 - this guard must report failures, not crash silently.
-        return None, f"{error}; direct status failed: {exc}"
+    return None, error
 
 
 def find_expected_miner(status: dict[str, Any]) -> dict[str, Any]:

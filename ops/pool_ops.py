@@ -6344,22 +6344,36 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         for node in managed_node_details
         if bool(node_details.get(node, {}).get("node_busy_syncing"))
     ]
-    if busy_syncing_nodes and sync_progress.get("status") == "synced" and not pool_has_recent_paid_work:
+    active_import_nodes = [
+        node
+        for node in managed_node_details
+        if bool(node_details.get(node, {}).get("importing"))
+        or (
+            node_details.get(node, {}).get("last_import_age_seconds") is not None
+            and safe_int(node_details.get(node, {}).get("last_import_age_seconds"), NODE_IMPORT_STALE_SECONDS + 1) <= NODE_IMPORT_STALE_SECONDS
+        )
+    ]
+    sync_blocked_nodes = unique_names([*busy_syncing_nodes, *active_import_nodes])
+    if sync_blocked_nodes and sync_progress.get("status") != "syncing":
         sync_progress = dict(sync_progress)
         sync_progress["status"] = "syncing"
-        sync_progress["error"] = "node busy syncing"
-        sync_progress["source"] = "nodes:busy-syncing"
+        sync_progress["error"] = "node busy syncing" if busy_syncing_nodes else "node importing blocks"
+        sync_progress["source"] = "nodes:busy-syncing" if busy_syncing_nodes else "nodes:importing"
         nodes_progress = dict(sync_progress.get("nodes") or {})
-        for node in busy_syncing_nodes:
+        for node in sync_blocked_nodes:
             node_progress = nodes_progress.get(node)
             if isinstance(node_progress, dict):
                 updated_node_progress = dict(node_progress)
                 updated_node_progress["status"] = "syncing"
-                updated_node_progress["error"] = "node busy syncing"
+                updated_node_progress["error"] = "node busy syncing" if node in busy_syncing_nodes else "node importing blocks"
                 nodes_progress[node] = updated_node_progress
         sync_progress["nodes"] = nodes_progress
-        sync_health["node_busy_syncing"] = True
-        sync_health["node_busy_syncing_nodes"] = busy_syncing_nodes
+        sync_health["node_busy_syncing"] = bool(busy_syncing_nodes)
+        if busy_syncing_nodes:
+            sync_health["node_busy_syncing_nodes"] = busy_syncing_nodes
+        sync_health["node_importing"] = bool(active_import_nodes)
+        if active_import_nodes:
+            sync_health["node_importing_nodes"] = active_import_nodes
     catchup_mining_ready = bool(
         sync_progress.get("status") == "synced"
         and not selected_source_unready_reasons

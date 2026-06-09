@@ -19,6 +19,7 @@ import automation_control
 from incident_journal import append_incident
 from guard_core import automation_mutation_allowed
 import pool_start_gate
+from stack_status_source import collect_stack_status
 from pool_ops import (
     LOG_DIR,
     NODES,
@@ -27,7 +28,6 @@ from pool_ops import (
     PROJECT_ROOT,
     RUNTIME_DIR,
     action_log_path,
-    collect_status_cached,
     configure_miner,
     default_miner_pool_settings,
     ensure_runtime,
@@ -1558,7 +1558,7 @@ def boot_repair(
         reason = str(marker.get("reason") or "dirty shutdown marker detected")
         log(f"boot-repair found dirty shutdown marker: {reason}")
         try:
-            collect_status_cached(include_logs=True)
+            collect_stack_status(include_logs=True)
         except Exception as exc:  # noqa: BLE001 - boot repair should still attempt the conservative repair.
             log(f"boot-repair preflight status check failed: {exc}")
 
@@ -1597,7 +1597,7 @@ def boot_repair(
         return payload
 
     try:
-        boot_status = collect_status_cached(include_logs=True)
+        boot_status = collect_stack_status(include_logs=True)
     except Exception as exc:  # noqa: BLE001 - boot repair should degrade gracefully on a bad status probe.
         log(f"boot-repair status check failed: {exc}")
         boot_status = {"stack_failures": [str(exc)], "failures": [str(exc)]}
@@ -1676,7 +1676,7 @@ def check_once(
     repair: bool = True,
 ) -> dict[str, Any]:
     state = read_state()
-    status = collect_status_cached(include_logs=True)
+    status = collect_stack_status(include_logs=True)
     stack_failures = status.get("stack_failures", status["failures"])
     miner_failures = status.get("miner_failures", [])
     failures = stack_failures + miner_failures

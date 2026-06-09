@@ -17,6 +17,7 @@ import automation_control
 from incident_journal import append_incident
 from guard_core import automation_mutation_allowed, should_emit, stable_failure_signature, start_unit
 import pool_start_gate
+from stack_status_source import StackStatusUnavailable, collect_stack_status
 from pool_ops import (
     LOG_DIR,
     NODES,
@@ -37,8 +38,15 @@ STATE_FILE = RUNTIME_DIR / "stack-sentinel-state.json"
 SYNC_COORDINATOR_STATE_FILE = RUNTIME_DIR / "sync-coordinator-state.json"
 LOG_FILE = LOG_DIR / "stack-sentinel.log"
 LOCK_FILE = RUNTIME_DIR / "stack-sentinel.lock"
-DASHBOARD_URL = os.environ.get("BDAG_SENTINEL_DASHBOARD_URL", "http://127.0.0.1:8088/api/status")
-DASHBOARD_TIMEOUT = float(os.environ.get("BDAG_SENTINEL_DASHBOARD_TIMEOUT", "20"))
+STATUS_URL = (
+    os.environ.get("BDAG_SENTINEL_STATUS_URL")
+    or os.environ.get("BDAG_SENTINEL_COLLECTOR_URL")
+    or os.environ.get("BDAG_SENTINEL_DASHBOARD_URL")
+    or "http://127.0.0.1:9280/api/status"
+)
+STATUS_TIMEOUT = float(
+    os.environ.get("BDAG_SENTINEL_STATUS_TIMEOUT", os.environ.get("BDAG_SENTINEL_DASHBOARD_TIMEOUT", "20"))
+)
 INCIDENT_COOLDOWN_SECONDS = int(os.environ.get("BDAG_SENTINEL_INCIDENT_COOLDOWN_SECONDS", "300"))
 SHARE_STALE_SECONDS = int(os.environ.get("BDAG_SENTINEL_SHARE_STALE_SECONDS", "180"))
 NODE_LOG_LOOKBACK_SECONDS = int(os.environ.get("BDAG_SENTINEL_NODE_LOG_LOOKBACK_SECONDS", "300"))
@@ -123,9 +131,8 @@ def automation_action_for_container(service: str, recreate: bool = False) -> str
 
 def status_api() -> tuple[dict[str, Any] | None, str]:
     try:
-        with urllib.request.urlopen(DASHBOARD_URL, timeout=DASHBOARD_TIMEOUT) as response:
-            return json.loads(response.read(4_000_000).decode("utf-8", "replace")), ""
-    except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        return collect_stack_status(include_logs=True, collector_url=STATUS_URL, timeout=STATUS_TIMEOUT), ""
+    except (StackStatusUnavailable, OSError, TimeoutError, json.JSONDecodeError) as exc:
         return None, str(exc)
 
 
@@ -496,23 +503,23 @@ def main() -> int:
             start_unit(unit, state, now, log=log, incident_source="stack-sentinel", cooldown_seconds=INCIDENT_COOLDOWN_SECONDS)
 
         status, error = status_api()
-        state["dashboard_status_ok"] = status is not None
-        state["dashboard_status_error"] = error
+        state["stack_status_ok"] = status is not None
+        state["stack_status_error"] = error
         if status is None and should_emit(
             state,
-            "dashboard_status_unavailable",
+            "stack_status_unavailable",
             error or "unknown",
             now,
             INCIDENT_COOLDOWN_SECONDS,
         ):
             append_incident(
-                "sentinel_dashboard_status_unavailable",
+                "sentinel_stack_status_unavailable",
                 "critical",
                 "stack-sentinel",
-                "Dashboard status API is unavailable to the stack sentinel",
-                {"url": DASHBOARD_URL, "error": error},
+                "Stack status is unavailable to the stack sentinel",
+                {"url": STATUS_URL, "error": error},
             )
-            notify_user("BlockDAG dashboard status unavailable", error[:160] or "status API timed out")
+            notify_user("BlockDAG stack status unavailable", error[:160] or "status source timed out")
         elif status is not None:
             overall = str(status.get("overall") or "")
             failures = status.get("failures") if isinstance(status.get("failures"), list) else []
