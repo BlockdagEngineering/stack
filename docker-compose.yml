@@ -8,10 +8,6 @@ x-mining-logging: &mining-logging
 x-build-args: &build-args
   SNAPSHOT_PATH: ${SNAPSHOT_PATH:-docker/no-snapshot.marker}
 
-x-dashboard-build-args: &dashboard-build-args
-  DASHBOARD_REPO: ${DASHBOARD_REPO:-https://github.com/BlockdagEngineering/dashboard.git}
-  DASHBOARD_REF: develop
-
 x-collector-build-args: &collector-build-args
   COLLECTOR_REPO: ${COLLECTOR_REPO:-https://github.com/BlockdagEngineering/dashboard.git}
   COLLECTOR_REF: ${COLLECTOR_REF:-develop}

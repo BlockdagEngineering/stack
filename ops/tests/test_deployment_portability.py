@@ -88,9 +88,11 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("BDAG_POOL_CONTAINER: pool", compose)
         self.assertIn("BDAG_POOL_DB_CONTAINER: postgres", compose)
         self.assertIn("BDAG_NODE_RPC_URL: http://node:38131", compose)
-        self.assertIn("DASHBOARD_EVM_RPC_URL: http://node:18545", compose)
+        self.assertIn("BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://collector:9280}", dashboard_block)
+        self.assertNotIn("DASHBOARD_EVM_RPC_URL:", compose)
         self.assertNotIn("BDAG_RPC_URL: http://node:38131", compose)
-        self.assertIn("node: { condition: service_started }", dashboard_block)
+        self.assertIn("collector: { condition: service_started }", dashboard_block)
+        self.assertNotIn("node: { condition: service_started }", dashboard_block)
         self.assertNotIn("pool: { condition: service_started }", dashboard_block)
 
     def test_mainnet_is_the_only_deployment_network_name(self) -> None:
@@ -127,17 +129,22 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         dockerfile_dev = (ROOT_DIR / "dockerfile-dev").read_text(encoding="utf-8")
 
         self.assertIn("dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../dashboard}", compose)
-        self.assertIn("COPY --from=dashboard_src . /opt/dashboard", dockerfile)
-        self.assertIn("COPY --from=dashboard_src . /src/dashboard", dockerfile_dev)
+        self.assertIn("collector_src: ${COLLECTOR_SRC_CONTEXT:-../collector}", compose)
+        self.assertIn("test -f ./bin/dashboard", dockerfile)
+        self.assertIn("COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard", dockerfile)
+        self.assertIn("COPY --from=collector_src . /opt/collector", dockerfile)
+        self.assertIn("COPY --from=dashboard_src . .", dockerfile_dev)
 
-    def test_dashboard_ref_build_arg_is_pinned_to_develop(self) -> None:
+    def test_dashboard_release_build_has_no_dead_git_ref_arg(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfile = (ROOT_DIR / "dockerfile").read_text(encoding="utf-8")
+        release_validator = (ROOT_DIR / "scripts" / "validate-release-build.sh").read_text(encoding="utf-8")
 
-        self.assertIn("DASHBOARD_REF: develop", compose)
+        self.assertNotIn("DASHBOARD_REPO:", compose)
+        self.assertNotIn("DASHBOARD_REF:", compose)
         self.assertNotIn("DASHBOARD_REF:-", compose)
-        self.assertIn('ref="develop"', dockerfile)
         self.assertNotIn('ref="${DASHBOARD_REF:-develop}"', dockerfile)
+        self.assertIn('reject_grep \'DASHBOARD_REF:\' "docker-compose.yml"', release_validator)
 
     def test_host_dashboard_env_uses_host_reachable_chain_rpc(self) -> None:
         installer = (ROOT_DIR / "ops" / "install-dashboard.sh").read_text(encoding="utf-8")
@@ -219,7 +226,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
 
         self.assertIn('if [[ "$mode" == "source" && -e "$root/ops/observability" ]]; then', validator)
         self.assertIn('need_grep \'NODE_RPC_URL: http://node:38131\' "docker-compose.yml"', validator)
-        self.assertIn('reject_grep \'NODE_RPC_URL\'\'S\' "docker-compose.yml"', validator)
+        self.assertIn("reject_grep '(^|[^A-Z0-9_])NODE_RPC_URLS([^A-Z0-9_]|$)' \"docker-compose.yml\"", validator)
         self.assertIn('need_grep \'BDAG_STACK_SERVICES=postgres,node,pool\' ".env.example"', validator)
         self.assertIn('reject_grep \'container_name:\' "docker-compose.yml"', validator)
 

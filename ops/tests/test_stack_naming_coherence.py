@@ -193,6 +193,25 @@ class StackNamingCoherenceTests(unittest.TestCase):
             sentinel,
         )
         self.assertIn(
+            '${INSTANCE}-status-sampler.service,${INSTANCE}-watchdog.service,${INSTANCE}-p2p-guard.service',
+            installer,
+        )
+        self.assertNotIn(
+            '${INSTANCE}-dashboard.service,${INSTANCE}-watchdog.service,${INSTANCE}-node-child-guard.service,'
+            '${INSTANCE}-p2p-guard.service',
+            installer,
+        )
+        self.assertIn(
+            '${INSTANCE}-stack-sentinel.timer,${INSTANCE}-sync-coordinator.timer,'
+            '${INSTANCE}-chain-restore-guard.timer,${INSTANCE}-local-peers.timer,'
+            '${INSTANCE}-mining-30min-guard.timer',
+            installer,
+        )
+        self.assertNotIn(
+            '${INSTANCE}-chain-presync.timer,${INSTANCE}-hourly-snapshot.timer',
+            installer,
+        )
+        self.assertIn(
             '"bdag-stack-sentinel.timer,bdag-sync-coordinator.timer,bdag-chain-restore-guard.timer,"',
             sentinel,
         )

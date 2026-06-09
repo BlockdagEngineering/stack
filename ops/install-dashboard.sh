@@ -723,8 +723,8 @@ Type=oneshot
 WorkingDirectory=$PROJECT_ROOT
 Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
 Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
-Environment=BDAG_SENTINEL_USER_SERVICES=${INSTANCE}-dashboard.service,${INSTANCE}-watchdog.service,${INSTANCE}-node-child-guard.service,${INSTANCE}-p2p-guard.service
-Environment=BDAG_SENTINEL_USER_TIMERS=${INSTANCE}-stack-sentinel.timer,${INSTANCE}-mining-30min-guard.timer,${INSTANCE}-node-child-guard.timer,${INSTANCE}-sync-coordinator.timer,${INSTANCE}-chain-restore-guard.timer,${INSTANCE}-chain-presync.timer,${INSTANCE}-hourly-snapshot.timer,${INSTANCE}-local-peers.timer,${INSTANCE}-incident-reporter.timer
+Environment=BDAG_SENTINEL_USER_SERVICES=${INSTANCE}-status-sampler.service,${INSTANCE}-watchdog.service,${INSTANCE}-p2p-guard.service
+Environment=BDAG_SENTINEL_USER_TIMERS=${INSTANCE}-stack-sentinel.timer,${INSTANCE}-sync-coordinator.timer,${INSTANCE}-chain-restore-guard.timer,${INSTANCE}-local-peers.timer,${INSTANCE}-mining-30min-guard.timer
 EnvironmentFile=-$ENV_FILE
 ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/stack_sentinel.py
 Nice=10
