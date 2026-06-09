@@ -28,6 +28,16 @@ and chain-sync packaging. The dashboard repository owns the dashboard/control
 plane source, and any dashboard code imported into this RC must preserve the
 release build gates in `scripts/validate-release-build.sh`.
 
+## Stack Configuration Source Of Truth
+
+Stack-owned deployment defaults live in `ops/config/stack-defaults.env`.
+Examples, compose fallback expressions, release installers, dashboard runtime
+helpers, watchdogs, and validators are projections of those defaults and must
+stay coherent through `scripts/validate-stack-defaults.py`. Do not reintroduce
+hard-coded copies of values such as dashboard scan windows, status cache
+durations, sidecar rsync bandwidth caps, catch-up thresholds, or pool template
+pressure defaults in installer or validation code.
+
 ## No-Miner Sync-Only Invariant
 
 When a deployment has no managed or connected miners, node services must run as
@@ -42,18 +52,33 @@ chain catch-up over template generation.
 When actual ASIC demand is present, the opposite invariant applies: the selected
 node must be able to build templates and accept block candidates during brief
 false `Client in initial download` windows. Runtime repairs must enable
-`BDAG_ENABLE_NODE_MINING=1`, `BDAG_NODE_MODULES=Blockdag,miner`, and
-`BDAG_NODE_MINING_ARGS` containing `--allowminingwhennearlysynced`,
-`--allowsubmitwhennotsynced`, `--miner`, and a non-zero `--miningaddr=<wallet>`.
+`BDAG_ENABLE_NODE_MINING=1`, `BDAG_NODE_MODULES=Blockdag`, and
+`BDAG_NODE_MINING_ARGS` containing `--miner` and a non-zero
+`--miningaddr=<wallet>`.
+Do not add `miner` to `BDAG_NODE_MODULES`; this release image enables mining
+through the `--miner` node argument and exposes templates through the `Blockdag`
+RPC module.
+Do not add `--allowminingwhennearlysynced` or `--allowsubmitwhennotsynced`.
+Those bypass flags can make template health report ready while the node has
+stale or absent P2P mining freshness; future runtime repair must remove them
+and keep the pool stopped until direct readiness passes.
 For constrained USB/router appliances also keep `--maxinbound=1`, because
 inbound catch-up peers and artifact requests have caused rewind/sync churn that
 converted valid ASIC work into `node-syncing`, `tip-overdue`, and
 `invalidated_job` losses.
 
-Any system with USB-backed blockchain data must avoid extra source-serving work
-by default. Keep `SYNC_SOURCE_NODE=0`. These nodes must still do normal
-outbound sync and block relay, but must not serve bulk chain data from the USB
-chain path unless a human deliberately overrides the policy for a proven
+Keep pool `getBlockTemplate` pressure below the node RPC client ceiling. Do not
+override `POOL_GBT_MIN_INTERVAL_MS` below `1000`, do not override
+`POOL_GBT_PRESSURE_INTERVAL_MS` below `250`, and keep node-health probes at
+least `10` seconds apart unless a measured soak test proves the node can absorb
+more frequent RPC traffic while importing and mining.
+
+Any system with USB-backed blockchain data is a FastSync/FastArtifact consumer,
+not a source, by default. Keep `SYNC_SOURCE_NODE=0`; do not reintroduce
+`NODE_ARGS_APPEND=--fastartifactsync` or artifact serving on low-IO USB hosts.
+These nodes must still do normal outbound sync and block relay, but must not
+serve bulk range, snapshot, or artifact traffic from the USB chain path unless a
+human deliberately overrides the policy for a proven
 high-IO source host.
 
 Fresh installs assume zero miner sources. Do not hard-code one, four, five, or
@@ -127,6 +152,15 @@ Normal shares must not fan out, and valid block candidates should return to the
 miner as soon as the active endpoint accepts them. Keep release defaults pinned
 to one endpoint.
 
+Installers and dashboards must publish the host-facing ASIC LAN endpoint, not a
+Docker bridge address. `BDAG_POOL_HOST`, `BDAG_POOL_URL`,
+`BDAG_MINER_SCAN_TARGET`, and `BDAG_ASIC_LAN_CIDRS` must be written during
+install/upgrade and passed into the dashboard container. Docker bridge CIDRs
+default to `172.16.0.0/12`; those addresses are infrastructure and must not be
+used as ASIC identities, miner scan targets, unmanaged miner rows, or the
+displayed Stratum endpoint unless an operator explicitly overrides the bridge
+filter for a nonstandard real ASIC LAN.
+
 Keep Issue #26 final release mitigations in
 `docs/final-release-issue-26-checklist.md` current when changing source repo
 pins, installer reset behavior, V2 sync defaults, or release packaging.
@@ -155,6 +189,13 @@ success. Keep `ops/deploy-live-runtime-update.sh` waiting for dashboard API
 recovery, fresh watchdog state when the watchdog is restarted, and running
 critical containers. If that post-deploy health gate fails, copied files must be
 rolled back from the backup manifest.
+
+After any full rebuild plus redeploy, always restart every affected stack
+container before declaring the work complete. For this mining stack that means
+`node`, `pool`, `postgres`, and `dashboard`; then verify container uptime, node
+RPC height, pool miner readiness, and accepted block-submit activity. Do not
+report a full rebuild/redeploy as complete before this restart and evidence
+exist.
 
 JSONL histories used by the dashboard should append each sample and compact only
 at a bounded threshold. Do not reintroduce full-history rewrite loops for every

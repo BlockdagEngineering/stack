@@ -37,3 +37,4 @@ logs/
 *.log
 sidechain-monitor.log
 ASIC-tools/
+perf-runs/

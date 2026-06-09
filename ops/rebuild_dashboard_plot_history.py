@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import pathlib
 import sys
 import time
@@ -123,23 +124,68 @@ def main() -> int:
         parser.error("--install and --dry-run are mutually exclusive")
 
     last_progress = {"at": 0.0}
+    started_at = pool_ops.now_iso()
+
+    def write_state(status: str, phase: str, **extra: Any) -> None:
+        pool_ops.write_dashboard_plot_rebuild_state(
+            {
+                "status": status,
+                "phase": phase,
+                "started_at": started_at,
+                "install": args.install and not args.dry_run,
+                "dry_run": args.dry_run,
+                "hours": args.hours,
+                "window_blocks": args.window_blocks,
+                "workers": args.workers,
+                "log_file": os.environ.get("BDAG_DASHBOARD_HISTORY_REBUILD_LOG_FILE", ""),
+                **extra,
+            }
+        )
 
     def progress(done: int, total: int, errors: int) -> None:
         now = time.time()
         if now - last_progress["at"] < 10 and done < total:
             return
         last_progress["at"] = now
-        print(json.dumps({"progress": done, "total": total, "errors": errors}), flush=True)
+        percent = round((float(done) / float(total)) * 100.0, 2) if total else 0.0
+        progress_payload = {"progress": done, "total": total, "errors": errors, "percent": percent}
+        write_state("running", "fetching sampled block headers", **progress_payload)
+        print(json.dumps(progress_payload), flush=True)
 
-    payload = pool_ops.rebuild_dashboard_plot_history_from_chain(
-        hours=args.hours,
-        window_blocks=args.window_blocks,
-        workers=args.workers,
-        install=args.install and not args.dry_run,
-        progress=progress,
-    )
-    if args.write_report:
-        payload["reports"] = write_report(payload)
+    write_state("running", "probing local chain RPC and planning samples", progress=0, total=0, errors=0, percent=0.0)
+    try:
+        payload = pool_ops.rebuild_dashboard_plot_history_from_chain(
+            hours=args.hours,
+            window_blocks=args.window_blocks,
+            workers=args.workers,
+            install=args.install and not args.dry_run,
+            progress=progress,
+        )
+        if args.write_report:
+            payload["reports"] = write_report(payload)
+        write_state(
+            str(payload.get("status") or "unknown"),
+            "complete",
+            finished_at=pool_ops.now_iso(),
+            progress=payload.get("fetched_header_count"),
+            total=payload.get("header_order_count"),
+            errors=payload.get("fetch_error_count"),
+            percent=100.0 if payload.get("fetch_error_count") == 0 else None,
+            latest_order=payload.get("latest_order"),
+            latest_at=payload.get("latest_at"),
+            sample_count=payload.get("sample_count"),
+            global_rows=payload.get("global_rows"),
+            earnings_rows=payload.get("earnings_rows"),
+            partial_samples=payload.get("partial_samples"),
+            wallet_24h_rebuild=payload.get("wallet_24h_rebuild"),
+            preserved_asic_history=payload.get("preserved_asic_history"),
+            history_files=payload.get("history_files"),
+            tier_counts=payload.get("tier_counts"),
+            reports=payload.get("reports"),
+        )
+    except Exception as exc:  # noqa: BLE001 - state file must explain failed rebuilds.
+        write_state("failed", "failed", finished_at=pool_ops.now_iso(), error=str(exc))
+        raise
     print(json.dumps(payload, indent=2, sort_keys=True, default=str))
     return 0 if payload.get("status") == "ok" else 2
 

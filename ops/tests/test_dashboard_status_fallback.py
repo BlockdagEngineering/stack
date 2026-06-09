@@ -20,6 +20,7 @@ class DashboardStatusFallbackTests(unittest.TestCase):
             "STATUS_CACHE_SECONDS": dashboard.STATUS_CACHE_SECONDS,
             "SAMPLER_CACHE_SECONDS": dashboard.SAMPLER_CACHE_SECONDS,
             "DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS": dashboard.DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS,
+            "SYNC_ESTIMATE_STATE_FILE": dashboard.SYNC_ESTIMATE_STATE_FILE,
             "collect_status_cached": dashboard.collect_status_cached,
             "time_time": dashboard.time.time,
         }
@@ -31,6 +32,7 @@ class DashboardStatusFallbackTests(unittest.TestCase):
         dashboard.STATUS_CACHE_SECONDS = self.originals["STATUS_CACHE_SECONDS"]
         dashboard.SAMPLER_CACHE_SECONDS = self.originals["SAMPLER_CACHE_SECONDS"]
         dashboard.DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS = self.originals["DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS"]
+        dashboard.SYNC_ESTIMATE_STATE_FILE = self.originals["SYNC_ESTIMATE_STATE_FILE"]
         dashboard.collect_status_cached = self.originals["collect_status_cached"]
         dashboard.time.time = self.originals["time_time"]
         dashboard.clear_api_cache()
@@ -218,6 +220,44 @@ class DashboardStatusFallbackTests(unittest.TestCase):
         self.assertEqual(payload["collector_budget_failure"]["class"], "waiting_for_status_sample")
         self.assertEqual(payload["collector_budget_failure"]["estimated_wait_seconds"], 30)
         self.assertIsNone(payload["collector_budget_failure"]["newest_cache_age_seconds"])
+
+    def test_sync_estimate_uses_catchup_pause_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dashboard.SYNC_ESTIMATE_STATE_FILE = pathlib.Path(tmp) / "sync-estimate.json"
+            payload = {
+                "sync_progress": {
+                    "status": "syncing",
+                    "remaining_blocks": 450,
+                    "nodes": {
+                        "node": {
+                            "current_block": 1000,
+                            "highest_block": 1450,
+                            "remaining_blocks": 450,
+                        }
+                    },
+                },
+                "sync_health": {},
+                "sync_coordinator": {},
+                "nodes": {"node": {}},
+                "managed_node_services": ["node"],
+                "catchup_policy": {
+                    "active": True,
+                    "lag_blocks": 450,
+                    "threshold_blocks": 300,
+                    "user_message": "Mining is intentionally paused while chain catch-up has priority.",
+                    "next_step": "Mining resumes when lag is at or below 300 blocks.",
+                },
+            }
+
+            enriched = dashboard.enrich_status_with_sync_estimate(payload)
+
+        estimate = enriched["sync_estimate"]
+        self.assertEqual(estimate["stage"], "Catch-up pause active")
+        self.assertTrue(estimate["catchup_pause_active"])
+        self.assertEqual(estimate["catchup_pause_lag_blocks"], 450)
+        self.assertEqual(estimate["catchup_pause_threshold_blocks"], 300)
+        self.assertEqual(estimate["narrative"], "Mining is intentionally paused while chain catch-up has priority.")
+        self.assertEqual(estimate["next_step"], "Mining resumes when lag is at or below 300 blocks.")
 
     def test_status_payload_fallback_estimates_wait_from_stale_cache_age(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

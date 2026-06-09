@@ -8,9 +8,9 @@ x-mining-logging: &mining-logging
 x-build-args: &build-args
   SNAPSHOT_PATH: ${SNAPSHOT_PATH:-docker/no-snapshot.marker}
 
-x-collector-build-args: &collector-build-args
-  COLLECTOR_REPO: ${COLLECTOR_REPO:-https://github.com/BlockdagEngineering/collector.git}
-  COLLECTOR_REF: develop
+x-dashboard-build-args: &dashboard-build-args
+  DASHBOARD_REPO: ${DASHBOARD_REPO:-https://github.com/BlockdagEngineering/dashboard.git}
+  DASHBOARD_REF: ${DASHBOARD_REF:-develop}
 
 x-dev-source-contexts: &dev-source-contexts
   stack_src: ${STACK_SRC_CONTEXT:-.}
@@ -26,19 +26,29 @@ x-node-critical: &node-critical
     - /var/tmp:size=${BDAG_NODE_TMPFS_SIZE:-512m},mode=1777
     - /run/bdag-ephemeral:size=${BDAG_NODE_TMPFS_SIZE:-512m},mode=1777
   shm_size: ${BDAG_NODE_SHM_SIZE:-512m}
-  cpu_shares: 4096
+  cpu_shares: ${BDAG_NODE_CPU_SHARES:-6144}
+  mem_swappiness: 0
   blkio_config:
     weight: 1000
   oom_score_adj: -900
+  ulimits:
+    nofile:
+      soft: 1048576
+      hard: 1048576
 
 x-pool-critical: &pool-critical
-  cpu_shares: 3072
+  cpu_shares: ${BDAG_POOL_CPU_SHARES:-5120}
+  mem_swappiness: 0
   blkio_config:
-    weight: 900
+    weight: 950
   oom_score_adj: -800
+  ulimits:
+    nofile:
+      soft: 1048576
+      hard: 1048576
 
-x-ops-low: &ops-low
-  cpu_shares: 256
+x-dashboard-low: &dashboard-low
+  cpu_shares: ${BDAG_DASHBOARD_CPU_SHARES:-128}
   blkio_config:
     weight: 100
   oom_score_adj: 300
@@ -51,11 +61,13 @@ services:
   # PostgreSQL for the mining pool. Schema is applied automatically on first
   # boot via /docker-entrypoint-initdb.d.
   # --------------------------------------------------------------------------
-  pool-db:
+  postgres:
     <<: *pool-critical
     image: postgres:15-bookworm
     restart: unless-stopped
     logging: *mining-logging
+    cpu_shares: ${BDAG_POOL_DB_CPU_SHARES:-4096}
+    shm_size: ${BDAG_POOL_DB_SHM_SIZE:-256m}
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
       - /var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
@@ -67,7 +79,7 @@ services:
       POSTGRES_DB:       ${POSTGRES_DB:-bdagpool}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - ${BDAG_POSTGRES_DATA_DIR:-./data/postgres}:/var/lib/postgresql/data
       - ./sql/pool-schema.sql:/docker-entrypoint-initdb.d/01-pool-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bdag_pool} -d ${POSTGRES_DB:-bdagpool}"]
@@ -101,9 +113,36 @@ services:
       TMPDIR: /tmp
       TMP: /tmp
       TEMP: /tmp
-      BDAG_NETWORK: ${BDAG_NETWORK:-}
+      BDAG_NETWORK: mainnet
       BDAG_EPHEMERAL_DIR: /run/bdag-ephemeral
       NODE_ARGS_APPEND: ${NODE_ARGS_APPEND:-}
+      BDAG_FASTSYNC_SNAPSHOT_PATH: ${BDAG_FASTSYNC_SNAPSHOT_PATH:-}
+      BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID: ${BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID:-}
+      BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX: ${BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX:-}
+      BDAG_FASTSYNC_ARTIFACT_MANIFEST_TTL: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST_TTL:-24h}
+      BDAG_FASTSNAP_ENABLED: ${BDAG_FASTSNAP_ENABLED:-1}
+      BDAG_FASTSNAP_REQUIRED: ${BDAG_FASTSNAP_REQUIRED:-0}
+      BDAG_FASTSNAP_PEERS_FILE: ${BDAG_FASTSNAP_PEERS_FILE:-/etc/bdagStack/node.conf}
+      BDAG_FASTSNAP_AUTO_MAX_PEERS: ${BDAG_FASTSNAP_AUTO_MAX_PEERS:-3}
+      BDAG_FASTSNAP_LEGACY_FALLBACK: ${BDAG_FASTSNAP_LEGACY_FALLBACK:-0}
+      BDAG_FASTSNAP_NETWORK: mainnet
+      BDAG_FASTSNAP_PEERS: ${BDAG_FASTSNAP_PEERS:-}
+      BDAG_FASTSNAP_MIN_TIP: ${BDAG_FASTSNAP_MIN_TIP:-0}
+      BDAG_FASTSNAP_TIMEOUT: ${BDAG_FASTSNAP_TIMEOUT:-90s}
+      BDAG_FASTSNAP_ARTIFACT_V2: ${BDAG_FASTSNAP_ARTIFACT_V2:-1}
+      BDAG_FASTSNAP_DIRECTORY_MODE: ${BDAG_FASTSNAP_DIRECTORY_MODE:-1}
+      BDAG_FASTSNAP_DIRECTORY_STAGING: ${BDAG_FASTSNAP_DIRECTORY_STAGING:-}
+      BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING: ${BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING:-1}
+      BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING: ${BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING:-1}
+      BDAG_FASTSNAP_PARALLELISM: ${BDAG_FASTSNAP_PARALLELISM:-4}
+      BDAG_FASTSNAP_RETRIES: ${BDAG_FASTSNAP_RETRIES:-5}
+      BDAG_FASTSNAP_RETRY_DELAY: ${BDAG_FASTSNAP_RETRY_DELAY:-10s}
+      BDAG_FASTSNAP_TRUSTED_SIGNERS: ${BDAG_FASTSNAP_TRUSTED_SIGNERS:-}
+      BDAG_FASTSNAP_ALLOW_UNSIGNED: ${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}
+      BDAG_FASTSNAP_KEEP_ARCHIVE: ${BDAG_FASTSNAP_KEEP_ARCHIVE:-0}
+      BDAG_FASTSNAP_LEDGER: ${BDAG_FASTSNAP_LEDGER:-}
+      BDAG_FASTSYNC_ARTIFACT_DIRECTORY: ${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}
+      BDAG_FASTSYNC_ARTIFACT_MANIFEST: ${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}
       SYNC_SOURCE_NODE: ${SYNC_SOURCE_NODE:-0}
       BDAG_STORAGE_PROFILE: ${BDAG_STORAGE_PROFILE:-auto}
       BDAG_NETWORK_TOPOLOGY: ${BDAG_NETWORK_TOPOLOGY:-auto}
@@ -113,16 +152,21 @@ services:
       BDAG_P2P_ADVERTISE_IP: ${BDAG_P2P_ADVERTISE_IP:-}
       BDAG_P2P_INTERFACE: ${BDAG_P2P_INTERFACE:-}
       BOOTSTRAP_PEER_ADDRESSES: ${BOOTSTRAP_PEER_ADDRESSES:-}
+      BDAG_FASTSYNC_PEERS: ${BDAG_FASTSYNC_PEERS:-}
+      BDAG_FASTSYNC_RANGE_BLOCKS: ${BDAG_FASTSYNC_RANGE_BLOCKS:-1024}
+      BDAG_FASTSYNC_PREPROCESS_WORKERS: ${BDAG_FASTSYNC_PREPROCESS_WORKERS:-1}
+      BDAG_ENABLE_NODE_MINING: ${BDAG_ENABLE_NODE_MINING:-0}
+      BDAG_NODE_MODULES: ${BDAG_NODE_MODULES:-Blockdag}
+      BDAG_NODE_MINING_ARGS: ${BDAG_NODE_MINING_ARGS:-}
       BDAG_ENTRYPOINT_CHOWN_MODE: ${BDAG_ENTRYPOINT_CHOWN_MODE:-needed}
       BDAG_NODEWORKER_LIVENESS_TIMEOUT: ${BDAG_NODEWORKER_LIVENESS_TIMEOUT:-5m}
     volumes:
-    # Note: The default behaviour is to keep any DB state from a previous run, 
-    # to prevent unintentional loss of synced chain data.
-    # so if you want to start fresh, you need to delete the volume explicity.
-    # `docker compose down && docker volume rm <project>_node-data`\
+      # Host-path data is preserved across container rebuilds. To start from an
+      # empty chain, stop the stack and move the configured BDAG_NODE_DATA_DIR
+      # aside deliberately.
 
-      - ${NODE_DATA_DIR:-node-data}:/var/lib/bdagStack/node
-      - nodeworker-data:/var/lib/bdagStack/nodeworker
+      - ${BDAG_NODE_DATA_DIR:-./data/node}:/var/lib/bdagStack/node
+      - ${BDAG_NODEWORKER_DATA_DIR:-./data/nodeworker}:/var/lib/bdagStack/nodeworker
       # node.conf in project root (copy from node.conf.example). gitignored.
       - ./node.conf:/etc/bdagStack/node.conf:ro
 
@@ -132,6 +176,7 @@ services:
   pool:
     <<: *pool-critical
     platform: ${DOCKER_PLATFORM:-linux/amd64}
+    shm_size: ${BDAG_POOL_SHM_SIZE:-256m}
     build:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
@@ -146,7 +191,7 @@ services:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
       - /var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     depends_on:
-      pool-db: { condition: service_healthy }
+      postgres: { condition: service_healthy }
     environment:
       TMPDIR: /tmp
       TMP: /tmp
@@ -157,7 +202,7 @@ services:
       POOL_SUBMIT_RPC_URLS: ${POOL_SUBMIT_RPC_URLS:-}
       POOL_RPC_BACKENDS: ${POOL_RPC_BACKENDS:-}
       POOL_RUNTIME_ADMIN_ENABLED: ${POOL_RUNTIME_ADMIN_ENABLED:-false}
-      PG_URL:       postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@pool-db:5432/${POSTGRES_DB:-bdagpool}?sslmode=disable
+      PG_URL:       postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bdagpool}?sslmode=disable
       # Stratum listen (inside container) — from root .env
       POOL_BIND_ADDR:     ${POOL_BIND_ADDR:-0.0.0.0:3334}
       NODE_RPC_USER:      ${NODE_RPC_USER:-test}
@@ -166,10 +211,19 @@ services:
       POOL_FEE_PERCENTAGE: ${POOL_FEE_PERCENTAGE:-1.0}
       POOL_BLOCK_MATURITY: ${POOL_BLOCK_MATURITY:-10}
       POOL_PAYOUT_MATURITY: ${POOL_PAYOUT_MATURITY:-4096}
+      POOL_RPC_ROUTER_NODE_HEALTH_ENABLED: ${POOL_RPC_ROUTER_NODE_HEALTH_ENABLED:-true}
       POOL_TEMPLATE_TTL_REFRESH_MS: ${POOL_TEMPLATE_TTL_REFRESH_MS:-500}
+      POOL_GBT_MIN_INTERVAL_MS: ${POOL_GBT_MIN_INTERVAL_MS:-1100}
+      POOL_GBT_PRESSURE_INTERVAL_MS: ${POOL_GBT_PRESSURE_INTERVAL_MS:-500}
+      POOL_GBT_PRESSURE_WINDOW_SECONDS: ${POOL_GBT_PRESSURE_WINDOW_SECONDS:-10}
       POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}
       POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS: ${POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS:-2500}
       POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}
+      POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS: ${POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS:-15}
+      POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS: ${POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS:-30}
+      POOL_RPC_ROUTER_NODE_HEALTH_UNREADY_THRESHOLD: ${POOL_RPC_ROUTER_NODE_HEALTH_UNREADY_THRESHOLD:-3}
+      POOL_RPC_ROUTER_NODE_HEALTH_ERROR_THRESHOLD: ${POOL_RPC_ROUTER_NODE_HEALTH_ERROR_THRESHOLD:-3}
+      POOL_RPC_ROUTER_NODE_HEALTH_FRESH_TEMPLATE_GRACE_SECONDS: ${POOL_RPC_ROUTER_NODE_HEALTH_FRESH_TEMPLATE_GRACE_SECONDS:-15}
       POOL_STALE_RACE_REJECT_WINDOW_SECONDS: ${POOL_STALE_RACE_REJECT_WINDOW_SECONDS:-10}
       POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD: ${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}
       POOL_STALE_RACE_RECOVERY_COOLDOWN_SECONDS: ${POOL_STALE_RACE_RECOVERY_COOLDOWN_SECONDS:-1}
@@ -230,7 +284,14 @@ services:
       BDAG_POOL_METRICS_PORT: 9090
       BDAG_NODE_RPC_URLS: node=http://node:38131
       BDAG_GLOBAL_CHAIN_RPC_URLS: node=http://node:38131
-      BDAG_RPC_URL: http://node:38131
+      BDAG_GLOBAL_RPC_URLS: ${BDAG_GLOBAL_RPC_URLS:-}
+      BDAG_PUBLIC_RPC_URLS: ${BDAG_PUBLIC_RPC_URLS:-blockdag-engineering-rpc=https://rpc.blockdag.engineering,bdagscan-rpc=https://rpc.bdagscan.com}
+      BDAG_HTTP_USER_AGENT: ${BDAG_HTTP_USER_AGENT:-Mozilla/5.0 blockdag-dashboard/1.0}
+      BDAG_GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS: ${BDAG_GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS:-30}
+      BDAG_GLOBAL_CATCHUP_MAX_BLOCKS: ${BDAG_GLOBAL_CATCHUP_MAX_BLOCKS:-240}
+      BDAG_GLOBAL_CATCHUP_PASSES: ${BDAG_GLOBAL_CATCHUP_PASSES:-2}
+      BDAG_GLOBAL_DEFERRED_RPC_WORKERS: ${BDAG_GLOBAL_DEFERRED_RPC_WORKERS:-12}
+      BDAG_GLOBAL_RPC_MIN_WORKERS: ${BDAG_GLOBAL_RPC_MIN_WORKERS:-12}
       # Must match node.conf rpcuser / rpcpass (same as pool service).
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
@@ -325,3 +386,4 @@ volumes:
   node-data:
   nodeworker-data:
   collector-runtime:
+  dashboard-runtime:

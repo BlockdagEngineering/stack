@@ -13,24 +13,22 @@ The root-cause log sequence was:
   doing heavy chain/state catch-up work.
 - nodeworker stopped and killed the inner binary.
 - the container stayed running with only nodeworker alive.
-- watchdog defaults still targeted older Compose names and the child guard only
-  detected the legacy `bdag` executable name, not the packaged
-  `blockdag-node` child.
+- watchdog defaults were not aligned to the current Compose service names, and
+  the child guard did not detect the packaged `blockdag-node` child.
 
 ## Fix
 
-The stack now treats `node`, `pool`, and `postgres` as the current container
-names and keeps `bdag-miner-node-1`, `asic-pool`, and `pool-db` only as legacy
-compatibility aliases where required.
+The stack now treats `node`, `pool`, and `postgres` as the current service
+names.
 
 The node child guard now:
 
-- detects both `blockdag-node` and legacy `bdag` child executables;
-- defaults to guarding `node` while retaining the legacy node alias;
+- detects the packaged `blockdag-node` child executable;
+- defaults to guarding `node`;
 - resolves the actual Compose service label before restart;
 - falls back to direct `docker restart`/`docker start` when Compose targeting
   fails;
-- omits missing legacy env files when building Compose commands.
+- omits missing env files when building Compose commands.
 
 The node entrypoint now adds `--health.liveness-timeout=5m` by default unless an
 operator explicitly supplies another nodeworker liveness timeout. This avoids
@@ -49,7 +47,6 @@ CI now includes runtime naming checks that verify:
 
 ## Live Deployment Note
 
-This host still has legacy Compose service labels on existing containers, but
-container names and Docker DNS resolve the current names. Runtime guards are
-therefore label-aware: they report and act on `node`, `pool`, and `postgres`
-while using Compose labels only as restart targets for existing installations.
+Runtime guards report and act on `node`, `pool`, and `postgres`; if Docker
+Compose adds project or ordinal suffixes to concrete container names, the guards
+resolve the service label before restart.
