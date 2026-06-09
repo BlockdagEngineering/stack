@@ -537,6 +537,7 @@ def catchup_io_pressure_reasons(payload: dict[str, Any]) -> list[str]:
 
 def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     policy = dict_value(payload.get("catchup_policy"))
+    sync_health = dict_value(payload.get("sync_health"))
     threshold = safe_int(policy.get("threshold_blocks"), CATCHUP_PAUSE_THRESHOLD_BLOCKS)
     lag = catchup_lag_blocks(payload)
     io_pressure_reasons = policy.get("io_pressure_reasons")
@@ -557,7 +558,14 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         and io_pressure_lag_active
     )
     lag_threshold_active = bool(lag > threshold and (not chain_ready_for_mining(payload) or not mining_ready))
-    active = bool(CATCHUP_PAUSE_ENABLED and (io_pressure_active or lag_threshold_active))
+    pause_candidate_active = bool(io_pressure_active or lag_threshold_active)
+    recent_paid_work = bool(
+        policy.get("pool_has_recent_paid_work")
+        or sync_health.get("pool_has_recent_paid_work")
+        or sync_health.get("pool_has_recent_mining")
+    )
+    recent_paid_work_suppressed = bool(recent_paid_work and pause_candidate_active)
+    active = bool(CATCHUP_PAUSE_ENABLED and pause_candidate_active and not recent_paid_work_suppressed)
     trigger = str(policy.get("trigger") or "")
     if not trigger and active:
         trigger = "io_pressure" if io_pressure_active else "lag_threshold"
@@ -577,6 +585,8 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "backend_unready_under_pressure": backend_unready_under_pressure,
         "lag_threshold_active": lag_threshold_active,
         "mining_ready": mining_ready,
+        "pool_has_recent_paid_work": recent_paid_work,
+        "recent_paid_work_suppressed": recent_paid_work_suppressed,
     }
 
 

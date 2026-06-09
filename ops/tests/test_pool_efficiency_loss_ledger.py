@@ -123,6 +123,23 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
         self.assertIn("I/O pressure drops", policy["next_step"])
         self.assertTrue(any("io_full_avg10" in reason for reason in policy["io_pressure_reasons"]))
 
+    def test_catchup_policy_keeps_paid_mining_online_under_io_pressure(self) -> None:
+        policy = pool_ops.build_catchup_policy(
+            {"status": "syncing", "remaining_blocks": 80},
+            {"node": {"peer_ahead_blocks": 80}},
+            {"pool": {"running": True}},
+            {"node_mineable": False, "node_submit_ready": False},
+            {"iowait_percent": 18.0, "io_some_avg10": 22.0, "io_full_avg10": 23.0},
+            mining_ready=False,
+            pool_has_recent_paid_work=True,
+        )
+
+        self.assertFalse(policy["active"])
+        self.assertEqual(policy["trigger"], "")
+        self.assertTrue(policy["io_pressure_active"])
+        self.assertTrue(policy["recent_paid_work_suppressed"])
+        self.assertFalse(policy["pool_pause_recommended"])
+
     def test_catchup_policy_uses_backend_peer_lead_when_sync_claims_synced(self) -> None:
         policy = pool_ops.build_catchup_policy(
             {"status": "synced", "remaining_blocks": 0},

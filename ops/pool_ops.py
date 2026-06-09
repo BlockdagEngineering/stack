@@ -5361,6 +5361,7 @@ def build_catchup_policy(
     selected_source_health: Mapping[str, Any] | None = None,
     host_pressure: Mapping[str, Any] | None = None,
     mining_ready: bool | None = None,
+    pool_has_recent_paid_work: bool = False,
 ) -> dict[str, Any]:
     lag = max_catchup_lag_blocks(sync_progress, node_details, selected_source_health)
     status = str(sync_progress.get("status") or "").lower()
@@ -5383,7 +5384,9 @@ def build_catchup_policy(
         and io_pressure_lag_active
     )
     lag_threshold_active = bool(lag > CATCHUP_PAUSE_THRESHOLD_BLOCKS and (status != "synced" or not mining_ready_for_policy))
-    active = bool(CATCHUP_PAUSE_ENABLED and (io_pressure_active or lag_threshold_active))
+    pause_candidate_active = bool(io_pressure_active or lag_threshold_active)
+    recent_paid_work_suppressed = bool(pool_has_recent_paid_work and pause_candidate_active)
+    active = bool(CATCHUP_PAUSE_ENABLED and pause_candidate_active and not recent_paid_work_suppressed)
     pool_running = bool((containers.get(POOL_CONTAINER) or {}).get("running")) if isinstance(containers, Mapping) else False
     trigger = ("io_pressure" if io_pressure_active else ("lag_threshold" if lag_threshold_active else "")) if active else ""
     summary = (
@@ -5449,6 +5452,8 @@ def build_catchup_policy(
         "backend_unready_under_pressure": backend_unready_under_pressure,
         "backend_unready_reasons": backend_unready_reasons,
         "lag_threshold_active": lag_threshold_active,
+        "pool_has_recent_paid_work": bool(pool_has_recent_paid_work),
+        "recent_paid_work_suppressed": recent_paid_work_suppressed,
         "pool_pause_recommended": active,
         "pool_pause_active": bool(active and not pool_running),
         "pool_running": pool_running,
@@ -6324,6 +6329,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         selected_source_health,
         host_pressure,
         mining_ready=catchup_mining_ready,
+        pool_has_recent_paid_work=pool_has_recent_paid_work,
     )
     if catchup_policy.get("active"):
         pool_down_message = f"{POOL_CONTAINER} is not running"
