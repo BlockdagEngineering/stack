@@ -544,19 +544,19 @@ BACKGROUND_MAINTENANCE_LAZY_TASKS = set(
 BACKGROUND_MAINTENANCE_POOL_READY_TASKS = set(
     split_env_list(
         "BDAG_BACKGROUND_MAINTENANCE_POOL_READY_TASKS",
-        "rawdatadir_content_seal,ipfs_content_sidecar,ipfs_segment_writer",
+        "rawdatadir_content_seal,ipfs_content_sidecar",
     )
 )
 BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS = set(
     split_env_list(
         "BDAG_BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS",
-        "",
+        "ipfs_segment_writer",
     )
 )
 BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS = set(
     split_env_list(
         "BDAG_BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS",
-        "",
+        "ipfs_segment_writer",
     )
 )
 BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN = env_float(

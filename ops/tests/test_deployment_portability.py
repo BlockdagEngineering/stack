@@ -341,10 +341,10 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         )
         for config in (env_example, defaults):
             self.assertIn("BDAG_BACKGROUND_MAINTENANCE_LAZY_TASKS=rawdatadir_sidecar", config)
-            self.assertIn("BDAG_BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS=", config)
-            self.assertIn("BDAG_BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS=", config)
+            self.assertIn("BDAG_BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS=ipfs_segment_writer", config)
+            self.assertIn("BDAG_BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS=ipfs_segment_writer", config)
             self.assertIn(
-                "BDAG_BACKGROUND_MAINTENANCE_POOL_READY_TASKS=rawdatadir_content_seal,ipfs_content_sidecar,ipfs_segment_writer",
+                "BDAG_BACKGROUND_MAINTENANCE_POOL_READY_TASKS=rawdatadir_content_seal,ipfs_content_sidecar",
                 config,
             )
             self.assertIn("BDAG_RAWDATADIR_SIDECAR_CATCHUP_RSYNC_BWLIMIT=1024", config)
@@ -352,7 +352,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             self.assertIn("BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS=3600", config)
             self.assertIn("BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE=rendezvous_sha256_v1", config)
             self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH=1", config)
-            self.assertIn("BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN=20", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN=1", config)
             self.assertIn("BDAG_IPFS_SEGMENT_PUBLISH_IPNS=auto", config)
         self.assertIn("install_mining_host_tuning\ninstall_rawdatadir_sidecar_timers", installer)
         self.assertIn("install_rawdatadir_sidecar_timers\ninstall_ipfs_content_sidecar_timer", installer)
@@ -367,7 +367,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             'BDAG_CHAIN_INTEGRITY_MAX_SEGMENT_ORDERS=$(env_value BDAG_CHAIN_INTEGRITY_MAX_SEGMENT_ORDERS "$(env_value BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT 300)")',
             installer,
         )
-        self.assertIn("BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN=$(env_value BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN 20)", installer)
+        self.assertIn("BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN=$(env_value BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN 1)", installer)
         self.assertIn(
             'BDAG_IPFS_SEGMENT_RESTORE_DIR=$(env_value BDAG_IPFS_SEGMENT_RESTORE_DIR "$ROOT/ops/runtime/ipfs-segment-restore-drills")',
             installer,

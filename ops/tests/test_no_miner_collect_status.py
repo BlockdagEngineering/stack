@@ -741,6 +741,43 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
         self.assertTrue(any("pool can_mine=false" in reason for reason in decision["reasons"]))
         self.assertFalse(any("host io full pressure" in reason for reason in decision["reasons"]))
 
+    def test_ipfs_segment_writer_can_checkpoint_during_catchup_when_explicitly_exempt(self) -> None:
+        pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
+        pool_ops.BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS = 0
+        pool_ops.BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT = 25.0
+        pool_ops.BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN = 20.0
+        pool_ops.BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN = 10.0
+        pool_ops.BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS = {"ipfs_segment_writer"}
+        pool_ops.BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS = {"ipfs_segment_writer"}
+        pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = {
+            "rawdatadir_content_seal",
+            "ipfs_content_sidecar",
+        }
+        pool_ops.SYNC_PRIORITY_MIN_LAG_BLOCKS = 25
+        status = {
+            "overall": "syncing",
+            "mode": "catchup_pause",
+            "can_mine": False,
+            "can_accept_shares": False,
+            "can_submit_blocks": False,
+            "catchup_policy": {"active": True, "trigger": "io_pressure", "io_pressure_active": True},
+            "sync_progress": {"status": "syncing", "remaining_blocks": 250_000},
+            "host_pressure": {
+                "iowait_percent": 35.0,
+                "io_some_avg10": 25.0,
+                "io_full_avg10": 15.0,
+                "cpu_some_avg10": 0.0,
+            },
+        }
+
+        decision = pool_ops.background_maintenance_decision("ipfs_segment_writer", status)
+
+        self.assertTrue(decision["allowed"])
+        self.assertFalse(decision["pool_ready_required"])
+        self.assertTrue(decision["sync_priority_exempt"])
+        self.assertTrue(decision["io_pressure_exempt"])
+        self.assertEqual([], decision["reasons"])
+
     def test_background_maintenance_defers_when_sync_remaining_is_unknown(self) -> None:
         pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
         pool_ops.BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS = 0
