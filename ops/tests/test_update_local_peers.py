@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import subprocess
 import unittest
 from unittest import mock
 
@@ -70,6 +71,40 @@ class UpdateLocalPeersActiveMiningGuardTest(unittest.TestCase):
         with mock.patch.dict("os.environ", {}, clear=True):
             with mock.patch.object(update_local_peers, "read_env_values", return_value={}):
                 self.assertEqual(update_local_peers.configured_active_nodes({}), ["node"])
+
+    def test_extracts_peerstore_startup_log_candidates(self) -> None:
+        logs = """
+        INFO Try to connect from peer store:{16Uiu2HAmSeedOne: [/ip4/13.57.132.47/tcp/8150 /dns4/excalibur.dagtech.network/tcp/8153]}
+        INFO Try to connect from peer store:{16Uiu2HAmSeedTwo: [/ip4/54.214.229.250/tcp/8153 badaddr]}
+        """
+
+        self.assertEqual(
+            [
+                "/ip4/13.57.132.47/tcp/8150/p2p/16Uiu2HAmSeedOne",
+                "/dns4/excalibur.dagtech.network/tcp/8153/p2p/16Uiu2HAmSeedOne",
+                "/ip4/54.214.229.250/tcp/8153/p2p/16Uiu2HAmSeedTwo",
+            ],
+            update_local_peers.extract_peerstore_log_peers(logs),
+        )
+
+    def test_docker_logs_falls_back_to_compose_service_container(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            calls.append(command)
+            if command == ["docker", "compose", "ps", "-q", "node"]:
+                return subprocess.CompletedProcess(command, 0, "compose-node-id\n", "")
+            if command == ["docker", "logs", "--tail", "5000", "node"]:
+                return subprocess.CompletedProcess(command, 1, "", "no such container")
+            if command == ["docker", "logs", "--tail", "5000", "compose-node-id"]:
+                return subprocess.CompletedProcess(command, 0, "Node started p2p server /p2p/localPeer\n", "")
+            return subprocess.CompletedProcess(command, 1, "", "unexpected")
+
+        with mock.patch.object(update_local_peers.subprocess, "run", side_effect=fake_run):
+            self.assertIn("localPeer", update_local_peers.docker_logs("node"))
+
+        self.assertIn(["docker", "compose", "ps", "-q", "node"], calls)
+        self.assertIn(["docker", "logs", "--tail", "5000", "compose-node-id"], calls)
 
 
 if __name__ == "__main__":

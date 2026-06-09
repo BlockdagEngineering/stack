@@ -18,6 +18,10 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.old_mining_rpc_call = pool_ops.mining_rpc_call
         self.old_json_rpc_call = pool_ops.json_rpc_call
         self.old_evm_reference_rpc_urls = pool_ops.evm_reference_rpc_urls
+        self.old_alignment_always_sample = pool_ops.EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE
+        self.old_alignment_min_samples = pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES
+        self.old_alignment_sample_blocks = pool_ops.EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS
+        self.old_alignment_min_reference_lag = pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG
         self.old_sleep = pool_ops.time.sleep
         self.old_time = pool_ops.time.time
         self.addCleanup(self.restore_globals)
@@ -28,6 +32,10 @@ class ChainRpcResilienceTests(unittest.TestCase):
         pool_ops.mining_rpc_call = self.old_mining_rpc_call
         pool_ops.json_rpc_call = self.old_json_rpc_call
         pool_ops.evm_reference_rpc_urls = self.old_evm_reference_rpc_urls
+        pool_ops.EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE = self.old_alignment_always_sample
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES = self.old_alignment_min_samples
+        pool_ops.EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS = self.old_alignment_sample_blocks
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG = self.old_alignment_min_reference_lag
         pool_ops.time.sleep = self.old_sleep
         pool_ops.time.time = self.old_time
 
@@ -48,7 +56,7 @@ class ChainRpcResilienceTests(unittest.TestCase):
 
         pool_ops.mining_rpc_call = fake_rpc
 
-        snapshot = pool_ops.node_chain_rpc_snapshot("node1", "http://node1:38131", timeout=8.0)
+        snapshot = pool_ops.node_chain_rpc_snapshot("node", "http://node:38131", timeout=8.0)
 
         self.assertEqual(snapshot["chain_rpc_error"], "")
         self.assertEqual(snapshot["chain_block_count"], 8656586)
@@ -69,7 +77,7 @@ class ChainRpcResilienceTests(unittest.TestCase):
 
         pool_ops.mining_rpc_call = fake_rpc
 
-        progress = pool_ops.node_sync_progress("node1", "http://node1:38131", timeout=8.0)
+        progress = pool_ops.node_sync_progress("node", "http://node:38131", timeout=8.0)
 
         self.assertEqual(progress["status"], "unknown")
         self.assertEqual(progress["chain_rpc_attempts"], 2)
@@ -87,7 +95,7 @@ class ChainRpcResilienceTests(unittest.TestCase):
         pool_ops.mining_rpc_call = fake_mining_rpc
         pool_ops.json_rpc_call = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("eth_blockNumber is not chain height"))
 
-        snapshot = pool_ops.node_chain_rpc_snapshot("node1", "http://127.0.0.1:18545", timeout=8.0)
+        snapshot = pool_ops.node_chain_rpc_snapshot("node", "http://127.0.0.1:18545", timeout=8.0)
 
         self.assertIsNone(snapshot["chain_block_count"])
         self.assertEqual(snapshot["chain_rpc_source"], "unavailable")
@@ -105,7 +113,7 @@ class ChainRpcResilienceTests(unittest.TestCase):
 
         pool_ops.mining_rpc_call = fake_mining_rpc
 
-        snapshot = pool_ops.node_chain_rpc_snapshot("node1", "http://127.0.0.1:38131", timeout=8.0)
+        snapshot = pool_ops.node_chain_rpc_snapshot("node", "http://127.0.0.1:38131", timeout=8.0)
 
         self.assertIsNone(snapshot["chain_block_count"])
         self.assertEqual(snapshot["chain_main_height"], 7001831)
@@ -133,10 +141,10 @@ class ChainRpcResilienceTests(unittest.TestCase):
         pool_ops.json_rpc_call = fake_json_rpc
         pool_ops.evm_reference_rpc_urls = lambda: [("reference", "http://reference:18545")]
 
-        progress = pool_ops.node_sync_progress("node1", "http://127.0.0.1:38131", timeout=8.0)
+        progress = pool_ops.node_sync_progress("node", "http://127.0.0.1:38131", timeout=8.0)
 
         self.assertEqual(progress["status"], "syncing")
-        self.assertEqual(progress["source"], "node1:evm-head-lag")
+        self.assertEqual(progress["source"], "node:evm-head-lag")
         self.assertEqual(progress["current_block"], 8000)
         self.assertEqual(progress["highest_block"], 10000)
         self.assertEqual(progress["remaining_blocks"], 2000)
@@ -146,6 +154,37 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.assertEqual(progress["evm_lag_to_reference"], 2000)
         self.assertEqual(progress["evm_gap_to_chain_count"], 2000)
         self.assertEqual(progress["current_block_source"], "eth_blockNumber")
+
+    def test_canonical_safety_allows_zero_lag_public_evm_hash_diagnostic(self) -> None:
+        pool_ops.EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE = True
+        pool_ops.EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS = 3
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES = 2
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG = 1000
+
+        def fake_json_rpc(url, method, params, timeout):
+            if method == "eth_blockNumber":
+                return "0x3e8"
+            if method == "eth_getBlockByNumber":
+                height = int(params[0], 16)
+                suffix = "local" if url == "http://local:18545" else "reference"
+                return {
+                    "number": params[0],
+                    "hash": f"0x{height:060x}{1 if suffix == 'local' else 2:04x}",
+                    "miner": "0x05518e03e148c56e426ff9e1cbdb962b4fc5250a",
+                    "timestamp": hex(1780784000 + height),
+                }
+            raise AssertionError(method)
+
+        pool_ops.json_rpc_call = fake_json_rpc
+        pool_ops.evm_reference_rpc_urls = lambda: [("public", "http://public:18545")]
+
+        snapshot = pool_ops.evm_rpc_lag_snapshot("node", "http://local:18545", 1200, timeout=8.0)
+
+        safety = snapshot["canonical_mining_safety"]
+        self.assertTrue(safety["safe"], safety)
+        self.assertEqual(safety["hash_mismatch_count"], 3)
+        self.assertFalse(safety["public_chain_diverged"])
+        self.assertIn("diagnostic", safety["reason"])
 
     def test_rpc_refused_is_recent_only_inside_warning_window(self) -> None:
         now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()
@@ -167,7 +206,7 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.assertEqual(stale["last_rpc_refused_age_seconds"], 300)
 
     def test_no_miner_sync_noise_includes_template_and_stale_rpc_noise(self) -> None:
-        self.assertTrue(pool_ops.is_no_miner_sync_noise("bdag-miner-node-1 is refusing live mining template probes"))
+        self.assertTrue(pool_ops.is_no_miner_sync_noise("node is refusing live mining template probes"))
         self.assertTrue(pool_ops.is_no_miner_sync_noise("pool recently saw RPC connection refused"))
         self.assertTrue(pool_ops.is_no_miner_sync_noise("pool is waiting for node sync to finish"))
         self.assertFalse(pool_ops.is_no_miner_sync_noise("pool has not accepted a valid share"))

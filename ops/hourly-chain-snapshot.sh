@@ -11,9 +11,6 @@ LOG_FILE="${BDAG_SNAPSHOT_LOG:-$PROJECT_ROOT/ops/runtime/logs/hourly-chain-snaps
 STATE_FILE="${BDAG_SNAPSHOT_STATE:-$PROJECT_ROOT/ops/runtime/hourly-chain-snapshot-state}"
 SNAPSHOT_STOP_STATE_FILE="${BDAG_SNAPSHOT_STOP_STATE_FILE:-$PROJECT_ROOT/ops/runtime/snapshot-stop-state.json}"
 ENV_FILE="${BDAG_ENV_FILE:-$PROJECT_ROOT/.env}"
-if [[ ! -f "$ENV_FILE" && -f "$PROJECT_ROOT/asic-pool/.env" ]]; then
-  ENV_FILE="$PROJECT_ROOT/asic-pool/.env"
-fi
 COMPOSE_FILE="${BDAG_COMPOSE_FILE:-$PROJECT_ROOT/docker-compose.yml}"
 SNAPSHOT_BACKOFF_BLOCKS="${BDAG_SNAPSHOT_BACKOFF_BLOCKS:-0}"
 SNAPSHOT_MAX_BLOCK_LAG="${BDAG_SNAPSHOT_MAX_BLOCK_LAG:-5}"
@@ -24,7 +21,7 @@ SNAPSHOT_RPC_RECOVERY_SECONDS="${BDAG_SNAPSHOT_RPC_RECOVERY_SECONDS:-180}"
 SNAPSHOT_FINAL_STOP_SYNC="${BDAG_SNAPSHOT_FINAL_STOP_SYNC:-0}"
 SNAPSHOT_FINAL_STOP_TIMEOUT_SECONDS="${BDAG_SNAPSHOT_FINAL_STOP_TIMEOUT_SECONDS:-45}"
 SNAPSHOT_WARM_SYNC_TIMEOUT_SECONDS="${BDAG_SNAPSHOT_WARM_SYNC_TIMEOUT_SECONDS:-2700}"
-SNAPSHOT_SOURCE_DIRS="${BDAG_SNAPSHOT_SOURCE_DIRS:-${BDAG_NODE_DATA_DIRS:-node1}}"
+SNAPSHOT_SOURCE_DIR="${BDAG_SNAPSHOT_SOURCE_DIR:-${BDAG_NODE_DATA_DIR:-$PROJECT_ROOT/data/node}}"
 
 source "$PROJECT_ROOT/ops/chain-snapshot-common.sh"
 
@@ -107,7 +104,7 @@ payload = {
         for name, info in nodes.items()
         if isinstance(info, dict)
     } if isinstance(nodes, dict) else {},
-    "restore_guidance": "Prefer the newest manifest with stack_overall=ok, sync_status=synced, and matching node heights. Preserve node identity files when cloning between nodes.",
+    "restore_guidance": "Prefer the newest manifest with stack_overall=ok and sync_status=synced. Preserve node identity files when restoring chain data.",
 }
 print(json.dumps(payload, indent=2, sort_keys=True))
 PY
@@ -126,7 +123,7 @@ write_snapshot_stop_marker() {
   local epoch
   epoch="$(date -u +%s)"
   cat > "$SNAPSHOT_STOP_STATE_FILE" <<EOF
-{"node":"$node_service","node_key":"$node_key","event":"$event","written_at":"$(date -Is)","written_epoch":$epoch,"recovery_seconds":$SNAPSHOT_RPC_RECOVERY_SECONDS}
+{"node":"$node_service","event":"$event","written_at":"$(date -Is)","written_epoch":$epoch,"recovery_seconds":$SNAPSHOT_RPC_RECOVERY_SECONDS}
 EOF
 }
 
@@ -142,7 +139,7 @@ fi
 
 read -r sync_status sync_remaining sync_unknown sync_block_lag < <(snapshot_sync_summary "$PROJECT_ROOT" 2>>"$LOG_FILE" || printf 'unknown -1 1 -1\n')
 if [[ "$SNAPSHOT_UNKNOWN_BACKOFF" == "1" && "$sync_unknown" =~ ^[0-9]+$ && "$sync_unknown" -gt 0 ]]; then
-  log "skipping hourly snapshot: sync state unknown for $sync_unknown node(s), preserving node resources"
+  log "skipping hourly snapshot: sync state unknown, preserving node resources"
   exit 0
 fi
 if [[ "$sync_remaining" =~ ^[0-9]+$ ]] && (( sync_remaining > SNAPSHOT_BACKOFF_BLOCKS )); then
@@ -155,13 +152,13 @@ if [[ "$sync_block_lag" =~ ^[0-9]+$ ]] && (( sync_block_lag > SNAPSHOT_MAX_BLOCK
 fi
 
 cleanup_stale_temps() {
-  find "$SNAPSHOT_DIR" -maxdepth 1 -type f -name '.bdag-node*-hourly-*.tar.gz.tmp' -mmin +30 -delete
-  find "$SNAPSHOT_DIR" -maxdepth 1 -type d -name '.bdag-node*-hourly-*.tmp' -mmin +30 -exec rm -rf {} +
+  find "$SNAPSHOT_DIR" -maxdepth 1 -type f -name '.bdag-node-hourly-*.tar.gz.tmp' -mmin +30 -delete
+  find "$SNAPSHOT_DIR" -maxdepth 1 -type d -name '.bdag-node-hourly-*.tmp' -mmin +30 -exec rm -rf {} +
 }
 
 prune_orphan_snapshot_manifests() {
   local manifest base
-  find "$SNAPSHOT_DIR" -maxdepth 1 -type f -name 'bdag-node*-hourly-*.manifest.json' -print0 |
+  find "$SNAPSHOT_DIR" -maxdepth 1 -type f -name 'bdag-node-hourly-*.manifest.json' -print0 |
     while IFS= read -r -d '' manifest; do
       base="${manifest%.manifest.json}"
       if [[ ! -d "$base" && ! -f "$base.tar.gz" ]]; then
@@ -173,7 +170,7 @@ prune_orphan_snapshot_manifests() {
 prune_directory_snapshots() {
   local old_names=()
   mapfile -t old_names < <(
-    find "$SNAPSHOT_DIR" -maxdepth 1 -type d -name 'bdag-node*-hourly-*' -printf '%f\n' |
+    find "$SNAPSHOT_DIR" -maxdepth 1 -type d -name 'bdag-node-hourly-*' -printf '%f\n' |
       sed -E 's/^(.*-hourly-)([0-9]{8}T[0-9]{6}Z)(.*)$/\2 \0/' |
       sort -r |
       awk -v keep="$SNAPSHOT_RETAIN" 'NR > keep {print (NF > 1 ? $2 : $1)}'
@@ -191,7 +188,7 @@ prune_directory_snapshots() {
 prune_compressed_snapshots() {
   local old_names=()
   mapfile -t old_names < <(
-    find "$SNAPSHOT_DIR" -maxdepth 1 -type f -name 'bdag-node*-hourly-*.tar.gz' -printf '%f\n' |
+    find "$SNAPSHOT_DIR" -maxdepth 1 -type f -name 'bdag-node-hourly-*.tar.gz' -printf '%f\n' |
       sed 's/\.tar\.gz$//' |
       sed -E 's/^(.*-hourly-)([0-9]{8}T[0-9]{6}Z)(.*)$/\2 \0/' |
       sort -r |
@@ -216,64 +213,9 @@ compose() {
   fi
 }
 
-choose_node() {
-  local previous next
-  mapfile -t node_keys < <(configured_node_keys)
-  previous="$(cat "$STATE_FILE" 2>/dev/null || true)"
-  next="${node_keys[0]}"
-  if ((${#node_keys[@]} > 1)); then
-    for index in "${!node_keys[@]}"; do
-      if [[ "${node_keys[$index]}" == "$previous" ]]; then
-        next="${node_keys[$(((index + 1) % ${#node_keys[@]}))]}"
-        break
-      fi
-    done
-  fi
-  printf '%s\n' "$next"
-}
-
-configured_node_keys() {
-  local raw="$SNAPSHOT_SOURCE_DIRS"
-  local item seen_node1=0 emitted=0
-  raw="${raw//;/,}"
-  IFS=',' read -ra items <<< "$raw"
-  for item in "${items[@]}"; do
-    item="${item//[[:space:]]/}"
-    case "$item" in
-      node1)
-        if [[ "$seen_node1" == "0" ]]; then
-          printf '%s\n' node1
-          seen_node1=1
-          emitted=1
-        fi
-        ;;
-    esac
-  done
-  if [[ "$emitted" == "0" ]]; then
-    printf '%s\n' node1
-  fi
-}
-
-service_for_node_key() {
-  case "$1" in
-    node1) printf '%s\n' "node" ;;
-    *) return 1 ;;
-  esac
-}
-
-dir_for_node_key() {
-  case "$1" in
-    node1) printf '%s\n' "node1" ;;
-    *) return 1 ;;
-  esac
-}
-
-node_key="$(choose_node)"
-node_service="$(service_for_node_key "$node_key")"
-node_dir="$(dir_for_node_key "$node_key")"
-
-SNAPSHOT_SOURCE="$PROJECT_ROOT/data/$node_dir"
-SNAPSHOT_STAGE="$SNAPSHOT_STAGE_ROOT/$node_dir"
+node_service="node"
+SNAPSHOT_SOURCE="$SNAPSHOT_SOURCE_DIR"
+SNAPSHOT_STAGE="$SNAPSHOT_STAGE_ROOT/node"
 mkdir -p "$SNAPSHOT_STAGE"
 
 node_stopped=0
@@ -318,10 +260,10 @@ if [[ ! -d "$SNAPSHOT_SOURCE" ]]; then
   log "snapshot source missing: $SNAPSHOT_SOURCE"
   exit 1
 fi
-printf '%s\n' "$node_key" > "$STATE_FILE"
+printf '%s\n' "node" > "$STATE_FILE"
 
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-snapshot_name="bdag-$node_dir-hourly-$stamp"
+snapshot_name="bdag-node-hourly-$stamp"
 snapshot_tmp="$SNAPSHOT_DIR/.$snapshot_name.tmp"
 snapshot_path="$SNAPSHOT_DIR/$snapshot_name"
 archive_name="$snapshot_name.tar.gz"
@@ -334,13 +276,13 @@ else
   log "starting hourly chain snapshot for $node_service: $snapshot_path"
 fi
 cleanup_stale_temps
-log "refreshing warm copy for $node_dir while stack remains online"
+log "refreshing warm copy for node while stack remains online"
 warm_copy_ok=0
 if bounded_warm_sync "$SNAPSHOT_SOURCE" "$SNAPSHOT_STAGE" >> "$LOG_FILE" 2>&1; then
   warm_copy_ok=1
-  log "warm copy complete for $node_dir"
+  log "warm copy complete for node"
 else
-  log "warm copy partial for $node_dir; will only publish if final stopped sync succeeds"
+  log "warm copy partial for node; will only publish if final stopped sync succeeds"
 fi
 
 pressure_reason="$(maintenance_backoff_reason hourly_snapshot_final_sync 2>>"$LOG_FILE" || true)"
@@ -351,7 +293,7 @@ fi
 
 read -r sync_status sync_remaining sync_unknown sync_block_lag < <(snapshot_sync_summary "$PROJECT_ROOT" 2>>"$LOG_FILE" || printf 'unknown -1 1 -1\n')
 if [[ "$SNAPSHOT_UNKNOWN_BACKOFF" == "1" && "$sync_unknown" =~ ^[0-9]+$ && "$sync_unknown" -gt 0 ]]; then
-  log "skipping final stopped sync: sync state became unknown for $sync_unknown node(s)"
+  log "skipping final stopped sync: sync state became unknown"
   exit 0
 fi
 if [[ "$sync_remaining" =~ ^[0-9]+$ ]] && (( sync_remaining > SNAPSHOT_BACKOFF_BLOCKS )); then
@@ -396,7 +338,7 @@ if [[ "$SNAPSHOT_COMPRESS" == "1" ]]; then
   run_low_priority tar -C "$SNAPSHOT_STAGE" -czf "$archive_tmp" .
   mv "$archive_tmp" "$archive_path"
   ln -sfn "hourly/$archive_name" "$PROJECT_ROOT/data-restore/latest-hourly.tar.gz"
-  write_snapshot_manifest "$archive_path" "$archive_path.manifest.json" "hourly/$archive_name.manifest.json" "$SNAPSHOT_FINAL_STOP_SYNC" "$node_service" "$node_key" "$node_dir"
+  write_snapshot_manifest "$archive_path" "$archive_path.manifest.json" "hourly/$archive_name.manifest.json" "$SNAPSHOT_FINAL_STOP_SYNC" "$node_service" "node" "$SNAPSHOT_SOURCE"
   log "pruning old compressed hourly snapshots, keeping $SNAPSHOT_RETAIN"
   prune_compressed_snapshots
   log "hourly chain snapshot complete: $archive_path"
@@ -407,7 +349,7 @@ else
   run_low_priority cp -al "$SNAPSHOT_STAGE"/. "$snapshot_tmp"/
   mv "$snapshot_tmp" "$snapshot_path"
   ln -sfn "hourly/$snapshot_name" "$PROJECT_ROOT/data-restore/latest-hourly"
-  write_snapshot_manifest "$snapshot_path" "$snapshot_path.manifest.json" "hourly/$snapshot_name.manifest.json" "$SNAPSHOT_FINAL_STOP_SYNC" "$node_service" "$node_key" "$node_dir"
+  write_snapshot_manifest "$snapshot_path" "$snapshot_path.manifest.json" "hourly/$snapshot_name.manifest.json" "$SNAPSHOT_FINAL_STOP_SYNC" "$node_service" "node" "$SNAPSHOT_SOURCE"
 
   log "pruning old directory hourly snapshots, keeping $SNAPSHOT_RETAIN"
   prune_directory_snapshots

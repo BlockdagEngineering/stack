@@ -57,7 +57,6 @@ if ($payloadMetadata['DOCKER_PLATFORM'] -and $payloadMetadata['DOCKER_PLATFORM']
 $snapshotUrl = if ($env:BDAG_SNAPSHOT_URL) { $env:BDAG_SNAPSHOT_URL } else { 'https://bdagstack.bdagdev.xyz/latest.bdsnap' }
 $snapshotMinBytes = if ($env:BDAG_SNAPSHOT_MIN_BYTES) { [int64]$env:BDAG_SNAPSHOT_MIN_BYTES } else { [int64]1048576 }
 $requireSnapshot = $env:BDAG_REQUIRE_SNAPSHOT -ne '0'
-$resetNodeData = $env:BDAG_RESET_NODE_DATA -eq '1'
 $requestedSnapshotDownloader = if ($env:BDAG_SNAPSHOT_DOWNLOADER) { $env:BDAG_SNAPSHOT_DOWNLOADER.ToLowerInvariant() } else { 'auto' }
 $aria2Connections = if ($env:BDAG_ARIA2_CONNECTIONS) { [int]$env:BDAG_ARIA2_CONNECTIONS } else { 8 }
 $installAria2 = $env:BDAG_INSTALL_ARIA2 -ne '0'
@@ -151,6 +150,60 @@ function Set-EnvValue([string]$Path, [string]$Key, [string]$Value) {
     }
     $text = $text -replace "`r`n", "`n"
     [System.IO.File]::WriteAllText((Join-Path (Get-Location) $Path), $text, [System.Text.Encoding]::UTF8)
+}
+
+function Get-EnvFileValue([string]$Path, [string]$Key) {
+    if (-not (Test-Path $Path)) { return '' }
+    $escaped = [regex]::Escape($Key)
+    $line = Get-Content $Path | Where-Object { $_ -match "^$escaped=" } | Select-Object -Last 1
+    if (-not $line) { return '' }
+    $value = $line.Substring($Key.Length + 1).Trim()
+    if (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'"))) {
+        $value = $value.Substring(1, $value.Length - 2)
+    }
+    return $value
+}
+
+function Resolve-PackagePath([string]$Value) {
+    if (-not $Value) { $Value = './data/node' }
+    if ([System.IO.Path]::IsPathRooted($Value)) { return $Value }
+    $clean = $Value -replace '^[.][\\/]', ''
+    return (Join-Path (Get-Location).Path $clean)
+}
+
+function Test-ChainMarkers([string]$NetworkDir) {
+    return (
+        (Test-Path (Join-Path $NetworkDir 'BdagChain')) -or
+        (Test-Path (Join-Path $NetworkDir 'bdageth\chaindata')) -or
+        (Test-Path (Join-Path $NetworkDir 'chaindata'))
+    )
+}
+
+function Stage-SnapshotForNodeDatadir {
+    if ($snapshotPath -ne './latest.bdsnap' -or -not (Test-Path 'latest.bdsnap')) { return }
+
+    $nodeDir = Resolve-PackagePath (Get-EnvFileValue '.env' 'BDAG_NODE_DATA_DIR')
+    $networkDir = Join-Path $nodeDir 'mainnet'
+    $target = Join-Path $networkDir 'snapshot.bdsnap'
+
+    if (Test-ChainMarkers $networkDir) {
+        Write-Host "Existing chain markers found in $networkDir; preserving node data and skipping snapshot staging."
+        return
+    }
+    if ((Test-Path $target) -and $env:BDAG_REPLACE_STAGED_SNAPSHOT -ne '1') {
+        Write-Host "Existing staged node snapshot found: $target"
+        return
+    }
+
+    New-Item -ItemType Directory -Force -Path $networkDir | Out-Null
+    Remove-Item -Path $target -ErrorAction SilentlyContinue
+    try {
+        New-Item -ItemType HardLink -Path $target -Target (Get-Item 'latest.bdsnap').FullName | Out-Null
+        Write-Host "Staged snapshot for node datadir using hard link: $target"
+    } catch {
+        Copy-Item -Path 'latest.bdsnap' -Destination $target -Force
+        Write-Host "Staged snapshot for node datadir: $target"
+    }
 }
 
 if ($env:BDAG_INSTALL_TEST_WRITE_ENV_ONLY -eq '1') {
@@ -299,32 +352,6 @@ function Plan-OrphanContainerCleanup {
     }
 }
 
-function Prepare-NodeVolumeForSnapshot {
-    if ($snapshotPath -ne './latest.bdsnap') { return }
-
-    $project = Get-ComposeProjectName
-    if (-not $project) { return }
-
-    $nodeVolume = "${project}_node-data"
-    $nodeworkerVolume = "${project}_nodeworker-data"
-
-    & docker volume inspect $nodeVolume *> $null
-    if ($LASTEXITCODE -ne 0) { return }
-
-    Write-Host ""
-    Write-Host "Existing Docker node volume detected: $nodeVolume" -ForegroundColor Yellow
-    Write-Host "Snapshot import happens when the node image is built. If this existing volume is kept,"
-    Write-Host "Docker will continue using its current chain data instead of the newly imported snapshot."
-
-    if ($resetNodeData) {
-        Write-Host "Stopping existing stack and removing node data volumes..."
-        & docker compose down
-        & docker volume rm $nodeVolume $nodeworkerVolume *> $null
-    } else {
-        Write-Host "BDAG_RESET_NODE_DATA=0; keeping existing node data. The downloaded snapshot will not replace this volume." -ForegroundColor Yellow
-    }
-}
-
 function Clean-BuildContextMetadata {
     Get-ChildItem -Force -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -like '._*' -or $_.Name -eq '.DS_Store' -or $_.Name -eq 'Thumbs.db' -or $_.Name -eq 'desktop.ini' } |
@@ -398,6 +425,43 @@ function Read-PlainPassword([string]$Prompt) {
     }
 }
 
+function Read-WithDefault([string]$Prompt, [string]$DefaultValue) {
+    $value = Read-Host "$Prompt [$DefaultValue]"
+    if ($value) { return $value }
+    return $DefaultValue
+}
+
+function Get-DefaultCidr([string]$IpAddress) {
+    if ($IpAddress -match '^([0-9]+)\.([0-9]+)\.([0-9]+)\.[0-9]+$') {
+        return "$($Matches[1]).$($Matches[2]).$($Matches[3]).0/24"
+    }
+    return '192.168.1.0/24'
+}
+
+function Test-DefaultDockerBridgeAddress([string]$Value) {
+    return $Value -match '^172\.(1[6-9]|2[0-9]|3[0-1])\.'
+}
+
+function Assert-PoolLanConfig {
+    $poolHost = Get-EnvFileValue '.env' 'BDAG_POOL_HOST'
+    $poolUrl = Get-EnvFileValue '.env' 'BDAG_POOL_URL'
+    $scanTarget = Get-EnvFileValue '.env' 'BDAG_MINER_SCAN_TARGET'
+    $asicCidrs = Get-EnvFileValue '.env' 'BDAG_ASIC_LAN_CIDRS'
+    $allowBridge = Get-EnvFileValue '.env' 'BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS'
+    $poolUrlHost = ($poolUrl -replace '^[^:]+://', '') -replace ':.*$', ''
+    if (-not $poolHost -or -not $poolUrl -or -not $scanTarget -or -not $asicCidrs) {
+        throw "Pool LAN configuration is incomplete. Set BDAG_POOL_HOST, BDAG_POOL_URL, BDAG_MINER_SCAN_TARGET, and BDAG_ASIC_LAN_CIDRS."
+    }
+    if ($allowBridge -notin @('1', 'true', 'True')) {
+        if ((Test-DefaultDockerBridgeAddress $poolHost) -or (Test-DefaultDockerBridgeAddress $poolUrlHost)) {
+            throw "Refusing Docker bridge pool endpoint '$poolUrl'. Use the host-facing ASIC LAN IP, not a 172.16.0.0/12 container address."
+        }
+        if ($scanTarget -match '(^|[, ])172\.(1[6-9]|2[0-9]|3[0-1])\.' -or $asicCidrs -match '(^|[, ])172\.(1[6-9]|2[0-9]|3[0-1])\.') {
+            throw "Refusing Docker bridge ASIC scan scope '$asicCidrs'. Set BDAG_ASIC_LAN_CIDRS to the physical ASIC LAN."
+        }
+    }
+}
+
 if ($env:POSTGRES_PASSWORD) {
     $pgPassword = $env:POSTGRES_PASSWORD
     Write-Host "Using POSTGRES_PASSWORD from environment."
@@ -410,10 +474,19 @@ $miningAddr = Read-Host "Mining/earnings wallet address (0x...)"
 $poolPrivateKey = Read-PlainPassword "Pool operator private key (optional, hidden; press Enter to skip)"
 
 Copy-Item .env.example .env -Force
+$poolLanIpDefault = if ($env:BDAG_POOL_HOST) { $env:BDAG_POOL_HOST } else { '192.168.1.10' }
+$poolLanIp = Read-WithDefault "Pool LAN IP miners should connect to" $poolLanIpDefault
+$minerScanTargetDefault = if ($env:BDAG_MINER_SCAN_TARGET) { $env:BDAG_MINER_SCAN_TARGET } elseif ($env:BDAG_ASIC_LAN_CIDRS) { $env:BDAG_ASIC_LAN_CIDRS } else { Get-DefaultCidr $poolLanIp }
+$minerScanTarget = Read-WithDefault "LAN scan range for ASIC discovery" $minerScanTargetDefault
 Set-EnvValue .env POSTGRES_PASSWORD $pgPassword
 Set-EnvValue .env MINING_POOL_ADDRESS $miningAddr
 Set-EnvValue .env DOCKER_PLATFORM $dockerPlatform
 Set-EnvValue .env SNAPSHOT_PATH $snapshotPath
+Set-EnvValue .env BDAG_POOL_HOST $poolLanIp
+Set-EnvValue .env BDAG_POOL_URL "stratum+tcp://${poolLanIp}:3334"
+Set-EnvValue .env BDAG_MINER_SCAN_TARGET $minerScanTarget
+Set-EnvValue .env BDAG_ASIC_LAN_CIDRS $minerScanTarget
+Assert-PoolLanConfig
 if ($poolPrivateKey) {
     Set-EnvValue .env POOL_PRIVATE_KEY $poolPrivateKey
 }
@@ -456,7 +529,7 @@ $nodeText = $nodeText -replace "`r`n", "`n"
 
 New-Item -ItemType Directory -Force -Path 'collector\logs' | Out-Null
 Clean-BuildContextMetadata
-Prepare-NodeVolumeForSnapshot
+Stage-SnapshotForNodeDatadir
 Plan-OrphanContainerCleanup
 $env:DOCKER_DEFAULT_PLATFORM = $dockerPlatform
 

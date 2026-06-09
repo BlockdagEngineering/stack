@@ -18,9 +18,6 @@ DENY_COMPONENTS = {
     "__pycache__",
     "runtime",
     "data",
-    "postgres-data",
-    "node-data",
-    "nodeworker-data",
 }
 DENY_BASENAMES = {
     ".env",
