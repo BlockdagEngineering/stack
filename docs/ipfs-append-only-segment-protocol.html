@@ -81,8 +81,6 @@
     "current_segment_index_cid": "bafkreia7jk2ljqi3raiohugp6nw3633njfp7jmnuvqh47po52et4kupu2a",
     "current_segment_count": 2,
     "current_segment_head_order": 9502504,
-    "deprecated_fastsnap_root_cid": "bafybeidesnyknx4fojvtpu6hctxnlqbw372eqaqh64tl362lwiaih7bkoa",
-    "deprecated_fastsnap_tip_order": 8639851,
     "recommended_next_phase": "Backfill earlier history and keep local-writer publication deterministic.",
     "safety_rule": "IPFS is never allowed to gate mining. Segment build and publish retries are low-priority background work and must defer under mining pressure."
   }
@@ -91,7 +89,7 @@
 <body>
 <header>
   <h1>BlockDAG IPFS Append-Only Segment Protocol</h1>
-  <p class="lede">Design for replacing the stale monolithic FastSnap seed with small immutable chain-data segments, a stable IPNS latest pointer, deterministic writer election, and validation rules that let any honest node reproduce and verify the data.</p>
+  <p class="lede">Design for using small immutable chain-data segments, a stable IPNS latest pointer, deterministic writer election, and validation rules that let any honest node reproduce and verify the data.</p>
   <span class="chip good">Status: phase-1 single writer live</span>
   <span class="chip">Segment target: about 5 minutes</span>
   <span class="chip">Trust: verify, do not trust IPFS/IPNS</span>
@@ -114,10 +112,7 @@
         <div class="value">2</div>
       </article>
     </div>
-    <div class="callout warn-callout">
-      The old FastSnap root <code>bafybeidesnyknx4fojvtpu6hctxnlqbw372eqaqh64tl362lwiaih7bkoa</code> at block/order <code>8,639,851</code> is deprecated and unpinned. It must remain only as historical evidence, not as the latest bootstrap source.
-    </div>
-    <p>The active discovery file is <code>ops/ipfs-content-discovery.json</code>. It records the stable IPNS name, the current immutable segment-index CID, the deprecated FastSnap CIDs, and the resolver-cache warning. Fresh consumers should verify the IPNS result against the discovery file and then verify the index and segments themselves.</p>
+    <p>The active discovery file is <code>ops/ipfs-content-discovery.json</code>. It records the stable IPNS name, the current immutable segment-index CID, and the resolver-cache warning. Fresh consumers should verify the IPNS result against the discovery file and then verify the index and segments themselves.</p>
     <p>The stable IPNS name is permanent only if it is maintained. This host's <code>bdag-ipfs-segment-writer.timer</code> publishes new segment indexes at low priority and republishes the current pointer whenever a segment append succeeds. The content sidecar can still republish the discovery CID while waiting, because distributed IPNS records need periodic maintenance even when the pointed-to CID has not changed.</p>
     <p>Phase 1 is deliberately local-writer: this pool's local node writes live-tail segments. The current published head is order <code>9502504</code>; earlier history before order <code>9502145</code> still needs backfill before this is a full bootstrap source.</p>
   </section>
@@ -287,8 +282,8 @@ rank eligible publishers by weighted rank_score, with win_count as bounded weigh
       <tbody>
         <tr>
           <td>0. Runtime correction</td>
-          <td>Deprecate and unpin stale FastSnap seed; publish empty segment index through IPNS.</td>
-          <td>Discovery file points to segment index, old FastSnap CIDs are deprecated only, new index CID is pinned.</td>
+          <td>Publish the initial segment index through IPNS and pin it locally.</td>
+          <td>Discovery file points to segment index and the current index CID is pinned.</td>
         </tr>
         <tr>
           <td>1. Single-publisher segments</td>

@@ -73,12 +73,10 @@ override `POOL_GBT_MIN_INTERVAL_MS` below `1000`, do not override
 least `10` seconds apart unless a measured soak test proves the node can absorb
 more frequent RPC traffic while importing and mining.
 
-Any system with USB-backed blockchain data is a FastSync/FastArtifact consumer,
-not a source, by default. Keep `SYNC_SOURCE_NODE=0`; do not reintroduce
-`NODE_ARGS_APPEND=--fastartifactsync` or artifact serving on low-IO USB hosts.
-These nodes must still do normal outbound sync and block relay, but must not
-serve bulk range, snapshot, or artifact traffic from the USB chain path unless a
-human deliberately overrides the policy for a proven
+Any system with USB-backed blockchain data must keep recovery/archive work on the
+low-priority raw-datadir and IPFS sidecars. These nodes must still do normal
+outbound sync and block relay, but must not serve bulk chain-data traffic from
+the USB chain path unless a human deliberately overrides the policy for a proven
 high-IO source host.
 
 Fresh installs assume zero miner sources. Do not hard-code one, four, five, or

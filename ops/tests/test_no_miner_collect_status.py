@@ -723,7 +723,6 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
         pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
         pool_ops.BACKGROUND_MAINTENANCE_LAZY_TASKS = {"rawdatadir_sidecar"}
         pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = {
-            "rawdatadir_publish",
             "rawdatadir_content_seal",
             "ipfs_content_sidecar",
             "ipfs_segment_writer",

@@ -39,7 +39,7 @@
     <tbody>
       <tr>
         <td>Mainnet-only stack paths</td>
-        <td>Rawdatadir, FastSnap/FastArtifact, IPFS segment writer, sidecar sealing, restore, and installer-generated service env now reject non-mainnet network values and normalize to <code>mainnet</code>.</td>
+        <td>Rawdatadir, IPFS segment writer, sidecar sealing, restore, and installer-generated service env now reject non-mainnet network values and normalize to <code>mainnet</code>.</td>
         <td>Active source and live runtime searches for forbidden non-mainnet network labels returned no matches outside ignored runtime/data/dashboard/generated paths.</td>
       </tr>
       <tr>
@@ -121,7 +121,7 @@
   </ul>
 
   <h2>Validation Run</h2>
-  <p>Focused Python validation passed with temporary runtime directories and bytecode disabled: 158 tests covered fastartifact source eligibility, IPFS segment writer, IPFS content sidecar, chain-state self-heal mainnet-only behavior, chain RPC resilience, pool start gate, status sampler mining imperative, deployment portability, rawdatadir sidecar finalization/verify, automation control, pool efficiency loss ledger, and no-miner status collection.</p>
+  <p>Focused Python validation passed with temporary runtime directories and bytecode disabled: 158 tests covered rawdatadir sidecar safety, IPFS segment writer, IPFS content sidecar, chain-state self-heal mainnet-only behavior, chain RPC resilience, pool start gate, status sampler mining imperative, deployment portability, rawdatadir sidecar finalization/verify, automation control, pool efficiency loss ledger, and no-miner status collection.</p>
   <p>Static release validation also passed: release bootstrap static tests, rawdatadir artifact static tests, doc consistency check, and restart-hardening validator.</p>
   <p>Live validation after restarting the sampler showed <code>overall ok</code>, <code>mode mining</code>, <code>can_mine true</code>, four connected miners, fresh accepted block submit/share data, no sync warnings, and canonical safety true.</p>
 </body>

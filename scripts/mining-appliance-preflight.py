@@ -463,15 +463,6 @@ def check_storage(checks: list[Check], root: Path, env: dict[str, str], profile:
     usb_chain_data = is_usb_source(str(data_mount.get("source") or ""))
     if usb_chain_data and data_fstype not in {"f2fs", "ext4"}:
         add(checks, "warn", "usb_chain_filesystem", f"USB chain device uses {data_fstype or 'unknown'} filesystem.", "Use F2FS for USB flash or ext4 for USB SSD.", evidence)
-    if usb_chain_data and bool_enabled(env.get("SYNC_SOURCE_NODE"), False):
-        add(
-            checks,
-            "fail",
-            "usb_mining_ipfs_source_role",
-            "USB-backed chain data is configured as a sync/source publisher.",
-            "Disable SYNC_SOURCE_NODE on USB-backed mining hosts. Keep only the low-priority local/IPFS sidecar path so archive work cannot compete aggressively with mining.",
-            evidence,
-        )
 
 
 def check_storage_profile(checks: list[Check], root: Path, env: dict[str, str], profile: HostProfile) -> None:
@@ -762,7 +753,7 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     evidence = {
         "BDAG_NODE_CACHE_MB": env.get("BDAG_NODE_CACHE_MB"),
         "NODE_MAX_PEERS": env.get("NODE_MAX_PEERS"),
-        "SYNC_SOURCE_NODE": env.get("SYNC_SOURCE_NODE"),
+        "BDAG_RAWDATADIR_SIDECAR_MODE": env.get("BDAG_RAWDATADIR_SIDECAR_MODE"),
         "BDAG_STORAGE_PROFILE": env.get("BDAG_STORAGE_PROFILE"),
         "BDAG_DETECTED_NETWORK_TOPOLOGY": env.get("BDAG_DETECTED_NETWORK_TOPOLOGY"),
         "BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS": env.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS"),
@@ -831,25 +822,6 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     else:
         add(checks, "pass", "node_mining_runtime", "node mining stays disabled until miners are present", evidence=evidence)
 
-    legacy_sync_failures = []
-    if bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), False):
-        legacy_sync_failures.append("BDAG_FASTARTIFACTSYNC_ENABLED is enabled")
-    if bool_enabled(env.get("BDAG_FASTSNAP_ENABLED"), False):
-        legacy_sync_failures.append("BDAG_FASTSNAP_ENABLED is enabled")
-    if "--fastartifactsync" in (env.get("NODE_ARGS_APPEND") or ""):
-        legacy_sync_failures.append("NODE_ARGS_APPEND contains --fastartifactsync")
-    if legacy_sync_failures:
-        add(
-            checks,
-            "fail",
-            "legacy_sync_path",
-            "legacy FastArtifact/FastSnap startup path is enabled: " + "; ".join(legacy_sync_failures),
-            "Keep legacy startup sync disabled. Use the IPFS segment writer/content sidecar as the recovery/archive path.",
-            evidence,
-        )
-    else:
-        add(checks, "pass", "legacy_sync_path", "legacy FastArtifact/FastSnap startup paths are disabled", evidence=evidence)
-
     pool_rpc_pressure = {
         "POOL_GBT_MIN_INTERVAL_MS": env.get("POOL_GBT_MIN_INTERVAL_MS"),
         "POOL_GBT_PRESSURE_INTERVAL_MS": env.get("POOL_GBT_PRESSURE_INTERVAL_MS"),
@@ -888,11 +860,6 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         )
     else:
         add(checks, "pass", "pool_template_rpc_pressure", "pool template RPC pressure stays within constrained-node defaults", evidence=pool_rpc_pressure)
-
-    if not bool_enabled(env.get("BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC"), True):
-        add(checks, "warn", "fastsync_acceleration", "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC is disabled.", "Enable coordinator acceleration so nodes more than 1000 blocks behind use fastest catch-up defaults.", evidence)
-    else:
-        add(checks, "pass", "fastsync_acceleration", "sync coordinator fastest catch-up is enabled", evidence=evidence)
 
     fast_restart_cooldown = safe_int(env.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS"), 900)
     if fast_restart_cooldown and fast_restart_cooldown > 1800:
@@ -1044,7 +1011,7 @@ def check_route_policy_validator(checks: list[Check], root: Path | None = None) 
 def check_network(checks: list[Check], root: Path | None = None) -> None:
     proc = run(["ip", "-o", "-4", "route", "get", "1.1.1.1"], timeout=3)
     if proc.returncode != 0 or not proc.stdout.strip():
-        add(checks, "warn", "default_route", "no IPv4 default route was detected.", "Configure networking before FastSnap peer discovery or ASIC setup.", {"stderr": proc.stderr.strip()})
+        add(checks, "warn", "default_route", "no IPv4 default route was detected.", "Configure networking before peer discovery, IPFS seeding, or ASIC setup.", {"stderr": proc.stderr.strip()})
         check_route_policy_validator(checks, root)
         return
     line = proc.stdout.strip().splitlines()[0]

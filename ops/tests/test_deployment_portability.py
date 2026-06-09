@@ -83,7 +83,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
 
         self.assertIn("BDAG_NODE_SERVICE: node", compose)
         self.assertIn("BDAG_NETWORK: mainnet", compose)
-        self.assertIn("BDAG_FASTSNAP_NETWORK: mainnet", compose)
+        self.assertIn("BDAG_RAWDATADIR_NETWORK: ${BDAG_RAWDATADIR_NETWORK:-mainnet}", compose)
         self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool", compose)
         self.assertIn("BDAG_POOL_CONTAINER: pool", compose)
         self.assertIn("BDAG_POOL_DB_CONTAINER: postgres", compose)
@@ -291,13 +291,12 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("BDAG_STACK_DEFAULTS_FILE=", installer)
         self.assertIn("stack-defaults.env", installer)
         self.assertIn("env_value()", installer)
-        self.assertIn("set_env_value()", installer)
         self.assertIn(
             "BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT=$(env_value BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT 4096)",
             installer,
         )
-        self.assertIn("install_mining_host_tuning\ninstall_rawdatadir_source_timer", installer)
-        self.assertIn("install_rawdatadir_source_timer\ninstall_ipfs_content_sidecar_timer", installer)
+        self.assertIn("install_mining_host_tuning\ninstall_rawdatadir_sidecar_timers", installer)
+        self.assertIn("install_rawdatadir_sidecar_timers\ninstall_ipfs_content_sidecar_timer", installer)
         self.assertIn("install_ipfs_content_sidecar_timer\ninstall_ipfs_segment_writer_timer", installer)
 
 

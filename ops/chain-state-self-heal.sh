@@ -115,7 +115,7 @@ if [[ "$enabled" != "1" && "$FORCE" != "1" ]]; then
   exit 0
 fi
 
-REQUESTED_NETWORK="${BDAG_CHAIN_STATE_NETWORK:-${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}}"
+REQUESTED_NETWORK="${BDAG_CHAIN_STATE_NETWORK:-${BDAG_RAWDATADIR_NETWORK:-mainnet}}"
 if [[ "${REQUESTED_NETWORK,,}" != "mainnet" ]]; then
   log "chain-state self-heal refuses non-mainnet network: $REQUESTED_NETWORK"
   json_state "blocked" "non-mainnet chain-state restore network is unsupported:$REQUESTED_NETWORK"

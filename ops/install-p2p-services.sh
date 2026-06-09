@@ -28,34 +28,6 @@ env_value() {
   printf '%s\n' "${value:-$fallback}"
 }
 
-set_env_value() {
-  local file="$1" key="$2" value="${3:-}"
-  mkdir -p "$(dirname "$file")"
-  touch "$file"
-  python3 - "$file" "$key" "$value" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-key = sys.argv[2]
-value = sys.argv[3]
-lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-prefix = key + "="
-updated = False
-out = []
-for line in lines:
-    if line.startswith(prefix):
-        if not updated:
-            out.append(f"{key}={value}")
-            updated = True
-        continue
-    out.append(line)
-if not updated:
-    out.append(f"{key}={value}")
-path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
-PY
-}
-
 need_sudo() {
   if [[ "$(id -u)" == "0" ]]; then
     "$@"
@@ -103,21 +75,15 @@ EOF
   systemctl --user enable --now bdag-local-peers.timer
 }
 
-install_fastsnap_seed_timer() {
-  warn "FastSnap archive seed timer is not part of this stack; raw datadir and IPFS segment sidecars own content publication"
-  return 0
-}
-
-install_rawdatadir_source_timer() {
-  local source_node mode
-  source_node="$(env_value SYNC_SOURCE_NODE 0)"
-  mode="$(env_value BDAG_RAWDATADIR_SOURCE_MODE auto)"
-  if [[ "$source_node" =~ ^(0|false|no|off|disabled)$ ]]; then
-    warn "Raw datadir FastArtifact source disabled by SYNC_SOURCE_NODE=$source_node"
+install_rawdatadir_sidecar_timers() {
+  local mode
+  mode="$(env_value BDAG_RAWDATADIR_SIDECAR_MODE auto)"
+  if [[ "$mode" =~ ^(0|false|no|off|disabled)$ ]]; then
+    warn "Raw datadir sidecar disabled by BDAG_RAWDATADIR_SIDECAR_MODE=$mode"
     return 0
   fi
-  if [[ ! -x "$ROOT/ops/fastartifact_source_eligibility.py" || ! -x "$ROOT/ops/maintain-rawdatadir-sidecar.sh" || ! -x "$ROOT/ops/verify-rawdatadir-sidecar.py" || ! -x "$ROOT/ops/publish-rawdatadir-artifact.sh" ]]; then
-    warn "Raw datadir source files are missing under $ROOT/ops"
+  if [[ ! -x "$ROOT/ops/maintain-rawdatadir-sidecar.sh" || ! -x "$ROOT/ops/verify-rawdatadir-sidecar.py" ]]; then
+    warn "Raw datadir sidecar files are missing under $ROOT/ops"
     return 0
   fi
 
@@ -126,9 +92,9 @@ install_rawdatadir_source_timer() {
   local network active_service source_dir sidecar_dir artifact_base
   local sidecar_content_base
 
-  network="$(env_value BDAG_FASTSNAP_NETWORK mainnet)"
+  network="$(env_value BDAG_RAWDATADIR_NETWORK mainnet)"
   if [[ "${network,,}" != "mainnet" ]]; then
-    warn "Raw datadir services refuse non-mainnet BDAG_FASTSNAP_NETWORK=$network"
+    warn "Raw datadir sidecar refuses non-mainnet BDAG_RAWDATADIR_NETWORK=$network"
     return 1
   fi
   network="mainnet"
@@ -145,8 +111,7 @@ install_rawdatadir_source_timer() {
 BDAG_PROJECT_ROOT=$ROOT
 BDAG_ENV_FILE=$ROOT/.env
 BDAG_COMPOSE_FILE=$ROOT/docker-compose.yml
-SYNC_SOURCE_NODE=$source_node
-BDAG_RAWDATADIR_SOURCE_MODE=$mode
+BDAG_RAWDATADIR_SIDECAR_MODE=$mode
 BDAG_RAWDATADIR_NETWORK=$network
 BDAG_RAWDATADIR_ACTIVE_SERVICE=$active_service
 BDAG_RAWDATADIR_SIDECAR_SOURCE=$source_dir
@@ -165,48 +130,17 @@ BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH=$(env_value BDAG_RAWDATADIR_REQUIRE_
 BDAG_RAWDATADIR_MAX_EVM_REFERENCE_LAG=$(env_value BDAG_RAWDATADIR_MAX_EVM_REFERENCE_LAG 1000)
 BDAG_PUBLIC_RPC_URLS=$(env_value BDAG_PUBLIC_RPC_URLS blockdag-engineering-rpc=https://rpc.blockdag.engineering,bdagscan-rpc=https://rpc.bdagscan.com)
 BDAG_RAWDATADIR_FINALIZE=$(env_value BDAG_RAWDATADIR_FINALIZE 0)
-BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID=$(env_value BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID "")
-BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX=$(env_value BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX "")
+BDAG_RAWDATADIR_SIGNING_KEY_ID=$(env_value BDAG_RAWDATADIR_SIGNING_KEY_ID "")
+BDAG_RAWDATADIR_SIGNING_KEY_HEX=$(env_value BDAG_RAWDATADIR_SIGNING_KEY_HEX "")
 EOF
-
-  local eligibility_json eligible publish_allowed current_manifest
-  eligibility_json="$("$ROOT/ops/fastartifact_source_eligibility.py" --full --json --status-file "$ROOT/ops/runtime/rawdatadir-source-status.json" 2>/dev/null || true)"
-  eligible="$(printf '%s' "$eligibility_json" | python3 -c 'import json,sys; print(str(bool(json.load(sys.stdin).get("eligible", False))).lower())' 2>/dev/null || printf 'false')"
-  publish_allowed="$(printf '%s' "$eligibility_json" | python3 -c 'import json,sys; print(str(bool(json.load(sys.stdin).get("publish_allowed", False))).lower())' 2>/dev/null || printf 'false')"
-  current_manifest="$artifact_base/current/manifest.json"
-
-  if [[ "$eligible" == "true" ]]; then
-    set_env_value "$ROOT/.env" SYNC_SOURCE_NODE "$source_node"
-    set_env_value "$ROOT/.env" BDAG_RAWDATADIR_SOURCE_MODE "$mode"
-    set_env_value "$ROOT/.env" BDAG_RAWDATADIR_ARTIFACT_BASE "$artifact_base"
-    if [[ -f "$current_manifest" && ! -f "$artifact_base/current/DO_NOT_PUBLISH.txt" && ! -f "$artifact_base/current/DO_NOT_PUBLISH" ]]; then
-      set_env_value "$ROOT/.env" BDAG_FASTSYNC_ARTIFACT_DIRECTORY "/fastartifact/rawdatadir/current"
-      set_env_value "$ROOT/.env" BDAG_FASTSYNC_ARTIFACT_MANIFEST "/fastartifact/rawdatadir/current/manifest.json"
-    else
-      # Do not advertise a raw-datadir artifact until a finalized manifest
-      # exists. The publisher promotes current atomically after verification.
-      set_env_value "$ROOT/.env" BDAG_FASTSYNC_ARTIFACT_DIRECTORY ""
-      set_env_value "$ROOT/.env" BDAG_FASTSYNC_ARTIFACT_MANIFEST ""
-    fi
-  else
-    warn "Raw datadir source sidecar is not currently eligible on this host; retry timers remain active and status is in ops/runtime/rawdatadir-source-status.json"
-    set_env_value "$ROOT/.env" BDAG_FASTSYNC_ARTIFACT_DIRECTORY ""
-    set_env_value "$ROOT/.env" BDAG_FASTSYNC_ARTIFACT_MANIFEST ""
-  fi
 
   install -m 0644 "$ROOT/ops/systemd/user-bdag-rawdatadir-sidecar.service" "$user_systemd_dir/bdag-rawdatadir-sidecar.service"
   install -m 0644 "$ROOT/ops/systemd/user-bdag-rawdatadir-sidecar.timer" "$user_systemd_dir/bdag-rawdatadir-sidecar.timer"
   install -m 0644 "$ROOT/ops/systemd/user-bdag-rawdatadir-sidecar-verify.service" "$user_systemd_dir/bdag-rawdatadir-sidecar-verify.service"
   install -m 0644 "$ROOT/ops/systemd/user-bdag-rawdatadir-sidecar-verify.timer" "$user_systemd_dir/bdag-rawdatadir-sidecar-verify.timer"
-  install -m 0644 "$ROOT/ops/systemd/user-bdag-rawdatadir-source.service" "$user_systemd_dir/bdag-rawdatadir-source.service"
-  install -m 0644 "$ROOT/ops/systemd/user-bdag-rawdatadir-source.timer" "$user_systemd_dir/bdag-rawdatadir-source.timer"
   systemctl --user daemon-reload
   systemctl --user enable --now bdag-rawdatadir-sidecar.timer
   systemctl --user enable --now bdag-rawdatadir-sidecar-verify.timer
-  systemctl --user enable --now bdag-rawdatadir-source.timer
-  if [[ "$publish_allowed" != "true" ]]; then
-    warn "Raw datadir artifact publisher is not allowed yet; timer remains active and the service will retry/defer safely"
-  fi
 }
 
 install_ipfs_content_sidecar_timer() {
@@ -315,6 +249,6 @@ install_mining_host_tuning() {
 install_firewall
 install_local_peer_timer
 install_mining_host_tuning
-install_rawdatadir_source_timer
+install_rawdatadir_sidecar_timers
 install_ipfs_content_sidecar_timer
 install_ipfs_segment_writer_timer

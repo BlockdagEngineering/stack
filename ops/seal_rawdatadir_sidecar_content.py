@@ -76,7 +76,7 @@ def env_int(env: dict[str, str], key: str, default: int) -> int:
 
 
 def mainnet_network(env: dict[str, str]) -> str:
-    requested = str(env.get("BDAG_RAWDATADIR_NETWORK") or env.get("BDAG_FASTSNAP_NETWORK") or MAINNET_NETWORK)
+    requested = str(env.get("BDAG_RAWDATADIR_NETWORK") or MAINNET_NETWORK)
     requested = requested.strip().lower()
     if requested != MAINNET_NETWORK:
         raise RuntimeError(f"raw datadir sidecar content refuses non-mainnet network: {requested}")
@@ -125,7 +125,7 @@ def manifest_root(manifest: dict[str, Any]) -> str:
 
 
 def signer_from_env(env: dict[str, str]) -> dict[str, str] | None:
-    key_hex = (env.get("BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX") or "").strip()
+    key_hex = (env.get("BDAG_RAWDATADIR_SIGNING_KEY_HEX") or "").strip()
     if not key_hex:
         return None
     key_bytes = bytes.fromhex(key_hex)
@@ -134,7 +134,7 @@ def signer_from_env(env: dict[str, str]) -> dict[str, str] | None:
     elif len(key_bytes) == 32:
         seed = key_bytes
     else:
-        raise ValueError("BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX must be a 32-byte seed or 64-byte ed25519 private key")
+        raise ValueError("BDAG_RAWDATADIR_SIGNING_KEY_HEX must be a 32-byte seed or 64-byte ed25519 private key")
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -144,7 +144,7 @@ def signer_from_env(env: dict[str, str]) -> dict[str, str] | None:
         format=serialization.PublicFormat.Raw,
     )
     return {
-        "key_id": env.get("BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID") or "rawdatadir-sidecar",
+        "key_id": env.get("BDAG_RAWDATADIR_SIGNING_KEY_ID") or "rawdatadir-sidecar",
         "public_key": public_key.hex(),
         "private_key": private_key,
     }

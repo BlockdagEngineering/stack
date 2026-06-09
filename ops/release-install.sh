@@ -561,8 +561,6 @@ configure_env() {
   set_env_value .env BDAG_ASIC_LAN_CIDRS "$scan_target"
   validate_pool_lan_config
   apply_stack_defaults_env .env
-  set_stack_default_env_value .env BDAG_FASTSYNC_RANGE_BLOCKS
-  set_stack_default_env_value .env BDAG_FASTSYNC_PREPROCESS_WORKERS
   set_stack_default_env_value .env BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED
   set_stack_default_env_value .env BDAG_CHAIN_PEERSTORE_LOG_TAIL
   set_env_value .env BDAG_INSTALL_APPLIANCE_HOST_PROFILE "$(env_value BDAG_INSTALL_APPLIANCE_HOST_PROFILE 1)"
@@ -571,12 +569,9 @@ configure_env() {
   set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_STRICT "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_STRICT 0)"
   set_env_value .env BDAG_INSTALL_STACK_SUPPORT_SERVICES "$(env_value BDAG_INSTALL_STACK_SUPPORT_SERVICES 1)"
   set_env_value .env BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT "$(env_value BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT 0)"
-  set_stack_default_env_value .env BDAG_FASTARTIFACTSYNC_ENABLED
-  set_stack_default_env_value .env SYNC_SOURCE_NODE
   set_env_value .env NODE_ARGS_APPEND ""
-  set_stack_default_env_value .env BDAG_FASTSNAP_SEED_TIMER_ENABLED
-  set_stack_default_env_value .env BDAG_RAWDATADIR_SOURCE_MODE
   set_env_value .env BDAG_RAWDATADIR_ARTIFACT_BASE "./data-restore/rawdatadir"
+  set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_MODE
   set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE
   set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE "./data-restore/rawdatadir-sidecar-content"
   set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP
@@ -619,7 +614,6 @@ configure_env() {
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WORKERS
   set_stack_default_env_value .env BDAG_DASHBOARD_HISTORY_REBUILD_PRESERVE_ASIC_HISTORY
-  set_stack_default_env_value .env BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC
   set_stack_default_env_value .env BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS
   set_stack_default_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT
   set_stack_default_env_value .env BDAG_CATCHUP_PAUSE_ENABLED
@@ -633,13 +627,6 @@ configure_env() {
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MB
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MIN_MB
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MODE
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MIN_GAIN_BLOCKS
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT
   configure_active_node_env
   configure_node_mining_env "$node_mining_enabled" "$mining_address"
 
@@ -806,45 +793,6 @@ seed_chain_data() {
   fi
 }
 
-publish_p2p_snapshot_archive() {
-  local arch="$1"
-  local bdag_bin="artifacts/binaries/linux-$arch/bdag"
-  local node_dir source_datadir target_datadir
-  node_dir="$(env_path_value BDAG_NODE_DATA_DIR data/node)"
-  source_datadir="$node_dir/mainnet"
-  target_datadir="$node_dir/mainnet"
-  local source_archive="$source_datadir/snapshot.bdsnap"
-  local target_archive="$target_datadir/snapshot.bdsnap"
-  local force="${BDAG_P2P_SNAPSHOT_FORCE:-0}"
-
-  if [[ "${BDAG_P2P_SNAPSHOT_PUBLISH:-1}" != "1" ]]; then
-    warn "P2P snapshot archive publication disabled by BDAG_P2P_SNAPSHOT_PUBLISH=0."
-    return 0
-  fi
-  if [[ ! -x "$bdag_bin" ]]; then
-    warn "Cannot publish P2P snapshot archive: missing executable $bdag_bin."
-    return 0
-  fi
-  if [[ ! -d "$source_datadir/BdagChain" ]]; then
-    warn "No seeded node chain DB found; the node will sync first, then use raw-datadir FastArtifact source serving after a finalized sidecar publish."
-    return 0
-  fi
-
-  if [[ ! -s "$source_archive" || "$force" == "1" ]]; then
-    say "Publishing P2P snapshot archive for node datadirs"
-    rm -f "$source_archive.tmp" "$source_archive.tmp.manifest.json"
-    "$bdag_bin" snap export --datadir "$source_datadir" --path "$source_archive.tmp"
-    mv "$source_archive.tmp" "$source_archive"
-    if [[ -f "$source_archive.tmp.manifest.json" ]]; then
-      mv "$source_archive.tmp.manifest.json" "$source_archive.manifest.json"
-    fi
-  else
-    say "Existing node P2P snapshot archive found: $source_archive"
-  fi
-
-  say "P2P snapshot archive available to node"
-}
-
 start_stack() {
   say "Starting BlockDAG sync services"
   guard_runtime_compose
@@ -999,7 +947,6 @@ main() {
   run_appliance_preflight
   load_or_build_images "$arch"
   seed_chain_data
-  publish_p2p_snapshot_archive "$arch"
   start_stack
   install_stack_support_services
   discover_preserved_chain_peers

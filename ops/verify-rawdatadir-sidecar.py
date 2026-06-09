@@ -15,7 +15,7 @@ from typing import Any
 
 
 ROOT = Path(os.environ.get("BDAG_PROJECT_ROOT") or Path(__file__).resolve().parents[1]).resolve()
-REQUESTED_NETWORK = (os.environ.get("BDAG_RAWDATADIR_NETWORK") or os.environ.get("BDAG_FASTSNAP_NETWORK") or "mainnet").strip().lower()
+REQUESTED_NETWORK = (os.environ.get("BDAG_RAWDATADIR_NETWORK") or "mainnet").strip().lower()
 if REQUESTED_NETWORK != "mainnet":
     raise SystemExit(f"raw datadir sidecar verifier refuses non-mainnet network: {REQUESTED_NETWORK}")
 NETWORK = "mainnet"

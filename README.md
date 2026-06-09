@@ -131,37 +131,25 @@ peers; address class is not a sync mode, priority class, or eligibility signal.
 
 During upgrades, `ops/update-local-peers.py` imports any existing
 address-bucket values only long enough to normalize complete P2P multiaddrs
-into `BDAG_FASTSYNC_PEERS`, then clears those bucket values. Do not add new LAN,
-VPN, or public sync options.
+into `BDAG_NODE_PEER_ADDRESSES`, then clears those bucket values. Do not add new
+LAN, VPN, or public sync options.
 
 Upgrades that keep existing chain data should also mine that data for peer
 evidence. After the node starts, the release installer runs
 `ops/update-local-peers.py --force-apply`, parses preserved chain peerstore
 startup logs, probes candidate multiaddrs for TCP reachability, writes
 `ops/runtime/peer-discovery-current.json`, and applies the resulting
-`BDAG_FASTSYNC_PEERS` to the active single node. TCP-open status is only a
+`BDAG_NODE_PEER_ADDRESSES` to the active single node. TCP-open status is only a
 bootstrap hint; install completion and mining readiness still require normal
 peer handshakes, sync freshness, RPC health, and template checks.
 
-## Fast Artifact Sync V2 Directory Mode
+## IPFS Sync Source
 
-Fast Artifact Sync V2 directory artifacts are now the preferred empty-datadir
-bootstrap path when a peer offers them. The node entrypoint first checks whether
-the packaged `fastsnap` binary supports directory install flags. When supported,
-it passes both `--dir-out` and `--out`: directory-capable peers install verified
-manifest files directly into the node datadir, while archive-only peers still
-fall back to the `.bdsnap` path. If the binary is older, the entrypoint stays on
-the V2 archive path instead of failing before normal sync can start.
-
-`BDAG_FASTSNAP_DIRECTORY_MODE=1` is the default. Set
-`BDAG_FASTSNAP_DIRECTORY_STAGING` only when the staging directory must live on a
-specific filesystem; otherwise the entrypoint creates a temporary staging path
-beside the node datadir. Serving a maintained directory hot stage is opt-in:
-set `BDAG_FASTSYNC_ARTIFACT_DIRECTORY` to the verified file root and
-`BDAG_FASTSYNC_ARTIFACT_MANIFEST` to the manifest sidecar. When a node was
-bootstrapped from a directory artifact, the entrypoint automatically exposes
-that verified checkpoint from the node datadir by using
-`artifact.manifest.json`.
+IPFS is the only supported chain-data bootstrap, archive, and recovery source.
+The stack keeps a conservative, low-priority raw-datadir sidecar copy near the
+live node, seals safe generations into content-addressed chunks, and publishes
+verified indexes and live-tail segments through IPFS/IPNS. The node startup path
+does not fetch alternate archive formats or serve chain ranges.
 
 ## IPFS Content Discovery
 
@@ -169,11 +157,8 @@ Future systems should read `ops/ipfs-content-discovery.json` for the durable
 IPFS/IPNS discovery contract. The stable latest pointer is
 `/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk`; the current
 immutable latest-index CID is
-recorded in that discovery file. At the first live segment publish on
-2026-05-31 it was `bafkreifvqj7qhkoifykybbvlxxmq3jhydgzq2kjxuq5fznjizjjogzgthi`.
-The stale monolithic FastSnap seed has been deprecated. The current implementation
-writes append-only live-tail chain-order segments from the local node. The
-durable protocol design is recorded in
+recorded in that discovery file. The current implementation writes append-only
+live-tail chain-order segments from the local node. The durable protocol design is recorded in
 `docs/ipfs-append-only-segment-protocol.html`. IPFS and IPNS are
 not chain trust. Receivers must verify segment CIDs, payload hashes, order
 continuity, network/genesis identity, tip/state roots, and normal consensus
@@ -387,35 +372,27 @@ configuration failure, not a valid physical miner.
 
 ## Default V2 Sync Source
 
-New installs use Fast Artifact Sync V2 as the preferred bootstrap path. Client
-sync is enabled by default; source serving is disabled unless
-`SYNC_SOURCE_NODE=1` is set and the chain, sidecar, artifact, temporary, and
-Docker paths are not USB/removable/external and the host has enough CPU, RAM,
-and disk headroom.
-
-Eligible source hosts maintain a low-priority raw datadir sidecar and publish a
-signed `raw_datadir_checkpoint` artifact from a finalized sidecar generation.
-The artifact publisher does not stop the live node automatically. Set
-`BDAG_RAWDATADIR_FINALIZE=1` only for an operator-approved
-finalization window.
+New installs use IPFS sidecar content and append-only segment indexes as the
+bootstrap path. Active mining hosts maintain a low-priority raw datadir sidecar
+and publish signed, verified sidecar content only after the safety and
+finalization gates pass.
 
 The archive seed timer is not part of this stack because IPFS segments and
-finalized raw-datadir sidecars now own source publication.
+finalized raw-datadir sidecars own source publication.
 
-Check source eligibility and status with:
-
-```bash
-./ops/fastartifact_source_eligibility.py --full --json
-```
-
-Refresh/publish the raw datadir source path with:
+Check sidecar safety and status with:
 
 ```bash
-./ops/publish-rawdatadir-artifact.sh
+./ops/rawdatadir_sidecar_safety.py --full --json
 ```
 
-See `docs/rawdatadir-libp2p-sync.md` and
-`docs/ipfs-append-only-segment-protocol.html`.
+Refresh the local raw datadir sidecar with:
+
+```bash
+./ops/maintain-rawdatadir-sidecar.sh
+```
+
+See `docs/ipfs-append-only-segment-protocol.html`.
 
 IPFS segments and finalized raw-datadir sidecars are the supported
 content-publication paths. Published files must be manifest-indexed and

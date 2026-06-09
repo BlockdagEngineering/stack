@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Lazy IPFS publisher for finalized BlockDAG FastArtifact content.
+"""Lazy IPFS publisher for finalized BlockDAG raw-datadir sidecar content.
 
 This process is deliberately not a snapshot builder. It only advertises an
-already-finalized, signed FastArtifact generation after resource pressure clears.
+already-finalized, signed raw-datadir generation after resource pressure clears.
 IPFS is treated as an untrusted byte distribution plane; the signed
-FastArtifact manifest and normal consensus validation remain authoritative.
+sidecar manifest and normal consensus validation remain authoritative.
 """
 
 from __future__ import annotations
@@ -134,48 +134,6 @@ def background_maintenance_allowed(env: dict[str, str]) -> dict[str, Any]:
         )
     except Exception as exc:  # pragma: no cover - exercised by integration use.
         return {"allowed": False, "reasons": [f"maintenance gate unavailable: {exc}"], "error": str(exc)}
-
-
-def source_eligibility(env: dict[str, str]) -> dict[str, Any]:
-    script = OPS_DIR / "fastartifact_source_eligibility.py"
-    if not script.exists():
-        return {"eligible": False, "publish_allowed": False, "reasons": ["missing_fastartifact_source_eligibility"]}
-    command = [
-        str(script),
-        "--full",
-        "--json",
-        "--status-file",
-        str(resolve_path(env.get("BDAG_RAWDATADIR_SOURCE_STATUS"), ROOT / "ops/runtime/rawdatadir-source-status.json")),
-    ]
-    result = run_command(command, int(env.get("BDAG_IPFS_CONTENT_ELIGIBILITY_TIMEOUT", "300")), env)
-    try:
-        payload = json.loads(result.stdout or "{}")
-    except json.JSONDecodeError:
-        payload = {
-            "eligible": False,
-            "publish_allowed": False,
-            "reasons": ["eligibility_json_unreadable"],
-            "stdout": result.stdout[-1000:],
-            "stderr": result.stderr[-1000:],
-        }
-    if result.returncode != 0:
-        payload.setdefault("eligible", False)
-        payload.setdefault("publish_allowed", False)
-        payload.setdefault("reasons", []).append(f"eligibility_exit_{result.returncode}")
-    return payload
-
-
-def source_publish_allowed(eligibility: dict[str, Any]) -> bool:
-    return bool(eligibility.get("eligible", False)) and bool(eligibility.get("publish_allowed", False))
-
-
-def source_publish_block_reasons(eligibility: dict[str, Any]) -> list[str]:
-    reasons = eligibility.get("reasons")
-    if isinstance(reasons, list) and reasons:
-        return [str(reason) for reason in reasons]
-    if eligibility.get("eligible", False) and not eligibility.get("publish_allowed", False):
-        return ["source_publish_not_allowed"]
-    return ["source_not_eligible"]
 
 
 def artifact_paths(env: dict[str, str]) -> tuple[Path, Path]:
@@ -366,20 +324,6 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
 
-    source_eligibility_required = env_bool(env, "BDAG_IPFS_CONTENT_REQUIRE_SOURCE_ELIGIBILITY", True)
-    eligibility = source_eligibility(env)
-    if source_eligibility_required and not source_publish_allowed(eligibility):
-        payload = write_status(
-            env,
-            "deferred",
-            reasons=source_publish_block_reasons(eligibility),
-            eligibility=eligibility,
-            source_eligibility_required=source_eligibility_required,
-        )
-        if args.json:
-            print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
-
     index_path = resolve_path(env.get("BDAG_IPFS_CONTENT_LATEST_INDEX_PATH"), ROOT / "ops/runtime/ipfs-content/latest-index.json")
     existing = load_existing_index(index_path)
     artifact_dir, manifest_path = artifact_paths(env)
@@ -399,8 +343,6 @@ def main(argv: list[str] | None = None) -> int:
             action="waiting_republish_current_ipns" if ipns else "waiting",
             index_cid=index_cid,
             ipns=ipns,
-            eligibility=eligibility,
-            source_eligibility_required=source_eligibility_required,
             retry_policy="timer_will_retry_after_pressure_or_artifact_state_changes",
             artifact_dir=str(artifact_dir),
             artifact_manifest=str(manifest_path),
@@ -423,8 +365,6 @@ def main(argv: list[str] | None = None) -> int:
             artifact_manifest_sha256=manifest_sha,
             artifact_dir=str(artifact_dir),
             artifact_manifest=str(manifest_path),
-            eligibility=eligibility,
-            source_eligibility_required=source_eligibility_required,
         )
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -438,8 +378,6 @@ def main(argv: list[str] | None = None) -> int:
             artifact_manifest_sha256=manifest_sha,
             artifact_dir=str(artifact_dir),
             artifact_manifest=str(manifest_path),
-            eligibility=eligibility,
-            source_eligibility_required=source_eligibility_required,
         )
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -463,8 +401,6 @@ def main(argv: list[str] | None = None) -> int:
             artifact_manifest_sha256=manifest_sha,
             artifact_dir=str(artifact_dir),
             artifact_manifest=str(manifest_path),
-            eligibility=eligibility,
-            source_eligibility_required=source_eligibility_required,
         )
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -481,8 +417,6 @@ def main(argv: list[str] | None = None) -> int:
         artifact_dir=str(artifact_dir),
         artifact_manifest=str(manifest_path),
         latest_index_path=str(index_path),
-        eligibility=eligibility,
-        source_eligibility_required=source_eligibility_required,
     )
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))

@@ -174,7 +174,7 @@ def canonical_manifest_value(field: str, value: Any) -> Any:
 def signable_manifest_payload(manifest: dict[str, Any]) -> bytes:
     """Return the canonical bytes used for artifact_root and Ed25519 signing.
 
-    This mirrors corechain FastArtifact V2's Go manifest canonicalization:
+    This mirrors the raw-datadir sidecar manifest canonicalization:
     signatures and artifact_root are excluded, struct fields are serialized in
     manifest order, optional empty fields are omitted, and maps are stable.
     """

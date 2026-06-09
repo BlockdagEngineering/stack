@@ -51,7 +51,7 @@ class NodeworkerEntrypointTest(unittest.TestCase):
     def test_print_mode_does_not_emit_removed_sync_flags(self) -> None:
         result = self.run_entrypoint(
             {
-                "SYNC_SOURCE_NODE": "1",
+                "BDAG_RAWDATADIR_SIDECAR_MODE": "auto",
                 "NODE_ARGS_APPEND": "--cache=1024",
             }
         )

@@ -80,7 +80,7 @@ class IPFSContentSidecarTest(unittest.TestCase):
 
         self.assertIn("manifest_non_mainnet_network:not-mainnet", blockers)
 
-    def test_dry_run_ready_requires_publish_allowed_source_and_signed_artifact(self) -> None:
+    def test_dry_run_ready_requires_signed_sidecar_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             artifact = base / "current"
@@ -108,11 +108,7 @@ class IPFSContentSidecarTest(unittest.TestCase):
                 "BDAG_IPFS_CONTENT_SKIP_MAINTENANCE_DECISION": "1",
             }
 
-            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
-                ipfs_content_sidecar,
-                "source_eligibility",
-                return_value={"eligible": True, "publish_allowed": True, "reasons": []},
-            ):
+            with mock.patch.dict(os.environ, env, clear=False):
                 rc = ipfs_content_sidecar.main(["--dry-run"])
 
             payload = json.loads(status.read_text(encoding="utf-8"))
@@ -120,116 +116,6 @@ class IPFSContentSidecarTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(payload["state"], "ready")
         self.assertEqual(payload["action"], "dry_run")
-        self.assertEqual(payload["eligibility"]["publish_allowed"], True)
-        self.assertTrue(payload["source_eligibility_required"])
-
-    def test_dry_run_defers_when_source_eligibility_fails_by_default(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            artifact = base / "current"
-            artifact.mkdir()
-            manifest = artifact / "manifest.json"
-            manifest.write_text(
-                json.dumps(
-                    {
-                        "artifact_type": "raw_datadir_checkpoint",
-                        "network": "mainnet",
-                        "block_total": 123,
-                        "signatures": [{"key_id": "test", "signature": "abcd"}],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            status = base / "status.json"
-            env = {
-                "BDAG_PROJECT_ROOT": str(ROOT),
-                "BDAG_IPFS_CONTENT_SIDECAR_MODE": "auto",
-                "BDAG_RAWDATADIR_ARTIFACT_BASE": str(base),
-                "BDAG_IPFS_CONTENT_STATUS_FILE": str(status),
-                "BDAG_IPFS_CONTENT_SKIP_MAINTENANCE_DECISION": "1",
-            }
-
-            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
-                ipfs_content_sidecar,
-                "source_eligibility",
-                return_value={"eligible": False, "publish_allowed": False, "reasons": ["local_evm_unavailable"]},
-            ):
-                rc = ipfs_content_sidecar.main(["--dry-run"])
-
-            payload = json.loads(status.read_text(encoding="utf-8"))
-
-        self.assertEqual(rc, 0)
-        self.assertEqual(payload["state"], "deferred")
-        self.assertEqual(payload["eligibility"]["reasons"], ["local_evm_unavailable"])
-        self.assertEqual(payload["reasons"], ["local_evm_unavailable"])
-        self.assertTrue(payload["source_eligibility_required"])
-
-    def test_source_publish_allowed_is_required_by_default(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            status = base / "status.json"
-            env = {
-                "BDAG_PROJECT_ROOT": str(ROOT),
-                "BDAG_IPFS_CONTENT_SIDECAR_MODE": "auto",
-                "BDAG_RAWDATADIR_ARTIFACT_BASE": str(base),
-                "BDAG_IPFS_CONTENT_STATUS_FILE": str(status),
-                "BDAG_IPFS_CONTENT_SKIP_MAINTENANCE_DECISION": "1",
-            }
-
-            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
-                ipfs_content_sidecar,
-                "source_eligibility",
-                return_value={"eligible": True, "publish_allowed": False, "reasons": []},
-            ):
-                rc = ipfs_content_sidecar.main(["--dry-run"])
-
-            payload = json.loads(status.read_text(encoding="utf-8"))
-
-        self.assertEqual(rc, 0)
-        self.assertEqual(payload["state"], "deferred")
-        self.assertEqual(payload["reasons"], ["source_publish_not_allowed"])
-        self.assertTrue(payload["source_eligibility_required"])
-
-    def test_source_eligibility_can_be_disabled_explicitly(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            artifact = base / "current"
-            artifact.mkdir()
-            manifest = artifact / "manifest.json"
-            manifest.write_text(
-                json.dumps(
-                    {
-                        "artifact_type": "raw_datadir_checkpoint",
-                        "network": "mainnet",
-                        "block_total": 123,
-                        "signatures": [{"key_id": "test", "signature": "abcd"}],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            status = base / "status.json"
-            env = {
-                "BDAG_PROJECT_ROOT": str(ROOT),
-                "BDAG_IPFS_CONTENT_SIDECAR_MODE": "auto",
-                "BDAG_IPFS_CONTENT_ARTIFACT_DIR": str(artifact),
-                "BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST": str(manifest),
-                "BDAG_IPFS_CONTENT_STATUS_FILE": str(status),
-                "BDAG_IPFS_CONTENT_SKIP_MAINTENANCE_DECISION": "1",
-                "BDAG_IPFS_CONTENT_REQUIRE_SOURCE_ELIGIBILITY": "0",
-            }
-
-            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
-                ipfs_content_sidecar,
-                "source_eligibility",
-                return_value={"eligible": False, "publish_allowed": False, "reasons": ["source_mode_disabled"]},
-            ):
-                rc = ipfs_content_sidecar.main(["--dry-run"])
-
-            payload = json.loads(status.read_text(encoding="utf-8"))
-
-        self.assertEqual(rc, 0)
-        self.assertEqual(payload["state"], "ready")
-        self.assertFalse(payload["source_eligibility_required"])
 
     def test_waiting_state_republishes_current_ipns_pointer_when_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -250,10 +136,6 @@ class IPFSContentSidecarTest(unittest.TestCase):
             }
 
             with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
-                ipfs_content_sidecar,
-                "source_eligibility",
-                return_value={"eligible": True, "publish_allowed": True, "reasons": []},
-            ), mock.patch.object(
                 ipfs_content_sidecar,
                 "ipfs_pin_present",
                 return_value=True,
