@@ -189,6 +189,68 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         self.assertEqual(index["current_head"]["end_order"], 400)
         self.assertEqual(index["recovered_from_discovery_cid"], "baf-index")
 
+    def test_attach_previous_index_link_records_append_only_lineage(self) -> None:
+        current = {"document_type": "bdag_ipfs_segment_index_v1", "segments": []}
+        previous = {
+            "current_head": {"segment_id": 2, "end_order": 9502504, "manifest_cid": "baf-manifest"},
+            "history_completeness": {"complete_from_order": 9502145},
+        }
+
+        linked = ipfs_segment_writer.attach_previous_index_link(
+            current,
+            "baf-previous-index",
+            previous,
+            "stale_head_live_tail_reset",
+        )
+
+        self.assertEqual(linked["previous_index_cid"], "baf-previous-index")
+        self.assertEqual(linked["previous_index_link"]["previous_current_head"]["end_order"], 9502504)
+        self.assertTrue(linked["append_only_index_policy"]["immutable_index_cids"])
+        self.assertTrue(linked["append_only_index_policy"]["latest_pointer_is_mutable_discovery_only"])
+
+    def test_attach_previous_index_link_declares_policy_without_previous_cid(self) -> None:
+        current = {"document_type": "bdag_ipfs_segment_index_v1", "segments": []}
+
+        linked = ipfs_segment_writer.attach_previous_index_link(current, "", {}, "segment_append")
+
+        self.assertNotIn("previous_index_cid", linked)
+        self.assertTrue(linked["append_only_index_policy"]["immutable_index_cids"])
+        self.assertTrue(linked["append_only_index_policy"]["latest_pointer_is_mutable_discovery_only"])
+
+    def test_update_discovery_records_previous_index_link(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            discovery = Path(tmp) / "discovery.json"
+            discovery.write_text(
+                json.dumps(
+                    {
+                        "document_type": "bdag_ipfs_content_discovery_v1",
+                        "current_latest_index_cid": "baf-old-index",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            index = {
+                "status": "active_deterministic_writer_segments",
+                "segments": [{"segment_id": 1}],
+                "current_head": {"segment_id": 1, "end_order": 10473200},
+                "history_completeness": {"complete_from_order": 10472901},
+                "previous_index_cid": "baf-old-index",
+                "append_only_index_policy": {"immutable_index_cids": True},
+            }
+
+            ipfs_segment_writer.update_discovery(
+                "baf-new-index",
+                index,
+                {"BDAG_IPFS_CONTENT_DISCOVERY_FILE": str(discovery)},
+            )
+
+            payload = json.loads(discovery.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["previous_latest_index_cid"], "baf-old-index")
+        self.assertEqual(payload["current_latest_index_cid"], "baf-new-index")
+        self.assertEqual(payload["current_content"]["previous_index_cid"], "baf-old-index")
+        self.assertTrue(payload["current_content"]["append_only_index_policy"]["immutable_index_cids"])
+
     def test_build_segment_publishes_unsigned_manifest_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             captured: dict[str, dict] = {}
@@ -582,12 +644,17 @@ class IPFSSegmentWriterTest(unittest.TestCase):
                 rc = ipfs_segment_writer.main(["--index", str(index)])
 
             payload = json.loads(status.read_text(encoding="utf-8"))
+            written_index = json.loads(index.read_text(encoding="utf-8"))
 
         self.assertEqual(rc, 0)
         self.assertEqual(payload["state"], "published")
         self.assertEqual(payload["chain_integrity"]["state"], "trusted")
         self.assertEqual(payload["writer_election"]["mode"], "bootstrap_single_writer")
         self.assertEqual(payload["segments_written"], 1)
+        self.assertEqual(payload["current_head"]["end_order"], 2)
+        self.assertTrue(payload["append_only_index_policy"]["immutable_index_cids"])
+        self.assertEqual(written_index["current_head"]["end_order"], 2)
+        self.assertTrue(written_index["append_only_index_policy"]["latest_pointer_is_mutable_discovery_only"])
 
     def test_normal_publish_preflights_each_segment_before_build(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

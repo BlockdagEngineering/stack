@@ -159,6 +159,52 @@ def load_index_with_discovery(index_path: Path, env: Mapping[str, str], *, use_d
     return index
 
 
+def discovered_latest_index_cid(env: Mapping[str, str]) -> str:
+    discovery = load_json(discovery_path(env))
+    return str(discovery.get("current_latest_index_cid") or "").strip()
+
+
+def published_index_cid(index: Mapping[str, Any], env: Mapping[str, str]) -> str:
+    for key in ("index_cid", "recovered_from_discovery_cid", "recovered_latest_index_cid"):
+        value = str(index.get(key) or "").strip()
+        if value:
+            return value
+    return discovered_latest_index_cid(env)
+
+
+def attach_previous_index_link(
+    index: Mapping[str, Any],
+    previous_index_cid: str,
+    previous_index: Mapping[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    linked = dict(index)
+    linked["append_only_index_policy"] = {
+        "immutable_index_cids": True,
+        "latest_pointer_is_mutable_discovery_only": True,
+        "verification_rule": (
+            "Resolve the latest IPNS pointer, then recursively verify previous_index_cid links, "
+            "segment manifests, payload CIDs, sha256 values, order continuity, and normal chain consensus."
+        ),
+    }
+    previous_index_cid = str(previous_index_cid or "").strip()
+    if not previous_index_cid:
+        return linked
+    previous_head = current_head(previous_index) or {}
+    linked["previous_index_cid"] = previous_index_cid
+    linked["previous_index_link"] = {
+        "document_type": "bdag_ipfs_segment_previous_index_link_v1",
+        "index_cid": previous_index_cid,
+        "linked_at": now_iso(),
+        "reason": reason or "segment_append",
+        "previous_current_head": dict(previous_head),
+        "previous_history_completeness": dict(previous_index.get("history_completeness") or {})
+        if isinstance(previous_index.get("history_completeness"), Mapping)
+        else {},
+    }
+    return linked
+
+
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -937,6 +983,9 @@ def update_discovery(index_cid: str, index: Mapping[str, Any], env: Mapping[str,
     if not data:
         return
     data["updated_at"] = now_iso()
+    previous_index_cid = str(index.get("previous_index_cid") or "").strip()
+    if previous_index_cid:
+        data["previous_latest_index_cid"] = previous_index_cid
     data["current_latest_index_cid"] = index_cid
     data["current_latest_index_uri"] = f"ipfs://{index_cid}"
     policy = data.get("ipns_publish_policy")
@@ -951,6 +1000,8 @@ def update_discovery(index_cid: str, index: Mapping[str, Any], env: Mapping[str,
         "segments": len(segments(index)),
         "current_head": index.get("current_head"),
         "history_completeness": index.get("history_completeness"),
+        "previous_index_cid": previous_index_cid,
+        "append_only_index_policy": index.get("append_only_index_policy"),
     }
     atomic_write_json(path, data)
 
@@ -987,6 +1038,7 @@ def main(argv: list[str] | None = None) -> int:
         pool_ops = import_pool_ops()
         index_path = resolve_path(args.index, latest_index_path(env)) if args.index else latest_index_path(env)
         index = load_index_with_discovery(index_path, env, use_discovery=not bool(args.index))
+        previous_index_cid = "" if args.index else published_index_cid(index, env)
         head = current_head(index)
         min_order = int(head.get("end_order") or 0) if head else 0
         explicit_range = bool(args.start_order and args.end_order)
@@ -1145,6 +1197,14 @@ def main(argv: list[str] | None = None) -> int:
             atomic_write_json(index_path, current_index)
             written.append(record)
             current_start, current_end, safe_tip, range_reason = choose_next_range(current_index, latest_order, env)
+        if written:
+            current_index = attach_previous_index_link(
+                current_index,
+                previous_index_cid,
+                index,
+                "stale_head_live_tail_reset" if live_tail_epoch_reset else "segment_append",
+            )
+            atomic_write_json(index_path, current_index)
         index_cid, index_sha, index_size = add_checked_json(index_path, current_index, env)
         update_discovery(index_cid, current_index, env)
         ipns = publish_ipns(index_cid, env)
@@ -1158,6 +1218,10 @@ def main(argv: list[str] | None = None) -> int:
             index_cid=index_cid,
             index_sha256=index_sha,
             index_size_bytes=index_size,
+            current_head=current_index.get("current_head"),
+            previous_index_cid=current_index.get("previous_index_cid"),
+            previous_index_link=current_index.get("previous_index_link"),
+            append_only_index_policy=current_index.get("append_only_index_policy"),
             ipns=ipns,
             latest_order=latest_order,
             safe_tip=safe_tip,
