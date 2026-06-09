@@ -102,18 +102,22 @@ class ComposeStartCommandTests(unittest.TestCase):
         self.assertIs(pool_ops._DOCKER_USE_SUDO_CACHE, True)
 
     def test_compose_container_name_does_not_cache_boot_miss(self) -> None:
+        os.environ["BDAG_COMPOSE_PROJECT_NAME"] = "stack"
         calls = []
+        project_queries_per_lookup = len(
+            pool_ops.unique_names([pool_ops.docker_compose_project_name(), "pool-stack-docker"])
+        )
 
         def fake_run(command, timeout=20):  # noqa: ARG001
             calls.append(command)
-            stdout = "" if len(calls) <= 1 else "stack-node-1\tUp 2 seconds\n"
+            stdout = "" if len(calls) <= project_queries_per_lookup else "stack-node-1\tUp 2 seconds\n"
             return pool_ops.CommandResult(command=list(command), returncode=0, stdout=stdout, stderr="", elapsed=0.0)
 
         with mock.patch.object(pool_ops, "run", side_effect=fake_run):
             self.assertEqual(pool_ops.compose_container_name("node"), "node")
             self.assertEqual(pool_ops.compose_container_name("node"), "stack-node-1")
 
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), project_queries_per_lookup + 1)
 
     def test_docker_inspect_re_resolves_stale_cached_container_name(self) -> None:
         pool_ops._COMPOSE_CONTAINER_NAME_CACHE["node"] = "old-node-1"
