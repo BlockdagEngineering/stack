@@ -40,7 +40,8 @@ def bootstrap_stack_env() -> None:
 
 bootstrap_stack_env()
 
-from pool_ops import NODES, RUNTIME_DIR, collect_status_cached, now_iso, write_json_file  # noqa: E402
+from pool_ops import NODES, RUNTIME_DIR, now_iso, write_json_file  # noqa: E402
+from stack_status_source import collect_stack_status  # noqa: E402
 
 
 STATE_FILE = RUNTIME_DIR / "sync-coordinator-state.json"
@@ -54,7 +55,7 @@ def safe_int(value: Any, default: int = 0) -> int:
 
 
 def build_state() -> dict[str, Any]:
-    status = collect_status_cached(include_logs=False)
+    status = collect_stack_status(include_logs=False)
     nodes = status.get("nodes") if isinstance(status, dict) else {}
     sync_progress = status.get("sync_progress") if isinstance(status, dict) else {}
     active_node = NODES[0] if NODES else "node"
