@@ -2,10 +2,10 @@
 Description=Run BlockDAG lazy IPFS content sidecar
 
 [Timer]
-OnBootSec=20m
-OnActiveSec=30m
-OnUnitActiveSec=30m
-RandomizedDelaySec=10m
+OnBootSec=5m
+OnActiveSec=5m
+OnUnitActiveSec=5m
+RandomizedDelaySec=0
 Persistent=false
 Unit=bdag-ipfs-content-sidecar.service
 

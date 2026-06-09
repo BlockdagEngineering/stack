@@ -538,13 +538,25 @@ BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS = env_float(
 BACKGROUND_MAINTENANCE_LAZY_TASKS = set(
     split_env_list(
         "BDAG_BACKGROUND_MAINTENANCE_LAZY_TASKS",
-        "",
+        "rawdatadir_sidecar",
     )
 )
 BACKGROUND_MAINTENANCE_POOL_READY_TASKS = set(
     split_env_list(
         "BDAG_BACKGROUND_MAINTENANCE_POOL_READY_TASKS",
         "rawdatadir_content_seal,ipfs_content_sidecar,ipfs_segment_writer",
+    )
+)
+BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS = set(
+    split_env_list(
+        "BDAG_BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS",
+        "",
+    )
+)
+BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS = set(
+    split_env_list(
+        "BDAG_BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS",
+        "",
     )
 )
 BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN = env_float(
@@ -6722,6 +6734,8 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
     """Return whether optional background work should run on this tick."""
     task_is_lazy = _background_task_selected(task, BACKGROUND_MAINTENANCE_LAZY_TASKS)
     pool_ready_required = _background_task_selected(task, BACKGROUND_MAINTENANCE_POOL_READY_TASKS)
+    sync_priority_exempt = _background_task_selected(task, BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS)
+    io_pressure_exempt = _background_task_selected(task, BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS)
     profile = host_runtime_profile()
     if not BACKGROUND_MAINTENANCE_BACKOFF_ENABLED:
         return {
@@ -6732,6 +6746,8 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
             "host_profile": profile,
             "task_is_lazy": task_is_lazy,
             "pool_ready_required": pool_ready_required,
+            "sync_priority_exempt": sync_priority_exempt,
+            "io_pressure_exempt": io_pressure_exempt,
         }
 
     payload = status if isinstance(status, dict) else collect_status_cached(include_logs=False)
@@ -6739,13 +6755,13 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
     host_pressure = payload.get("host_pressure") if isinstance(payload.get("host_pressure"), dict) else {}
     reasons: list[str] = []
     sync_priority = sync_priority_decision(task, payload)
-    if sync_priority.get("active"):
+    if sync_priority.get("active") and not sync_priority_exempt:
         priority_reason = "; ".join(str(item) for item in sync_priority.get("reasons", []) if item)
         reasons.append(f"sync priority active: {priority_reason or 'chain catch-up needs host capacity'}")
     sync_status = str(sync_progress.get("status") or "unknown")
     remaining_blocks = _sync_remaining_blocks(sync_progress)
     chain_rpc_latency_ms = _sync_chain_rpc_latency_ms(sync_progress)
-    if sync_status == "syncing" and (
+    if sync_status == "syncing" and not sync_priority_exempt and (
         remaining_blocks < 0 or remaining_blocks > BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS
     ):
         remaining_text = "unknown" if remaining_blocks < 0 else str(remaining_blocks)
@@ -6756,21 +6772,21 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
         )
 
     iowait = safe_float(host_pressure.get("iowait_percent"))
-    if bool(host_pressure.get("iowait_warning_active")):
+    if bool(host_pressure.get("iowait_warning_active")) and not io_pressure_exempt:
         reasons.append("host IO wait warning is active")
-    elif iowait is not None and iowait >= BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT:
+    elif iowait is not None and not io_pressure_exempt and iowait >= BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT:
         reasons.append(
             f"host iowait {iowait:.2f}% >= {BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT:.2f}%"
         )
 
     io_some = safe_float(host_pressure.get("io_some_avg10"))
-    if io_some is not None and io_some >= BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN:
+    if io_some is not None and not io_pressure_exempt and io_some >= BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN:
         reasons.append(
             f"host io pressure avg10 {io_some:.2f} >= {BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN:.2f}"
         )
 
     io_full = safe_float(host_pressure.get("io_full_avg10"))
-    if io_full is not None and io_full >= BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN:
+    if io_full is not None and not io_pressure_exempt and io_full >= BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN:
         reasons.append(
             f"host io full pressure avg10 {io_full:.2f} >= {BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN:.2f}"
         )
@@ -6780,7 +6796,11 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
         reasons.append(
             f"host cpu pressure avg10 {cpu_some:.2f} >= {BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN:.2f}"
         )
-    if chain_rpc_latency_ms is not None and chain_rpc_latency_ms >= BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS:
+    if (
+        chain_rpc_latency_ms is not None
+        and not sync_priority_exempt
+        and chain_rpc_latency_ms >= BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS
+    ):
         reasons.append(
             f"chain RPC latency {chain_rpc_latency_ms:.1f}ms >= {BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS:.1f}ms"
         )
@@ -6826,6 +6846,8 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
         "loadavg_1m_warn": loadavg_warn if task_is_lazy else None,
         "task_is_lazy": task_is_lazy,
         "pool_ready_required": pool_ready_required,
+        "sync_priority_exempt": sync_priority_exempt,
+        "io_pressure_exempt": io_pressure_exempt,
         "host_profile": profile,
         "adaptive_concurrency": adaptive_worker_budgets({**host_pressure, "chain_rpc_latency_ms": chain_rpc_latency_ms}),
         "shared_status_cache": payload.get("shared_status_cache"),

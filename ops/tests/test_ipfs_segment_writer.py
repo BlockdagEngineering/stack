@@ -34,6 +34,7 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         env = {
             "BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS": "100",
             "BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT": "50",
+            "BDAG_IPFS_SEGMENT_STALE_HEAD_RESET_ENABLED": "0",
         }
 
         start, end, safe_tip, reason = ipfs_segment_writer.choose_next_range(index, 1_400, env)
@@ -42,6 +43,22 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         self.assertEqual(start, 1_235)
         self.assertEqual(end, 1_284)
         self.assertEqual(reason, "append_after_current_head")
+
+    def test_choose_next_range_resets_stale_live_tail_head(self) -> None:
+        index = {"current_head": {"end_order": 9_502_504, "segment_id": 1, "manifest_cid": "baf-old"}}
+        env = {
+            "BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS": "600",
+            "BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT": "300",
+            "BDAG_IPFS_SEGMENT_STALE_HEAD_RESET_ENABLED": "1",
+            "BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS": "3600",
+        }
+
+        start, end, safe_tip, reason = ipfs_segment_writer.choose_next_range(index, 10_400_000, env)
+
+        self.assertEqual(safe_tip, 10_399_400)
+        self.assertEqual(start, 10_399_101)
+        self.assertEqual(end, 10_399_400)
+        self.assertEqual(reason, "stale_head_live_tail_reset")
 
     def test_choose_next_range_can_start_after_deprecated_tip(self) -> None:
         index = {"deprecated_content": [{"tip_order": 8_639_851}]}
@@ -75,6 +92,28 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         self.assertEqual(len(index["segments"]), 1)
         self.assertNotIn("signatures", index)
         self.assertNotIn("index_root", index)
+
+    def test_reset_index_for_live_tail_epoch_preserves_stale_head_as_deprecated(self) -> None:
+        old_index = {
+            "current_head": {"segment_id": 7, "end_order": 9_502_504, "manifest_cid": "baf-old"},
+            "segments": [{"segment_id": 7, "start_order": 9_502_205, "end_order": 9_502_504}],
+            "history_completeness": {"complete_from_order": 9_502_205},
+            "recovered_from_discovery_cid": "baf-old-index",
+        }
+
+        index = ipfs_segment_writer.reset_index_for_live_tail_epoch(
+            old_index,
+            10_399_101,
+            10_399_400,
+            10_400_000,
+            10_399_400,
+            {"BDAG_NETWORK": "mainnet"},
+        )
+
+        self.assertEqual(index["segments"], [])
+        self.assertEqual(index["history_completeness"]["complete_from_order"], 10_399_101)
+        self.assertEqual(index["deprecated_content"][0]["type"], "superseded_stale_live_tail_epoch")
+        self.assertEqual(index["deprecated_content"][0]["previous_index_cid"], "baf-old-index")
 
     def test_update_index_rejects_non_mainnet_network(self) -> None:
         record = {
@@ -113,6 +152,42 @@ class IPFSSegmentWriterTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "non-contiguous"):
             ipfs_segment_writer.update_index(index, record, {"BDAG_NETWORK": "mainnet"})
+
+    def test_index_from_discovery_recovers_current_head_summary(self) -> None:
+        discovery = {
+            "current_latest_index_cid": "baf-index",
+            "current_content": {
+                "document_type": "bdag_ipfs_segment_index_v1",
+                "status": "active_deterministic_writer_segments",
+                "current_head": {"segment_id": 3, "end_order": 300, "manifest_cid": "baf-manifest"},
+                "history_completeness": {"complete_from_order": 100},
+            },
+        }
+
+        index = ipfs_segment_writer.index_from_discovery(discovery, {"BDAG_NETWORK": "mainnet"})
+
+        self.assertTrue(index["recovered_from_discovery"])
+        self.assertEqual(index["current_head"]["end_order"], 300)
+        self.assertEqual(index["history_completeness"]["complete_from_order"], 100)
+
+    def test_load_index_recovers_previous_index_from_discovery_cid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            index_path = base / "latest-index.json"
+            index_path.write_text("{}", encoding="utf-8")
+            discovery = base / "discovery.json"
+            discovery.write_text(json.dumps({"current_latest_index_cid": "baf-index"}), encoding="utf-8")
+            previous_index = {
+                "document_type": "bdag_ipfs_segment_index_v1",
+                "current_head": {"segment_id": 4, "end_order": 400, "manifest_cid": "baf-manifest"},
+            }
+            env = {"BDAG_NETWORK": "mainnet", "BDAG_IPFS_CONTENT_DISCOVERY_FILE": str(discovery)}
+
+            with mock.patch.object(ipfs_segment_writer, "ipfs_cat_json", return_value=previous_index):
+                index = ipfs_segment_writer.load_index_with_discovery(index_path, env)
+
+        self.assertEqual(index["current_head"]["end_order"], 400)
+        self.assertEqual(index["recovered_from_discovery_cid"], "baf-index")
 
     def test_build_segment_publishes_unsigned_manifest_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -173,6 +248,69 @@ class IPFSSegmentWriterTest(unittest.TestCase):
 
     def test_normal_publish_preflight_requirement_has_no_env_disable(self) -> None:
         self.assertTrue(ipfs_segment_writer.normal_publish_requires_preflight({"BDAG_IPFS_SEGMENT_REQUIRE_PREFLIGHT": "0"}))
+
+    def test_writer_election_uses_deterministic_roster(self) -> None:
+        roster = "writer-b,writer-a,writer-a"
+        probe = ipfs_segment_writer.writer_election(
+            {"BDAG_IPFS_SEGMENT_WRITER_ID": "writer-a", "BDAG_IPFS_SEGMENT_WRITER_ROSTER": roster},
+            100,
+            399,
+            "baf-prev",
+        )
+        selected = probe["selected_writer_id"]
+        other = "writer-b" if selected == "writer-a" else "writer-a"
+
+        allowed = ipfs_segment_writer.writer_election(
+            {"BDAG_IPFS_SEGMENT_WRITER_ID": selected, "BDAG_IPFS_SEGMENT_WRITER_ROSTER": roster},
+            100,
+            399,
+            "baf-prev",
+        )
+        denied = ipfs_segment_writer.writer_election(
+            {"BDAG_IPFS_SEGMENT_WRITER_ID": other, "BDAG_IPFS_SEGMENT_WRITER_ROSTER": roster},
+            100,
+            399,
+            "baf-prev",
+        )
+
+        self.assertTrue(allowed["allowed"])
+        self.assertFalse(denied["allowed"])
+        self.assertEqual(allowed["roster_size"], 2)
+
+    def test_empty_writer_roster_allows_bootstrap_seed(self) -> None:
+        with mock.patch.object(ipfs_segment_writer, "ipfs_peer_id", return_value="peer-local"):
+            election = ipfs_segment_writer.writer_election({}, 100, 399)
+
+        self.assertTrue(election["allowed"])
+        self.assertEqual(election["mode"], "bootstrap_single_writer")
+        self.assertEqual(election["local_writer_id"], "peer-local")
+
+    def test_auto_ipns_publish_waits_for_key(self) -> None:
+        with mock.patch.object(ipfs_segment_writer, "run_command", side_effect=AssertionError("must not publish")):
+            result = ipfs_segment_writer.publish_ipns("baf-index", {"BDAG_IPFS_SEGMENT_PUBLISH_IPNS": "auto"})
+
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "auto_publish_waiting_for_ipns_key")
+
+    def test_bootstrap_seed_can_publish_without_reference_rpc(self) -> None:
+        election = {
+            "allowed": True,
+            "mode": "bootstrap_single_writer",
+            "roster_size": 0,
+        }
+
+        result = ipfs_segment_writer.publication_integrity_gate(
+            {"BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH": "1"},
+            Path("/tmp/index.json"),
+            "http://source:38131",
+            "",
+            100,
+            399,
+            election,
+        )
+
+        self.assertEqual(result["state"], "bootstrap_local_reference_absent")
+        self.assertEqual(result["mutation_policy"], "allowed_for_bootstrap_seed_without_roster_only")
 
     def test_preflight_runs_chain_gate_without_ipfs_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -448,6 +586,7 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(payload["state"], "published")
         self.assertEqual(payload["chain_integrity"]["state"], "trusted")
+        self.assertEqual(payload["writer_election"]["mode"], "bootstrap_single_writer")
         self.assertEqual(payload["segments_written"], 1)
 
     def test_normal_publish_preflights_each_segment_before_build(self) -> None:
@@ -473,7 +612,17 @@ class IPFSSegmentWriterTest(unittest.TestCase):
                 call_order.append(f"preflight:{start}-{end}")
                 return {"state": "trusted", "trusted": True, "segment_preflight": {"start_order": start, "end_order": end}}
 
-            def build_side_effect(_pool_ops, _source_name, _source_url, start, end, _index, _env):
+            def build_side_effect(
+                _pool_ops,
+                _source_name,
+                _source_url,
+                start,
+                end,
+                _index,
+                _env,
+                _election=None,
+                _publication_integrity=None,
+            ):
                 call_order.append(f"build:{start}-{end}")
                 return {
                     "segment_id": 1 if start == 1 else 2,
@@ -521,6 +670,54 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         self.assertEqual(call_order, ["preflight:1-2", "build:1-2", "preflight:3-4", "build:3-4"])
         self.assertEqual(payload["segments_written"], 2)
         self.assertEqual(len(payload["chain_integrity_preflights"]), 2)
+
+    def test_normal_publish_defers_when_another_roster_writer_is_selected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            status = base / "status.json"
+            index = base / "latest-index.json"
+            index.write_text("{}", encoding="utf-8")
+            probe = ipfs_segment_writer.writer_election(
+                {"BDAG_IPFS_SEGMENT_WRITER_ID": "writer-a", "BDAG_IPFS_SEGMENT_WRITER_ROSTER": "writer-a,writer-b"},
+                1,
+                2,
+            )
+            local_writer = "writer-b" if probe["selected_writer_id"] == "writer-a" else "writer-a"
+            env = {
+                "BDAG_PROJECT_ROOT": str(ROOT),
+                "BDAG_IPFS_SEGMENT_STATUS_FILE": str(status),
+                "BDAG_IPFS_SEGMENT_SKIP_MAINTENANCE_DECISION": "1",
+                "BDAG_CHAIN_SOURCE_RPC_URL": "http://source:38131",
+                "BDAG_CHAIN_REFERENCE_RPC_URL": "http://reference:38131",
+                "BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS": "0",
+                "BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT": "2",
+                "BDAG_IPFS_SEGMENT_WRITER_ROSTER": "writer-a,writer-b",
+                "BDAG_IPFS_SEGMENT_WRITER_ID": local_writer,
+            }
+
+            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
+                ipfs_segment_writer,
+                "import_pool_ops",
+            ) as import_pool_ops, mock.patch.object(
+                ipfs_segment_writer,
+                "run_preflight",
+                side_effect=AssertionError("non-elected writer must not preflight"),
+            ), mock.patch.object(
+                ipfs_segment_writer,
+                "build_segment",
+                side_effect=AssertionError("non-elected writer must not build"),
+            ):
+                pool_ops = mock.Mock()
+                pool_ops.mining_rpc_urls.return_value = [("node", "http://source:38131")]
+                pool_ops.fetch_chain_order_tip.return_value = (2, "test-tip")
+                import_pool_ops.return_value = pool_ops
+                rc = ipfs_segment_writer.main(["--index", str(index)])
+
+            payload = json.loads(status.read_text(encoding="utf-8"))
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["state"], "deferred")
+        self.assertEqual(payload["writer_election"]["reason"], "another_writer_selected")
 
 
 if __name__ == "__main__":

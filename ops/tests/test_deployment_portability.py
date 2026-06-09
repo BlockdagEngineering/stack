@@ -322,6 +322,11 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
 
     def test_p2p_installer_enables_ipfs_sidecars_from_stack_defaults(self) -> None:
         installer = (ROOT_DIR / "ops" / "install-p2p-services.sh").read_text(encoding="utf-8")
+        env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
+        defaults = (ROOT_DIR / "ops" / "config" / "stack-defaults.env").read_text(encoding="utf-8")
+        raw_timer = (ROOT_DIR / "ops" / "systemd" / "user-bdag-rawdatadir-sidecar.timer").read_text(encoding="utf-8")
+        content_timer = (ROOT_DIR / "ops" / "systemd" / "user-bdag-ipfs-content-sidecar.timer").read_text(encoding="utf-8")
+        segment_timer = (ROOT_DIR / "ops" / "systemd" / "user-bdag-ipfs-segment-writer.timer").read_text(encoding="utf-8")
 
         self.assertIn("BDAG_STACK_DEFAULTS_FILE=", installer)
         self.assertIn("stack-defaults.env", installer)
@@ -330,9 +335,48 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             "BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT=$(env_value BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT 4096)",
             installer,
         )
+        self.assertIn(
+            "BDAG_RAWDATADIR_SIDECAR_CATCHUP_RSYNC_BWLIMIT=$(env_value BDAG_RAWDATADIR_SIDECAR_CATCHUP_RSYNC_BWLIMIT 1024)",
+            installer,
+        )
+        for config in (env_example, defaults):
+            self.assertIn("BDAG_BACKGROUND_MAINTENANCE_LAZY_TASKS=rawdatadir_sidecar", config)
+            self.assertIn("BDAG_BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS=", config)
+            self.assertIn("BDAG_BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS=", config)
+            self.assertIn(
+                "BDAG_BACKGROUND_MAINTENANCE_POOL_READY_TASKS=rawdatadir_content_seal,ipfs_content_sidecar,ipfs_segment_writer",
+                config,
+            )
+            self.assertIn("BDAG_RAWDATADIR_SIDECAR_CATCHUP_RSYNC_BWLIMIT=1024", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_STALE_HEAD_RESET_ENABLED=1", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS=3600", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE=rendezvous_sha256_v1", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH=1", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN=20", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_PUBLISH_IPNS=auto", config)
         self.assertIn("install_mining_host_tuning\ninstall_rawdatadir_sidecar_timers", installer)
         self.assertIn("install_rawdatadir_sidecar_timers\ninstall_ipfs_content_sidecar_timer", installer)
         self.assertIn("install_ipfs_content_sidecar_timer\ninstall_ipfs_segment_writer_timer", installer)
+        self.assertIn("BDAG_IPFS_SEGMENT_WRITER_ROSTER=$(env_value BDAG_IPFS_SEGMENT_WRITER_ROSTER \"\")", installer)
+        self.assertIn(
+            "BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE=$(env_value BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE rendezvous_sha256_v1)",
+            installer,
+        )
+        self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH=$(env_value BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH 1)", installer)
+        self.assertIn(
+            'BDAG_CHAIN_INTEGRITY_MAX_SEGMENT_ORDERS=$(env_value BDAG_CHAIN_INTEGRITY_MAX_SEGMENT_ORDERS "$(env_value BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT 300)")',
+            installer,
+        )
+        self.assertIn("BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN=$(env_value BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN 20)", installer)
+        self.assertIn(
+            'BDAG_IPFS_SEGMENT_RESTORE_DIR=$(env_value BDAG_IPFS_SEGMENT_RESTORE_DIR "$ROOT/ops/runtime/ipfs-segment-restore-drills")',
+            installer,
+        )
+        self.assertIn("BDAG_IPFS_SEGMENT_PUBLISH_IPNS=$(env_value BDAG_IPFS_SEGMENT_PUBLISH_IPNS auto)", installer)
+        for timer in (raw_timer, content_timer, segment_timer):
+            self.assertIn("OnActiveSec=5m", timer)
+            self.assertIn("OnUnitActiveSec=5m", timer)
+            self.assertIn("RandomizedDelaySec=0", timer)
 
 
 if __name__ == "__main__":

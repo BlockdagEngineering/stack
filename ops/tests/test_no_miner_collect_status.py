@@ -590,7 +590,10 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
                 "BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS",
                 "BACKGROUND_MAINTENANCE_LAZY_TASKS",
                 "BACKGROUND_MAINTENANCE_POOL_READY_TASKS",
+                "BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS",
+                "BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS",
                 "BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN",
+                "SYNC_PRIORITY_MIN_LAG_BLOCKS",
                 "host_runtime_profile",
             )
         }
@@ -607,6 +610,8 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
         pool_ops.BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN = 20.0
         pool_ops.BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN = 10.0
         pool_ops.BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN = 80.0
+        pool_ops.BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS = set()
+        pool_ops.BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS = set()
         status = {
             "sync_progress": {"status": "syncing", "remaining_blocks": 12},
             "host_pressure": {
@@ -640,6 +645,7 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
         pool_ops.BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT = 25.0
         pool_ops.BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN = 20.0
         pool_ops.BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN = 10.0
+        pool_ops.BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS = set()
         status = {
             "overall": "ok",
             "mode": "mining",
@@ -658,8 +664,82 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
         decision = pool_ops.background_maintenance_decision("rawdatadir_content_seal", status)
 
         self.assertFalse(decision["allowed"])
-        self.assertFalse(decision["pool_ready_required"])
+        self.assertTrue(decision["pool_ready_required"])
         self.assertTrue(any("host io full pressure" in reason for reason in decision["reasons"]))
+
+    def test_ipfs_segment_writer_ignores_io_pressure_only_when_explicitly_exempt_and_pool_ready(self) -> None:
+        pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
+        pool_ops.BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT = 25.0
+        pool_ops.BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN = 20.0
+        pool_ops.BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN = 10.0
+        pool_ops.BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS = set()
+        pool_ops.BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS = {"ipfs_segment_writer"}
+        pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = {
+            "rawdatadir_content_seal",
+            "ipfs_content_sidecar",
+            "ipfs_segment_writer",
+        }
+        status = {
+            "overall": "ok",
+            "mode": "mining",
+            "can_mine": True,
+            "can_accept_shares": True,
+            "can_submit_blocks": True,
+            "sync_progress": {"status": "synced", "remaining_blocks": 0},
+            "host_pressure": {
+                "iowait_percent": 35.0,
+                "io_some_avg10": 25.0,
+                "io_full_avg10": 15.0,
+                "cpu_some_avg10": 0.0,
+            },
+        }
+
+        decision = pool_ops.background_maintenance_decision("ipfs_segment_writer", status)
+
+        self.assertTrue(decision["allowed"])
+        self.assertTrue(decision["pool_ready_required"])
+        self.assertFalse(decision["sync_priority_exempt"])
+        self.assertTrue(decision["io_pressure_exempt"])
+        self.assertEqual([], decision["reasons"])
+
+    def test_ipfs_segment_writer_still_defers_during_sync_when_io_exempt(self) -> None:
+        pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
+        pool_ops.BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS = 0
+        pool_ops.BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT = 25.0
+        pool_ops.BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN = 20.0
+        pool_ops.BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN = 10.0
+        pool_ops.BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS = set()
+        pool_ops.BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS = {"ipfs_segment_writer"}
+        pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = {
+            "rawdatadir_content_seal",
+            "ipfs_content_sidecar",
+            "ipfs_segment_writer",
+        }
+        pool_ops.SYNC_PRIORITY_MIN_LAG_BLOCKS = 25
+        status = {
+            "overall": "syncing",
+            "mode": "catchup_pause",
+            "can_mine": False,
+            "can_accept_shares": False,
+            "can_submit_blocks": False,
+            "catchup_policy": {"active": True, "trigger": "io_pressure", "io_pressure_active": True},
+            "sync_progress": {"status": "syncing", "remaining_blocks": 250_000},
+            "host_pressure": {
+                "iowait_percent": 35.0,
+                "io_some_avg10": 25.0,
+                "io_full_avg10": 15.0,
+                "cpu_some_avg10": 0.0,
+            },
+        }
+
+        decision = pool_ops.background_maintenance_decision("ipfs_segment_writer", status)
+
+        self.assertFalse(decision["allowed"])
+        self.assertFalse(decision["sync_priority_exempt"])
+        self.assertTrue(decision["io_pressure_exempt"])
+        self.assertTrue(any("chain catch-up has priority" in reason for reason in decision["reasons"]))
+        self.assertTrue(any("pool can_mine=false" in reason for reason in decision["reasons"]))
+        self.assertFalse(any("host io full pressure" in reason for reason in decision["reasons"]))
 
     def test_background_maintenance_defers_when_sync_remaining_is_unknown(self) -> None:
         pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
@@ -722,6 +802,8 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
     def test_rawdatadir_sidecar_can_run_when_pool_is_intentionally_not_ready(self) -> None:
         pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
         pool_ops.BACKGROUND_MAINTENANCE_LAZY_TASKS = {"rawdatadir_sidecar"}
+        pool_ops.BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS = {"rawdatadir_sidecar"}
+        pool_ops.BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS = {"rawdatadir_sidecar"}
         pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = {
             "rawdatadir_content_seal",
             "ipfs_content_sidecar",
@@ -749,6 +831,55 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
         self.assertTrue(decision["task_is_lazy"])
         self.assertFalse(decision["pool_ready_required"])
         self.assertEqual([], decision["reasons"])
+
+    def test_rawdatadir_sidecar_defers_during_catchup_pressure_with_publishers(self) -> None:
+        pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
+        pool_ops.BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS = 0
+        pool_ops.BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT = 25.0
+        pool_ops.BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN = 20.0
+        pool_ops.BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN = 10.0
+        pool_ops.BACKGROUND_MAINTENANCE_LAZY_TASKS = {"rawdatadir_sidecar"}
+        pool_ops.BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS = set()
+        pool_ops.BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS = set()
+        pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = {
+            "rawdatadir_content_seal",
+            "ipfs_content_sidecar",
+            "ipfs_segment_writer",
+        }
+        pool_ops.SYNC_PRIORITY_MIN_LAG_BLOCKS = 25
+        pool_ops.host_runtime_profile = lambda: {"cpu_count": 8}
+        status = {
+            "overall": "syncing",
+            "mode": "catchup_pause",
+            "can_mine": False,
+            "can_accept_shares": False,
+            "can_submit_blocks": False,
+            "catchup_policy": {"active": True, "trigger": "io_pressure", "io_pressure_active": True},
+            "sync_progress": {"status": "syncing", "remaining_blocks": 250_000},
+            "host_pressure": {
+                "iowait_percent": 10.0,
+                "io_some_avg10": 12.0,
+                "io_full_avg10": 12.0,
+                "cpu_some_avg10": 0.0,
+                "loadavg_1m": 2.0,
+            },
+        }
+
+        sidecar = pool_ops.background_maintenance_decision("rawdatadir_sidecar", status)
+        content = pool_ops.background_maintenance_decision("rawdatadir_content_seal", status)
+        ipfs_content = pool_ops.background_maintenance_decision("ipfs_content_sidecar", status)
+        ipfs_segments = pool_ops.background_maintenance_decision("ipfs_segment_writer", status)
+
+        self.assertFalse(sidecar["allowed"])
+        self.assertFalse(sidecar["sync_priority_exempt"])
+        self.assertFalse(sidecar["io_pressure_exempt"])
+        self.assertTrue(sidecar["task_is_lazy"])
+        for decision in (sidecar, content, ipfs_content, ipfs_segments):
+            self.assertFalse(decision["allowed"])
+            self.assertFalse(decision["sync_priority_exempt"])
+            self.assertTrue(any("chain catch-up has priority" in reason for reason in decision["reasons"]))
+        for decision in (content, ipfs_content, ipfs_segments):
+            self.assertTrue(any("pool can_mine=false" in reason for reason in decision["reasons"]))
 
     def test_lazy_archive_task_defers_on_load_pressure(self) -> None:
         pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
