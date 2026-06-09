@@ -52,7 +52,13 @@ x-dashboard-low: &dashboard-low
   blkio_config:
     weight: 100
   oom_score_adj: 300
-  
+
+x-pool-low: &pool-low
+  <<: *dashboard-low
+
+x-ops-low: &ops-low
+  <<: *dashboard-low
+
 
 
 services:
@@ -245,7 +251,7 @@ services:
 
 
   # --------------------------------------------------------------------------
-  # Read-only collector API from BlockdagEngineering/collector.
+  # Read-only status API from BlockdagEngineering/collector.
   # --------------------------------------------------------------------------
 
   collector:
@@ -273,7 +279,7 @@ services:
       TMPDIR: /tmp
       TMP: /tmp
       TEMP: /tmp
-      # The collector observes current container names and exposes read-only JSON.
+      # The status API observes current container names and exposes read-only JSON.
       BDAG_NODE_SERVICES: node
       BDAG_STACK_SERVICES: postgres,node,pool
       BDAG_POOL_CONTAINER: pool
@@ -303,6 +309,9 @@ services:
       BDAG_COLLECTOR_STATUS_CACHE_SECONDS: ${BDAG_COLLECTOR_STATUS_CACHE_SECONDS:-120}
       BDAG_COLLECTOR_SAMPLER_CACHE_SECONDS: ${BDAG_COLLECTOR_SAMPLER_CACHE_SECONDS:-120}
       BDAG_COLLECTOR_STATUS_SAMPLE_WAIT_SECONDS: ${BDAG_COLLECTOR_STATUS_SAMPLE_WAIT_SECONDS:-60}
+      BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK: ${BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK:-0}
+      BDAG_DASHBOARD_STATUS_CACHE_SECONDS: ${BDAG_DASHBOARD_STATUS_CACHE_SECONDS:-120}
+      BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS: ${BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS:-120}
       BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS: ${BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS:-120}
       BDAG_COLLECTOR_GLOBAL_SAMPLER_INTERVAL_SECONDS: ${BDAG_COLLECTOR_GLOBAL_SAMPLER_INTERVAL_SECONDS:-60}
       BDAG_GLOBAL_CACHE_TTL_SECONDS: ${BDAG_GLOBAL_CACHE_TTL_SECONDS:-60}
@@ -318,7 +327,7 @@ services:
       - collector-runtime:/var/lib/bdag-collector
 
   # --------------------------------------------------------------------------
-  # Dashboard UI over the collector API.
+  # Dashboard UI over the status API.
   # --------------------------------------------------------------------------
   dashboard:
     <<: *ops-low
