@@ -89,6 +89,31 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "refuses non-mainnet"):
             ipfs_segment_writer.update_index({}, record, {"BDAG_NETWORK": "not-mainnet"})
 
+    def test_update_index_rejects_non_contiguous_append(self) -> None:
+        index = {
+            "segments": [
+                {
+                    "segment_id": 1,
+                    "start_order": 1,
+                    "end_order": 10,
+                    "manifest_cid": "baf-manifest-1",
+                    "payload_cid": "baf-payload-1",
+                }
+            ],
+            "current_head": {"segment_id": 1, "end_order": 10},
+        }
+        record = {
+            "segment_id": 2,
+            "start_order": 12,
+            "end_order": 20,
+            "end_hash": "0xend",
+            "manifest_cid": "baf-manifest-2",
+            "payload_cid": "baf-payload-2",
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "non-contiguous"):
+            ipfs_segment_writer.update_index(index, record, {"BDAG_NETWORK": "mainnet"})
+
     def test_build_segment_publishes_unsigned_manifest_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             captured: dict[str, dict] = {}
@@ -317,6 +342,50 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         self.assertTrue(payload["retrying"])
         self.assertIn("chain integrity preflight not trusted", payload["reasons"][0])
         run_preflight.assert_called_once()
+
+    def test_explicit_normal_publish_beyond_safe_tip_defers_before_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            status = base / "status.json"
+            index = base / "latest-index.json"
+            index.write_text("{}", encoding="utf-8")
+            env = {
+                "BDAG_PROJECT_ROOT": str(ROOT),
+                "BDAG_IPFS_SEGMENT_STATUS_FILE": str(status),
+                "BDAG_IPFS_SEGMENT_SKIP_MAINTENANCE_DECISION": "1",
+                "BDAG_CHAIN_SOURCE_RPC_URL": "http://source:38131",
+                "BDAG_CHAIN_REFERENCE_RPC_URL": "http://reference:38131",
+                "BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS": "10",
+            }
+
+            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
+                ipfs_segment_writer,
+                "import_pool_ops",
+            ) as import_pool_ops, mock.patch.object(
+                ipfs_segment_writer,
+                "run_preflight",
+                side_effect=AssertionError("explicit unsafe range must not preflight"),
+            ), mock.patch.object(
+                ipfs_segment_writer,
+                "build_segment",
+                side_effect=AssertionError("explicit unsafe range must not build"),
+            ), mock.patch.object(
+                ipfs_segment_writer,
+                "ipfs_add",
+                side_effect=AssertionError("explicit unsafe range must not call ipfs add"),
+            ):
+                pool_ops = mock.Mock()
+                pool_ops.mining_rpc_urls.return_value = [("node", "http://source:38131")]
+                pool_ops.fetch_chain_order_tip.return_value = (100, "test-tip")
+                import_pool_ops.return_value = pool_ops
+                rc = ipfs_segment_writer.main(["--index", str(index), "--start-order", "95", "--end-order", "100"])
+
+            payload = json.loads(status.read_text(encoding="utf-8"))
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["state"], "waiting_for_finalized_range")
+        self.assertEqual(payload["safe_tip"], 90)
+        self.assertEqual(payload["reason"], "explicit_range_exceeds_safe_tip")
 
     def test_normal_publish_includes_trusted_preflight_in_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

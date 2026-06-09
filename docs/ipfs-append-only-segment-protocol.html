@@ -256,6 +256,18 @@ rank eligible publishers by weighted rank_score, with win_count as bounded weigh
   </section>
 
   <section>
+    <h2>Restore Drill</h2>
+    <p><code>ops/ipfs_restore_drill.py</code> is the phase-1 consumer boundary. It fetches a local index, a discovery-selected index CID, or fixture CIDs, then verifies every selected manifest and payload before writing <code>ops/runtime/ipfs-content/restore-drill-status.json</code>.</p>
+    <p>The drill is intentionally non-destructive. It never mutates the node datadir, never starts or stops mining services, and always records <code>usable_for_destructive_restore=false</code> until a separate importer can prove a reconstructed candidate with normal consensus validation. This keeps IPFS useful for automated install and recovery readiness without letting untrusted transport bytes become chain authority.</p>
+    <ul>
+      <li>Index checks: document type, <code>mainnet</code>, non-empty segments, contiguous orders, monotonic segment ids, and current-head consistency.</li>
+      <li>Manifest checks: network, segment metadata, payload CID, manifest SHA-256, payload SHA-256, payload format, and previous-manifest CID links.</li>
+      <li>Payload checks: canonical SHA-256, order continuity, start/end hash consistency, block count, and raw-block SHA-256 for each block.</li>
+      <li>Installer defaults: <code>BDAG_IPFS_RESTORE_MODE=verify</code>, latest 16 segments, and no materialized candidate unless explicitly enabled.</li>
+    </ul>
+  </section>
+
+  <section>
     <h2>Safe-Copy Rule</h2>
     <p>Before any node updates an index or announces a segment as usable, it must perform the same safe-copy check that a receiver will perform:</p>
     <ul>

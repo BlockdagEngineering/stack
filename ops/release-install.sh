@@ -609,6 +609,11 @@ configure_env() {
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_IPNS_LIFETIME
   set_env_value .env BDAG_IPFS_SEGMENT_STATUS_FILE "./ops/runtime/ipfs-content/segment-writer-status.json"
   set_env_value .env BDAG_IPFS_SEGMENT_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_MODE
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_MAX_SEGMENTS
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_MATERIALIZE
+  set_env_value .env BDAG_IPFS_RESTORE_STATUS_FILE "./ops/runtime/ipfs-content/restore-drill-status.json"
+  set_env_value .env BDAG_IPFS_RESTORE_CANDIDATE_DIR "./ops/runtime/ipfs-content/restore-candidate"
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOTS
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_HOURS
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS

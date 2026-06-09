@@ -584,6 +584,20 @@ def build_segment(
 
 def update_index(index: dict[str, Any], segment_record: dict[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
     existing_segments = segments(index)
+    if existing_segments:
+        last = existing_segments[-1]
+        expected_start = int(last.get("end_order") or 0) + 1
+        if int(segment_record.get("start_order") or 0) != expected_start:
+            raise RuntimeError(
+                "refusing non-contiguous IPFS segment append: "
+                f"start_order {segment_record.get('start_order')} != expected {expected_start}"
+            )
+        expected_segment_id = int(last.get("segment_id") or 0) + 1
+        if int(segment_record.get("segment_id") or 0) != expected_segment_id:
+            raise RuntimeError(
+                "refusing non-monotonic IPFS segment append: "
+                f"segment_id {segment_record.get('segment_id')} != expected {expected_segment_id}"
+            )
     now = now_iso()
     if not index:
         index = {
@@ -726,6 +740,21 @@ def main(argv: list[str] | None = None) -> int:
                 safe_tip=safe_tip,
                 next_start_order=start,
                 reason=range_reason,
+                rpc_source=source_name,
+                tip_method=tip_method,
+            )
+            if args.json:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        if explicit_range and not args.preflight and safe_tip is not None and end > safe_tip:
+            payload = write_status(
+                env,
+                "waiting_for_finalized_range",
+                latest_order=latest_order,
+                safe_tip=safe_tip,
+                next_start_order=start,
+                next_end_order=end,
+                reason="explicit_range_exceeds_safe_tip",
                 rpc_source=source_name,
                 tip_method=tip_method,
             )
