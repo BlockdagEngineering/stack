@@ -46,33 +46,22 @@ class ComposeStartCommandTests(unittest.TestCase):
         return run
 
     def test_repair_start_command_uses_configured_core_services(self) -> None:
-        pool_ops.STACK_SERVICES = [
-            "pool-stack-docker-postgres-1",
-            "pool-stack-docker-node-1",
-            "pool-stack-docker-pool-1",
-            "pool-stack-docker-dashboard-1",
-        ]
-        labels = {
-            "pool-stack-docker-postgres-1": "postgres",
-            "pool-stack-docker-node-1": "node",
-            "pool-stack-docker-pool-1": "pool",
-            "pool-stack-docker-dashboard-1": "dashboard",
-        }
-        with mock.patch.object(pool_ops.subprocess, "run", side_effect=self.fake_inspect(labels)):
-            command = pool_ops.docker_compose_start_command()
+        os.environ["BDAG_START_SERVICES"] = "postgres,node,pool"
+        command = pool_ops.docker_compose_start_command()
 
-        self.assertEqual(command[-6:], ["up", "-d", "postgres", "node", "pool", "dashboard"])
+        self.assertEqual(command[-5:], ["up", "-d", "postgres", "node", "pool"])
         self.assertNotIn("hotsnap", command)
         self.assertNotIn("snapshot-node", command)
 
     def test_repair_start_command_excludes_pool_dependencies_when_pool_is_unsafe(self) -> None:
-        pool_ops.STACK_SERVICES = ["postgres", "node", "pool", "dashboard"]
+        os.environ["BDAG_START_SERVICES"] = "postgres,node,pool"
         command = pool_ops.docker_compose_start_command(include_pool=False)
 
-        self.assertEqual(command[-6:], ["up", "-d", "--no-deps", "postgres", "node", "dashboard"])
-        self.assertNotIn("pool", command[-3:])
+        self.assertEqual(command[-5:], ["up", "-d", "--no-deps", "postgres", "node"])
+        self.assertNotIn("pool", command[-2:])
 
     def test_repair_start_command_infers_service_from_compose_container_name(self) -> None:
+        os.environ.pop("BDAG_START_SERVICES", None)
         pool_ops.STACK_SERVICES = ["pool-stack-docker-node-1"]
         with mock.patch.object(
             pool_ops.subprocess,
@@ -84,6 +73,7 @@ class ComposeStartCommandTests(unittest.TestCase):
         self.assertEqual(command[-3:], ["up", "-d", "node"])
 
     def test_inspect_timeout_falls_back_to_compose_container_name(self) -> None:
+        os.environ.pop("BDAG_START_SERVICES", None)
         pool_ops.STACK_SERVICES = ["pool-stack-docker-node-1"]
         with mock.patch.object(pool_ops.subprocess, "run", side_effect=pool_ops.subprocess.TimeoutExpired("docker", 10)):
             command = pool_ops.docker_compose_start_command()
@@ -116,14 +106,14 @@ class ComposeStartCommandTests(unittest.TestCase):
 
         def fake_run(command, timeout=20):  # noqa: ARG001
             calls.append(command)
-            stdout = "" if len(calls) <= 2 else "stack-node-1\tUp 2 seconds\n"
+            stdout = "" if len(calls) <= 1 else "stack-node-1\tUp 2 seconds\n"
             return pool_ops.CommandResult(command=list(command), returncode=0, stdout=stdout, stderr="", elapsed=0.0)
 
         with mock.patch.object(pool_ops, "run", side_effect=fake_run):
             self.assertEqual(pool_ops.compose_container_name("node"), "node")
             self.assertEqual(pool_ops.compose_container_name("node"), "stack-node-1")
 
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 2)
 
     def test_docker_inspect_re_resolves_stale_cached_container_name(self) -> None:
         pool_ops._COMPOSE_CONTAINER_NAME_CACHE["node"] = "old-node-1"

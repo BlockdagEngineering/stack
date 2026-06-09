@@ -102,13 +102,14 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("COPY --from=dashboard_src . /opt/dashboard", dockerfile)
         self.assertIn("COPY --from=dashboard_src . /src/dashboard", dockerfile_dev)
 
-    def test_dashboard_ref_build_arg_is_not_hardcoded(self) -> None:
+    def test_dashboard_ref_build_arg_is_pinned_to_develop(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfile = (ROOT_DIR / "dockerfile").read_text(encoding="utf-8")
 
-        self.assertIn("DASHBOARD_REF: ${DASHBOARD_REF:-develop}", compose)
-        self.assertIn('ref="${DASHBOARD_REF:-develop}"', dockerfile)
-        self.assertNotIn('ref="develop"', dockerfile)
+        self.assertIn("DASHBOARD_REF: develop", compose)
+        self.assertNotIn("DASHBOARD_REF:-", compose)
+        self.assertIn('ref="develop"', dockerfile)
+        self.assertNotIn('ref="${DASHBOARD_REF:-develop}"', dockerfile)
 
     def test_host_dashboard_env_uses_host_reachable_chain_rpc(self) -> None:
         installer = (ROOT_DIR / "ops" / "install-dashboard.sh").read_text(encoding="utf-8")
@@ -283,6 +284,21 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("Environment=P2P_PORT=8150", unit)
         self.assertNotIn("BDAG_P2P_PORTS", combined)
         self.assertNotIn("--dports", firewall)
+
+    def test_p2p_installer_enables_ipfs_sidecars_from_stack_defaults(self) -> None:
+        installer = (ROOT_DIR / "ops" / "install-p2p-services.sh").read_text(encoding="utf-8")
+
+        self.assertIn("BDAG_STACK_DEFAULTS_FILE=", installer)
+        self.assertIn("stack-defaults.env", installer)
+        self.assertIn("env_value()", installer)
+        self.assertIn("set_env_value()", installer)
+        self.assertIn(
+            "BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT=$(env_value BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT 4096)",
+            installer,
+        )
+        self.assertIn("install_mining_host_tuning\ninstall_rawdatadir_source_timer", installer)
+        self.assertIn("install_rawdatadir_source_timer\ninstall_ipfs_content_sidecar_timer", installer)
+        self.assertIn("install_ipfs_content_sidecar_timer\ninstall_ipfs_segment_writer_timer", installer)
 
 
 if __name__ == "__main__":

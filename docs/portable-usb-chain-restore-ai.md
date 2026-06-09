@@ -109,13 +109,13 @@ Dry-run:
 
 ```bash
 USB_ROOT="/run/media/jeremy/<label>/blockdag-portable"
-./ops/usb-sidecar-restore-from-drive.sh --usb-root "$USB_ROOT" --target "$PWD/data/node1/mainnet" --dry-run
+./ops/usb-sidecar-restore-from-drive.sh --usb-root "$USB_ROOT" --target "$PWD/data/node/mainnet" --dry-run
 ```
 
 Execute:
 
 ```bash
-./ops/usb-sidecar-restore-from-drive.sh --usb-root "$USB_ROOT" --target "$PWD/data/node1/mainnet" --execute
+./ops/usb-sidecar-restore-from-drive.sh --usb-root "$USB_ROOT" --target "$PWD/data/node/mainnet" --execute
 ```
 
 Start only non-pool services first:

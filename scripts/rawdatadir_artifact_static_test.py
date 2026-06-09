@@ -98,7 +98,10 @@ def main() -> None:
         "bdag-rawdatadir-source.timer",
         "Raw datadir artifact publisher is not allowed",
         "install_ipfs_content_sidecar_timer",
+        "install_ipfs_segment_writer_timer",
+        "BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT",
         "bdag-ipfs-content-sidecar.timer",
+        "bdag-ipfs-segment-writer.timer",
         "BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE",
         "BDAG_IPFS_CONTENT_ARTIFACT_DIR",
     ):

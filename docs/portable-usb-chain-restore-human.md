@@ -111,19 +111,19 @@ USB_ROOT="/run/media/jeremy/YOUR_USB_LABEL/blockdag-portable"
 4. Dry-run the restore:
 
 ```bash
-./ops/usb-sidecar-restore-from-drive.sh --usb-root "$USB_ROOT" --target "$PWD/data/node1/mainnet" --dry-run
+./ops/usb-sidecar-restore-from-drive.sh --usb-root "$USB_ROOT" --target "$PWD/data/node/mainnet" --dry-run
 ```
 
 5. Execute the restore:
 
 ```bash
-./ops/usb-sidecar-restore-from-drive.sh --usb-root "$USB_ROOT" --target "$PWD/data/node1/mainnet" --execute
+./ops/usb-sidecar-restore-from-drive.sh --usb-root "$USB_ROOT" --target "$PWD/data/node/mainnet" --execute
 ```
 
 The existing target is moved aside once, for example:
 
 ```text
-data/node1/mainnet.before-usb-restore-20260607T145500Z
+data/node/mainnet.before-usb-restore-20260607T145500Z
 ```
 
 6. Start the non-pool stack first:
@@ -146,7 +146,7 @@ If the target already has data from the same USB holder, repeat:
 
 ```bash
 docker compose stop pool node
-./ops/usb-sidecar-restore-from-drive.sh --usb-root "$USB_ROOT" --target "$PWD/data/node1/mainnet" --execute --no-backup
+./ops/usb-sidecar-restore-from-drive.sh --usb-root "$USB_ROOT" --target "$PWD/data/node/mainnet" --execute --no-backup
 docker compose up -d --no-deps postgres node dashboard
 ```
 

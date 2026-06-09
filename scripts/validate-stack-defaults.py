@@ -137,6 +137,7 @@ def assert_required_hooks(errors: list[str], root: Path) -> None:
             "BDAG_STACK_DEFAULTS_FILE",
             "stack_default",
         ),
+        "ops/install-p2p-services.sh": ("stack-defaults.env",),
         "ops/pool_ops.py": ("stack-defaults.env",),
         "ops/maintain-rawdatadir-sidecar.sh": ("stack-defaults.env",),
     }

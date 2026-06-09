@@ -107,7 +107,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         self.assertIn("adaptive_concurrency", warnings)
         self.assertIn("entrypoint_chown_mode", warnings)
 
-    def test_constrained_mining_profile_accepts_disabled_fastartifact_startup_flag(self) -> None:
+    def test_constrained_mining_profile_accepts_disabled_legacy_sync_path(self) -> None:
         profile = preflight.HostProfile(
             os_name="linux",
             arch="aarch64",
@@ -129,7 +129,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         )
 
         statuses = {check.name: check.status for check in checks}
-        self.assertEqual(statuses["fastartifactsync"], "pass")
+        self.assertEqual(statuses["legacy_sync_path"], "pass")
 
     def test_constrained_mining_profile_rejects_fastartifact_append_override(self) -> None:
         profile = preflight.HostProfile(
@@ -153,7 +153,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         )
 
         found = {check.name: check for check in checks}
-        self.assertEqual(found["fastartifactsync"].status, "fail")
+        self.assertEqual(found["legacy_sync_path"].status, "fail")
 
     def test_pool_template_rpc_pressure_rejects_unsafe_overrides(self) -> None:
         profile = preflight.HostProfile(
@@ -248,7 +248,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             checks,
             {
                 "SYNC_SOURCE_NODE": "0",
-                "BDAG_FASTARTIFACTSYNC_ENABLED": "1",
+                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
                 "BDAG_STORAGE_PROFILE": "single-usb-constrained",
                 "BDAG_DETECTED_NETWORK_TOPOLOGY": "asic-router",
             },
@@ -256,7 +256,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         )
 
         found = {check.name: check for check in checks}
-        self.assertEqual(found["fastartifactsync"].status, "pass")
+        self.assertEqual(found["legacy_sync_path"].status, "pass")
 
     def test_sync_source_zero_does_not_make_single_device_receiver_constrained(self) -> None:
         profile = preflight.HostProfile(
@@ -278,8 +278,8 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         )
 
         found = {check.name: check for check in checks}
-        self.assertEqual(found["fastartifactsync"].status, "pass")
-        self.assertEqual(found["fastartifactsync"].detail, "Fast Artifact Sync V2 startup flag is enabled")
+        self.assertEqual(found["legacy_sync_path"].status, "pass")
+        self.assertEqual(found["legacy_sync_path"].detail, "legacy FastArtifact/FastSnap startup paths are disabled")
 
     def test_node_mining_runtime_accepts_safe_main_chain_args(self) -> None:
         profile = preflight.HostProfile(
@@ -362,7 +362,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             preflight.is_usb_source = old_is_usb_source
 
         found = {check.name: check for check in checks}
-        self.assertEqual(found["usb_mining_fastsync_serving"].status, "fail")
+        self.assertEqual(found["usb_mining_ipfs_source_role"].status, "fail")
 
     def test_active_node_data_layout_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

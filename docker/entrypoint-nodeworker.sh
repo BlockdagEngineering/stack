@@ -490,7 +490,7 @@ apply_no_fastsync_serve_guard() {
 }
 
 apply_default_fastsync_flags() {
-  if [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-1}" != "1" ]; then
+  if [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-0}" != "1" ]; then
     return 0
   fi
 
@@ -650,7 +650,7 @@ maybe_fastsnap_bootstrap() {
 }
 
 configure_directory_artifact_serving() {
-  if [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-1}" != "1" ]; then
+  if [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-0}" != "1" ]; then
     log "Fast Artifact Sync V2 serving disabled for this node"
     return 0
   fi

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 import sys
 import tempfile
@@ -56,10 +57,13 @@ def safe_canonical_status() -> dict[str, object]:
 class SingleGateOrchestrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.original_stack_services = list(pool_ops.STACK_SERVICES)
+        self.original_env = dict(os.environ)
         self.addCleanup(self.restore)
 
     def restore(self) -> None:
         pool_ops.STACK_SERVICES = self.original_stack_services
+        os.environ.clear()
+        os.environ.update(self.original_env)
 
     def fake_inspect(self, labels: dict[str, str]):
         def run(command, **_kwargs):
@@ -189,6 +193,7 @@ class SingleGateOrchestrationTests(unittest.TestCase):
         self.assertNotIn("pool", commands[0])
 
     def test_non_pool_start_command_never_falls_back_to_all_services(self) -> None:
+        os.environ.pop("BDAG_START_SERVICES", None)
         pool_ops.STACK_SERVICES = ["blockdag-pool-1"]
         with mock.patch.object(
             pool_ops.subprocess,

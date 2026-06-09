@@ -2,10 +2,59 @@
 set -euo pipefail
 
 ROOT="${BDAG_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+BDAG_STACK_DEFAULTS_FILE="${BDAG_STACK_DEFAULTS_FILE:-$ROOT/ops/config/stack-defaults.env}"
+if [[ -f "$BDAG_STACK_DEFAULTS_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$BDAG_STACK_DEFAULTS_FILE"
+  set +a
+fi
 P2P_PORT="${P2P_PORT:-8150}"
 P2P_PROTOCOLS="${BDAG_P2P_PROTOCOLS:-tcp}"
 
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
+
+env_file_value() {
+  local key="$1"
+  grep -E "^${key}=" "$ROOT/.env" 2>/dev/null | tail -n1 | cut -d= -f2- || true
+}
+
+env_value() {
+  local key="$1" fallback="${2:-}" value
+  value="$(env_file_value "$key")"
+  if [[ -z "$value" ]]; then
+    value="${!key:-}"
+  fi
+  printf '%s\n' "${value:-$fallback}"
+}
+
+set_env_value() {
+  local file="$1" key="$2" value="${3:-}"
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+  python3 - "$file" "$key" "$value" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+prefix = key + "="
+updated = False
+out = []
+for line in lines:
+    if line.startswith(prefix):
+        if not updated:
+            out.append(f"{key}={value}")
+            updated = True
+        continue
+    out.append(line)
+if not updated:
+    out.append(f"{key}={value}")
+path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+PY
+}
 
 need_sudo() {
   if [[ "$(id -u)" == "0" ]]; then
@@ -109,6 +158,8 @@ BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE=$sidecar_content_base
 BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP=$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP 2)
 BDAG_RAWDATADIR_SIDECAR_CONTENT_CHUNK_SIZE=$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_CHUNK_SIZE 67108864)
 BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED=$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED 1)
+BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT=$(env_value BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT 4096)
+BDAG_RAWDATADIR_SIDECAR_DELAY_UPDATES=$(env_value BDAG_RAWDATADIR_SIDECAR_DELAY_UPDATES 0)
 BDAG_RAWDATADIR_REQUIRE_SIGNED=$(env_value BDAG_RAWDATADIR_REQUIRE_SIGNED 1)
 BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH=$(env_value BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH 1)
 BDAG_RAWDATADIR_MAX_EVM_REFERENCE_LAG=$(env_value BDAG_RAWDATADIR_MAX_EVM_REFERENCE_LAG 1000)
@@ -264,3 +315,6 @@ install_mining_host_tuning() {
 install_firewall
 install_local_peer_timer
 install_mining_host_tuning
+install_rawdatadir_source_timer
+install_ipfs_content_sidecar_timer
+install_ipfs_segment_writer_timer

@@ -463,6 +463,15 @@ def check_storage(checks: list[Check], root: Path, env: dict[str, str], profile:
     usb_chain_data = is_usb_source(str(data_mount.get("source") or ""))
     if usb_chain_data and data_fstype not in {"f2fs", "ext4"}:
         add(checks, "warn", "usb_chain_filesystem", f"USB chain device uses {data_fstype or 'unknown'} filesystem.", "Use F2FS for USB flash or ext4 for USB SSD.", evidence)
+    if usb_chain_data and bool_enabled(env.get("SYNC_SOURCE_NODE"), False):
+        add(
+            checks,
+            "fail",
+            "usb_mining_ipfs_source_role",
+            "USB-backed chain data is configured as a sync/source publisher.",
+            "Disable SYNC_SOURCE_NODE on USB-backed mining hosts. Keep only the low-priority local/IPFS sidecar path so archive work cannot compete aggressively with mining.",
+            evidence,
+        )
 
 
 def check_storage_profile(checks: list[Check], root: Path, env: dict[str, str], profile: HostProfile) -> None:
@@ -821,6 +830,25 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         add(checks, "pass", "node_mining_runtime", "node miner/template runtime args are configured", evidence=evidence)
     else:
         add(checks, "pass", "node_mining_runtime", "node mining stays disabled until miners are present", evidence=evidence)
+
+    legacy_sync_failures = []
+    if bool_enabled(env.get("BDAG_FASTARTIFACTSYNC_ENABLED"), False):
+        legacy_sync_failures.append("BDAG_FASTARTIFACTSYNC_ENABLED is enabled")
+    if bool_enabled(env.get("BDAG_FASTSNAP_ENABLED"), False):
+        legacy_sync_failures.append("BDAG_FASTSNAP_ENABLED is enabled")
+    if "--fastartifactsync" in (env.get("NODE_ARGS_APPEND") or ""):
+        legacy_sync_failures.append("NODE_ARGS_APPEND contains --fastartifactsync")
+    if legacy_sync_failures:
+        add(
+            checks,
+            "fail",
+            "legacy_sync_path",
+            "legacy FastArtifact/FastSnap startup path is enabled: " + "; ".join(legacy_sync_failures),
+            "Keep legacy startup sync disabled. Use the IPFS segment writer/content sidecar as the recovery/archive path.",
+            evidence,
+        )
+    else:
+        add(checks, "pass", "legacy_sync_path", "legacy FastArtifact/FastSnap startup paths are disabled", evidence=evidence)
 
     pool_rpc_pressure = {
         "POOL_GBT_MIN_INTERVAL_MS": env.get("POOL_GBT_MIN_INTERVAL_MS"),

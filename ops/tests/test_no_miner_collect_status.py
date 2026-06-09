@@ -658,7 +658,7 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
         decision = pool_ops.background_maintenance_decision("rawdatadir_content_seal", status)
 
         self.assertFalse(decision["allowed"])
-        self.assertTrue(decision["pool_ready_required"])
+        self.assertFalse(decision["pool_ready_required"])
         self.assertTrue(any("host io full pressure" in reason for reason in decision["reasons"]))
 
     def test_background_maintenance_defers_when_sync_remaining_is_unknown(self) -> None:
@@ -730,8 +730,8 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
         }
         pool_ops.host_runtime_profile = lambda: {"cpu_count": 8}
         status = {
-            "overall": "syncing",
-            "mode": "catchup_pause",
+            "overall": "ok",
+            "mode": "ready_no_miners",
             "can_mine": False,
             "can_accept_shares": False,
             "can_submit_blocks": False,

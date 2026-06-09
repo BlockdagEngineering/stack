@@ -571,15 +571,7 @@ configure_env() {
   set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_STRICT "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_STRICT 0)"
   set_env_value .env BDAG_INSTALL_STACK_SUPPORT_SERVICES "$(env_value BDAG_INSTALL_STACK_SUPPORT_SERVICES 1)"
   set_env_value .env BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT "$(env_value BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT 0)"
-  fastartifact_enabled=1
-  if [[ "$node_mining_enabled" == "1" ]]; then
-    case "$(env_value BDAG_STORAGE_PROFILE auto)" in
-      usb-chain-internal-runtime|single-usb-constrained)
-        fastartifact_enabled=0
-        ;;
-    esac
-  fi
-  set_env_value .env BDAG_FASTARTIFACTSYNC_ENABLED "$fastartifact_enabled"
+  set_stack_default_env_value .env BDAG_FASTARTIFACTSYNC_ENABLED
   set_stack_default_env_value .env SYNC_SOURCE_NODE
   set_env_value .env NODE_ARGS_APPEND ""
   set_stack_default_env_value .env BDAG_FASTSNAP_SEED_TIMER_ENABLED

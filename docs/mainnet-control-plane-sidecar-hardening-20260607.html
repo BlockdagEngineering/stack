@@ -105,7 +105,7 @@
   <h2>Remaining Architecture Work</h2>
   <ol>
     <li><strong>Corechain mining safety lease:</strong> add a public-mainnet safety snapshot with external witness evidence, same-height DAG/EVM anchors, expiry, generation, quarantine reason, and chain ID. Gate every template and submit ingress before mining work is produced or accepted.</li>
-    <li><strong>Pool job safety lease:</strong> attach the canonical safety lease to fetched templates and Stratum jobs. Cached templates, rebroadcast, recovery, submit, failover, and fanout must hard-veto missing, stale, wrong-network, or unsafe leases.</li>
+    <li><strong>Pool job safety lease:</strong> attach the canonical safety lease to fetched templates and Stratum jobs. Cached templates, rebroadcast, recovery, submit, and fanout must hard-veto missing, stale, wrong-network, or unsafe leases.</li>
     <li><strong>Installer sequencing:</strong> install and start node/dashboard sync-only first, rebuild plot/global/wallet data with a visible dashboard holding screen, then start the pool only through the shared pool gate after canonical safety passes.</li>
     <li><strong>Single mutation broker:</strong> continue reducing direct Docker/systemd/config mutations so watchdog, sampler, sentinel, peer updater, snapshot, and sidecar scripts submit one audited mutation intent rather than independently fighting for control.</li>
     <li><strong>Append-only recovery ledger:</strong> separate the mutable rsync mirror from an append-only local ledger of safe points and signed/IPFS-ready immutable segment generations.</li>
