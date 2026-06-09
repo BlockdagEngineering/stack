@@ -3561,6 +3561,10 @@ RECOVERY_JOB_TO_CLIENT_RE = re.compile(
     r"resending current job to ((?:\d{1,3}\.){3}\d{1,3}):([0-9]+).*?\(job=([^\s)]+)"
 )
 CLIENT_ADDR_RE = re.compile(r"\bclient=((?:\d{1,3}\.){3}\d{1,3}):([0-9]+)")
+STRATUM_ACCEPT_RE = re.compile(
+    r"\[STRATUM\]\s+accepted client\s+addr=((?:\d{1,3}\.){3}\d{1,3}):([0-9]+).*?"
+    r"(?:\blane=mac:([0-9A-Fa-f:.-]+)|\bmac=([0-9A-Fa-f:.-]+))"
+)
 JOB_EXTRANONCE_RE = re.compile(r"_([0-9a-fA-F]{8})(?:\s|$)")
 SUBMIT_RE = re.compile(
     r"submit from\s+(?:client=((?:\d{1,3}\.){3}\d{1,3}):([0-9]+)\s+)?worker=([^\s]+)\s+job=([^\s]+)"
@@ -4236,8 +4240,11 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
             return bridge_alias_ip
         return ip
 
-    def identity_key_for_route(ip: str) -> str:
+    def identity_key_for_route(ip: str, mac_hint: str = "") -> str:
         ip = canonical_client_ip(ip)
+        hinted_mac = normalize_mac(mac_hint)
+        if hinted_mac:
+            return f"mac:{hinted_mac}"
         _registered, mac = registered_for_ip(ip)
         if mac:
             return f"mac:{mac}"
@@ -4250,12 +4257,16 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
             return ""
         return str(client.get("identity_key") or identity_key_for_route(str(client.get("ip") or "")))
 
-    def client_from_identity(ip: str, port: str = "") -> dict[str, str] | None:
+    def client_from_identity(ip: str, port: str = "", mac_hint: str = "") -> dict[str, str] | None:
         ip = canonical_client_ip(ip)
-        identity_key = identity_key_for_route(ip)
+        mac = normalize_mac(mac_hint)
+        identity_key = identity_key_for_route(ip, mac_hint=mac)
         if not identity_key:
             return None
-        return {"ip": ip, "port": port, "identity_key": identity_key}
+        result = {"ip": ip, "port": port, "identity_key": identity_key}
+        if mac:
+            result["mac"] = mac
+        return result
 
     def note_worker_client(worker: str, ip: str, port: str = "", priority: int = 1) -> None:
         incoming = client_from_identity(ip, port)
@@ -4398,9 +4409,13 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
     for suffix, client in registry_extranonce_clients.items():
         extranonce_to_client.setdefault(suffix, client)
 
-    def miner_for_ip(ip: str) -> dict[str, Any] | None:
+    def miner_for_ip(ip: str, mac_hint: str = "") -> dict[str, Any] | None:
         ip = canonical_client_ip(ip)
         registered, mac = registered_for_ip(ip)
+        hinted_mac = normalize_mac(mac_hint)
+        if hinted_mac:
+            mac = hinted_mac
+            registered = registered_by_mac.get(mac, registered)
         if mac:
             identity_key = f"mac:{mac}"
         elif is_lan_ipv4(ip):
@@ -4420,7 +4435,7 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
                 "display_name": registered.get("display_name") or "",
                 "display_label": miner_display_label({**registered, "mac": mac}) if mac or registered else "",
                 "ip_history": merge_unique_strings(registered.get("ip_history"), ip),
-                "device_type": "stratum",
+                "device_type": "asic" if mac and is_lan_ipv4(ip) else "stratum",
                 "source": "pool-log",
                 "jobs": 0,
                 "submits": 0,
@@ -4475,6 +4490,22 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
             workers.append(worker)
 
     for line in strip_ansi(log).splitlines():
+        stratum_accept = STRATUM_ACCEPT_RE.search(line)
+        if stratum_accept:
+            ip, port, lane_mac, field_mac = stratum_accept.groups()
+            mac = normalize_mac(lane_mac or field_mac)
+            if not mac:
+                continue
+            client = client_from_identity(ip, port, mac_hint=mac)
+            if not client:
+                continue
+            item = miner_for_ip(ip, mac_hint=mac)
+            if item is None:
+                continue
+            note_port(item, port)
+            note_seen(item, line)
+            continue
+
         pushdif = PUSHDIF_RE.search(line)
         if pushdif:
             ip, port, difficulty = pushdif.groups()
@@ -4815,6 +4846,8 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
         elif last_share_log_at and "last_share_epoch" not in item:
             item["last_share_epoch"] = now_epoch
 
+        if mac and previous_ip and previous_ip != ip:
+            existing.pop(previous_ip, None)
         existing[ip] = item
         if mac:
             existing_by_mac[mac] = item

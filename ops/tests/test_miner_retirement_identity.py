@@ -505,6 +505,41 @@ class PoolActivityAttributionTests(unittest.TestCase):
         self.assertEqual(miners["192.168.1.14"]["share_work"], 500)
         self.assertNotIn("192.168.1.103", miners)
 
+    def test_current_stratum_accept_line_uses_line_mac_over_stale_registry_ip(self) -> None:
+        stale_mac = "28:e2:97:1e:c0:b5"
+        current_mac = "28:e2:97:4d:44:3a"
+        pool_ops.read_neighbor_macs = lambda: {}
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {
+                    "ip": "192.168.1.102",
+                    "mac": stale_mac,
+                    "device_id": f"mac:{stale_mac}",
+                    "device_type": "asic",
+                    "discovered_by": "pool-log",
+                },
+                {
+                    "ip": "192.168.1.105",
+                    "mac": current_mac,
+                    "device_id": f"mac:{current_mac}",
+                    "device_type": "asic",
+                    "discovered_by": "asic-api",
+                },
+            ]
+        }
+        log = (
+            "2026/06/09 06:27:08 [STRATUM] accepted client "
+            f"addr=192.168.1.102:53998 host=192.168.1.102 lane=mac:{current_mac} mac={current_mac}"
+        )
+
+        miners = pool_ops.parse_pool_activity(log)["miners"]
+
+        self.assertEqual(len(miners), 1)
+        self.assertEqual(miners[0]["ip"], "192.168.1.102")
+        self.assertEqual(miners[0]["mac"], current_mac)
+        self.assertEqual(miners[0]["identity_key"], f"mac:{current_mac}")
+        self.assertEqual(miners[0]["device_type"], "asic")
+
     def test_same_mac_ip_change_keeps_worker_and_work_on_one_identity(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
         mac = "28:e2:97:3e:39:63"
