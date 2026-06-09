@@ -21,15 +21,15 @@ from typing import Any
 from pool_ops import PROJECT_ROOT, RUNTIME_DIR, now_iso, run
 
 
-DEFAULT_STATUS_URL = "http://127.0.0.1:8088/api/status"
-DEFAULT_GLOBAL_URL = "http://127.0.0.1:8088/api/global"
+DEFAULT_STATUS_URL = "http://127.0.0.1:9280/api/status"
+DEFAULT_GLOBAL_URL = "http://127.0.0.1:9280/api/global"
 DEFAULT_METRICS_URL = "http://127.0.0.1:9092/metrics"
 REPORT_DIR = RUNTIME_DIR / "reports"
 PROM_LINE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([-+0-9.eE]+)\s*$")
 SOURCE_REPOS = {
     "pool_stack_docker": PROJECT_ROOT,
     "pool": Path(os.environ.get("BDAG_POOL_SOURCE", "/home/jeremy/blockdag-source/pool")),
-    "dashboard": Path(os.environ.get("BDAG_DASHBOARD_SOURCE", "/home/jeremy/blockdag-source/dashboard")),
+    "collector": Path(os.environ.get("BDAG_COLLECTOR_SOURCE", "/home/jeremy/blockdag-source/collector")),
     "blockdag_corechain": Path(os.environ.get("BDAG_CORECHAIN_SOURCE", "/home/jeremy/blockdag-source/blockdag-corechain")),
 }
 KEEP_PREFIXES = (

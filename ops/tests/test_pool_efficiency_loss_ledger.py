@@ -142,7 +142,7 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
         self.assertEqual(policy["trigger"], "io_pressure")
         self.assertEqual(policy["lag_blocks"], 80)
 
-    def test_catchup_policy_pauses_backend_unready_under_io_pressure_without_lag(self) -> None:
+    def test_catchup_policy_does_not_pause_backend_unready_under_io_pressure_without_lag(self) -> None:
         policy = pool_ops.build_catchup_policy(
             {"status": "synced", "remaining_blocks": 0},
             {"node": {}},
@@ -152,12 +152,12 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
             mining_ready=False,
         )
 
-        self.assertTrue(policy["active"])
-        self.assertEqual(policy["trigger"], "io_pressure")
+        self.assertFalse(policy["active"])
+        self.assertEqual(policy["trigger"], "")
         self.assertEqual(policy["lag_blocks"], 0)
         self.assertTrue(policy["backend_unready_under_pressure"])
-        self.assertIn("backend is not ready", policy["summary"])
-        self.assertIn("stale or invalid work", policy["user_message"])
+        self.assertEqual(policy["summary"], "")
+        self.assertEqual(policy["user_message"], "")
 
 
 class PoolPrometheusMetricsParsingTests(unittest.TestCase):

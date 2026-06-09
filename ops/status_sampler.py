@@ -549,16 +549,15 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         policy.get("backend_unready_under_pressure")
         or (io_pressure_reasons and not mining_ready and payload.get("can_mine") is False)
     )
+    io_pressure_lag_active = lag >= io_min_lag
     io_pressure_active = bool(
         io_pressure_enabled
         and io_pressure_reasons
         and not mining_ready
-        and (lag >= io_min_lag or backend_unready_under_pressure)
+        and io_pressure_lag_active
     )
     lag_threshold_active = bool(lag > threshold and (not chain_ready_for_mining(payload) or not mining_ready))
-    active = bool(policy.get("active")) if "active" in policy else False
-    if not active:
-        active = bool(CATCHUP_PAUSE_ENABLED and (io_pressure_active or lag_threshold_active))
+    active = bool(CATCHUP_PAUSE_ENABLED and (io_pressure_active or lag_threshold_active))
     trigger = str(policy.get("trigger") or "")
     if not trigger and active:
         trigger = "io_pressure" if io_pressure_active else "lag_threshold"
@@ -1361,7 +1360,7 @@ def apply_catchup_node_runtime(payload: dict[str, Any], policy: dict[str, Any]) 
     if not automation_repair_mutation_allowed(
         automation_control.ACTION_CONFIG_EDIT,
         target="catchup-node-runtime",
-        reason=f"catch-up runtime adjustment lag={policy.get('lag_blocks')} threshold={policy.get('threshold_blocks')}",
+        reason=f"catch-up cache adjustment lag={policy.get('lag_blocks')} threshold={policy.get('threshold_blocks')}",
         payload=payload,
         event_type="catchup_pause_config_edit_blocked",
         message="Catch-up pause could not adjust node runtime because automation control blocked config edits",
@@ -1369,17 +1368,6 @@ def apply_catchup_node_runtime(payload: dict[str, Any], policy: dict[str, Any]) 
         return False
     changed_paths: list[str] = []
     env_updates: dict[str, str] = {}
-    disabled_values = {
-        "BDAG_ENABLE_NODE_MINING": "0",
-        "BDAG_NODE_MODULES": "Blockdag",
-        "BDAG_NODE_MINING_ARGS": "",
-        "NODE_ARGS_APPEND": "",
-    }
-    for key, wanted in disabled_values.items():
-        if config_value(key) != wanted:
-            changed_paths.extend(set_runtime_env_value(key, wanted))
-            env_updates[key] = wanted
-    changed_paths.extend(update_node_conf_mining(False))
 
     target_cache = catchup_target_node_cache_mb()
     if target_cache > 0:
@@ -1396,24 +1384,36 @@ def apply_catchup_node_runtime(payload: dict[str, Any], policy: dict[str, Any]) 
 
     node_results: list[dict[str, Any]] = []
     ok = True
-    if CATCHUP_NODE_RECREATE_ENABLED:
+    node_service = node_service_for_recreate()
+    containers = dict_value(payload.get("containers"))
+    node_container = containers.get(node_service)
+    node_state_known = isinstance(node_container, dict)
+    node_running = bool(dict_value(node_container).get("running")) if node_state_known else False
+    if CATCHUP_NODE_RECREATE_ENABLED and node_state_known and not node_running:
         ok, node_results = recreate_node_service(payload, "recreate node after catch-up runtime adjustment")
+    elif CATCHUP_NODE_RECREATE_ENABLED:
+        log(
+            "catch-up pause deferred node recreate after cache config adjustment "
+            f"lag={policy.get('lag_blocks')} threshold={policy.get('threshold_blocks')}"
+        )
     action = {
         "policy": policy,
         "changed_env": env_updates,
         "changed_paths": changed_paths,
         "node_recreate_results": node_results,
+        "node_recreate_deferred": bool(CATCHUP_NODE_RECREATE_ENABLED and (node_running or not node_state_known)),
+        "node_state_known": node_state_known,
         "target_cache_mb": target_cache,
     }
     if ok:
         log(
-            "catch-up pause adjusted node runtime "
+            "catch-up pause adjusted node cache runtime "
             f"lag={policy.get('lag_blocks')} threshold={policy.get('threshold_blocks')} paths={','.join(changed_paths)}"
         )
         record_incident(
             "catchup_pause_node_runtime_adjusted",
             "warning",
-            "Catch-up pause disabled mining/template churn and raised node cache while the node is behind peers",
+            "Catch-up pause raised node cache settings without disabling mining/template support",
             action,
             payload,
         )

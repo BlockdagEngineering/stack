@@ -36,7 +36,7 @@ def load_runtime_env_defaults() -> None:
 load_runtime_env_defaults()
 
 
-DASHBOARD_URL = os.environ.get("BDAG_MINING_GUARD_DASHBOARD_URL", "http://127.0.0.1:8088/api/status")
+DASHBOARD_URL = os.environ.get("BDAG_MINING_GUARD_COLLECTOR_URL", "http://127.0.0.1:9280/api/status")
 DASHBOARD_TIMEOUT = float(os.environ.get("BDAG_MINING_GUARD_DASHBOARD_TIMEOUT", "20"))
 EXPECTED_ASIC_MAC = normalize_mac(os.environ.get("BDAG_EXPECTED_ASIC_MAC", ""))
 EXPECTED_WALLET = os.environ.get("BDAG_EXPECTED_MINING_WALLET", "").strip()

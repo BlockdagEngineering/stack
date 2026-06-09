@@ -39,6 +39,7 @@ PEER_RE_FULL = re.compile(r"/(?:ip4|ip6|dns|dns4|dns6)/([^/]+)/tcp/(\d+)/p2p/([^
 PEERSTORE_LOG_RE = re.compile(r"Try to connect from peer store:\{([^:]+): \[([^\]]*)\]}")
 PEER_LATENCY_TIMEOUT = float(os.environ.get("BDAG_LOCAL_PEER_LATENCY_TIMEOUT", "0.75"))
 PEER_LATENCY_WORKERS = int(os.environ.get("BDAG_LOCAL_PEER_LATENCY_WORKERS", "16"))
+COLLECTOR_STATUS_URL = os.environ.get("BDAG_COLLECTOR_STATUS_URL", "http://127.0.0.1:9280/api/status")
 CHAIN_PEERSTORE_LOG_TAIL = os.environ.get("BDAG_CHAIN_PEERSTORE_LOG_TAIL", "8000")
 DASHBOARD_STATUS_URL = os.environ.get("BDAG_DASHBOARD_STATUS_URL", "http://127.0.0.1:8088/api/status")
 ACTIVE_MINING_RECENT_SECONDS = int(os.environ.get("BDAG_LOCAL_PEERS_ACTIVE_MINING_RECENT_SECONDS", "300"))
@@ -797,7 +798,7 @@ def safe_int(value: object, default: int = 0) -> int:
 
 
 def fetch_dashboard_status() -> dict[str, object]:
-    request = urllib.request.Request(DASHBOARD_STATUS_URL, headers={"Accept": "application/json"})
+    request = urllib.request.Request(COLLECTOR_STATUS_URL, headers={"Accept": "application/json"})
     with urllib.request.urlopen(request, timeout=3) as response:
         payload = json.loads(response.read().decode("utf-8", "replace"))
     return payload if isinstance(payload, dict) else {}

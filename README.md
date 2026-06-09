@@ -1,14 +1,15 @@
 # pool-stack-docker-stack
 
-This stack can be run in any environment where docker is installed. It includes an upgradable BDAG node, a mining pool with its db, and the canonical operations dashboard/control plane.
+This stack can be run in any environment where docker is installed. It includes an upgradable BDAG node, a mining pool with its database, a read-only collector API, and the Go dashboard UI.
 
 
-| Service     | Image / build                           | Purpose |
-| ----------- | --------------------------------------- | ------- |
-| `node`      | BlockDAG node, supervised by nodeworker |         |
-| `pool`      | Mining pool (Stratum :3334)             |         |
-| `postgres`  | Pool persistence, schema auto-loaded    |         |
-| `dashboard` | Essential monitoring                    |         |
+| Service | Image / build | Purpose |
+| --- | --- | --- |
+| `node` | BlockDAG node, supervised by nodeworker | Consensus, P2P, and RPC |
+| `pool` | Mining pool (Stratum :3334) | ASIC Stratum and block submission |
+| `pool-db` | Postgres | Pool persistence, schema auto-loaded |
+| `collector` | Python collector | Read-only JSON API and normalized logs |
+| `dashboard` | Go dashboard | Browser UI over the collector API |
 
 
 ## Release package
@@ -26,11 +27,11 @@ the matching payload zip from that same tag. Linux ARM64, macOS ARM64, and
 Windows ARM64 hosts use the `linux-arm64` runtime payload.
 
 Each payload zip contains `bin/` (pre-built `blockdag-node`, `nodeworker`,
-`mining-pool`, and `dashboard-api`), `docker-compose.yml`, `dockerfile`,
+`mining-pool`, `dashboard-api`, and `dashboard`), `docker-compose.yml`, `dockerfile`,
 `.env.example`,
 `docker/`, and the cross-platform payload installers. **Node and pool release
-images** stage binaries from `./bin`; the `dashboard` image checks out
-the `develop` branch from `BlockdagEngineering/dashboard`. Export
+images** stage binaries from `./bin`; the `collector` image checks out
+the `develop` branch from `BlockdagEngineering/collector`. Export
 `GITHUB_TOKEN` before `docker compose build` if that repository is private in
 your environment.
 
@@ -190,30 +191,28 @@ The dashboard reports this as a deliberate catch-up pause, not a pool failure,
 and tells operators to leave miners configured until I/O pressure drops, peer lag
 is back inside the safe window, and template health is ready.
 
-Dashboard block height is sourced from chain RPC `getBlockCount`; template
+Collector block height is sourced from chain RPC `getBlockCount`; template
 height, logs, and main-order values are shown only as
 diagnostics. Build and release flows should run through
 `scripts/bdag-low-io-build.sh`, which uses idle I/O priority, low CPU priority,
 and `BDAG_BUILD_TMPDIR` so image builds do not compete with chain sync or block
 submission. Chain RPC checks retry slow storage-bound samples via
 `BDAG_NODE_CHAIN_RPC_TIMEOUT` and `BDAG_NODE_CHAIN_RPC_RETRIES`, and the status
-payload exposes the active dashboard URL, RPC latency, and Linux IO pressure
-metrics. When PSI is unavailable, the dashboard falls back to `/proc/stat`
+payload exposes RPC latency and Linux IO pressure metrics. When PSI is unavailable, the collector falls back to `/proc/stat`
 `iowait` deltas and raises a maintenance warning after sustained high IO wait.
 The ops layer also detects a host profile with `BDAG_HOST_PROFILE=auto` and
-uses adaptive worker budgets for expensive dashboard/global/miner scans. The
+uses adaptive worker budgets for expensive collector/global/miner scans. The
 same release source is expected to behave conservatively on constrained ARM64
 hosts, while AMD64 and larger ARM64 hosts can use more parallelism when pressure
 is low. See `docs/platform-adaptive-runtime.md`.
 
-The dashboard, watchdog, sync coordinator, P2P guard, and startup checks also
-share one cross-process status sample. `ops/status_sampler.py` writes
+The collector, sync coordinator, P2P guard, and startup checks also share one
+cross-process status sample. `ops/status_sampler.py` writes
 `ops/runtime/status-sampler.json` atomically, and routine callers read it
 through `collect_status_cached()` when it is fresh. The default sampler reuse
 window is bounded at 120 seconds so constrained hosts do not repeatedly probe
 Docker, node RPC, pool metrics, and miner state while the node is catching up.
-Direct repair diagnostics can still force a live collection with
-`max_age_seconds=0`.
+Diagnostics can still force a live collection with `max_age_seconds=0`.
 
 If a node stops importing while peers continue advancing, the dashboard must not
 describe the state as ordinary catch-up. Node logs that contain `Irreparable
@@ -280,22 +279,19 @@ image assembly so ARM64 packages cannot silently receive AMD64 binaries; the
 checker reads ELF/Mach-O/PE headers directly so it can be used from Linux,
 macOS, and Windows build hosts.
 
-The Python operations dashboard is the canonical operator interface and source
-of truth, normally exposed on `BDAG_DASHBOARD_PORT`/`8088`. Its tabs separate
-pool status, miners, earnings, and global chain production, and each global
-production view must be sourced from native BlockDAG chain RPC
+The dashboard UI is normally exposed on host port `8080`. It talks to the
+collector API, which is bound to localhost on host port `9280` by default. Global
+production data must be sourced from native BlockDAG chain RPC
 `getBlockCount`/ordered block/coinbase calls. EVM RPC belongs to wallet balance
 views only. The packaged web dashboard on `DASHBOARD_HOST_PORT`/`9280` is a
 diagnostic chart view and must not be treated as the authoritative mining
 dashboard.
 
-When testing directly from a source checkout, start the Python operations
-dashboard with environment that matches the actual container names for the stack
-it is watching. On Linux, that process also needs Docker API access; use a
-system service account with Docker socket access or an explicit `DOCKER_HOST`.
-On macOS and Windows Docker Desktop hosts, prefer the packaged installer or run
-the ops dashboard from a session where the Docker CLI already works instead of
-installing Linux systemd units.
+When testing directly from a source checkout, start the collector with
+environment that matches the actual container names for the stack it is
+watching. On Linux, that process needs Docker API access for container status
+and logs; use a system service account with Docker socket access or an explicit
+`DOCKER_HOST`.
 
 Source checkout tests require Python's standard library test runner plus
 `pytest`. On Ubuntu/Debian hosts, install the test dependency with:
@@ -308,13 +304,13 @@ sudo apt-get install -y python3-pytest
 Agents should verify it with `python3 -m pytest --version` before running
 `ops/tests` through pytest-backed deployment checks.
 
-The dashboard runtime collectors use Python's standard HTTP client for local
+The collector runtime uses Python's standard HTTP client for local
 pool metrics and public enrichment calls. Do not make live status depend on
 host utilities such as `curl`; release packages should behave the same on Linux
 AMD64, Linux ARM64, macOS Docker Desktop, and Windows Docker Desktop once Docker
 and Python are available.
 
-For live dashboard/watchdog-only updates, use:
+For live collector-only updates, use:
 
 ```bash
 ops/deploy-live-runtime-update.sh --target /path/to/installed/runtime --mark-runtime-compose
@@ -322,7 +318,7 @@ ops/deploy-live-runtime-update.sh --target /path/to/installed/runtime --mark-run
 
 The deploy helper copies only a small whitelist, backs up changed files, refuses
 dev compose files, validates source and target, restarts only the configured
-user services, and rolls back copied files if validation or restart fails.
+services, and rolls back copied files if validation or restart fails.
 It also checks that every live-runtime file required by the RC hardening
 validator is present in the copy contract before touching the installed stack.
 
@@ -333,7 +329,7 @@ evidence with:
 PYTHONDONTWRITEBYTECODE=1 python3 -B ops/optimization_measurement.py --duration-seconds 300 --interval-seconds 15 --label baseline
 ```
 
-Add `--status-url http://127.0.0.1:8088/api/status` when measuring dashboard
+Add `--status-url http://127.0.0.1:9280/api/status` when measuring collector
 HTTP latency as part of the same run. The harness writes JSONL samples and an
 HTML summary under `ops/runtime/measurements`.
 
@@ -357,8 +353,8 @@ service; leave `COMPOSE_PROFILES` empty to disable it.
 
 Once everything is running:
 
-- Operations dashboard, authoritative interface: `http://localhost:8088`
-- Diagnostic chart view, non-authoritative: `http://localhost:9280`
+- Dashboard: `http://localhost:8080`
+- Collector API: `http://localhost:9280`
 - Mining pool Stratum endpoint: `stratum+tcp://localhost:3334`
 - RPC endpoint: `http://localhost:38131`
 

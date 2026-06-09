@@ -5375,11 +5375,12 @@ def build_catchup_policy(
         and backend_unready_reasons
         and not mining_ready_for_policy
     )
+    io_pressure_lag_active = bool(peer_catchup and lag >= CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS)
     io_pressure_active = bool(
         CATCHUP_IO_PRESSURE_PAUSE_ENABLED
         and io_pressure_reasons
         and not mining_ready_for_policy
-        and ((peer_catchup and lag >= CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS) or backend_unready_under_pressure)
+        and io_pressure_lag_active
     )
     lag_threshold_active = bool(lag > CATCHUP_PAUSE_THRESHOLD_BLOCKS and (status != "synced" or not mining_ready_for_policy))
     active = bool(CATCHUP_PAUSE_ENABLED and (io_pressure_active or lag_threshold_active))
