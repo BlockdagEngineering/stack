@@ -23,6 +23,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "MINING_IMPERATIVE_GUARD_UNITS",
                 "MINING_IMPERATIVE_START_POOL_ENABLED",
                 "MINING_IMPERATIVE_START_IDLE_SYNCED_POOL",
+                "MINING_IMPERATIVE_POOL_START_STABLE_SAFE_SECONDS",
                 "MINING_IMPERATIVE_MINER_TRACKING_REPAIR_ENABLED",
                 "MINING_IMPERATIVE_MINER_ACTIVITY_REPAIR_ENABLED",
                 "MINING_IMPERATIVE_ASIC_MAC_OVERRIDES_REPAIR_ENABLED",
@@ -44,6 +45,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "detect_total_memory_bytes",
                 "log",
                 "POOL_ENV_FILE",
+                "POOL_START_STABILITY_FILE",
                 "PROJECT_ROOT",
                 "pool_asic_mac_override_diagnostics",
                 "pool_asic_mac_overrides_value",
@@ -58,6 +60,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         }
         self.original_env = dict(os.environ)
         self.original_check_mutation_allowed = status_sampler.automation_control.check_mutation_allowed
+        self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.restore)
         status_sampler.automation_control.check_mutation_allowed = (
             lambda *_args, **_kwargs: SimpleNamespace(allowed=True, reason="unit test allow")
@@ -68,12 +71,14 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         status_sampler.MINING_IMPERATIVE_REPAIR_ENABLED = True
         status_sampler.MINING_IMPERATIVE_START_POOL_ENABLED = True
         status_sampler.MINING_IMPERATIVE_START_IDLE_SYNCED_POOL = False
+        status_sampler.MINING_IMPERATIVE_POOL_START_STABLE_SAFE_SECONDS = 0
         status_sampler.MINING_IMPERATIVE_MINER_TRACKING_REPAIR_ENABLED = True
         status_sampler.MINING_IMPERATIVE_MINER_ACTIVITY_REPAIR_ENABLED = True
         status_sampler.MINING_IMPERATIVE_ASIC_MAC_OVERRIDES_REPAIR_ENABLED = False
         status_sampler.MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS = 180
         status_sampler.MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED = True
         status_sampler.POOL_ENV_FILE = pathlib.Path("/nonexistent/status-sampler-test.env")
+        status_sampler.POOL_START_STABILITY_FILE = pathlib.Path(self.tmp.name) / "pool-start-stability.json"
         status_sampler.PROJECT_ROOT = pathlib.Path("/nonexistent/status-sampler-test-root")
         status_sampler.CATCHUP_PAUSE_ENABLED = True
         status_sampler.CATCHUP_PAUSE_THRESHOLD_BLOCKS = 300
@@ -115,6 +120,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         for name, value in self.originals.items():
             setattr(status_sampler, name, value)
         status_sampler.automation_control.check_mutation_allowed = self.original_check_mutation_allowed
+        self.tmp.cleanup()
         os.environ.clear()
         os.environ.update(self.original_env)
 
@@ -178,6 +184,26 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         self.assertTrue(self.pool_compose_start_seen(commands))
         self.assertIn(f"started_container:{status_sampler.POOL_CONTAINER}", repair["actions"])
+
+    def test_first_safe_sample_waits_for_stable_window_before_starting_pool(self) -> None:
+        commands = []
+        incidents = []
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.MINING_IMPERATIVE_POOL_START_STABLE_SAFE_SECONDS = 90
+        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.1.0/24"
+        status_sampler.read_neighbor_macs = lambda: {"192.168.1.107": "28:e2:97:1e:c0:b5"}
+        status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
+        status_sampler.append_incident = (
+            lambda event_type, severity, *_args, **_kwargs: incidents.append((event_type, severity))
+        )
+
+        repair = status_sampler.mining_imperative_repair(
+            self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        )
+
+        self.assertFalse(self.pool_compose_start_seen(commands))
+        self.assertNotIn(f"started_container:{status_sampler.POOL_CONTAINER}", repair["actions"])
+        self.assertIn(("mining_imperative_pool_start_blocked", "warning"), incidents)
 
     def test_visible_asic_lan_neighbor_does_not_start_pool_while_syncing(self) -> None:
         commands = []

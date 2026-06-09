@@ -54,6 +54,34 @@ def safe_canonical_status() -> dict[str, object]:
     }
 
 
+def transient_down_mining_missing_trie_status() -> dict[str, object]:
+    return {
+        "fresh": True,
+        "mode": "mining",
+        "overall": "down",
+        "status_reason": "node EVM trie state is unavailable (1 missing-trie warning(s))",
+        "sync_progress": {
+            "status": "synced",
+            "remaining_blocks": 0,
+            "nodes": {
+                "node": {
+                    "missing_trie_node_warnings": 1,
+                    "canonical_mining_safety": {
+                        "safe": True,
+                        "schema": "stack_evm_public_reference_v1",
+                    },
+                }
+            },
+        },
+        "nodes": {
+            "node": {
+                "missing_trie_node_warnings": 1,
+            }
+        },
+        "rpc_template_health": {"all_nodes_ready": True},
+    }
+
+
 class SingleGateOrchestrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.original_stack_services = list(pool_ops.STACK_SERVICES)
@@ -95,6 +123,13 @@ class SingleGateOrchestrationTests(unittest.TestCase):
 
         self.assertTrue(decision.allowed, decision.reason)
 
+    def test_shared_gate_blocks_transient_down_mining_with_missing_trie_state(self) -> None:
+        decision = pool_start_gate.pool_start_decision(transient_down_mining_missing_trie_status())
+
+        self.assertFalse(decision.allowed)
+        self.assertIn("node reports missing trie state", decision.reason)
+        self.assertIn("overall stack status is down", decision.reason)
+
     def test_status_sampler_cannot_direct_start_pool_when_gate_blocks(self) -> None:
         incidents: list[tuple[str, str]] = []
         with mock.patch.object(status_sampler, "run", side_effect=AssertionError("docker start must not run")), mock.patch.object(
@@ -134,6 +169,36 @@ class SingleGateOrchestrationTests(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertEqual([("sentinel_pool_start_blocked", "warning")], incidents)
+
+    def test_stack_sentinel_requires_stable_safe_window_before_pool_start(self) -> None:
+        state: dict[str, object] = {}
+        starts: list[str] = []
+        inspected = {
+            stack_sentinel.POOL_DB_CONTAINER: {"running": True, "status": "running"},
+            "node-a": {"running": True, "status": "running"},
+            stack_sentinel.POOL_CONTAINER: {"running": False, "status": "exited"},
+        }
+        status = safe_canonical_status()
+
+        with mock.patch.object(stack_sentinel, "NODES", ["node-a"]), mock.patch.object(
+            stack_sentinel, "POOL_START_STABLE_SAFE_SECONDS", 90
+        ), mock.patch.object(
+            stack_sentinel, "docker_inspect", return_value=inspected
+        ), mock.patch.object(
+            stack_sentinel, "start_container", side_effect=lambda service, *_args: starts.append(service) or True
+        ), mock.patch.object(
+            stack_sentinel, "append_incident", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            stack_sentinel, "notify_user", lambda _title, _body: None
+        ), mock.patch.object(
+            stack_sentinel, "log", lambda _message: None
+        ):
+            stack_sentinel.inspect_and_repair_containers(status, state, 100)
+            stack_sentinel.inspect_and_repair_containers(status, state, 189)
+            stack_sentinel.inspect_and_repair_containers(status, state, 190)
+
+        self.assertEqual([stack_sentinel.POOL_CONTAINER], starts)
+        self.assertEqual(100, state["pool_start_allowed_since"])
 
     def test_watchdog_cannot_restart_pool_when_latest_status_blocks(self) -> None:
         events: list[tuple[str, str]] = []

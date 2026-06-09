@@ -83,6 +83,12 @@ MINING_IMPERATIVE_GUARD_UNITS = split_env_list(
 )
 MINING_IMPERATIVE_START_POOL_ENABLED = env_bool("BDAG_MINING_IMPERATIVE_START_POOL_ENABLED", True)
 MINING_IMPERATIVE_START_IDLE_SYNCED_POOL = env_bool("BDAG_MINING_IMPERATIVE_START_IDLE_SYNCED_POOL", False)
+MINING_IMPERATIVE_POOL_START_STABLE_SAFE_SECONDS = env_int(
+    "BDAG_MINING_IMPERATIVE_POOL_START_STABLE_SAFE_SECONDS",
+    90,
+    minimum=0,
+)
+POOL_START_STABILITY_FILE = STATUS_SAMPLER_FILE.parent / "mining-imperative-pool-start-stability.json"
 MINING_IMPERATIVE_MINER_TRACKING_REPAIR_ENABLED = env_bool(
     "BDAG_MINING_IMPERATIVE_MINER_TRACKING_REPAIR_ENABLED",
     True,
@@ -1523,6 +1529,64 @@ def pool_container_running(payload: dict[str, Any]) -> bool:
     return bool(container.get("running"))
 
 
+def clear_pool_start_stability() -> None:
+    try:
+        POOL_START_STABILITY_FILE.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        log(f"could not clear pool start stability state: {exc}")
+
+
+def pool_start_stability_blocked(payload: dict[str, Any]) -> tuple[bool, str]:
+    required = MINING_IMPERATIVE_POOL_START_STABLE_SAFE_SECONDS
+    if required <= 0:
+        return False, ""
+
+    now = time.time()
+    state: dict[str, Any] = {}
+    try:
+        state = json.loads(POOL_START_STABILITY_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        state = {}
+
+    status_key = "|".join(
+        str(payload.get(name) or "")
+        for name in ("overall", "mode", "status_reason")
+    )
+    sync_progress = dict_value(payload.get("sync_progress"))
+    status_key = "|".join(
+        [
+            status_key,
+            str(sync_progress.get("status") or ""),
+            str(sync_progress.get("remaining_blocks") or ""),
+        ]
+    )
+    if state.get("status_key") != status_key:
+        state = {
+            "schema_version": 1,
+            "status": "allowed",
+            "status_key": status_key,
+            "allowed_since": now,
+            "updated_at": now_iso(),
+        }
+    else:
+        state["updated_at"] = now_iso()
+    write_json_file(POOL_START_STABILITY_FILE, state, mode=0o600)
+
+    try:
+        allowed_since = float(state.get("allowed_since"))
+    except (TypeError, ValueError):
+        allowed_since = now
+    elapsed = max(0.0, now - allowed_since)
+    if elapsed < required:
+        return (
+            True,
+            f"pool start gate is safe, but waiting for a stable-safe window ({elapsed:.0f}/{required}s)",
+        )
+    return False, ""
+
+
 def stop_pool_container(payload: dict[str, Any], reason: str, *, containment: str = "catchup_pause") -> bool:
     control = automation_control.check_mutation_allowed(
         automation_control.ACTION_CONTAINMENT_STOP,
@@ -1597,6 +1661,7 @@ def start_pool_container(payload: dict[str, Any], reason: str) -> bool:
         status=payload,
     )
     if not allowed:
+        clear_pool_start_stability()
         action = {
             "reason": reason,
             "container": POOL_CONTAINER,
@@ -1608,6 +1673,24 @@ def start_pool_container(payload: dict[str, Any], reason: str) -> bool:
             "mining_imperative_pool_start_blocked",
             "warning",
             f"Mining imperative left {POOL_CONTAINER} stopped: {block_reason}",
+            action,
+            payload,
+        )
+        return False
+
+    stable_blocked, stable_reason = pool_start_stability_blocked(payload)
+    if stable_blocked:
+        action = {
+            "reason": reason,
+            "container": POOL_CONTAINER,
+            "blocked_reason": stable_reason,
+            "method": "pool_start_stability_gate",
+        }
+        log(f"mining imperative left {POOL_CONTAINER} stopped by pool start stability gate: {stable_reason}")
+        record_incident(
+            "mining_imperative_pool_start_blocked",
+            "warning",
+            f"Mining imperative left {POOL_CONTAINER} stopped: {stable_reason}",
             action,
             payload,
         )
@@ -1661,6 +1744,7 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
 
     divergence_reasons = public_chain_divergence_reasons(payload)
     if divergence_reasons:
+        clear_pool_start_stability()
         reason = "; ".join(divergence_reasons)
         if pool_container_running(payload) and stop_pool_container(payload, reason, containment="public_chain_divergence"):
             actions.append(f"stopped_container:{POOL_CONTAINER}:public_chain_divergence")
@@ -1670,6 +1754,7 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
 
     chain_restore_decision = chain_state_restore_decision(payload)
     if chain_restore_decision.get("should_repair"):
+        clear_pool_start_stability()
         reason = "; ".join(chain_restore_decision.get("reasons") or []) or "chain-state restore required"
         if pool_container_running(payload) and stop_pool_container(payload, reason, containment="chain_state_restore"):
             actions.append(f"stopped_container:{POOL_CONTAINER}:chain_state_restore")
@@ -1690,6 +1775,7 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
             actions.append("repaired_miner_activity_visibility")
 
     if catchup_active:
+        clear_pool_start_stability()
         reason = (
             f"node is {catchup_policy.get('lag_blocks')} blocks behind peers "
             f"(pause threshold {catchup_policy.get('threshold_blocks')})"
@@ -1727,6 +1813,7 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
                 f"lag={catchup_policy.get('lag_blocks')} threshold={catchup_policy.get('threshold_blocks')}"
             )
         else:
+            clear_pool_start_stability()
             log(
                 f"mining imperative left {POOL_CONTAINER} stopped: "
                 "no miner demand or ASIC LAN neighbor; idle synced pool autostart is disabled"

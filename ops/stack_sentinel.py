@@ -45,6 +45,7 @@ NODE_LOG_LOOKBACK_SECONDS = int(os.environ.get("BDAG_SENTINEL_NODE_LOG_LOOKBACK_
 NODE_LOG_SCAN_TIMEOUT_SECONDS = float(os.environ.get("BDAG_SENTINEL_NODE_LOG_SCAN_TIMEOUT_SECONDS", "12"))
 ZERO_STATE_ROOT_WARN_COUNT = int(os.environ.get("BDAG_SENTINEL_ZERO_STATE_ROOT_WARN_COUNT", "3"))
 ZERO_STATE_ROOT_CRITICAL_COUNT = int(os.environ.get("BDAG_SENTINEL_ZERO_STATE_ROOT_CRITICAL_COUNT", "20"))
+POOL_START_STABLE_SAFE_SECONDS = int(os.environ.get("BDAG_SENTINEL_POOL_START_STABLE_SAFE_SECONDS", "90"))
 DESKTOP_NOTIFY_ENABLED = os.environ.get("BDAG_SENTINEL_DESKTOP_NOTIFY", "false").strip().lower() in {
     "1",
     "true",
@@ -170,6 +171,7 @@ def start_container(service: str, reason: str, state: dict[str, Any], now: int) 
     if pool_start_gate.is_pool_target(service, POOL_CONTAINER):
         decision = pool_start_gate.pool_start_decision(pool_start_gate.read_latest_status_payload())
         if not decision.allowed:
+            clear_pool_start_stability(state)
             state["pool_start_blocked_reason"] = decision.reason
             append_incident(
                 "sentinel_pool_start_blocked",
@@ -179,6 +181,18 @@ def start_container(service: str, reason: str, state: dict[str, Any], now: int) 
                 {"pool_container": service, "reason": decision.reason},
             )
             log(f"left {service} stopped by pool start gate: {decision.reason}")
+            return False
+        stable_blocked, stable_reason = pool_start_stability_blocked(state, now)
+        if stable_blocked:
+            state["pool_start_blocked_reason"] = stable_reason
+            append_incident(
+                "sentinel_pool_start_blocked",
+                "warning",
+                "stack-sentinel",
+                f"Stack sentinel left {service} stopped: {stable_reason}",
+                {"pool_container": service, "reason": stable_reason},
+            )
+            log(f"left {service} stopped by pool start stability gate: {stable_reason}")
             return False
 
     log_path = LOG_DIR / f"sentinel-start-{service}-{now}.log"
@@ -226,6 +240,7 @@ def recreate_container(service: str, reason: str, state: dict[str, Any], now: in
     if pool_start_gate.is_pool_target(service, POOL_CONTAINER):
         decision = pool_start_gate.pool_start_decision(pool_start_gate.read_latest_status_payload())
         if not decision.allowed:
+            clear_pool_start_stability(state)
             state["pool_start_blocked_reason"] = decision.reason
             append_incident(
                 "sentinel_pool_start_blocked",
@@ -235,6 +250,18 @@ def recreate_container(service: str, reason: str, state: dict[str, Any], now: in
                 {"pool_container": service, "reason": decision.reason},
             )
             log(f"left {service} stopped by pool start gate: {decision.reason}")
+            return False
+        stable_blocked, stable_reason = pool_start_stability_blocked(state, now)
+        if stable_blocked:
+            state["pool_start_blocked_reason"] = stable_reason
+            append_incident(
+                "sentinel_pool_start_blocked",
+                "warning",
+                "stack-sentinel",
+                f"Stack sentinel left {service} stopped: {stable_reason}",
+                {"pool_container": service, "reason": stable_reason},
+            )
+            log(f"left {service} stopped by pool start stability gate: {stable_reason}")
             return False
 
     log_path = LOG_DIR / f"sentinel-recreate-{service}-{now}.log"
@@ -286,6 +313,44 @@ def pool_start_blocked_by_status(status: dict[str, Any] | None) -> tuple[bool, s
     return (not decision.allowed), decision.reason
 
 
+def clear_pool_start_stability(state: dict[str, Any]) -> None:
+    state.pop("pool_start_allowed_since", None)
+    state.pop("pool_start_allowed_reason", None)
+
+
+def pool_start_stability_blocked(state: dict[str, Any], now: int) -> tuple[bool, str]:
+    if POOL_START_STABLE_SAFE_SECONDS <= 0:
+        return False, ""
+    try:
+        allowed_since = int(state.get("pool_start_allowed_since"))
+    except (TypeError, ValueError):
+        allowed_since = now
+        state["pool_start_allowed_since"] = allowed_since
+    elapsed = max(0, now - allowed_since)
+    state["pool_start_allowed_reason"] = "status safe; waiting stable pool-start window"
+    if elapsed < POOL_START_STABLE_SAFE_SECONDS:
+        return (
+            True,
+            (
+                "pool start gate is safe, but waiting for a stable-safe window "
+                f"({elapsed}/{POOL_START_STABLE_SAFE_SECONDS}s)"
+            ),
+        )
+    return False, ""
+
+
+def pool_start_blocked_by_status_with_stability(
+    status: dict[str, Any] | None,
+    state: dict[str, Any],
+    now: int,
+) -> tuple[bool, str]:
+    decision = pool_start_gate.pool_start_decision(status)
+    if not decision.allowed:
+        clear_pool_start_stability(state)
+        return True, decision.reason
+    return pool_start_stability_blocked(state, now)
+
+
 def inspect_and_repair_containers(status: dict[str, Any] | None, state: dict[str, Any], now: int) -> None:
     inspected = docker_inspect(SERVICES)
     critical_services = unique_names(
@@ -299,7 +364,7 @@ def inspect_and_repair_containers(status: dict[str, Any] | None, state: dict[str
     ]
     state["stopped_containers"] = stopped
     state["restarting_containers"] = restarting
-    pool_start_blocked, pool_start_blocked_reason = pool_start_blocked_by_status(status)
+    pool_start_blocked, pool_start_blocked_reason = pool_start_blocked_by_status_with_stability(status, state, now)
     actionable_stopped = list(stopped)
     if pool_start_blocked and POOL_CONTAINER in actionable_stopped:
         actionable_stopped.remove(POOL_CONTAINER)
