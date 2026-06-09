@@ -17,6 +17,7 @@ from typing import Any
 
 import automation_control
 from incident_journal import append_incident
+from guard_core import automation_mutation_allowed
 import pool_start_gate
 from pool_ops import (
     LOG_DIR,
@@ -44,6 +45,8 @@ from pool_ops import (
     write_action_state,
 )
 from status_sampler import (
+    constrained_fastartifact_should_repair,
+    fastsync_peer_quarantine_should_repair,
     node_mining_template_support_should_repair,
     repair_missing_tracked_miners,
     repair_node_mining_template_support,
@@ -172,29 +175,6 @@ def record_failed_repair(action: str, reason: str, details: dict[str, Any] | Non
         payload.update(details)
     record_efficiency_event("repair_failed", "critical", f"{action} failed", payload)
     append_incident("repair_failed", "critical", "repair", f"{action} failed", payload)
-
-
-def automation_mutation_allowed(action: str, target: str, reason: str) -> bool:
-    decision = automation_control.check_mutation_allowed(
-        action,
-        actor="watchdog",
-        target=target,
-        reason=reason,
-    )
-    if decision.allowed:
-        return True
-    message = (
-        f"automation control suppressed watchdog mutation action={action} "
-        f"target={target}: {decision.reason}"
-    )
-    log(message)
-    record_efficiency_event(
-        "automation_control_suppressed",
-        "critical",
-        message,
-        decision.as_dict(),
-    )
-    return False
 
 
 def miner_label(row: dict[str, Any]) -> str:
@@ -890,7 +870,14 @@ def run_repair(mode: str, reason: str) -> bool:
         "restart": automation_control.ACTION_STACK_RESTART,
         "clean": automation_control.ACTION_STACK_CLEAN_RESTORE,
     }.get(mode, f"stack_{mode}")
-    if not automation_mutation_allowed(action, "stack", reason):
+    if not automation_mutation_allowed(
+        actor="watchdog",
+        action=action,
+        target="stack",
+        reason=reason,
+        log=log,
+        incident_source="watchdog",
+    ):
         return False
 
     lock_handle = acquire_lock(blocking=False)
@@ -946,7 +933,14 @@ def run_node_restart(node_service: str, reason: str) -> bool:
     if node_service not in NODES:
         log(f"targeted node restart skipped for unknown node={node_service} reason={reason}")
         return False
-    if not automation_mutation_allowed(automation_control.ACTION_NODE_RESTART, node_service, reason):
+    if not automation_mutation_allowed(
+        actor="watchdog",
+        action=automation_control.ACTION_NODE_RESTART,
+        target=node_service,
+        reason=reason,
+        log=log,
+        incident_source="watchdog",
+    ):
         return False
 
     lock_handle = acquire_lock(blocking=False)
@@ -999,7 +993,14 @@ def run_node_dag_tip_cleanup(node_service: str, reason: str) -> bool:
     if node_service not in NODES:
         log(f"node DAG tip cleanup skipped for unknown node={node_service} reason={reason}")
         return False
-    if not automation_mutation_allowed(automation_control.ACTION_NODE_RESTART, node_service, reason):
+    if not automation_mutation_allowed(
+        actor="watchdog",
+        action=automation_control.ACTION_NODE_RESTART,
+        target=node_service,
+        reason=reason,
+        log=log,
+        incident_source="watchdog",
+    ):
         return False
 
     lock_handle = acquire_lock(blocking=False)
@@ -1061,7 +1062,14 @@ docker start "$node"
 
 
 def run_pool_restart(reason: str) -> bool:
-    if not automation_mutation_allowed(automation_control.ACTION_ASIC_POOL_RESTART, POOL_CONTAINER, reason):
+    if not automation_mutation_allowed(
+        actor="watchdog",
+        action=automation_control.ACTION_ASIC_POOL_RESTART,
+        target=POOL_CONTAINER,
+        reason=reason,
+        log=log,
+        incident_source="watchdog",
+    ):
         return False
     gate = pool_start_gate.pool_start_decision(pool_start_gate.read_latest_status_payload())
     if not gate.allowed:
@@ -1133,7 +1141,14 @@ def run_miner_restarts(targets: list[dict[str, Any]], reason: str) -> dict[str, 
         if open_restart_only
         else automation_control.ACTION_ASIC_MINER_RESTART
     )
-    if not automation_mutation_allowed(mutation_action, target_label, reason):
+    if not automation_mutation_allowed(
+        actor="watchdog",
+        action=mutation_action,
+        target=target_label,
+        reason=reason,
+        log=log,
+        incident_source="watchdog",
+    ):
         return {
             "status": "suppressed",
             "reason": "automation control denied ASIC miner restart",

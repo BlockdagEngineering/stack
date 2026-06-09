@@ -6,7 +6,6 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import re
 import subprocess
 import time
 import urllib.error
@@ -16,6 +15,7 @@ from typing import Any
 
 import automation_control
 from incident_journal import append_incident
+from guard_core import automation_mutation_allowed, should_emit, stable_failure_signature, start_unit
 import pool_start_gate
 from pool_ops import (
     LOG_DIR,
@@ -45,7 +45,6 @@ NODE_LOG_LOOKBACK_SECONDS = int(os.environ.get("BDAG_SENTINEL_NODE_LOG_LOOKBACK_
 NODE_LOG_SCAN_TIMEOUT_SECONDS = float(os.environ.get("BDAG_SENTINEL_NODE_LOG_SCAN_TIMEOUT_SECONDS", "12"))
 ZERO_STATE_ROOT_WARN_COUNT = int(os.environ.get("BDAG_SENTINEL_ZERO_STATE_ROOT_WARN_COUNT", "3"))
 ZERO_STATE_ROOT_CRITICAL_COUNT = int(os.environ.get("BDAG_SENTINEL_ZERO_STATE_ROOT_CRITICAL_COUNT", "20"))
-FAILURE_AGE_RE = re.compile(r"\bfor \d+s\b")
 DESKTOP_NOTIFY_ENABLED = os.environ.get("BDAG_SENTINEL_DESKTOP_NOTIFY", "false").strip().lower() in {
     "1",
     "true",
@@ -115,100 +114,10 @@ def acquire_run_lock() -> Any | None:
     return handle
 
 
-def should_emit(state: dict[str, Any], key: str, signature: str, now: int) -> bool:
-    last_signature = str(state.get(f"{key}_signature") or "")
-    last_epoch = int(state.get(f"{key}_epoch", 0) or 0)
-    if last_signature == signature and now - last_epoch < INCIDENT_COOLDOWN_SECONDS:
-        return False
-    state[f"{key}_signature"] = signature
-    state[f"{key}_epoch"] = now
-    state[f"{key}_at"] = now_iso()
-    return True
-
-
 def automation_action_for_container(service: str, recreate: bool = False) -> str:
     if service == POOL_CONTAINER:
         return automation_control.ACTION_ASIC_POOL_RESTART if recreate else automation_control.ACTION_ASIC_POOL_START
     return automation_control.ACTION_CONTAINER_RECREATE if recreate else automation_control.ACTION_CONTAINER_START
-
-
-def automation_mutation_allowed(
-    action: str,
-    target: str,
-    reason: str,
-    state: dict[str, Any],
-    now: int,
-) -> bool:
-    decision = automation_control.check_mutation_allowed(
-        action,
-        actor="sentinel",
-        target=target,
-        reason=reason,
-    )
-    if decision.allowed:
-        return True
-    message = (
-        f"Stack sentinel suppressed {action} for {target}: "
-        f"{decision.reason}"
-    )
-    if should_emit(state, f"automation_control_{action}_{target}", decision.reason, now):
-        append_incident(
-            "automation_control_suppressed",
-            "critical",
-            "stack-sentinel",
-            message,
-            decision.as_dict(),
-        )
-    log(message)
-    return False
-
-
-def stable_failure_signature(failures: list[Any]) -> str:
-    parts = []
-    for item in failures[:8]:
-        parts.append(FAILURE_AGE_RE.sub("for Ns", str(item)))
-    return " | ".join(parts) or "overall-down"
-
-
-def systemctl_user(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["systemctl", "--user", *args],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-
-
-def unit_active(unit: str) -> bool:
-    result = systemctl_user("is-active", unit)
-    return result.returncode == 0 and result.stdout.strip() == "active"
-
-
-def start_unit(unit: str, state: dict[str, Any], now: int) -> None:
-    if unit_active(unit):
-        return
-    if not automation_mutation_allowed(
-        automation_control.ACTION_SYSTEMD_START,
-        unit,
-        "Stack sentinel user unit start",
-        state,
-        now,
-    ):
-        return
-    result = systemctl_user("start", unit)
-    details = {
-        "unit": unit,
-        "returncode": result.returncode,
-        "stdout": result.stdout.strip(),
-        "stderr": result.stderr.strip(),
-    }
-    event_type = "sentinel_started_unit" if result.returncode == 0 else "sentinel_unit_start_failed"
-    severity = "warning" if result.returncode == 0 else "critical"
-    message = f"Stack sentinel {'started' if result.returncode == 0 else 'could not start'} {unit}"
-    if should_emit(state, event_type + "_" + unit.replace(".", "_"), str(result.returncode), now):
-        append_incident(event_type, severity, "stack-sentinel", message, details)
-    log(f"{message} rc={result.returncode}")
 
 
 def status_api() -> tuple[dict[str, Any] | None, str]:
@@ -247,7 +156,16 @@ def compose_service_name(name: str) -> str:
 
 def start_container(service: str, reason: str, state: dict[str, Any], now: int) -> bool:
     action = automation_action_for_container(service, recreate=False)
-    if not automation_mutation_allowed(action, service, reason, state, now):
+    if not automation_mutation_allowed(
+        actor="sentinel",
+        action=action,
+        target=service,
+        reason=reason,
+        state=state,
+        now=now,
+        log=log,
+        incident_source="stack-sentinel",
+    ):
         return False
     if pool_start_gate.is_pool_target(service, POOL_CONTAINER):
         decision = pool_start_gate.pool_start_decision(pool_start_gate.read_latest_status_payload())
@@ -294,7 +212,16 @@ def start_container(service: str, reason: str, state: dict[str, Any], now: int) 
 
 def recreate_container(service: str, reason: str, state: dict[str, Any], now: int) -> bool:
     action = automation_action_for_container(service, recreate=True)
-    if not automation_mutation_allowed(action, service, reason, state, now):
+    if not automation_mutation_allowed(
+        actor="sentinel",
+        action=action,
+        target=service,
+        reason=reason,
+        state=state,
+        now=now,
+        log=log,
+        incident_source="stack-sentinel",
+    ):
         return False
     if pool_start_gate.is_pool_target(service, POOL_CONTAINER):
         decision = pool_start_gate.pool_start_decision(pool_start_gate.read_latest_status_payload())
@@ -377,7 +304,7 @@ def inspect_and_repair_containers(status: dict[str, Any] | None, state: dict[str
     if pool_start_blocked and POOL_CONTAINER in actionable_stopped:
         actionable_stopped.remove(POOL_CONTAINER)
         state["pool_start_blocked_reason"] = pool_start_blocked_reason
-        if should_emit(state, "pool_start_blocked", pool_start_blocked_reason, now):
+        if should_emit(state, "pool_start_blocked", pool_start_blocked_reason, now, INCIDENT_COOLDOWN_SECONDS):
             append_incident(
                 "sentinel_pool_start_blocked",
                 "warning",
@@ -389,7 +316,7 @@ def inspect_and_repair_containers(status: dict[str, Any] | None, state: dict[str
     else:
         state.pop("pool_start_blocked_reason", None)
     state["actionable_stopped_containers"] = actionable_stopped
-    if stopped and should_emit(state, "stopped_containers", ",".join(stopped), now):
+    if stopped and should_emit(state, "stopped_containers", ",".join(stopped), now, INCIDENT_COOLDOWN_SECONDS):
         append_incident(
             "sentinel_stopped_containers",
             "critical",
@@ -421,7 +348,7 @@ def inspect_and_repair_containers(status: dict[str, Any] | None, state: dict[str
     connected = int(miner_health.get("connected_count") or 0)
     if connected > 0 and isinstance(last_share_age, int) and last_share_age > SHARE_STALE_SECONDS:
         signature = f"{connected}:{last_share_age // 60}"
-        if should_emit(state, "share_stale", signature, now):
+        if should_emit(state, "share_stale", signature, now, INCIDENT_COOLDOWN_SECONDS):
             append_incident(
                 "sentinel_share_stale",
                 "critical",
@@ -447,7 +374,7 @@ def check_node_log_red_flags(state: dict[str, Any], now: int) -> None:
             stdout_text = timeout_text(exc.stdout)
             stderr_text = timeout_text(exc.stderr)
             signature = f"{node}:{NODE_LOG_LOOKBACK_SECONDS}:{NODE_LOG_SCAN_TIMEOUT_SECONDS}"
-            if should_emit(state, f"node_log_scan_timeout_{node}", signature, now):
+            if should_emit(state, f"node_log_scan_timeout_{node}", signature, now, INCIDENT_COOLDOWN_SECONDS):
                 message = (
                     f"{node} docker log scan timed out after {NODE_LOG_SCAN_TIMEOUT_SECONDS:.1f}s "
                     f"over a {NODE_LOG_LOOKBACK_SECONDS}s lookback"
@@ -475,7 +402,7 @@ def check_node_log_red_flags(state: dict[str, Any], now: int) -> None:
         # The count changes minute to minute during a reorg storm; rate-limit by node
         # and severity so the incident log stays useful instead of becoming the fault.
         signature = f"{node}:{severity}"
-        if should_emit(state, f"zero_state_root_{node}", signature, now):
+        if should_emit(state, f"zero_state_root_{node}", signature, now, INCIDENT_COOLDOWN_SECONDS):
             message = f"{node} logged {zero_state_count} zero-state-root warning(s) in the last {NODE_LOG_LOOKBACK_SECONDS}s"
             details = {
                 "node": node,
@@ -501,12 +428,18 @@ def main() -> int:
 
     try:
         for unit in [*USER_SERVICES, *USER_TIMERS]:
-            start_unit(unit, state, now)
+            start_unit(unit, state, now, log=log, incident_source="stack-sentinel", cooldown_seconds=INCIDENT_COOLDOWN_SECONDS)
 
         status, error = status_api()
         state["dashboard_status_ok"] = status is not None
         state["dashboard_status_error"] = error
-        if status is None and should_emit(state, "dashboard_status_unavailable", error or "unknown", now):
+        if status is None and should_emit(
+            state,
+            "dashboard_status_unavailable",
+            error or "unknown",
+            now,
+            INCIDENT_COOLDOWN_SECONDS,
+        ):
             append_incident(
                 "sentinel_dashboard_status_unavailable",
                 "critical",
@@ -520,7 +453,7 @@ def main() -> int:
             failures = status.get("failures") if isinstance(status.get("failures"), list) else []
             if overall == "down":
                 signature = stable_failure_signature(failures)
-                if should_emit(state, "dashboard_overall_down", signature, now):
+                if should_emit(state, "dashboard_overall_down", signature, now, INCIDENT_COOLDOWN_SECONDS):
                     append_incident(
                         "sentinel_dashboard_overall_down",
                         "critical",

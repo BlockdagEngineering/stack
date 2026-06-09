@@ -161,7 +161,7 @@ class StackNamingCoherenceTests(unittest.TestCase):
         installer = read("ops/install-dashboard.sh")
 
         for unit in (root_dashboard, root_watchdog, root_sampler, user_dashboard, user_watchdog, user_sampler):
-            self.assertIn("BDAG_NODE_SERVICE=node", unit)
+            self.assertRegex(unit, r"BDAG_NODE_SERVICES?=node")
             self.assertIn("BDAG_STACK_SERVICES=postgres,node,pool", unit)
             self.assertIn("BDAG_POOL_CONTAINER=pool", unit)
             self.assertIn("BDAG_POOL_DB_CONTAINER=postgres", unit)
@@ -174,19 +174,19 @@ class StackNamingCoherenceTests(unittest.TestCase):
 
         for unit in (user_dashboard, user_watchdog):
             self.assertIn("bdag-status-sampler.service", unit)
-            self.assertIn("EnvironmentFile=-/home/jeremy/blockdag-mining-pool/stack/ops/runtime/ops.env", unit)
+            self.assertIn("ops/runtime/ops.env", unit)
         self.assertIn("BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS=120", user_sampler)
         self.assertIn("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=120", user_sampler)
         self.assertIn("bdag-boot-repair.service", user_codex_handoff)
         self.assertIn("bdag-dashboard.service", user_codex_handoff)
         self.assertIn("codex_boot_handoff.py --repair", user_codex_handoff)
         self.assertIn("SuccessExitStatus=2", user_codex_handoff)
-        self.assertIn("EnvironmentFile=-/home/jeremy/blockdag-mining-pool/stack/ops/runtime/ops.env", user_codex_handoff)
+        self.assertIn("ops/runtime/ops.env", user_codex_handoff)
         self.assertIn("graphical-session.target", user_codex_auto_resume)
         self.assertNotIn("bdag-codex-boot-handoff.service", user_codex_auto_resume)
         self.assertIn("codex_auto_resume.py", user_codex_auto_resume)
         self.assertIn("WantedBy=graphical-session.target", user_codex_auto_resume)
-        self.assertIn("EnvironmentFile=-/home/jeremy/blockdag-mining-pool/stack/ops/runtime/ops.env", user_codex_auto_resume)
+        self.assertIn("ops/runtime/ops.env", user_codex_auto_resume)
         self.assertIn('loginctl enable-linger "$(id -un)"', installer)
         self.assertIn(
             '"bdag-status-sampler.service,bdag-watchdog.service,bdag-p2p-guard.service"',

@@ -258,7 +258,7 @@ enrichment calls so Linux AMD64, Linux ARM64/Pi5, macOS Docker Desktop, and
 Windows Docker Desktop behave consistently once Docker and Python are present.
 
 When operating from source, keep surfaces explicit: the Go dashboard is exposed
-on host port `8080`; the collector API is bound to localhost on host port
+on host port `8080`; the status API is bound to localhost on host port
 `9280` and must be configured with the real container names and Docker access
 for the stack being watched.
 

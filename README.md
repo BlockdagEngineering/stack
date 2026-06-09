@@ -1,6 +1,6 @@
 # pool-stack-docker-stack
 
-This stack can be run in any environment where docker is installed. It includes an upgradable BDAG node, a mining pool with its database, a read-only collector API, and the Go dashboard UI.
+This stack can be run in any environment where docker is installed. It includes an upgradable BDAG node, a mining pool with its database, a read-only status API, and the Go dashboard UI.
 
 
 | Service | Image / build | Purpose |
@@ -8,8 +8,8 @@ This stack can be run in any environment where docker is installed. It includes 
 | `node` | BlockDAG node, supervised by nodeworker | Consensus, P2P, and RPC |
 | `pool` | Mining pool (Stratum :3334) | ASIC Stratum and block submission |
 | `pool-db` | Postgres | Pool persistence, schema auto-loaded |
-| `collector` | Python collector | Read-only JSON API and normalized logs |
-| `dashboard` | Go dashboard | Browser UI over the collector API |
+| `collector` | Python collector | Read-only status API and normalized logs |
+| `dashboard` | Go dashboard | Browser UI over the status API |
 
 
 ## Release package
@@ -280,14 +280,14 @@ checker reads ELF/Mach-O/PE headers directly so it can be used from Linux,
 macOS, and Windows build hosts.
 
 The dashboard UI is normally exposed on host port `8080`. It talks to the
-collector API, which is bound to localhost on host port `9280` by default. Global
+status API, which is bound to localhost on host port `9280` by default. Global
 production data must be sourced from native BlockDAG chain RPC
 `getBlockCount`/ordered block/coinbase calls. EVM RPC belongs to wallet balance
 views only. The packaged web dashboard on `DASHBOARD_HOST_PORT`/`9280` is a
 diagnostic chart view and must not be treated as the authoritative mining
 dashboard.
 
-When testing directly from a source checkout, start the collector with
+When testing directly from a source checkout, start the status API with
 environment that matches the actual container names for the stack it is
 watching. On Linux, that process needs Docker API access for container status
 and logs; use a system service account with Docker socket access or an explicit

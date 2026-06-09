@@ -200,7 +200,7 @@ EXPOSE 9280
 ENTRYPOINT ["/usr/local/bin/entrypoint-collector.sh"]
 
 # ----------------------------------------------------------------------------
-# Dashboard Runtime Stage (Go UI over collector API)
+# Dashboard Runtime Stage (Go UI over status API)
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS dashboard
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
