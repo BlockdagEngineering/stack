@@ -296,6 +296,7 @@ Installed unit files:
 
 ```text
 ~/.config/systemd/user/bdag-boot-repair.service
+~/.config/systemd/user/bdag-status-sampler.service
 ~/.config/systemd/user/bdag-dashboard.service
 ~/.config/systemd/user/bdag-stack-sentinel.service
 ~/.config/systemd/user/bdag-stack-sentinel.timer
@@ -312,6 +313,7 @@ Service templates are in:
 
 ```text
 ops/systemd/user-bdag-boot-repair.service
+ops/systemd/user-bdag-status-sampler.service
 ops/systemd/user-bdag-dashboard.service
 ops/systemd/user-bdag-watchdog.service
 ```
@@ -328,16 +330,22 @@ Enable lingering so user services can start at boot without an active login:
 loginctl enable-linger jeremy
 ```
 
+`ops/install-dashboard.sh` attempts to enable linger for the installing user,
+then enables `bdag-boot-repair.service`, `bdag-status-sampler.service`,
+`bdag-watchdog.service`, and `bdag-stack-sentinel.timer` when service startup is
+requested. The pool container may intentionally remain stopped after boot while
+the node is catching up or canonical mining-safety checks are not yet fresh.
+
 Check status:
 
 ```bash
-systemctl --user status bdag-boot-repair.service bdag-dashboard.service bdag-watchdog.service bdag-stack-sentinel.timer
+systemctl --user status bdag-boot-repair.service bdag-status-sampler.service bdag-watchdog.service bdag-stack-sentinel.timer
 ```
 
 View logs:
 
 ```bash
-journalctl --user -u bdag-boot-repair.service -u bdag-dashboard.service -u bdag-watchdog.service -u bdag-stack-sentinel.service -f
+journalctl --user -u bdag-boot-repair.service -u bdag-status-sampler.service -u bdag-watchdog.service -u bdag-stack-sentinel.service -f
 ```
 
 The watchdog writes `ops/runtime/dirty-shutdown.marker` while it is running and clears it on a clean stop. If the host loses power, the marker remains; the boot-repair unit preserves current node data and starts the stack. Do not enable automatic clean restore unless the current snapshots are known safe and replacing live chain data is explicitly intended.

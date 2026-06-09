@@ -24,12 +24,14 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("BDAG_START_SERVICES: postgres,node,pool", compose)
         self.assertIn("POOL_ASIC_MAC_OVERRIDES: ${POOL_ASIC_MAC_OVERRIDES:-}", compose)
         self.assertIn("BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-}", compose)
+        self.assertIn("BDAG_DOCKER_BRIDGE_CIDRS: ${BDAG_DOCKER_BRIDGE_CIDRS:-172.16.0.0/12}", compose)
+        self.assertIn("BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS: ${BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS:-0}", compose)
         self.assertIn("BDAG_POOL_CONTAINER: pool", compose)
         self.assertIn("BDAG_POOL_DB_CONTAINER: postgres", compose)
         self.assertIn("BDAG_NODE_RPC_URL: http://node:38131", compose)
-        self.assertIn("BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK: ${BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK:-0}", compose)
-        self.assertIn("BDAG_DASHBOARD_STATUS_CACHE_SECONDS: ${BDAG_DASHBOARD_STATUS_CACHE_SECONDS:-120}", compose)
-        self.assertIn("BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS: ${BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS:-120}", compose)
+        self.assertIn("BDAG_COLLECTOR_DIRECT_STATUS_FALLBACK: ${BDAG_COLLECTOR_DIRECT_STATUS_FALLBACK:-0}", compose)
+        self.assertIn("BDAG_COLLECTOR_STATUS_CACHE_SECONDS: ${BDAG_COLLECTOR_STATUS_CACHE_SECONDS:-120}", compose)
+        self.assertIn("BDAG_COLLECTOR_SAMPLER_CACHE_SECONDS: ${BDAG_COLLECTOR_SAMPLER_CACHE_SECONDS:-120}", compose)
         self.assertIn("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS: ${BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS:-120}", compose)
 
     def test_env_examples_and_installer_use_current_names(self) -> None:
@@ -155,6 +157,8 @@ class StackNamingCoherenceTests(unittest.TestCase):
         user_sampler = read("ops/systemd/user-bdag-status-sampler.service")
         user_codex_handoff = read("ops/systemd/user-bdag-codex-boot-handoff.service")
         user_codex_auto_resume = read("ops/systemd/user-bdag-codex-auto-resume.service")
+        sentinel = read("ops/stack_sentinel.py")
+        installer = read("ops/install-dashboard.sh")
 
         for unit in (root_dashboard, root_watchdog, root_sampler, user_dashboard, user_watchdog, user_sampler):
             self.assertIn("BDAG_NODE_SERVICE=node", unit)
@@ -183,6 +187,21 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("codex_auto_resume.py", user_codex_auto_resume)
         self.assertIn("WantedBy=graphical-session.target", user_codex_auto_resume)
         self.assertIn("EnvironmentFile=-/home/jeremy/blockdag-mining-pool/stack/ops/runtime/ops.env", user_codex_auto_resume)
+        self.assertIn('loginctl enable-linger "$(id -un)"', installer)
+        self.assertIn(
+            '"bdag-status-sampler.service,bdag-watchdog.service,bdag-p2p-guard.service"',
+            sentinel,
+        )
+        self.assertIn(
+            '"bdag-stack-sentinel.timer,bdag-sync-coordinator.timer,bdag-chain-restore-guard.timer,"',
+            sentinel,
+        )
+        self.assertIn('"bdag-local-peers.timer,bdag-mining-30min-guard.timer"', sentinel)
+        self.assertNotIn(
+            '"bdag-dashboard.service,bdag-watchdog.service,bdag-p2p-guard.service"',
+            sentinel,
+        )
+        self.assertNotIn("bdag-chain-presync.timer,bdag-hourly-snapshot.timer", sentinel)
 
     def test_validator_locks_current_topology_into_build_checks(self) -> None:
         validator = read("scripts/validate-pi5-restart-hardening.sh")

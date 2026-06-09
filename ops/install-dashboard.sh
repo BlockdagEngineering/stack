@@ -1036,6 +1036,10 @@ ensure_automation_control_file() {
 
 ensure_automation_control_file
 
+if command -v loginctl >/dev/null 2>&1; then
+  loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || true
+fi
+
 systemctl --user daemon-reload
 if [[ "$START_SERVICES" -eq 1 ]]; then
   if [[ "$INSTALL_WATCHDOG" -eq 1 ]]; then

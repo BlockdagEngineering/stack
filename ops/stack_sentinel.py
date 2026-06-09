@@ -67,12 +67,12 @@ def unique_names(names: list[str]) -> list[str]:
 
 USER_SERVICES = split_csv_env(
     "BDAG_SENTINEL_USER_SERVICES",
-    "bdag-dashboard.service,bdag-watchdog.service,bdag-p2p-guard.service",
+    "bdag-status-sampler.service,bdag-watchdog.service,bdag-p2p-guard.service",
 )
 USER_TIMERS = split_csv_env(
     "BDAG_SENTINEL_USER_TIMERS",
     "bdag-stack-sentinel.timer,bdag-sync-coordinator.timer,bdag-chain-restore-guard.timer,"
-    "bdag-chain-presync.timer,bdag-hourly-snapshot.timer,bdag-local-peers.timer",
+    "bdag-local-peers.timer,bdag-mining-30min-guard.timer",
 )
 
 
