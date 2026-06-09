@@ -96,6 +96,8 @@ class DashboardGlobalRenderingTests(unittest.TestCase):
         self.assertIn("the pool is not mining", html)
         self.assertIn("Stopped: node chain state is stuck on irreparable sync block", html)
         self.assertIn("Restore or resync node data before mining", html)
+        self.assertIn("Synced node, but waiting for backend template checks to become healthy.", html)
+        self.assertIn("wait for backend template checks to become healthy before mining jobs are sent", html)
         self.assertLess(
             section.index('id="syncHeight"'),
             section.index('id="syncMiningState"'),

@@ -55,6 +55,7 @@ HARD_LOG_PATTERNS = (
     re.compile(r"Head state missing,\s*repairing", re.IGNORECASE),
     re.compile(r"Block state missing", re.IGNORECASE),
     re.compile(r"Genesis block reached", re.IGNORECASE),
+    re.compile(r"node busy syncing", re.IGNORECASE),
     re.compile(r"bdag pool syncing", re.IGNORECASE),
     re.compile(r"missing (trie|state|state-root|state root)", re.IGNORECASE),
     re.compile(r"stale parent", re.IGNORECASE),

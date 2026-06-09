@@ -3210,6 +3210,11 @@ def parse_node_log(log: str) -> dict[str, Any]:
         or "Can't find tip:" in line
         or "Tip is missing block data" in line
     ]
+    busy_syncing_lines = [
+        line
+        for line in recent
+        if "node busy syncing" in line.lower()
+    ]
     not_dag_block_lines = [line for line in recent if NODE_NOT_DAG_BLOCK_RE.search(line)]
     irreparable_sync_lines = [line for line in recent if NODE_IRREPARABLE_SYNC_RE.search(line)]
     missing_trie_lines = [line for line in recent if NODE_MISSING_TRIE_RE.search(line)]
@@ -3278,6 +3283,8 @@ def parse_node_log(log: str) -> dict[str, Any]:
         "mining_template_error_lines": template_error_lines[-5:],
         "mining_template_hard_error_lines": template_hard_error_lines[-5:],
         "mining_template_failing": len(template_hard_error_lines) >= 3,
+        "node_busy_syncing": bool(busy_syncing_lines),
+        "node_busy_syncing_lines": busy_syncing_lines[-5:],
         "critical": bool(critical_lines),
         "critical_lines": critical_lines[-5:],
         "tail": recent[-24:],
@@ -5783,6 +5790,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
                 f"{node} cannot create fresh mining templates "
                 f"({parsed['mining_template_error_count']} recent errors)"
             )
+        if managed_node and parsed["node_busy_syncing"]:
+            add_sync_warning(f"{node} reports node busy syncing; mining template updates are blocked")
 
         node_details[node] = {
             "role": node_role(node),
@@ -5816,6 +5825,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "mining_template_error_lines": parsed["mining_template_error_lines"],
             "mining_template_hard_error_lines": parsed["mining_template_hard_error_lines"],
             "mining_template_failing": parsed["mining_template_failing"],
+            "node_busy_syncing": parsed["node_busy_syncing"],
+            "node_busy_syncing_lines": parsed["node_busy_syncing_lines"],
             "critical": parsed["critical"],
             "critical_lines": parsed["critical_lines"],
             "tail": parsed["tail"],
@@ -6328,6 +6339,27 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         node_details[node]["chain_rpc_timeout_seconds"] = progress.get("chain_rpc_timeout_seconds")
         node_details[node]["chain_rpc_retry_limit"] = progress.get("chain_rpc_retry_limit")
         node_details[node]["chain_rpc_error"] = progress.get("chain_rpc_error") or progress.get("error") or ""
+    busy_syncing_nodes = [
+        node
+        for node in managed_node_details
+        if bool(node_details.get(node, {}).get("node_busy_syncing"))
+    ]
+    if busy_syncing_nodes and sync_progress.get("status") == "synced" and not pool_has_recent_paid_work:
+        sync_progress = dict(sync_progress)
+        sync_progress["status"] = "syncing"
+        sync_progress["error"] = "node busy syncing"
+        sync_progress["source"] = "nodes:busy-syncing"
+        nodes_progress = dict(sync_progress.get("nodes") or {})
+        for node in busy_syncing_nodes:
+            node_progress = nodes_progress.get(node)
+            if isinstance(node_progress, dict):
+                updated_node_progress = dict(node_progress)
+                updated_node_progress["status"] = "syncing"
+                updated_node_progress["error"] = "node busy syncing"
+                nodes_progress[node] = updated_node_progress
+        sync_progress["nodes"] = nodes_progress
+        sync_health["node_busy_syncing"] = True
+        sync_health["node_busy_syncing_nodes"] = busy_syncing_nodes
     catchup_mining_ready = bool(
         sync_progress.get("status") == "synced"
         and not selected_source_unready_reasons
