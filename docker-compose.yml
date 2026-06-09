@@ -12,6 +12,10 @@ x-dashboard-build-args: &dashboard-build-args
   DASHBOARD_REPO: ${DASHBOARD_REPO:-https://github.com/BlockdagEngineering/dashboard.git}
   DASHBOARD_REF: ${DASHBOARD_REF:-develop}
 
+x-collector-build-args: &collector-build-args
+  COLLECTOR_REPO: ${COLLECTOR_REPO:-https://github.com/BlockdagEngineering/collector.git}
+  COLLECTOR_REF: ${COLLECTOR_REF:-develop}
+
 x-dev-source-contexts: &dev-source-contexts
   stack_src: ${STACK_SRC_CONTEXT:-.}
   blockdag_corechain: ${BLOCKDAG_CORECHAIN_CONTEXT:-.}
@@ -317,7 +321,6 @@ services:
       BDAG_GLOBAL_CACHE_TTL_SECONDS: ${BDAG_GLOBAL_CACHE_TTL_SECONDS:-60}
       BDAG_GLOBAL_RPC_WORKERS: ${BDAG_GLOBAL_RPC_WORKERS:-24}
       BDAG_GLOBAL_BLOCK_WINDOW: ${BDAG_GLOBAL_BLOCK_WINDOW:-128}
-      BDAG_GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS: ${BDAG_GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS:-30}
       MINING_POOL_ADDRESS: ${MINING_POOL_ADDRESS:?set MINING_POOL_ADDRESS to a non-zero payout address}
     ports:
       - "127.0.0.1:${COLLECTOR_HOST_PORT:-9280}:9280"

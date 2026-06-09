@@ -72,6 +72,20 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertTrue(parsed["critical"])
         self.assertEqual(parsed["missing_trie_node_warnings"], 1)
 
+    def test_node_log_marks_busy_syncing_template_block(self) -> None:
+        parsed = pool_ops.parse_node_log(
+            "\n".join(
+                [
+                    "2026-06-09|19:45:59.592 [WARN ] BdagPool template update failed after chain head module=BDAG err=\"node busy syncing\"",
+                    "2026-06-09|19:45:59.602 [WARN ] BdagPool template update failed after chain head module=BDAG err=\"node busy syncing\"",
+                ]
+            )
+        )
+
+        self.assertTrue(parsed["node_busy_syncing"])
+        self.assertEqual(2, len(parsed["node_busy_syncing_lines"]))
+        self.assertIn("node busy syncing", parsed["node_busy_syncing_lines"][0].lower())
+
     def test_no_miner_status_suppresses_template_and_rpc_noise(self) -> None:
         now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()
         pool_ops.time.time = lambda: now
@@ -194,6 +208,129 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         joined_warnings = "\n".join(status["warnings"])
         self.assertNotIn("live mining template probes", joined_warnings)
         self.assertNotIn("pool recently saw RPC connection refused", joined_warnings)
+
+    def test_no_miner_status_promotes_busy_syncing_to_syncing(self) -> None:
+        now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+        pool_ops.time.time = lambda: now
+        pool_ops.NODES = ["node"]
+        pool_ops.OBSERVER_NODES = []
+        pool_ops.STACK_SERVICES = ["postgres", "node", "asic-pool", "asic-pool"]
+        pool_ops.SERVICES = list(pool_ops.STACK_SERVICES)
+        pool_ops.POOL_CONTAINER = "asic-pool"
+        pool_ops.POOL_CONTAINERS = ["asic-pool"]
+        pool_ops.ensure_runtime = lambda: None
+        pool_ops.docker_access_error = lambda: None
+        pool_ops.local_ipv4_addresses = lambda: ["192.168.68.55"]
+        pool_ops.default_miner_pool_settings = lambda: {
+            "pool_url": "stratum+tcp://192.168.68.55:3334",
+            "worker_user": "0x0000000000000000000000000000000000000000",
+            "pool_password": "1234",
+        }
+        pool_ops.run = lambda command, timeout=20: pool_ops.CommandResult(command, 0, "", "", 0.0)
+        pool_ops.read_latest_action = lambda: None
+        pool_ops.discover_observer_node_services = lambda: []
+        pool_ops.docker_top = lambda _name: (
+            "UID PID PPID C STIME TTY TIME CMD\n"
+            "root 1 0 0 12:00 ? 00:00:01 /usr/local/bin/bdag\n"
+        )
+        pool_ops.docker_logs = lambda _name, lines=160: (
+            "2026-06-09|19:45:59.592 [WARN ] BdagPool template update failed after chain head module=BDAG err=\"node busy syncing\"\n"
+        )
+        pool_ops.docker_logs_many = lambda _names, lines=160: (
+            "2026/05/25 11:59:30 GBT ERROR: connect: connection refused\n"
+        )
+        pool_ops.collect_host_pressure = lambda: {
+            "iowait_percent": 10.0,
+            "iowait_warning_active": False,
+            "samples": [],
+        }
+
+        def fake_inspect(names):
+            return {
+                name: {
+                    "name": name,
+                    "image": "test",
+                    "running": True,
+                    "status": "running",
+                    "restart_count": 0,
+                    "exit_code": 0,
+                    "error": "",
+                    "ports": {},
+                }
+                for name in names
+            }
+
+        pool_ops.docker_inspect = fake_inspect
+        pool_ops.collect_template_probe_health = lambda: {
+            "generated_at": "2026-05-25T12:00:00+0000",
+            "cached": False,
+            "suppressed_for_no_miners": True,
+            "suppressed_reason": "no managed or connected miners",
+            "nodes": {},
+            "failing_nodes": [],
+            "all_nodes_failing": False,
+        }
+        pool_ops.collect_pool_prometheus_metrics = lambda _containers: {
+            "generated_at": "2026-05-25T12:00:00+0000",
+            "status": "ok",
+            "active_connections": 0,
+            "selected_backend": "node",
+            "source_job_health": {"ok": True},
+            "source_backend_health": {},
+            "selected_backend_source_health": {},
+            "template_conversion_stall": {},
+            "loss_ledger": {},
+        }
+        pool_ops.collect_miner_health = lambda: {
+            "managed_count": 0,
+            "connected_count": 0,
+            "failures": [],
+            "warnings": [],
+            "miners": [],
+        }
+        pool_ops.collect_sync_progress = lambda: {
+            "status": "synced",
+            "percent": 100.0,
+            "current_block": 8_658_598,
+            "highest_block": 8_658_598,
+            "remaining_blocks": 0,
+            "source": "nodes",
+            "error": "",
+            "nodes": {
+                "node": {
+                    "status": "synced",
+                    "percent": 100.0,
+                    "current_block": 8_658_598,
+                    "highest_block": 8_658_598,
+                    "remaining_blocks": 0,
+                    "source": "node",
+                    "error": "",
+                    "chain_block_count": 8_658_598,
+                    "chain_main_height": 7_001_831,
+                    "chain_rpc_source": "getBlockCount",
+                    "chain_rpc_latency_ms": 3.3,
+                    "chain_rpc_attempts": 1,
+                    "chain_rpc_retry_limit": 2,
+                    "chain_rpc_error": "",
+                }
+            },
+        }
+        pool_ops.observe_sync_progress_health = lambda _sync_progress: {
+            "active_nodes": [],
+            "active_node_count": 0,
+            "node_rates_blocks_per_second": {},
+            "lookback_seconds": 2700,
+        }
+        pool_ops.read_sync_coordinator_state = lambda: {}
+
+        status = pool_ops.collect_status(include_logs=True)
+
+        self.assertEqual(status["overall"], "syncing")
+        self.assertEqual(status["sync_progress"]["status"], "syncing")
+        self.assertEqual(status["sync_progress"]["error"], "node busy syncing")
+        self.assertTrue(status["sync_warnings"])
+        self.assertIn("node busy syncing", "\n".join(status["sync_warnings"]).lower())
+        self.assertTrue(status["nodes"]["node"]["node_busy_syncing"])
 
     def test_pool_log_detects_failed_expired_job_reconnect(self) -> None:
         log = "\n".join(
