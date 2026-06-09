@@ -2033,6 +2033,18 @@ HTML = r"""<!doctype html>
       }
       return parts.join(" ");
     }
+    function selectedBackendSourceHealth(data) {
+      const poolHealth = data.pool_health || {};
+      const metrics = data.pool_metrics || {};
+      return poolHealth.selected_backend_source_health || metrics.selected_backend_source_health || {};
+    }
+    function selectedBackendTemplateReady(data) {
+      const selected = selectedBackendSourceHealth(data);
+      const readinessKeys = ["healthy", "node_mineable", "node_submit_ready", "node_p2p_mining_fresh"];
+      const hasReadinessSignal = readinessKeys.some((key) => hasValue(selected[key]));
+      if (!hasReadinessSignal) return true;
+      return readinessKeys.every((key) => !hasValue(selected[key]) || metricEnabled(selected[key]));
+    }
     function sourceHealthStatusText(data) {
       const poolHealth = data.pool_health || {};
       const metrics = data.pool_metrics || {};
@@ -2170,11 +2182,19 @@ HTML = r"""<!doctype html>
       text("meta", data.generated_at + " | " + data.project_root + " | dashboard " + (data.dashboard_url || "unknown"));
       text("overall", data.overall);
       const catchupPolicy = data.catchup_policy || {};
+      const syncProgress = data.sync_progress || {};
+      const templateReady = selectedBackendTemplateReady(data);
       text(
         "statusReason",
         catchupPolicy.active
           ? (catchupPolicy.summary || catchupPolicy.user_message || "Catch-up pause active.")
-          : (data.overall === "ok" ? "" : (data.status_reason || "Reason unavailable."))
+          : (data.overall === "ok"
+            ? (syncProgress.status === "synced"
+              ? (templateReady
+                ? ""
+                : "Node sync is complete, but the selected backend's template checks are not yet healthy.")
+              : `Node is ${syncProgress.status || "syncing"}; the pool is not mining until sync completes.`)
+            : (data.status_reason || "Reason unavailable."))
       );
       document.getElementById("overall").className = "kpi-value " + statusClass(data.overall);
       const nodeNames = data.node_services || Object.keys(data.nodes || {});
@@ -2290,6 +2310,7 @@ HTML = r"""<!doctype html>
     }
     function renderSyncEstimate(data, progress) {
       const estimate = data.sync_estimate || {};
+      const templateReady = selectedBackendTemplateReady(data);
       if (data.mode === "status_cache_unavailable" || data.collector_budget_exceeded && !(data.sync_progress || {}).status) {
         text("syncNarrative", "Status sampler is unavailable; waiting for a fresh stack sample.");
         text("syncMode", "unknown");
@@ -2363,11 +2384,17 @@ HTML = r"""<!doctype html>
           miningStateBox.classList.add("paused");
           miningStateBox.classList.remove("ready");
         }
-      } else if (progress.status === "synced") {
-        text("syncMiningState", "Ready once backend template checks are healthy.");
+      } else if (progress.status === "synced" && templateReady) {
+        text("syncMiningState", "Ready: node sync and backend template checks are healthy.");
         if (miningStateBox) {
           miningStateBox.classList.add("ready");
           miningStateBox.classList.remove("paused");
+        }
+      } else if (progress.status === "synced") {
+        text("syncMiningState", "Synced node, but waiting for backend template checks to become healthy.");
+        if (miningStateBox) {
+          miningStateBox.classList.add("paused");
+          miningStateBox.classList.remove("ready");
         }
       } else {
         text("syncMiningState", "Waiting for node sync before mining jobs are sent.");
@@ -2377,8 +2404,10 @@ HTML = r"""<!doctype html>
       }
       if (estimate.next_step) {
         text("syncNextStep", estimate.next_step);
-      } else if (progress.status === "synced") {
+      } else if (progress.status === "synced" && templateReady) {
         text("syncNextStep", "pool can mine normally once backend template checks are healthy");
+      } else if (progress.status === "synced") {
+        text("syncNextStep", "wait for backend template checks to become healthy before mining jobs are sent");
       } else {
         text("syncNextStep", "wait for nodes to finish syncing; the pool is holding mining jobs until backend sync is complete");
       }

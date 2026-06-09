@@ -186,6 +186,7 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
         ("public-chain divergence", "public-chain divergence is reported in status"),
         ("catch-up pause active", "chain catch-up pause is reported in status"),
         ("node_syncing", "node template health reports node_syncing"),
+        ("node busy syncing", "node log reports node busy syncing"),
         ("bdag pool syncing", "node log reports bdag pool syncing"),
         ("client in initial download", "node reports initial download"),
     )

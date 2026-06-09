@@ -51,8 +51,8 @@ ARG COLLECTOR_REPO
 ARG COLLECTOR_REF=develop
 RUN apk add --no-cache ca-certificates git
 RUN --mount=type=secret,id=github_token,required=false set -eu; \
-    repo="${DASHBOARD_REPO:-https://github.com/BlockdagEngineering/dashboard.git}"; \
-    ref="${DASHBOARD_REF:-develop}"; \
+    repo="${COLLECTOR_REPO:-https://github.com/BlockdagEngineering/collector.git}"; \
+    ref="${COLLECTOR_REF:-develop}"; \
     token="$(cat /run/secrets/github_token 2>/dev/null || true)"; \
     if [ -n "$token" ]; then \
       auth="$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"; \
