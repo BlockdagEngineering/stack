@@ -93,6 +93,34 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("node: { condition: service_started }", dashboard_block)
         self.assertNotIn("pool: { condition: service_started }", dashboard_block)
 
+    def test_mainnet_is_the_only_deployment_network_name(self) -> None:
+        compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("BDAG_NETWORK: mainnet", compose)
+        self.assertNotRegex(compose, r"BDAG_NETWORK:\s*\$\{")
+
+        deployment_files = [
+            ROOT_DIR / "docker-compose.yml",
+            ROOT_DIR / ".env.example",
+            ROOT_DIR / "ops" / "portable.env.example",
+            ROOT_DIR / "ops" / "maintain-rawdatadir-sidecar.sh",
+            ROOT_DIR / "ops" / "install-p2p-services.sh",
+            ROOT_DIR / "ops" / "verify-rawdatadir-sidecar.py",
+            ROOT_DIR / "ops" / "ipfs_segment_writer.py",
+            ROOT_DIR / "ops" / "seal_rawdatadir_sidecar_content.py",
+            ROOT_DIR / "ops" / "chain-state-self-heal.sh",
+        ]
+        alias_re = re.compile(
+            r"\bBDAG_(?:RAWDATADIR_|CHAIN_STATE_)?NETWORK\b[^\n]*(?:\bmain\b|\bprod(?:uction)?\b)",
+            re.IGNORECASE,
+        )
+        default_re = re.compile(r"\bBDAG_(?:RAWDATADIR_|CHAIN_STATE_)?NETWORK:-([A-Za-z0-9_-]+)")
+        for path in deployment_files:
+            text = path.read_text(encoding="utf-8")
+            for line_no, line in enumerate(text.splitlines(), start=1):
+                self.assertIsNone(alias_re.search(line), f"{path}:{line_no}: {line}")
+                for default in default_re.finditer(line):
+                    self.assertEqual(default.group(1), "mainnet", f"{path}:{line_no}: {line}")
+
     def test_dashboard_image_uses_checked_out_dashboard_context(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfile = (ROOT_DIR / "dockerfile").read_text(encoding="utf-8")
