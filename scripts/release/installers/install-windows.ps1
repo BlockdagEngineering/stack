@@ -62,7 +62,7 @@ $requestedSnapshotDownloader = if ($env:BDAG_SNAPSHOT_DOWNLOADER) { $env:BDAG_SN
 $aria2Connections = if ($env:BDAG_ARIA2_CONNECTIONS) { [int]$env:BDAG_ARIA2_CONNECTIONS } else { 8 }
 $installAria2 = $env:BDAG_INSTALL_ARIA2 -ne '0'
 $installMinFreeBytes = if ($env:BDAG_INSTALL_MIN_FREE_BYTES) { [int64]$env:BDAG_INSTALL_MIN_FREE_BYTES } else { [int64]10737418240 }
-$installCheckPorts = if ($env:BDAG_INSTALL_CHECK_PORTS) { $env:BDAG_INSTALL_CHECK_PORTS -split '[, ]+' } else { @('3334', '9280', '18545', '18546', '38131') }
+$installCheckPorts = if ($env:BDAG_INSTALL_CHECK_PORTS) { $env:BDAG_INSTALL_CHECK_PORTS -split '[, ]+' } else { @('3334', '8080', '9280', '18545', '18546', '38131') }
 $strictPreflight = $env:BDAG_INSTALL_STRICT_PREFLIGHT -eq '1'
 $strictPorts = $env:BDAG_INSTALL_STRICT_PORTS -eq '1'
 $cleanOrphanContainers = $env:BDAG_CLEAN_ORPHAN_CONTAINERS -eq '1'
@@ -483,7 +483,7 @@ if ($externalIp) {
 $nodeText = $nodeText -replace "`r`n", "`n"
 [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'node.conf'), $nodeText, [System.Text.Encoding]::UTF8)
 
-New-Item -ItemType Directory -Force -Path 'dashboard\logs' | Out-Null
+New-Item -ItemType Directory -Force -Path 'collector\logs' | Out-Null
 Clean-BuildContextMetadata
 Ensure-DockerignoreExcludesSnapshots
 Prepare-NodeVolumeForSnapshot
@@ -504,7 +504,8 @@ Write-Host ""
 Write-Host "=================================================" -ForegroundColor Green
 Write-Host "  BlockDAG Pool Stack is running." -ForegroundColor Green
 Write-Host "=================================================" -ForegroundColor Green
-Write-Host "  Dashboard:  http://localhost:9280"
+Write-Host "  Dashboard:  http://localhost:8080"
+Write-Host "  Collector:  http://localhost:9280"
 Write-Host "  Stratum:    stratum+tcp://localhost:3334"
 Write-Host "  EVM RPC:    http://localhost:18545"
 Write-Host ""

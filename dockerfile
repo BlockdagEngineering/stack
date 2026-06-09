@@ -4,7 +4,7 @@
 # Expects unpacked layout:
 #
 #   ./
-#   ├── bin/blockdag-node, bin/nodeworker, bin/mining-pool, bin/dashboard-api
+#   ├── bin/blockdag-node, bin/nodeworker, bin/mining-pool, bin/dashboard-api, bin/dashboard
 #   ├── docker/             (e.g. no-snapshot.marker; see SNAPSHOT_PATH)
 #   ├── .env.example, docker-compose.yml, …
 #
@@ -44,14 +44,14 @@ RUN set -eu; mkdir -p /out; \
     chmod +x /out/mining-pool 
 
 # ----------------------------------------------------------------------------
-# Dashboard Source Stage (canonical dashboard repo)
+# Collector Source Stage
 # ----------------------------------------------------------------------------
-FROM alpine:3.20 AS dashboard-source
-ARG DASHBOARD_REPO
-ARG DASHBOARD_REF=develop
+FROM alpine:3.20 AS collector-source
+ARG COLLECTOR_REPO
+ARG COLLECTOR_REF=develop
 RUN apk add --no-cache ca-certificates git
 RUN --mount=type=secret,id=github_token,required=false set -eu; \
-    repo="${DASHBOARD_REPO:-https://github.com/BlockdagEngineering/dashboard.git}"; \
+    repo="${COLLECTOR_REPO:-https://github.com/BlockdagEngineering/collector.git}"; \
     ref="develop"; \
     token="$(cat /run/secrets/github_token 2>/dev/null || true)"; \
     if [ -n "$token" ]; then \
@@ -60,8 +60,8 @@ RUN --mount=type=secret,id=github_token,required=false set -eu; \
       export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader; \
       export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"; \
     fi; \
-    git clone --depth 1 "$repo" /src/dashboard; \
-    cd /src/dashboard; \
+    git clone --depth 1 "$repo" /src/collector; \
+    cd /src/collector; \
     if git rev-parse --verify "$ref^{commit}" >/dev/null 2>&1; then \
       git checkout --detach "$ref"; \
     else \
@@ -71,7 +71,18 @@ RUN --mount=type=secret,id=github_token,required=false set -eu; \
     rm -rf .git
 
 # ----------------------------------------------------------------------------
-# Node Runtime Stage
+# Dashboard Build Stage
+# ----------------------------------------------------------------------------
+FROM base AS dashboard-build
+WORKDIR /src
+COPY bin ./bin
+RUN set -eu; mkdir -p /out; \
+    test -f ./bin/dashboard || { echo 'ERROR: ./bin/dashboard missing'; exit 1; }; \
+    cp -f ./bin/dashboard /out/dashboard && \
+    chmod +x /out/dashboard
+
+# ----------------------------------------------------------------------------
+# Node Runtime Stage (with optional snapshot import)
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS node
 
@@ -147,9 +158,9 @@ EXPOSE 3334 8080
 ENTRYPOINT ["/usr/local/bin/mining-pool"]
 
 # ----------------------------------------------------------------------------
-# Dashboard Runtime Stage (Python operations dashboard/control plane)
+# Collector Runtime Stage (read-only Python API)
 # ----------------------------------------------------------------------------
-FROM docker:27-cli AS dashboard
+FROM docker:27-cli AS collector
 
 RUN apk add --no-cache \
     bash \
@@ -164,22 +175,38 @@ RUN apk add --no-cache \
     shadow \
     tzdata
 
-COPY --from=dashboard-source /src/dashboard /opt/dashboard
-COPY docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
-RUN chmod +x /usr/local/bin/entrypoint-dashboard.sh \
- && mkdir -p /var/lib/bdag-dashboard/runtime /workspace \
- && if [ -f /opt/dashboard/requirements.txt ]; then \
-      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/dashboard/requirements.txt; \
+COPY --from=collector-source /src/collector /opt/collector
+COPY docker/entrypoint-collector.sh /usr/local/bin/entrypoint-collector.sh
+RUN chmod +x /usr/local/bin/entrypoint-collector.sh \
+ && mkdir -p /var/lib/bdag-collector/runtime /workspace \
+ && if [ -f /opt/collector/requirements.txt ]; then \
+      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/collector/requirements.txt; \
     fi
 
 ENV PYTHONUNBUFFERED=1 \
     BDAG_PROJECT_ROOT=/workspace \
-    BDAG_RUNTIME_DIR=/var/lib/bdag-dashboard/runtime \
+    BDAG_RUNTIME_DIR=/var/lib/bdag-collector/runtime \
     BDAG_POOL_ENV_FILE=/workspace/.env \
-    BDAG_DASHBOARD_BIND=0.0.0.0 \
-    BDAG_DASHBOARD_PORT=9280 \
-    BDAG_DASHBOARD_REQUIRE_TOKEN=auto
+    BDAG_COLLECTOR_BIND=0.0.0.0 \
+    BDAG_COLLECTOR_PORT=9280
 
-WORKDIR /opt/dashboard
+WORKDIR /opt/collector
 EXPOSE 9280
-ENTRYPOINT ["/usr/local/bin/entrypoint-dashboard.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint-collector.sh"]
+
+# ----------------------------------------------------------------------------
+# Dashboard Runtime Stage (Go UI over collector API)
+# ----------------------------------------------------------------------------
+FROM ubuntu:24.04 AS dashboard
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates tzdata \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard
+RUN chmod +x /usr/local/bin/dashboard
+
+ENV ADDR=0.0.0.0:9290 \
+    BDAG_COLLECTOR_API=http://collector:9280
+
+EXPOSE 9290
+ENTRYPOINT ["/usr/local/bin/dashboard"]

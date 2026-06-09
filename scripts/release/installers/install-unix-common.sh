@@ -20,7 +20,7 @@ BDAG_ARIA2_CONNECTIONS="${BDAG_ARIA2_CONNECTIONS:-8}"
 BDAG_INSTALL_ARIA2="${BDAG_INSTALL_ARIA2:-0}"
 BDAG_BROWSER_SNAPSHOT_FALLBACK="${BDAG_BROWSER_SNAPSHOT_FALLBACK:-0}"
 BDAG_INSTALL_MIN_FREE_KB="${BDAG_INSTALL_MIN_FREE_KB:-10485760}"
-BDAG_INSTALL_CHECK_PORTS="${BDAG_INSTALL_CHECK_PORTS:-3334 9280 18545 18546 38131}"
+BDAG_INSTALL_CHECK_PORTS="${BDAG_INSTALL_CHECK_PORTS:-3334 8080 9280 18545 18546 38131}"
 BDAG_INSTALL_STRICT_PORTS="${BDAG_INSTALL_STRICT_PORTS:-0}"
 BDAG_CLEAN_ORPHAN_CONTAINERS="${BDAG_CLEAN_ORPHAN_CONTAINERS:-0}"
 
@@ -566,7 +566,7 @@ else
     echo "  Warning: could not detect external IP. Node will operate outbound-only."
 fi
 
-mkdir -p dashboard/logs
+mkdir -p collector/logs
 
 clean_build_context_metadata
 ensure_dockerignore_excludes_snapshots
@@ -595,7 +595,8 @@ cat <<'EOF'
 =================================================
   BlockDAG Pool Stack is running.
 =================================================
-  Dashboard:  http://localhost:9280
+  Dashboard:  http://localhost:8080
+  Collector:  http://localhost:9280
   Stratum:    stratum+tcp://localhost:3334
   EVM RPC:    http://localhost:18545
 
