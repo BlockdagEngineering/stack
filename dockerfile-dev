@@ -9,7 +9,8 @@
 #   blockdag_corechain -> local clone of blockdag node source
 #   pool_src           -> local clone of mining pool source
 #   cpu_miner_src      -> local clone of cpu miner source
-#   dashboard_src      -> local clone of dashboard/control-plane source
+#   collector_src      -> local clone of collector source
+#   dashboard_src      -> local clone of dashboard UI source
 #
 # Optional snapshot import: SNAPSHOT_PATH copies a .bdsnap from the build context
 # (see compose / Makefile). No URL download. Datadir matches node.conf.
@@ -55,11 +56,19 @@ COPY --from=cpu_miner_src . .
 RUN CGO_ENABLED=1 CGO_CFLAGS='-O2' go build -o /out/scrypt-miner ./cmd/miner
 
 # ----------------------------------------------------------------------------
-# Dashboard Source Stage (canonical dashboard local clone)
+# Collector Source Stage
 # ----------------------------------------------------------------------------
-FROM alpine:3.20 AS dashboard-source
-COPY --from=dashboard_src . /src/dashboard
-RUN rm -rf /src/dashboard/.git
+FROM alpine:3.20 AS collector-source
+COPY --from=collector_src . /src/collector
+RUN rm -rf /src/collector/.git
+
+# ----------------------------------------------------------------------------
+# Dashboard Build Stage
+# ----------------------------------------------------------------------------
+FROM base AS dashboard-build
+WORKDIR /src/dashboard
+COPY --from=dashboard_src . .
+RUN CGO_ENABLED=0 go build -trimpath -o /out/dashboard .
 
 # ----------------------------------------------------------------------------
 # Node Runtime Stage (with optional snapshot import)
@@ -165,9 +174,9 @@ ENV POOL_URL=stratum+tcp://pool:3334 \
 ENTRYPOINT ["/usr/local/bin/cpu-miner"]
 
 # ----------------------------------------------------------------------------
-# Dashboard Runtime Stage (Python operations dashboard/control plane)
+# Collector Runtime Stage (read-only Python API)
 # ----------------------------------------------------------------------------
-FROM docker:27-cli AS dashboard
+FROM docker:27-cli AS collector
 
 RUN apk add --no-cache \
     bash \
@@ -182,22 +191,38 @@ RUN apk add --no-cache \
     shadow \
     tzdata
 
-COPY --from=dashboard-source /src/dashboard /opt/dashboard
-COPY --from=stack_src docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
-RUN chmod +x /usr/local/bin/entrypoint-dashboard.sh \
- && mkdir -p /var/lib/bdag-dashboard/runtime /workspace \
- && if [ -f /opt/dashboard/requirements.txt ]; then \
-      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/dashboard/requirements.txt; \
+COPY --from=collector-source /src/collector /opt/collector
+COPY --from=stack_src docker/entrypoint-collector.sh /usr/local/bin/entrypoint-collector.sh
+RUN chmod +x /usr/local/bin/entrypoint-collector.sh \
+ && mkdir -p /var/lib/bdag-collector/runtime /workspace \
+ && if [ -f /opt/collector/requirements.txt ]; then \
+      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/collector/requirements.txt; \
     fi
 
 ENV PYTHONUNBUFFERED=1 \
     BDAG_PROJECT_ROOT=/workspace \
-    BDAG_RUNTIME_DIR=/var/lib/bdag-dashboard/runtime \
+    BDAG_RUNTIME_DIR=/var/lib/bdag-collector/runtime \
     BDAG_POOL_ENV_FILE=/workspace/.env \
-    BDAG_DASHBOARD_BIND=0.0.0.0 \
-    BDAG_DASHBOARD_PORT=9280 \
-    BDAG_DASHBOARD_REQUIRE_TOKEN=auto
+    BDAG_COLLECTOR_BIND=0.0.0.0 \
+    BDAG_COLLECTOR_PORT=9280
 
-WORKDIR /opt/dashboard
-EXPOSE ${DASHBOARD_HOST_PORT:-9280}
-ENTRYPOINT ["/usr/local/bin/entrypoint-dashboard.sh"]
+WORKDIR /opt/collector
+EXPOSE 9280
+ENTRYPOINT ["/usr/local/bin/entrypoint-collector.sh"]
+
+# ----------------------------------------------------------------------------
+# Dashboard Runtime Stage (Go UI over collector API)
+# ----------------------------------------------------------------------------
+FROM ubuntu:24.04 AS dashboard
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates tzdata \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard
+RUN chmod +x /usr/local/bin/dashboard
+
+ENV ADDR=0.0.0.0:9290 \
+    BDAG_COLLECTOR_API=http://collector:9280
+
+EXPOSE 9290
+ENTRYPOINT ["/usr/local/bin/dashboard"]
