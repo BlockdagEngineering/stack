@@ -228,6 +228,10 @@ through `collect_status_cached()` when it is fresh. The default sampler reuse
 window is bounded at 120 seconds so constrained hosts do not repeatedly probe
 Docker, node RPC, pool metrics, and miner state while the node is catching up.
 Diagnostics can still force a live collection with `max_age_seconds=0`.
+Repair actors should acquire stack status through `ops/stack_status_source.py`.
+That module prefers the collector status API, then falls back to the shared
+status sampler/direct collection path, so watchdogs and sentinels do not each
+recreate their own monitoring fallback order.
 
 If a node stops importing while peers continue advancing, the dashboard must not
 describe the state as ordinary catch-up. Node logs that contain `Irreparable
