@@ -133,21 +133,26 @@ and ready to mine, it starts the pool container without recreating dependencies.
 Set `BDAG_MINING_IMPERATIVE_REPAIR_ENABLED=0` only for an intentional maintenance
 window where mining must remain stopped.
 
-It also owns automatic chain-state self-heal. When status reports
-`needs_chain_data_restore`, `chain_data_restore_required`, an irreparable sync
-block, DAG tip/block damage, or repeated missing-trie state warnings, the sampler
-stops `pool` and starts `bdag-chain-state-self-heal.service`. The repair script
-quarantines damaged chain data, restores from a configured trusted source or
-snapshot, restarts `node` and `dashboard`, and leaves `pool` stopped until normal
-readiness gates make mining safe again. A stateful adjacent detector watches for
-height staying frozen while peer lag grows; after the configured sustained
-threshold it follows the same flow instead of leaving the dashboard stuck in a
-misleading syncing state.
+It can request chain-state self-heal, but destructive restore is disabled by
+default. When status reports `needs_chain_data_restore`,
+`chain_data_restore_required`, an irreparable sync block, DAG tip/block damage,
+or repeated missing-trie state warnings, the sampler starts
+`bdag-chain-state-self-heal.service`; the script exits without mutating data
+unless `BDAG_CHAIN_STATE_SELF_HEAL_ENABLED=1` and a trusted restore source or
+snapshot is explicitly configured. When enabled, the repair script quarantines
+damaged chain data, restores from that configured input, restarts `node` and
+`dashboard`, and leaves `pool` stopped until normal readiness gates make mining
+safe again. A stateful adjacent detector watches for height staying frozen while
+peer lag grows; after the configured sustained threshold it follows the same
+flow instead of leaving the dashboard stuck in a misleading syncing state.
+Sealed rawdatadir/IPFS artifact folders are verifier inputs, not raw node
+datadirs, and the self-heal script rejects them before any destructive action.
 
 Run the chain-state self-heal manually only for an approved data repair:
 
 ```bash
 BDAG_CHAIN_STATE_RESTORE_SOURCE=/path/to/known-good/mainnet \
+BDAG_CHAIN_STATE_SELF_HEAL_ENABLED=1 \
   ops/chain-state-self-heal.sh --force
 ```
 

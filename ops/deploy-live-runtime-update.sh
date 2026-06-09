@@ -40,6 +40,7 @@ FILES=(
   "ops/rawdatadir_sidecar_safety.py"
   "ops/maintain-rawdatadir-sidecar.sh"
   "ops/ipfs_content_sidecar.py"
+  "ops/ipfs_restore_drill.py"
   "ops/ipfs_segment_writer.py"
   "ops/usb-sidecar-restore-from-drive.sh"
   "ops/usb-sidecar-sync-to-drive.sh"

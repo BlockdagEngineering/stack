@@ -21,11 +21,13 @@ for arg in "$@"; do
       cat <<'USAGE'
 Usage: ops/chain-state-self-heal.sh [--force] [--from-systemd]
 
-Fail-closed repair for BlockDAG node chain-state corruption. The script checks
-dashboard status for needs_chain_data_restore / chain_state_blocker, stops the
-pool, stops the node, quarantines the damaged node datadir, restores from a
-configured trusted source or local snapshot, restarts node/dashboard, and leaves
-the pool stopped until normal readiness gates pass.
+Fail-closed repair for BlockDAG node chain-state corruption. This destructive
+restore path is disabled by default and requires an explicitly configured
+trusted source or snapshot. When enabled, the script checks dashboard status for
+needs_chain_data_restore / chain_state_blocker, stops the pool, stops the node,
+quarantines the damaged node datadir, restores from the configured restore
+input, restarts node/dashboard, and leaves the pool stopped until normal
+readiness gates pass.
 
 Configure trusted restore input with one of:
   BDAG_CHAIN_STATE_RESTORE_SOURCE=/local/path/or/user@host:/path/to/mainnet
@@ -108,7 +110,7 @@ load_env_file() {
 load_env_file "$ENV_FILE"
 load_env_file "${BDAG_RUNTIME_ENV_FILE:-$RUNTIME_DIR/ops.env}"
 
-enabled="${BDAG_CHAIN_STATE_SELF_HEAL_ENABLED:-1}"
+enabled="${BDAG_CHAIN_STATE_SELF_HEAL_ENABLED:-0}"
 if [[ "$enabled" != "1" && "$FORCE" != "1" ]]; then
   log "self-heal disabled by BDAG_CHAIN_STATE_SELF_HEAL_ENABLED=$enabled"
   json_state "disabled" "BDAG_CHAIN_STATE_SELF_HEAL_ENABLED is not 1"
@@ -265,7 +267,7 @@ stop_service_best_effort() {
 
 copy_existing_snapshot() {
   local snapshot="$NODE_NETWORK_DIR/snapshot.bdsnap"
-  if [[ "${BDAG_CHAIN_STATE_REUSE_EXISTING_SNAPSHOT:-1}" == "1" && -s "$snapshot" ]]; then
+  if [[ "${BDAG_CHAIN_STATE_REUSE_EXISTING_SNAPSHOT:-0}" == "1" && -s "$snapshot" ]]; then
     cp -a "$snapshot" "$TMP_DIR/snapshot.bdsnap"
     for companion in "$NODE_NETWORK_DIR/snapshot.bdsnap.manifest" "$NODE_NETWORK_DIR/snapshot.bdsnap.json" "$NODE_NETWORK_DIR/manifest.json"; do
       [[ -f "$companion" ]] && cp -a "$companion" "$TMP_DIR/$(basename "$companion")"
@@ -287,27 +289,109 @@ choose_restore_source() {
     RESTORE_SOURCE_USED="$BDAG_CHAIN_STATE_RESTORE_SNAPSHOT"
     return 0
   fi
-  local candidates=(
-    "$ROOT/data-restore/rawdatadir-sidecar-content/current/mainnet"
-    "$ROOT/data-restore/rawdatadir-sidecar-content/current"
-    "$ROOT/data-restore/rawdatadir/current/mainnet"
-    "$ROOT/data-restore/rawdatadir/current"
-    "$ROOT/data-restore/latest/mainnet"
-    "$ROOT/data-restore/latest"
-  )
-  for candidate in "${candidates[@]}"; do
-    if [[ -d "$candidate" ]]; then
-      RESTORE_MODE_USED="source"
-      RESTORE_SOURCE_USED="$candidate"
-      return 0
-    fi
-  done
+  if [[ "${BDAG_CHAIN_STATE_SELF_HEAL_ALLOW_LOCAL_CANDIDATES:-0}" == "1" ]]; then
+    local candidates=(
+      "$ROOT/data-restore/rawdatadir/current/mainnet"
+      "$ROOT/data-restore/rawdatadir/current"
+      "$ROOT/data-restore/latest/mainnet"
+      "$ROOT/data-restore/latest"
+    )
+    for candidate in "${candidates[@]}"; do
+      if [[ -d "$candidate" ]]; then
+        RESTORE_MODE_USED="source"
+        RESTORE_SOURCE_USED="$candidate"
+        return 0
+      fi
+    done
+  fi
   if [[ -s "$TMP_DIR/snapshot.bdsnap" ]]; then
     RESTORE_MODE_USED="snapshot"
     RESTORE_SOURCE_USED="$TMP_DIR/snapshot.bdsnap"
     return 0
   fi
   return 1
+}
+
+resolve_local_restore_source() {
+  local source="$1"
+  local local_source
+  local_source="$(abs_path "$source")"
+  if [[ -d "$local_source/mainnet" ]]; then
+    local_source="$local_source/mainnet"
+  fi
+  printf '%s\n' "$local_source"
+}
+
+reject_sealed_artifact_source() {
+  local source="$1"
+  case "$source" in
+    *rawdatadir-sidecar-content*)
+      log "restore source $source is sealed rawdatadir-sidecar-content, not a raw node datadir"
+      return 1
+      ;;
+  esac
+  if [[ -f "$source/DO_NOT_PUBLISH.txt" ]]; then
+    log "restore source $source contains DO_NOT_PUBLISH.txt and is not a raw node datadir"
+    return 1
+  fi
+  if [[ -d "$source/chunks" && -f "$source/manifest.json" ]]; then
+    log "restore source $source contains chunks/ plus manifest.json and is not a raw node datadir"
+    return 1
+  fi
+  if [[ -f "$source/manifest.json" ]]; then
+    if python3 - "$source/manifest.json" <<'PY'
+import json
+import sys
+
+try:
+    payload = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+
+artifact_type = str(payload.get("artifact_type") or "")
+chunks = payload.get("chunks")
+if artifact_type in {"raw_datadir_checkpoint", "ipfs_segment_index", "ipfs_segment"}:
+    sys.exit(0)
+if isinstance(chunks, list):
+    sys.exit(0)
+sys.exit(1)
+PY
+    then
+      log "restore source $source manifest describes sealed artifact chunks, not a raw node datadir"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+validate_restore_input() {
+  local mode="$1" source="$2"
+  case "$mode" in
+    source)
+      if [[ "$source" == *:* && "$source" != /* ]]; then
+        return 0
+      fi
+      local local_source
+      local_source="$(resolve_local_restore_source "$source")"
+      if [[ ! -d "$local_source" ]]; then
+        log "configured restore source does not exist or is not a directory: $local_source"
+        return 1
+      fi
+      reject_sealed_artifact_source "$local_source"
+      ;;
+    snapshot)
+      local snapshot_path
+      snapshot_path="$(abs_path "$source")"
+      if [[ ! -s "$snapshot_path" ]]; then
+        log "configured restore snapshot does not exist or is empty: $snapshot_path"
+        return 1
+      fi
+      ;;
+    *)
+      log "internal error: unknown restore mode $mode"
+      return 1
+      ;;
+  esac
 }
 
 restore_from_source() {
@@ -319,10 +403,7 @@ restore_from_source() {
     rsync -a --delete -e "$ssh_command" "${source%/}/" "$NODE_NETWORK_DIR/"
   else
     local local_source
-    local_source="$(abs_path "$source")"
-    if [[ -d "$local_source/mainnet" ]]; then
-      local_source="$local_source/mainnet"
-    fi
+    local_source="$(resolve_local_restore_source "$source")"
     log "restoring chain data from local source $local_source"
     rsync -a --delete "$local_source/" "$NODE_NETWORK_DIR/"
   fi
@@ -343,8 +424,12 @@ restore_from_snapshot() {
 copy_existing_snapshot
 if ! choose_restore_source; then
   log "no trusted restore source or local snapshot was found"
-  stop_service_best_effort "$POOL_SERVICE" || true
   json_state "blocked" "chain-state restore needed but no restore source/snapshot is configured"
+  exit 1
+fi
+if ! validate_restore_input "$RESTORE_MODE_USED" "$RESTORE_SOURCE_USED"; then
+  log "selected restore input is not safe for destructive chain-state restore"
+  json_state "blocked" "selected restore input is not a restore-safe raw datadir or snapshot"
   exit 1
 fi
 
