@@ -56,7 +56,7 @@ jobs:
           repository: BlockdagEngineering/blockdag-corechain
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/blockdag-node
-          ref: c74f88b9c1b4fbf4213e15272d3bf1f63943e839
+          ref: main
 
       - name: Checkout private mining pool repo
         uses: actions/checkout@v4
@@ -64,7 +64,7 @@ jobs:
           repository: BlockdagEngineering/pool
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/pool
-          ref: 61b231c0501b32338f4ad47561a09e03e5933adc
+          ref: main
 
       - name: Checkout dashboard repo
         uses: actions/checkout@v4
