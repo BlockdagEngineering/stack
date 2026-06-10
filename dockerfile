@@ -4,7 +4,8 @@
 # Expects unpacked layout:
 #
 #   ./
-#   ├── bin/blockdag-node, bin/nodeworker, bin/mining-pool, bin/dashboard-api, bin/dashboard
+#   ├── bin/blockdag-node, bin/nodeworker, bin/mining-pool, bin/dashboard-api
+#   ├── dashboard-source/
 #   ├── docker/
 #   ├── .env.example, docker-compose.yml, …
 #
@@ -69,17 +70,6 @@ RUN --mount=type=secret,id=github_token,required=false set -eu; \
       git checkout --detach FETCH_HEAD; \
     fi; \
     rm -rf .git
-
-# ----------------------------------------------------------------------------
-# Dashboard Build Stage
-# ----------------------------------------------------------------------------
-FROM base AS dashboard-build
-WORKDIR /src
-COPY bin ./bin
-RUN set -eu; mkdir -p /out; \
-    test -f ./bin/dashboard || { echo 'ERROR: ./bin/dashboard missing'; exit 1; }; \
-    cp -f ./bin/dashboard /out/dashboard && \
-    chmod +x /out/dashboard
 
 # ----------------------------------------------------------------------------
 # Node Runtime Stage
@@ -181,18 +171,38 @@ EXPOSE 9280
 ENTRYPOINT ["/usr/local/bin/entrypoint-collector.sh"]
 
 # ----------------------------------------------------------------------------
-# Dashboard Runtime Stage (Go UI over status API)
+# Dashboard Runtime Stage (Python UI from packaged dashboard-source/)
 # ----------------------------------------------------------------------------
-FROM ubuntu:24.04 AS dashboard
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates tzdata \
- && rm -rf /var/lib/apt/lists/*
+FROM docker:27-cli AS dashboard
 
-COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard
-RUN chmod +x /usr/local/bin/dashboard
+RUN apk add --no-cache \
+    bash \
+    ca-certificates \
+    coreutils \
+    curl \
+    findutils \
+    iproute2 \
+    openssl \
+    procps \
+    py3-pip \
+    python3 \
+    shadow \
+    tzdata
 
-ENV ADDR=0.0.0.0:9290 \
-    BDAG_COLLECTOR_API=http://collector:9280
+COPY dashboard-source /opt/dashboard
+COPY docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
+RUN chmod +x /usr/local/bin/entrypoint-dashboard.sh \
+ && mkdir -p /workspace /workspace/ops/runtime \
+ && if [ -f /opt/dashboard/requirements-dev.txt ]; then \
+      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/dashboard/requirements-dev.txt; \
+    fi
+
+ENV PYTHONUNBUFFERED=1 \
+    BDAG_PROJECT_ROOT=/workspace \
+    BDAG_RUNTIME_DIR=/workspace/ops/runtime \
+    BDAG_POOL_ENV_FILE=/workspace/.env \
+    BDAG_DASHBOARD_BIND=0.0.0.0 \
+    BDAG_DASHBOARD_PORT=9290
 
 EXPOSE 9290
-ENTRYPOINT ["/usr/local/bin/dashboard"]
+ENTRYPOINT ["/usr/local/bin/entrypoint-dashboard.sh"]

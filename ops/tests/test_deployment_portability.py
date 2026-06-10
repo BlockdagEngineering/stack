@@ -91,7 +91,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://collector:9280}", dashboard_block)
         self.assertNotIn("DASHBOARD_EVM_RPC_URL:", compose)
         self.assertNotIn("BDAG_RPC_URL: http://node:38131", compose)
-        self.assertIn("collector: { condition: service_started }", dashboard_block)
+        self.assertNotIn("collector: { condition: service_started }", dashboard_block)
         self.assertNotIn("node: { condition: service_started }", dashboard_block)
         self.assertNotIn("pool: { condition: service_started }", dashboard_block)
 
@@ -130,10 +130,11 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
 
         self.assertIn("dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../dashboard}", compose)
         self.assertIn("collector_src: ${COLLECTOR_SRC_CONTEXT:-../collector}", compose)
-        self.assertIn("test -f ./bin/dashboard", dockerfile)
-        self.assertIn("COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard", dockerfile)
+        self.assertIn("COPY dashboard-source /opt/dashboard", dockerfile)
+        self.assertIn("entrypoint-dashboard.sh", dockerfile)
         self.assertIn("COPY --from=collector_src . /opt/collector", dockerfile)
-        self.assertIn("COPY --from=dashboard_src . .", dockerfile_dev)
+        self.assertIn("COPY --from=dashboard_src . /src/dashboard", dockerfile_dev)
+        self.assertIn("COPY --from=dashboard-source /src/dashboard /opt/dashboard", dockerfile_dev)
 
     def test_dashboard_release_build_has_no_dead_git_ref_arg(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
