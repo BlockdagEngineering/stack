@@ -26,6 +26,7 @@ ENV_FILE = Path(os.environ.get("BDAG_ENV_FILE") or ROOT / ".env")
 OPS_DIR = ROOT / "ops"
 MAINNET_NETWORK = "mainnet"
 sys.path.insert(0, str(OPS_DIR))
+import chain_integrity_gate  # type: ignore  # noqa: E402
 import ipfs_segment_trust  # type: ignore  # noqa: E402
 
 FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
@@ -532,6 +533,83 @@ def update_accepted_head_state(
     return {"updated": True, "state_file": str(state_file)}
 
 
+def chain_anchor_source_url(env: Mapping[str, str]) -> str:
+    return str(env.get("BDAG_IPFS_RESTORE_CHAIN_SOURCE_RPC_URL") or env.get("BDAG_CHAIN_SOURCE_RPC_URL") or "").strip()
+
+
+def chain_anchor_reference_url(env: Mapping[str, str]) -> str:
+    return str(
+        env.get("BDAG_IPFS_RESTORE_CHAIN_REFERENCE_RPC_URL") or env.get("BDAG_CHAIN_REFERENCE_RPC_URL") or ""
+    ).strip()
+
+
+def run_chain_anchor_validation(
+    *,
+    index: Mapping[str, Any],
+    verified: Mapping[str, Any],
+    env: Mapping[str, str],
+) -> dict[str, Any]:
+    if not env_bool(env, "BDAG_IPFS_RESTORE_CHAIN_ANCHOR_ENABLED", True):
+        return {
+            "state": "disabled",
+            "trusted": False,
+            "required": env_bool(env, "BDAG_IPFS_RESTORE_REQUIRE_CHAIN_ANCHOR", False),
+            "reasons": ["disabled_by_policy"],
+        }
+
+    source_url = chain_anchor_source_url(env)
+    reference_url = chain_anchor_reference_url(env)
+    required = env_bool(env, "BDAG_IPFS_RESTORE_REQUIRE_CHAIN_ANCHOR", False)
+    if not source_url or not reference_url:
+        reasons = []
+        if not source_url:
+            reasons.append("chain_source_rpc_url_missing")
+        if not reference_url:
+            reasons.append("chain_reference_rpc_url_missing")
+        return {
+            "state": chain_integrity_gate.DEFERRED_REFERENCE_UNAVAILABLE,
+            "trusted": False,
+            "required": required,
+            "reasons": reasons,
+            "trust_model": "chain anchoring requires a source RPC and an independent reference RPC",
+        }
+
+    first = verified.get("first_verified_order")
+    last = verified.get("last_verified_order")
+    max_span = max(0, env_int(env, "BDAG_IPFS_RESTORE_CHAIN_ANCHOR_FULL_SPAN_MAX_ORDERS", 300))
+    start_order = 0
+    end_order = 0
+    if isinstance(first, int) and isinstance(last, int) and first > 0 and last >= first and (last - first + 1) <= max_span:
+        start_order = first
+        end_order = last
+
+    with tempfile.TemporaryDirectory(prefix="bdag-ipfs-restore-anchor-") as tmp:
+        index_path = Path(tmp) / "latest-index.json"
+        index_path.write_bytes(canonical_json_bytes(index))
+        anchor_env = dict(env)
+        if env_bool(env, "BDAG_IPFS_RESTORE_CHAIN_ANCHOR_SKIP_ENVIRONMENT_GATES", True):
+            anchor_env["BDAG_CHAIN_INTEGRITY_SKIP_ENVIRONMENT_GATES"] = "1"
+        result = chain_integrity_gate.evaluate_chain_integrity(
+            {
+                "workflow": "ipfs_restore_drill",
+                "source_rpc_url": source_url,
+                "reference_rpc_url": reference_url,
+                "index": str(index_path),
+                "start_order": start_order,
+                "end_order": end_order,
+            },
+            env=anchor_env,
+        )
+    result["required"] = required
+    result["full_span_checked"] = bool(start_order and end_order)
+    result["full_span_max_orders"] = max_span
+    result["trust_model"] = (
+        "IPFS segment bytes become chain-anchored only when signed/hash-verified segment metadata "
+        "matches live source RPC and independent reference RPC block hashes."
+    )
+    return result
+
+
 def verify_manifest(
     record: Mapping[str, Any],
     manifest: Mapping[str, Any],
@@ -734,6 +812,12 @@ def main(argv: list[str] | None = None) -> int:
             lineage=verified,
             env=env,
         )
+        chain_anchor = run_chain_anchor_validation(index=index, verified=verified, env=env)
+        if chain_anchor.get("required") and not chain_anchor.get("trusted"):
+            raise VerificationError(
+                "IPFS restore drill chain anchor is not trusted: "
+                + "; ".join(str(item) for item in (chain_anchor.get("reasons") or [chain_anchor.get("state")]))
+            )
         if materialize_dir and index_raw is not None:
             index_name = (
                 index_source.removeprefix("ipfs:")
@@ -760,6 +844,9 @@ def main(argv: list[str] | None = None) -> int:
             "restore_policy": "verification_only_no_chain_datadir_mutation",
             "trust_model": "IPFS/IPNS are byte transport only; CID bytes, sha256, manifest links, order continuity, and chain consensus must verify before use.",
             "accepted_head": accepted_head,
+            "chain_anchor": chain_anchor,
+            "chain_anchor_trusted": bool(chain_anchor.get("trusted")),
+            "archive_trusted_for_chain_reference": bool(chain_anchor.get("trusted")),
         }
         payload.update(verified)
         payload["accepted_head"].update(

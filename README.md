@@ -415,6 +415,16 @@ indexes, and reject non-lineage indexes when both the previous and current index
 CIDs are known. This protects against IPNS rollback while keeping chain-order
 segments verify-only; it does not import segment data into the node datadir.
 
+The same restore drill can chain-anchor verified IPFS data with
+`BDAG_IPFS_RESTORE_CHAIN_ANCHOR_ENABLED=1`. When
+`BDAG_IPFS_RESTORE_CHAIN_SOURCE_RPC_URL` and
+`BDAG_IPFS_RESTORE_CHAIN_REFERENCE_RPC_URL` are configured, the drill compares
+the signed segment index against live source and independent reference chain RPC
+block hashes. Set `BDAG_IPFS_RESTORE_REQUIRE_CHAIN_ANCHOR=1` for fail-closed
+promotion drills. CIDs, signatures, hashes, lineage, accepted-head state, and
+live-chain block-hash anchors must all agree before treating IPFS as canonical
+chain evidence.
+
 The archive seed timer is not part of this stack because IPFS segments and
 finalized raw-datadir sidecars own source publication.
 

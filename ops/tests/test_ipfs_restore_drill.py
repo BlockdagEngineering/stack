@@ -502,6 +502,95 @@ class IPFSRestoreDrillTest(unittest.TestCase):
         self.assertEqual(state["current_head_end_order"], 4)
         self.assertEqual(state["current_index_cid"], current_cid)
 
+    def test_chain_anchor_marks_archive_trusted_when_live_reference_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            record, fixtures = segment_fixture(1, 1, 2, None)
+            cid_dir = base / "cid-fixtures"
+            self.write_fixtures(cid_dir, fixtures)
+            index = self.write_index(base, [record])
+            status = base / "status.json"
+            env = self.signing_env(
+                base,
+                {
+                    "BDAG_IPFS_RESTORE_CHAIN_SOURCE_RPC_URL": "http://source:38131",
+                    "BDAG_IPFS_RESTORE_CHAIN_REFERENCE_RPC_URL": "http://reference:38131",
+                },
+            )
+
+            trusted_anchor = {
+                "state": "trusted",
+                "trusted": True,
+                "reasons": [],
+                "source_url": "http://source:38131",
+                "reference_url": "http://reference:38131",
+            }
+            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
+                ipfs_restore_drill.chain_integrity_gate,
+                "evaluate_chain_integrity",
+                return_value=trusted_anchor,
+            ) as evaluate:
+                rc = ipfs_restore_drill.main(
+                    [
+                        "--index",
+                        str(index),
+                        "--cid-dir",
+                        str(cid_dir),
+                        "--status-file",
+                        str(status),
+                    ]
+                )
+            payload = json.loads(status.read_text(encoding="utf-8"))
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(payload["chain_anchor_trusted"])
+        self.assertTrue(payload["archive_trusted_for_chain_reference"])
+        self.assertEqual(payload["chain_anchor"]["state"], "trusted")
+        config = evaluate.call_args.args[0]
+        self.assertEqual(config["workflow"], "ipfs_restore_drill")
+        self.assertEqual(config["source_rpc_url"], "http://source:38131")
+        self.assertEqual(config["reference_rpc_url"], "http://reference:38131")
+        self.assertEqual(config["start_order"], 1)
+        self.assertEqual(config["end_order"], 2)
+
+    def test_required_chain_anchor_failure_blocks_restore_drill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            record, fixtures = segment_fixture(1, 1, 2, None)
+            cid_dir = base / "cid-fixtures"
+            self.write_fixtures(cid_dir, fixtures)
+            index = self.write_index(base, [record])
+            status = base / "status.json"
+            env = self.signing_env(
+                base,
+                {
+                    "BDAG_IPFS_RESTORE_CHAIN_SOURCE_RPC_URL": "http://source:38131",
+                    "BDAG_IPFS_RESTORE_CHAIN_REFERENCE_RPC_URL": "http://reference:38131",
+                    "BDAG_IPFS_RESTORE_REQUIRE_CHAIN_ANCHOR": "1",
+                },
+            )
+
+            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
+                ipfs_restore_drill.chain_integrity_gate,
+                "evaluate_chain_integrity",
+                return_value={"state": "rejected_mismatch", "trusted": False, "reasons": ["order_2_hash_mismatch"]},
+            ):
+                rc = ipfs_restore_drill.main(
+                    [
+                        "--index",
+                        str(index),
+                        "--cid-dir",
+                        str(cid_dir),
+                        "--status-file",
+                        str(status),
+                    ]
+                )
+            payload = json.loads(status.read_text(encoding="utf-8"))
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(payload["state"], "failed")
+        self.assertTrue(any("chain anchor is not trusted" in reason for reason in payload["reasons"]))
+
     def test_rejects_previous_index_lineage_head_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

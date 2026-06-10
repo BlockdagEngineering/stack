@@ -657,6 +657,12 @@ configure_env() {
   set_stack_default_env_value .env BDAG_IPFS_RESTORE_MAX_INDEX_LINEAGE_DEPTH
   set_stack_default_env_value .env BDAG_IPFS_RESTORE_ACCEPTED_HEAD_ENABLED
   set_stack_default_env_value .env BDAG_IPFS_RESTORE_ACCEPTED_HEAD_STATE_FILE
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_CHAIN_ANCHOR_ENABLED
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_REQUIRE_CHAIN_ANCHOR
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_CHAIN_SOURCE_RPC_URL
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_CHAIN_REFERENCE_RPC_URL
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_CHAIN_ANCHOR_FULL_SPAN_MAX_ORDERS
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_CHAIN_ANCHOR_SKIP_ENVIRONMENT_GATES
   set_stack_default_env_value .env BDAG_IPFS_RESTORE_PRESTART_DRILL
   set_stack_default_env_value .env BDAG_IPFS_RESTORE_PRESTART_STRICT
   set_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART
