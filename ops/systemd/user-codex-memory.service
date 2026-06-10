@@ -4,12 +4,12 @@ After=default.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/jeremy/blockdag-mining-pool/stack
-Environment=CODEX_PROJECT_ROOT=/home/jeremy/blockdag-mining-pool/stack
+WorkingDirectory=/home/jeremy/blockdag-asic-pool
+Environment=CODEX_PROJECT_ROOT=/home/jeremy/blockdag-asic-pool
 Environment=CODEX_MEMORY_DB=/home/jeremy/.codex/memories/context-store/context.sqlite
 Environment=CODEX_HISTORY_FILE=/home/jeremy/.codex/history.jsonl
 Environment=CODEX_MEMORY_INTERVAL=10
-ExecStart=/usr/bin/env python3 /home/jeremy/blockdag-mining-pool/stack/ops/codex_memory.py watch --interval 10
+ExecStart=/usr/bin/env python3 /home/jeremy/blockdag-asic-pool/ops/codex_memory.py watch --interval 10
 Restart=always
 RestartSec=5
 

@@ -37,7 +37,7 @@ That means another computer can use the USB to catch up quickly without inheriti
 On the source pool host:
 
 ```bash
-cd /home/jeremy/blockdag-mining-pool/stack
+cd /home/jeremy/blockdag-asic-pool
 systemctl --user status bdag-rawdatadir-sidecar.timer
 python3 -m json.tool ops/runtime/rawdatadir-sidecar-safe-status.json
 ```
@@ -68,7 +68,7 @@ USB_ROOT="/run/media/jeremy/YOUR_USB_LABEL/blockdag-portable"
 2. Dry-run the USB update:
 
 ```bash
-cd /home/jeremy/blockdag-mining-pool/stack
+cd /home/jeremy/blockdag-asic-pool
 ./ops/usb-sidecar-sync-to-drive.sh --usb-root "$USB_ROOT" --dry-run
 ```
 
@@ -93,7 +93,7 @@ On the target computer:
 1. Install or check out the stack repo.
 
 ```bash
-cd /home/jeremy/blockdag-mining-pool/stack
+cd /home/jeremy/blockdag-asic-pool
 ```
 
 2. Stop the node and pool before copying chain data:

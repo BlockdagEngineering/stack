@@ -89,6 +89,14 @@ for retired_pattern in "${retired_terms[@]}"; do
     reject_grep "$retired_pattern" "$retired_file"
   done
 done
+retired_runtime_root='/home/jeremy/blockdag-''mining-pool'
+retired_runtime_stack='blockdag-''mining-pool/stack'
+if grep -R -n -E "$retired_runtime_root|$retired_runtime_stack" "$root/ops/systemd" >/tmp/bdag-retired-systemd-paths.$$ 2>/dev/null; then
+  cat /tmp/bdag-retired-systemd-paths.$$ >&2
+  rm -f /tmp/bdag-retired-systemd-paths.$$
+  fail "ops/systemd still references the retired blockdag-mining-pool runtime path"
+fi
+rm -f /tmp/bdag-retired-systemd-paths.$$
 need_grep '^BOOTSTRAP_PEER_ADDRESSES=/ip4/13\.57\.132\.47/tcp/8150/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus$' ".env.example"
 need_grep 'BOOTSTRAP_PEER_ADDRESSES: \$\{BOOTSTRAP_PEER_ADDRESSES:-\}' "docker-compose.yml"
 need_grep '^addpeer=/ip4/13\.57\.132\.47/tcp/8150/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus$' "node.conf.example"

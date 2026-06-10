@@ -29,7 +29,7 @@ Do not start the pool while catch-up pause is active. If the dashboard says `mod
 Run:
 
 ```bash
-cd /home/jeremy/blockdag-mining-pool/stack
+cd /home/jeremy/blockdag-asic-pool
 systemctl --user status bdag-rawdatadir-sidecar.timer
 python3 -m json.tool ops/runtime/rawdatadir-sidecar-safe-status.json
 ```
@@ -94,7 +94,7 @@ Use the exact block devices from `lsblk`; do not guess.
 Verify the target repo and stack:
 
 ```bash
-cd /home/jeremy/blockdag-mining-pool/stack
+cd /home/jeremy/blockdag-asic-pool
 git status --short --branch
 docker compose ps -a
 ```
@@ -161,7 +161,7 @@ Do not initiate host reboots for this verification. Reboot-loop testing was a on
 `bdag-codex-auto-resume.service` should open a visible desktop terminal and run:
 
 ```bash
-codex resume --cd /home/jeremy/blockdag-mining-pool/stack --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-approvals-and-sandbox <session-id>
+codex resume --cd /home/jeremy/blockdag-asic-pool --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-approvals-and-sandbox <session-id>
 ```
 
 It must run `ops/codex_boot_handoff.py --repair` first, which checks the pool and writes:
