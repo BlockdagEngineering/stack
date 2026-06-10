@@ -67,6 +67,8 @@ need_grep 'entrypoint-dashboard\.sh' "dockerfile"
 need_grep 'COPY --from=dashboard_src \. /src/dashboard' "dockerfile-dev"
 need_grep 'COPY --from=dashboard-source /src/dashboard /opt/dashboard' "dockerfile-dev"
 need_grep 'entrypoint-dashboard\.sh' "dockerfile-dev"
+reject_grep 'requirements-dev\.txt' "dockerfile"
+reject_grep 'requirements-dev\.txt' "dockerfile-dev"
 reject_grep 'DASHBOARD_REF:-' "docker-compose.yml"
 reject_grep 'DASHBOARD_REF:-' "dockerfile"
 retired_terms=(

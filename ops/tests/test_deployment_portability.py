@@ -127,6 +127,8 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfile = (ROOT_DIR / "dockerfile").read_text(encoding="utf-8")
         dockerfile_dev = (ROOT_DIR / "dockerfile-dev").read_text(encoding="utf-8")
+        release_dashboard_block = dockerfile.split("FROM docker:27-cli AS dashboard", 1)[1]
+        dev_dashboard_block = dockerfile_dev.split("FROM docker:27-cli AS dashboard", 1)[1]
 
         self.assertIn("dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../dashboard}", compose)
         self.assertIn("collector_src: ${COLLECTOR_SRC_CONTEXT:-../collector}", compose)
@@ -135,6 +137,8 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("COPY --from=collector_src . /opt/collector", dockerfile)
         self.assertIn("COPY --from=dashboard_src . /src/dashboard", dockerfile_dev)
         self.assertIn("COPY --from=dashboard-source /src/dashboard /opt/dashboard", dockerfile_dev)
+        self.assertNotIn("requirements-dev.txt", release_dashboard_block)
+        self.assertNotIn("requirements-dev.txt", dev_dashboard_block)
 
     def test_dashboard_release_build_has_no_dead_git_ref_arg(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")

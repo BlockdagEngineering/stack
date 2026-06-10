@@ -192,10 +192,7 @@ RUN apk add --no-cache \
 COPY dashboard-source /opt/dashboard
 COPY docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
 RUN chmod +x /usr/local/bin/entrypoint-dashboard.sh \
- && mkdir -p /workspace /workspace/ops/runtime \
- && if [ -f /opt/dashboard/requirements-dev.txt ]; then \
-      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/dashboard/requirements-dev.txt; \
-    fi
+ && mkdir -p /workspace /workspace/ops/runtime
 
 ENV PYTHONUNBUFFERED=1 \
     BDAG_PROJECT_ROOT=/workspace \
