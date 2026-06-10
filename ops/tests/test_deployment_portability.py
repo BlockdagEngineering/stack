@@ -353,9 +353,13 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             self.assertIn("BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE=rendezvous_sha256_v1", config)
             self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH=0", config)
             self.assertIn("BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE=./ops/runtime/ipfs-content/segment-writer.key", config)
+            self.assertIn("BDAG_RAWDATADIR_SIGNING_KEY_FILE=./ops/runtime/ipfs-content/segment-writer.key", config)
+            self.assertIn("BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER=1", config)
             self.assertIn("BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES=1", config)
             self.assertIn("BDAG_IPFS_RESTORE_REQUIRE_SIGNATURES=1", config)
             self.assertIn("BDAG_IPFS_RESTORE_VERIFY_INDEX_LINEAGE=1", config)
+            self.assertIn("BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART=1", config)
+            self.assertIn("BDAG_IPFS_RAWDATADIR_RESTORE_STATUS_FILE=./ops/runtime/ipfs-content/rawdatadir-restore-status.json", config)
             self.assertIn("BDAG_IPFS_BACKFILL_INDEX_PATH=./ops/runtime/ipfs-content/backfill-genesis-index.json", config)
             self.assertIn("BDAG_IPFS_BACKFILL_MAX_SEGMENTS_PER_RUN=1", config)
             self.assertIn("BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN=1", config)
@@ -374,6 +378,11 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             'BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE=$(env_value BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE "$ROOT/ops/runtime/ipfs-content/segment-writer.key")',
             installer,
         )
+        self.assertIn(
+            'BDAG_RAWDATADIR_SIGNING_KEY_FILE=$(env_value BDAG_RAWDATADIR_SIGNING_KEY_FILE "$ROOT/ops/runtime/ipfs-content/segment-writer.key")',
+            installer,
+        )
+        self.assertIn("BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER=$(env_value BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER 1)", installer)
         self.assertIn("BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES=$(env_value BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES 1)", installer)
         self.assertIn("BDAG_IPFS_SEGMENT_UPDATE_DISCOVERY_FOR_CUSTOM_INDEX", (ROOT_DIR / "ops" / "ipfs_segment_writer.py").read_text(encoding="utf-8"))
         self.assertIn(
@@ -390,6 +399,19 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             self.assertIn("OnActiveSec=5m", timer)
             self.assertIn("OnUnitActiveSec=5m", timer)
             self.assertIn("RandomizedDelaySec=0", timer)
+
+    def test_release_installer_has_prestart_ipfs_rawdatadir_restore_gate(self) -> None:
+        installer = (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8")
+
+        self.assertIn("run_prestart_ipfs_rawdatadir_restore()", installer)
+        self.assertIn("set_existing_or_stack_default_env_value()", installer)
+        self.assertIn('if grep -q "^${key}=" "$file"; then', installer)
+        self.assertIn("BDAG_IPFS_RAWDATADIR_RESTORE_ARTIFACT_CID", installer)
+        self.assertIn("BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_CID", installer)
+        self.assertIn("set_existing_or_stack_default_env_value .env BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS", installer)
+        self.assertIn("set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_TRUSTED_SIGNERS", installer)
+        self.assertIn("ops/restore-rawdatadir-segment-artifact.py", installer)
+        self.assertIn("seed_chain_data\n  run_prestart_ipfs_rawdatadir_restore\n  run_prestart_ipfs_restore_drill", installer)
 
 
 if __name__ == "__main__":

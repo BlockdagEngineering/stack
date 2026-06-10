@@ -136,6 +136,7 @@ need_file "ops/ipfs_segment_identity.py"
 need_file "ops/ipfs_segment_trust.py"
 need_file "ops/ipfs_segment_writer.py"
 need_file "ops/ipfs_restore_drill.py"
+need_file "ops/restore-rawdatadir-segment-artifact.py"
 need_file "sql/pool-schema.sql"
 validate_runtime_compose
 

@@ -23,7 +23,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Mapping
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -136,6 +136,20 @@ PRESERVE_PATHS = (
 
 class RestoreError(RuntimeError):
     """Raised when artifact verification or reconstruction fails."""
+
+
+def load_env(path: Path | None = None) -> dict[str, str]:
+    env_file = path or Path(os.environ.get("BDAG_ENV_FILE") or ROOT / ".env")
+    env: dict[str, str] = {}
+    if env_file.exists():
+        for raw in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            env[key.strip()] = value.strip().strip('"').strip("'")
+    env.update({key: value for key, value in os.environ.items() if key.startswith("BDAG_") or key in {"IPFS_PATH"}})
+    return env
 
 
 def now_iso() -> str:
@@ -252,9 +266,14 @@ def read_manifest(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
     if args.local_artifact_dir:
         path = Path(args.local_artifact_dir).resolve() / "manifest.json"
         raw = path.read_bytes()
+    elif ipfs_restore_requested(args):
+        raw = ipfs_cat_artifact_path(args, "manifest.json")
     else:
         if not args.remote or not args.remote_artifact_dir:
-            raise RestoreError("set --local-artifact-dir or both --remote and --remote-artifact-dir")
+            raise RestoreError(
+                "set --local-artifact-dir, --ipfs-artifact-cid/--ipfs-index-*, "
+                "or both --remote and --remote-artifact-dir"
+            )
         path = str(Path(args.remote_artifact_dir) / "manifest.json")
         result = subprocess.run(
             remote_cat_command(args.remote, args.ssh_control_socket, path),
@@ -272,6 +291,102 @@ def read_manifest(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
     if not isinstance(manifest, dict):
         raise RestoreError("manifest root is not an object")
     return manifest, raw
+
+
+def env_bool(env: Mapping[str, str], key: str, default: bool = False) -> bool:
+    parsed = parse_bool(env.get(key))
+    return default if parsed is None else parsed
+
+
+def clean_cid(value: str) -> str:
+    cid = str(value or "").strip().removeprefix("ipfs://").removeprefix("/ipfs/")
+    if not cid or "/" in cid or "\\" in cid:
+        raise RestoreError(f"unsafe or empty IPFS CID: {value!r}")
+    return cid
+
+
+def ipfs_binary(args: argparse.Namespace) -> str:
+    return str(args.ipfs_binary or os.environ.get("BDAG_IPFS_BINARY") or "ipfs")
+
+
+def ipfs_cat_path_command(args: argparse.Namespace, ipfs_path: str) -> list[str]:
+    return [ipfs_binary(args), "cat", ipfs_path]
+
+
+def run_ipfs_cat(args: argparse.Namespace, ipfs_path: str) -> bytes:
+    result = subprocess.run(
+        ipfs_cat_path_command(args, ipfs_path),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=max(1, int(args.ipfs_timeout or 600)),
+        check=False,
+    )
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or b"ipfs cat failed").decode(errors="replace")[-500:]
+        raise RestoreError(f"ipfs cat failed for {ipfs_path}: {message}")
+    return result.stdout
+
+
+def load_ipfs_content_index(args: argparse.Namespace) -> dict[str, Any]:
+    if args.ipfs_index_file:
+        raw = Path(args.ipfs_index_file).expanduser().resolve().read_bytes()
+    elif args.ipfs_index_cid:
+        raw = run_ipfs_cat(args, f"/ipfs/{clean_cid(args.ipfs_index_cid)}")
+    elif args.discovery:
+        discovery = json.loads(Path(args.discovery).expanduser().resolve().read_text(encoding="utf-8"))
+        if not isinstance(discovery, dict):
+            raise RestoreError("IPFS discovery file is not a JSON object")
+        index_cid = (
+            discovery.get("rawdatadir_latest_index_cid")
+            or discovery.get("current_rawdatadir_index_cid")
+            or discovery.get("current_content_index_cid")
+            or discovery.get("current_latest_content_index_cid")
+        )
+        if not index_cid:
+            raise RestoreError("discovery file does not contain a raw-datadir content index CID")
+        raw = run_ipfs_cat(args, f"/ipfs/{clean_cid(str(index_cid))}")
+    else:
+        raise RestoreError("no IPFS content index source configured")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RestoreError(f"IPFS content index is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RestoreError("IPFS content index is not a JSON object")
+    return payload
+
+
+def artifact_cid_from_index(index: Mapping[str, Any], args: argparse.Namespace) -> str:
+    if index.get("document_type") != "bdag_ipfs_content_index_v1":
+        raise RestoreError(f"unsupported IPFS content index document_type={index.get('document_type')!r}")
+    if str(index.get("network") or "").strip().lower() != args.network:
+        raise RestoreError(f"IPFS content index network mismatch: {index.get('network')!r} != {args.network!r}")
+    artifact_type = str(index.get("artifact_type") or "")
+    if artifact_type != "raw_datadir_checkpoint":
+        raise RestoreError(f"IPFS content index does not describe a raw datadir checkpoint: {artifact_type!r}")
+    return clean_cid(str(index.get("artifact_cid") or ""))
+
+
+def resolve_ipfs_artifact_cid(args: argparse.Namespace) -> str:
+    cached = getattr(args, "_resolved_ipfs_artifact_cid", "")
+    if cached:
+        return str(cached)
+    if args.ipfs_artifact_cid:
+        cid = clean_cid(args.ipfs_artifact_cid)
+    else:
+        cid = artifact_cid_from_index(load_ipfs_content_index(args), args)
+    setattr(args, "_resolved_ipfs_artifact_cid", cid)
+    return cid
+
+
+def ipfs_restore_requested(args: argparse.Namespace) -> bool:
+    return bool(args.ipfs_artifact_cid or args.ipfs_index_cid or args.ipfs_index_file or args.discovery)
+
+
+def ipfs_cat_artifact_path(args: argparse.Namespace, rel_path: str) -> bytes:
+    rel = safe_relative_path(rel_path).as_posix()
+    artifact_cid = resolve_ipfs_artifact_cid(args)
+    return run_ipfs_cat(args, f"/ipfs/{artifact_cid}/{rel}")
 
 
 def parse_bool(value: Any) -> bool | None:
@@ -397,6 +512,10 @@ def verify_manifest_signatures(manifest: dict[str, Any], args: argparse.Namespac
     if not isinstance(signatures, list):
         raise RestoreError("manifest signatures must be an array")
     digest = manifest_digest(manifest)
+    trusted_signers = parse_trusted_signers(args.trusted_signers)
+    require_trusted = bool(args.require_trusted_signer)
+    if require_trusted and not trusted_signers:
+        raise RestoreError("trusted raw-datadir signer roster is empty")
     verified: list[str] = []
     for index, item in enumerate(signatures):
         if not isinstance(item, dict):
@@ -413,10 +532,40 @@ def verify_manifest_signatures(manifest: dict[str, Any], args: argparse.Namespac
             Ed25519PublicKey.from_public_bytes(public_key).verify(signature, digest)
         except InvalidSignature:
             continue
+        expected_public = trusted_signers.get(key_id)
+        if require_trusted:
+            if expected_public is None:
+                continue
+            if expected_public.lower() != public_key.hex().lower():
+                continue
         verified.append(key_id)
     if not verified:
+        if require_trusted:
+            raise RestoreError("manifest has no valid Ed25519 signature from a trusted raw-datadir signer")
         raise RestoreError("manifest has no valid Ed25519 signature")
     return sorted(set(verified))
+
+
+def parse_trusted_signers(value: str) -> dict[str, str]:
+    signers: dict[str, str] = {}
+    for raw in str(value or "").replace("\n", ",").split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        if "=" in item:
+            key_id, public_key = item.split("=", 1)
+        elif ":" in item:
+            key_id, public_key = item.split(":", 1)
+        else:
+            continue
+        key_id = key_id.strip()
+        public_key = public_key.strip().lower().removeprefix("0x")
+        if not key_id or not public_key:
+            continue
+        if len(public_key) != ED25519_PUBLIC_KEY_LEN * 2:
+            continue
+        signers[key_id] = public_key
+    return signers
 
 
 def validate_manifest(manifest: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -447,6 +596,15 @@ def open_chunk(args: argparse.Namespace, chunk_path: str) -> tuple[BinaryIO, sub
     if args.local_artifact_dir:
         path = Path(args.local_artifact_dir).resolve() / chunk_path
         return path.open("rb"), None
+    if ipfs_restore_requested(args):
+        proc = subprocess.Popen(
+            ipfs_cat_path_command(args, f"/ipfs/{resolve_ipfs_artifact_cid(args)}/{safe_relative_path(chunk_path).as_posix()}"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if proc.stdout is None:
+            raise RestoreError("failed to open IPFS chunk pipe")
+        return proc.stdout, proc
     assert args.remote and args.remote_artifact_dir
     remote_path = str(Path(args.remote_artifact_dir) / chunk_path)
     proc = subprocess.Popen(
@@ -627,14 +785,22 @@ def main(argv: list[str] | None = None) -> int:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--local-artifact-dir")
     source.add_argument("--remote-artifact-dir")
+    source.add_argument("--ipfs-artifact-cid", help="CID of a recursively pinned raw-datadir artifact directory")
+    source.add_argument("--ipfs-index-cid", help="CID of a bdag_ipfs_content_index_v1 JSON document")
+    source.add_argument("--ipfs-index-file", help="local bdag_ipfs_content_index_v1 JSON document")
+    source.add_argument("--discovery", help="local discovery JSON containing a raw-datadir content index CID")
     parser.add_argument("--remote", help="SSH remote, for example jeremy@192.168.68.65")
     parser.add_argument("--ssh-control-socket")
+    parser.add_argument("--ipfs-binary", default=os.environ.get("BDAG_IPFS_BINARY", "ipfs"))
+    parser.add_argument("--ipfs-timeout", type=int, default=int(os.environ.get("BDAG_IPFS_RAWDATADIR_RESTORE_IPFS_TIMEOUT", "600")))
     parser.add_argument("--target-dir", required=True)
     parser.add_argument("--preserve-from")
     parser.add_argument("--status-file", required=True)
     parser.add_argument("--network", default="mainnet")
     parser.add_argument("--min-tip-order", type=int, default=0)
     parser.add_argument("--allow-unsigned", action="store_true")
+    parser.add_argument("--trusted-signers", default="", help="trusted key_id=ed25519_public_key_hex pairs")
+    parser.add_argument("--require-trusted-signer", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument(
         "--allow-test-unsafe-metadata",
         action="store_true",
@@ -644,6 +810,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--progress-every", type=int, default=25)
     parser.add_argument("--max-files", type=int, default=0, help="test-only limit")
     args = parser.parse_args(argv)
+    env = load_env()
+    if not args.trusted_signers:
+        args.trusted_signers = (
+            env.get("BDAG_RAWDATADIR_TRUSTED_SIGNERS")
+            or env.get("BDAG_IPFS_RAWDATADIR_TRUSTED_SIGNERS")
+            or env.get("BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS")
+            or ""
+        )
+    if args.require_trusted_signer is None:
+        args.require_trusted_signer = env_bool(env, "BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER", True)
     if str(args.network or "").strip().lower() != "mainnet":
         raise RestoreError(f"raw datadir restore refuses non-mainnet network: {args.network!r}")
 
@@ -659,9 +835,10 @@ def main(argv: list[str] | None = None) -> int:
         "duration_seconds": round(time.time() - started, 3),
         "project_root": str(ROOT),
         "source": {
-            "mode": "local" if args.local_artifact_dir else "ssh_segment_fetch",
+            "mode": "local" if args.local_artifact_dir else "ipfs_artifact" if ipfs_restore_requested(args) else "ssh_segment_fetch",
             "remote": args.remote if args.remote_artifact_dir else None,
             "artifact_dir": args.local_artifact_dir or args.remote_artifact_dir,
+            "ipfs_artifact_cid": resolve_ipfs_artifact_cid(args) if ipfs_restore_requested(args) else None,
         },
         "manifest": {
             "sha256": manifest_sha,

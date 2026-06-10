@@ -29,15 +29,32 @@ class RestoreRawdatadirSegmentArtifactTest(unittest.TestCase):
         *,
         allow_unsigned: bool = False,
         allow_test_unsafe_metadata: bool = False,
+        trusted_signers: str = "",
+        require_trusted_signer: bool = True,
     ) -> argparse.Namespace:
+        if not trusted_signers and (artifact / "manifest.json").exists():
+            try:
+                manifest = json.loads((artifact / "manifest.json").read_text(encoding="utf-8"))
+                signature = manifest["signatures"][0]
+                trusted_signers = f"{signature['key_id']}={signature['public_key']}"
+            except Exception:
+                trusted_signers = ""
         return argparse.Namespace(
             local_artifact_dir=str(artifact),
             remote_artifact_dir=None,
+            ipfs_artifact_cid=None,
+            ipfs_index_cid=None,
+            ipfs_index_file=None,
+            discovery=None,
             remote=None,
             ssh_control_socket=None,
+            ipfs_binary="ipfs",
+            ipfs_timeout=600,
             network="mainnet",
             min_tip_order=0,
             allow_unsigned=allow_unsigned,
+            trusted_signers=trusted_signers,
+            require_trusted_signer=require_trusted_signer,
             allow_test_unsafe_metadata=allow_test_unsafe_metadata,
         )
 
@@ -136,6 +153,8 @@ class RestoreRawdatadirSegmentArtifactTest(unittest.TestCase):
                         str(target),
                         "--status-file",
                         str(status),
+                        "--trusted-signers",
+                        f"unit-test={manifest['signatures'][0]['public_key']}",
                         "--progress-every",
                         "0",
                     ]
@@ -159,6 +178,19 @@ class RestoreRawdatadirSegmentArtifactTest(unittest.TestCase):
                 "artifact_root mismatch",
             ):
                 restore_rawdatadir_segment_artifact.validate_manifest(manifest, self.make_args(artifact))
+
+    def test_signature_from_untrusted_key_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact, manifest = self.write_signed_artifact(Path(tmp))
+
+            with self.assertRaisesRegex(
+                restore_rawdatadir_segment_artifact.RestoreError,
+                "trusted raw-datadir signer",
+            ):
+                restore_rawdatadir_segment_artifact.validate_manifest(
+                    manifest,
+                    self.make_args(artifact, trusted_signers="other=" + "00" * 32),
+                )
 
     def test_bad_ed25519_signature_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -189,6 +221,8 @@ class RestoreRawdatadirSegmentArtifactTest(unittest.TestCase):
                         str(base / "target"),
                         "--status-file",
                         str(base / "status.json"),
+                        "--trusted-signers",
+                        f"unit-test={_manifest['signatures'][0]['public_key']}",
                         "--progress-every",
                         "0",
                     ]
@@ -225,6 +259,47 @@ class RestoreRawdatadirSegmentArtifactTest(unittest.TestCase):
             )
 
         self.assertEqual(verification["verified_signature_key_ids"], ["unit-test"])
+
+    def test_ipfs_content_index_resolves_rawdatadir_artifact_cid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            index = base / "index.json"
+            index.write_text(
+                json.dumps(
+                    {
+                        "document_type": "bdag_ipfs_content_index_v1",
+                        "network": "mainnet",
+                        "artifact_type": "raw_datadir_checkpoint",
+                        "artifact_cid": "bafybeigdyrzt",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = self.make_args(base, trusted_signers="unit-test=" + "00" * 32)
+            args.local_artifact_dir = None
+            args.ipfs_index_file = str(index)
+
+            cid = restore_rawdatadir_segment_artifact.resolve_ipfs_artifact_cid(args)
+
+        self.assertEqual(cid, "bafybeigdyrzt")
+
+    def test_ipfs_content_index_rejects_segment_index_documents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            index = base / "index.json"
+            index.write_text(
+                json.dumps({"document_type": "bdag_ipfs_segment_index_v1", "network": "mainnet"}),
+                encoding="utf-8",
+            )
+            args = self.make_args(base, trusted_signers="unit-test=" + "00" * 32)
+            args.local_artifact_dir = None
+            args.ipfs_index_file = str(index)
+
+            with self.assertRaisesRegex(
+                restore_rawdatadir_segment_artifact.RestoreError,
+                "unsupported IPFS content index",
+            ):
+                restore_rawdatadir_segment_artifact.resolve_ipfs_artifact_cid(args)
 
 
 if __name__ == "__main__":

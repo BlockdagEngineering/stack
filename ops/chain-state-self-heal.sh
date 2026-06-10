@@ -32,6 +32,8 @@ readiness gates pass.
 Configure trusted restore input with one of:
   BDAG_CHAIN_STATE_RESTORE_SOURCE=/local/path/or/user@host:/path/to/mainnet
   BDAG_CHAIN_STATE_RESTORE_SNAPSHOT=/path/to/latest.bdsnap
+  BDAG_CHAIN_STATE_RESTORE_IPFS_ARTIFACT_CID=bafy...
+  BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_CID=bafy...
 
 Remote restore uses rsync and can set:
   BDAG_CHAIN_STATE_RESTORE_SSH_COMMAND='ssh -i /path/to/key -o BatchMode=yes'
@@ -289,6 +291,21 @@ choose_restore_source() {
     RESTORE_SOURCE_USED="$BDAG_CHAIN_STATE_RESTORE_SNAPSHOT"
     return 0
   fi
+  if [[ -n "${BDAG_CHAIN_STATE_RESTORE_IPFS_ARTIFACT_CID:-}" ]]; then
+    RESTORE_MODE_USED="ipfs_artifact"
+    RESTORE_SOURCE_USED="$BDAG_CHAIN_STATE_RESTORE_IPFS_ARTIFACT_CID"
+    return 0
+  fi
+  if [[ -n "${BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_CID:-}" ]]; then
+    RESTORE_MODE_USED="ipfs_index"
+    RESTORE_SOURCE_USED="$BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_CID"
+    return 0
+  fi
+  if [[ -n "${BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_FILE:-}" ]]; then
+    RESTORE_MODE_USED="ipfs_index_file"
+    RESTORE_SOURCE_USED="$BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_FILE"
+    return 0
+  fi
   if [[ "${BDAG_CHAIN_STATE_SELF_HEAL_ALLOW_LOCAL_CANDIDATES:-0}" == "1" ]]; then
     local candidates=(
       "$ROOT/data-restore/rawdatadir/current/mainnet"
@@ -387,6 +404,20 @@ validate_restore_input() {
         return 1
       fi
       ;;
+    ipfs_artifact|ipfs_index|ipfs_index_file)
+      if [[ ! -x "$ROOT/ops/restore-rawdatadir-segment-artifact.py" ]]; then
+        log "IPFS rawdatadir restore tool is missing"
+        return 1
+      fi
+      if ! command -v "${BDAG_IPFS_BINARY:-ipfs}" >/dev/null 2>&1; then
+        log "IPFS rawdatadir restore requires Kubo CLI; set BDAG_IPFS_BINARY or install ipfs"
+        return 1
+      fi
+      if [[ "$mode" == "ipfs_index_file" && ! -s "$(abs_path "$source")" ]]; then
+        log "configured IPFS rawdatadir restore index file is missing or empty: $(abs_path "$source")"
+        return 1
+      fi
+      ;;
     *)
       log "internal error: unknown restore mode $mode"
       return 1
@@ -421,6 +452,24 @@ restore_from_snapshot() {
   done
 }
 
+restore_from_ipfs_artifact() {
+  local mode="$1" source="$2" status_file timeout args=()
+  mkdir -p "$NODE_NETWORK_DIR"
+  status_file="${BDAG_CHAIN_STATE_RESTORE_IPFS_STATUS_FILE:-$RUNTIME_DIR/ipfs-rawdatadir-self-heal-restore-status.json}"
+  timeout="${BDAG_IPFS_RAWDATADIR_RESTORE_IPFS_TIMEOUT:-600}"
+  args=(--target-dir "$NODE_NETWORK_DIR" --status-file "$status_file" --ipfs-timeout "$timeout" --network "$NETWORK")
+  case "$mode" in
+    ipfs_artifact) args+=(--ipfs-artifact-cid "$source") ;;
+    ipfs_index) args+=(--ipfs-index-cid "$source") ;;
+    ipfs_index_file) args+=(--ipfs-index-file "$(abs_path "$source")") ;;
+  esac
+  if [[ -n "${BDAG_RAWDATADIR_TRUSTED_SIGNERS:-}" ]]; then
+    args+=(--trusted-signers "$BDAG_RAWDATADIR_TRUSTED_SIGNERS")
+  fi
+  log "restoring chain data from signed IPFS rawdatadir artifact mode=$mode source=$source"
+  python3 "$ROOT/ops/restore-rawdatadir-segment-artifact.py" "${args[@]}" >>"$LOG_FILE" 2>&1
+}
+
 copy_existing_snapshot
 if ! choose_restore_source; then
   log "no trusted restore source or local snapshot was found"
@@ -447,6 +496,7 @@ mkdir -p "$NODE_DATA_DIR"
 case "$RESTORE_MODE_USED" in
   source) restore_from_source "$RESTORE_SOURCE_USED" ;;
   snapshot) restore_from_snapshot "$RESTORE_SOURCE_USED" ;;
+  ipfs_artifact|ipfs_index|ipfs_index_file) restore_from_ipfs_artifact "$RESTORE_MODE_USED" "$RESTORE_SOURCE_USED" ;;
   *)
     log "internal error: unknown restore mode $RESTORE_MODE_USED"
     json_state "failed" "unknown restore mode"

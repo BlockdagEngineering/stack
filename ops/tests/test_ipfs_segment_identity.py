@@ -40,10 +40,14 @@ class IPFSSegmentIdentityTest(unittest.TestCase):
         self.assertEqual(first["public_key_hex"], second["public_key_hex"])
         self.assertEqual(env["BDAG_IPFS_SEGMENT_WRITER_ID"], first["writer_id"])
         self.assertIn(f"{first['writer_id']}={first['public_key_hex']}", env["BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS"])
+        self.assertIn(f"{first['writer_id']}={first['public_key_hex']}", env["BDAG_RAWDATADIR_TRUSTED_SIGNERS"])
         self.assertIn(first["writer_id"], env["BDAG_IPFS_SEGMENT_WRITER_ROSTER"])
         self.assertEqual(env["BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES"], "1")
         self.assertEqual(env["BDAG_IPFS_RESTORE_REQUIRE_SIGNATURES"], "1")
+        self.assertEqual(env["BDAG_RAWDATADIR_SIGNING_KEY_ID"], first["writer_id"])
+        self.assertEqual(env["BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER"], "1")
         self.assertNotIn("BDAG_IPFS_SEGMENT_SIGNING_KEY_HEX", env)
+        self.assertNotIn("BDAG_RAWDATADIR_SIGNING_KEY_HEX", env)
         self.assertTrue(key_exists)
 
 

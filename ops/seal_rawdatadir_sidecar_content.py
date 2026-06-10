@@ -126,6 +126,28 @@ def manifest_root(manifest: dict[str, Any]) -> str:
 
 def signer_from_env(env: dict[str, str]) -> dict[str, str] | None:
     key_hex = (env.get("BDAG_RAWDATADIR_SIGNING_KEY_HEX") or "").strip()
+    key_file = (env.get("BDAG_RAWDATADIR_SIGNING_KEY_FILE") or env.get("BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE") or "").strip()
+    if not key_hex and key_file:
+        key_path = resolve_path(key_file, ROOT / "ops/runtime/ipfs-content/segment-writer.key")
+        try:
+            for raw in key_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    if key.strip() not in {
+                        "BDAG_RAWDATADIR_SIGNING_KEY_HEX",
+                        "BDAG_IPFS_SEGMENT_SIGNING_KEY_HEX",
+                        "SIGNING_KEY_HEX",
+                    }:
+                        continue
+                    key_hex = value.strip().strip('"').strip("'")
+                    break
+                key_hex = line
+                break
+        except OSError:
+            key_hex = ""
     if not key_hex:
         return None
     key_bytes = bytes.fromhex(key_hex)
@@ -144,7 +166,9 @@ def signer_from_env(env: dict[str, str]) -> dict[str, str] | None:
         format=serialization.PublicFormat.Raw,
     )
     return {
-        "key_id": env.get("BDAG_RAWDATADIR_SIGNING_KEY_ID") or "rawdatadir-sidecar",
+        "key_id": env.get("BDAG_RAWDATADIR_SIGNING_KEY_ID")
+        or env.get("BDAG_IPFS_SEGMENT_WRITER_ID")
+        or "rawdatadir-sidecar",
         "public_key": public_key.hex(),
         "private_key": private_key,
     }

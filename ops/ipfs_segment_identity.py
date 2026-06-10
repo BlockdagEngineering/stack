@@ -130,15 +130,21 @@ def ensure_identity(env_file: Path, key_file_override: str = "", write_env: bool
     public_hex = ipfs_segment_trust.public_key_hex(private_key)
     writer_id = env.get("BDAG_IPFS_SEGMENT_WRITER_ID") or env.get("BDAG_IPFS_WRITER_ID") or default_writer_id(public_hex)
     trusted = append_signer(env.get("BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS", ""), writer_id, public_hex)
+    rawdatadir_trusted = append_signer(env.get("BDAG_RAWDATADIR_TRUSTED_SIGNERS", ""), writer_id, public_hex)
     roster = append_roster(env.get("BDAG_IPFS_SEGMENT_WRITER_ROSTER", ""), writer_id)
     relative_key = os.path.relpath(key_path, env_file.parent)
+    relative_key_value = f"./{relative_key}" if not relative_key.startswith(".") else relative_key
     updates = {
         "BDAG_IPFS_SEGMENT_WRITER_ID": writer_id,
         "BDAG_IPFS_SEGMENT_WRITER_ROSTER": roster,
-        "BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE": f"./{relative_key}" if not relative_key.startswith(".") else relative_key,
+        "BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE": relative_key_value,
         "BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS": trusted,
         "BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES": env.get("BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES") or "1",
         "BDAG_IPFS_RESTORE_REQUIRE_SIGNATURES": env.get("BDAG_IPFS_RESTORE_REQUIRE_SIGNATURES") or "1",
+        "BDAG_RAWDATADIR_SIGNING_KEY_FILE": env.get("BDAG_RAWDATADIR_SIGNING_KEY_FILE") or relative_key_value,
+        "BDAG_RAWDATADIR_SIGNING_KEY_ID": env.get("BDAG_RAWDATADIR_SIGNING_KEY_ID") or writer_id,
+        "BDAG_RAWDATADIR_TRUSTED_SIGNERS": rawdatadir_trusted,
+        "BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER": env.get("BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER") or "1",
     }
     if write_env:
         atomic_write_env(env_file, updates)
@@ -149,6 +155,7 @@ def ensure_identity(env_file: Path, key_file_override: str = "", write_env: bool
         "writer_id": writer_id,
         "public_key_hex": public_hex,
         "trusted_signers": trusted,
+        "rawdatadir_trusted_signers": rawdatadir_trusted,
         "writer_roster": roster,
         "env_updates": updates,
     }

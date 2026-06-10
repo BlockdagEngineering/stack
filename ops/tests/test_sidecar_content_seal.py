@@ -164,6 +164,25 @@ class SidecarContentSealTest(unittest.TestCase):
         self.assertTrue(payload["publishable"])
         self.assertEqual(payload["anchor"]["anchor_source"], "configured_finalization_anchor")
 
+    def test_signer_can_read_seed_from_key_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            key_file = base / "segment-writer.key"
+            key_file.write_text(
+                "# test key\nBDAG_IPFS_SEGMENT_SIGNING_KEY_HEX=" + ("00" * 32) + "\n",
+                encoding="utf-8",
+            )
+            signer = seal.signer_from_env(
+                {
+                    "BDAG_RAWDATADIR_SIGNING_KEY_FILE": str(key_file),
+                    "BDAG_RAWDATADIR_SIGNING_KEY_ID": "file-backed-writer",
+                }
+            )
+
+        self.assertIsNotNone(signer)
+        self.assertEqual(signer["key_id"], "file-backed-writer")
+        self.assertEqual(len(signer["public_key"]), 64)
+
 
 if __name__ == "__main__":
     unittest.main()

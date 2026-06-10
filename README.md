@@ -50,8 +50,9 @@ bash install.sh
 
 The payload installer writes `.env` and `node.conf`, generates a strong Postgres
 password unless `POSTGRES_PASSWORD` is already set, provisions a signed IPFS
-segment-writer identity, verifies any configured IPFS archive evidence for an
-empty datadir, sets `DOCKER_PLATFORM` from the downloaded payload's
+segment-writer identity, attempts a trusted signed IPFS raw-datadir restore for
+an empty datadir when a raw artifact/index is configured, verifies configured
+IPFS segment evidence, sets `DOCKER_PLATFORM` from the downloaded payload's
 `release-payload.env`, and runs
 `docker compose build && docker compose up -d --no-build --pull never --no-deps postgres node dashboard`.
 
@@ -62,12 +63,19 @@ treat this host's five X100 devices as a release default.
 
 The installer uses host-path chain storage at `BDAG_NODE_DATA_DIR` and preserves
 existing chain data. If the configured node datadir has no chain markers, the
-installer runs the IPFS restore drill in verification-only mode and records the
-result under `ops/runtime/ipfs-content/restore-drill-status.json`. Segment data
-is not promoted into the live datadir until a segment-to-node importer and
-scratch-node validation path exists, so first start still uses normal P2P sync
-after the verification drill. To replace existing chain data, stop the stack and
-move the configured datadir aside deliberately before running the installer.
+installer first tries `ops/restore-rawdatadir-segment-artifact.py` when
+`BDAG_IPFS_RAWDATADIR_RESTORE_ARTIFACT_CID`,
+`BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_CID`, or
+`BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_FILE` is configured. That path reconstructs
+a raw `mainnet` datadir only after the artifact manifest signature verifies
+against `BDAG_RAWDATADIR_TRUSTED_SIGNERS`, the manifest root matches, and every
+chunk/file hash matches. The installer then runs the chain-order IPFS restore
+drill in verification-only mode and records the result under
+`ops/runtime/ipfs-content/restore-drill-status.json`. Chain-order segment data
+is not promoted into the live datadir until a segment-to-node replay/importer
+and scratch-node validation path exists. To replace existing chain data, stop
+the stack and move the configured datadir aside deliberately before running the
+installer.
 
 On macOS, if Docker reports an `xattr` error for files such as `._.env.example`, those are AppleDouble metadata files from the extracted folder or external drive. Current release packages include `.dockerignore` and the installer removes those files before building. For an older extracted folder, clean it manually and run the installer again:
 
@@ -140,10 +148,14 @@ The stack keeps a conservative, low-priority raw-datadir sidecar copy near the
 live node, seals safe generations into content-addressed chunks, and publishes
 verified indexes and live-tail segments through IPFS/IPNS. Segment manifests
 and indexes are signed with a local Ed25519 writer key provisioned by
-`ops/ipfs_segment_identity.py`; receivers must trust the writer public key before
-using any archive object. The node startup path runs a verification-only IPFS
-restore drill on empty datadirs, then continues normal P2P sync until a
-destructive segment import path exists.
+`ops/ipfs_segment_identity.py`; the same key file signs raw-datadir checkpoint
+artifacts via `BDAG_RAWDATADIR_SIGNING_KEY_FILE`. Receivers must trust the
+writer public key before using any archive object. Empty-datadir installs can
+restore a signed raw-datadir artifact from IPFS when a trusted raw content
+artifact/index is configured. Chain-order segments remain the continuous
+append-only mirror and verification source; destructive replay from those
+segments is still blocked until an importer and scratch-node validation path
+exists.
 
 ## IPFS Content Discovery
 
@@ -155,9 +167,9 @@ recorded in that discovery file. The current implementation writes append-only
 live-tail chain-order segments from the local node. The durable protocol design is recorded in
 `docs/ipfs-append-only-segment-protocol.html`. IPFS and IPNS are
 not chain trust. Receivers must verify Ed25519 signatures against a trusted
-writer roster, recursive previous-index lineage, segment CIDs, payload hashes,
-order continuity, network/genesis identity, tip/state roots, finality, and
-normal consensus before using the data.
+writer roster, recursive previous-index lineage, raw artifact manifests, segment
+CIDs, payload hashes, order continuity, network/genesis identity, tip/state
+roots, finality, and normal consensus before using the data.
 
 ## Runtime Stability Defaults
 
@@ -292,7 +304,8 @@ and logs; use a system service account with Docker socket access or an explicit
 `DOCKER_HOST`.
 
 Source checkout tests require Python's standard library test runner,
-`cryptography` for signed IPFS archive metadata, and `pytest`. On
+`cryptography` for signed IPFS archive metadata, `pytest`, and the Kubo
+`ipfs` CLI for live IPFS restore/publish drills. On
 Ubuntu/Debian hosts, install the test dependencies with:
 
 ```bash
@@ -302,7 +315,8 @@ sudo apt-get install -y python3-cryptography python3-pytest
 
 Agents should verify it with `python3 -m pytest --version` before running
 `ops/tests` through pytest-backed deployment checks. Verify the signing
-dependency with `python3 -c 'import cryptography'`.
+dependency with `python3 -c 'import cryptography'`. Verify Kubo with
+`ipfs version` before running live IPFS restore, pin, or publish tests.
 
 The collector runtime uses Python's standard HTTP client for local
 pool metrics and public enrichment calls. Do not make live status depend on
@@ -369,9 +383,12 @@ configuration failure, not a valid physical miner.
 ## Default V2 Sync Source
 
 New installs use IPFS sidecar content and append-only segment indexes as the
-bootstrap path. Active mining hosts maintain a low-priority raw datadir sidecar
-and publish signed, verified sidecar content only after the safety and
-finalization gates pass.
+bootstrap path. Active mining hosts maintain a low-priority raw datadir sidecar,
+seal signed restore artifacts, and publish signed, verified sidecar content only
+after the safety and finalization gates pass. Configure
+`BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_CID` or
+`BDAG_IPFS_RAWDATADIR_RESTORE_ARTIFACT_CID` for unattended fresh-node bootstrap
+from a trusted IPFS raw checkpoint.
 
 The archive seed timer is not part of this stack because IPFS segments and
 finalized raw-datadir sidecars own source publication.

@@ -231,6 +231,16 @@ set_stack_default_env_value() {
   set_env_value "$file" "$key" "$(stack_default "$key" "$fallback")"
 }
 
+set_existing_or_stack_default_env_value() {
+  local file="$1" key="$2" fallback="${3:-}" existing
+  existing="$(env_value "$key" "")"
+  if [[ -n "$existing" ]]; then
+    set_env_value "$file" "$key" "$existing"
+  else
+    set_stack_default_env_value "$file" "$key" "$fallback"
+  fi
+}
+
 apply_stack_defaults_env() {
   local file="$1" line key value
   [[ -f "$BDAG_STACK_DEFAULTS_FILE" ]] || return 0
@@ -240,6 +250,9 @@ apply_stack_defaults_env() {
     [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
     key="${line%%=*}"
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    if grep -q "^${key}=" "$file"; then
+      continue
+    fi
     value="$(stack_default "$key" "${line#*=}")"
     set_env_value "$file" "$key" "$value"
   done < "$BDAG_STACK_DEFAULTS_FILE"
@@ -577,6 +590,9 @@ configure_env() {
   set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_STRICT "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_STRICT 0)"
   set_env_value .env BDAG_INSTALL_STACK_SUPPORT_SERVICES "$(env_value BDAG_INSTALL_STACK_SUPPORT_SERVICES 1)"
   set_env_value .env BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT "$(env_value BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT 0)"
+  set_existing_or_stack_default_env_value .env BDAG_CHAIN_STATE_RESTORE_IPFS_ARTIFACT_CID
+  set_existing_or_stack_default_env_value .env BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_CID
+  set_existing_or_stack_default_env_value .env BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_FILE
   set_env_value .env NODE_ARGS_APPEND ""
   set_env_value .env BDAG_RAWDATADIR_ARTIFACT_BASE "./data-restore/rawdatadir"
   set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_MODE
@@ -584,10 +600,12 @@ configure_env() {
   set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE "./data-restore/rawdatadir-sidecar-content"
   set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP
   set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED
+  set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_SIGNING_KEY_FILE
+  set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_TRUSTED_SIGNERS
+  set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER
   set_env_value .env BDAG_RAWDATADIR_ACTIVE_SERVICE "node"
   set_stack_default_env_value .env BDAG_RAWDATADIR_FINALIZE
   set_env_value .env BDAG_RAWDATADIR_PEERS ""
-  set_env_value .env BDAG_RAWDATADIR_TRUSTED_SIGNERS ""
   set_stack_default_env_value .env BDAG_IPFS_CONTENT_SIDECAR_MODE
   set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_DIR "./data-restore/rawdatadir-sidecar-content/current"
   set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST "./data-restore/rawdatadir-sidecar-content/current/manifest.json"
@@ -604,8 +622,8 @@ configure_env() {
   set_env_value .env BDAG_IPFS_CONTENT_STATUS_FILE "./ops/runtime/ipfs-content-sidecar-status.json"
   set_env_value .env BDAG_IPFS_CONTENT_LATEST_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_MODE
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_ID
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_ROSTER
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_ID
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_ROSTER
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_START_POLICY
@@ -622,8 +640,8 @@ configure_env() {
   set_env_value .env BDAG_IPFS_SEGMENT_IPNS_KEY ""
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_IPNS_TTL
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_IPNS_LIFETIME
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES
   set_env_value .env BDAG_IPFS_SEGMENT_STATUS_FILE "./ops/runtime/ipfs-content/segment-writer-status.json"
   set_env_value .env BDAG_IPFS_SEGMENT_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
@@ -635,6 +653,14 @@ configure_env() {
   set_stack_default_env_value .env BDAG_IPFS_RESTORE_MAX_INDEX_LINEAGE_DEPTH
   set_stack_default_env_value .env BDAG_IPFS_RESTORE_PRESTART_DRILL
   set_stack_default_env_value .env BDAG_IPFS_RESTORE_PRESTART_STRICT
+  set_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART
+  set_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART_STRICT
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_ARTIFACT_CID
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_CID
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_FILE
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_DISCOVERY_FILE
+  set_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_STATUS_FILE
+  set_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_IPFS_TIMEOUT
   set_stack_default_env_value .env BDAG_IPFS_BACKFILL_INDEX_PATH
   set_stack_default_env_value .env BDAG_IPFS_BACKFILL_STATUS_FILE
   set_stack_default_env_value .env BDAG_IPFS_BACKFILL_START_ORDER
@@ -845,6 +871,72 @@ node_chain_markers_present() {
   [[ -d "$network_dir/BdagChain" || -d "$network_dir/bdageth/chaindata" || -d "$network_dir/chaindata" ]]
 }
 
+run_prestart_ipfs_rawdatadir_restore() {
+  local enabled strict artifact_cid index_cid index_file discovery status_file timeout chain_base node_dir network_dir
+  local args=()
+  enabled="$(env_value BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART 1)"
+  case "$enabled" in
+    0|false|False|no|No|off|Off)
+      return 0
+      ;;
+  esac
+  if node_chain_markers_present; then
+    say "Existing mainnet chain markers found; skipping pre-start IPFS raw-datadir restore"
+    return 0
+  fi
+  if [[ ! -x ops/restore-rawdatadir-segment-artifact.py ]]; then
+    warn "Cannot run pre-start IPFS raw-datadir restore: ops/restore-rawdatadir-segment-artifact.py is missing."
+    return 0
+  fi
+  artifact_cid="$(env_value BDAG_IPFS_RAWDATADIR_RESTORE_ARTIFACT_CID "")"
+  index_cid="$(env_value BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_CID "")"
+  index_file="$(env_value BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_FILE "")"
+  discovery="$(env_value BDAG_IPFS_RAWDATADIR_RESTORE_DISCOVERY_FILE "")"
+  if [[ -z "$artifact_cid" && -z "$index_cid" && -z "$index_file" && -z "$discovery" ]]; then
+    warn "No IPFS raw-datadir restore artifact/index is configured. The node will continue with normal P2P sync."
+    return 0
+  fi
+  if ! command -v "$(env_value BDAG_IPFS_BINARY ipfs)" >/dev/null 2>&1; then
+    warn "IPFS raw-datadir restore is configured, but the IPFS/Kubo CLI is not available. Install Kubo or set BDAG_IPFS_BINARY."
+    strict="$(env_value BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART_STRICT 0)"
+    if [[ "$strict" =~ ^(1|true|True|yes|Yes|on|On)$ ]]; then
+      exit 1
+    fi
+    return 0
+  fi
+  chain_base="$(env_path_value BDAG_CHAIN_DATA_DIR data)"
+  node_dir="$(env_path_value BDAG_NODE_DATA_DIR "$chain_base/node")"
+  network_dir="$node_dir/mainnet"
+  status_file="$(env_path_value BDAG_IPFS_RAWDATADIR_RESTORE_STATUS_FILE "ops/runtime/ipfs-content/rawdatadir-restore-status.json")"
+  timeout="$(env_value BDAG_IPFS_RAWDATADIR_RESTORE_IPFS_TIMEOUT 600)"
+  mkdir -p "$network_dir" "$(dirname "$status_file")"
+  args=(--target-dir "$network_dir" --status-file "$status_file" --ipfs-timeout "$timeout" --network mainnet)
+  if [[ -n "$artifact_cid" ]]; then
+    args+=(--ipfs-artifact-cid "$artifact_cid")
+  elif [[ -n "$index_cid" ]]; then
+    args+=(--ipfs-index-cid "$index_cid")
+  elif [[ -n "$index_file" ]]; then
+    args+=(--ipfs-index-file "$index_file")
+  else
+    args+=(--discovery "$discovery")
+  fi
+  if [[ -n "$(env_value BDAG_RAWDATADIR_TRUSTED_SIGNERS "")" ]]; then
+    args+=(--trusted-signers "$(env_value BDAG_RAWDATADIR_TRUSTED_SIGNERS "")")
+  fi
+
+  say "Restoring initial chain data from verified IPFS raw-datadir artifact"
+  if python3 ops/restore-rawdatadir-segment-artifact.py "${args[@]}"; then
+    say "IPFS raw-datadir restore completed for empty mainnet datadir"
+    return 0
+  fi
+  strict="$(env_value BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART_STRICT 0)"
+  if [[ "$strict" =~ ^(1|true|True|yes|Yes|on|On)$ ]]; then
+    echo "Pre-start IPFS raw-datadir restore failed and BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART_STRICT=1." >&2
+    exit 1
+  fi
+  warn "Pre-start IPFS raw-datadir restore failed. Continuing because BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART_STRICT=0."
+}
+
 run_prestart_ipfs_restore_drill() {
   local enabled strict status_file max_segments args=()
   enabled="$(env_value BDAG_IPFS_RESTORE_PRESTART_DRILL 1)"
@@ -1036,6 +1128,7 @@ main() {
   run_appliance_preflight
   load_or_build_images "$arch"
   seed_chain_data
+  run_prestart_ipfs_rawdatadir_restore
   run_prestart_ipfs_restore_drill
   start_stack
   install_stack_support_services
