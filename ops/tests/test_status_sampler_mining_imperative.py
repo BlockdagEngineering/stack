@@ -315,6 +315,31 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertEqual(policy["trigger"], "")
         self.assertTrue(policy["backend_unready_under_pressure"])
 
+    def test_catchup_policy_records_memory_pressure_reason(self) -> None:
+        payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=80)
+        payload["can_mine"] = False
+        payload["host_pressure"] = {
+            "memory_available_percent": 8.5,
+            "memory_available_warn_percent": 12.0,
+            "memory_warning_active": True,
+            "swap_used_percent": 0.0,
+            "swap_used_warn_percent": 5.0,
+            "swap_warning_active": False,
+        }
+        payload["catchup_policy"] = {
+            "active": False,
+            "lag_blocks": 80,
+            "threshold_blocks": 300,
+            "io_pressure_min_lag_blocks": 25,
+            "mining_ready": False,
+        }
+
+        policy = status_sampler.catchup_policy_from_payload(payload)
+
+        self.assertTrue(policy["active"])
+        self.assertEqual(policy["trigger"], "io_pressure")
+        self.assertIn("memory_available_warning", policy["io_pressure_reasons"])
+
     def test_catchup_pause_does_not_stop_pool_with_recent_paid_work(self) -> None:
         commands = []
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []

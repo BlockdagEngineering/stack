@@ -168,11 +168,7 @@ def detect_total_memory_bytes(os_name: str | None = None) -> int | None:
     system = normalize_os_name(os_name)
     if system == "linux":
         try:
-            for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
-                if line.startswith("MemTotal:"):
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        return int(parts[1]) * 1024
+            return parse_meminfo(Path("/proc/meminfo").read_text(encoding="utf-8")).get("MemTotal")
         except (OSError, ValueError):
             return None
     if system == "darwin":
@@ -182,6 +178,26 @@ def detect_total_memory_bytes(os_name: str | None = None) -> int | None:
         except (OSError, subprocess.SubprocessError, ValueError):
             return None
     return None
+
+
+def parse_meminfo(text: str) -> dict[str, int]:
+    values: dict[str, int] = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        key, raw_value = line.split(":", 1)
+        parts = raw_value.split()
+        if not parts:
+            continue
+        try:
+            value = int(parts[0])
+        except ValueError:
+            continue
+        unit = parts[1].lower() if len(parts) > 1 else ""
+        if unit == "kb":
+            value *= 1024
+        values[key.strip()] = value
+    return values
 
 
 def detect_hardware_model(os_name: str | None = None) -> str:
@@ -488,6 +504,16 @@ NODE_TEMPLATE_PROBE_TIMEOUT = float(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_TIM
 NODE_CHAIN_RPC_TIMEOUT = float(os.environ.get("BDAG_NODE_CHAIN_RPC_TIMEOUT", "8.0"))
 NODE_CHAIN_RPC_RETRIES = max(1, int(os.environ.get("BDAG_NODE_CHAIN_RPC_RETRIES", "2")))
 HOST_PRESSURE_IOWAIT_WARN_PERCENT = env_float("BDAG_HOST_PRESSURE_IOWAIT_WARN_PERCENT", 25.0, minimum=0.0)
+HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT = env_float(
+    "BDAG_HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT",
+    12.0,
+    minimum=0.0,
+)
+HOST_PRESSURE_SWAP_USED_WARN_PERCENT = env_float(
+    "BDAG_HOST_PRESSURE_SWAP_USED_WARN_PERCENT",
+    5.0,
+    minimum=0.0,
+)
 HOST_PRESSURE_IOWAIT_WARN_SAMPLES = env_int("BDAG_HOST_PRESSURE_IOWAIT_WARN_SAMPLES", 3, minimum=2)
 HOST_PRESSURE_HISTORY_SAMPLES = max(
     HOST_PRESSURE_IOWAIT_WARN_SAMPLES,
@@ -509,6 +535,16 @@ ADAPTIVE_IOWAIT_WARN_PERCENT = env_float(
 ADAPTIVE_IO_SOME_AVG10_WARN = env_float("BDAG_ADAPTIVE_IO_SOME_AVG10_WARN", 20.0, minimum=0.0)
 ADAPTIVE_CPU_SOME_AVG10_WARN = env_float("BDAG_ADAPTIVE_CPU_SOME_AVG10_WARN", 80.0, minimum=0.0)
 ADAPTIVE_CHAIN_RPC_WARN_MS = env_float("BDAG_ADAPTIVE_CHAIN_RPC_WARN_MS", 1000.0, minimum=0.0)
+ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT = env_float(
+    "BDAG_ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT",
+    HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT,
+    minimum=0.0,
+)
+ADAPTIVE_SWAP_USED_WARN_PERCENT = env_float(
+    "BDAG_ADAPTIVE_SWAP_USED_WARN_PERCENT",
+    HOST_PRESSURE_SWAP_USED_WARN_PERCENT,
+    minimum=0.0,
+)
 BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = env_bool("BDAG_BACKGROUND_MAINTENANCE_BACKOFF_ENABLED", True)
 BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS = env_int("BDAG_BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS", 0, minimum=0)
 BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT = env_float(
@@ -534,6 +570,16 @@ BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN = env_float(
 BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS = env_float(
     "BDAG_BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS",
     ADAPTIVE_CHAIN_RPC_WARN_MS,
+    minimum=0.0,
+)
+BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT = env_float(
+    "BDAG_BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT",
+    HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT,
+    minimum=0.0,
+)
+BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT = env_float(
+    "BDAG_BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT",
+    HOST_PRESSURE_SWAP_USED_WARN_PERCENT,
     minimum=0.0,
 )
 BACKGROUND_MAINTENANCE_LAZY_TASKS = set(
@@ -937,9 +983,22 @@ def host_pressure_iowait_sustained(samples: list[dict[str, Any]], threshold: flo
 
 
 def host_pressure_warning_messages(pressure: dict[str, Any]) -> list[str]:
+    messages: list[str] = []
+    memory_available_percent = safe_float(pressure.get("memory_available_percent"))
+    if pressure.get("memory_warning_active") and memory_available_percent is not None:
+        messages.append(
+            "host RAM available is low "
+            f"({memory_available_percent:.2f}% <= {HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT:.2f}%)"
+        )
+    swap_used_percent = safe_float(pressure.get("swap_used_percent"))
+    if pressure.get("swap_warning_active") and swap_used_percent is not None:
+        messages.append(
+            "host swap use is active "
+            f"({swap_used_percent:.2f}% >= {HOST_PRESSURE_SWAP_USED_WARN_PERCENT:.2f}%)"
+        )
     samples = pressure.get("samples") if isinstance(pressure.get("samples"), list) else []
     if not pressure.get("iowait_warning_active"):
-        return []
+        return messages
     values = [
         safe_float(item.get("iowait_percent"))
         for item in samples[-HOST_PRESSURE_IOWAIT_WARN_SAMPLES:]
@@ -951,10 +1010,11 @@ def host_pressure_warning_messages(pressure: dict[str, Any]) -> list[str]:
         detail = f"current={current:.2f}% avg={avg:.2f}%"
     else:
         detail = f"threshold={HOST_PRESSURE_IOWAIT_WARN_PERCENT:.2f}%"
-    return [
+    messages.append(
         "host IO wait is sustained across recent dashboard samples "
         f"({detail}, threshold={HOST_PRESSURE_IOWAIT_WARN_PERCENT:.2f}%)"
-    ]
+    )
+    return messages
 
 
 def collect_host_pressure() -> dict[str, Any]:
@@ -972,6 +1032,18 @@ def collect_host_pressure() -> dict[str, Any]:
         "iowait_warning_active": False,
         "cpu_some_avg10": None,
         "memory_some_avg10": None,
+        "memory_full_avg10": None,
+        "memory_total_bytes": None,
+        "memory_available_bytes": None,
+        "memory_available_percent": None,
+        "memory_available_warn_percent": HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT,
+        "memory_warning_active": False,
+        "swap_total_bytes": None,
+        "swap_free_bytes": None,
+        "swap_used_bytes": None,
+        "swap_used_percent": None,
+        "swap_used_warn_percent": HOST_PRESSURE_SWAP_USED_WARN_PERCENT,
+        "swap_warning_active": False,
     }
     try:
         load_parts = Path("/proc/loadavg").read_text(encoding="utf-8").split()
@@ -989,6 +1061,30 @@ def collect_host_pressure() -> dict[str, Any]:
             continue
         pressure[f"{name}_some_avg10"] = parsed.get("some_avg10")
         pressure[f"{name}_full_avg10"] = parsed.get("full_avg10")
+
+    try:
+        meminfo = parse_meminfo(Path("/proc/meminfo").read_text(encoding="utf-8"))
+    except OSError:
+        meminfo = {}
+    mem_total = meminfo.get("MemTotal")
+    mem_available = meminfo.get("MemAvailable")
+    if mem_total and mem_available is not None and mem_total > 0:
+        memory_available_percent = round(max(0.0, mem_available * 100.0 / mem_total), 2)
+        pressure["memory_total_bytes"] = mem_total
+        pressure["memory_available_bytes"] = mem_available
+        pressure["memory_available_percent"] = memory_available_percent
+        pressure["memory_warning_active"] = memory_available_percent <= HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT
+    swap_total = meminfo.get("SwapTotal")
+    swap_free = meminfo.get("SwapFree")
+    if swap_total is not None and swap_free is not None:
+        swap_used = max(0, swap_total - swap_free)
+        pressure["swap_total_bytes"] = swap_total
+        pressure["swap_free_bytes"] = swap_free
+        pressure["swap_used_bytes"] = swap_used
+        if swap_total > 0:
+            swap_used_percent = round(max(0.0, swap_used * 100.0 / swap_total), 2)
+            pressure["swap_used_percent"] = swap_used_percent
+            pressure["swap_warning_active"] = swap_used_percent >= HOST_PRESSURE_SWAP_USED_WARN_PERCENT
 
     try:
         cpu = parse_proc_stat_cpu(Path("/proc/stat").read_text(encoding="utf-8"))
@@ -1079,12 +1175,21 @@ def adaptive_pressure_level(pressure: dict[str, Any] | None) -> str:
     io_some = safe_float(pressure.get("io_some_avg10"))
     cpu_some = safe_float(pressure.get("cpu_some_avg10"))
     chain_rpc_latency = safe_float(pressure.get("chain_rpc_latency_ms"))
+    memory_available_percent = safe_float(pressure.get("memory_available_percent"))
+    swap_used_percent = safe_float(pressure.get("swap_used_percent"))
     if (
         bool(pressure.get("iowait_warning_active"))
+        or bool(pressure.get("memory_warning_active"))
+        or bool(pressure.get("swap_warning_active"))
         or (iowait is not None and iowait >= ADAPTIVE_IOWAIT_WARN_PERCENT)
         or (io_some is not None and io_some >= ADAPTIVE_IO_SOME_AVG10_WARN)
         or (cpu_some is not None and cpu_some >= ADAPTIVE_CPU_SOME_AVG10_WARN)
         or (chain_rpc_latency is not None and chain_rpc_latency >= ADAPTIVE_CHAIN_RPC_WARN_MS)
+        or (
+            memory_available_percent is not None
+            and memory_available_percent <= ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT
+        )
+        or (swap_used_percent is not None and swap_used_percent >= ADAPTIVE_SWAP_USED_WARN_PERCENT)
     ):
         return "high"
     if (
@@ -1092,6 +1197,11 @@ def adaptive_pressure_level(pressure: dict[str, Any] | None) -> str:
         or (io_some is not None and io_some >= ADAPTIVE_IO_SOME_AVG10_WARN / 2)
         or (cpu_some is not None and cpu_some >= ADAPTIVE_CPU_SOME_AVG10_WARN / 2)
         or (chain_rpc_latency is not None and chain_rpc_latency >= ADAPTIVE_CHAIN_RPC_WARN_MS / 2)
+        or (
+            memory_available_percent is not None
+            and memory_available_percent <= max(ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT * 2, ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT)
+        )
+        or (swap_used_percent is not None and swap_used_percent >= max(ADAPTIVE_SWAP_USED_WARN_PERCENT / 2, 1.0))
     ):
         return "moderate"
     return "low"
@@ -6914,6 +7024,24 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
         reasons.append(
             f"host cpu pressure avg10 {cpu_some:.2f} >= {BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN:.2f}"
         )
+    memory_available_percent = safe_float(host_pressure.get("memory_available_percent"))
+    if bool(host_pressure.get("memory_warning_active")):
+        reasons.append("host RAM available warning is active")
+    elif (
+        memory_available_percent is not None
+        and memory_available_percent <= BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT
+    ):
+        reasons.append(
+            "host RAM available "
+            f"{memory_available_percent:.2f}% <= {BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT:.2f}%"
+        )
+    swap_used_percent = safe_float(host_pressure.get("swap_used_percent"))
+    if bool(host_pressure.get("swap_warning_active")):
+        reasons.append("host swap use warning is active")
+    elif swap_used_percent is not None and swap_used_percent >= BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT:
+        reasons.append(
+            f"host swap used {swap_used_percent:.2f}% >= {BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT:.2f}%"
+        )
     if (
         chain_rpc_latency_ms is not None
         and not sync_priority_exempt
@@ -6958,6 +7086,10 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
         "io_full_avg10_warn": BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN,
         "cpu_some_avg10": cpu_some,
         "cpu_some_avg10_warn": BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN,
+        "memory_available_percent": memory_available_percent,
+        "memory_available_warn_percent": BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT,
+        "swap_used_percent": swap_used_percent,
+        "swap_used_warn_percent": BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT,
         "chain_rpc_latency_ms": chain_rpc_latency_ms,
         "chain_rpc_latency_warn_ms": BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS,
         "loadavg_1m": loadavg_1m,

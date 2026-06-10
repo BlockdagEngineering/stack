@@ -459,6 +459,9 @@ configure_storage_profile() {
   set_env_value .env BDAG_POOL_DB_CPU_SHARES "$(env_value BDAG_POOL_DB_CPU_SHARES 4096)"
   set_env_value .env BDAG_DASHBOARD_CPU_SHARES "$(env_value BDAG_DASHBOARD_CPU_SHARES 128)"
   set_env_value .env BDAG_NODE_MEMORY_LOW "$(env_value BDAG_NODE_MEMORY_LOW 768M)"
+  set_env_value .env BDAG_NODE_MEMORY_HIGH "$(env_value BDAG_NODE_MEMORY_HIGH auto)"
+  set_env_value .env BDAG_NODE_MEMORY_HIGH_PERCENT "$(env_value BDAG_NODE_MEMORY_HIGH_PERCENT 82)"
+  set_env_value .env BDAG_NODE_MEMORY_HIGH_MIN "$(env_value BDAG_NODE_MEMORY_HIGH_MIN 4096M)"
   set_env_value .env BDAG_POOL_MEMORY_LOW "$(env_value BDAG_POOL_MEMORY_LOW 256M)"
   set_env_value .env BDAG_POOL_DB_MEMORY_LOW "$(env_value BDAG_POOL_DB_MEMORY_LOW 512M)"
   set_env_value .env BDAG_DASHBOARD_MEMORY_LOW "$(env_value BDAG_DASHBOARD_MEMORY_LOW 64M)"
@@ -697,6 +700,12 @@ configure_env() {
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MB
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MIN_MB
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT
+  set_stack_default_env_value .env BDAG_HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT
+  set_stack_default_env_value .env BDAG_HOST_PRESSURE_SWAP_USED_WARN_PERCENT
+  set_stack_default_env_value .env BDAG_ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT
+  set_stack_default_env_value .env BDAG_ADAPTIVE_SWAP_USED_WARN_PERCENT
+  set_stack_default_env_value .env BDAG_BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT
+  set_stack_default_env_value .env BDAG_BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT
   set_stack_default_env_value .env BDAG_MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED
   set_stack_default_env_value .env BDAG_CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS
   set_stack_default_env_value .env BDAG_CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS

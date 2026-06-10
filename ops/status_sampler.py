@@ -540,6 +540,14 @@ def catchup_io_pressure_reasons(payload: dict[str, Any]) -> list[str]:
     iowait = safe_float(host_pressure.get("iowait_percent")) if host_pressure.get("iowait_percent") is not None else None
     io_some = safe_float(host_pressure.get("io_some_avg10")) if host_pressure.get("io_some_avg10") is not None else None
     io_full = safe_float(host_pressure.get("io_full_avg10")) if host_pressure.get("io_full_avg10") is not None else None
+    memory_available = (
+        safe_float(host_pressure.get("memory_available_percent"))
+        if host_pressure.get("memory_available_percent") is not None
+        else None
+    )
+    memory_available_warn = safe_float(host_pressure.get("memory_available_warn_percent"), 0.0) or 0.0
+    swap_used = safe_float(host_pressure.get("swap_used_percent")) if host_pressure.get("swap_used_percent") is not None else None
+    swap_used_warn = safe_float(host_pressure.get("swap_used_warn_percent"), 0.0) or 0.0
     if bool(host_pressure.get("iowait_warning_active")):
         reasons.append("sustained_iowait_warning")
     if iowait is not None and iowait >= CATCHUP_IOWAIT_WARN_PERCENT:
@@ -548,6 +556,14 @@ def catchup_io_pressure_reasons(payload: dict[str, Any]) -> list[str]:
         reasons.append(f"io_some_avg10={io_some:.2f}>={CATCHUP_IO_SOME_AVG10_WARN:.2f}")
     if io_full is not None and io_full >= CATCHUP_IO_FULL_AVG10_WARN:
         reasons.append(f"io_full_avg10={io_full:.2f}>={CATCHUP_IO_FULL_AVG10_WARN:.2f}")
+    if bool(host_pressure.get("memory_warning_active")):
+        reasons.append("memory_available_warning")
+    elif memory_available is not None and memory_available_warn > 0 and memory_available <= memory_available_warn:
+        reasons.append(f"memory_available_percent={memory_available:.2f}<={memory_available_warn:.2f}")
+    if bool(host_pressure.get("swap_warning_active")):
+        reasons.append("swap_used_warning")
+    elif swap_used is not None and swap_used_warn > 0 and swap_used >= swap_used_warn:
+        reasons.append(f"swap_used_percent={swap_used:.2f}>={swap_used_warn:.2f}")
     return reasons
 
 
