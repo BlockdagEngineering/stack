@@ -8,13 +8,12 @@ import json
 import os
 import subprocess
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
 from incident_journal import append_incident
-from pool_ops import LOG_DIR, RUNTIME_DIR, collect_status_cached, ensure_runtime, now_iso
+from pool_ops import LOG_DIR, RUNTIME_DIR, ensure_runtime, now_iso
+from stack_status_source import StackStatusUnavailable, collect_stack_status
 
 
 def load_runtime_env_defaults() -> None:
@@ -36,8 +35,12 @@ def load_runtime_env_defaults() -> None:
 load_runtime_env_defaults()
 
 
-DASHBOARD_URL = os.environ.get("BDAG_MINING_GUARD_COLLECTOR_URL", "http://127.0.0.1:9280/api/status")
-DASHBOARD_TIMEOUT = float(os.environ.get("BDAG_MINING_GUARD_DASHBOARD_TIMEOUT", "20"))
+STATUS_URL = (
+    os.environ.get("BDAG_MINING_GUARD_STATUS_URL")
+    or os.environ.get("BDAG_MINING_GUARD_COLLECTOR_URL")
+    or "http://127.0.0.1:9280/api/status"
+)
+STATUS_TIMEOUT = float(os.environ.get("BDAG_MINING_GUARD_STATUS_TIMEOUT", "20"))
 EXPECTED_ASIC_IP = os.environ.get("BDAG_EXPECTED_ASIC_IP", "").strip()
 EXPECTED_WALLET = os.environ.get("BDAG_EXPECTED_MINING_WALLET", "").strip()
 MINING_GUARD_ENABLED = os.environ.get(
@@ -182,9 +185,8 @@ def as_float(value: Any) -> float | None:
 
 def status_api() -> tuple[dict[str, Any] | None, str]:
     try:
-        with urllib.request.urlopen(DASHBOARD_URL, timeout=DASHBOARD_TIMEOUT) as response:
-            return json.loads(response.read(4_000_000).decode("utf-8", "replace")), ""
-    except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        return collect_stack_status(include_logs=True, collector_url=STATUS_URL, timeout=STATUS_TIMEOUT), ""
+    except (StackStatusUnavailable, OSError, TimeoutError, json.JSONDecodeError) as exc:
         return None, str(exc)
 
 
@@ -192,10 +194,7 @@ def fallback_status() -> tuple[dict[str, Any] | None, str]:
     status, error = status_api()
     if status is not None:
         return status, ""
-    try:
-        return collect_status_cached(include_logs=True), f"dashboard API unavailable; used direct status: {error}"
-    except Exception as exc:  # noqa: BLE001 - this guard must report failures, not crash silently.
-        return None, f"{error}; direct status failed: {exc}"
+    return None, error
 
 
 def find_expected_miner(status: dict[str, Any]) -> dict[str, Any]:
@@ -239,10 +238,10 @@ def build_sample(status: dict[str, Any] | None, error: str, state: dict[str, Any
         "generated_epoch": now,
         "guard_state": "critical" if status is None else "ok",
         "problems": [],
-        "dashboard_error": error,
+        "status_error": error,
     }
     if status is None:
-        sample["problems"].append("dashboard-status-unavailable")
+        sample["problems"].append("status-unavailable")
         return sample
 
     pool = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
@@ -322,7 +321,7 @@ def build_sample(status: dict[str, Any] | None, error: str, state: dict[str, Any
     critical = False
 
     if str(status.get("overall") or "") == "down":
-        problems.append("dashboard-overall-down")
+        problems.append("status-overall-down")
         critical = True
 
     if sync_status != "synced" or remaining_blocks > 0 or effective_initial_download:
@@ -399,11 +398,12 @@ def should_emit(state: dict[str, Any], sample: dict[str, Any]) -> bool:
     return True
 
 
-def run_once() -> dict[str, Any]:
+def run_once(dry_run: bool = False) -> dict[str, Any]:
     ensure_runtime()
     state = read_json(STATE_FILE)
     status, error = fallback_status()
     sample = build_sample(status, error, state)
+    sample["dry_run"] = dry_run
     source_triage: dict[str, Any] = {}
     if sample.get("guard_state") != "ok":
         source_triage = source_freshness_triage()
@@ -463,8 +463,9 @@ def run_once() -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true", help="run one check and print JSON")
+    parser.add_argument("--dry-run", action="store_true", help="evaluate triage without acting on the stack")
     args = parser.parse_args()
-    sample = run_once()
+    sample = run_once(dry_run=args.dry_run)
     print(json.dumps(sample, indent=2, sort_keys=True, default=str))
     return 0 if sample.get("guard_state") in {"ok", "warning", "critical"} else 1
 

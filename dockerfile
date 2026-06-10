@@ -52,7 +52,7 @@ ARG COLLECTOR_REF=develop
 RUN apk add --no-cache ca-certificates git
 RUN --mount=type=secret,id=github_token,required=false set -eu; \
     repo="${COLLECTOR_REPO:-https://github.com/BlockdagEngineering/collector.git}"; \
-    ref="develop"; \
+    ref="${COLLECTOR_REF:-develop}"; \
     token="$(cat /run/secrets/github_token 2>/dev/null || true)"; \
     if [ -n "$token" ]; then \
       auth="$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"; \
@@ -175,12 +175,15 @@ RUN apk add --no-cache \
     shadow \
     tzdata
 
-COPY --from=collector-source /src/collector /opt/collector
-COPY docker/entrypoint-collector.sh /usr/local/bin/entrypoint-collector.sh
-RUN chmod +x /usr/local/bin/entrypoint-collector.sh \
- && mkdir -p /var/lib/bdag-collector/runtime /workspace \
- && if [ -f /opt/collector/requirements.txt ]; then \
-      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/collector/requirements.txt; \
+COPY --from=dashboard-source /src/dashboard /opt/dashboard
+# Compose supplies dashboard_src from DASHBOARD_SRC_CONTEXT so local fresh builds
+# run the checked-out dashboard code instead of silently cloning an older ref.
+COPY --from=dashboard_src . /opt/dashboard
+COPY docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
+RUN chmod +x /usr/local/bin/entrypoint-dashboard.sh \
+ && mkdir -p /var/lib/bdag-dashboard/runtime /workspace \
+ && if [ -f /opt/dashboard/requirements.txt ]; then \
+      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/dashboard/requirements.txt; \
     fi
 
 ENV PYTHONUNBUFFERED=1 \
@@ -195,7 +198,7 @@ EXPOSE 9280
 ENTRYPOINT ["/usr/local/bin/entrypoint-collector.sh"]
 
 # ----------------------------------------------------------------------------
-# Dashboard Runtime Stage (Go UI over collector API)
+# Dashboard Runtime Stage (Go UI over status API)
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS dashboard
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \

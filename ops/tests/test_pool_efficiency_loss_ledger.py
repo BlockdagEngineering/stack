@@ -51,13 +51,113 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
         source_health = {"node_mineable": False, "node_submit_ready": False, "node_p2p_mining_fresh": True}
         job_health = {"ok": False}
 
-        contradiction = pool_ops.selected_backend_readiness_contract("node1", source_health, job_health, True)
-        hard_unready = pool_ops.selected_backend_readiness_contract("node1", source_health, job_health, False)
+        contradiction = pool_ops.selected_backend_readiness_contract("node", source_health, job_health, True)
+        hard_unready = pool_ops.selected_backend_readiness_contract("node", source_health, job_health, False)
 
         self.assertTrue(contradiction["contradiction"])
         self.assertFalse(contradiction["hard_unready"])
         self.assertFalse(hard_unready["contradiction"])
         self.assertTrue(hard_unready["hard_unready"])
+
+    def test_selected_backend_unready_reasons_include_peer_freshness(self) -> None:
+        reasons = pool_ops.selected_backend_unready_reasons(
+            {
+                "node_mineable": False,
+                "node_submit_ready": False,
+                "node_p2p_mining_fresh": False,
+                "node_last_template_build_error_blocking": True,
+            }
+        )
+
+        self.assertEqual(
+            reasons,
+            [
+                "mineable=false",
+                "submit_ready=false",
+                "p2p_mining_fresh=false",
+                "template_build_error_blocking=true",
+            ],
+        )
+
+    def test_selected_backend_source_degradation_is_advisory_with_recent_paid_work(self) -> None:
+        advisory = pool_ops.selected_backend_source_degradation(True, True)
+        hard = pool_ops.selected_backend_source_degradation(True, False)
+
+        self.assertTrue(advisory["degraded"])
+        self.assertTrue(advisory["advisory"])
+        self.assertFalse(advisory["hard"])
+        self.assertTrue(hard["hard"])
+        self.assertFalse(hard["advisory"])
+
+    def test_catchup_policy_pauses_pool_above_threshold(self) -> None:
+        policy = pool_ops.build_catchup_policy(
+            {"status": "syncing", "remaining_blocks": 450},
+            {"node": {"peer_ahead_blocks": 20}},
+            {"pool": {"running": False}},
+            {},
+        )
+
+        self.assertTrue(policy["active"])
+        self.assertTrue(policy["pool_pause_active"])
+        self.assertEqual(policy["threshold_blocks"], 300)
+        self.assertIn("mining work is intentionally paused", policy["summary"])
+        self.assertIn("Leave miners configured", policy["user_message"])
+        self.assertEqual(policy["trigger"], "lag_threshold")
+
+    def test_catchup_policy_uses_io_pressure_as_primary_trigger(self) -> None:
+        policy = pool_ops.build_catchup_policy(
+            {"status": "syncing", "remaining_blocks": 80},
+            {"node": {"peer_ahead_blocks": 80}},
+            {"pool": {"running": True}},
+            {"node_mineable": False, "node_submit_ready": False},
+            {"iowait_percent": 18.0, "io_some_avg10": 22.0, "io_full_avg10": 23.0},
+            mining_ready=False,
+        )
+
+        self.assertTrue(policy["active"])
+        self.assertEqual(policy["trigger"], "io_pressure")
+        self.assertTrue(policy["io_pressure_active"])
+        self.assertFalse(policy["lag_threshold_active"])
+        self.assertEqual(policy["lag_blocks"], 80)
+        self.assertIn("I/O-bound", policy["summary"])
+        self.assertIn("I/O pressure drops", policy["next_step"])
+        self.assertTrue(any("io_full_avg10" in reason for reason in policy["io_pressure_reasons"]))
+
+    def test_catchup_policy_uses_backend_peer_lead_when_sync_claims_synced(self) -> None:
+        policy = pool_ops.build_catchup_policy(
+            {"status": "synced", "remaining_blocks": 0},
+            {"node": {}},
+            {"pool": {"running": True}},
+            {
+                "node_mineable": False,
+                "node_submit_ready": False,
+                "node_p2p_mining_fresh": True,
+                "node_p2p_best_peer_lead_blocks": 80,
+            },
+            {"io_full_avg10": 23.0},
+            mining_ready=False,
+        )
+
+        self.assertTrue(policy["active"])
+        self.assertEqual(policy["trigger"], "io_pressure")
+        self.assertEqual(policy["lag_blocks"], 80)
+
+    def test_catchup_policy_pauses_backend_unready_under_io_pressure_without_lag(self) -> None:
+        policy = pool_ops.build_catchup_policy(
+            {"status": "synced", "remaining_blocks": 0},
+            {"node": {}},
+            {"pool": {"running": True}},
+            {"node_mineable": False, "node_submit_ready": False, "node_p2p_mining_fresh": True},
+            {"iowait_percent": 21.0, "io_full_avg10": 22.0},
+            mining_ready=False,
+        )
+
+        self.assertTrue(policy["active"])
+        self.assertEqual(policy["trigger"], "io_pressure")
+        self.assertEqual(policy["lag_blocks"], 0)
+        self.assertTrue(policy["backend_unready_under_pressure"])
+        self.assertIn("backend is not ready", policy["summary"])
+        self.assertIn("stale or invalid work", policy["user_message"])
 
 
 class PoolPrometheusMetricsParsingTests(unittest.TestCase):
@@ -74,10 +174,10 @@ class PoolPrometheusMetricsParsingTests(unittest.TestCase):
     def test_pool_metrics_parse_loss_ledger_and_source_health_contract_inputs(self) -> None:
         metrics = """
 pool_active_connections 5
-pool_rpc_backend_selected{backend="node1",pool_id="0"} 1
-pool_rpc_backend_healthy{backend="node1",pool_id="0"} 1
-pool_rpc_backend_node_health_mineable{backend="node1",pool_id="0"} 0
-pool_rpc_backend_node_health_submit_ready{backend="node1",pool_id="0"} 0
+pool_rpc_backend_selected{backend="node",pool_id="0"} 1
+pool_rpc_backend_healthy{backend="node",pool_id="0"} 1
+pool_rpc_backend_node_health_mineable{backend="node",pool_id="0"} 0
+pool_rpc_backend_node_health_submit_ready{backend="node",pool_id="0"} 0
 pool_job_health_ok{pool_id="0"} 0
 pool_job_health_ready_miners{pool_id="0"} 5
 pool_template_conversion_stall_active_miners{pool_id="0"} 5
@@ -86,7 +186,7 @@ pool_template_conversion_stall_window_candidates{kind="accepted",pool_id="0"} 2
 pool_template_conversion_stall_window_candidates{kind="failed",pool_id="0"} 3
 pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"} 10
 pool_block_submit_outcomes_total{outcome="rejected",pool_id="0",reason="tip-overdue"} 8
-pool_block_submit_backend_outcomes_total{backend="node1",outcome="rejected",pool_id="0",reason="tip-overdue"} 8
+pool_block_submit_backend_outcomes_total{backend="node",outcome="rejected",pool_id="0",reason="tip-overdue"} 8
 pool_blocks_found_total{pool_id="0"} 18
 pool_blocks_submitted_total{pool_id="0"} 18
 pool_blocks_rejected_by_node_total{pool_id="0",reason="tip-overdue"} 8
@@ -103,7 +203,7 @@ pool_shares_rejected_total{pool_id="0",reason="invalidated_job"} 15
 
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["active_connections"], 5)
-        self.assertEqual(payload["selected_backend"], "node1")
+        self.assertEqual(payload["selected_backend"], "node")
         self.assertFalse(payload["selected_backend_source_health"]["node_mineable"])
         self.assertEqual(payload["loss_ledger"]["severity"], "critical")
         self.assertEqual(payload["loss_ledger"]["share_outcomes"]["accepted_ratio_percent"], 25.0)

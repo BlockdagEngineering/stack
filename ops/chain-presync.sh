@@ -12,9 +12,8 @@ PRESYNC_ACCEPTABLE_BLOCK_LAG_FLOOR="${BDAG_PRESYNC_ACCEPTABLE_BLOCK_LAG_FLOOR:-$
 PRESYNC_COPY_MINUTE_BLOCK_ALLOWANCE="${BDAG_PRESYNC_COPY_MINUTE_BLOCK_ALLOWANCE:-${BDAG_SYNC_COPY_MINUTE_BLOCK_ALLOWANCE:-4}}"
 PRESYNC_LAST_COPY_SECONDS_FILE="${BDAG_PRESYNC_LAST_COPY_SECONDS_FILE:-$PROJECT_ROOT/ops/runtime/chain-presync-last-copy-seconds}"
 PRESYNC_UNKNOWN_BACKOFF="${BDAG_PRESYNC_UNKNOWN_BACKOFF:-1}"
-PRESYNC_ONE_NODE="${BDAG_PRESYNC_ONE_NODE:-1}"
-PRESYNC_NODE_DIRS="${BDAG_PRESYNC_NODE_DIRS:-${BDAG_NODE_DATA_DIRS:-node1}}"
 PRESYNC_STATE_FILE="${BDAG_PRESYNC_STATE_FILE:-$PROJECT_ROOT/ops/runtime/chain-presync-state}"
+PRESYNC_SOURCE_DIR="${BDAG_PRESYNC_SOURCE_DIR:-${BDAG_NODE_DATA_DIR:-$PROJECT_ROOT/data/node}}"
 
 source "$PROJECT_ROOT/ops/chain-snapshot-common.sh"
 source "$PROJECT_ROOT/ops/sync-startup-lag-policy.sh"
@@ -64,70 +63,30 @@ if [[ "$sync_block_lag" =~ ^[0-9]+$ ]] && (( sync_block_lag > effective_max_bloc
 fi
 
 sync_node() {
-  local node_dir="$1"
-  local source_dir="$PROJECT_ROOT/data/$node_dir"
-  local stage_dir="$SNAPSHOT_STAGE_ROOT/$node_dir"
+  local source_dir="$PRESYNC_SOURCE_DIR"
+  local stage_dir="$SNAPSHOT_STAGE_ROOT/node"
 
   if [[ ! -d "$source_dir" ]]; then
-    log "skipping $node_dir: source missing: $source_dir"
+    log "skipping node: source missing: $source_dir"
     return 0
   fi
 
-  log "pre-syncing $node_dir with acceptable block lag threshold $(presync_effective_max_block_lag)"
+  log "pre-syncing node with acceptable block lag threshold $(presync_effective_max_block_lag)"
   local started_at finished_at duration_seconds
   started_at="$(date +%s)"
   if snapshot_rsync_node "$source_dir" "$stage_dir" >> "$LOG_FILE" 2>&1; then
     finished_at="$(date +%s)"
     duration_seconds=$((finished_at - started_at))
     bdag_sync_record_copy_seconds "$PRESYNC_LAST_COPY_SECONDS_FILE" "$duration_seconds"
-    log "pre-sync complete for $node_dir"
+    log "pre-sync complete for node"
   else
     finished_at="$(date +%s)"
     duration_seconds=$((finished_at - started_at))
     bdag_sync_record_copy_seconds "$PRESYNC_LAST_COPY_SECONDS_FILE" "$duration_seconds"
-    log "pre-sync partial for $node_dir; live database changed while copying"
+    log "pre-sync partial for node; live database changed while copying"
   fi
-  log "pre-sync copy duration for $node_dir was ${duration_seconds}s; next acceptable lag threshold $(presync_effective_max_block_lag) block(s)"
+  log "pre-sync copy duration for node was ${duration_seconds}s; next acceptable lag threshold $(presync_effective_max_block_lag) block(s)"
 }
 
-configured_node_dirs() {
-  local raw="$PRESYNC_NODE_DIRS"
-  local item seen_node1=0 emitted=0
-  raw="${raw//;/,}"
-  IFS=',' read -ra items <<< "$raw"
-  for item in "${items[@]}"; do
-    item="${item//[[:space:]]/}"
-    case "$item" in
-      node1)
-        if [[ "$seen_node1" == "0" ]]; then
-          printf '%s\n' node1
-          seen_node1=1
-          emitted=1
-        fi
-        ;;
-    esac
-  done
-  if [[ "$emitted" == "0" ]]; then
-    printf '%s\n' node1
-  fi
-}
-
-if [[ "$PRESYNC_ONE_NODE" == "1" ]]; then
-  mapfile -t node_dirs < <(configured_node_dirs)
-  previous="$(cat "$PRESYNC_STATE_FILE" 2>/dev/null || true)"
-  next="${node_dirs[0]}"
-  if ((${#node_dirs[@]} > 1)); then
-    for index in "${!node_dirs[@]}"; do
-      if [[ "${node_dirs[$index]}" == "$previous" ]]; then
-        next="${node_dirs[$(((index + 1) % ${#node_dirs[@]}))]}"
-        break
-      fi
-    done
-  fi
-  sync_node "$next"
-  printf '%s\n' "$next" > "$PRESYNC_STATE_FILE"
-else
-  while IFS= read -r node_dir; do
-    sync_node "$node_dir"
-  done < <(configured_node_dirs)
-fi
+sync_node
+printf '%s\n' "node" > "$PRESYNC_STATE_FILE"
