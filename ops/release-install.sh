@@ -655,6 +655,8 @@ configure_env() {
   set_stack_default_env_value .env BDAG_IPFS_RESTORE_REQUIRE_SIGNATURES
   set_stack_default_env_value .env BDAG_IPFS_RESTORE_VERIFY_INDEX_LINEAGE
   set_stack_default_env_value .env BDAG_IPFS_RESTORE_MAX_INDEX_LINEAGE_DEPTH
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_ACCEPTED_HEAD_ENABLED
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_ACCEPTED_HEAD_STATE_FILE
   set_stack_default_env_value .env BDAG_IPFS_RESTORE_PRESTART_DRILL
   set_stack_default_env_value .env BDAG_IPFS_RESTORE_PRESTART_STRICT
   set_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART

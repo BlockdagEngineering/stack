@@ -361,6 +361,11 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             self.assertIn("BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES=1", config)
             self.assertIn("BDAG_IPFS_RESTORE_REQUIRE_SIGNATURES=1", config)
             self.assertIn("BDAG_IPFS_RESTORE_VERIFY_INDEX_LINEAGE=1", config)
+            self.assertIn("BDAG_IPFS_RESTORE_ACCEPTED_HEAD_ENABLED=1", config)
+            self.assertIn(
+                "BDAG_IPFS_RESTORE_ACCEPTED_HEAD_STATE_FILE=./ops/runtime/ipfs-content/restore-accepted-head.json",
+                config,
+            )
             self.assertIn("BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART=1", config)
             self.assertIn("BDAG_IPFS_RAWDATADIR_RESTORE_DISCOVERY_FILE=./ops/ipfs-content-discovery.json", config)
             self.assertIn("BDAG_IPFS_RAWDATADIR_RESTORE_STATUS_FILE=./ops/runtime/ipfs-content/rawdatadir-restore-status.json", config)
@@ -410,6 +415,10 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN=$(env_value BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN 1)", installer)
         self.assertIn(
             'BDAG_IPFS_SEGMENT_RESTORE_DIR=$(env_value BDAG_IPFS_SEGMENT_RESTORE_DIR "$ROOT/ops/runtime/ipfs-segment-restore-drills")',
+            installer,
+        )
+        self.assertIn(
+            "BDAG_IPFS_RESTORE_ACCEPTED_HEAD_ENABLED=$(env_value BDAG_IPFS_RESTORE_ACCEPTED_HEAD_ENABLED 1)",
             installer,
         )
         self.assertIn("BDAG_IPFS_SEGMENT_PUBLISH_IPNS=$(env_value BDAG_IPFS_SEGMENT_PUBLISH_IPNS auto)", installer)

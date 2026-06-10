@@ -409,6 +409,12 @@ The current segment format treats order `0` as genesis identity for validation;
 candidate backfill payloads start at order `1` and remain candidate-only until a
 separate full-coverage verification and promotion path exists.
 
+Every successful chain-order restore drill records the highest accepted segment
+index in `BDAG_IPFS_RESTORE_ACCEPTED_HEAD_STATE_FILE`. Later drills reject older
+indexes, and reject non-lineage indexes when both the previous and current index
+CIDs are known. This protects against IPNS rollback while keeping chain-order
+segments verify-only; it does not import segment data into the node datadir.
+
 The archive seed timer is not part of this stack because IPFS segments and
 finalized raw-datadir sidecars own source publication.
 

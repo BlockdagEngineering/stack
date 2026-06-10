@@ -175,6 +175,11 @@ def candidate_dir(env: Mapping[str, str]) -> Path:
     return resolve_path(env.get("BDAG_IPFS_RESTORE_CANDIDATE_DIR"), ROOT / "ops/runtime/ipfs-content/restore-candidate")
 
 
+def accepted_head_path(env: Mapping[str, str]) -> Path:
+    default = status_path(env).parent / "restore-accepted-head.json"
+    return resolve_path(env.get("BDAG_IPFS_RESTORE_ACCEPTED_HEAD_STATE_FILE"), default)
+
+
 def discovery_path(env: Mapping[str, str]) -> Path:
     return resolve_path(env.get("BDAG_IPFS_CONTENT_DISCOVERY_FILE"), ROOT / "ops/ipfs-content-discovery.json")
 
@@ -407,6 +412,126 @@ def verify_index_lineage(index: Mapping[str, Any], env: Mapping[str, str], cid_d
     }
 
 
+def index_source_cid(index_source: str) -> str:
+    if not index_source.startswith("ipfs:"):
+        return ""
+    return cid_filename(index_source.removeprefix("ipfs:"))
+
+
+def head_end_order(index: Mapping[str, Any]) -> int | None:
+    head = index.get("current_head")
+    if not isinstance(head, Mapping):
+        return None
+    value = head.get("end_order")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def load_accepted_head_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise VerificationError(f"accepted IPFS restore head state is unreadable at {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise VerificationError(f"accepted IPFS restore head state is not a JSON object at {path}")
+    return data
+
+
+def lineage_contains_index_cid(lineage: Mapping[str, Any], accepted_cid: str, current_cid: str) -> bool:
+    if not accepted_cid:
+        return True
+    if current_cid and current_cid == accepted_cid:
+        return True
+    links = lineage.get("index_lineage_links")
+    if not isinstance(links, list):
+        return False
+    return any(
+        isinstance(item, Mapping) and str(item.get("previous_index_cid") or "").strip() == accepted_cid
+        for item in links
+    )
+
+
+def enforce_accepted_head_state(
+    *,
+    index: Mapping[str, Any],
+    index_source: str,
+    index_sha256: str | None,
+    lineage: Mapping[str, Any],
+    env: Mapping[str, str],
+) -> dict[str, Any]:
+    if not env_bool(env, "BDAG_IPFS_RESTORE_ACCEPTED_HEAD_ENABLED", True):
+        return {"enforced": False, "reason": "disabled_by_policy"}
+
+    state_file = accepted_head_path(env)
+    state = load_accepted_head_state(state_file)
+    current_end = head_end_order(index)
+    if current_end is None:
+        raise VerificationError("index current_head.end_order is required for accepted-head rollback protection")
+
+    accepted_end = state.get("current_head_end_order")
+    if isinstance(accepted_end, bool) or (accepted_end is not None and not isinstance(accepted_end, int)):
+        raise VerificationError("accepted IPFS restore head state has invalid current_head_end_order")
+    accepted_cid = str(state.get("current_index_cid") or "").strip()
+    current_cid = index_source_cid(index_source)
+    if accepted_end is not None and current_end < accepted_end:
+        raise VerificationError(
+            "IPFS restore drill rejected index rollback: "
+            f"current_head.end_order={current_end} accepted_head.end_order={accepted_end}"
+        )
+    lineage_enforced = False
+    if accepted_cid and current_cid:
+        lineage_enforced = True
+        if not lineage_contains_index_cid(lineage, accepted_cid, current_cid):
+            raise VerificationError(
+                "IPFS restore drill rejected non-lineage index: "
+                f"accepted_index_cid={accepted_cid} current_index_cid={current_cid}"
+            )
+
+    return {
+        "enforced": True,
+        "state_file": str(state_file),
+        "previous_head_order": accepted_end,
+        "previous_index_cid": accepted_cid,
+        "current_head_order": current_end,
+        "current_index_cid": current_cid,
+        "index_sha256": index_sha256,
+        "lineage_cid_enforced": lineage_enforced,
+    }
+
+
+def update_accepted_head_state(
+    *,
+    index: Mapping[str, Any],
+    index_source: str,
+    index_sha256: str | None,
+    verified: Mapping[str, Any],
+    accepted: Mapping[str, Any],
+    env: Mapping[str, str],
+) -> dict[str, Any]:
+    if not accepted.get("enforced"):
+        return {"updated": False, "reason": accepted.get("reason") or "not_enforced"}
+    current_end = head_end_order(index)
+    if current_end is None:
+        return {"updated": False, "reason": "missing_current_head_end_order"}
+    state_file = accepted_head_path(env)
+    payload = {
+        "document_type": "bdag_ipfs_restore_accepted_head_v1",
+        "network": MAINNET_NETWORK,
+        "updated_at": now_iso(),
+        "current_head_end_order": current_end,
+        "current_index_cid": index_source_cid(index_source),
+        "index_source": index_source,
+        "index_sha256": index_sha256,
+        "last_verified_order": verified.get("last_verified_order"),
+        "segments_verified": verified.get("segments_verified"),
+        "index_lineage_depth": verified.get("index_lineage_depth"),
+        "restore_policy": "anti_rollback_state_only_no_chain_datadir_mutation",
+    }
+    atomic_write_json(state_file, payload)
+    return {"updated": True, "state_file": str(state_file)}
+
+
 def verify_manifest(
     record: Mapping[str, Any],
     manifest: Mapping[str, Any],
@@ -601,6 +726,14 @@ def main(argv: list[str] | None = None) -> int:
             max_segments=max_segments,
             materialize_dir=materialize_dir,
         )
+        index_sha = sha256_bytes(index_raw) if index_raw is not None else None
+        accepted_head = enforce_accepted_head_state(
+            index=index,
+            index_source=index_source,
+            index_sha256=index_sha,
+            lineage=verified,
+            env=env,
+        )
         if materialize_dir and index_raw is not None:
             index_name = (
                 index_source.removeprefix("ipfs:")
@@ -616,7 +749,7 @@ def main(argv: list[str] | None = None) -> int:
             "mode": mode,
             "project_root": str(ROOT),
             "index_source": index_source,
-            "index_sha256": sha256_bytes(index_raw) if index_raw is not None else None,
+            "index_sha256": index_sha,
             "network": MAINNET_NETWORK,
             "max_segments": max_segments,
             "materialized": bool(materialize_dir),
@@ -626,8 +759,19 @@ def main(argv: list[str] | None = None) -> int:
             "usable_for_destructive_restore": False,
             "restore_policy": "verification_only_no_chain_datadir_mutation",
             "trust_model": "IPFS/IPNS are byte transport only; CID bytes, sha256, manifest links, order continuity, and chain consensus must verify before use.",
+            "accepted_head": accepted_head,
         }
         payload.update(verified)
+        payload["accepted_head"].update(
+            update_accepted_head_state(
+                index=index,
+                index_source=index_source,
+                index_sha256=index_sha,
+                verified=verified,
+                accepted=accepted_head,
+                env=env,
+            )
+        )
     except Exception as exc:  # noqa: BLE001 - report all verifier failures in status JSON.
         payload = {
             "generated_at": now_iso(),

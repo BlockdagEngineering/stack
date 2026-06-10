@@ -109,6 +109,15 @@ def segment_fixture(segment_id: int, start: int, end: int, previous_manifest_cid
 
 
 class IPFSRestoreDrillTest(unittest.TestCase):
+    def signing_env(self, base: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
+        env = {
+            **SIGNING_ENV,
+            "BDAG_IPFS_RESTORE_ACCEPTED_HEAD_STATE_FILE": str(base / "accepted-head.json"),
+        }
+        if extra:
+            env.update(extra)
+        return env
+
     def write_fixtures(self, cid_dir: Path, fixtures: dict[str, bytes]) -> None:
         cid_dir.mkdir(parents=True, exist_ok=True)
         for cid, raw in fixtures.items():
@@ -181,7 +190,7 @@ class IPFSRestoreDrillTest(unittest.TestCase):
             index = self.write_index(base, [record1, record2])
             status = base / "status.json"
 
-            with mock.patch.dict(os.environ, SIGNING_ENV, clear=False):
+            with mock.patch.dict(os.environ, self.signing_env(base), clear=False):
                 rc = ipfs_restore_drill.main(
                     [
                         "--index",
@@ -215,11 +224,13 @@ class IPFSRestoreDrillTest(unittest.TestCase):
             index = self.write_index(base, [record])
             status = base / "status.json"
 
-            env = {
-                **SIGNING_ENV,
-                "BDAG_IPFS_SEGMENT_WRITER_ROSTER": "writer-a",
-                "BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE": "rendezvous_sha256_v1",
-            }
+            env = self.signing_env(
+                base,
+                {
+                    "BDAG_IPFS_SEGMENT_WRITER_ROSTER": "writer-a",
+                    "BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE": "rendezvous_sha256_v1",
+                },
+            )
             with mock.patch.dict(os.environ, env, clear=False):
                 rc = ipfs_restore_drill.main(
                     [
@@ -246,11 +257,13 @@ class IPFSRestoreDrillTest(unittest.TestCase):
             index = self.write_index(base, [record])
             status = base / "status.json"
 
-            env = {
-                **SIGNING_ENV,
-                "BDAG_IPFS_SEGMENT_WRITER_ROSTER": "writer-b",
-                "BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE": "rendezvous_sha256_v1",
-            }
+            env = self.signing_env(
+                base,
+                {
+                    "BDAG_IPFS_SEGMENT_WRITER_ROSTER": "writer-b",
+                    "BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE": "rendezvous_sha256_v1",
+                },
+            )
             with mock.patch.dict(os.environ, env, clear=False):
                 rc = ipfs_restore_drill.main(
                     [
@@ -293,7 +306,7 @@ class IPFSRestoreDrillTest(unittest.TestCase):
             index.write_text(json.dumps(current_index), encoding="utf-8")
             status = base / "status.json"
 
-            with mock.patch.dict(os.environ, SIGNING_ENV, clear=False):
+            with mock.patch.dict(os.environ, self.signing_env(base), clear=False):
                 rc = ipfs_restore_drill.main(
                     [
                         "--index",
@@ -312,6 +325,182 @@ class IPFSRestoreDrillTest(unittest.TestCase):
         self.assertTrue(payload["index_lineage_verified"])
         self.assertEqual(payload["index_lineage_depth"], 1)
         self.assertEqual(payload["index_lineage_links"][0]["previous_index_cid"], previous_index_cid)
+
+    def test_successful_ipfs_drill_records_accepted_head_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            record, fixtures = segment_fixture(1, 1, 2, None)
+            index = self.build_index([record])
+            index_cid = "baf-index-current"
+            cid_dir = base / "cid-fixtures"
+            self.write_fixtures(cid_dir, {**fixtures, index_cid: canonical(index)})
+            status = base / "status.json"
+            accepted = base / "accepted.json"
+
+            env = self.signing_env(base, {"BDAG_IPFS_RESTORE_ACCEPTED_HEAD_STATE_FILE": str(accepted)})
+            with mock.patch.dict(os.environ, env, clear=False):
+                rc = ipfs_restore_drill.main(
+                    [
+                        "--index-cid",
+                        index_cid,
+                        "--cid-dir",
+                        str(cid_dir),
+                        "--status-file",
+                        str(status),
+                    ]
+                )
+            payload = json.loads(status.read_text(encoding="utf-8"))
+            state = json.loads(accepted.read_text(encoding="utf-8"))
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(payload["accepted_head"]["enforced"])
+        self.assertTrue(payload["accepted_head"]["updated"])
+        self.assertEqual(state["document_type"], "bdag_ipfs_restore_accepted_head_v1")
+        self.assertEqual(state["current_head_end_order"], 2)
+        self.assertEqual(state["current_index_cid"], index_cid)
+        self.assertEqual(state["restore_policy"], "anti_rollback_state_only_no_chain_datadir_mutation")
+
+    def test_rejects_index_rollback_below_accepted_head(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            record, fixtures = segment_fixture(1, 1, 2, None)
+            index = self.build_index([record])
+            index_cid = "baf-index-old"
+            cid_dir = base / "cid-fixtures"
+            self.write_fixtures(cid_dir, {**fixtures, index_cid: canonical(index)})
+            status = base / "status.json"
+            accepted = base / "accepted.json"
+            accepted.write_text(
+                json.dumps(
+                    {
+                        "document_type": "bdag_ipfs_restore_accepted_head_v1",
+                        "network": "mainnet",
+                        "current_head_end_order": 4,
+                        "current_index_cid": "baf-index-later",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            env = self.signing_env(base, {"BDAG_IPFS_RESTORE_ACCEPTED_HEAD_STATE_FILE": str(accepted)})
+            with mock.patch.dict(os.environ, env, clear=False):
+                rc = ipfs_restore_drill.main(
+                    [
+                        "--index-cid",
+                        index_cid,
+                        "--cid-dir",
+                        str(cid_dir),
+                        "--status-file",
+                        str(status),
+                    ]
+                )
+            payload = json.loads(status.read_text(encoding="utf-8"))
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(payload["state"], "failed")
+        self.assertTrue(any("rejected index rollback" in reason for reason in payload["reasons"]))
+
+    def test_rejects_newer_ipfs_index_that_does_not_link_to_accepted_cid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            record1, fixture1 = segment_fixture(1, 1, 2, None)
+            record2, fixture2 = segment_fixture(2, 3, 4, record1["manifest_cid"])
+            index = self.build_index([record1, record2])
+            index_cid = "baf-index-current"
+            cid_dir = base / "cid-fixtures"
+            self.write_fixtures(cid_dir, {**fixture1, **fixture2, index_cid: canonical(index)})
+            status = base / "status.json"
+            accepted = base / "accepted.json"
+            accepted.write_text(
+                json.dumps(
+                    {
+                        "document_type": "bdag_ipfs_restore_accepted_head_v1",
+                        "network": "mainnet",
+                        "current_head_end_order": 2,
+                        "current_index_cid": "baf-index-accepted",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            env = self.signing_env(base, {"BDAG_IPFS_RESTORE_ACCEPTED_HEAD_STATE_FILE": str(accepted)})
+            with mock.patch.dict(os.environ, env, clear=False):
+                rc = ipfs_restore_drill.main(
+                    [
+                        "--index-cid",
+                        index_cid,
+                        "--cid-dir",
+                        str(cid_dir),
+                        "--status-file",
+                        str(status),
+                        "--max-segments",
+                        "0",
+                    ]
+                )
+            payload = json.loads(status.read_text(encoding="utf-8"))
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(payload["state"], "failed")
+        self.assertTrue(any("rejected non-lineage index" in reason for reason in payload["reasons"]))
+
+    def test_accepts_newer_ipfs_index_that_links_to_accepted_cid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            record1, fixture1 = segment_fixture(1, 1, 2, None)
+            record2, fixture2 = segment_fixture(2, 3, 4, record1["manifest_cid"])
+            accepted_index = self.build_index([record1])
+            accepted_cid = "baf-index-accepted"
+            current_index = self.build_index(
+                [record1, record2],
+                previous_index_cid=accepted_cid,
+                previous_index=accepted_index,
+            )
+            current_cid = "baf-index-current"
+            cid_dir = base / "cid-fixtures"
+            self.write_fixtures(
+                cid_dir,
+                {
+                    **fixture1,
+                    **fixture2,
+                    accepted_cid: canonical(accepted_index),
+                    current_cid: canonical(current_index),
+                },
+            )
+            status = base / "status.json"
+            accepted = base / "accepted.json"
+            accepted.write_text(
+                json.dumps(
+                    {
+                        "document_type": "bdag_ipfs_restore_accepted_head_v1",
+                        "network": "mainnet",
+                        "current_head_end_order": 2,
+                        "current_index_cid": accepted_cid,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            env = self.signing_env(base, {"BDAG_IPFS_RESTORE_ACCEPTED_HEAD_STATE_FILE": str(accepted)})
+            with mock.patch.dict(os.environ, env, clear=False):
+                rc = ipfs_restore_drill.main(
+                    [
+                        "--index-cid",
+                        current_cid,
+                        "--cid-dir",
+                        str(cid_dir),
+                        "--status-file",
+                        str(status),
+                        "--max-segments",
+                        "0",
+                    ]
+                )
+            payload = json.loads(status.read_text(encoding="utf-8"))
+            state = json.loads(accepted.read_text(encoding="utf-8"))
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(payload["accepted_head"]["lineage_cid_enforced"])
+        self.assertEqual(state["current_head_end_order"], 4)
+        self.assertEqual(state["current_index_cid"], current_cid)
 
     def test_rejects_previous_index_lineage_head_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -339,7 +528,7 @@ class IPFSRestoreDrillTest(unittest.TestCase):
             index.write_text(json.dumps(current_index), encoding="utf-8")
             status = base / "status.json"
 
-            with mock.patch.dict(os.environ, SIGNING_ENV, clear=False):
+            with mock.patch.dict(os.environ, self.signing_env(base), clear=False):
                 rc = ipfs_restore_drill.main(
                     [
                         "--index",
@@ -366,7 +555,7 @@ class IPFSRestoreDrillTest(unittest.TestCase):
             index = self.write_index(base, [record1, record2])
             status = base / "status.json"
 
-            with mock.patch.dict(os.environ, SIGNING_ENV, clear=False):
+            with mock.patch.dict(os.environ, self.signing_env(base), clear=False):
                 rc = ipfs_restore_drill.main(
                     [
                         "--index",
@@ -395,7 +584,7 @@ class IPFSRestoreDrillTest(unittest.TestCase):
             index = self.write_index(base, [record])
             status = base / "status.json"
 
-            with mock.patch.dict(os.environ, SIGNING_ENV, clear=False):
+            with mock.patch.dict(os.environ, self.signing_env(base), clear=False):
                 rc = ipfs_restore_drill.main(
                     [
                         "--index",
