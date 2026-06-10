@@ -89,7 +89,7 @@ FROM ubuntu:24.04 AS node
 ARG SNAPSHOT_PATH=docker/no-snapshot.marker
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates tzdata \
+    ca-certificates tzdata curl \
  && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack
