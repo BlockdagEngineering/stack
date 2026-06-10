@@ -69,7 +69,7 @@ jobs:
       - name: Checkout dashboard repo
         uses: actions/checkout@v4
         with:
-          repository: BlockdagEngineering/dashboard
+          repository: BlockdagEngineering/dashboard2
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/dashboard
           ref: main
