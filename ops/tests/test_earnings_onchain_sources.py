@@ -22,7 +22,7 @@ class EarningsOnchainSourceTests(unittest.TestCase):
                 "global_evm_rpc_urls",
                 "json_rpc_balance_at",
                 "json_rpc_call",
-                "node_rpc_urls",
+                "node_rpc_endpoint",
                 "read_json_file",
                 "rpc_block_timestamp",
                 "seconds_since_epoch",
@@ -43,7 +43,7 @@ class EarningsOnchainSourceTests(unittest.TestCase):
         pool_ops.read_json_file = lambda _path, default: {}
         pool_ops.write_json_file = lambda _path, _payload, mode=0o600: None
         pool_ops.global_evm_rpc_urls = lambda: [("local-evm", "http://evm-rpc")]
-        pool_ops.node_rpc_urls = lambda: [("mining-rpc", "http://mining-rpc")]
+        pool_ops.node_rpc_endpoint = lambda: ("mining-rpc", "http://mining-rpc")
         pool_ops.archive_rpc_urls = lambda: [("archive-evm", "http://archive-rpc")]
         pool_ops.first_block_at_or_after = lambda url, latest, target: 90
         pool_ops.rpc_block_timestamp = lambda url, block: 100_000 if block == 100 else 96_400

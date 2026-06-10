@@ -113,6 +113,25 @@ class ChainIntegrityGateTest(unittest.TestCase):
         self.assertEqual(result["segment_preflight"]["block_count"], 2)
         self.assertRegex(result["segment_preflight"]["canonical_payload_sha256"], r"^[0-9a-f]{64}$")
 
+    def test_default_segment_cap_follows_ipfs_segment_size(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            index = self.write_index(Path(tmp), {})
+            blocks = {order: block(order) for order in range(0, 130)}
+            fake_rpc = FakeRpc(blocks)
+            env = {
+                "BDAG_CHAIN_INTEGRITY_SKIP_ENVIRONMENT_GATES": "1",
+                "BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT": "129",
+            }
+
+            result = chain_integrity_gate.evaluate_chain_integrity(
+                self.config(index, start_order=1, end_order=129),
+                env=env,
+                rpc=fake_rpc,
+            )
+
+        self.assertEqual(result["state"], "trusted")
+        self.assertEqual(result["segment_preflight"]["block_count"], 129)
+
     def test_source_tip_behind_index_head_rejects(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             index = self.write_index(

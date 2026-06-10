@@ -23,11 +23,15 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "MINING_IMPERATIVE_GUARD_UNITS",
                 "MINING_IMPERATIVE_START_POOL_ENABLED",
                 "MINING_IMPERATIVE_START_IDLE_SYNCED_POOL",
+                "MINING_IMPERATIVE_POOL_START_STABLE_SAFE_SECONDS",
                 "MINING_IMPERATIVE_MINER_TRACKING_REPAIR_ENABLED",
                 "MINING_IMPERATIVE_MINER_ACTIVITY_REPAIR_ENABLED",
+                "MINING_IMPERATIVE_ASIC_MAC_OVERRIDES_REPAIR_ENABLED",
                 "MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS",
                 "MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED",
-                "MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED",
+                "MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED",
+                "CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS",
+                "CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS",
                 "CATCHUP_PAUSE_ENABLED",
                 "CATCHUP_PAUSE_THRESHOLD_BLOCKS",
                 "CATCHUP_NODE_RECREATE_ENABLED",
@@ -44,7 +48,11 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "detect_total_memory_bytes",
                 "log",
                 "POOL_ENV_FILE",
+                "POOL_START_STABILITY_FILE",
                 "PROJECT_ROOT",
+                "pool_asic_mac_override_diagnostics",
+                "pool_asic_mac_overrides_value",
+                "pool_container_env_value",
                 "read_neighbor_macs",
                 "read_miner_registry",
                 "run",
@@ -55,6 +63,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         }
         self.original_env = dict(os.environ)
         self.original_check_mutation_allowed = status_sampler.automation_control.check_mutation_allowed
+        self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.restore)
         status_sampler.automation_control.check_mutation_allowed = (
             lambda *_args, **_kwargs: SimpleNamespace(allowed=True, reason="unit test allow")
@@ -65,12 +74,17 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         status_sampler.MINING_IMPERATIVE_REPAIR_ENABLED = True
         status_sampler.MINING_IMPERATIVE_START_POOL_ENABLED = True
         status_sampler.MINING_IMPERATIVE_START_IDLE_SYNCED_POOL = False
+        status_sampler.MINING_IMPERATIVE_POOL_START_STABLE_SAFE_SECONDS = 0
         status_sampler.MINING_IMPERATIVE_MINER_TRACKING_REPAIR_ENABLED = True
         status_sampler.MINING_IMPERATIVE_MINER_ACTIVITY_REPAIR_ENABLED = True
+        status_sampler.MINING_IMPERATIVE_ASIC_MAC_OVERRIDES_REPAIR_ENABLED = False
         status_sampler.MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS = 180
         status_sampler.MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED = True
-        status_sampler.MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED = True
+        status_sampler.MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED = True
+        status_sampler.CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS = 1
+        status_sampler.CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS = 180
         status_sampler.POOL_ENV_FILE = pathlib.Path("/nonexistent/status-sampler-test.env")
+        status_sampler.POOL_START_STABILITY_FILE = pathlib.Path(self.tmp.name) / "pool-start-stability.json"
         status_sampler.PROJECT_ROOT = pathlib.Path("/nonexistent/status-sampler-test-root")
         status_sampler.CATCHUP_PAUSE_ENABLED = True
         status_sampler.CATCHUP_PAUSE_THRESHOLD_BLOCKS = 300
@@ -92,6 +106,17 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["NODE_ARGS_APPEND"] = ""
         os.environ["POOL_COINBASE_ADDRESS"] = ""
         for key in (
+            "BDAG_ASIC_LAN_CIDRS",
+            "BDAG_DETECTED_NETWORK_TOPOLOGY",
+            "BDAG_MINER_SCAN_TARGET",
+            "BDAG_NETWORK_TOPOLOGY",
+            "BDAG_NODE_PEER_ADDRESSES",
+            "BDAG_STORAGE_PROFILE",
+            "BOOTSTRAP_PEER_ADDRESSES",
+            "POOL_ASIC_MAC_OVERRIDES",
+        ):
+            os.environ.pop(key, None)
+        for key in (
             "BDAG_COMPOSE_PROJECT_NAME",
             "COMPOSE_PROJECT_NAME",
         ):
@@ -101,6 +126,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         for name, value in self.originals.items():
             setattr(status_sampler, name, value)
         status_sampler.automation_control.check_mutation_allowed = self.original_check_mutation_allowed
+        self.tmp.cleanup()
         os.environ.clear()
         os.environ.update(self.original_env)
 
@@ -164,6 +190,26 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         self.assertTrue(self.pool_compose_start_seen(commands))
         self.assertIn(f"started_container:{status_sampler.POOL_CONTAINER}", repair["actions"])
+
+    def test_first_safe_sample_waits_for_stable_window_before_starting_pool(self) -> None:
+        commands = []
+        incidents = []
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.MINING_IMPERATIVE_POOL_START_STABLE_SAFE_SECONDS = 90
+        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.1.0/24"
+        status_sampler.read_neighbor_macs = lambda: {"192.168.1.107": "28:e2:97:1e:c0:b5"}
+        status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
+        status_sampler.append_incident = (
+            lambda event_type, severity, *_args, **_kwargs: incidents.append((event_type, severity))
+        )
+
+        repair = status_sampler.mining_imperative_repair(
+            self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        )
+
+        self.assertFalse(self.pool_compose_start_seen(commands))
+        self.assertNotIn(f"started_container:{status_sampler.POOL_CONTAINER}", repair["actions"])
+        self.assertIn(("mining_imperative_pool_start_blocked", "warning"), incidents)
 
     def test_visible_asic_lan_neighbor_does_not_start_pool_while_syncing(self) -> None:
         commands = []
@@ -251,7 +297,78 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertFalse(self.pool_compose_start_seen(commands))
         self.assertEqual(repair["actions"], [])
 
-    def test_catchup_pause_stops_pool_and_removes_node_mining_churn(self) -> None:
+    def test_catchup_policy_from_payload_ignores_backend_unready_pressure_without_lag(self) -> None:
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["can_mine"] = False
+        payload["catchup_policy"] = {
+            "active": True,
+            "trigger": "io_pressure",
+            "io_pressure_reasons": ["io_full_avg10=12.00>=10.00"],
+            "backend_unready_under_pressure": True,
+            "lag_blocks": 0,
+            "threshold_blocks": 300,
+        }
+
+        policy = status_sampler.catchup_policy_from_payload(payload)
+
+        self.assertFalse(policy["active"])
+        self.assertEqual(policy["trigger"], "")
+        self.assertTrue(policy["backend_unready_under_pressure"])
+
+    def test_catchup_policy_records_memory_pressure_reason(self) -> None:
+        payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=80)
+        payload["can_mine"] = False
+        payload["host_pressure"] = {
+            "memory_available_percent": 8.5,
+            "memory_available_warn_percent": 12.0,
+            "memory_warning_active": True,
+            "swap_used_percent": 0.0,
+            "swap_used_warn_percent": 5.0,
+            "swap_warning_active": False,
+        }
+        payload["catchup_policy"] = {
+            "active": False,
+            "lag_blocks": 80,
+            "threshold_blocks": 300,
+            "io_pressure_min_lag_blocks": 25,
+            "mining_ready": False,
+        }
+
+        policy = status_sampler.catchup_policy_from_payload(payload)
+
+        self.assertTrue(policy["active"])
+        self.assertEqual(policy["trigger"], "io_pressure")
+        self.assertIn("memory_available_warning", policy["io_pressure_reasons"])
+
+    def test_catchup_pause_does_not_stop_pool_with_recent_paid_work(self) -> None:
+        commands = []
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=80)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["can_mine"] = False
+        payload["sync_health"] = {"pool_has_recent_paid_work": True}
+        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
+        payload["host_pressure"] = {"io_full_avg10": 23.0}
+        payload["catchup_policy"] = {
+            "active": True,
+            "trigger": "io_pressure",
+            "lag_blocks": 80,
+            "threshold_blocks": 300,
+            "io_pressure_reasons": ["io_full_avg10=23.00>=10.00"],
+            "io_pressure_min_lag_blocks": 25,
+            "mining_ready": False,
+        }
+        status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
+
+        repair = status_sampler.mining_imperative_repair(payload)
+        policy = status_sampler.catchup_policy_from_payload(payload)
+
+        self.assertFalse(policy["active"])
+        self.assertTrue(policy["recent_paid_work_suppressed"])
+        self.assertNotIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
+        self.assertFalse(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
+
+    def test_catchup_pause_stops_pool_but_preserves_node_mining_config(self) -> None:
         commands = []
         env_updates = {}
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
@@ -259,7 +376,8 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["BDAG_NODE_MODULES"] = "Blockdag,miner"
         os.environ["BDAG_NODE_MINING_ARGS"] = "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         os.environ["NODE_ARGS_APPEND"] = os.environ["BDAG_NODE_MINING_ARGS"]
-        os.environ["BDAG_NODE_SERVICES"] = "node"
+        os.environ["BDAG_NODE_CACHE_MB"] = "2048"
+        os.environ["BDAG_NODE_SERVICE"] = "node"
         payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=450)
         payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
@@ -306,17 +424,21 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         self.assertIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
         self.assertIn("applied_catchup_node_runtime", repair["actions"])
-        self.assertEqual(env_updates["BDAG_ENABLE_NODE_MINING"], "0")
-        self.assertEqual(env_updates["BDAG_NODE_MODULES"], "Blockdag")
-        self.assertEqual(env_updates["BDAG_NODE_MINING_ARGS"], "")
-        self.assertEqual(env_updates["NODE_ARGS_APPEND"], "")
+        self.assertEqual(env_updates, {"BDAG_NODE_CACHE_MB": "6144"})
+        self.assertEqual(os.environ["BDAG_ENABLE_NODE_MINING"], "1")
+        self.assertEqual(os.environ["BDAG_NODE_MODULES"], "Blockdag,miner")
+        self.assertEqual(
+            os.environ["BDAG_NODE_MINING_ARGS"],
+            "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc",
+        )
+        self.assertEqual(os.environ["NODE_ARGS_APPEND"], os.environ["BDAG_NODE_MINING_ARGS"])
         self.assertIn("cache=6144", node_conf)
         self.assertIn("--cache 6144", node_conf)
-        self.assertIn("miningaddr=", node_conf)
-        self.assertIn("# modules=miner disabled during catch-up pause", node_conf)
-        self.assertIn("# miner=true disabled during catch-up pause", node_conf)
+        self.assertIn("miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc", node_conf)
+        self.assertIn("modules=miner", node_conf)
+        self.assertIn("miner=true", node_conf)
         self.assertTrue(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
-        self.assertTrue(any("--force-recreate" in command for command in commands))
+        self.assertFalse(any("--force-recreate" in command for command in commands))
 
     def test_catchup_pause_does_not_restart_stopped_pool_for_visible_miners(self) -> None:
         commands = []
@@ -349,6 +471,91 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertNotIn(f"started_container:{status_sampler.POOL_CONTAINER}", repair["actions"])
         self.assertNotIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
         self.assertFalse(any(command[:2] == ["docker", "start"] for command in commands))
+
+    def test_recent_paid_work_clears_zero_lag_io_pressure_catchup_pause(self) -> None:
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["can_mine"] = False
+        payload["host_pressure"] = {
+            "iowait_percent": 35.0,
+            "io_some_avg10": 30.0,
+            "io_full_avg10": 25.0,
+        }
+        payload["pool"].update(
+            {
+                "block_submit_success_count": 6,
+                "last_block_submit_age_seconds": 12,
+            }
+        )
+        payload["sync_health"] = {
+            "pool_has_recent_paid_work": True,
+            "pool_has_recent_mining": True,
+        }
+        payload["catchup_policy"] = {
+            "active": True,
+            "trigger": "io_pressure",
+            "lag_blocks": 0,
+            "threshold_blocks": 300,
+            "mining_ready": False,
+            "backend_unready_under_pressure": True,
+            "io_pressure_reasons": [
+                "iowait_percent=35.00>=15.00",
+                "io_some_avg10=30.00>=20.00",
+            ],
+        }
+
+        policy = status_sampler.catchup_policy_from_payload(payload)
+
+        self.assertFalse(policy["active"])
+        self.assertFalse(policy["io_pressure_active"])
+        self.assertFalse(policy["backend_unready_under_pressure"])
+
+    def test_missing_trie_only_defers_chain_state_restore_during_fresh_paid_mining(self) -> None:
+        commands = []
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 0}
+        payload["pool"] = {
+            **payload["pool"],
+            "block_submit_success_count": 4,
+            "last_block_submit_age_seconds": 12,
+        }
+        payload["sync_health"] = {"pool_has_recent_paid_work": True}
+        payload["nodes"] = {"stack-node-1": {"missing_trie_node_warnings": 1}}
+        status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
+
+        decision = status_sampler.chain_state_restore_decision(payload)
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertFalse(decision["should_repair"])
+        self.assertTrue(decision["deferred"])
+        self.assertEqual(repair["actions"], [])
+        self.assertFalse(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
+
+    def test_hard_chain_state_blocker_still_stops_pool_during_fresh_paid_mining(self) -> None:
+        commands = []
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 0}
+        payload["pool"] = {
+            **payload["pool"],
+            "block_submit_success_count": 4,
+            "last_block_submit_age_seconds": 12,
+        }
+        payload["sync_health"] = {"pool_has_recent_paid_work": True}
+        payload["nodes"] = {
+            "stack-node-1": {
+                "chain_state_blocker": True,
+                "chain_state_blocker_hash": "0xabc",
+            }
+        }
+        status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:chain_state_restore", repair["actions"])
+        self.assertTrue(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
 
     def test_reenables_guard_timer_when_it_drifts_disabled(self) -> None:
         commands = []
@@ -386,6 +593,119 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         repair = status_sampler.mining_imperative_repair(payload)
 
         self.assertIn("repaired_tracked_miners", repair["actions"])
+
+    def test_repairs_pool_asic_mac_overrides_and_recreates_pool(self) -> None:
+        commands = []
+        env_updates = {}
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.MINING_IMPERATIVE_ASIC_MAC_OVERRIDES_REPAIR_ENABLED = True
+        status_sampler.pool_asic_mac_overrides_value = (
+            lambda: "192.168.1.101=2a:71:c7:f5:1f:1e,192.168.1.105=28:e2:97:4d:44:3a"
+        )
+        status_sampler.pool_asic_mac_override_diagnostics = lambda: {
+            "identity_basis": "mac",
+            "override_value": "192.168.1.101=2a:71:c7:f5:1f:1e,192.168.1.105=28:e2:97:4d:44:3a",
+            "override_count": 2,
+            "overrides": [],
+            "unresolved_count": 0,
+            "unresolved": [],
+        }
+        status_sampler.pool_container_env_value = lambda _key: ""
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["miner_health"] = {"tracked_count": 2, "connected_count": 2, "managed_count": 2}
+
+        def fake_set_runtime_env(key: str, value: str):
+            env_updates[key] = value
+            os.environ[key] = value
+            return [f"/runtime/{key}"]
+
+        def fake_run(command: list[str], timeout: int = 20):
+            commands.append(command)
+            return self.command_result(command)
+
+        status_sampler.set_runtime_env_value = fake_set_runtime_env
+        status_sampler.run = fake_run
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertIn("repaired_pool_asic_mac_overrides", repair["actions"])
+        self.assertEqual(
+            env_updates["POOL_ASIC_MAC_OVERRIDES"],
+            "192.168.1.101=2a:71:c7:f5:1f:1e,192.168.1.105=28:e2:97:4d:44:3a",
+        )
+        recreate = [command for command in commands if "--force-recreate" in command]
+        self.assertEqual(1, len(recreate))
+        self.assertIn("--no-build", recreate[0])
+        self.assertIn("--pull", recreate[0])
+        self.assertIn("never", recreate[0])
+        self.assertEqual(recreate[0][-1], status_sampler.POOL_CONTAINER)
+
+    def test_recreates_pool_when_asic_lan_cidr_container_env_is_stale(self) -> None:
+        commands = []
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.MINING_IMPERATIVE_ASIC_MAC_OVERRIDES_REPAIR_ENABLED = True
+        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.1.0/24"
+        os.environ["POOL_ASIC_MAC_OVERRIDES"] = "192.168.1.101=2a:71:c7:f5:1f:1e"
+        status_sampler.pool_asic_mac_overrides_value = lambda: "192.168.1.101=2a:71:c7:f5:1f:1e"
+        status_sampler.pool_asic_mac_override_diagnostics = lambda: {
+            "identity_basis": "mac",
+            "override_value": "192.168.1.101=2a:71:c7:f5:1f:1e",
+            "override_count": 1,
+            "overrides": [],
+            "unresolved_count": 0,
+            "unresolved": [],
+        }
+        status_sampler.pool_container_env_value = (
+            lambda key: "192.168.1.101=2a:71:c7:f5:1f:1e" if key == "POOL_ASIC_MAC_OVERRIDES" else ""
+        )
+        status_sampler.set_runtime_env_value = lambda *_args, **_kwargs: []
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
+
+        def fake_run(command: list[str], timeout: int = 20):
+            commands.append(command)
+            return self.command_result(command)
+
+        status_sampler.run = fake_run
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertIn("repaired_pool_asic_mac_overrides", repair["actions"])
+        recreate = [command for command in commands if "--force-recreate" in command]
+        self.assertEqual(1, len(recreate))
+        self.assertEqual(recreate[0][-1], status_sampler.POOL_CONTAINER)
+
+    def test_unresolved_asic_mac_does_not_repair_to_ip_lane(self) -> None:
+        incidents = []
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.MINING_IMPERATIVE_ASIC_MAC_OVERRIDES_REPAIR_ENABLED = True
+        status_sampler.pool_asic_mac_overrides_value = lambda: ""
+        status_sampler.pool_asic_mac_override_diagnostics = lambda: {
+            "identity_basis": "mac",
+            "override_value": "",
+            "override_count": 0,
+            "overrides": [],
+            "unresolved_count": 1,
+            "unresolved": [{"ip": "192.168.1.111", "issue": "asic_mac_unresolved"}],
+        }
+        status_sampler.pool_container_env_value = lambda _key: ""
+        status_sampler.set_runtime_env_value = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("must not write IP-based ASIC identity")
+        )
+        status_sampler.run = lambda command, timeout=20: self.command_result(command)
+        status_sampler.append_incident = (
+            lambda event_type, severity, *_args, **_kwargs: incidents.append((event_type, severity))
+        )
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertNotIn("repaired_pool_asic_mac_overrides", repair["actions"])
+        self.assertFalse(any(event == "mining_imperative_asic_mac_overrides_reconciled" for event, _ in incidents))
 
     def test_detects_miner_activity_visibility_gap_after_power_cycle(self) -> None:
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
@@ -479,41 +799,6 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertIn(status_sampler.POOL_ACTIVITY_BOOTSTRAP_LOG_LINES, activity_calls)
         self.assertIn("repaired_miner_activity_visibility", repair["actions"])
 
-    def test_disables_fastartifact_on_constrained_synced_mining_profile(self) -> None:
-        commands = []
-        env_updates = {}
-        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
-        os.environ["BDAG_DETECTED_NETWORK_TOPOLOGY"] = "asic-router"
-        os.environ["BDAG_STORAGE_PROFILE"] = "usb-chain-internal-runtime"
-        os.environ["BDAG_FASTARTIFACTSYNC_ENABLED"] = "1"
-        os.environ["NODE_ARGS_APPEND"] = "--fastartifactsync"
-        os.environ["BDAG_NODE_SERVICES"] = "node"
-        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
-        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
-        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
-
-        def fake_set_runtime_env(key: str, value: str):
-            env_updates[key] = value
-            os.environ[key] = value
-            return [f"/runtime/{key}={value}"]
-
-        status_sampler.set_runtime_env_value = fake_set_runtime_env
-
-        def fake_run(command: list[str], timeout: int = 20):
-            commands.append(command)
-            return self.command_result(command)
-
-        status_sampler.run = fake_run
-
-        repair = status_sampler.mining_imperative_repair(payload)
-
-        self.assertIn("disabled_constrained_fastartifact", repair["actions"])
-        self.assertEqual(env_updates["BDAG_FASTARTIFACTSYNC_ENABLED"], "0")
-        self.assertEqual(env_updates["SYNC_SOURCE_NODE"], "0")
-        self.assertEqual(env_updates["BDAG_NO_FASTSYNC_SERVE"], "1")
-        self.assertEqual(env_updates["NODE_ARGS_APPEND"], "")
-        self.assertTrue(any("--force-recreate" in command for command in commands))
-
     def test_enables_node_mining_template_support_when_miner_is_present(self) -> None:
         commands = []
         env_updates = {}
@@ -522,7 +807,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["BDAG_ENABLE_NODE_MINING"] = "0"
         os.environ["BDAG_NODE_MODULES"] = "Blockdag"
         os.environ["BDAG_NODE_MINING_ARGS"] = ""
-        os.environ["BDAG_NODE_SERVICES"] = "node"
+        os.environ["BDAG_NODE_SERVICE"] = "node"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
         payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
@@ -551,6 +836,34 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertNotIn("--allowsubmitwhennotsynced", env_updates["BDAG_NODE_MINING_ARGS"])
         self.assertEqual(env_updates["NODE_ARGS_APPEND"], env_updates["BDAG_NODE_MINING_ARGS"])
         self.assertTrue(any("--force-recreate" in command for command in commands))
+
+    def test_preserves_explicit_maxinbound_when_enabling_node_mining(self) -> None:
+        commands = []
+        env_updates = {}
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        address = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        os.environ["MINING_ADDRESS"] = address
+        os.environ["BDAG_ENABLE_NODE_MINING"] = "0"
+        os.environ["BDAG_NODE_MODULES"] = "Blockdag"
+        os.environ["BDAG_NODE_MINING_ARGS"] = f"--miner --miningaddr={address} --maxinbound=1"
+        os.environ["BDAG_NODE_SERVICES"] = "node"
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
+
+        def fake_set_runtime_env(key: str, value: str):
+            env_updates[key] = value
+            os.environ[key] = value
+            return [f"/runtime/{key}"]
+
+        status_sampler.set_runtime_env_value = fake_set_runtime_env
+        status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertIn("enabled_node_mining_template_support", repair["actions"])
+        self.assertIn("--maxinbound=1", env_updates["BDAG_NODE_MINING_ARGS"])
+        self.assertIn("--maxinbound=1", env_updates["NODE_ARGS_APPEND"])
 
     def test_node_mining_template_support_requires_canonical_proof(self) -> None:
         commands = []
@@ -587,7 +900,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["BDAG_ENABLE_NODE_MINING"] = "0"
         os.environ["BDAG_NODE_MODULES"] = "Blockdag"
         os.environ["BDAG_NODE_MINING_ARGS"] = ""
-        os.environ["BDAG_NODE_SERVICES"] = "node"
+        os.environ["BDAG_NODE_SERVICE"] = "node"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
         payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
@@ -632,7 +945,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
             "--allowminingwhennearlysynced --allowsubmitwhennotsynced --miner "
             "--miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         )
-        os.environ["BDAG_NODE_SERVICES"] = "node"
+        os.environ["BDAG_NODE_SERVICE"] = "node"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
         payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
@@ -664,7 +977,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["BDAG_NODE_MINING_ARGS"] = (
             "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         )
-        os.environ["BDAG_NODE_SERVICES"] = "node"
+        os.environ["BDAG_NODE_SERVICE"] = "node"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
         payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
@@ -694,7 +1007,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["BDAG_NODE_MINING_ARGS"] = (
             "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         )
-        os.environ["BDAG_NODE_SERVICES"] = "node"
+        os.environ["BDAG_NODE_SERVICE"] = "node"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
         payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
@@ -740,57 +1053,6 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         self.assertNotIn("enabled_node_mining_template_support", repair["actions"])
         self.assertFalse(any("--force-recreate" in command for command in commands))
-
-    def test_quarantines_fastsync_peer_returning_only_orphan_blocks(self) -> None:
-        commands = []
-        env_updates = {}
-        peer_id = "16Uiu2HAkvvmkRJXJAZAWq3bFDzBAFQwQJ88PQqMedULsrv4t3XCD"
-        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
-        os.environ["BDAG_DETECTED_NETWORK_TOPOLOGY"] = "asic-router"
-        os.environ["BDAG_STORAGE_PROFILE"] = "usb-chain-internal-runtime"
-        os.environ["BDAG_FASTARTIFACTSYNC_ENABLED"] = "0"
-        os.environ["BDAG_ENABLE_NODE_MINING"] = "1"
-        os.environ["BDAG_NODE_MODULES"] = "Blockdag"
-        os.environ["MINING_ADDRESS"] = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
-        os.environ["BDAG_NODE_MINING_ARGS"] = (
-            "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc --maxinbound=1"
-        )
-        os.environ["BDAG_NODE_PEER_ADDRESSES"] = f"/ip4/10.0.0.2/tcp/8151/p2p/{peer_id},/ip4/3.3.3.3/tcp/8150/p2p/good"
-        os.environ["BDAG_FASTSYNC_PEERS"] = f"/ip4/10.0.0.2/tcp/8151/p2p/{peer_id}"
-        os.environ["BOOTSTRAP_PEER_ADDRESSES"] = f"/ip4/10.0.0.2/tcp/8151/p2p/{peer_id},/ip4/4.4.4.4/tcp/8150/p2p/good"
-        os.environ["BDAG_NODE_SERVICES"] = "node"
-        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
-        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
-        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
-        payload["nodes"] = {
-            "node": {
-                "tail": [
-                    "Fast-sync range returned only orphan blocks; falling back to legacy sync DAG "
-                    f"module=SYNC peer={peer_id} processID=54"
-                ]
-            }
-        }
-
-        def fake_set_runtime_env(key: str, value: str):
-            env_updates[key] = value
-            os.environ[key] = value
-            return [f"/runtime/{key}"]
-
-        def fake_run(command: list[str], timeout: int = 20):
-            commands.append(command)
-            return self.command_result(command)
-
-        status_sampler.set_runtime_env_value = fake_set_runtime_env
-        status_sampler.run = fake_run
-
-        repair = status_sampler.mining_imperative_repair(payload)
-
-        self.assertIn("quarantined_fastsync_orphan_peer", repair["actions"])
-        self.assertNotIn(peer_id, env_updates["BDAG_NODE_PEER_ADDRESSES"])
-        self.assertNotIn(peer_id, env_updates["BDAG_FASTSYNC_PEERS"])
-        self.assertNotIn(peer_id, env_updates["BOOTSTRAP_PEER_ADDRESSES"])
-        self.assertTrue(any("--force-recreate" in command for command in commands))
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -126,7 +126,7 @@ if [[ -z "$ENV_FILE" ]]; then
   ENV_FILE="$RUNTIME_DIR/ops.env"
 fi
 
-mkdir -p "$RUNTIME_DIR/logs" "$(dirname "$ENV_FILE")" "$HOME/.config/systemd/user"
+mkdir -p "$RUNTIME_DIR/logs" "$(dirname "$ENV_FILE")" "$HOME/.config/systemd/user" "$HOME/.config/autostart" "$HOME/.local/bin"
 
 set_env_value() {
   local file="$1" key="$2" value="$3"
@@ -167,19 +167,15 @@ BDAG_POOL_DB_CONTAINER=$(stack_default BDAG_POOL_DB_CONTAINER)
 BDAG_POOL_DB_USER=$(stack_default BDAG_POOL_DB_USER)
 BDAG_POOL_DB_NAME=$(stack_default BDAG_POOL_DB_NAME)
 BDAG_NODE_MODE=$(stack_default BDAG_NODE_MODE)
-BDAG_NODE_SERVICES=$(stack_default BDAG_NODE_SERVICES)
+BDAG_NODE_SERVICE=$(stack_default BDAG_NODE_SERVICE)
 BDAG_STACK_SERVICES=$(stack_default BDAG_STACK_SERVICES)
-BDAG_NODE_RPC_URLS=node=http://127.0.0.1:38131
+BDAG_START_SERVICES=$(stack_default BDAG_START_SERVICES)
+POOL_ASIC_MAC_OVERRIDES=$(stack_default POOL_ASIC_MAC_OVERRIDES)
+BDAG_NODE_RPC_URL=http://127.0.0.1:38131
 BDAG_GLOBAL_CHAIN_RPC_URLS=node=http://127.0.0.1:38131
 BDAG_ENABLE_NODE_MINING=0
-SYNC_SOURCE_NODE=$(stack_default SYNC_SOURCE_NODE)
 BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED=$(stack_default BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED)
 BDAG_CHAIN_PEERSTORE_LOG_TAIL=$(stack_default BDAG_CHAIN_PEERSTORE_LOG_TAIL)
-BDAG_NO_FASTSYNC_SERVE=$(stack_default BDAG_NO_FASTSYNC_SERVE)
-BDAG_FASTARTIFACTSYNC_ENABLED=$(stack_default BDAG_FASTARTIFACTSYNC_ENABLED)
-BDAG_FASTSYNC_RANGE_BLOCKS=$(stack_default BDAG_FASTSYNC_RANGE_BLOCKS)
-BDAG_FASTSYNC_PREPROCESS_WORKERS=$(stack_default BDAG_FASTSYNC_PREPROCESS_WORKERS)
-BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC=$(stack_default BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC)
 BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS=$(stack_default BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS)
 BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT=$(stack_default BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT)
 BDAG_CATCHUP_PAUSE_ENABLED=$(stack_default BDAG_CATCHUP_PAUSE_ENABLED)
@@ -196,18 +192,13 @@ BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT=$(stack_default BDAG_CATCHUP_NODE_CACHE_M
 BDAG_CHAIN_STATE_SELF_HEAL_ENABLED=$(stack_default BDAG_CHAIN_STATE_SELF_HEAL_ENABLED)
 BDAG_CHAIN_STATE_SELF_HEAL_UNIT=${INSTANCE}-chain-state-self-heal.service
 BDAG_MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED=$(stack_default BDAG_MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED)
+BDAG_CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS=$(stack_default BDAG_CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS)
+BDAG_CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS=$(stack_default BDAG_CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS)
 BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_ENABLED=$(stack_default BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_ENABLED)
 BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_SECONDS=$(stack_default BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_SECONDS)
 BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_PEER_AHEAD_BLOCKS=$(stack_default BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_PEER_AHEAD_BLOCKS)
 BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_GAP_GROWTH_BLOCKS=$(stack_default BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_GAP_GROWTH_BLOCKS)
-BDAG_CHAIN_STATE_REUSE_EXISTING_SNAPSHOT=$(stack_default BDAG_CHAIN_STATE_REUSE_EXISTING_SNAPSHOT)
-BDAG_FAST_CATCHUP_ARTIFACT_MODE=$(stack_default BDAG_FAST_CATCHUP_ARTIFACT_MODE)
-BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS=$(stack_default BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS)
-BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS=$(stack_default BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS)
-BDAG_FAST_CATCHUP_ARTIFACT_MIN_GAIN_BLOCKS=$(stack_default BDAG_FAST_CATCHUP_ARTIFACT_MIN_GAIN_BLOCKS)
-BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED=$(stack_default BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED)
-BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS=$(stack_default BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS)
-BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT=$(stack_default BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT)
+BDAG_CHAIN_STATE_SELF_HEAL_ALLOW_LOCAL_CANDIDATES=$(stack_default BDAG_CHAIN_STATE_SELF_HEAL_ALLOW_LOCAL_CANDIDATES)
 BDAG_SHARED_STATUS_CACHE_ENABLED=$(stack_default BDAG_SHARED_STATUS_CACHE_ENABLED)
 BDAG_SHARED_STATUS_CACHE_SECONDS=$(stack_default BDAG_SHARED_STATUS_CACHE_SECONDS)
 BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=$(stack_default BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS)
@@ -217,6 +208,11 @@ BDAG_ADAPTIVE_IOWAIT_WARN_PERCENT=$(stack_default BDAG_ADAPTIVE_IOWAIT_WARN_PERC
 BDAG_ADAPTIVE_IO_SOME_AVG10_WARN=$(stack_default BDAG_ADAPTIVE_IO_SOME_AVG10_WARN)
 BDAG_ADAPTIVE_CPU_SOME_AVG10_WARN=$(stack_default BDAG_ADAPTIVE_CPU_SOME_AVG10_WARN)
 BDAG_ADAPTIVE_CHAIN_RPC_WARN_MS=$(stack_default BDAG_ADAPTIVE_CHAIN_RPC_WARN_MS)
+BDAG_ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT=$(stack_default BDAG_ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT)
+BDAG_ADAPTIVE_SWAP_USED_WARN_PERCENT=$(stack_default BDAG_ADAPTIVE_SWAP_USED_WARN_PERCENT)
+BDAG_HOST_PRESSURE_IOWAIT_WARN_PERCENT=$(stack_default BDAG_HOST_PRESSURE_IOWAIT_WARN_PERCENT)
+BDAG_HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT=$(stack_default BDAG_HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT)
+BDAG_HOST_PRESSURE_SWAP_USED_WARN_PERCENT=$(stack_default BDAG_HOST_PRESSURE_SWAP_USED_WARN_PERCENT)
 BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK=$(stack_default BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK)
 BDAG_DASHBOARD_STATUS_CACHE_SECONDS=$(stack_default BDAG_DASHBOARD_STATUS_CACHE_SECONDS)
 BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS=$(stack_default BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS)
@@ -239,6 +235,9 @@ BDAG_POOL_CPU_SHARES=$(stack_default BDAG_POOL_CPU_SHARES)
 BDAG_POOL_DB_CPU_SHARES=$(stack_default BDAG_POOL_DB_CPU_SHARES)
 BDAG_DASHBOARD_CPU_SHARES=$(stack_default BDAG_DASHBOARD_CPU_SHARES)
 BDAG_NODE_MEMORY_LOW=$(stack_default BDAG_NODE_MEMORY_LOW)
+BDAG_NODE_MEMORY_HIGH=$(stack_default BDAG_NODE_MEMORY_HIGH)
+BDAG_NODE_MEMORY_HIGH_PERCENT=$(stack_default BDAG_NODE_MEMORY_HIGH_PERCENT)
+BDAG_NODE_MEMORY_HIGH_MIN=$(stack_default BDAG_NODE_MEMORY_HIGH_MIN)
 BDAG_POOL_MEMORY_LOW=$(stack_default BDAG_POOL_MEMORY_LOW)
 BDAG_POOL_DB_MEMORY_LOW=$(stack_default BDAG_POOL_DB_MEMORY_LOW)
 BDAG_DASHBOARD_MEMORY_LOW=$(stack_default BDAG_DASHBOARD_MEMORY_LOW)
@@ -249,8 +248,11 @@ BDAG_BACKGROUND_MAINTENANCE_BACKOFF_ENABLED=$(stack_default BDAG_BACKGROUND_MAIN
 BDAG_BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS=$(stack_default BDAG_BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS)
 BDAG_BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT=$(stack_default BDAG_BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT)
 BDAG_BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN=$(stack_default BDAG_BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN)
+BDAG_BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN=$(stack_default BDAG_BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN)
 BDAG_BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN=$(stack_default BDAG_BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN)
 BDAG_BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS=$(stack_default BDAG_BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS)
+BDAG_BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT=$(stack_default BDAG_BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT)
+BDAG_BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT=$(stack_default BDAG_BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT)
 BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER=$(stack_default BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER)
 BDAG_ENTRYPOINT_CHOWN_MODE=$(stack_default BDAG_ENTRYPOINT_CHOWN_MODE)
 BDAG_NODEWORKER_LIVENESS_TIMEOUT=$(stack_default BDAG_NODEWORKER_LIVENESS_TIMEOUT)
@@ -259,6 +261,8 @@ BDAG_BOOT_REPAIR_DIRTY_POLICY=$(stack_default BDAG_BOOT_REPAIR_DIRTY_POLICY)
 BDAG_BOOT_REPAIR_CRITICAL_POLICY=$(stack_default BDAG_BOOT_REPAIR_CRITICAL_POLICY)
 BDAG_INCIDENT_REPORT_ENABLED=$(stack_default BDAG_INCIDENT_REPORT_ENABLED)
 BDAG_INCIDENT_REPORT_REPO=$(stack_default BDAG_INCIDENT_REPORT_REPO)
+BDAG_CODEX_AUTO_RESUME_CHECK_WAIT_SECONDS=60
+BDAG_CODEX_AUTO_RESUME_CHECK_INTERVAL_SECONDS=10
 
 # Optional overrides:
 # BDAG_MINING_ADDRESS=0x0000000000000000000000000000000000000000
@@ -278,6 +282,43 @@ ensure_env_value() {
   fi
 }
 
+ensure_env_value_if_empty() {
+  local key="$1" value="$2" current escaped
+  [[ -n "$value" ]] || return 0
+  if grep -q "^${key}=" "$ENV_FILE"; then
+    current="$(grep "^${key}=" "$ENV_FILE" | tail -n 1 | cut -d= -f2-)"
+    if [[ -z "$current" ]]; then
+      escaped="$(printf '%s' "$value" | sed -e 's/[\/&|\\]/\\&/g')"
+      sed -i "s|^${key}=.*|${key}=${escaped}|" "$ENV_FILE"
+    fi
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+  fi
+}
+
+detect_codex_resume_session_id() {
+  pgrep -af 'codex' 2>/dev/null \
+    | grep -Eo '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' \
+    | head -n 1
+}
+
+ensure_codex_trusted_project() {
+  local project="$1" config_dir config_file escaped
+  [[ -n "$project" ]] || return 0
+  config_dir="${CODEX_HOME:-$HOME/.codex}"
+  config_file="$config_dir/config.toml"
+  mkdir -p "$config_dir"
+  touch "$config_file"
+  escaped="${project//\\/\\\\}"
+  escaped="${escaped//\"/\\\"}"
+  if ! grep -Fqx "[projects.\"$escaped\"]" "$config_file"; then
+    {
+      printf '\n[projects."%s"]\n' "$escaped"
+      printf 'trust_level = "trusted"\n'
+    } >> "$config_file"
+  fi
+}
+
 ensure_stack_default_env_value() {
   local key="$1" fallback="${2:-}"
   ensure_env_value "$key" "$(stack_default "$key" "$fallback")"
@@ -290,21 +331,17 @@ ensure_stack_default_env_value BDAG_POOL_CONTAINER
 ensure_stack_default_env_value BDAG_POOL_CONTAINERS
 ensure_stack_default_env_value BDAG_POOL_DB_CONTAINER
 ensure_stack_default_env_value BDAG_NODE_MODE
-ensure_stack_default_env_value BDAG_NODE_SERVICES
+ensure_stack_default_env_value BDAG_NODE_SERVICE
 ensure_stack_default_env_value BDAG_STACK_SERVICES
-ensure_env_value BDAG_NODE_RPC_URLS "node=http://127.0.0.1:38131"
+ensure_stack_default_env_value BDAG_START_SERVICES
+ensure_stack_default_env_value POOL_ASIC_MAC_OVERRIDES
+ensure_env_value BDAG_NODE_RPC_URL "http://127.0.0.1:38131"
 ensure_env_value BDAG_GLOBAL_CHAIN_RPC_URLS "node=http://127.0.0.1:38131"
 ensure_env_value BDAG_ENABLE_NODE_MINING 0
-ensure_stack_default_env_value SYNC_SOURCE_NODE
 ensure_stack_default_env_value BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED
 ensure_stack_default_env_value BDAG_CHAIN_PEERSTORE_LOG_TAIL
-ensure_stack_default_env_value BDAG_NO_FASTSYNC_SERVE
-ensure_stack_default_env_value BDAG_FASTARTIFACTSYNC_ENABLED
-ensure_stack_default_env_value BDAG_FASTSYNC_RANGE_BLOCKS
-ensure_stack_default_env_value BDAG_FASTSYNC_PREPROCESS_WORKERS
-ensure_stack_default_env_value BDAG_FASTSNAP_SEED_TIMER_ENABLED
-ensure_stack_default_env_value BDAG_RAWDATADIR_SOURCE_MODE
 ensure_env_value BDAG_RAWDATADIR_ARTIFACT_BASE "$PROJECT_ROOT/data-restore/rawdatadir"
+ensure_stack_default_env_value BDAG_RAWDATADIR_SIDECAR_MODE
 ensure_stack_default_env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE
 ensure_env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE "$PROJECT_ROOT/data-restore/rawdatadir-sidecar-content"
 ensure_stack_default_env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP
@@ -324,6 +361,10 @@ ensure_stack_default_env_value BDAG_IPFS_CONTENT_IPNS_LIFETIME
 ensure_env_value BDAG_IPFS_CONTENT_DISCOVERY_FILE "$PROJECT_ROOT/ops/ipfs-content-discovery.json"
 ensure_env_value BDAG_IPFS_CONTENT_LATEST_IPNS "/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk"
 ensure_env_value BDAG_IPFS_CONTENT_DEFAULT_INDEX_CID "bafkreia7jk2ljqi3raiohugp6nw3633njfp7jmnuvqh47po52et4kupu2a"
+ensure_stack_default_env_value BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH
+ensure_stack_default_env_value BDAG_IPFS_RAWDATADIR_CONTENT_DEFAULT_INDEX_CID
+ensure_stack_default_env_value BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS
+ensure_env_value BDAG_IPFS_RAWDATADIR_CONTENT_IPNS_KEY ""
 ensure_stack_default_env_value BDAG_IPFS_CONTENT_DEFAULT_ROOT_CID
 ensure_env_value BDAG_IPFS_CONTENT_STATUS_FILE "$PROJECT_ROOT/ops/runtime/ipfs-content-sidecar-status.json"
 ensure_env_value BDAG_IPFS_CONTENT_LATEST_INDEX_PATH "$PROJECT_ROOT/ops/runtime/ipfs-content/latest-index.json"
@@ -341,7 +382,14 @@ ensure_stack_default_env_value BDAG_IPFS_SEGMENT_IPNS_TTL
 ensure_stack_default_env_value BDAG_IPFS_SEGMENT_IPNS_LIFETIME
 ensure_env_value BDAG_IPFS_SEGMENT_STATUS_FILE "$PROJECT_ROOT/ops/runtime/ipfs-content/segment-writer-status.json"
 ensure_env_value BDAG_IPFS_SEGMENT_INDEX_PATH "$PROJECT_ROOT/ops/runtime/ipfs-content/latest-index.json"
-ensure_stack_default_env_value BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC
+ensure_stack_default_env_value BDAG_IPFS_RESTORE_ACCEPTED_HEAD_ENABLED
+ensure_env_value BDAG_IPFS_RESTORE_ACCEPTED_HEAD_STATE_FILE "$PROJECT_ROOT/ops/runtime/ipfs-content/restore-accepted-head.json"
+ensure_stack_default_env_value BDAG_IPFS_RESTORE_CHAIN_ANCHOR_ENABLED
+ensure_stack_default_env_value BDAG_IPFS_RESTORE_REQUIRE_CHAIN_ANCHOR
+ensure_stack_default_env_value BDAG_IPFS_RESTORE_CHAIN_SOURCE_RPC_URL
+ensure_stack_default_env_value BDAG_IPFS_RESTORE_CHAIN_REFERENCE_RPC_URL
+ensure_stack_default_env_value BDAG_IPFS_RESTORE_CHAIN_ANCHOR_FULL_SPAN_MAX_ORDERS
+ensure_stack_default_env_value BDAG_IPFS_RESTORE_CHAIN_ANCHOR_SKIP_ENVIRONMENT_GATES
 ensure_stack_default_env_value BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS
 ensure_stack_default_env_value BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT
 ensure_stack_default_env_value BDAG_CATCHUP_PAUSE_ENABLED
@@ -358,18 +406,13 @@ ensure_stack_default_env_value BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT
 ensure_stack_default_env_value BDAG_CHAIN_STATE_SELF_HEAL_ENABLED
 ensure_env_value BDAG_CHAIN_STATE_SELF_HEAL_UNIT "${INSTANCE}-chain-state-self-heal.service"
 ensure_stack_default_env_value BDAG_MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED
+ensure_stack_default_env_value BDAG_CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS
+ensure_stack_default_env_value BDAG_CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS
 ensure_stack_default_env_value BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_ENABLED
 ensure_stack_default_env_value BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_SECONDS
 ensure_stack_default_env_value BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_PEER_AHEAD_BLOCKS
 ensure_stack_default_env_value BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_GAP_GROWTH_BLOCKS
-ensure_stack_default_env_value BDAG_CHAIN_STATE_REUSE_EXISTING_SNAPSHOT
-ensure_stack_default_env_value BDAG_FAST_CATCHUP_ARTIFACT_MODE
-ensure_stack_default_env_value BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS
-ensure_stack_default_env_value BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS
-ensure_stack_default_env_value BDAG_FAST_CATCHUP_ARTIFACT_MIN_GAIN_BLOCKS
-ensure_stack_default_env_value BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED
-ensure_stack_default_env_value BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS
-ensure_stack_default_env_value BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT
+ensure_stack_default_env_value BDAG_CHAIN_STATE_SELF_HEAL_ALLOW_LOCAL_CANDIDATES
 ensure_stack_default_env_value BDAG_SHARED_STATUS_CACHE_ENABLED
 ensure_stack_default_env_value BDAG_SHARED_STATUS_CACHE_SECONDS
 ensure_stack_default_env_value BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS
@@ -379,6 +422,11 @@ ensure_stack_default_env_value BDAG_ADAPTIVE_IOWAIT_WARN_PERCENT
 ensure_stack_default_env_value BDAG_ADAPTIVE_IO_SOME_AVG10_WARN
 ensure_stack_default_env_value BDAG_ADAPTIVE_CPU_SOME_AVG10_WARN
 ensure_stack_default_env_value BDAG_ADAPTIVE_CHAIN_RPC_WARN_MS
+ensure_stack_default_env_value BDAG_ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT
+ensure_stack_default_env_value BDAG_ADAPTIVE_SWAP_USED_WARN_PERCENT
+ensure_stack_default_env_value BDAG_HOST_PRESSURE_IOWAIT_WARN_PERCENT
+ensure_stack_default_env_value BDAG_HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT
+ensure_stack_default_env_value BDAG_HOST_PRESSURE_SWAP_USED_WARN_PERCENT
 ensure_stack_default_env_value BDAG_STATUS_SAMPLER_ENABLED
 ensure_stack_default_env_value BDAG_STATUS_SAMPLER_INTERVAL_SECONDS
 ensure_stack_default_env_value BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS
@@ -404,6 +452,9 @@ ensure_stack_default_env_value BDAG_POOL_CPU_SHARES
 ensure_stack_default_env_value BDAG_POOL_DB_CPU_SHARES
 ensure_stack_default_env_value BDAG_DASHBOARD_CPU_SHARES
 ensure_stack_default_env_value BDAG_NODE_MEMORY_LOW
+ensure_stack_default_env_value BDAG_NODE_MEMORY_HIGH
+ensure_stack_default_env_value BDAG_NODE_MEMORY_HIGH_PERCENT
+ensure_stack_default_env_value BDAG_NODE_MEMORY_HIGH_MIN
 ensure_stack_default_env_value BDAG_POOL_MEMORY_LOW
 ensure_stack_default_env_value BDAG_POOL_DB_MEMORY_LOW
 ensure_stack_default_env_value BDAG_DASHBOARD_MEMORY_LOW
@@ -414,8 +465,11 @@ ensure_stack_default_env_value BDAG_BACKGROUND_MAINTENANCE_BACKOFF_ENABLED
 ensure_stack_default_env_value BDAG_BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS
 ensure_stack_default_env_value BDAG_BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT
 ensure_stack_default_env_value BDAG_BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN
+ensure_stack_default_env_value BDAG_BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN
 ensure_stack_default_env_value BDAG_BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN
 ensure_stack_default_env_value BDAG_BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS
+ensure_stack_default_env_value BDAG_BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT
+ensure_stack_default_env_value BDAG_BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT
 ensure_stack_default_env_value BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER
 ensure_stack_default_env_value BDAG_ENTRYPOINT_CHOWN_MODE
 ensure_stack_default_env_value BDAG_NODEWORKER_LIVENESS_TIMEOUT
@@ -425,11 +479,23 @@ ensure_stack_default_env_value BDAG_BOOT_REPAIR_CRITICAL_POLICY
 ensure_stack_default_env_value BDAG_INCIDENT_REPORT_ENABLED
 ensure_stack_default_env_value BDAG_INCIDENT_REPORT_REPO
 append_stack_defaults_to_env_file "$ENV_FILE"
+ensure_env_value BDAG_CODEX_RESUME_SESSION_ID ""
+ensure_env_value_if_empty BDAG_CODEX_RESUME_SESSION_ID "$(detect_codex_resume_session_id || true)"
+ensure_env_value BDAG_CODEX_AUTO_RESUME_VISIBLE 1
+ensure_env_value BDAG_CODEX_AUTO_RESUME_BACKEND ptyxis
+ensure_env_value BDAG_CODEX_AUTO_RESUME_CHECK_WAIT_SECONDS 60
+ensure_env_value BDAG_CODEX_AUTO_RESUME_CHECK_INTERVAL_SECONDS 10
+ensure_codex_trusted_project "$PROJECT_ROOT"
+ensure_codex_trusted_project "$(dirname "$PROJECT_ROOT")"
 
 DASHBOARD_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-dashboard.service"
 STATUS_SAMPLER_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-status-sampler.service"
 WATCHDOG_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-watchdog.service"
 BOOT_REPAIR_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-boot-repair.service"
+CODEX_BOOT_HANDOFF_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-codex-boot-handoff.service"
+CODEX_AUTO_RESUME_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-codex-auto-resume.service"
+CODEX_AUTO_RESUME_WRAPPER="$HOME/.local/bin/${INSTANCE}-codex-auto-resume"
+CODEX_AUTO_RESUME_DESKTOP="$HOME/.config/autostart/${INSTANCE}-codex-auto-resume.desktop"
 SYNC_COORDINATOR_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-sync-coordinator.service"
 SYNC_COORDINATOR_TIMER="$HOME/.config/systemd/user/${INSTANCE}-sync-coordinator.timer"
 STACK_SENTINEL_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-stack-sentinel.service"
@@ -444,14 +510,13 @@ LOCAL_PEERS_TIMER="$HOME/.config/systemd/user/${INSTANCE}-local-peers.timer"
 CHAIN_STATE_SELF_HEAL_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-chain-state-self-heal.service"
 CHAIN_RESTORE_GUARD_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-chain-restore-guard.service"
 CHAIN_RESTORE_GUARD_TIMER="$HOME/.config/systemd/user/${INSTANCE}-chain-restore-guard.timer"
-CHAIN_PRESYNC_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-chain-presync.service"
-CHAIN_PRESYNC_TIMER="$HOME/.config/systemd/user/${INSTANCE}-chain-presync.timer"
-HOURLY_SNAPSHOT_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-hourly-snapshot.service"
-HOURLY_SNAPSHOT_TIMER="$HOME/.config/systemd/user/${INSTANCE}-hourly-snapshot.timer"
 INCIDENT_REPORTER_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-incident-reporter.service"
 INCIDENT_REPORTER_TIMER="$HOME/.config/systemd/user/${INSTANCE}-incident-reporter.timer"
+DOCKER_READY_TEST='(docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1)'
 
 cleanup_obsolete_user_units() {
+  local retired_chain_copy_prefix="${INSTANCE}-chain-pre""sync"
+  local retired_chain_artifact_word="snap""shot"
   local units=(
     "${INSTANCE}-watchdog-guard.service"
     "${INSTANCE}-watchdog-guard.timer"
@@ -459,6 +524,10 @@ cleanup_obsolete_user_units() {
     "${INSTANCE}-miner-15min-supervisor.timer"
     "${INSTANCE}-today-3asic-optimum-watch.service"
     "${INSTANCE}-today-3asic-optimum-watch.timer"
+    "${retired_chain_copy_prefix}.service"
+    "${retired_chain_copy_prefix}.timer"
+    "${INSTANCE}-hourly-${retired_chain_artifact_word}.service"
+    "${INSTANCE}-hourly-${retired_chain_artifact_word}.timer"
   )
   local unit
   for unit in "${units[@]}"; do
@@ -530,7 +599,7 @@ Environment=BDAG_WATCHDOG_INTERVAL=30
 Environment=BDAG_WATCHDOG_FAILURE_THRESHOLD=3
 Environment=BDAG_CLEAN_RESTORE_COOLDOWN=1800
 EnvironmentFile=-$ENV_FILE
-ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do docker info >/dev/null 2>&1 && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
+ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do $DOCKER_READY_TEST && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
 ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/watchdog.py --loop
 ExecStopPost=/bin/sh -c 'rm -f "\$BDAG_RUNTIME_DIR/dirty-shutdown.marker"'
 Restart=always
@@ -596,12 +665,91 @@ Environment=BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE=0
 Environment=BDAG_BOOT_REPAIR_DIRTY_POLICY=start
 Environment=BDAG_BOOT_REPAIR_CRITICAL_POLICY=restart
 EnvironmentFile=-$ENV_FILE
-ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do docker info >/dev/null 2>&1 && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
+ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do $DOCKER_READY_TEST && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
 ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/watchdog.py --boot-repair
 
 [Install]
 WantedBy=default.target
 EOF
+fi
+
+cat > "$CODEX_BOOT_HANDOFF_SERVICE" <<EOF
+[Unit]
+Description=BlockDAG Codex boot handoff verifier ($INSTANCE)
+After=${INSTANCE}-boot-repair.service ${INSTANCE}-dashboard.service ${INSTANCE}-watchdog.service default.target
+Wants=${INSTANCE}-boot-repair.service ${INSTANCE}-dashboard.service ${INSTANCE}-watchdog.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=$PROJECT_ROOT
+Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
+Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
+Environment=BDAG_CODEX_BOOT_DASHBOARD_URL=http://$BIND:$PORT/api/status
+EnvironmentFile=-$ENV_FILE
+ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/codex_boot_handoff.py --repair
+SuccessExitStatus=2
+Nice=15
+IOSchedulingClass=idle
+CPUWeight=10
+IOWeight=10
+
+[Install]
+WantedBy=default.target
+EOF
+
+cat > "$CODEX_AUTO_RESUME_SERVICE" <<EOF
+[Unit]
+Description=BlockDAG visible Codex auto-resume terminal ($INSTANCE)
+After=graphical-session.target ${INSTANCE}-dashboard.service
+Wants=${INSTANCE}-dashboard.service
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=$PROJECT_ROOT
+Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
+Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
+EnvironmentFile=-$ENV_FILE
+ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/codex_auto_resume.py
+Nice=15
+IOSchedulingClass=idle
+CPUWeight=10
+IOWeight=10
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=graphical-session.target
+EOF
+
+printf -v PROJECT_ROOT_SHELL '%q' "$PROJECT_ROOT"
+printf -v RUNTIME_DIR_SHELL '%q' "$RUNTIME_DIR"
+cat > "$CODEX_AUTO_RESUME_WRAPPER" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export BDAG_PROJECT_ROOT=$PROJECT_ROOT_SHELL
+export BDAG_RUNTIME_DIR=$RUNTIME_DIR_SHELL
+exec /usr/bin/env python3 $PROJECT_ROOT_SHELL/ops/codex_auto_resume.py
+EOF
+chmod 0755 "$CODEX_AUTO_RESUME_WRAPPER"
+
+if [[ "$START_SERVICES" -eq 1 ]]; then
+  cat > "$CODEX_AUTO_RESUME_DESKTOP" <<EOF
+[Desktop Entry]
+Type=Application
+Name=BlockDAG Codex Resume ($INSTANCE)
+Comment=Check the BlockDAG pool after desktop login and open Codex resume
+Exec=$CODEX_AUTO_RESUME_WRAPPER
+TryExec=$CODEX_AUTO_RESUME_WRAPPER
+Path=$PROJECT_ROOT
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+OnlyShowIn=GNOME;Unity;MATE;XFCE;
+EOF
+  chmod 0644 "$CODEX_AUTO_RESUME_DESKTOP"
+else
+  rm -f "$CODEX_AUTO_RESUME_DESKTOP"
 fi
 
 if [[ "$INSTALL_GUARDS" -eq 1 ]]; then
@@ -615,8 +763,8 @@ Type=oneshot
 WorkingDirectory=$PROJECT_ROOT
 Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
 Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
-Environment=BDAG_SENTINEL_USER_SERVICES=${INSTANCE}-dashboard.service,${INSTANCE}-watchdog.service,${INSTANCE}-node-child-guard.service,${INSTANCE}-p2p-guard.service
-Environment=BDAG_SENTINEL_USER_TIMERS=${INSTANCE}-stack-sentinel.timer,${INSTANCE}-mining-30min-guard.timer,${INSTANCE}-node-child-guard.timer,${INSTANCE}-sync-coordinator.timer,${INSTANCE}-chain-restore-guard.timer,${INSTANCE}-chain-presync.timer,${INSTANCE}-hourly-snapshot.timer,${INSTANCE}-local-peers.timer,${INSTANCE}-incident-reporter.timer
+Environment=BDAG_SENTINEL_USER_SERVICES=${INSTANCE}-status-sampler.service,${INSTANCE}-watchdog.service,${INSTANCE}-p2p-guard.service
+Environment=BDAG_SENTINEL_USER_TIMERS=${INSTANCE}-stack-sentinel.timer,${INSTANCE}-sync-coordinator.timer,${INSTANCE}-chain-restore-guard.timer,${INSTANCE}-local-peers.timer,${INSTANCE}-mining-30min-guard.timer
 EnvironmentFile=-$ENV_FILE
 ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/stack_sentinel.py
 Nice=10
@@ -718,7 +866,7 @@ Environment=BDAG_RUNTIME_DIR=$RUNTIME_DIR
 Environment=BDAG_P2P_GUARD_INTERVAL=300
 Environment=BDAG_POOL_ACTIVITY_LOG_LINES=1200
 EnvironmentFile=-$ENV_FILE
-ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do docker info >/dev/null 2>&1 && curl -fsS http://127.0.0.1:$PORT/api/status >/dev/null 2>&1 && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
+ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do $DOCKER_READY_TEST && curl -fsS http://127.0.0.1:$PORT/api/status >/dev/null 2>&1 && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
 ExecStart=/usr/bin/env python3 $PROJECT_ROOT/ops/p2p_guard.py --loop
 Restart=always
 RestartSec=15
@@ -783,7 +931,7 @@ IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 CPUWeight=50
 IOWeight=50
-ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do docker info >/dev/null 2>&1 && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
+ExecStartPre=/bin/sh -c 'i=0; while [ "\$i" -lt 60 ]; do $DOCKER_READY_TEST && exit 0; i=\$((i+1)); sleep 5; done; exit 1'
 ExecStart=$PROJECT_ROOT/ops/chain-state-self-heal.sh --from-systemd
 EOF
 
@@ -816,70 +964,6 @@ AccuracySec=30s
 Persistent=true
 RandomizedDelaySec=20s
 Unit=${INSTANCE}-chain-restore-guard.service
-
-[Install]
-WantedBy=timers.target
-EOF
-
-  cat > "$CHAIN_PRESYNC_SERVICE" <<EOF
-[Unit]
-Description=BlockDAG live chain pre-sync ($INSTANCE)
-After=default.target
-
-[Service]
-Type=oneshot
-WorkingDirectory=$PROJECT_ROOT
-Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
-Environment=BDAG_PRESYNC_ONE_NODE=1
-EnvironmentFile=-$ENV_FILE
-Nice=19
-IOSchedulingClass=idle
-CPUWeight=10
-IOWeight=10
-ExecStart=$PROJECT_ROOT/ops/chain-presync.sh
-EOF
-
-  cat > "$CHAIN_PRESYNC_TIMER" <<EOF
-[Unit]
-Description=Run BlockDAG live chain pre-sync every two hours ($INSTANCE)
-
-[Timer]
-OnBootSec=10min
-OnUnitActiveSec=2h
-Persistent=true
-RandomizedDelaySec=5min
-Unit=${INSTANCE}-chain-presync.service
-
-[Install]
-WantedBy=timers.target
-EOF
-
-  cat > "$HOURLY_SNAPSHOT_SERVICE" <<EOF
-[Unit]
-Description=BlockDAG hourly chain snapshot ($INSTANCE)
-After=${INSTANCE}-watchdog.service ${INSTANCE}-dashboard.service default.target
-
-[Service]
-Type=oneshot
-WorkingDirectory=$PROJECT_ROOT
-Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
-EnvironmentFile=-$ENV_FILE
-Nice=19
-IOSchedulingClass=idle
-CPUWeight=10
-IOWeight=10
-ExecStart=$PROJECT_ROOT/ops/hourly-chain-snapshot.sh
-EOF
-
-  cat > "$HOURLY_SNAPSHOT_TIMER" <<EOF
-[Unit]
-Description=Run BlockDAG chain snapshot periodically ($INSTANCE)
-
-[Timer]
-OnCalendar=hourly
-Persistent=true
-RandomizedDelaySec=120
-Unit=${INSTANCE}-hourly-snapshot.service
 
 [Install]
 WantedBy=timers.target
@@ -928,6 +1012,10 @@ ensure_automation_control_file() {
 
 ensure_automation_control_file
 
+if command -v loginctl >/dev/null 2>&1; then
+  loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || true
+fi
+
 systemctl --user daemon-reload
 if [[ "$START_SERVICES" -eq 1 ]]; then
   if [[ "$INSTALL_WATCHDOG" -eq 1 ]]; then
@@ -938,6 +1026,9 @@ if [[ "$START_SERVICES" -eq 1 ]]; then
   if [[ "$INSTALL_WATCHDOG" -eq 1 ]]; then
     systemctl --user enable --now "${INSTANCE}-watchdog.service"
   fi
+  systemctl --user enable "${INSTANCE}-codex-boot-handoff.service"
+  systemctl --user start --no-block "${INSTANCE}-codex-boot-handoff.service" || true
+  systemctl --user enable "${INSTANCE}-codex-auto-resume.service"
   if [[ "$INSTALL_SYNC_COORDINATOR" -eq 1 ]]; then
     systemctl --user enable --now "${INSTANCE}-sync-coordinator.timer"
   fi
@@ -948,8 +1039,6 @@ if [[ "$START_SERVICES" -eq 1 ]]; then
     systemctl --user enable --now "${INSTANCE}-p2p-guard.service"
     systemctl --user enable --now "${INSTANCE}-local-peers.timer"
     systemctl --user enable --now "${INSTANCE}-chain-restore-guard.timer"
-    systemctl --user enable --now "${INSTANCE}-chain-presync.timer"
-    systemctl --user enable --now "${INSTANCE}-hourly-snapshot.timer"
     systemctl --user enable --now "${INSTANCE}-incident-reporter.timer"
   fi
 fi
@@ -986,10 +1075,6 @@ if [[ "$INSTALL_GUARDS" -eq 1 ]]; then
   echo "  $CHAIN_STATE_SELF_HEAL_SERVICE"
   echo "  $CHAIN_RESTORE_GUARD_SERVICE"
   echo "  $CHAIN_RESTORE_GUARD_TIMER"
-  echo "  $CHAIN_PRESYNC_SERVICE"
-  echo "  $CHAIN_PRESYNC_TIMER"
-  echo "  $HOURLY_SNAPSHOT_SERVICE"
-  echo "  $HOURLY_SNAPSHOT_TIMER"
   echo "  $INCIDENT_REPORTER_SERVICE"
   echo "  $INCIDENT_REPORTER_TIMER"
 fi

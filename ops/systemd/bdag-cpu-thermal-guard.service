@@ -6,7 +6,7 @@ Wants=bdag-cpu-boost.service power-profiles-daemon.service
 [Service]
 Type=simple
 Environment=BDAG_CPU_GUARD_INTERVAL_SECONDS=30
-ExecStart=/home/jeremy/blockdag-asic-pool/ops/cpu-thermal-guard.sh
+ExecStart=/home/jeremy/blockdag-mining-pool/stack/ops/cpu-thermal-guard.sh
 Restart=always
 RestartSec=5
 Nice=-5

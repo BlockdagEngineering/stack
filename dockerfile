@@ -5,11 +5,11 @@
 #
 #   ./
 #   ├── bin/blockdag-node, bin/nodeworker, bin/mining-pool, bin/dashboard-api, bin/dashboard
-#   ├── docker/             (e.g. no-snapshot.marker; see SNAPSHOT_PATH)
+#   ├── docker/
 #   ├── .env.example, docker-compose.yml, …
 #
-# Optional snapshot import: SNAPSHOT_PATH copies a .bdsnap from the build context
-# (see compose / Makefile). No URL download. Datadir matches node.conf.
+# Chain bootstrap is IPFS/P2P owned. Do not bake mutable chain artifacts into
+# the image.
 
 # ----------------------------------------------------------------------------
 # Common base
@@ -82,11 +82,9 @@ RUN set -eu; mkdir -p /out; \
     chmod +x /out/dashboard
 
 # ----------------------------------------------------------------------------
-# Node Runtime Stage (with optional snapshot import)
+# Node Runtime Stage
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS node
-# Git dev compose passes SNAPSHOT_PATH; release tarball defaults to marker under ./docker/.
-ARG SNAPSHOT_PATH=docker/no-snapshot.marker
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates tzdata curl \
@@ -102,23 +100,6 @@ RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker
 
 COPY docker/entrypoint-nodeworker.sh /usr/local/bin/docker-entrypoint-nodeworker.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh
-
-# Snapshot path is relative to build context (Compose sets this in .env for dev vs release).
-COPY ${SNAPSHOT_PATH} /tmp/snapshot-candidate.bdsnap
-
-RUN set -eu; \
-    if [ "$(stat -c%s /tmp/snapshot-candidate.bdsnap)" -ge 1024 ]; then \
-      echo "Importing local snapshot ($(stat -c%s /tmp/snapshot-candidate.bdsnap) bytes)"; \
-      /usr/local/bin/blockdag-node snap import \
-        --datadir /var/lib/bdagStack/node/mainnet \
-        --path /tmp/snapshot-candidate.bdsnap; \
-      cp -f /tmp/snapshot-candidate.bdsnap /var/lib/bdagStack/node/mainnet/snapshot.bdsnap; \
-      chown -R bdagStack:bdagStack /var/lib/bdagStack/node /var/log/bdagStack; \
-      echo "Snapshot import finished and P2P snapshot archive published"; \
-    else \
-      echo "No snapshot file (marker or tiny file); node will sync from genesis or P2P and cannot serve a P2P snapshot until snapshot.bdsnap exists in its datadir"; \
-    fi; \
-    rm -f /tmp/snapshot-candidate.bdsnap
 
 WORKDIR /var/lib/bdagStack/node
 EXPOSE 8150 38131 38132 18545 18546 6060
@@ -177,15 +158,15 @@ RUN apk add --no-cache \
     shadow \
     tzdata
 
-COPY --from=dashboard-source /src/dashboard /opt/dashboard
-# Compose supplies dashboard_src from DASHBOARD_SRC_CONTEXT so local fresh builds
-# run the checked-out dashboard code instead of silently cloning an older ref.
-COPY --from=dashboard_src . /opt/dashboard
-COPY docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
-RUN chmod +x /usr/local/bin/entrypoint-dashboard.sh \
- && mkdir -p /var/lib/bdag-dashboard/runtime /workspace \
- && if [ -f /opt/dashboard/requirements.txt ]; then \
-      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/dashboard/requirements.txt; \
+COPY --from=collector-source /src/collector /opt/collector
+# Compose supplies collector_src from COLLECTOR_SRC_CONTEXT so local fresh builds
+# can run a checked-out collector without silently cloning an older ref.
+COPY --from=collector_src . /opt/collector
+COPY docker/entrypoint-collector.sh /usr/local/bin/entrypoint-collector.sh
+RUN chmod +x /usr/local/bin/entrypoint-collector.sh \
+ && mkdir -p /var/lib/bdag-collector/runtime /workspace \
+ && if [ -f /opt/collector/requirements.txt ]; then \
+      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/collector/requirements.txt; \
     fi
 
 ENV PYTHONUNBUFFERED=1 \

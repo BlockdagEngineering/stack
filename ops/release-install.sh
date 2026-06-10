@@ -73,8 +73,8 @@ init_docker_access() {
     export BDAG_DOCKER_USE_SUDO=0
     return 0
   fi
-  if command -v sudo >/dev/null 2>&1 && sudo docker info >/dev/null 2>&1; then
-    DOCKER=(sudo docker)
+  if command -v sudo >/dev/null 2>&1 && sudo -n docker info >/dev/null 2>&1; then
+    DOCKER=(sudo -n docker)
     export BDAG_DOCKER_USE_SUDO=1
     return 0
   fi
@@ -231,6 +231,16 @@ set_stack_default_env_value() {
   set_env_value "$file" "$key" "$(stack_default "$key" "$fallback")"
 }
 
+set_existing_or_stack_default_env_value() {
+  local file="$1" key="$2" fallback="${3:-}" existing
+  existing="$(env_value "$key" "")"
+  if [[ -n "$existing" ]]; then
+    set_env_value "$file" "$key" "$existing"
+  else
+    set_stack_default_env_value "$file" "$key" "$fallback"
+  fi
+}
+
 apply_stack_defaults_env() {
   local file="$1" line key value
   [[ -f "$BDAG_STACK_DEFAULTS_FILE" ]] || return 0
@@ -240,6 +250,9 @@ apply_stack_defaults_env() {
     [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
     key="${line%%=*}"
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    if grep -q "^${key}=" "$file"; then
+      continue
+    fi
     value="$(stack_default "$key" "${line#*=}")"
     set_env_value "$file" "$key" "$value"
   done < "$BDAG_STACK_DEFAULTS_FILE"
@@ -250,10 +263,11 @@ configure_active_node_env() {
   set_stack_default_env_value .env BDAG_POOL_CONTAINER pool
   set_stack_default_env_value .env BDAG_POOL_CONTAINERS pool
   set_stack_default_env_value .env BDAG_POOL_DB_CONTAINER postgres
-  set_stack_default_env_value .env BDAG_NODE_SERVICES node
+  set_stack_default_env_value .env BDAG_NODE_SERVICE node
   set_stack_default_env_value .env BDAG_STACK_SERVICES "postgres,node,pool"
-  set_env_value .env POOL_RPC_BACKENDS "node=http://node:38131"
-  set_env_value .env POOL_SUBMIT_RPC_URLS ""
+  set_stack_default_env_value .env BDAG_START_SERVICES "postgres,node,pool"
+  set_stack_default_env_value .env POOL_ASIC_MAC_OVERRIDES
+  set_env_value .env NODE_RPC_URL "http://node:38131"
   set_env_value .env WALLET_RPC_URL "http://node:18545"
   set_env_value .env WALLET_RPC_URLS "http://node:18545"
   set_stack_default_env_value .env POOL_GBT_MIN_INTERVAL_MS
@@ -445,6 +459,9 @@ configure_storage_profile() {
   set_env_value .env BDAG_POOL_DB_CPU_SHARES "$(env_value BDAG_POOL_DB_CPU_SHARES 4096)"
   set_env_value .env BDAG_DASHBOARD_CPU_SHARES "$(env_value BDAG_DASHBOARD_CPU_SHARES 128)"
   set_env_value .env BDAG_NODE_MEMORY_LOW "$(env_value BDAG_NODE_MEMORY_LOW 768M)"
+  set_env_value .env BDAG_NODE_MEMORY_HIGH "$(env_value BDAG_NODE_MEMORY_HIGH auto)"
+  set_env_value .env BDAG_NODE_MEMORY_HIGH_PERCENT "$(env_value BDAG_NODE_MEMORY_HIGH_PERCENT 82)"
+  set_env_value .env BDAG_NODE_MEMORY_HIGH_MIN "$(env_value BDAG_NODE_MEMORY_HIGH_MIN 4096M)"
   set_env_value .env BDAG_POOL_MEMORY_LOW "$(env_value BDAG_POOL_MEMORY_LOW 256M)"
   set_env_value .env BDAG_POOL_DB_MEMORY_LOW "$(env_value BDAG_POOL_DB_MEMORY_LOW 512M)"
   set_env_value .env BDAG_DASHBOARD_MEMORY_LOW "$(env_value BDAG_DASHBOARD_MEMORY_LOW 64M)"
@@ -503,17 +520,25 @@ guard_runtime_compose() {
 }
 
 install_packages() {
-  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  local packages=()
+  if ! command -v python3 >/dev/null 2>&1; then
+    packages+=(python3)
+  elif ! python3 -c 'import cryptography' >/dev/null 2>&1; then
+    packages+=(python3-cryptography)
+  fi
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && (( ${#packages[@]} == 0 )); then
     return 0
   fi
   say "Installing Docker and helper packages"
   if ! command -v apt-get >/dev/null 2>&1; then
-    echo "This installer expects Debian/Ubuntu with apt-get. Install Docker and rerun ./install.sh." >&2
+    echo "This installer expects Debian/Ubuntu with apt-get. Install Docker, Python cryptography, and rerun ./install.sh." >&2
     exit 1
   fi
+  if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
+    packages+=(docker.io docker-compose-plugin curl jq rsync unzip zip zstd openssl iproute2)
+  fi
   need_sudo apt-get update
-  need_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    docker.io docker-compose-plugin python3 curl jq rsync unzip zip zstd openssl iproute2
+  need_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
   if [[ "$(id -u)" != "0" ]]; then
     need_sudo usermod -aG docker "$USER" || true
     warn "If Docker permission fails, log out and back in, or rerun with: sudo ./install.sh"
@@ -560,8 +585,6 @@ configure_env() {
   set_env_value .env BDAG_ASIC_LAN_CIDRS "$scan_target"
   validate_pool_lan_config
   apply_stack_defaults_env .env
-  set_stack_default_env_value .env BDAG_FASTSYNC_RANGE_BLOCKS
-  set_stack_default_env_value .env BDAG_FASTSYNC_PREPROCESS_WORKERS
   set_stack_default_env_value .env BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED
   set_stack_default_env_value .env BDAG_CHAIN_PEERSTORE_LOG_TAIL
   set_env_value .env BDAG_INSTALL_APPLIANCE_HOST_PROFILE "$(env_value BDAG_INSTALL_APPLIANCE_HOST_PROFILE 1)"
@@ -570,28 +593,22 @@ configure_env() {
   set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_STRICT "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_STRICT 0)"
   set_env_value .env BDAG_INSTALL_STACK_SUPPORT_SERVICES "$(env_value BDAG_INSTALL_STACK_SUPPORT_SERVICES 1)"
   set_env_value .env BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT "$(env_value BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT 0)"
-  fastartifact_enabled=1
-  if [[ "$node_mining_enabled" == "1" ]]; then
-    case "$(env_value BDAG_STORAGE_PROFILE auto)" in
-      usb-chain-internal-runtime|single-usb-constrained)
-        fastartifact_enabled=0
-        ;;
-    esac
-  fi
-  set_env_value .env BDAG_FASTARTIFACTSYNC_ENABLED "$fastartifact_enabled"
-  set_stack_default_env_value .env SYNC_SOURCE_NODE
+  set_existing_or_stack_default_env_value .env BDAG_CHAIN_STATE_RESTORE_IPFS_ARTIFACT_CID
+  set_existing_or_stack_default_env_value .env BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_CID
+  set_existing_or_stack_default_env_value .env BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_FILE
   set_env_value .env NODE_ARGS_APPEND ""
-  set_stack_default_env_value .env BDAG_FASTSNAP_SEED_TIMER_ENABLED
-  set_stack_default_env_value .env BDAG_RAWDATADIR_SOURCE_MODE
   set_env_value .env BDAG_RAWDATADIR_ARTIFACT_BASE "./data-restore/rawdatadir"
+  set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_MODE
   set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE
   set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE "./data-restore/rawdatadir-sidecar-content"
   set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP
   set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED
+  set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_SIGNING_KEY_FILE
+  set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_TRUSTED_SIGNERS
+  set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER
   set_env_value .env BDAG_RAWDATADIR_ACTIVE_SERVICE "node"
   set_stack_default_env_value .env BDAG_RAWDATADIR_FINALIZE
   set_env_value .env BDAG_RAWDATADIR_PEERS ""
-  set_env_value .env BDAG_RAWDATADIR_TRUSTED_SIGNERS ""
   set_stack_default_env_value .env BDAG_IPFS_CONTENT_SIDECAR_MODE
   set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_DIR "./data-restore/rawdatadir-sidecar-content/current"
   set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST "./data-restore/rawdatadir-sidecar-content/current/manifest.json"
@@ -604,13 +621,24 @@ configure_env() {
   set_env_value .env BDAG_IPFS_CONTENT_DISCOVERY_FILE "./ops/ipfs-content-discovery.json"
   set_env_value .env BDAG_IPFS_CONTENT_LATEST_IPNS "/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk"
   set_env_value .env BDAG_IPFS_CONTENT_DEFAULT_INDEX_CID "bafkreia7jk2ljqi3raiohugp6nw3633njfp7jmnuvqh47po52et4kupu2a"
+  set_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_CONTENT_DEFAULT_INDEX_CID
+  set_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_CONTENT_IPNS_KEY
   set_stack_default_env_value .env BDAG_IPFS_CONTENT_DEFAULT_ROOT_CID
   set_env_value .env BDAG_IPFS_CONTENT_STATUS_FILE "./ops/runtime/ipfs-content-sidecar-status.json"
   set_env_value .env BDAG_IPFS_CONTENT_LATEST_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_MODE
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_ID
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_ROSTER
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_START_POLICY
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_STALE_HEAD_RESET_ENABLED
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT
+  set_stack_default_env_value .env BDAG_CHAIN_INTEGRITY_MAX_SEGMENT_ORDERS
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_MAX_RPC_PER_SECOND
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_RPC_TIMEOUT
@@ -619,14 +647,46 @@ configure_env() {
   set_env_value .env BDAG_IPFS_SEGMENT_IPNS_KEY ""
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_IPNS_TTL
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_IPNS_LIFETIME
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES
   set_env_value .env BDAG_IPFS_SEGMENT_STATUS_FILE "./ops/runtime/ipfs-content/segment-writer-status.json"
   set_env_value .env BDAG_IPFS_SEGMENT_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_MODE
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_MAX_SEGMENTS
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_MATERIALIZE
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_REQUIRE_SIGNATURES
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_VERIFY_INDEX_LINEAGE
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_MAX_INDEX_LINEAGE_DEPTH
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_ACCEPTED_HEAD_ENABLED
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_ACCEPTED_HEAD_STATE_FILE
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_CHAIN_ANCHOR_ENABLED
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_REQUIRE_CHAIN_ANCHOR
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_CHAIN_SOURCE_RPC_URL
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_CHAIN_REFERENCE_RPC_URL
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_CHAIN_ANCHOR_FULL_SPAN_MAX_ORDERS
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_CHAIN_ANCHOR_SKIP_ENVIRONMENT_GATES
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_PRESTART_DRILL
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_PRESTART_STRICT
+  set_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART
+  set_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART_STRICT
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_ARTIFACT_CID
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_CID
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_FILE
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_DISCOVERY_FILE
+  set_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_STATUS_FILE
+  set_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_RESTORE_IPFS_TIMEOUT
+  set_stack_default_env_value .env BDAG_IPFS_BACKFILL_INDEX_PATH
+  set_stack_default_env_value .env BDAG_IPFS_BACKFILL_STATUS_FILE
+  set_stack_default_env_value .env BDAG_IPFS_BACKFILL_START_ORDER
+  set_stack_default_env_value .env BDAG_IPFS_BACKFILL_MAX_SEGMENTS_PER_RUN
+  set_env_value .env BDAG_IPFS_RESTORE_STATUS_FILE "./ops/runtime/ipfs-content/restore-drill-status.json"
+  set_env_value .env BDAG_IPFS_RESTORE_CANDIDATE_DIR "./ops/runtime/ipfs-content/restore-candidate"
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOTS
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_HOURS
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WORKERS
   set_stack_default_env_value .env BDAG_DASHBOARD_HISTORY_REBUILD_PRESERVE_ASIC_HISTORY
-  set_stack_default_env_value .env BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC
   set_stack_default_env_value .env BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS
   set_stack_default_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT
   set_stack_default_env_value .env BDAG_CATCHUP_PAUSE_ENABLED
@@ -640,13 +700,15 @@ configure_env() {
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MB
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MIN_MB
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MODE
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MIN_GAIN_BLOCKS
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT
+  set_stack_default_env_value .env BDAG_HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT
+  set_stack_default_env_value .env BDAG_HOST_PRESSURE_SWAP_USED_WARN_PERCENT
+  set_stack_default_env_value .env BDAG_ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT
+  set_stack_default_env_value .env BDAG_ADAPTIVE_SWAP_USED_WARN_PERCENT
+  set_stack_default_env_value .env BDAG_BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT
+  set_stack_default_env_value .env BDAG_BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT
+  set_stack_default_env_value .env BDAG_MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED
+  set_stack_default_env_value .env BDAG_CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS
+  set_stack_default_env_value .env BDAG_CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS
   configure_active_node_env
   configure_node_mining_env "$node_mining_enabled" "$mining_address"
 
@@ -664,6 +726,18 @@ configure_env() {
     set_env_value .env BDAG_DASHBOARD_BIND "0.0.0.0"
   fi
 
+}
+
+provision_ipfs_segment_identity() {
+  if [[ ! -x ops/ipfs_segment_identity.py ]]; then
+    warn "Cannot provision IPFS segment writer identity: ops/ipfs_segment_identity.py is missing."
+    return 0
+  fi
+  say "Provisioning signed IPFS segment writer identity"
+  if ! python3 ops/ipfs_segment_identity.py --env-file "$ROOT/.env" --json >/dev/null; then
+    echo "IPFS segment writer identity provisioning failed. Install python3-cryptography and rerun ./install.sh." >&2
+    exit 1
+  fi
 }
 
 install_appliance_host_profile() {
@@ -813,43 +887,114 @@ seed_chain_data() {
   fi
 }
 
-publish_p2p_snapshot_archive() {
-  local arch="$1"
-  local bdag_bin="artifacts/binaries/linux-$arch/bdag"
-  local node_dir source_datadir target_datadir
-  node_dir="$(env_path_value BDAG_NODE_DATA_DIR data/node)"
-  source_datadir="$node_dir/mainnet"
-  target_datadir="$node_dir/mainnet"
-  local source_archive="$source_datadir/snapshot.bdsnap"
-  local target_archive="$target_datadir/snapshot.bdsnap"
-  local force="${BDAG_P2P_SNAPSHOT_FORCE:-0}"
+node_chain_markers_present() {
+  local chain_base node_dir network_dir
+  chain_base="$(env_path_value BDAG_CHAIN_DATA_DIR data)"
+  node_dir="$(env_path_value BDAG_NODE_DATA_DIR "$chain_base/node")"
+  network_dir="$node_dir/mainnet"
+  [[ -d "$network_dir/BdagChain" || -d "$network_dir/bdageth/chaindata" || -d "$network_dir/chaindata" ]]
+}
 
-  if [[ "${BDAG_P2P_SNAPSHOT_PUBLISH:-1}" != "1" ]]; then
-    warn "P2P snapshot archive publication disabled by BDAG_P2P_SNAPSHOT_PUBLISH=0."
+run_prestart_ipfs_rawdatadir_restore() {
+  local enabled strict artifact_cid index_cid index_file discovery status_file timeout chain_base node_dir network_dir
+  local args=()
+  enabled="$(env_value BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART 1)"
+  case "$enabled" in
+    0|false|False|no|No|off|Off)
+      return 0
+      ;;
+  esac
+  if node_chain_markers_present; then
+    say "Existing mainnet chain markers found; skipping pre-start IPFS raw-datadir restore"
     return 0
   fi
-  if [[ ! -x "$bdag_bin" ]]; then
-    warn "Cannot publish P2P snapshot archive: missing executable $bdag_bin."
+  if [[ ! -x ops/restore-rawdatadir-segment-artifact.py ]]; then
+    warn "Cannot run pre-start IPFS raw-datadir restore: ops/restore-rawdatadir-segment-artifact.py is missing."
     return 0
   fi
-  if [[ ! -d "$source_datadir/BdagChain" ]]; then
-    warn "No seeded node chain DB found; the node will sync first, then use raw-datadir FastArtifact source serving after a finalized sidecar publish."
+  artifact_cid="$(env_value BDAG_IPFS_RAWDATADIR_RESTORE_ARTIFACT_CID "")"
+  index_cid="$(env_value BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_CID "")"
+  index_file="$(env_value BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_FILE "")"
+  discovery="$(env_value BDAG_IPFS_RAWDATADIR_RESTORE_DISCOVERY_FILE "")"
+  if [[ -z "$artifact_cid" && -z "$index_cid" && -z "$index_file" && -z "$discovery" ]]; then
+    warn "No IPFS raw-datadir restore artifact/index is configured. The node will continue with normal P2P sync."
     return 0
   fi
-
-  if [[ ! -s "$source_archive" || "$force" == "1" ]]; then
-    say "Publishing P2P snapshot archive for node datadirs"
-    rm -f "$source_archive.tmp" "$source_archive.tmp.manifest.json"
-    "$bdag_bin" snap export --datadir "$source_datadir" --path "$source_archive.tmp"
-    mv "$source_archive.tmp" "$source_archive"
-    if [[ -f "$source_archive.tmp.manifest.json" ]]; then
-      mv "$source_archive.tmp.manifest.json" "$source_archive.manifest.json"
+  if ! command -v "$(env_value BDAG_IPFS_BINARY ipfs)" >/dev/null 2>&1; then
+    warn "IPFS raw-datadir restore is configured, but the IPFS/Kubo CLI is not available. Install Kubo or set BDAG_IPFS_BINARY."
+    strict="$(env_value BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART_STRICT 0)"
+    if [[ "$strict" =~ ^(1|true|True|yes|Yes|on|On)$ ]]; then
+      exit 1
     fi
+    return 0
+  fi
+  chain_base="$(env_path_value BDAG_CHAIN_DATA_DIR data)"
+  node_dir="$(env_path_value BDAG_NODE_DATA_DIR "$chain_base/node")"
+  network_dir="$node_dir/mainnet"
+  status_file="$(env_path_value BDAG_IPFS_RAWDATADIR_RESTORE_STATUS_FILE "ops/runtime/ipfs-content/rawdatadir-restore-status.json")"
+  timeout="$(env_value BDAG_IPFS_RAWDATADIR_RESTORE_IPFS_TIMEOUT 600)"
+  mkdir -p "$network_dir" "$(dirname "$status_file")"
+  args=(--target-dir "$network_dir" --status-file "$status_file" --ipfs-timeout "$timeout" --network mainnet)
+  if [[ -n "$artifact_cid" ]]; then
+    args+=(--ipfs-artifact-cid "$artifact_cid")
+  elif [[ -n "$index_cid" ]]; then
+    args+=(--ipfs-index-cid "$index_cid")
+  elif [[ -n "$index_file" ]]; then
+    args+=(--ipfs-index-file "$index_file")
   else
-    say "Existing node P2P snapshot archive found: $source_archive"
+    args+=(--discovery "$discovery")
+  fi
+  if [[ -n "$(env_value BDAG_RAWDATADIR_TRUSTED_SIGNERS "")" ]]; then
+    args+=(--trusted-signers "$(env_value BDAG_RAWDATADIR_TRUSTED_SIGNERS "")")
   fi
 
-  say "P2P snapshot archive available to node"
+  say "Restoring initial chain data from verified IPFS raw-datadir artifact"
+  if python3 ops/restore-rawdatadir-segment-artifact.py "${args[@]}"; then
+    say "IPFS raw-datadir restore completed for empty mainnet datadir"
+    return 0
+  fi
+  strict="$(env_value BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART_STRICT 0)"
+  if [[ "$strict" =~ ^(1|true|True|yes|Yes|on|On)$ ]]; then
+    echo "Pre-start IPFS raw-datadir restore failed and BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART_STRICT=1." >&2
+    exit 1
+  fi
+  warn "Pre-start IPFS raw-datadir restore failed. Continuing because BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART_STRICT=0."
+}
+
+run_prestart_ipfs_restore_drill() {
+  local enabled strict status_file max_segments args=()
+  enabled="$(env_value BDAG_IPFS_RESTORE_PRESTART_DRILL 1)"
+  case "$enabled" in
+    0|false|False|no|No|off|Off)
+      return 0
+      ;;
+  esac
+  if node_chain_markers_present; then
+    say "Existing mainnet chain markers found; skipping pre-start IPFS restore drill"
+    return 0
+  fi
+  if [[ ! -x ops/ipfs_restore_drill.py ]]; then
+    warn "Cannot run pre-start IPFS restore drill: ops/ipfs_restore_drill.py is missing."
+    return 0
+  fi
+  status_file="$(env_path_value BDAG_IPFS_RESTORE_STATUS_FILE "ops/runtime/ipfs-content/restore-drill-status.json")"
+  max_segments="$(env_value BDAG_IPFS_RESTORE_MAX_SEGMENTS 16)"
+  args=(--status-file "$status_file" --max-segments "$max_segments")
+  if [[ "$(env_value BDAG_IPFS_RESTORE_MATERIALIZE 0)" =~ ^(1|true|True|yes|Yes|on|On)$ ]]; then
+    args+=(--materialize)
+  fi
+
+  say "Running pre-start IPFS restore drill for empty node datadir"
+  if python3 ops/ipfs_restore_drill.py "${args[@]}"; then
+    warn "IPFS archive verified into restore drill status. Segment-to-node import is not enabled yet, so install will continue with normal sync."
+    return 0
+  fi
+  strict="$(env_value BDAG_IPFS_RESTORE_PRESTART_STRICT 0)"
+  if [[ "$strict" =~ ^(1|true|True|yes|Yes|on|On)$ ]]; then
+    echo "Pre-start IPFS restore drill failed and BDAG_IPFS_RESTORE_PRESTART_STRICT=1." >&2
+    exit 1
+  fi
+  warn "Pre-start IPFS restore drill failed. Continuing because BDAG_IPFS_RESTORE_PRESTART_STRICT=0."
 }
 
 start_stack() {
@@ -864,7 +1009,7 @@ start_stack() {
   else
     warn "Skipping implicit image pulls. Set BDAG_RELEASE_PULL_BASE_IMAGES=1 for an explicit base-image refresh."
   fi
-  compose_cmd up -d --no-build --pull never postgres node dashboard
+  compose_cmd up -d --no-build --pull never --no-deps postgres node dashboard
   compose_cmd ps
 }
 
@@ -1002,11 +1147,13 @@ main() {
   init_docker_access
   enforce_wired_route_policy
   configure_env
+  provision_ipfs_segment_identity
   install_appliance_host_profile
   run_appliance_preflight
   load_or_build_images "$arch"
   seed_chain_data
-  publish_p2p_snapshot_archive "$arch"
+  run_prestart_ipfs_rawdatadir_restore
+  run_prestart_ipfs_restore_drill
   start_stack
   install_stack_support_services
   discover_preserved_chain_peers

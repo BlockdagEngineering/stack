@@ -12,8 +12,8 @@
 #   collector_src      -> local clone of the status API source
 #   dashboard_src      -> local clone of dashboard source
 #
-# Optional snapshot import: SNAPSHOT_PATH copies a .bdsnap from the build context
-# (see compose / Makefile). No URL download. Datadir matches node.conf.
+# Chain bootstrap is IPFS/P2P owned. Do not bake mutable chain artifacts into
+# the image.
 
 # ----------------------------------------------------------------------------
 # Common base
@@ -71,10 +71,9 @@ COPY --from=dashboard_src . .
 RUN CGO_ENABLED=0 go build -trimpath -o /out/dashboard .
 
 # ----------------------------------------------------------------------------
-# Node Runtime Stage (with optional snapshot import)
+# Node Runtime Stage
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS node
-ARG SNAPSHOT_PATH=docker/no-snapshot.marker
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates tzdata curl \
@@ -90,23 +89,6 @@ RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker
 
 COPY --from=stack_src docker/entrypoint-nodeworker.sh /usr/local/bin/docker-entrypoint-nodeworker.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh
-
-# Snapshot file must be in the main build context (repo root).
-COPY ${SNAPSHOT_PATH} /tmp/snapshot-candidate.bdsnap
-
-RUN set -eu; \
-    if [ "$(stat -c%s /tmp/snapshot-candidate.bdsnap)" -ge 1024 ]; then \
-      echo "Importing local snapshot ($(stat -c%s /tmp/snapshot-candidate.bdsnap) bytes)"; \
-      /usr/local/bin/blockdag-node snap import \
-        --datadir /var/lib/bdagStack/node/mainnet \
-        --path /tmp/snapshot-candidate.bdsnap; \
-      cp -f /tmp/snapshot-candidate.bdsnap /var/lib/bdagStack/node/mainnet/snapshot.bdsnap; \
-      chown -R bdagStack:bdagStack /var/lib/bdagStack/node /var/log/bdagStack; \
-      echo "Snapshot import finished and P2P snapshot archive published"; \
-    else \
-      echo "No snapshot file (marker or tiny file); node will sync from genesis or P2P and cannot serve a P2P snapshot until snapshot.bdsnap exists in its datadir"; \
-    fi; \
-    rm -f /tmp/snapshot-candidate.bdsnap
 
 WORKDIR /var/lib/bdagStack/node
 EXPOSE 8150 38131 38132 18545 18546 6060

@@ -51,7 +51,7 @@ class NodeworkerEntrypointTest(unittest.TestCase):
     def test_print_mode_does_not_emit_removed_sync_flags(self) -> None:
         result = self.run_entrypoint(
             {
-                "SYNC_SOURCE_NODE": "1",
+                "BDAG_RAWDATADIR_SIDECAR_MODE": "auto",
                 "NODE_ARGS_APPEND": "--cache=1024",
             }
         )
@@ -71,10 +71,10 @@ class NodeworkerEntrypointTest(unittest.TestCase):
             }
         )
 
-        self.assert_stdout_contains(result, "BDAG_FASTARTIFACTSYNC_ENABLED=1")
-        self.assert_stdout_contains(result, "--fastartifactsync")
         self.assert_stdout_contains(result, "--miner")
         self.assert_stdout_contains(result, "--miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc")
+        combined = result.stdout + result.stderr
+        self.assertNotIn("FAST", combined.upper())
         self.assertNotIn("--allowminingwhennearlysynced", result.stdout)
         self.assertNotIn("--allowsubmitwhennotsynced", result.stdout)
         self.assertNotIn("--modules=Blockdag,miner", result.stdout)

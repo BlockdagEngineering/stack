@@ -27,7 +27,7 @@ Only real catch-up problems put the dashboard into `syncing`: pool initial downl
 
 The dashboard also watches for pool share stalls. If miners are connected but the pool stops accepting valid shares for several minutes, that is treated as a recovery condition and the watchdog will restart the stack after the configured threshold.
 
-The watchdog also has a fast-sync recovery path. If real syncing warnings persist for `BDAG_WATCHDOG_SYNCING_THRESHOLD` checks, default `5`, it runs a normal stack restart to force fresh peer/RPC connections and apply the current config. This restart is cooldown-limited by `BDAG_SYNCING_RESTART_COOLDOWN`, default `900` seconds, so it cannot loop continuously.
+The watchdog also has a stuck-sync recovery path. If real syncing warnings persist for `BDAG_WATCHDOG_SYNCING_THRESHOLD` checks, default `5`, it runs a normal stack restart to force fresh peer/RPC connections and apply the current config. This restart is cooldown-limited by `BDAG_SYNCING_RESTART_COOLDOWN`, default `900` seconds, so it cannot loop continuously.
 
 The persisted peer list in `.env` should contain only valid multiaddrs. Removing a bad peer from `.env` takes effect on the next controlled node restart; it does not interrupt currently running miners by itself.
 
@@ -96,7 +96,7 @@ Action buttons are intentionally limited to known maintenance tasks:
 
 - Start stack
 - Restart stack
-- Clean restore from latest snapshot
+- Clean restore from an explicitly configured verified restore source
 - Write a Codex handoff file
 - Scan/configure LAN miners from the Miners tab
 
@@ -140,21 +140,26 @@ and ready to mine, it starts the pool container without recreating dependencies.
 Set `BDAG_MINING_IMPERATIVE_REPAIR_ENABLED=0` only for an intentional maintenance
 window where mining must remain stopped.
 
-It also owns automatic chain-state self-heal. When status reports
-`needs_chain_data_restore`, `chain_data_restore_required`, an irreparable sync
-block, DAG tip/block damage, or repeated missing-trie state warnings, the sampler
-stops `pool` and starts `bdag-chain-state-self-heal.service`. The repair script
-quarantines damaged chain data, restores from a configured trusted source or
-snapshot, restarts `node` and `dashboard`, and leaves `pool` stopped until normal
-readiness gates make mining safe again. A stateful adjacent detector watches for
-height staying frozen while peer lag grows; after the configured sustained
-threshold it follows the same flow instead of leaving the dashboard stuck in a
-misleading syncing state.
+It can request chain-state self-heal, but destructive restore is disabled by
+default. When status reports `needs_chain_data_restore`,
+`chain_data_restore_required`, an irreparable sync block, DAG tip/block damage,
+or repeated missing-trie state warnings, the sampler starts
+`bdag-chain-state-self-heal.service`; the script exits without mutating data
+unless `BDAG_CHAIN_STATE_SELF_HEAL_ENABLED=1` and a trusted rawdatadir/IPFS
+restore source is explicitly configured. When enabled, the repair script quarantines
+damaged chain data, restores from that configured input, restarts `node` and
+`dashboard`, and leaves `pool` stopped until normal readiness gates make mining
+safe again. A stateful adjacent detector watches for height staying frozen while
+peer lag grows; after the configured sustained threshold it follows the same
+flow instead of leaving the dashboard stuck in a misleading syncing state.
+Sealed rawdatadir/IPFS artifact folders are verifier inputs, not raw node
+datadirs, and the self-heal script rejects them before any destructive action.
 
 Run the chain-state self-heal manually only for an approved data repair:
 
 ```bash
 BDAG_CHAIN_STATE_RESTORE_SOURCE=/path/to/known-good/mainnet \
+BDAG_CHAIN_STATE_SELF_HEAL_ENABLED=1 \
   ops/chain-state-self-heal.sh --force
 ```
 
@@ -248,9 +253,11 @@ The watchdog performs a staged repair:
 2. Restart if the node wrapper is up but the `bdag` child process is gone.
 3. Clean restore only after repeated hard failures, such as critical database startup errors.
 
-Clean restore stops the stack, moves existing active chain data to a timestamped backup, restores the newest snapshot from `data-restore/`, and starts the stack.
+Clean restore stops the stack, moves existing active chain data to a timestamped backup, runs the explicitly configured verified restore command, and starts the stack. Without `BDAG_RESTORE_NODE_COMMAND`, clean restore fails closed before mutating chain data.
 
 Boot-time recovery is handled by `bdag-boot-repair.service`, which waits for Docker, checks the dirty-shutdown marker, and preserves existing chain data by default. A dirty marker now triggers a conservative start/restart path; automatic clean restore is disabled unless `BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE=1` is set explicitly.
+
+Boot recovery is verification and service repair only. Do not add automation that initiates host reboots, shutdowns, poweroffs, kexec, or reboot-until-healthy loops. Reboot testing is an operator-controlled validation activity, not a behavior that should propagate into installers, watchdogs, Codex handoff, or background timers.
 
 ## P2P Guard
 
@@ -301,6 +308,7 @@ Installed unit files:
 
 ```text
 ~/.config/systemd/user/bdag-boot-repair.service
+~/.config/systemd/user/bdag-status-sampler.service
 ~/.config/systemd/user/bdag-dashboard.service
 ~/.config/systemd/user/bdag-stack-sentinel.service
 ~/.config/systemd/user/bdag-stack-sentinel.timer
@@ -308,8 +316,6 @@ Installed unit files:
 ~/.config/systemd/user/bdag-watchdog.service
 ~/.config/systemd/user/bdag-sync-coordinator.timer
 ~/.config/systemd/user/bdag-chain-restore-guard.timer
-~/.config/systemd/user/bdag-chain-presync.timer
-~/.config/systemd/user/bdag-hourly-snapshot.timer
 ~/.config/systemd/user/bdag-local-peers.timer
 ```
 
@@ -317,6 +323,7 @@ Service templates are in:
 
 ```text
 ops/systemd/user-bdag-boot-repair.service
+ops/systemd/user-bdag-status-sampler.service
 ops/systemd/user-bdag-dashboard.service
 ops/systemd/user-bdag-watchdog.service
 ```
@@ -333,16 +340,22 @@ Enable lingering so user services can start at boot without an active login:
 loginctl enable-linger jeremy
 ```
 
+`ops/install-dashboard.sh` attempts to enable linger for the installing user,
+then enables `bdag-boot-repair.service`, `bdag-status-sampler.service`,
+`bdag-watchdog.service`, and `bdag-stack-sentinel.timer` when service startup is
+requested. The pool container may intentionally remain stopped after boot while
+the node is catching up or canonical mining-safety checks are not yet fresh.
+
 Check status:
 
 ```bash
-systemctl --user status bdag-boot-repair.service bdag-dashboard.service bdag-watchdog.service bdag-stack-sentinel.timer
+systemctl --user status bdag-boot-repair.service bdag-status-sampler.service bdag-watchdog.service bdag-stack-sentinel.timer
 ```
 
 View logs:
 
 ```bash
-journalctl --user -u bdag-boot-repair.service -u bdag-dashboard.service -u bdag-watchdog.service -u bdag-stack-sentinel.service -f
+journalctl --user -u bdag-boot-repair.service -u bdag-status-sampler.service -u bdag-watchdog.service -u bdag-stack-sentinel.service -f
 ```
 
 The watchdog writes `ops/runtime/dirty-shutdown.marker` while it is running and clears it on a clean stop. If the host loses power, the marker remains; the boot-repair unit preserves current node data and starts the stack. Do not enable automatic clean restore unless the current snapshots are known safe and replacing live chain data is explicitly intended.

@@ -24,6 +24,8 @@ ROOT = Path(os.environ.get("BDAG_PROJECT_ROOT") or Path(__file__).resolve().pare
 ENV_FILE = Path(os.environ.get("BDAG_ENV_FILE") or ROOT / ".env")
 OPS_DIR = ROOT / "ops"
 MAINNET_NETWORK = "mainnet"
+sys.path.insert(0, str(OPS_DIR))
+import ipfs_segment_trust  # type: ignore  # noqa: E402
 
 FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
@@ -114,6 +116,97 @@ def load_json(path: Path) -> dict[str, Any]:
         return {}
 
 
+def index_from_discovery(discovery: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
+    content = discovery.get("current_content")
+    if not isinstance(content, Mapping):
+        return {}
+    if content.get("document_type") != "bdag_ipfs_segment_index_v1":
+        return {}
+    head = content.get("current_head")
+    if not isinstance(head, Mapping) or not isinstance(head.get("end_order"), int):
+        return {}
+    history = content.get("history_completeness")
+    index = {
+        "document_type": "bdag_ipfs_segment_index_v1",
+        "network": mainnet_network(env),
+        "status": content.get("status") or "active_deterministic_writer_segments",
+        "current_head": dict(head),
+        "segments": [],
+        "recovered_from_discovery": True,
+        "recovered_from_discovery_at": now_iso(),
+        "recovered_latest_index_cid": discovery.get("current_latest_index_cid") or "",
+    }
+    if isinstance(history, Mapping):
+        index["history_completeness"] = dict(history)
+    return index
+
+
+def load_index_with_discovery(index_path: Path, env: Mapping[str, str], *, use_discovery: bool = True) -> dict[str, Any]:
+    index = load_json(index_path)
+    if current_head(index):
+        return index
+    if not use_discovery:
+        return index
+    discovery = load_json(discovery_path(env))
+    latest_index_cid = str(discovery.get("current_latest_index_cid") or "").strip()
+    if latest_index_cid:
+        previous_index = ipfs_cat_json(latest_index_cid, env)
+        if current_head(previous_index):
+            previous_index["recovered_from_discovery_cid"] = latest_index_cid
+            previous_index["recovered_from_discovery_at"] = now_iso()
+            return previous_index
+    discovery_index = index_from_discovery(discovery, env)
+    if discovery_index:
+        return discovery_index
+    return index
+
+
+def discovered_latest_index_cid(env: Mapping[str, str]) -> str:
+    discovery = load_json(discovery_path(env))
+    return str(discovery.get("current_latest_index_cid") or "").strip()
+
+
+def published_index_cid(index: Mapping[str, Any], env: Mapping[str, str]) -> str:
+    for key in ("index_cid", "recovered_from_discovery_cid", "recovered_latest_index_cid"):
+        value = str(index.get(key) or "").strip()
+        if value:
+            return value
+    return discovered_latest_index_cid(env)
+
+
+def attach_previous_index_link(
+    index: Mapping[str, Any],
+    previous_index_cid: str,
+    previous_index: Mapping[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    linked = dict(index)
+    linked["append_only_index_policy"] = {
+        "immutable_index_cids": True,
+        "latest_pointer_is_mutable_discovery_only": True,
+        "verification_rule": (
+            "Resolve the latest IPNS pointer, then recursively verify previous_index_cid links, "
+            "segment manifests, payload CIDs, sha256 values, order continuity, and normal chain consensus."
+        ),
+    }
+    previous_index_cid = str(previous_index_cid or "").strip()
+    if not previous_index_cid:
+        return linked
+    previous_head = current_head(previous_index) or {}
+    linked["previous_index_cid"] = previous_index_cid
+    linked["previous_index_link"] = {
+        "document_type": "bdag_ipfs_segment_previous_index_link_v1",
+        "index_cid": previous_index_cid,
+        "linked_at": now_iso(),
+        "reason": reason or "segment_append",
+        "previous_current_head": dict(previous_head),
+        "previous_history_completeness": dict(previous_index.get("history_completeness") or {})
+        if isinstance(previous_index.get("history_completeness"), Mapping)
+        else {},
+    }
+    return linked
+
+
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -183,6 +276,24 @@ def ipfs_cat_sha256(cid: str, env: Mapping[str, str]) -> str:
     return hashlib.sha256(result.stdout.encode("utf-8")).hexdigest()
 
 
+def ipfs_cat_json(cid: str, env: Mapping[str, str]) -> dict[str, Any]:
+    try:
+        result = run_command(
+            [ipfs_binary(env), "cat", f"/ipfs/{cid}"],
+            env_int(env, "BDAG_IPFS_SEGMENT_IPFS_TIMEOUT", 600),
+            env,
+        )
+    except Exception:
+        return {}
+    if result.returncode != 0:
+        return {}
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def ipfs_pin_present(cid: str, env: Mapping[str, str]) -> bool:
     result = run_command(
         [ipfs_binary(env), "pin", "ls", "--type=recursive", cid],
@@ -200,12 +311,19 @@ def ipfs_peer_id(env: Mapping[str, str]) -> str:
 
 
 def publish_ipns(index_cid: str, env: Mapping[str, str]) -> dict[str, Any] | None:
-    if not env_bool(env, "BDAG_IPFS_SEGMENT_PUBLISH_IPNS", False):
+    publish_mode = str(env.get("BDAG_IPFS_SEGMENT_PUBLISH_IPNS") or "auto").strip().lower()
+    key = str(env.get("BDAG_IPFS_SEGMENT_IPNS_KEY") or env.get("BDAG_IPFS_CONTENT_IPNS_KEY") or "").strip()
+    if publish_mode in FALSE_VALUES:
         return None
+    if publish_mode == "auto" and not key:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "auto_publish_waiting_for_ipns_key",
+            "index_cid": index_cid,
+        }
     command = [ipfs_binary(env), "name", "publish"]
-    key = str(env.get("BDAG_IPFS_SEGMENT_IPNS_KEY") or env.get("BDAG_IPFS_CONTENT_IPNS_KEY") or "self").strip()
-    if key:
-        command.extend(["--key", key])
+    command.extend(["--key", key or "self"])
     ttl = str(env.get("BDAG_IPFS_SEGMENT_IPNS_TTL") or env.get("BDAG_IPFS_CONTENT_IPNS_TTL") or "1m").strip()
     if ttl:
         command.extend(["--ttl", ttl])
@@ -297,17 +415,26 @@ def deprecated_tip_order(index: Mapping[str, Any]) -> int | None:
 def choose_next_range(index: Mapping[str, Any], latest_order: int, env: Mapping[str, str]) -> tuple[int, int, int, str]:
     finality_lag = max(0, env_int(env, "BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS", 600))
     orders_per_segment = max(1, env_int(env, "BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT", 300))
+    policy = str(env.get("BDAG_IPFS_SEGMENT_START_POLICY") or "live_tail").strip().lower()
     safe_tip = latest_order - finality_lag
     if safe_tip < 1:
         return 0, 0, safe_tip, "safe_tip_not_available"
 
     head = current_head(index)
     if head and isinstance(head.get("end_order"), int):
-        start = int(head["end_order"]) + 1
+        head_end = int(head["end_order"])
+        stale_reset_enabled = env_bool(env, "BDAG_IPFS_SEGMENT_STALE_HEAD_RESET_ENABLED", True)
+        stale_reset_lag = max(
+            orders_per_segment,
+            env_int(env, "BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS", 3600),
+        )
+        if policy == "live_tail" and stale_reset_enabled and safe_tip - head_end > stale_reset_lag:
+            start = max(1, safe_tip - orders_per_segment + 1)
+            return start, min(start + orders_per_segment - 1, safe_tip), safe_tip, "stale_head_live_tail_reset"
+        start = head_end + 1
         reason = "append_after_current_head"
     else:
         configured = env_int(env, "BDAG_IPFS_SEGMENT_START_ORDER", 0)
-        policy = str(env.get("BDAG_IPFS_SEGMENT_START_POLICY") or "live_tail").strip().lower()
         if configured > 0:
             start = configured
             reason = "configured_start_order"
@@ -320,6 +447,72 @@ def choose_next_range(index: Mapping[str, Any], latest_order: int, env: Mapping[
     if start > safe_tip:
         return start, 0, safe_tip, "waiting_for_next_finalized_range"
     return start, min(start + orders_per_segment - 1, safe_tip), safe_tip, reason
+
+
+def reset_index_for_live_tail_epoch(
+    index: Mapping[str, Any],
+    start: int,
+    end: int,
+    latest_order: int,
+    safe_tip: int | None,
+    env: Mapping[str, str],
+) -> dict[str, Any]:
+    """Start a near-tip epoch when the stored live-tail seed is stale."""
+
+    deprecated = [dict(item) for item in index.get("deprecated_content") or [] if isinstance(item, Mapping)]
+    head = current_head(index)
+    old_segments = segments(index)
+    if head or old_segments:
+        deprecated.append(
+            {
+                "type": "superseded_stale_live_tail_epoch",
+                "superseded_at": now_iso(),
+                "reason": "stale_head_live_tail_reset",
+                "previous_current_head": dict(head or {}),
+                "previous_segment_count": len(old_segments),
+                "previous_history_completeness": dict(index.get("history_completeness") or {})
+                if isinstance(index.get("history_completeness"), Mapping)
+                else {},
+                "previous_index_cid": index.get("recovered_from_discovery_cid")
+                or index.get("recovered_latest_index_cid")
+                or index.get("index_cid")
+                or "",
+            }
+        )
+    return {
+        "document_type": "bdag_ipfs_segment_index_v1",
+        "network": mainnet_network(env),
+        "status": "active_deterministic_writer_segments",
+        "chain_data_status": "live_tail_epoch_reset_pending",
+        "append_only_model": {
+            "immutable_segments": True,
+            "old_segments_never_change": True,
+            "latest_index_changes_on_append": True,
+            "stable_latest_pointer": env.get("BDAG_IPFS_CONTENT_LATEST_IPNS", ""),
+        },
+        "deprecated_content": deprecated,
+        "segments": [],
+        "history_completeness": {
+            "complete_from_order": start,
+            "backfill_required_before_order": start if start > 1 else None,
+            "note": (
+                "Current live-tail epoch was reset near the finalized tip because the previous seed head was stale. "
+                "Earlier history remains required for full bootstrap and must be supplied by verified backfill or a signed checkpoint."
+            ),
+        },
+        "live_tail_epoch": {
+            "reset_at": now_iso(),
+            "start_order": start,
+            "planned_end_order": end,
+            "latest_order_at_reset": latest_order,
+            "safe_tip_at_reset": safe_tip,
+            "stale_head_reset_enabled": True,
+            "stale_head_max_lag_orders": max(
+                env_int(env, "BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT", 300),
+                env_int(env, "BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS", 3600),
+            ),
+        },
+    }
 
 
 def normalize_block(block: Mapping[str, Any]) -> dict[str, Any]:
@@ -384,9 +577,11 @@ def fetch_segment_blocks(pool_ops: Any, url: str, start: int, end: int, env: Map
 
 def next_segment_id(index: Mapping[str, Any]) -> int:
     values = segments(index)
-    if not values:
-        return 1
-    return max(int(item.get("segment_id") or 0) for item in values) + 1
+    ids = [int(item.get("segment_id") or 0) for item in values]
+    head = current_head(index)
+    if head and isinstance(head.get("segment_id"), int):
+        ids.append(int(head["segment_id"]))
+    return max(ids, default=0) + 1
 
 
 def select_rpc_source(
@@ -412,6 +607,83 @@ def select_rpc_source(
 
 def chain_reference_rpc_url(env: Mapping[str, str]) -> str:
     return str(env.get("BDAG_CHAIN_REFERENCE_RPC_URL") or env.get("BDAG_IPFS_SEGMENT_REFERENCE_RPC_URL") or "").strip()
+
+
+def parse_writer_roster(value: str | None) -> list[str]:
+    if not value:
+        return []
+    seen: set[str] = set()
+    roster: list[str] = []
+    for raw in value.replace("\n", ",").split(","):
+        writer = raw.strip()
+        if "=" in writer:
+            writer = writer.split("=", 1)[0].strip()
+        elif ":" in writer:
+            writer = writer.split(":", 1)[0].strip()
+        if not writer or writer in seen:
+            continue
+        seen.add(writer)
+        roster.append(writer)
+    return sorted(roster)
+
+
+def local_writer_id(env: Mapping[str, str]) -> str:
+    configured = str(env.get("BDAG_IPFS_SEGMENT_WRITER_ID") or env.get("BDAG_IPFS_WRITER_ID") or "").strip()
+    if configured:
+        return configured
+    return ipfs_peer_id(env)
+
+
+def writer_election(
+    env: Mapping[str, str],
+    start: int,
+    end: int,
+    previous_manifest_cid: str = "",
+) -> dict[str, Any]:
+    """Return deterministic segment-writer eligibility for this finalized range."""
+
+    rule = str(env.get("BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE") or "rendezvous_sha256_v1").strip()
+    roster = parse_writer_roster(str(env.get("BDAG_IPFS_SEGMENT_WRITER_ROSTER") or env.get("BDAG_IPFS_WRITER_ROSTER") or ""))
+    writer_id = local_writer_id(env)
+    if not roster:
+        return {
+            "allowed": True,
+            "mode": "bootstrap_single_writer",
+            "rule": rule,
+            "local_writer_id": writer_id,
+            "selected_writer_id": writer_id or "local_bootstrap_writer",
+            "roster_size": 0,
+            "reason": "writer_roster_empty_bootstrap_seed_allows_local_writer",
+        }
+    if not writer_id:
+        return {
+            "allowed": False,
+            "mode": "deterministic_roster",
+            "rule": rule,
+            "local_writer_id": "",
+            "selected_writer_id": "",
+            "roster_size": len(roster),
+            "reason": "local_writer_id_unavailable",
+        }
+    seed = f"{MAINNET_NETWORK}|{start}|{end}|{previous_manifest_cid or '-'}"
+    scores = [
+        {
+            "writer_id": candidate,
+            "score": hashlib.sha256(f"{rule}|{seed}|{candidate}".encode("utf-8")).hexdigest(),
+        }
+        for candidate in roster
+    ]
+    selected = max(scores, key=lambda item: (item["score"], item["writer_id"]))["writer_id"]
+    return {
+        "allowed": selected == writer_id,
+        "mode": "deterministic_roster",
+        "rule": rule,
+        "local_writer_id": writer_id,
+        "selected_writer_id": selected,
+        "roster_size": len(roster),
+        "range": {"start_order": start, "end_order": end},
+        "reason": "local_writer_selected" if selected == writer_id else "another_writer_selected",
+    }
 
 
 def normal_publish_requires_preflight(env: Mapping[str, str]) -> bool:
@@ -463,6 +735,41 @@ def require_trusted_preflight(
     return preflight
 
 
+def bootstrap_local_publish_allowed(env: Mapping[str, str], election: Mapping[str, Any]) -> bool:
+    return (
+        env_bool(env, "BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH", False)
+        and election.get("mode") == "bootstrap_single_writer"
+        and int(election.get("roster_size") or 0) == 0
+    )
+
+
+def publication_integrity_gate(
+    env: Mapping[str, str],
+    index_path: Path,
+    source_url: str,
+    reference_url: str,
+    start: int,
+    end: int,
+    election: Mapping[str, Any],
+) -> dict[str, Any]:
+    if reference_url:
+        return require_trusted_preflight(env, index_path, source_url, reference_url, start, end)
+    if bootstrap_local_publish_allowed(env, election):
+        return {
+            "state": "bootstrap_local_reference_absent",
+            "trusted": False,
+            "reasons": [
+                "no independent native reference RPC configured",
+                "bootstrap seed publication is immutable transport only; receivers must verify segment continuity and chain consensus before restore",
+            ],
+            "source_url": source_url,
+            "reference_url": "",
+            "range": {"start_order": start, "end_order": end},
+            "mutation_policy": "allowed_for_bootstrap_seed_without_roster_only",
+        }
+    return require_trusted_preflight(env, index_path, source_url, reference_url, start, end)
+
+
 def add_checked_json(path: Path, payload: Any, env: Mapping[str, str]) -> tuple[str, str, int]:
     raw = canonical_json_bytes(payload)
     atomic_write_bytes(path, raw)
@@ -490,7 +797,13 @@ def build_segment(
     end: int,
     index: Mapping[str, Any],
     env: Mapping[str, str],
+    election: Mapping[str, Any] | None = None,
+    publication_integrity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if ipfs_segment_trust.signature_required(env) and not ipfs_segment_trust.signing_key_hex(env):
+        raise RuntimeError(
+            "IPFS segment signing is required but no BDAG_IPFS_SEGMENT_SIGNING_KEY_HEX/FILE is configured"
+        )
     blocks = fetch_segment_blocks(pool_ops, source_url, start, end, env)
     if len(blocks) != end - start + 1:
         raise RuntimeError(f"expected {end - start + 1} blocks, fetched {len(blocks)}")
@@ -526,6 +839,7 @@ def build_segment(
         except Exception:
             base_anchor_hash = ""
 
+    election_payload = dict(election or writer_election(env, start, end, previous_manifest_cid))
     manifest = {
         "document_type": "bdag_ipfs_segment_manifest_v1",
         "network": mainnet_network(env),
@@ -550,17 +864,16 @@ def build_segment(
             "rpc_method": "getBlockByOrder",
         },
         "writer": {
-            "mode": "local_writer",
+            "mode": election_payload.get("mode") or "bootstrap_single_writer",
             "kubo_peer_id": ipfs_peer_id(env),
+            "writer_id": election_payload.get("local_writer_id") or "",
             "ipns_name": env.get("BDAG_IPFS_CONTENT_LATEST_IPNS", ""),
         },
-        "election": {
-            "phase": "local_writer",
-            "rule": "this deployment writes verified finalized segments from its local node",
-            "fallback": "timer retries after maintenance pressure clears",
-        },
+        "election": election_payload,
+        "publication_integrity": dict(publication_integrity or {}),
         "trust_model": "CID and sha256 verify bytes; receivers must still verify chain consensus and segment continuity.",
     }
+    manifest = ipfs_segment_trust.sign_payload(manifest, env, signature_field="manifest_signatures")
     manifest_cid, manifest_sha, manifest_size = add_checked_json(manifest_path, manifest, env)
     return {
         "segment_id": seg_id,
@@ -578,12 +891,46 @@ def build_segment(
         "manifest_sha256": manifest_sha,
         "manifest_path": str(manifest_path),
         "payload_path": str(payload_path),
-        "writer_mode": "local_writer",
+        "writer_mode": election_payload.get("mode") or "bootstrap_single_writer",
+        "writer_election": election_payload,
+        "publication_integrity": dict(publication_integrity or {}),
+        "manifest_signature_status": manifest.get("signature_status"),
+        "manifest_signatures": manifest.get("manifest_signatures") or [],
     }
 
 
 def update_index(index: dict[str, Any], segment_record: dict[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
     existing_segments = segments(index)
+    if existing_segments:
+        last = existing_segments[-1]
+        expected_start = int(last.get("end_order") or 0) + 1
+        if int(segment_record.get("start_order") or 0) != expected_start:
+            raise RuntimeError(
+                "refusing non-contiguous IPFS segment append: "
+                f"start_order {segment_record.get('start_order')} != expected {expected_start}"
+            )
+        expected_segment_id = int(last.get("segment_id") or 0) + 1
+        if int(segment_record.get("segment_id") or 0) != expected_segment_id:
+            raise RuntimeError(
+                "refusing non-monotonic IPFS segment append: "
+                f"segment_id {segment_record.get('segment_id')} != expected {expected_segment_id}"
+            )
+    else:
+        head = current_head(index)
+        if head and isinstance(head.get("end_order"), int):
+            expected_start = int(head["end_order"]) + 1
+            if int(segment_record.get("start_order") or 0) != expected_start:
+                raise RuntimeError(
+                    "refusing non-contiguous IPFS segment append after current head: "
+                    f"start_order {segment_record.get('start_order')} != expected {expected_start}"
+                )
+            if isinstance(head.get("segment_id"), int):
+                expected_segment_id = int(head["segment_id"]) + 1
+                if int(segment_record.get("segment_id") or 0) != expected_segment_id:
+                    raise RuntimeError(
+                        "refusing non-monotonic IPFS segment append after current head: "
+                        f"segment_id {segment_record.get('segment_id')} != expected {expected_segment_id}"
+                    )
     now = now_iso()
     if not index:
         index = {
@@ -597,11 +944,17 @@ def update_index(index: dict[str, Any], segment_record: dict[str, Any], env: Map
             },
             "deprecated_content": [],
         }
-    first_start = segment_record["start_order"] if not existing_segments else existing_segments[0].get("start_order")
+    existing_history = index.get("history_completeness") if isinstance(index.get("history_completeness"), Mapping) else {}
+    existing_complete_from = existing_history.get("complete_from_order") if isinstance(existing_history, Mapping) else None
+    first_start = (
+        existing_complete_from
+        if isinstance(existing_complete_from, int) and existing_complete_from > 0
+        else segment_record["start_order"] if not existing_segments else existing_segments[0].get("start_order")
+    )
     index.update(
         {
             "generated_at": now,
-            "status": "active_single_writer_segments",
+            "status": "active_deterministic_writer_segments",
             "index_sequence": len(existing_segments) + 1,
             "chain_data_status": "live_tail_segments_publishing",
             "trust_model": "IPFS and IPNS are byte transport only. Segment payload CIDs, sha256, manifest links, order continuity, and normal consensus validation are authoritative.",
@@ -617,17 +970,22 @@ def update_index(index: dict[str, Any], segment_record: dict[str, Any], env: Map
             "history_completeness": {
                 "complete_from_order": first_start,
                 "backfill_required_before_order": first_start if first_start and int(first_start) > 1 else None,
-                "note": "Phase-1 writer starts from configured/current tail. Earlier history must be backfilled or supplied by a verified snapshot before full bootstrap use.",
+                "note": "Phase-1 writer starts from configured/current tail. Earlier history must be backfilled through verified IPFS segments or supplied by a signed checkpoint before full bootstrap use.",
             },
             "notes": [
-                "This phase-1 index contains live-tail chain-order segments written by the local single writer.",
-                "Earlier history before history_completeness.complete_from_order is not complete yet and must be backfilled or supplied by a verified snapshot before full bootstrap use.",
+                "This index contains live-tail chain-order segments written by the deterministic elected writer, or by the bootstrap seed when no roster is configured.",
+                "Earlier history before history_completeness.complete_from_order is not complete yet and must be backfilled through verified IPFS segments or supplied by a signed checkpoint before full bootstrap use.",
                 "New nodes should resolve the stable IPNS pointer, fetch this index, verify every segment CID/sha256/order link, and then rely on normal chain consensus.",
             ],
             "publisher_policy": {
-                "phase": "phase_1_single_local_writer",
-                "current_writer": "this_pool_local_node",
-                "future_policy": "deterministic finalized-PoW-winner roster with fallback slots",
+                "phase": "deterministic_roster_or_bootstrap_seed",
+                "rule": env.get("BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE", "rendezvous_sha256_v1"),
+                "configured_roster_size": len(parse_writer_roster(env.get("BDAG_IPFS_SEGMENT_WRITER_ROSTER"))),
+                "writer_roster": parse_writer_roster(env.get("BDAG_IPFS_SEGMENT_WRITER_ROSTER")),
+                "trusted_writer_ids": sorted(ipfs_segment_trust.trusted_signers(env)),
+                "cadence": "timer attempts every five minutes; chain finality and maintenance gates decide whether a segment is publishable",
+                "conflict_policy": "only the elected roster writer should publish each immutable finalized range; identical honest content still verifies to the same canonical bytes",
+                "signature_requirement": "ed25519 signatures required unless explicitly disabled for non-production drills",
             },
         }
     )
@@ -641,6 +999,9 @@ def update_discovery(index_cid: str, index: Mapping[str, Any], env: Mapping[str,
     if not data:
         return
     data["updated_at"] = now_iso()
+    previous_index_cid = str(index.get("previous_index_cid") or "").strip()
+    if previous_index_cid:
+        data["previous_latest_index_cid"] = previous_index_cid
     data["current_latest_index_cid"] = index_cid
     data["current_latest_index_uri"] = f"ipfs://{index_cid}"
     policy = data.get("ipns_publish_policy")
@@ -655,8 +1016,14 @@ def update_discovery(index_cid: str, index: Mapping[str, Any], env: Mapping[str,
         "segments": len(segments(index)),
         "current_head": index.get("current_head"),
         "history_completeness": index.get("history_completeness"),
+        "previous_index_cid": previous_index_cid,
+        "append_only_index_policy": index.get("append_only_index_policy"),
     }
     atomic_write_json(path, data)
+
+
+def custom_index_discovery_enabled(env: Mapping[str, str]) -> bool:
+    return env_bool(env, "BDAG_IPFS_SEGMENT_UPDATE_DISCOVERY_FOR_CUSTOM_INDEX", False)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -690,7 +1057,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         pool_ops = import_pool_ops()
         index_path = resolve_path(args.index, latest_index_path(env)) if args.index else latest_index_path(env)
-        index = load_json(index_path)
+        index = load_index_with_discovery(index_path, env, use_discovery=not bool(args.index))
+        previous_index_cid = "" if args.index else published_index_cid(index, env)
         head = current_head(index)
         min_order = int(head.get("end_order") or 0) if head else 0
         explicit_range = bool(args.start_order and args.end_order)
@@ -732,6 +1100,21 @@ def main(argv: list[str] | None = None) -> int:
             if args.json:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
+        if explicit_range and not args.preflight and safe_tip is not None and end > safe_tip:
+            payload = write_status(
+                env,
+                "waiting_for_finalized_range",
+                latest_order=latest_order,
+                safe_tip=safe_tip,
+                next_start_order=start,
+                next_end_order=end,
+                reason="explicit_range_exceeds_safe_tip",
+                rpc_source=source_name,
+                tip_method=tip_method,
+            )
+            if args.json:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
         if args.preflight:
             reference_url = str(args.reference_rpc_url or chain_reference_rpc_url(env)).strip()
             preflight = run_preflight(env, index_path, source_url, reference_url, start, end)
@@ -754,6 +1137,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             return 0 if preflight.get("state") == "trusted" or str(preflight.get("state") or "").startswith("deferred_") else 1
         if args.dry_run:
+            election = writer_election(env, start, end, str((head or {}).get("manifest_cid") or ""))
             payload = write_status(
                 env,
                 "ready",
@@ -764,6 +1148,8 @@ def main(argv: list[str] | None = None) -> int:
                 next_start_order=start,
                 next_end_order=end,
                 range_reason=range_reason,
+                writer_election=election,
+                stale_head_live_tail_reset=range_reason == "stale_head_live_tail_reset",
             )
             if args.json:
                 print(json.dumps(payload, indent=2, sort_keys=True))
@@ -774,21 +1160,82 @@ def main(argv: list[str] | None = None) -> int:
         publish_preflights: list[dict[str, Any]] = []
         max_segments = max(1, env_int(env, "BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN", 1))
         written: list[dict[str, Any]] = []
-        current_index = dict(index)
+        live_tail_epoch_reset = range_reason == "stale_head_live_tail_reset"
+        current_index = (
+            reset_index_for_live_tail_epoch(index, start, end, latest_order, safe_tip, env)
+            if live_tail_epoch_reset
+            else dict(index)
+        )
         current_start, current_end = start, end
+        current_election: dict[str, Any] = {}
         for _ in range(max_segments):
             if current_end <= 0:
                 break
-            publish_preflight = require_trusted_preflight(env, index_path, source_url, reference_url, current_start, current_end)
+            current_head_record = current_head(current_index)
+            previous_manifest_cid = str(current_head_record.get("manifest_cid") or "") if current_head_record else ""
+            current_election = writer_election(env, current_start, current_end, previous_manifest_cid)
+            if not current_election.get("allowed", False):
+                if not written:
+                    payload = write_status(
+                        env,
+                        "deferred",
+                        reasons=[str(current_election.get("reason") or "writer_election_deferred")],
+                        writer_election=current_election,
+                        latest_order=latest_order,
+                        safe_tip=safe_tip,
+                        next_start_order=current_start,
+                        next_end_order=current_end,
+                        rpc_source=source_name,
+                        tip_method=tip_method,
+                    )
+                    if args.json:
+                        print(json.dumps(payload, indent=2, sort_keys=True))
+                    return 0
+                break
+            publish_preflight = publication_integrity_gate(
+                env,
+                index_path,
+                source_url,
+                reference_url,
+                current_start,
+                current_end,
+                current_election,
+            )
             publish_preflights.append(publish_preflight)
-            record = build_segment(pool_ops, source_name, source_url, current_start, current_end, current_index, env)
+            record = build_segment(
+                pool_ops,
+                source_name,
+                source_url,
+                current_start,
+                current_end,
+                current_index,
+                env,
+                current_election,
+                publish_preflight,
+            )
             current_index = update_index(current_index, record, env)
             atomic_write_json(index_path, current_index)
             written.append(record)
             current_start, current_end, safe_tip, range_reason = choose_next_range(current_index, latest_order, env)
+        if written:
+            current_index = attach_previous_index_link(
+                current_index,
+                previous_index_cid,
+                index,
+                "stale_head_live_tail_reset" if live_tail_epoch_reset else "segment_append",
+            )
+            current_index = ipfs_segment_trust.sign_payload(current_index, env, signature_field="index_signatures")
+            atomic_write_json(index_path, current_index)
         index_cid, index_sha, index_size = add_checked_json(index_path, current_index, env)
-        update_discovery(index_cid, current_index, env)
-        ipns = publish_ipns(index_cid, env)
+        if args.index and not custom_index_discovery_enabled(env):
+            ipns = {
+                "published": False,
+                "reason": "custom_index_discovery_disabled",
+                "policy": "custom --index paths are candidate/backfill workspaces unless BDAG_IPFS_SEGMENT_UPDATE_DISCOVERY_FOR_CUSTOM_INDEX=1",
+            }
+        else:
+            update_discovery(index_cid, current_index, env)
+            ipns = publish_ipns(index_cid, env)
         state = "published" if written else "waiting_for_finalized_range"
         payload = write_status(
             env,
@@ -799,6 +1246,10 @@ def main(argv: list[str] | None = None) -> int:
             index_cid=index_cid,
             index_sha256=index_sha,
             index_size_bytes=index_size,
+            current_head=current_index.get("current_head"),
+            previous_index_cid=current_index.get("previous_index_cid"),
+            previous_index_link=current_index.get("previous_index_link"),
+            append_only_index_policy=current_index.get("append_only_index_policy"),
             ipns=ipns,
             latest_order=latest_order,
             safe_tip=safe_tip,
@@ -806,8 +1257,10 @@ def main(argv: list[str] | None = None) -> int:
             next_end_order=current_end,
             rpc_source=source_name,
             tip_method=tip_method,
+            writer_election=current_election,
             chain_integrity=publish_preflight,
             chain_integrity_preflights=publish_preflights,
+            stale_head_live_tail_reset=live_tail_epoch_reset,
         )
     except Exception as exc:
         transient_retry = is_retryable_exception(exc)

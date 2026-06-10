@@ -40,8 +40,8 @@ class SidecarContentSealTest(unittest.TestCase):
                 "BDAG_RAWDATADIR_SIDECAR_CONTENT_STATUS_FILE": str(status),
                 "BDAG_RAWDATADIR_SIDECAR_CONTENT_CHUNK_SIZE": "4",
                 "BDAG_RAWDATADIR_SIDECAR_CONTENT_FINALIZED": "1",
-                "BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID": "test-key",
-                "BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX": "00" * 32,
+                "BDAG_RAWDATADIR_SIGNING_KEY_ID": "test-key",
+                "BDAG_RAWDATADIR_SIGNING_KEY_HEX": "00" * 32,
                 "BDAG_RAWDATADIR_STATE_ROOT": "0x" + ("1" * 64),
                 "BDAG_RAWDATADIR_GENESIS_HASH": "0x" + ("2" * 64),
             }
@@ -87,8 +87,8 @@ class SidecarContentSealTest(unittest.TestCase):
                 "BDAG_RAWDATADIR_SIDECAR_DIR": str(sidecar),
                 "BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE": str(content_base),
                 "BDAG_RAWDATADIR_SIDECAR_CONTENT_STATUS_FILE": str(status),
-                "BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID": "test-key",
-                "BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX": "00" * 32,
+                "BDAG_RAWDATADIR_SIGNING_KEY_ID": "test-key",
+                "BDAG_RAWDATADIR_SIGNING_KEY_HEX": "00" * 32,
                 "BDAG_RAWDATADIR_STATE_ROOT": "0x" + ("1" * 64),
                 "BDAG_RAWDATADIR_GENESIS_HASH": "0x" + ("2" * 64),
             }
@@ -137,8 +137,8 @@ class SidecarContentSealTest(unittest.TestCase):
                 "BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE": str(content_base),
                 "BDAG_RAWDATADIR_SIDECAR_CONTENT_STATUS_FILE": str(status),
                 "BDAG_RAWDATADIR_SIDECAR_CONTENT_FINALIZED": "1",
-                "BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID": "test-key",
-                "BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX": "00" * 32,
+                "BDAG_RAWDATADIR_SIGNING_KEY_ID": "test-key",
+                "BDAG_RAWDATADIR_SIGNING_KEY_HEX": "00" * 32,
                 "BDAG_RAWDATADIR_BLOCK_TOTAL": "10",
                 "BDAG_RAWDATADIR_TIP_ORDER": "9",
                 "BDAG_RAWDATADIR_TIP_HASH": "0x" + ("3" * 64),
@@ -163,6 +163,25 @@ class SidecarContentSealTest(unittest.TestCase):
         self.assertEqual(payload["state"], "sealed")
         self.assertTrue(payload["publishable"])
         self.assertEqual(payload["anchor"]["anchor_source"], "configured_finalization_anchor")
+
+    def test_signer_can_read_seed_from_key_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            key_file = base / "segment-writer.key"
+            key_file.write_text(
+                "# test key\nBDAG_IPFS_SEGMENT_SIGNING_KEY_HEX=" + ("00" * 32) + "\n",
+                encoding="utf-8",
+            )
+            signer = seal.signer_from_env(
+                {
+                    "BDAG_RAWDATADIR_SIGNING_KEY_FILE": str(key_file),
+                    "BDAG_RAWDATADIR_SIGNING_KEY_ID": "file-backed-writer",
+                }
+            )
+
+        self.assertIsNotNone(signer)
+        self.assertEqual(signer["key_id"], "file-backed-writer")
+        self.assertEqual(len(signer["public_key"]), 64)
 
 
 if __name__ == "__main__":

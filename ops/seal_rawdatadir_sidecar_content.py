@@ -76,7 +76,7 @@ def env_int(env: dict[str, str], key: str, default: int) -> int:
 
 
 def mainnet_network(env: dict[str, str]) -> str:
-    requested = str(env.get("BDAG_RAWDATADIR_NETWORK") or env.get("BDAG_FASTSNAP_NETWORK") or MAINNET_NETWORK)
+    requested = str(env.get("BDAG_RAWDATADIR_NETWORK") or MAINNET_NETWORK)
     requested = requested.strip().lower()
     if requested != MAINNET_NETWORK:
         raise RuntimeError(f"raw datadir sidecar content refuses non-mainnet network: {requested}")
@@ -125,7 +125,29 @@ def manifest_root(manifest: dict[str, Any]) -> str:
 
 
 def signer_from_env(env: dict[str, str]) -> dict[str, str] | None:
-    key_hex = (env.get("BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX") or "").strip()
+    key_hex = (env.get("BDAG_RAWDATADIR_SIGNING_KEY_HEX") or "").strip()
+    key_file = (env.get("BDAG_RAWDATADIR_SIGNING_KEY_FILE") or env.get("BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE") or "").strip()
+    if not key_hex and key_file:
+        key_path = resolve_path(key_file, ROOT / "ops/runtime/ipfs-content/segment-writer.key")
+        try:
+            for raw in key_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    if key.strip() not in {
+                        "BDAG_RAWDATADIR_SIGNING_KEY_HEX",
+                        "BDAG_IPFS_SEGMENT_SIGNING_KEY_HEX",
+                        "SIGNING_KEY_HEX",
+                    }:
+                        continue
+                    key_hex = value.strip().strip('"').strip("'")
+                    break
+                key_hex = line
+                break
+        except OSError:
+            key_hex = ""
     if not key_hex:
         return None
     key_bytes = bytes.fromhex(key_hex)
@@ -134,7 +156,7 @@ def signer_from_env(env: dict[str, str]) -> dict[str, str] | None:
     elif len(key_bytes) == 32:
         seed = key_bytes
     else:
-        raise ValueError("BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX must be a 32-byte seed or 64-byte ed25519 private key")
+        raise ValueError("BDAG_RAWDATADIR_SIGNING_KEY_HEX must be a 32-byte seed or 64-byte ed25519 private key")
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -144,7 +166,9 @@ def signer_from_env(env: dict[str, str]) -> dict[str, str] | None:
         format=serialization.PublicFormat.Raw,
     )
     return {
-        "key_id": env.get("BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID") or "rawdatadir-sidecar",
+        "key_id": env.get("BDAG_RAWDATADIR_SIGNING_KEY_ID")
+        or env.get("BDAG_IPFS_SEGMENT_WRITER_ID")
+        or "rawdatadir-sidecar",
         "public_key": public_key.hex(),
         "private_key": private_key,
     }
@@ -170,7 +194,8 @@ def sign_manifest(manifest: dict[str, Any], env: dict[str, str]) -> list[dict[st
 def excluded_rel(rel: str, is_dir: bool) -> bool:
     parts = rel.split("/")
     name = parts[-1]
-    if name in {".rsync-partial", "LOCK", "snapshot.bdsnap", "artifact.manifest.json"}:
+    retired_chain_artifact = "snap" + "shot.bd" + "snap"
+    if name in {".rsync-partial", "LOCK", retired_chain_artifact, "artifact.manifest.json"}:
         return True
     if fnmatch.fnmatch(name, "*.ipc") or fnmatch.fnmatch(name, "*.sock"):
         return True

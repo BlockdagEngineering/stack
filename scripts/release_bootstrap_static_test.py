@@ -111,9 +111,13 @@ class PayloadInstallerTests(unittest.TestCase):
             return (package_root / ".env").read_text(encoding="utf-8")
 
     def test_unix_payload_installer_writes_amd64_platform(self) -> None:
+        if os.name == "nt":
+            self.skipTest("Unix installer env-write smoke is covered by Linux/macOS matrix jobs")
         self.assertIn("DOCKER_PLATFORM=linux/amd64", self.run_unix_env_write("amd64"))
 
     def test_unix_payload_installer_writes_arm64_platform(self) -> None:
+        if os.name == "nt":
+            self.skipTest("Unix installer env-write smoke is covered by Linux/macOS matrix jobs")
         self.assertIn("DOCKER_PLATFORM=linux/arm64", self.run_unix_env_write("arm64"))
 
     def test_installers_do_not_warn_arm_hosts_to_use_amd64_emulation(self) -> None:

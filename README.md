@@ -49,36 +49,35 @@ bash install.sh
 ```
 
 The payload installer writes `.env` and `node.conf`, generates a strong Postgres
-password unless `POSTGRES_PASSWORD` is already set, downloads `latest.bdsnap`
-when needed, sets `DOCKER_PLATFORM` from the downloaded payload's
+password unless `POSTGRES_PASSWORD` is already set, provisions a signed IPFS
+segment-writer identity, attempts a trusted signed IPFS raw-datadir restore for
+an empty datadir when a raw artifact/index is configured, verifies configured
+IPFS segment evidence, sets `DOCKER_PLATFORM` from the downloaded payload's
 `release-payload.env`, and runs
-`docker compose build && docker compose up -d --no-build --pull never postgres node dashboard`.
+`docker compose build && docker compose up -d --no-build --pull never --no-deps postgres node dashboard`.
 
 Fresh installs assume zero miner sources. Initial install and chain sync must
 work with no ASICs or Stratum miners configured; operators can opt in to the
 miner wizard after sync and may configure 0..N miner sources. The RC must not
 treat this host's five X100 devices as a release default.
 
-On macOS, the installer uses `aria2c` for faster, resumable snapshot downloads and installs it with Homebrew when missing. If that path fails, it opens a browser download link and Finder at the installer folder, then waits for `latest.bdsnap` to appear there. Browsers may still save to Downloads unless you choose the installer folder. To skip the dependency install, force curl with `BDAG_SNAPSHOT_DOWNLOADER=curl bash install.sh`; to go straight to the browser helper, use `BDAG_SNAPSHOT_DOWNLOADER=browser bash install.sh`. On Windows, the installer uses `aria2c` when available, tries to install it with `winget`, then falls back to BITS and PowerShell download.
-
 The installer uses host-path chain storage at `BDAG_NODE_DATA_DIR` and preserves
-existing chain data. When a valid `latest.bdsnap` is available and the configured
-node datadir has no chain markers, the installer stages that snapshot into the
-host datadir so the container can import it on first start. To replace existing
-chain data, stop the stack and move the configured datadir aside deliberately
-before running the installer.
-
-If the default snapshot host is unavailable, point the installer at the snapshot URL you want to use:
-
-```bash
-BDAG_SNAPSHOT_URL=https://your-host.example/latest.bdsnap bash install.sh
-```
-
-The installer requires a valid snapshot by default. To allow the node to sync from P2P when no valid snapshot can be downloaded, use:
-
-```bash
-BDAG_REQUIRE_SNAPSHOT=0 bash install.sh
-```
+existing chain data. If the configured node datadir has no chain markers, the
+installer first tries `ops/restore-rawdatadir-segment-artifact.py` when
+`BDAG_IPFS_RAWDATADIR_RESTORE_ARTIFACT_CID`,
+`BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_CID`, or
+`BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_FILE` is configured, or when
+`BDAG_IPFS_RAWDATADIR_RESTORE_DISCOVERY_FILE` names a raw-datadir checkpoint
+index. That path reconstructs a raw `mainnet` datadir only after the artifact
+manifest signature verifies
+against `BDAG_RAWDATADIR_TRUSTED_SIGNERS`, the manifest root matches, and every
+chunk/file hash matches. The installer then runs the chain-order IPFS restore
+drill in verification-only mode and records the result under
+`ops/runtime/ipfs-content/restore-drill-status.json`. Chain-order segment data
+is not promoted into the live datadir until a segment-to-node replay/importer
+and scratch-node validation path exists. To replace existing chain data, stop
+the stack and move the configured datadir aside deliberately before running the
+installer.
 
 On macOS, if Docker reports an `xattr` error for files such as `._.env.example`, those are AppleDouble metadata files from the extracted folder or external drive. Current release packages include `.dockerignore` and the installer removes those files before building. For an older extracted folder, clean it manually and run the installer again:
 
@@ -132,53 +131,50 @@ peers; address class is not a sync mode, priority class, or eligibility signal.
 
 During upgrades, `ops/update-local-peers.py` imports any existing
 address-bucket values only long enough to normalize complete P2P multiaddrs
-into `BDAG_FASTSYNC_PEERS`, then clears those bucket values. Do not add new LAN,
-VPN, or public sync options.
+into `BDAG_NODE_PEER_ADDRESSES`, then clears those bucket values. Do not add new
+LAN, VPN, or public sync options.
 
 Upgrades that keep existing chain data should also mine that data for peer
 evidence. After the node starts, the release installer runs
 `ops/update-local-peers.py --force-apply`, parses preserved chain peerstore
 startup logs, probes candidate multiaddrs for TCP reachability, writes
 `ops/runtime/peer-discovery-current.json`, and applies the resulting
-`BDAG_FASTSYNC_PEERS` to the active single node. TCP-open status is only a
+`BDAG_NODE_PEER_ADDRESSES` to the active single node. TCP-open status is only a
 bootstrap hint; install completion and mining readiness still require normal
 peer handshakes, sync freshness, RPC health, and template checks.
 
-## Fast Artifact Sync V2 Directory Mode
+## IPFS Sync Source
 
-Fast Artifact Sync V2 directory artifacts are now the preferred empty-datadir
-bootstrap path when a peer offers them. The node entrypoint first checks whether
-the packaged `fastsnap` binary supports directory install flags. When supported,
-it passes both `--dir-out` and `--out`: directory-capable peers install verified
-manifest files directly into the node datadir, while archive-only peers still
-fall back to the `.bdsnap` path. If the binary is older, the entrypoint stays on
-the V2 archive path instead of failing before normal sync can start.
-
-`BDAG_FASTSNAP_DIRECTORY_MODE=1` is the default. Set
-`BDAG_FASTSNAP_DIRECTORY_STAGING` only when the staging directory must live on a
-specific filesystem; otherwise the entrypoint creates a temporary staging path
-beside the node datadir. Serving a maintained directory hot stage is opt-in:
-set `BDAG_FASTSYNC_ARTIFACT_DIRECTORY` to the verified file root and
-`BDAG_FASTSYNC_ARTIFACT_MANIFEST` to the manifest sidecar. When a node was
-bootstrapped from a directory artifact, the entrypoint automatically exposes
-that verified checkpoint from the node datadir by using
-`artifact.manifest.json`.
+IPFS is the only supported chain-data bootstrap, archive, and recovery source.
+The stack keeps a conservative, low-priority raw-datadir sidecar copy near the
+live node, seals safe generations into content-addressed chunks, and publishes
+verified indexes and live-tail segments through IPFS/IPNS. Segment manifests
+and indexes are signed with a local Ed25519 writer key provisioned by
+`ops/ipfs_segment_identity.py`; the same key file signs raw-datadir checkpoint
+artifacts via `BDAG_RAWDATADIR_SIGNING_KEY_FILE`. Receivers must trust the
+writer public key before using any archive object. Empty-datadir installs can
+restore a signed raw-datadir artifact from IPFS when a trusted raw content
+artifact/index is configured. Chain-order segments remain the continuous
+append-only mirror and verification source; destructive replay from those
+segments is still blocked until an importer and scratch-node validation path
+exists.
 
 ## IPFS Content Discovery
 
 Future systems should read `ops/ipfs-content-discovery.json` for the durable
-IPFS/IPNS discovery contract. The stable latest pointer is
+IPFS/IPNS discovery contract. The stable segment latest pointer is
 `/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk`; the current
-immutable latest-index CID is
-recorded in that discovery file. At the first live segment publish on
-2026-05-31 it was `bafkreifvqj7qhkoifykybbvlxxmq3jhydgzq2kjxuq5fznjizjjogzgthi`.
-The stale monolithic FastSnap seed has been deprecated. The current implementation
-writes append-only live-tail chain-order segments from the local node. The
-durable protocol design is recorded in
+immutable chain-order segment index CID is recorded in `current_latest_index_cid`.
+Raw checkpoint restore uses separate discovery keys such as
+`current_rawdatadir_index_cid` and a separate local
+`ops/runtime/ipfs-content/rawdatadir-content-index.json` file. The current
+implementation writes append-only live-tail chain-order segments from the local node.
+The durable protocol design is recorded in
 `docs/ipfs-append-only-segment-protocol.html`. IPFS and IPNS are
-not chain trust. Receivers must verify segment CIDs, payload hashes, order
-continuity, network/genesis identity, tip/state roots, and normal consensus
-before using the data.
+not chain trust. Receivers must verify Ed25519 signatures against a trusted
+writer roster, recursive previous-index lineage, raw artifact manifests, segment
+CIDs, payload hashes, order continuity, network/genesis identity, tip/state
+roots, finality, and normal consensus before using the data.
 
 ## Runtime Stability Defaults
 
@@ -188,7 +184,7 @@ mining/template flags only when real miners are attached. Do not add unsynced
 mining bypass flags; readiness gates must fail closed until node sync and P2P
 freshness are healthy. The dashboard,
 watchdog, stack sentinel, P2P guard, peer refresh, chain restore guard, and
-snapshot timers are installed by `ops/install-dashboard.sh` unless explicitly
+IPFS sidecar timers are installed by `ops/install-dashboard.sh` unless explicitly
 disabled. Runtime tooling uses the current stack service names: `node`, `pool`,
 and `postgres`. Concrete Compose container names may include project and ordinal
 suffixes.
@@ -246,7 +242,7 @@ error`, `Not DAG block`, DAG tip/block damage, or repeated `missing trie node`
 warnings are chain-data restore triggers. The status sampler fails mining closed,
 starts the one-shot `${INSTANCE}-chain-state-self-heal.service`, and the script
 `ops/chain-state-self-heal.sh` quarantines the damaged node datadir, restores
-from `BDAG_CHAIN_STATE_RESTORE_SOURCE` or `BDAG_CHAIN_STATE_RESTORE_SNAPSHOT`,
+from `BDAG_CHAIN_STATE_RESTORE_SOURCE` or the signed IPFS rawdatadir restore settings,
 restarts `node` and `dashboard` with `--no-build --pull never`, and leaves
 `pool` stopped until readiness gates pass. A softer adjacent detector records
 sustained stuck height while peer lag grows; by default it requires 900 seconds,
@@ -276,7 +272,7 @@ ephemeral scratch is kept on bounded tmpfs through `BDAG_EPHEMERAL_DIR`,
 `BDAG_CONTAINER_TMPFS_SIZE`, and node-specific `BDAG_NODE_TMPFS_SIZE`; service
 containers also mount `/var/tmp` as tmpfs and export `TMPDIR`, `TMP`, and
 `TEMP` to avoid accidental temp spillover into overlay layers. Large
-snapshot and chain-artifact staging stays on capacity storage unless
+IPFS/rawdatadir restore staging stays on capacity storage unless
 deliberately overridden. The installer reports
 warnings and continues by default. Set `BDAG_APPLIANCE_PREFLIGHT_STRICT=1` to
 make hard failures stop the install, or `BDAG_APPLIANCE_PREFLIGHT=0` to skip it
@@ -319,16 +315,20 @@ watching. On Linux, that process needs Docker API access for container status
 and logs; use a system service account with Docker socket access or an explicit
 `DOCKER_HOST`.
 
-Source checkout tests require Python's standard library test runner plus
-`pytest`. On Ubuntu/Debian hosts, install the test dependency with:
+Source checkout tests require Python's standard library test runner,
+`cryptography` for signed IPFS archive metadata, `pytest`, and the Kubo
+`ipfs` CLI for live IPFS restore/publish drills. On
+Ubuntu/Debian hosts, install the test dependencies with:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y python3-pytest
+sudo apt-get install -y python3-cryptography python3-pytest
 ```
 
 Agents should verify it with `python3 -m pytest --version` before running
-`ops/tests` through pytest-backed deployment checks.
+`ops/tests` through pytest-backed deployment checks. Verify the signing
+dependency with `python3 -c 'import cryptography'`. Verify Kubo with
+`ipfs version` before running live IPFS restore, pin, or publish tests.
 
 The collector runtime uses Python's standard HTTP client for local
 pool metrics and public enrichment calls. Do not make live status depend on
@@ -392,37 +392,62 @@ networks default to `172.16.0.0/12` and are filtered from ASIC discovery and
 displayed Stratum endpoints; seeing `172.*` as a miner IP or pool endpoint is a
 configuration failure, not a valid physical miner.
 
-## Default V2 Sync Source
+## Default IPFS Sync Source
 
-New installs use Fast Artifact Sync V2 as the preferred bootstrap path. Client
-sync is enabled by default; source serving is disabled unless
-`SYNC_SOURCE_NODE=1` is set and the chain, sidecar, artifact, temporary, and
-Docker paths are not USB/removable/external and the host has enough CPU, RAM,
-and disk headroom.
+New installs can use trusted IPFS raw checkpoint content as the destructive
+bootstrap path when a raw checkpoint artifact, index, or discovery source is
+configured. Append-only chain-order segment indexes are the continuous signed
+verification mirror; they are not replayed into the node datadir until a
+segment importer and scratch-node validation path exists. Active mining hosts
+maintain a low-priority raw datadir sidecar, seal signed restore artifacts, and
+publish signed, verified sidecar content only after the safety and finalization
+gates pass. Configure
+`BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_CID` or
+`BDAG_IPFS_RAWDATADIR_RESTORE_ARTIFACT_CID` for unattended fresh-node bootstrap
+from a trusted IPFS raw checkpoint.
 
-Eligible source hosts maintain a low-priority raw datadir sidecar and publish a
-signed `raw_datadir_checkpoint` artifact from a finalized sidecar generation.
-The artifact publisher does not stop the live node automatically. Set
-`BDAG_RAWDATADIR_FINALIZE=1` only for an operator-approved
-finalization window.
+Plan bounded chain-order backfill without RPC/IPFS mutation with:
+
+```bash
+./ops/ipfs_segment_backfill.py --plan --stop-order <safe-finalized-order> --json
+```
+
+The current segment format treats order `0` as genesis identity for validation;
+candidate backfill payloads start at order `1` and remain candidate-only until a
+separate full-coverage verification and promotion path exists.
+
+Every successful chain-order restore drill records the highest accepted segment
+index in `BDAG_IPFS_RESTORE_ACCEPTED_HEAD_STATE_FILE`. Later drills reject older
+indexes, and reject non-lineage indexes when both the previous and current index
+CIDs are known. This protects against IPNS rollback while keeping chain-order
+segments verify-only; it does not import segment data into the node datadir.
+
+The same restore drill can chain-anchor verified IPFS data with
+`BDAG_IPFS_RESTORE_CHAIN_ANCHOR_ENABLED=1`. When
+`BDAG_IPFS_RESTORE_CHAIN_SOURCE_RPC_URL` and
+`BDAG_IPFS_RESTORE_CHAIN_REFERENCE_RPC_URL` are configured, the drill compares
+the signed segment index against live source and independent reference chain RPC
+block hashes. Set `BDAG_IPFS_RESTORE_REQUIRE_CHAIN_ANCHOR=1` for fail-closed
+promotion drills. CIDs, signatures, hashes, lineage, accepted-head state, and
+live-chain block-hash anchors must all agree before treating IPFS as canonical
+chain evidence.
 
 The archive seed timer is not part of this stack because IPFS segments and
-finalized raw-datadir sidecars now own source publication.
+finalized raw-datadir sidecars own source publication.
 
-Check source eligibility and status with:
-
-```bash
-./ops/fastartifact_source_eligibility.py --full --json
-```
-
-Refresh/publish the raw datadir source path with:
+Check sidecar safety and status with:
 
 ```bash
-./ops/publish-rawdatadir-artifact.sh
+./ops/rawdatadir_sidecar_safety.py --full --json
 ```
 
-See `docs/rawdatadir-libp2p-sync.md` and
-`docs/ipfs-append-only-segment-protocol.html`.
+Refresh the local raw datadir sidecar with:
+
+```bash
+./ops/maintain-rawdatadir-sidecar.sh
+```
+
+See `docs/ipfs-append-only-segment-protocol.html`.
 
 IPFS segments and finalized raw-datadir sidecars are the supported
 content-publication paths. Published files must be manifest-indexed and

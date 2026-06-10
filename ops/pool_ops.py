@@ -102,6 +102,11 @@ def split_env_list(name: str, default: str) -> list[str]:
     return [item.strip() for item in re.split(r"[,;]", raw) if item.strip()]
 
 
+def single_env_value(name: str, default: str) -> str:
+    value = os.environ.get(name, default).strip()
+    return value or default
+
+
 def env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None:
@@ -163,11 +168,7 @@ def detect_total_memory_bytes(os_name: str | None = None) -> int | None:
     system = normalize_os_name(os_name)
     if system == "linux":
         try:
-            for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
-                if line.startswith("MemTotal:"):
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        return int(parts[1]) * 1024
+            return parse_meminfo(Path("/proc/meminfo").read_text(encoding="utf-8")).get("MemTotal")
         except (OSError, ValueError):
             return None
     if system == "darwin":
@@ -177,6 +178,26 @@ def detect_total_memory_bytes(os_name: str | None = None) -> int | None:
         except (OSError, subprocess.SubprocessError, ValueError):
             return None
     return None
+
+
+def parse_meminfo(text: str) -> dict[str, int]:
+    values: dict[str, int] = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        key, raw_value = line.split(":", 1)
+        parts = raw_value.split()
+        if not parts:
+            continue
+        try:
+            value = int(parts[0])
+        except ValueError:
+            continue
+        unit = parts[1].lower() if len(parts) > 1 else ""
+        if unit == "kb":
+            value *= 1024
+        values[key.strip()] = value
+    return values
 
 
 def detect_hardware_model(os_name: str | None = None) -> str:
@@ -259,6 +280,9 @@ CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS = env_int("BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_B
 CATCHUP_IOWAIT_WARN_PERCENT = env_float("BDAG_CATCHUP_IOWAIT_WARN_PERCENT", 15.0, minimum=0.0)
 CATCHUP_IO_SOME_AVG10_WARN = env_float("BDAG_CATCHUP_IO_SOME_AVG10_WARN", 20.0, minimum=0.0)
 CATCHUP_IO_FULL_AVG10_WARN = env_float("BDAG_CATCHUP_IO_FULL_AVG10_WARN", 10.0, minimum=0.0)
+SYNC_PRIORITY_ENABLED = env_bool("BDAG_SYNC_PRIORITY_ENABLED", True)
+SYNC_PRIORITY_MIN_LAG_BLOCKS = env_int("BDAG_SYNC_PRIORITY_MIN_LAG_BLOCKS", 25, minimum=0)
+SYNC_PRIORITY_DEFER_DASHBOARD_SAMPLERS = env_bool("BDAG_SYNC_PRIORITY_DEFER_DASHBOARD_SAMPLERS", True)
 SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS = int(os.environ.get("BDAG_SYNC_PROGRESS_ACTIVE_LOOKBACK_SECONDS", "2700"))
 DEFAULT_POOL_ENV_FILE = PROJECT_ROOT / ".env"
 POOL_ENV_FILE = path_from_env("BDAG_POOL_ENV_FILE", DEFAULT_POOL_ENV_FILE, PROJECT_ROOT)
@@ -269,8 +293,9 @@ POOL_CONTAINERS = unique_names([POOL_CONTAINER, *split_env_list("BDAG_POOL_CONTA
 POOL_DB_CONTAINER = os.environ.get("BDAG_POOL_DB_CONTAINER", "postgres")
 POOL_DB_USER = os.environ.get("BDAG_POOL_DB_USER", "test")
 POOL_DB_NAME = os.environ.get("BDAG_POOL_DB_NAME", "pool")
-NODES = split_env_list("BDAG_NODE_SERVICES", "node")
-OBSERVER_NODES = unique_names(split_env_list("BDAG_OBSERVER_NODE_SERVICES", ""))
+NODE_SERVICE = single_env_value("BDAG_NODE_SERVICE", "node")
+NODES = [NODE_SERVICE]
+OBSERVER_NODES: list[str] = []
 STACK_SERVICES = split_env_list(
     "BDAG_STACK_SERVICES",
     "postgres,node,pool",
@@ -312,7 +337,7 @@ NODE_IRREPARABLE_SYNC_RE = re.compile(
 NODE_MISSING_TRIE_RE = re.compile(r"missing trie node\s+([0-9a-fA-F]+)", re.IGNORECASE)
 CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS = env_int(
     "BDAG_CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS",
-    1,
+    3,
     minimum=1,
 )
 CHAIN_STATE_ORPHAN_STORM_RESTORE_PEER_AHEAD_BLOCKS = env_int(
@@ -460,6 +485,7 @@ POOL_ACCEPTED_JOB_EXPIRED_STORM_RATIO = int(
 )
 POOL_METRICS_PORT = int(os.environ.get("BDAG_POOL_METRICS_PORT", "9090"))
 POOL_METRICS_TIMEOUT = float(os.environ.get("BDAG_POOL_METRICS_TIMEOUT", "2.0"))
+POOL_TEMPLATE_DELIVERY_FRESH_SECONDS = env_float("BDAG_POOL_TEMPLATE_DELIVERY_FRESH_SECONDS", 5.0, minimum=0.1)
 POOL_SUBMIT_RECOVERY_RECENT_SECONDS = int(os.environ.get("BDAG_POOL_SUBMIT_RECOVERY_RECENT_SECONDS", "180"))
 POOL_SUBMIT_RECOVERY_ACCEPTED_RESUME_SECONDS = int(
     os.environ.get("BDAG_POOL_SUBMIT_RECOVERY_ACCEPTED_RESUME_SECONDS", "90")
@@ -478,6 +504,16 @@ NODE_TEMPLATE_PROBE_TIMEOUT = float(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_TIM
 NODE_CHAIN_RPC_TIMEOUT = float(os.environ.get("BDAG_NODE_CHAIN_RPC_TIMEOUT", "8.0"))
 NODE_CHAIN_RPC_RETRIES = max(1, int(os.environ.get("BDAG_NODE_CHAIN_RPC_RETRIES", "2")))
 HOST_PRESSURE_IOWAIT_WARN_PERCENT = env_float("BDAG_HOST_PRESSURE_IOWAIT_WARN_PERCENT", 25.0, minimum=0.0)
+HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT = env_float(
+    "BDAG_HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT",
+    12.0,
+    minimum=0.0,
+)
+HOST_PRESSURE_SWAP_USED_WARN_PERCENT = env_float(
+    "BDAG_HOST_PRESSURE_SWAP_USED_WARN_PERCENT",
+    5.0,
+    minimum=0.0,
+)
 HOST_PRESSURE_IOWAIT_WARN_SAMPLES = env_int("BDAG_HOST_PRESSURE_IOWAIT_WARN_SAMPLES", 3, minimum=2)
 HOST_PRESSURE_HISTORY_SAMPLES = max(
     HOST_PRESSURE_IOWAIT_WARN_SAMPLES,
@@ -499,6 +535,16 @@ ADAPTIVE_IOWAIT_WARN_PERCENT = env_float(
 ADAPTIVE_IO_SOME_AVG10_WARN = env_float("BDAG_ADAPTIVE_IO_SOME_AVG10_WARN", 20.0, minimum=0.0)
 ADAPTIVE_CPU_SOME_AVG10_WARN = env_float("BDAG_ADAPTIVE_CPU_SOME_AVG10_WARN", 80.0, minimum=0.0)
 ADAPTIVE_CHAIN_RPC_WARN_MS = env_float("BDAG_ADAPTIVE_CHAIN_RPC_WARN_MS", 1000.0, minimum=0.0)
+ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT = env_float(
+    "BDAG_ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT",
+    HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT,
+    minimum=0.0,
+)
+ADAPTIVE_SWAP_USED_WARN_PERCENT = env_float(
+    "BDAG_ADAPTIVE_SWAP_USED_WARN_PERCENT",
+    HOST_PRESSURE_SWAP_USED_WARN_PERCENT,
+    minimum=0.0,
+)
 BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = env_bool("BDAG_BACKGROUND_MAINTENANCE_BACKOFF_ENABLED", True)
 BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS = env_int("BDAG_BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS", 0, minimum=0)
 BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT = env_float(
@@ -526,16 +572,42 @@ BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS = env_float(
     ADAPTIVE_CHAIN_RPC_WARN_MS,
     minimum=0.0,
 )
+BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT = env_float(
+    "BDAG_BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT",
+    HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT,
+    minimum=0.0,
+)
+BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT = env_float(
+    "BDAG_BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT",
+    HOST_PRESSURE_SWAP_USED_WARN_PERCENT,
+    minimum=0.0,
+)
 BACKGROUND_MAINTENANCE_LAZY_TASKS = set(
     split_env_list(
         "BDAG_BACKGROUND_MAINTENANCE_LAZY_TASKS",
-        "",
+        (
+            "dashboard_global_sampler,global_blockchain_scan,global_scan,"
+            "rawdatadir_sidecar,rawdatadir_content_seal,ipfs_content_sidecar,"
+            "ipfs_segment_writer,history_compaction,snapshot"
+        ),
     )
 )
 BACKGROUND_MAINTENANCE_POOL_READY_TASKS = set(
     split_env_list(
         "BDAG_BACKGROUND_MAINTENANCE_POOL_READY_TASKS",
-        "rawdatadir_publish,rawdatadir_content_seal,ipfs_content_sidecar,ipfs_segment_writer",
+        "rawdatadir_content_seal,ipfs_content_sidecar",
+    )
+)
+BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS = set(
+    split_env_list(
+        "BDAG_BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS",
+        "ipfs_segment_writer",
+    )
+)
+BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS = set(
+    split_env_list(
+        "BDAG_BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS",
+        "ipfs_segment_writer",
     )
 )
 BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN = env_float(
@@ -621,7 +693,37 @@ def redact_sensitive_text(value: str) -> str:
     return text
 
 
-def run(command: list[str], timeout: int = 20) -> CommandResult:
+_DOCKER_USE_SUDO_CACHE: bool | None = None
+DOCKER_ACCESS_ERROR_MARKERS = (
+    "permission denied while trying to connect to the docker api",
+    "cannot connect to the docker daemon",
+    "is the docker daemon running",
+    "connect: permission denied",
+)
+
+
+def command_uses_docker(command: list[str]) -> bool:
+    return bool(command) and command[0] == "docker"
+
+
+def sudo_docker_command(command: list[str]) -> list[str]:
+    return ["sudo", "-n", *command]
+
+
+def docker_result_looks_like_access_error(result: CommandResult) -> bool:
+    text = f"{result.stderr}\n{result.stdout}".lower()
+    return result.returncode == 127 or any(marker in text for marker in DOCKER_ACCESS_ERROR_MARKERS)
+
+
+def docker_sudo_fallback_enabled() -> bool:
+    return env_bool("BDAG_DOCKER_SUDO_FALLBACK", True)
+
+
+def docker_use_sudo_requested() -> bool:
+    return env_bool("BDAG_DOCKER_USE_SUDO", False)
+
+
+def run_subprocess_capture(command: list[str], timeout: int) -> CommandResult:
     start = time.time()
     try:
         proc = subprocess.run(
@@ -660,6 +762,25 @@ def run(command: list[str], timeout: int = 20) -> CommandResult:
             stderr=str(exc),
             elapsed=round(time.time() - start, 3),
         )
+
+
+def run(command: list[str], timeout: int = 20) -> CommandResult:
+    global _DOCKER_USE_SUDO_CACHE
+    if command_uses_docker(command) and docker_sudo_fallback_enabled():
+        if docker_use_sudo_requested() or _DOCKER_USE_SUDO_CACHE is True:
+            return run_subprocess_capture(sudo_docker_command(command), timeout)
+        direct = run_subprocess_capture(command, timeout)
+        if direct.ok:
+            _DOCKER_USE_SUDO_CACHE = False
+            return direct
+        if docker_result_looks_like_access_error(direct):
+            sudo_result = run_subprocess_capture(sudo_docker_command(command), timeout)
+            if sudo_result.ok:
+                _DOCKER_USE_SUDO_CACHE = True
+                return sudo_result
+        return direct
+
+    return run_subprocess_capture(command, timeout)
 
 
 def read_env_file_value(path: Path, name: str) -> str | None:
@@ -862,9 +983,22 @@ def host_pressure_iowait_sustained(samples: list[dict[str, Any]], threshold: flo
 
 
 def host_pressure_warning_messages(pressure: dict[str, Any]) -> list[str]:
+    messages: list[str] = []
+    memory_available_percent = safe_float(pressure.get("memory_available_percent"))
+    if pressure.get("memory_warning_active") and memory_available_percent is not None:
+        messages.append(
+            "host RAM available is low "
+            f"({memory_available_percent:.2f}% <= {HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT:.2f}%)"
+        )
+    swap_used_percent = safe_float(pressure.get("swap_used_percent"))
+    if pressure.get("swap_warning_active") and swap_used_percent is not None:
+        messages.append(
+            "host swap use is active "
+            f"({swap_used_percent:.2f}% >= {HOST_PRESSURE_SWAP_USED_WARN_PERCENT:.2f}%)"
+        )
     samples = pressure.get("samples") if isinstance(pressure.get("samples"), list) else []
     if not pressure.get("iowait_warning_active"):
-        return []
+        return messages
     values = [
         safe_float(item.get("iowait_percent"))
         for item in samples[-HOST_PRESSURE_IOWAIT_WARN_SAMPLES:]
@@ -876,10 +1010,11 @@ def host_pressure_warning_messages(pressure: dict[str, Any]) -> list[str]:
         detail = f"current={current:.2f}% avg={avg:.2f}%"
     else:
         detail = f"threshold={HOST_PRESSURE_IOWAIT_WARN_PERCENT:.2f}%"
-    return [
+    messages.append(
         "host IO wait is sustained across recent dashboard samples "
         f"({detail}, threshold={HOST_PRESSURE_IOWAIT_WARN_PERCENT:.2f}%)"
-    ]
+    )
+    return messages
 
 
 def collect_host_pressure() -> dict[str, Any]:
@@ -897,6 +1032,18 @@ def collect_host_pressure() -> dict[str, Any]:
         "iowait_warning_active": False,
         "cpu_some_avg10": None,
         "memory_some_avg10": None,
+        "memory_full_avg10": None,
+        "memory_total_bytes": None,
+        "memory_available_bytes": None,
+        "memory_available_percent": None,
+        "memory_available_warn_percent": HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT,
+        "memory_warning_active": False,
+        "swap_total_bytes": None,
+        "swap_free_bytes": None,
+        "swap_used_bytes": None,
+        "swap_used_percent": None,
+        "swap_used_warn_percent": HOST_PRESSURE_SWAP_USED_WARN_PERCENT,
+        "swap_warning_active": False,
     }
     try:
         load_parts = Path("/proc/loadavg").read_text(encoding="utf-8").split()
@@ -914,6 +1061,30 @@ def collect_host_pressure() -> dict[str, Any]:
             continue
         pressure[f"{name}_some_avg10"] = parsed.get("some_avg10")
         pressure[f"{name}_full_avg10"] = parsed.get("full_avg10")
+
+    try:
+        meminfo = parse_meminfo(Path("/proc/meminfo").read_text(encoding="utf-8"))
+    except OSError:
+        meminfo = {}
+    mem_total = meminfo.get("MemTotal")
+    mem_available = meminfo.get("MemAvailable")
+    if mem_total and mem_available is not None and mem_total > 0:
+        memory_available_percent = round(max(0.0, mem_available * 100.0 / mem_total), 2)
+        pressure["memory_total_bytes"] = mem_total
+        pressure["memory_available_bytes"] = mem_available
+        pressure["memory_available_percent"] = memory_available_percent
+        pressure["memory_warning_active"] = memory_available_percent <= HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT
+    swap_total = meminfo.get("SwapTotal")
+    swap_free = meminfo.get("SwapFree")
+    if swap_total is not None and swap_free is not None:
+        swap_used = max(0, swap_total - swap_free)
+        pressure["swap_total_bytes"] = swap_total
+        pressure["swap_free_bytes"] = swap_free
+        pressure["swap_used_bytes"] = swap_used
+        if swap_total > 0:
+            swap_used_percent = round(max(0.0, swap_used * 100.0 / swap_total), 2)
+            pressure["swap_used_percent"] = swap_used_percent
+            pressure["swap_warning_active"] = swap_used_percent >= HOST_PRESSURE_SWAP_USED_WARN_PERCENT
 
     try:
         cpu = parse_proc_stat_cpu(Path("/proc/stat").read_text(encoding="utf-8"))
@@ -1004,12 +1175,21 @@ def adaptive_pressure_level(pressure: dict[str, Any] | None) -> str:
     io_some = safe_float(pressure.get("io_some_avg10"))
     cpu_some = safe_float(pressure.get("cpu_some_avg10"))
     chain_rpc_latency = safe_float(pressure.get("chain_rpc_latency_ms"))
+    memory_available_percent = safe_float(pressure.get("memory_available_percent"))
+    swap_used_percent = safe_float(pressure.get("swap_used_percent"))
     if (
         bool(pressure.get("iowait_warning_active"))
+        or bool(pressure.get("memory_warning_active"))
+        or bool(pressure.get("swap_warning_active"))
         or (iowait is not None and iowait >= ADAPTIVE_IOWAIT_WARN_PERCENT)
         or (io_some is not None and io_some >= ADAPTIVE_IO_SOME_AVG10_WARN)
         or (cpu_some is not None and cpu_some >= ADAPTIVE_CPU_SOME_AVG10_WARN)
         or (chain_rpc_latency is not None and chain_rpc_latency >= ADAPTIVE_CHAIN_RPC_WARN_MS)
+        or (
+            memory_available_percent is not None
+            and memory_available_percent <= ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT
+        )
+        or (swap_used_percent is not None and swap_used_percent >= ADAPTIVE_SWAP_USED_WARN_PERCENT)
     ):
         return "high"
     if (
@@ -1017,6 +1197,11 @@ def adaptive_pressure_level(pressure: dict[str, Any] | None) -> str:
         or (io_some is not None and io_some >= ADAPTIVE_IO_SOME_AVG10_WARN / 2)
         or (cpu_some is not None and cpu_some >= ADAPTIVE_CPU_SOME_AVG10_WARN / 2)
         or (chain_rpc_latency is not None and chain_rpc_latency >= ADAPTIVE_CHAIN_RPC_WARN_MS / 2)
+        or (
+            memory_available_percent is not None
+            and memory_available_percent <= max(ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT * 2, ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT)
+        )
+        or (swap_used_percent is not None and swap_used_percent >= max(ADAPTIVE_SWAP_USED_WARN_PERCENT / 2, 1.0))
     ):
         return "moderate"
     return "low"
@@ -1214,19 +1399,8 @@ def docker_compose_command(*args: str) -> list[str]:
 
 
 def compose_service_name(name: str) -> str:
-    try:
-        result = subprocess.run(
-            ["docker", "inspect", "-f", '{{ index .Config.Labels "com.docker.compose.service" }}', name],
-            cwd=PROJECT_ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=10,
-            check=False,
-        )
-        service = result.stdout.strip() if result.returncode == 0 else ""
-    except (OSError, subprocess.SubprocessError):
-        service = ""
+    result = run(["docker", "inspect", "-f", '{{ index .Config.Labels "com.docker.compose.service" }}', name], timeout=10)
+    service = result.stdout.strip() if result.ok else ""
     if service and service != "<no value>":
         return service
     container_to_service = {
@@ -1248,6 +1422,44 @@ def compose_service_name(name: str) -> str:
                     return candidate
     return name
 
+_COMPOSE_CONTAINER_NAME_CACHE: dict[str, str] = {}
+
+
+def compose_container_name(name: str) -> str:
+    cached = _COMPOSE_CONTAINER_NAME_CACHE.get(name)
+    if cached:
+        return cached
+    project_names = unique_names([docker_compose_project_name(), "pool-stack-docker"])
+    for project in project_names:
+        result = run(
+            [
+                "docker",
+                "ps",
+                "-a",
+                "--filter",
+                f"label=com.docker.compose.project={project}",
+                "--filter",
+                f"label=com.docker.compose.service={name}",
+                "--format",
+                "{{.Names}}\t{{.Status}}",
+            ],
+            timeout=8,
+        )
+        if not result.ok:
+            continue
+        rows = []
+        for line in result.stdout.splitlines():
+            parts = line.split("\t", 1)
+            container_name = parts[0].strip()
+            status = parts[1].strip() if len(parts) > 1 else ""
+            if container_name:
+                rows.append((container_name, status))
+        if rows:
+            chosen = next((container for container, status in rows if status.startswith("Up ")), rows[0][0])
+            _COMPOSE_CONTAINER_NAME_CACHE[name] = chosen
+            return chosen
+    return name
+
 
 def stack_start_services(*, include_pool: bool = True) -> list[str]:
     configured = split_env_list("BDAG_START_SERVICES", "")
@@ -1264,6 +1476,8 @@ def docker_compose_start_command(*, include_pool: bool = True) -> list[str]:
         if not include_pool:
             return []
         return docker_compose_command("up", "-d")
+    if not include_pool:
+        return docker_compose_command("up", "-d", "--no-deps", *services)
     return docker_compose_command("up", "-d", *services)
 
 
@@ -1666,12 +1880,40 @@ class MinerAPIError(RuntimeError):
         self.body = body
 
 
+def configured_asic_lan_networks() -> list[ipaddress.IPv4Network]:
+    raw_values = [
+        os.environ.get("BDAG_ASIC_LAN_CIDRS", ""),
+        os.environ.get("BDAG_MINER_SCAN_TARGET", ""),
+    ]
+    networks: list[ipaddress.IPv4Network] = []
+    for raw in raw_values:
+        for token in re.split(r"[,;\s]+", str(raw or "")):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                if "/" in token:
+                    network = ipaddress.ip_network(token, strict=False)
+                else:
+                    network = ipaddress.ip_network(f"{token}/32", strict=False)
+            except ValueError:
+                continue
+            if network.version == 4:
+                networks.append(network)
+    return networks
+
+
 def is_lan_ipv4(value: str) -> bool:
     try:
         address = ipaddress.ip_address(value)
     except ValueError:
         return False
-    return address.version == 4 and (address.is_private or address.is_link_local) and not is_docker_bridge_ipv4(value)
+    if address.version != 4 or is_docker_bridge_ipv4(value):
+        return False
+    configured_networks = configured_asic_lan_networks()
+    if configured_networks:
+        return any(address in network for network in configured_networks)
+    return (address.is_private or address.is_link_local) and not is_docker_bridge_ipv4(value)
 
 
 def docker_bridge_networks() -> list[ipaddress.IPv4Network]:
@@ -1742,8 +1984,7 @@ def is_local_asic_earnings_miner(item: dict[str, Any]) -> bool:
     identity = str(item.get("identity_key") or item.get("device_id") or "").strip().lower()
     if identity.startswith("mac:"):
         mac = mac or normalize_mac(identity[4:])
-    device_type = str(item.get("device_type") or "").strip().lower()
-    return bool(mac) or device_type == "asic"
+    return bool(mac)
 
 
 def is_ipv4(value: str) -> bool:
@@ -2022,6 +2263,91 @@ def miner_identity_key(item: dict[str, Any]) -> str:
     return f"mac:{mac}" if mac else ""
 
 
+def asic_mac_override_entries(registry: dict[str, Any] | None = None) -> list[tuple[str, str]]:
+    """Return verified host-visible ASIC IP to MAC mappings for the pool.
+
+    The IP is only a current connection route into the ASIC. The durable lane
+    identity is the MAC, and rows without a proven MAC are excluded so the pool
+    never promotes an IP address into an ASIC identity.
+    """
+    if registry is None:
+        registry = read_miner_registry()
+    by_ip: dict[str, str] = {}
+    neighbors = read_neighbor_macs()
+    now_epoch = seconds_since_epoch()
+    miners = registry.get("miners") if isinstance(registry, dict) else []
+    for row in miners if isinstance(miners, list) else []:
+        if not isinstance(row, dict):
+            continue
+        ip = str(row.get("ip") or "")
+        if not is_lan_ipv4(ip) or is_docker_bridge_ipv4(ip):
+            continue
+        recent_pool_route = bool(
+            safe_int(row.get("last_pool_seen_epoch"), 0) > 0
+            and now_epoch - safe_int(row.get("last_pool_seen_epoch"), 0) <= POOL_CONNECTED_STALE_SECONDS
+        )
+        active_or_configured = bool(
+            row.get("managed")
+            or row.get("configured")
+            or row.get("last_configured_ok")
+            or row.get("connected")
+            or row.get("pool_active")
+            or row.get("work_pool_active")
+            or recent_pool_route
+        )
+        if not active_or_configured:
+            continue
+        mac = normalize_mac(neighbors.get(ip)) or normalize_mac(row.get("mac"))
+        if not mac:
+            continue
+        device_type = str(row.get("device_type") or "").strip().lower()
+        if device_type and device_type != "asic" and not bool(row.get("managed") or row.get("last_configured_ok")):
+            continue
+        by_ip[ip] = mac
+    return sorted(by_ip.items(), key=lambda item: ipaddress.ip_address(item[0]))
+
+
+def pool_asic_mac_overrides_value(registry: dict[str, Any] | None = None) -> str:
+    return ",".join(f"{ip}={mac}" for ip, mac in asic_mac_override_entries(registry))
+
+
+def pool_asic_mac_override_diagnostics(registry: dict[str, Any] | None = None) -> dict[str, Any]:
+    if registry is None:
+        registry = read_miner_registry()
+    override_entries = asic_mac_override_entries(registry)
+    override_ips = {ip for ip, _mac in override_entries}
+    unresolved: list[dict[str, Any]] = []
+    miners = registry.get("miners") if isinstance(registry, dict) else []
+    for row in miners if isinstance(miners, list) else []:
+        if not isinstance(row, dict):
+            continue
+        ip = str(row.get("ip") or "")
+        if not is_lan_ipv4(ip) or ip in override_ips or is_docker_bridge_ipv4(ip):
+            continue
+        device_type = str(row.get("device_type") or "").strip().lower()
+        if device_type != "asic" and not bool(row.get("managed") or row.get("last_configured_ok")):
+            continue
+        if normalize_mac(row.get("mac")):
+            continue
+        unresolved.append(
+            {
+                "ip": ip,
+                "display_label": miner_display_label(row),
+                "managed": bool(row.get("managed")),
+                "configured": bool(row.get("last_configured_ok") or row.get("configured")),
+                "issue": "asic_mac_unresolved",
+            }
+        )
+    return {
+        "override_value": ",".join(f"{ip}={mac}" for ip, mac in override_entries),
+        "override_count": len(override_entries),
+        "overrides": [{"ip": ip, "mac": mac, "lane_id": f"mac:{mac}"} for ip, mac in override_entries],
+        "unresolved_count": len(unresolved),
+        "unresolved": unresolved,
+        "identity_basis": "mac",
+    }
+
+
 def miner_display_label(item: dict[str, Any]) -> str:
     mac = normalize_mac(item.get("mac"))
     if not mac:
@@ -2101,8 +2427,8 @@ def prune_inactive_miner_records(miners: list[dict[str, Any]]) -> list[dict[str,
                 else MINER_REGISTRY_POOL_LOG_STALE_SECONDS
             )
             stale = not last_seen_epoch or now_epoch - last_seen_epoch > stale_limit
-            duplicate_old_asic_ip = ip in asic_known_ips and ip not in asic_current_ips
-            if stale or duplicate_old_asic_ip:
+            duplicate_old_asic_route = ip in asic_known_ips and ip not in asic_current_ips
+            if stale or duplicate_old_asic_route:
                 continue
         pruned.append(item)
     return pruned
@@ -2253,7 +2579,12 @@ def save_miner_registry(miners: list[dict[str, Any]]) -> dict[str, Any]:
             item["mac"] = mac
             item["device_id"] = f"mac:{mac}"
         item["ip_history"] = merge_unique_strings(item.get("ip_history"), ip)
-        key = f"mac:{mac}" if mac else f"ip:{ip}"
+        likely_asic = str(item.get("device_type") or "").lower() == "asic" or bool(
+            item.get("managed") or item.get("last_configured_ok")
+        )
+        if not mac and likely_asic:
+            continue
+        key = f"mac:{mac}" if mac else f"stratum:{ip}"
         by_identity[key] = merge_miner_records(by_identity[key], item) if key in by_identity else item
 
     cleaned = prune_inactive_miner_records(list(by_identity.values()))
@@ -2292,11 +2623,12 @@ def upsert_miner_registry(miners: list[dict[str, Any]], expected_pool_url: str |
         configured = any(str(pool.get("url", "")) == expected_url and str(pool.get("user", "")) == expected_user for pool in pools)
         item = existing_by_mac.get(mac) if mac else None
         item = dict(item or existing.get(ip, {"ip": ip}))
+        device_id = f"mac:{mac}" if mac else ""
         item.update(
             {
                 "ip": ip,
                 "mac": mac or item.get("mac", ""),
-                "device_id": f"mac:{mac}" if mac else item.get("device_id", ""),
+                "device_id": device_id,
                 "ip_history": merge_unique_strings(item.get("ip_history"), ip),
                 "device_type": "asic",
                 "discovered_by": "lan-scan",
@@ -2338,11 +2670,12 @@ def mark_configured_miners(results: list[dict[str, Any]], pool_url: str, worker_
         item = existing_by_mac.get(mac) if mac else None
         item = dict(item or existing.get(ip, {"ip": ip}))
         ok = result.get("status") in {"ok", "partial"} and not result.get("error")
+        device_id = f"mac:{mac}" if mac else ""
         item.update(
             {
                 "ip": ip,
                 "mac": mac or item.get("mac", ""),
-                "device_id": f"mac:{mac}" if mac else item.get("device_id", ""),
+                "device_id": device_id,
                 "ip_history": merge_unique_strings(item.get("ip_history"), ip),
                 "device_type": "asic",
                 "sources": merge_unique_strings(item.get("sources"), "configured"),
@@ -2787,7 +3120,9 @@ def configure_miners(
 
 
 def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
-    result = run(["docker", "inspect", *names], timeout=12)
+    requested_to_actual = {name: compose_container_name(name) for name in names}
+    actual_names = unique_names(list(requested_to_actual.values()))
+    result = run(["docker", "inspect", *actual_names], timeout=12)
     payload: list[dict[str, Any]] = []
     if result.ok:
         try:
@@ -2795,7 +3130,7 @@ def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
         except json.JSONDecodeError:
             payload = []
     else:
-        for name in names:
+        for name in actual_names:
             single = run(["docker", "inspect", name], timeout=8)
             if not single.ok:
                 continue
@@ -2804,11 +3139,33 @@ def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
             except json.JSONDecodeError:
                 continue
 
+    payload_names = {str(item.get("Name", "")).lstrip("/") for item in payload}
+    for requested, actual in list(requested_to_actual.items()):
+        if actual in payload_names:
+            continue
+        if _COMPOSE_CONTAINER_NAME_CACHE.get(requested) == actual:
+            _COMPOSE_CONTAINER_NAME_CACHE.pop(requested, None)
+        refreshed_actual = compose_container_name(requested)
+        requested_to_actual[requested] = refreshed_actual
+        if refreshed_actual in payload_names or refreshed_actual in actual_names:
+            continue
+        refreshed = run(["docker", "inspect", refreshed_actual], timeout=8)
+        actual_names.append(refreshed_actual)
+        if not refreshed.ok:
+            continue
+        try:
+            refreshed_payload = json.loads(refreshed.stdout)
+        except json.JSONDecodeError:
+            continue
+        payload.extend(refreshed_payload)
+        payload_names.update(str(item.get("Name", "")).lstrip("/") for item in refreshed_payload)
+
     inspected: dict[str, dict[str, Any]] = {}
     for item in payload:
         name = str(item.get("Name", "")).lstrip("/")
         state = item.get("State") or {}
         config = item.get("Config") or {}
+        labels = config.get("Labels") if isinstance(config.get("Labels"), dict) else {}
         network_settings = item.get("NetworkSettings") or {}
         networks = network_settings.get("Networks") or {}
         network_rows = {
@@ -2819,8 +3176,9 @@ def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
             for network_name, network_info in networks.items()
             if isinstance(network_info, dict)
         }
-        inspected[name] = {
+        record = {
             "name": name,
+            "runtime_name": name,
             "image": config.get("Image", ""),
             "running": bool(state.get("Running")),
             "status": state.get("Status", "unknown"),
@@ -2833,11 +3191,16 @@ def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
             "networks": network_rows,
             "network_ips": [row["ip_address"] for row in network_rows.values() if row.get("ip_address")],
         }
+        inspected[name] = record
+        service_label = str(labels.get("com.docker.compose.service") or "")
+        for requested, actual in requested_to_actual.items():
+            if actual == name or requested == service_label:
+                inspected[requested] = dict(record)
     return inspected
 
 
 def docker_top(name: str) -> str:
-    return run(["docker", "top", name], timeout=8).stdout
+    return run(["docker", "top", compose_container_name(name)], timeout=8).stdout
 
 
 def bdag_child_running_from_top(top: str) -> bool:
@@ -2855,7 +3218,7 @@ def bdag_child_running_from_top(top: str) -> bool:
 
 
 def docker_logs(name: str, lines: int = 160) -> str:
-    result = run(["docker", "logs", "-n", str(lines), name], timeout=12)
+    result = run(["docker", "logs", "-n", str(lines), compose_container_name(name)], timeout=12)
     return redact_sensitive_text(result.stdout + "\n" + result.stderr).strip()
 
 
@@ -3332,6 +3695,10 @@ RECOVERY_JOB_TO_CLIENT_RE = re.compile(
     r"resending current job to ((?:\d{1,3}\.){3}\d{1,3}):([0-9]+).*?\(job=([^\s)]+)"
 )
 CLIENT_ADDR_RE = re.compile(r"\bclient=((?:\d{1,3}\.){3}\d{1,3}):([0-9]+)")
+STRATUM_ACCEPT_RE = re.compile(
+    r"\[STRATUM\]\s+accepted client\s+addr=((?:\d{1,3}\.){3}\d{1,3}):([0-9]+).*?"
+    r"(?:\blane=mac:([0-9A-Fa-f:.-]+)|\bmac=([0-9A-Fa-f:.-]+))"
+)
 JOB_EXTRANONCE_RE = re.compile(r"_([0-9a-fA-F]{8})(?:\s|$)")
 SUBMIT_RE = re.compile(
     r"submit from\s+(?:client=((?:\d{1,3}\.){3}\d{1,3}):([0-9]+)\s+)?worker=([^\s]+)\s+job=([^\s]+)"
@@ -3355,10 +3722,7 @@ PROMETHEUS_LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:\\.|[^"\\])*)"'
 def mining_rpc_urls() -> list[tuple[str, str]]:
     urls: list[tuple[str, str]] = []
     for name in NODES:
-        ip = run(
-            ["docker", "inspect", name, "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"],
-            timeout=8,
-        ).stdout.strip()
+        ip = docker_container_ip(name)
         if valid_ipv4(ip):
             urls.append((name, f"http://{ip}:{NODE_MINING_RPC_PORT}"))
     return urls
@@ -3706,7 +4070,15 @@ def selected_backend_readiness_contract(
     source = selected_source_health if isinstance(selected_source_health, dict) else {}
     job_health = source_job_health if isinstance(source_job_health, dict) else {}
     checks: dict[str, bool] = {}
-    for key in ("node_mineable", "node_submit_ready", "node_p2p_mining_fresh", "healthy", "ws_connected"):
+    for key in (
+        "node_mineable",
+        "node_submit_ready",
+        "node_p2p_mining_fresh",
+        "healthy",
+        "ws_connected",
+        "ws_connected_observed",
+        "template_delivery_effective",
+    ):
         if key in source:
             checks[key] = bool(source.get(key))
     if source.get("node_last_template_build_error_blocking") is True:
@@ -3743,6 +4115,50 @@ def selected_backend_source_degradation(selected_source_degraded: bool, pool_has
         "hard": bool(degraded and not recent_paid),
         "advisory": bool(degraded and recent_paid),
     }
+
+
+def annotate_template_delivery_state(source_backend_health: dict[str, dict[str, Any]]) -> None:
+    for row in source_backend_health.values():
+        if not isinstance(row, dict):
+            continue
+        if "ws_connected" in row and "ws_connected_observed" not in row:
+            row["ws_connected_observed"] = bool(row.get("ws_connected"))
+        template_ages = [
+            value
+            for value in (
+                safe_float(row.get("template_age_seconds")),
+                safe_float(row.get("node_template_age_seconds")),
+                safe_float(row.get("node_last_template_build_age_seconds")),
+            )
+            if value is not None
+        ]
+        freshest_template_age = min(template_ages) if template_ages else None
+        template_fresh = bool(
+            freshest_template_age is not None
+            and freshest_template_age <= POOL_TEMPLATE_DELIVERY_FRESH_SECONDS
+        )
+        health_ready = bool(
+            row.get("healthy") is True
+            and row.get("node_mineable") is True
+            and row.get("node_submit_ready") is True
+            and row.get("node_p2p_mining_fresh") is not False
+        )
+        effective = bool(row.get("ws_connected") or (template_fresh and health_ready))
+        row["template_delivery_effective"] = effective
+        row["template_delivery_fresh_age_seconds"] = (
+            round(freshest_template_age, 3) if freshest_template_age is not None else None
+        )
+        if row.get("ws_connected"):
+            row["template_delivery_mode"] = "websocket"
+            row["template_delivery_reason"] = "backend reports websocket template stream connected"
+        elif effective:
+            row["template_delivery_mode"] = "fresh-template-fallback"
+            row["template_delivery_reason"] = (
+                "backend websocket metric is disconnected, but fresh templates and submit readiness are observed"
+            )
+        else:
+            row["template_delivery_mode"] = "polling-or-stale"
+            row["template_delivery_reason"] = "backend websocket metric is disconnected and fresh templates are not proven"
 
 
 def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -3916,6 +4332,7 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
         if source_backend_health and not template_backend_source:
             template_backend_source = endpoint
 
+    annotate_template_delivery_state(source_backend_health)
     payload["status"] = "ok" if any_ok else "unavailable"
     payload["error"] = "; ".join(errors[:3])
     payload["active_connections"] = active_connections
@@ -4010,22 +4427,38 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
             return bridge_alias_ip
         return ip
 
-    def identity_key_for_ip(ip: str) -> str:
+    def identity_key_for_route(ip: str, mac_hint: str = "") -> str:
         ip = canonical_client_ip(ip)
+        hinted_mac = normalize_mac(mac_hint)
+        if hinted_mac:
+            return f"mac:{hinted_mac}"
         _registered, mac = registered_for_ip(ip)
-        return f"mac:{mac}" if mac else f"ip:{ip}"
+        if mac:
+            return f"mac:{mac}"
+        if is_lan_ipv4(ip):
+            return ""
+        return f"stratum:{ip}"
 
     def client_identity_key(client: dict[str, str] | None) -> str:
         if not client:
             return ""
-        return str(client.get("identity_key") or identity_key_for_ip(str(client.get("ip") or "")))
+        return str(client.get("identity_key") or identity_key_for_route(str(client.get("ip") or "")))
 
-    def client_from_identity(ip: str, port: str = "") -> dict[str, str]:
+    def client_from_identity(ip: str, port: str = "", mac_hint: str = "") -> dict[str, str] | None:
         ip = canonical_client_ip(ip)
-        return {"ip": ip, "port": port, "identity_key": identity_key_for_ip(ip)}
+        mac = normalize_mac(mac_hint)
+        identity_key = identity_key_for_route(ip, mac_hint=mac)
+        if not identity_key:
+            return None
+        result = {"ip": ip, "port": port, "identity_key": identity_key}
+        if mac:
+            result["mac"] = mac
+        return result
 
     def note_worker_client(worker: str, ip: str, port: str = "", priority: int = 1) -> None:
         incoming = client_from_identity(ip, port)
+        if not incoming:
+            return
         current = worker_to_client.get(worker)
         current_priority = worker_client_priority.get(worker, -1)
         if current and client_identity_key(current) != client_identity_key(incoming):
@@ -4146,6 +4579,8 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         for worker in merge_unique_strings(registered.get("last_workers"), registered.get("expected_worker_user")):
             note_worker_client(worker, ip, priority=priority)
         client = client_from_identity(ip)
+        if not client:
+            continue
         for extranonce in merge_unique_strings(registered.get("last_pool_job_extranonces")):
             if re.fullmatch(r"[0-9a-fA-F]{8}", str(extranonce or "")):
                 suffix = str(extranonce).lower()
@@ -4161,11 +4596,20 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
     for suffix, client in registry_extranonce_clients.items():
         extranonce_to_client.setdefault(suffix, client)
 
-    def miner_for_ip(ip: str) -> dict[str, Any]:
+    def miner_for_ip(ip: str, mac_hint: str = "") -> dict[str, Any] | None:
         ip = canonical_client_ip(ip)
         registered, mac = registered_for_ip(ip)
-        identity_key = f"mac:{mac}" if mac else ""
-        storage_key = identity_key or f"ip:{ip}"
+        hinted_mac = normalize_mac(mac_hint)
+        if hinted_mac:
+            mac = hinted_mac
+            registered = registered_by_mac.get(mac, registered)
+        if mac:
+            identity_key = f"mac:{mac}"
+        elif is_lan_ipv4(ip):
+            return None
+        else:
+            identity_key = f"stratum:{ip}"
+        storage_key = identity_key or f"stratum:{ip}"
         item = miners.setdefault(
             storage_key,
             {
@@ -4173,10 +4617,12 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
                 "mac": mac,
                 "device_id": f"mac:{mac}" if mac else "",
                 "identity_key": identity_key,
+                "identity_unresolved": bool(is_lan_ipv4(ip) and not mac),
+                "identity_issue": "asic_mac_unresolved" if is_lan_ipv4(ip) and not mac else "",
                 "display_name": registered.get("display_name") or "",
                 "display_label": miner_display_label({**registered, "mac": mac}) if mac or registered else "",
                 "ip_history": merge_unique_strings(registered.get("ip_history"), ip),
-                "device_type": "stratum",
+                "device_type": "asic" if mac and is_lan_ipv4(ip) else "stratum",
                 "source": "pool-log",
                 "jobs": 0,
                 "submits": 0,
@@ -4231,10 +4677,28 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
             workers.append(worker)
 
     for line in strip_ansi(log).splitlines():
+        stratum_accept = STRATUM_ACCEPT_RE.search(line)
+        if stratum_accept:
+            ip, port, lane_mac, field_mac = stratum_accept.groups()
+            mac = normalize_mac(lane_mac or field_mac)
+            if not mac:
+                continue
+            client = client_from_identity(ip, port, mac_hint=mac)
+            if not client:
+                continue
+            item = miner_for_ip(ip, mac_hint=mac)
+            if item is None:
+                continue
+            note_port(item, port)
+            note_seen(item, line)
+            continue
+
         pushdif = PUSHDIF_RE.search(line)
         if pushdif:
             ip, port, difficulty = pushdif.groups()
             item = miner_for_ip(ip)
+            if item is None:
+                continue
             note_port(item, port)
             item["last_difficulty"] = difficulty
             note_seen(item, line, "last_job_at")
@@ -4245,11 +4709,15 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
             ip, port, worker = auth.groups()
             note_worker_client(worker, ip, port=port, priority=1)
             legacy_client = client_from_identity(ip, port)
+            if not legacy_client:
+                continue
             if is_docker_bridge_pool_log_client(ip):
                 legacy_client = client_for_worker(worker) or legacy_client
             remember_recent_worker_client(worker, legacy_client)
             note_legacy_extranonce_client(legacy_client)
             item = miner_for_ip(ip)
+            if item is None:
+                continue
             note_port(item, port)
             note_worker(item, worker)
             note_seen(item, line)
@@ -4259,8 +4727,12 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         if subscribe:
             ip, port, extranonce = subscribe.groups()
             client = client_from_identity(ip, port)
+            if not client:
+                continue
             extranonce_to_client[extranonce.lower()] = client
             item = miner_for_ip(ip)
+            if item is None:
+                continue
             note_port(item, port)
             note_seen(item, line)
             continue
@@ -4268,8 +4740,13 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         notify = JOB_NOTIFY_DETAIL_RE.search(line)
         if notify:
             ip, port, job_id = notify.groups()
-            note_job_client(job_id, {"ip": ip, "port": port})
+            client = client_from_identity(ip, port)
+            if not client:
+                continue
+            note_job_client(job_id, client)
             item = miner_for_ip(ip)
+            if item is None:
+                continue
             note_port(item, port)
             item["jobs"] += 1
             note_seen(item, line, "last_job_at")
@@ -4278,8 +4755,13 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         legacy_notify = JOB_NOTIFY_RE.search(line)
         if legacy_notify:
             ip, job_id = legacy_notify.groups()
-            note_job_client(job_id, {"ip": ip, "port": ""})
+            client = client_from_identity(ip, "")
+            if not client:
+                continue
+            note_job_client(job_id, client)
             item = miner_for_ip(ip)
+            if item is None:
+                continue
             item["jobs"] += 1
             note_seen(item, line, "last_job_at")
             continue
@@ -4287,9 +4769,13 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
         recovery_resend = RECOVERY_JOB_TO_CLIENT_RE.search(line)
         if recovery_resend:
             ip, port, job_id = recovery_resend.groups()
-            client = {"ip": ip, "port": port}
+            client = client_from_identity(ip, port)
+            if not client:
+                continue
             note_job_client(job_id, client)
             item = miner_for_ip(ip)
+            if item is None:
+                continue
             note_port(item, port)
             note_item_extranonce(item, job_id)
             item["jobs"] += 1
@@ -4307,6 +4793,8 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
                 continue
             note_job_client(job_id, client)
             item = miner_for_ip(client["ip"])
+            if item is None:
+                continue
             note_port(item, client.get("port"))
             note_worker(item, worker)
             item["submits"] += submit_line_weight(line)
@@ -4328,6 +4816,9 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
                 continue
             note_job_client(job_id, client)
             item = miner_for_ip(client["ip"])
+            if item is None:
+                unattributed_valid_shares += valid_share_line_weight(line)
+                continue
             note_port(item, client.get("port"))
             note_item_extranonce(item, job_id)
             item["shares"] += valid_share_line_weight(line)
@@ -4352,6 +4843,9 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
                 unattributed_blocks += 1
                 continue
             item = miner_for_ip(client["ip"])
+            if item is None:
+                unattributed_blocks += 1
+                continue
             note_port(item, client.get("port"))
             note_item_extranonce(item, job_id)
             item["blocks_found"] += 1
@@ -4496,7 +4990,10 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
             {
                 "ip": ip,
                 "mac": mac or item.get("mac", ""),
-                "device_id": f"mac:{mac}" if mac else item.get("device_id", ""),
+                "device_id": f"mac:{mac}" if mac else "",
+                "identity_key": f"mac:{mac}" if mac else "",
+                "identity_unresolved": bool(is_lan_ipv4(ip) and not mac),
+                "identity_issue": "asic_mac_unresolved" if is_lan_ipv4(ip) and not mac else "",
                 "ip_history": merge_unique_strings(item.get("ip_history"), previous_ip, ip),
                 "sources": merge_unique_strings(item.get("sources"), "pool-log", "asic-api" if discovered else None),
                 "auto_discovered": bool(item.get("auto_discovered", item.get("discovered_by") == "pool-log")),
@@ -4536,6 +5033,8 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
         elif last_share_log_at and "last_share_epoch" not in item:
             item["last_share_epoch"] = now_epoch
 
+        if mac and previous_ip and previous_ip != ip:
+            existing.pop(previous_ip, None)
         existing[ip] = item
         if mac:
             existing_by_mac[mac] = item
@@ -4574,6 +5073,19 @@ def collect_miner_health() -> dict[str, Any]:
     health: list[dict[str, Any]] = []
     failures: list[str] = []
     warnings: list[str] = []
+    asic_identity = pool_asic_mac_override_diagnostics(registry)
+    unresolved_asic_identity = asic_identity.get("unresolved") or []
+    if unresolved_asic_identity:
+        sample = ", ".join(
+            str(item.get("ip") or "")
+            for item in unresolved_asic_identity[:4]
+            if isinstance(item, dict) and item.get("ip")
+        )
+        suffix = f"; +{len(unresolved_asic_identity) - 4} more" if len(unresolved_asic_identity) > 4 else ""
+        warnings.append(
+            "ASIC MAC identity unresolved for observed LAN miner route(s): "
+            f"{sample}{suffix}; IP addresses remain observations only and are not used as ASIC lanes"
+        )
     now_epoch = seconds_since_epoch()
 
     for registered in miners:
@@ -4796,8 +5308,10 @@ def collect_miner_health() -> dict[str, Any]:
             {
                 "ip": ip,
                 "mac": mac,
-                "device_id": f"mac:{mac}" if mac else str(registered.get("device_id") or ""),
+                "device_id": f"mac:{mac}" if mac else "",
                 "identity_key": miner_identity_key({**registered, "mac": mac}),
+                "identity_unresolved": bool(is_lan_ipv4(ip) and not mac and device_type == "asic"),
+                "identity_issue": "asic_mac_unresolved" if is_lan_ipv4(ip) and not mac and device_type == "asic" else "",
                 "display_name": registered.get("display_name") or "",
                 "display_label": miner_display_label({**registered, "mac": mac}),
                 "managed": managed,
@@ -4868,11 +5382,9 @@ def collect_miner_health() -> dict[str, Any]:
         for item in health
         if item.get("relevant_for_work_share")
         and (item.get("configured") or item.get("managed"))
+        and miner_identity_key(item)
     ]
-    expected_lane_ids = {
-        str(item.get("identity_key") or item.get("device_id") or item.get("mac") or item.get("ip") or "")
-        for item in expected_lane_rows
-    }
+    expected_lane_ids = {miner_identity_key(item) for item in expected_lane_rows}
     expected_lane_count = len(expected_lane_rows)
     expected_lane_percent = Decimal("100") / Decimal(expected_lane_count) if expected_lane_count > 0 else Decimal("0")
     imbalanced_lanes: list[str] = []
@@ -4881,7 +5393,7 @@ def collect_miner_health() -> dict[str, Any]:
         include_in_work_percent = bool(item.get("relevant_for_work_share") or total_work_includes_all_rows)
         if total_work > 0 and share_work_int > 0 and include_in_work_percent:
             item["work_percent"] = percent_to_str((Decimal(share_work_int) / Decimal(total_work)) * Decimal("100"))
-        lane_id = str(item.get("identity_key") or item.get("device_id") or item.get("mac") or item.get("ip") or "")
+        lane_id = miner_identity_key(item)
         expected_lane = bool(lane_id and lane_id in expected_lane_ids)
         item["expected_work_lane"] = expected_lane
         item["expected_work_percent"] = percent_to_str(expected_lane_percent) if expected_lane_count > 0 and expected_lane else "0.00"
@@ -4923,6 +5435,7 @@ def collect_miner_health() -> dict[str, Any]:
             "expected_work_percent": percent_to_str(expected_lane_percent) if expected_lane_count > 0 else "0.00",
             "imbalanced_count": len(imbalanced_lanes),
         },
+        "asic_identity": asic_identity,
         "failures": failures,
         "warnings": warnings,
         "miners": health,
@@ -5035,6 +5548,7 @@ def build_catchup_policy(
     selected_source_health: Mapping[str, Any] | None = None,
     host_pressure: Mapping[str, Any] | None = None,
     mining_ready: bool | None = None,
+    pool_has_recent_paid_work: bool = False,
 ) -> dict[str, Any]:
     lag = max_catchup_lag_blocks(sync_progress, node_details, selected_source_health)
     status = str(sync_progress.get("status") or "").lower()
@@ -5048,15 +5562,19 @@ def build_catchup_policy(
         io_pressure_reasons
         and backend_unready_reasons
         and not mining_ready_for_policy
+        and not pool_has_recent_paid_work
     )
+    io_pressure_lag_active = bool(peer_catchup and lag >= CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS)
     io_pressure_active = bool(
         CATCHUP_IO_PRESSURE_PAUSE_ENABLED
         and io_pressure_reasons
         and not mining_ready_for_policy
-        and ((peer_catchup and lag >= CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS) or backend_unready_under_pressure)
+        and io_pressure_lag_active
     )
     lag_threshold_active = bool(lag > CATCHUP_PAUSE_THRESHOLD_BLOCKS and (status != "synced" or not mining_ready_for_policy))
-    active = bool(CATCHUP_PAUSE_ENABLED and (io_pressure_active or lag_threshold_active))
+    pause_candidate_active = bool(io_pressure_active or lag_threshold_active)
+    recent_paid_work_suppressed = bool(pool_has_recent_paid_work and pause_candidate_active)
+    active = bool(CATCHUP_PAUSE_ENABLED and pause_candidate_active and not recent_paid_work_suppressed)
     pool_running = bool((containers.get(POOL_CONTAINER) or {}).get("running")) if isinstance(containers, Mapping) else False
     trigger = ("io_pressure" if io_pressure_active else ("lag_threshold" if lag_threshold_active else "")) if active else ""
     summary = (
@@ -5122,6 +5640,8 @@ def build_catchup_policy(
         "backend_unready_under_pressure": backend_unready_under_pressure,
         "backend_unready_reasons": backend_unready_reasons,
         "lag_threshold_active": lag_threshold_active,
+        "pool_has_recent_paid_work": bool(pool_has_recent_paid_work),
+        "recent_paid_work_suppressed": recent_paid_work_suppressed,
         "pool_pause_recommended": active,
         "pool_pause_active": bool(active and not pool_running),
         "pool_running": pool_running,
@@ -5784,9 +6304,22 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         pool_has_recent_paid_work,
     )
     pool["selected_backend_readiness_contract"] = readiness_contract
+    source_advisory_suppressed = bool(
+        connected_miners > 0
+        and pool_has_recent_paid_work
+        and (
+            readiness_contract.get("contradiction")
+            or source_selected_backend_advisory_degraded
+            or source_health_transient_degraded
+            or pool_initial_download_transient
+        )
+    )
+    pool["source_health_advisory_suppressed"] = source_advisory_suppressed
+    if source_advisory_suppressed:
+        pool["source_health_suppressed_reasons"] = selected_source_unready_reasons
     if pool_initial_download_needs_repair:
         add_sync_warning("pool is waiting for node sync to finish")
-    elif pool_initial_download_transient:
+    elif pool_initial_download_transient and not source_advisory_suppressed:
         add_maintenance_warning(
             "pool saw a transient initial-download template response while accepted block submission stayed fresh"
         )
@@ -5794,7 +6327,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         ledger_warnings = [str(item) for item in pool_loss_ledger.get("warnings", []) if item]
         if ledger_warnings:
             add_maintenance_warning("pool efficiency loss ledger: " + "; ".join(ledger_warnings[:3]))
-    if connected_miners > 0 and readiness_contract.get("contradiction"):
+    if connected_miners > 0 and readiness_contract.get("contradiction") and not source_advisory_suppressed:
         backend = readiness_contract.get("selected_backend") or "selected backend"
         checks = readiness_contract.get("checks") if isinstance(readiness_contract.get("checks"), dict) else {}
         add_maintenance_warning(
@@ -5804,7 +6337,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         )
     if connected_miners > 0 and source_job_hard_degraded:
         add_sync_warning("pool source job health reports not-ok and accepted block submission is stale")
-    elif connected_miners > 0 and source_job_health_ok is False:
+    elif connected_miners > 0 and source_job_health_ok is False and not source_advisory_suppressed:
         add_maintenance_warning("pool source job health is advisory-degraded while accepted block submission remains fresh")
     if connected_miners > 0 and source_selected_backend_hard_degraded:
         backend = pool.get("selected_backend") or "selected backend"
@@ -5812,13 +6345,13 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             f"pool source health says {backend} is not ready for mining "
             f"({', '.join(selected_source_unready_reasons)})"
         )
-    elif connected_miners > 0 and source_selected_backend_advisory_degraded:
+    elif connected_miners > 0 and source_selected_backend_advisory_degraded and not source_advisory_suppressed:
         backend = pool.get("selected_backend") or "selected backend"
         add_maintenance_warning(
             f"pool source health says {backend} is degraded, but accepted block submission remains fresh "
             f"({', '.join(selected_source_unready_reasons)})"
         )
-    elif connected_miners > 0 and source_health_transient_degraded:
+    elif connected_miners > 0 and source_health_transient_degraded and not source_advisory_suppressed:
         backend = pool.get("selected_backend") or "selected backend"
         add_maintenance_warning(f"pool source health says {backend} is degraded, but accepted block submission remains fresh")
     if connected_miners > 0 and pool.get("share_stall"):
@@ -6025,9 +6558,9 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             sync_health["node_importing_nodes"] = active_import_nodes
     catchup_mining_ready = bool(
         sync_progress.get("status") == "synced"
-        and not selected_source_unready_reasons
+        and (not selected_source_unready_reasons or pool_has_recent_paid_work)
         and source_job_health_ok is not False
-        and not pool.get("initial_download")
+        and not pool_initial_download_needs_repair
     )
     catchup_policy = build_catchup_policy(
         sync_progress,
@@ -6036,6 +6569,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         selected_source_health,
         host_pressure,
         mining_ready=catchup_mining_ready,
+        pool_has_recent_paid_work=pool_has_recent_paid_work,
     )
     if catchup_policy.get("active"):
         pool_down_message = f"{POOL_CONTAINER} is not running"
@@ -6279,6 +6813,146 @@ def _sync_chain_rpc_latency_ms(sync_progress: dict[str, Any]) -> float | None:
     return max(values) if values else None
 
 
+def _sync_priority_add_lag(values: list[int], value: Any) -> None:
+    parsed = safe_int(value, -1)
+    if parsed >= 0:
+        values.append(parsed)
+
+
+def _sync_priority_block_gap(info: Mapping[str, Any]) -> int:
+    current = safe_int(
+        info.get("evm_block_count")
+        if info.get("evm_block_count") is not None
+        else info.get("current_block")
+        if info.get("current_block") is not None
+        else info.get("latest_block"),
+        -1,
+    )
+    highest = safe_int(
+        info.get("evm_reference_block_count")
+        if info.get("evm_reference_block_count") is not None
+        else info.get("highest_block"),
+        -1,
+    )
+    if current >= 0 and highest >= current:
+        return highest - current
+    return -1
+
+
+def _sync_priority_lag_blocks(payload: Mapping[str, Any], sync_progress: Mapping[str, Any]) -> int:
+    values: list[int] = []
+    policy = payload.get("catchup_policy") if isinstance(payload.get("catchup_policy"), Mapping) else {}
+    if isinstance(policy, Mapping):
+        _sync_priority_add_lag(values, policy.get("lag_blocks"))
+    for key in (
+        "remaining_blocks",
+        "peer_ahead_blocks",
+        "evm_lag_to_reference",
+        "evm_lag_to_chain",
+        "reference_lag_blocks",
+        "chain_tip_lag_blocks",
+    ):
+        _sync_priority_add_lag(values, sync_progress.get(key))
+    _sync_priority_add_lag(values, _sync_priority_block_gap(sync_progress))
+    for group in (sync_progress.get("nodes"), payload.get("nodes")):
+        if not isinstance(group, Mapping):
+            continue
+        for info in group.values():
+            if not isinstance(info, Mapping):
+                continue
+            for key in (
+                "remaining_blocks",
+                "peer_ahead_blocks",
+                "evm_lag_to_reference",
+                "evm_lag_to_chain",
+                "reference_lag_blocks",
+                "node_p2p_best_peer_lead_blocks",
+            ):
+                _sync_priority_add_lag(values, info.get(key))
+            alignment = info.get("public_chain_alignment")
+            if isinstance(alignment, Mapping):
+                _sync_priority_add_lag(values, alignment.get("reference_lag_blocks"))
+            _sync_priority_add_lag(values, _sync_priority_block_gap(info))
+    return max(values) if values else -1
+
+
+def sync_priority_decision(task: str, status: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return whether chain catch-up should preempt optional local work."""
+    if not SYNC_PRIORITY_ENABLED:
+        return {
+            "enabled": False,
+            "active": False,
+            "task": task,
+            "reasons": [],
+            "lag_blocks": -1,
+            "min_lag_blocks": SYNC_PRIORITY_MIN_LAG_BLOCKS,
+            "defer_dashboard_samplers": False,
+        }
+
+    try:
+        payload = status if isinstance(status, dict) else collect_status_cached(include_logs=False)
+    except Exception as exc:  # noqa: BLE001 - priority probing must not take down callers.
+        return {
+            "enabled": True,
+            "active": False,
+            "task": task,
+            "reasons": [],
+            "lag_blocks": -1,
+            "min_lag_blocks": SYNC_PRIORITY_MIN_LAG_BLOCKS,
+            "defer_dashboard_samplers": False,
+            "error": str(exc),
+        }
+
+    sync_progress = payload.get("sync_progress") if isinstance(payload.get("sync_progress"), dict) else {}
+    host_pressure = payload.get("host_pressure") if isinstance(payload.get("host_pressure"), dict) else {}
+    catchup_policy = payload.get("catchup_policy") if isinstance(payload.get("catchup_policy"), dict) else {}
+    sync_status = str(sync_progress.get("status") or "unknown").strip().lower()
+    mode = str(payload.get("mode") or "unknown").strip().lower()
+    lag_blocks = _sync_priority_lag_blocks(payload, sync_progress)
+    payload_nodes = payload.get("nodes") if isinstance(payload.get("nodes"), Mapping) else {}
+    importing = sync_status == "syncing" or any(
+        isinstance(info, Mapping) and bool(info.get("importing"))
+        for info in payload_nodes.values()
+    )
+    io_pressure_reasons = catchup_policy.get("io_pressure_reasons")
+    if not isinstance(io_pressure_reasons, list):
+        io_pressure_reasons = catchup_io_pressure_reasons(host_pressure)
+
+    reasons: list[str] = []
+    if bool(catchup_policy.get("active")):
+        reasons.append(f"catchup_policy_active:{catchup_policy.get('trigger') or 'active'}")
+    if mode == "catchup_pause":
+        reasons.append("stack_mode=catchup_pause")
+    if sync_status == "syncing":
+        lag_text = "unknown" if lag_blocks < 0 else str(lag_blocks)
+        reasons.append(f"sync_status=syncing lag={lag_text}")
+    if lag_blocks >= SYNC_PRIORITY_MIN_LAG_BLOCKS and sync_status != "synced":
+        reasons.append(f"lag_blocks={lag_blocks}>={SYNC_PRIORITY_MIN_LAG_BLOCKS}")
+    if importing and lag_blocks >= SYNC_PRIORITY_MIN_LAG_BLOCKS:
+        reasons.append("node_importing_while_behind")
+    if bool(catchup_policy.get("io_pressure_active")) and lag_blocks >= SYNC_PRIORITY_MIN_LAG_BLOCKS:
+        reasons.append("catchup_io_pressure_active")
+    elif io_pressure_reasons and importing and lag_blocks >= SYNC_PRIORITY_MIN_LAG_BLOCKS:
+        reasons.append("catchup_io_pressure:" + ",".join(str(item) for item in io_pressure_reasons[:3]))
+
+    active = bool(reasons)
+    return {
+        "enabled": True,
+        "active": active,
+        "task": task,
+        "reasons": reasons,
+        "lag_blocks": lag_blocks,
+        "min_lag_blocks": SYNC_PRIORITY_MIN_LAG_BLOCKS,
+        "sync_status": sync_status,
+        "mode": mode,
+        "importing": importing,
+        "catchup_policy_active": bool(catchup_policy.get("active")),
+        "io_pressure_reasons": io_pressure_reasons,
+        "defer_dashboard_samplers": bool(active and SYNC_PRIORITY_DEFER_DASHBOARD_SAMPLERS),
+        "shared_status_cache": payload.get("shared_status_cache"),
+    }
+
+
 def _background_task_selected(task: str, selected: set[str]) -> bool:
     normalized = str(task or "").strip()
     return "*" in selected or normalized in selected
@@ -6288,6 +6962,8 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
     """Return whether optional background work should run on this tick."""
     task_is_lazy = _background_task_selected(task, BACKGROUND_MAINTENANCE_LAZY_TASKS)
     pool_ready_required = _background_task_selected(task, BACKGROUND_MAINTENANCE_POOL_READY_TASKS)
+    sync_priority_exempt = _background_task_selected(task, BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS)
+    io_pressure_exempt = _background_task_selected(task, BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS)
     profile = host_runtime_profile()
     if not BACKGROUND_MAINTENANCE_BACKOFF_ENABLED:
         return {
@@ -6298,16 +6974,22 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
             "host_profile": profile,
             "task_is_lazy": task_is_lazy,
             "pool_ready_required": pool_ready_required,
+            "sync_priority_exempt": sync_priority_exempt,
+            "io_pressure_exempt": io_pressure_exempt,
         }
 
     payload = status if isinstance(status, dict) else collect_status_cached(include_logs=False)
     sync_progress = payload.get("sync_progress") if isinstance(payload.get("sync_progress"), dict) else {}
     host_pressure = payload.get("host_pressure") if isinstance(payload.get("host_pressure"), dict) else {}
     reasons: list[str] = []
+    sync_priority = sync_priority_decision(task, payload)
+    if sync_priority.get("active") and not sync_priority_exempt:
+        priority_reason = "; ".join(str(item) for item in sync_priority.get("reasons", []) if item)
+        reasons.append(f"sync priority active: {priority_reason or 'chain catch-up needs host capacity'}")
     sync_status = str(sync_progress.get("status") or "unknown")
     remaining_blocks = _sync_remaining_blocks(sync_progress)
     chain_rpc_latency_ms = _sync_chain_rpc_latency_ms(sync_progress)
-    if sync_status == "syncing" and (
+    if sync_status == "syncing" and not sync_priority_exempt and (
         remaining_blocks < 0 or remaining_blocks > BACKGROUND_MAINTENANCE_SYNC_BACKOFF_BLOCKS
     ):
         remaining_text = "unknown" if remaining_blocks < 0 else str(remaining_blocks)
@@ -6318,21 +7000,21 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
         )
 
     iowait = safe_float(host_pressure.get("iowait_percent"))
-    if bool(host_pressure.get("iowait_warning_active")):
+    if bool(host_pressure.get("iowait_warning_active")) and not io_pressure_exempt:
         reasons.append("host IO wait warning is active")
-    elif iowait is not None and iowait >= BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT:
+    elif iowait is not None and not io_pressure_exempt and iowait >= BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT:
         reasons.append(
             f"host iowait {iowait:.2f}% >= {BACKGROUND_MAINTENANCE_IOWAIT_WARN_PERCENT:.2f}%"
         )
 
     io_some = safe_float(host_pressure.get("io_some_avg10"))
-    if io_some is not None and io_some >= BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN:
+    if io_some is not None and not io_pressure_exempt and io_some >= BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN:
         reasons.append(
             f"host io pressure avg10 {io_some:.2f} >= {BACKGROUND_MAINTENANCE_IO_SOME_AVG10_WARN:.2f}"
         )
 
     io_full = safe_float(host_pressure.get("io_full_avg10"))
-    if io_full is not None and io_full >= BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN:
+    if io_full is not None and not io_pressure_exempt and io_full >= BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN:
         reasons.append(
             f"host io full pressure avg10 {io_full:.2f} >= {BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN:.2f}"
         )
@@ -6342,7 +7024,29 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
         reasons.append(
             f"host cpu pressure avg10 {cpu_some:.2f} >= {BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN:.2f}"
         )
-    if chain_rpc_latency_ms is not None and chain_rpc_latency_ms >= BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS:
+    memory_available_percent = safe_float(host_pressure.get("memory_available_percent"))
+    if bool(host_pressure.get("memory_warning_active")):
+        reasons.append("host RAM available warning is active")
+    elif (
+        memory_available_percent is not None
+        and memory_available_percent <= BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT
+    ):
+        reasons.append(
+            "host RAM available "
+            f"{memory_available_percent:.2f}% <= {BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT:.2f}%"
+        )
+    swap_used_percent = safe_float(host_pressure.get("swap_used_percent"))
+    if bool(host_pressure.get("swap_warning_active")):
+        reasons.append("host swap use warning is active")
+    elif swap_used_percent is not None and swap_used_percent >= BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT:
+        reasons.append(
+            f"host swap used {swap_used_percent:.2f}% >= {BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT:.2f}%"
+        )
+    if (
+        chain_rpc_latency_ms is not None
+        and not sync_priority_exempt
+        and chain_rpc_latency_ms >= BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS
+    ):
         reasons.append(
             f"chain RPC latency {chain_rpc_latency_ms:.1f}ms >= {BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS:.1f}ms"
         )
@@ -6382,12 +7086,18 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
         "io_full_avg10_warn": BACKGROUND_MAINTENANCE_IO_FULL_AVG10_WARN,
         "cpu_some_avg10": cpu_some,
         "cpu_some_avg10_warn": BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN,
+        "memory_available_percent": memory_available_percent,
+        "memory_available_warn_percent": BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT,
+        "swap_used_percent": swap_used_percent,
+        "swap_used_warn_percent": BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT,
         "chain_rpc_latency_ms": chain_rpc_latency_ms,
         "chain_rpc_latency_warn_ms": BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS,
         "loadavg_1m": loadavg_1m,
         "loadavg_1m_warn": loadavg_warn if task_is_lazy else None,
         "task_is_lazy": task_is_lazy,
         "pool_ready_required": pool_ready_required,
+        "sync_priority_exempt": sync_priority_exempt,
+        "io_pressure_exempt": io_pressure_exempt,
         "host_profile": profile,
         "adaptive_concurrency": adaptive_worker_budgets({**host_pressure, "chain_rpc_latency_ms": chain_rpc_latency_ms}),
         "shared_status_cache": payload.get("shared_status_cache"),
@@ -6396,7 +7106,20 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
 
 def pool_db_json(sql: str) -> Any:
     result = run(
-        ["docker", "exec", POOL_DB_CONTAINER, "psql", "-U", POOL_DB_USER, "-d", POOL_DB_NAME, "-t", "-A", "-c", sql],
+        [
+            "docker",
+            "exec",
+            compose_container_name(POOL_DB_CONTAINER),
+            "psql",
+            "-U",
+            POOL_DB_USER,
+            "-d",
+            POOL_DB_NAME,
+            "-t",
+            "-A",
+            "-c",
+            sql,
+        ],
         timeout=20,
     )
     if not result.ok:
@@ -6536,6 +7259,16 @@ def named_urls_from_env(name: str, defaults: list[tuple[str, str]]) -> list[tupl
     return urls
 
 
+def named_url_from_env(name: str, default_source: str) -> list[tuple[str, str]]:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return []
+    if "=" in value:
+        source, url = value.split("=", 1)
+        return [(source.strip() or default_source, url.strip())]
+    return [(default_source, value)]
+
+
 def valid_url(value: str) -> bool:
     if not value or any(ord(ch) < 32 or ch.isspace() for ch in value):
         return False
@@ -6558,23 +7291,23 @@ def valid_ipv4(value: str) -> bool:
         return False
 
 
-def node_rpc_urls() -> list[tuple[str, str]]:
-    configured = named_urls_from_env("BDAG_NODE_RPC_URLS", [])
+def node_rpc_endpoint() -> tuple[str, str] | None:
+    configured = named_url_from_env("BDAG_NODE_RPC_URL", NODE_SERVICE)
     if configured:
-        valid_configured = [
-            (source.strip() or "configured-node", url.strip())
-            for source, url in configured
-            if valid_url(url.strip())
-        ]
-        if valid_configured:
-            return valid_configured
+        source, url = configured[0]
+        url = url.strip()
+        if valid_url(url):
+            return source.strip() or NODE_SERVICE, url
 
-    return mining_rpc_urls()
+    for source, url in mining_rpc_urls():
+        if valid_url(url):
+            return source, url
+    return None
 
 
 def docker_container_ip(name: str) -> str:
     ip = run(
-        ["docker", "inspect", name, "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"],
+        ["docker", "inspect", compose_container_name(name), "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"],
         timeout=8,
     ).stdout.strip()
     return ip if valid_ipv4(ip) else ""
@@ -6621,7 +7354,7 @@ def global_evm_rpc_urls() -> list[tuple[str, str]]:
 def global_chain_rpc_urls() -> list[tuple[str, str]]:
     configured = (
         named_urls_from_env("BDAG_GLOBAL_CHAIN_RPC_URLS", [])
-        or named_urls_from_env("BDAG_NODE_RPC_URLS", [])
+        or named_url_from_env("BDAG_NODE_RPC_URL", NODE_SERVICE)
     )
     urls: list[tuple[str, str]] = []
     for source, url in configured:
@@ -7059,11 +7792,17 @@ def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int,
     sample_heights = alignment.get("sample_heights") if isinstance(alignment.get("sample_heights"), list) else []
     required_samples = min(EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES, max(1, len(sample_heights)))
     hash_mismatch_count = safe_int(alignment.get("hash_mismatch_count"), 0)
+    reference_lag_below_unsafe_threshold = bool(
+        external_url
+        and alignment.get("enabled")
+        and reference_lag < EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG
+        and not snapshot["public_chain_diverged"]
+    )
     safety_safe = bool(
         external_url
         and alignment.get("enabled")
-        and compared_count >= required_samples
         and not snapshot["public_chain_diverged"]
+        and (reference_lag_below_unsafe_threshold or compared_count >= required_samples)
     )
     if safety_safe:
         if hash_mismatch_count:
@@ -7071,6 +7810,8 @@ def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int,
                 "local/public EVM miner samples align and the public reference is not materially ahead; "
                 "block-hash mismatch is retained as diagnostic only for this node build"
             )
+        elif reference_lag_below_unsafe_threshold:
+            safety_reason = str(alignment.get("reason") or "public EVM reference lag is below the unsafe threshold")
         else:
             safety_reason = "local EVM headers match an independent public reference at sampled heights"
     elif not external_url:
@@ -7329,14 +8070,15 @@ def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TI
 
 
 def collect_sync_progress() -> dict[str, Any]:
-    urls = node_rpc_urls()
-    if not urls:
+    endpoint = node_rpc_endpoint()
+    if endpoint is None:
         return {
-            **unknown_sync_progress("nodes", "no node RPC URLs available"),
+            **unknown_sync_progress(NODE_SERVICE, "node RPC URL unavailable"),
             "nodes": {node: unknown_sync_progress(node, "node RPC URL unavailable") for node in NODES},
         }
 
-    per_node = {source: node_sync_progress(source, url) for source, url in urls}
+    source, url = endpoint
+    per_node = {source: node_sync_progress(source, url)}
     known = [item for item in per_node.values() if item.get("status") != "unknown"]
     syncing = [item for item in known if item.get("status") == "syncing"]
     if syncing:
@@ -8228,7 +8970,9 @@ def miner_history_merge_key(miner: dict[str, Any]) -> str:
     if mac:
         return f"mac:{mac}"
     identity = str(miner.get("identity_key") or miner.get("device_id") or "").strip().lower()
-    return identity or str(miner.get("ip") or "")
+    if identity.startswith("mac:") or identity.startswith("wallet:"):
+        return identity
+    return identity
 
 
 def nearest_rebuild_epoch(epoch: float, rebuild_epochs: list[float], latest_epoch: float) -> float | None:
@@ -8615,8 +9359,9 @@ def _parse_proc_net_peer_ips(text: str) -> list[str]:
 
 def container_peer_ips(name: str) -> list[str]:
     ips: list[str] = []
+    container_name = compose_container_name(name)
     for path in ("/proc/net/tcp", "/proc/net/tcp6"):
-        result = run(["docker", "exec", name, "cat", path], timeout=8)
+        result = run(["docker", "exec", container_name, "cat", path], timeout=8)
         for ip in _parse_proc_net_peer_ips(result.stdout):
             if ip not in ips:
                 ips.append(ip)
@@ -9359,7 +10104,9 @@ def miner_worker_identity_score(miner: dict[str, Any]) -> tuple[int, int, int, i
 def local_worker_identity_for_shared_miners(miners: list[dict[str, Any]]) -> dict[str, Any]:
     identities: dict[str, dict[str, Any]] = {}
     for miner in miners:
-        identity = miner_identity_key(miner) or f"ip:{miner.get('ip', '')}"
+        identity = miner_identity_key(miner)
+        if not identity:
+            continue
         identities.setdefault(identity, miner)
     unique_miners = list(identities.values())
     if len(unique_miners) <= 1:
@@ -10894,7 +11641,9 @@ def collect_miner_earnings_estimates(credit_totals: dict[str, Any], price: dict[
         activity_mac = normalize_mac((registered or {}).get("mac")) or normalize_mac(item.get("mac"))
         if is_docker_bridge_pool_log_client(activity_ip, activity_mac):
             continue
-        identity = str(item.get("identity_key") or miner_identity_key({**registered, **item}) or f"ip:{activity_ip}")
+        identity = str(item.get("identity_key") or miner_identity_key({**registered, **item}))
+        if not identity:
+            continue
         for worker in item.get("workers", []):
             worker_to_identities.setdefault(str(worker), set()).add(identity)
     total_work = sum(int(item.get("share_work", 0) or 0) for item in earnings_activity_miners)
@@ -11009,11 +11758,21 @@ def compact_miner_estimate_for_history(miner: dict[str, Any]) -> dict[str, Any]:
         "identity_key",
         "display_name",
         "display_label",
+        "device_type",
+        "discovered_by",
+        "sources",
+        "status",
         "managed",
         "configured",
         "connected",
+        "pool_active",
+        "work_pool_active",
+        "expected_work_lane",
+        "expected_work_percent",
+        "lane_status",
         "workers",
         "credit_workers",
+        "shared_workers",
         "credit_scope",
         "earnings_scope",
         "history_source",
@@ -11021,18 +11780,31 @@ def compact_miner_estimate_for_history(miner: dict[str, Any]) -> dict[str, Any]:
         "share_work",
         "work_percent",
         "blocks_found",
+        "credited_blocks",
+        "credited_bdag_total",
+        "credited_bdag_paid",
+        "credited_bdag_pending",
+        "last_credit_at",
+        "last_share_at",
+        "active_asics",
+        "target_active_asics",
+        "connected_miners",
         "hashrate",
         "av_hashrate",
         "hashrate_ghs",
         "av_hashrate_ghs",
         "hashrate_available",
         "hashrate_source",
+        "hashrate_error",
         "estimated_bdag_avg_hour",
         "estimated_bdag_1h",
+        "estimated_bdag_total",
         "estimated_usd_avg_hour",
         "estimated_usd_1h",
+        "estimated_usd_total",
         "estimated_zar_avg_hour",
         "estimated_zar_1h",
+        "estimated_zar_total",
         "estimated_wallet_bdag_recent_hour",
         "estimated_wallet_bdag_avg_hour",
         "estimated_wallet_bdag_1h",
@@ -11856,13 +12628,19 @@ def read_latest_action() -> dict[str, Any] | None:
 
 def run_logged(command: list[str], log_path: Path, timeout: int | None = None) -> CommandResult:
     ensure_runtime()
+    global _DOCKER_USE_SUDO_CACHE
+    effective_command = command
+    if command_uses_docker(command) and docker_sudo_fallback_enabled() and (
+        docker_use_sudo_requested() or _DOCKER_USE_SUDO_CACHE is True
+    ):
+        effective_command = sudo_docker_command(command)
     start = time.time()
     with log_path.open("a", encoding="utf-8") as log:
-        log.write(f"\n[{now_iso()}] $ {' '.join(command)}\n")
+        log.write(f"\n[{now_iso()}] $ {' '.join(effective_command)}\n")
         log.flush()
         try:
             proc = subprocess.run(
-                command,
+                effective_command,
                 cwd=PROJECT_ROOT,
                 text=True,
                 stdout=log,
@@ -11874,9 +12652,36 @@ def run_logged(command: list[str], log_path: Path, timeout: int | None = None) -
         except subprocess.TimeoutExpired:
             code = 124
             log.write(f"\n[{now_iso()}] timed out after {timeout}s\n")
+        if (
+            command_uses_docker(command)
+            and effective_command == command
+            and code != 0
+            and docker_sudo_fallback_enabled()
+        ):
+            fallback_command = sudo_docker_command(command)
+            log.write(f"\n[{now_iso()}] retry with sudo fallback: {' '.join(fallback_command)}\n")
+            log.flush()
+            try:
+                proc = subprocess.run(
+                    fallback_command,
+                    cwd=PROJECT_ROOT,
+                    text=True,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    timeout=timeout,
+                    check=False,
+                )
+                fallback_code = proc.returncode
+            except subprocess.TimeoutExpired:
+                fallback_code = 124
+                log.write(f"\n[{now_iso()}] sudo fallback timed out after {timeout}s\n")
+            if fallback_code == 0:
+                _DOCKER_USE_SUDO_CACHE = True
+                effective_command = fallback_command
+                code = fallback_code
         elapsed = round(time.time() - start, 3)
         log.write(f"\n[{now_iso()}] exit={code} elapsed={elapsed}s\n")
-    return CommandResult(command=command, returncode=code, stdout="", stderr="", elapsed=elapsed)
+    return CommandResult(command=effective_command, returncode=code, stdout="", stderr="", elapsed=elapsed)
 
 
 def backup_node_dir(node_name: str, log_path: Path) -> None:
@@ -11907,8 +12712,17 @@ def restore_clean(log_path: Path) -> bool:
     for node_dir in NODE_DATA_DIRS:
         backup_node_dir(node_dir, log_path)
 
+    restore_command = configured_command("BDAG_RESTORE_NODE_COMMAND", [])
+    if not restore_command:
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(
+                f"[{now_iso()}] clean restore blocked: BDAG_RESTORE_NODE_COMMAND is not configured. "
+                "Configure an explicit verified IPFS/rawdatadir restore command before destructive restore.\n"
+            )
+        return False
+
     for step in (
-        configured_command("BDAG_RESTORE_NODE_COMMAND", ["make", "restore-node-snapshot"]),
+        restore_command,
         gated_stack_start_command(log_path),
     ):
         if not step:

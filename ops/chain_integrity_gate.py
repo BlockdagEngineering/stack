@@ -55,7 +55,6 @@ DEFAULT_LOCK_RELATIVE_PATHS = (
     "ops/runtime/rawdatadir-artifact.lock",
     "ops/runtime/rawdatadir-publish.lock",
     "ops/runtime/repair.lock",
-    "ops/runtime/hourly-chain-snapshot.lock",
 )
 
 RpcCall = Callable[[str, str, list[Any], float, Mapping[str, str]], Any]
@@ -713,7 +712,14 @@ def evaluate_chain_integrity(
     reference_url = str(config.get("reference_rpc_url") or env.get("BDAG_CHAIN_REFERENCE_RPC_URL") or "").strip()
     start_order = safe_int(config.get("start_order"), 0)
     end_order = safe_int(config.get("end_order"), 0)
-    max_orders = max(1, env_int(env, "BDAG_CHAIN_INTEGRITY_MAX_SEGMENT_ORDERS", 128))
+    max_orders = max(
+        1,
+        env_int(
+            env,
+            "BDAG_CHAIN_INTEGRITY_MAX_SEGMENT_ORDERS",
+            env_int(env, "BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT", 128),
+        ),
+    )
     index_path = resolve_path(str(config.get("index") or env.get("BDAG_IPFS_SEGMENT_INDEX_PATH") or env.get("BDAG_IPFS_CONTENT_LATEST_INDEX_PATH") or ""), ROOT / "ops/runtime/ipfs-content/latest-index.json")
     index = load_json(index_path)
 

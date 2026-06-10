@@ -54,8 +54,12 @@ def safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def collect_status_cached() -> dict[str, Any]:
+    return collect_stack_status(include_logs=False)
+
+
 def build_state() -> dict[str, Any]:
-    status = collect_stack_status(include_logs=False)
+    status = collect_status_cached()
     nodes = status.get("nodes") if isinstance(status, dict) else {}
     sync_progress = status.get("sync_progress") if isinstance(status, dict) else {}
     active_node = NODES[0] if NODES else "node"

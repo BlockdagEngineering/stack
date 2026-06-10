@@ -20,6 +20,9 @@ desktop_nice="${BDAG_DESKTOP_BACKGROUND_NICE:-19}"
 pool_metrics_url="${BDAG_POOL_METRICS_URL:-http://127.0.0.1:9090/metrics}"
 sync_state_file="${BDAG_SYNC_COORDINATOR_STATE_FILE:-$ROOT/ops/runtime/sync-coordinator-state.json}"
 node_memory_low="${BDAG_NODE_MEMORY_LOW:-768M}"
+node_memory_high="${BDAG_NODE_MEMORY_HIGH:-auto}"
+node_memory_high_percent="${BDAG_NODE_MEMORY_HIGH_PERCENT:-82}"
+node_memory_high_min="${BDAG_NODE_MEMORY_HIGH_MIN:-4096M}"
 pool_memory_low="${BDAG_POOL_MEMORY_LOW:-256M}"
 pool_db_memory_low="${BDAG_POOL_DB_MEMORY_LOW:-512M}"
 dashboard_memory_low="${BDAG_DASHBOARD_MEMORY_LOW:-64M}"
@@ -207,6 +210,36 @@ bytes_value() {
   esac
 }
 
+total_memory_bytes() {
+  awk '$1 == "MemTotal:" { print $2 * 1024; exit }' /proc/meminfo 2>/dev/null || true
+}
+
+node_memory_high_bytes() {
+  case "$node_memory_high" in
+    ""|0|off|none|disabled)
+      return 0
+      ;;
+    auto)
+      total="$(total_memory_bytes)"
+      case "$total" in
+        ''|0) return 0 ;;
+      esac
+      min_bytes="$(bytes_value "$node_memory_high_min")"
+      target="$(( total * node_memory_high_percent / 100 ))"
+      if [ "$target" -lt "$min_bytes" ]; then
+        target="$min_bytes"
+      fi
+      if [ "$target" -ge "$total" ]; then
+        target="$(( total - 512 * 1024 * 1024 ))"
+      fi
+      [ "$target" -gt 0 ] && printf '%s\n' "$target"
+      ;;
+    *)
+      bytes_value "$node_memory_high"
+      ;;
+  esac
+}
+
 write_cgroup_value() {
   path="$1"
   value="$2"
@@ -221,12 +254,16 @@ apply_cgroup_policy() {
   cpu_weight="$2"
   io_weight="$3"
   memory_low="$4"
+  memory_high="${5:-}"
   cgroup_root="$(container_cgroup_root "$container")"
   [ -n "$cgroup_root" ] && [ -d "$cgroup_root" ] || return 0
   write_cgroup_value "$cgroup_root/cpu.weight" "$cpu_weight"
   write_cgroup_value "$cgroup_root/io.weight" "default $io_weight"
   write_cgroup_value "$cgroup_root/memory.low" "$(bytes_value "$memory_low")"
-  log "container=$container cpu_weight=$(cat "$cgroup_root/cpu.weight" 2>/dev/null || echo unknown) io_weight=$(cat "$cgroup_root/io.weight" 2>/dev/null | head -n1 || echo unknown) memory_low=$(cat "$cgroup_root/memory.low" 2>/dev/null || echo unknown)"
+  if [ -n "$memory_high" ]; then
+    write_cgroup_value "$cgroup_root/memory.high" "$memory_high"
+  fi
+  log "container=$container cpu_weight=$(cat "$cgroup_root/cpu.weight" 2>/dev/null || echo unknown) io_weight=$(cat "$cgroup_root/io.weight" 2>/dev/null | head -n1 || echo unknown) memory_low=$(cat "$cgroup_root/memory.low" 2>/dev/null || echo unknown) memory_high=$(cat "$cgroup_root/memory.high" 2>/dev/null || echo unknown)"
 }
 
 selected_backend_from_metrics() {
@@ -242,18 +279,10 @@ selected_backend_from_metrics() {
       }'
 }
 
-selected_backend_from_env() {
-  for env_file in "$ROOT/.env"; do
-    [ -f "$env_file" ] || continue
-    sed -n 's/^POOL_RPC_BACKENDS=//p' "$env_file" |
-      awk -F'[=,]' 'NF { print $1; exit }'
-  done
-}
-
 selected_backend() {
   backend="$(selected_backend_from_metrics || true)"
   if [ -z "$backend" ]; then
-    backend="$(selected_backend_from_env || true)"
+    backend="node"
   fi
   case "$backend" in
     node|primary) printf '%s\n' "node" ;;
@@ -381,8 +410,9 @@ tune_cgroups() {
   pool_container="$(service_container pool pool)"
   pool_db_container="$(service_container postgres postgres)"
   dashboard_container="$(service_container dashboard dashboard bdag-dashboard)"
+  node_memory_high_value="$(node_memory_high_bytes)"
 
-  [ -n "$node_container" ] && apply_cgroup_policy "$node_container" 10000 10000 "$node_memory_low"
+  [ -n "$node_container" ] && apply_cgroup_policy "$node_container" 10000 10000 "$node_memory_low" "$node_memory_high_value"
   [ -n "$pool_container" ] && apply_cgroup_policy "$pool_container" 8500 9500 "$pool_memory_low"
   [ -n "$pool_db_container" ] && apply_cgroup_policy "$pool_db_container" 8500 9500 "$pool_db_memory_low"
   [ -n "$dashboard_container" ] && apply_cgroup_policy "$dashboard_container" 250 100 "$dashboard_memory_low"

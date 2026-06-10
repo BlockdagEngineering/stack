@@ -2,10 +2,41 @@
 set -euo pipefail
 
 ROOT="${BDAG_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+BDAG_STACK_DEFAULTS_FILE="${BDAG_STACK_DEFAULTS_FILE:-$ROOT/ops/config/stack-defaults.env}"
+if [[ -f "$BDAG_STACK_DEFAULTS_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$BDAG_STACK_DEFAULTS_FILE"
+  set +a
+fi
 P2P_PORT="${P2P_PORT:-8150}"
 P2P_PROTOCOLS="${BDAG_P2P_PROTOCOLS:-tcp}"
 
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
+
+env_file_value() {
+  local key="$1"
+  grep -E "^${key}=" "$ROOT/.env" 2>/dev/null | tail -n1 | cut -d= -f2- || true
+}
+
+env_value() {
+  local key="$1" fallback="${2:-}" value
+  value="$(env_file_value "$key")"
+  if [[ -z "$value" ]]; then
+    value="${!key:-}"
+  fi
+  printf '%s\n' "${value:-$fallback}"
+}
+
+ensure_ipfs_segment_identity() {
+  if [[ ! -f "$ROOT/.env" || ! -x "$ROOT/ops/ipfs_segment_identity.py" ]]; then
+    return 0
+  fi
+  if ! python3 "$ROOT/ops/ipfs_segment_identity.py" --env-file "$ROOT/.env" --json >/dev/null; then
+    warn "Could not provision IPFS segment writer identity. Install python3-cryptography and rerun support-service setup."
+    return 1
+  fi
+}
 
 need_sudo() {
   if [[ "$(id -u)" == "0" ]]; then
@@ -54,21 +85,15 @@ EOF
   systemctl --user enable --now bdag-local-peers.timer
 }
 
-install_fastsnap_seed_timer() {
-  warn "FastSnap archive seed timer is not part of this stack; raw datadir and IPFS segment sidecars own content publication"
-  return 0
-}
-
-install_rawdatadir_source_timer() {
-  local source_node mode
-  source_node="$(env_value SYNC_SOURCE_NODE 0)"
-  mode="$(env_value BDAG_RAWDATADIR_SOURCE_MODE auto)"
-  if [[ "$source_node" =~ ^(0|false|no|off|disabled)$ ]]; then
-    warn "Raw datadir FastArtifact source disabled by SYNC_SOURCE_NODE=$source_node"
+install_rawdatadir_sidecar_timers() {
+  local mode
+  mode="$(env_value BDAG_RAWDATADIR_SIDECAR_MODE auto)"
+  if [[ "$mode" =~ ^(0|false|no|off|disabled)$ ]]; then
+    warn "Raw datadir sidecar disabled by BDAG_RAWDATADIR_SIDECAR_MODE=$mode"
     return 0
   fi
-  if [[ ! -x "$ROOT/ops/fastartifact_source_eligibility.py" || ! -x "$ROOT/ops/maintain-rawdatadir-sidecar.sh" || ! -x "$ROOT/ops/verify-rawdatadir-sidecar.py" || ! -x "$ROOT/ops/publish-rawdatadir-artifact.sh" ]]; then
-    warn "Raw datadir source files are missing under $ROOT/ops"
+  if [[ ! -x "$ROOT/ops/maintain-rawdatadir-sidecar.sh" || ! -x "$ROOT/ops/verify-rawdatadir-sidecar.py" ]]; then
+    warn "Raw datadir sidecar files are missing under $ROOT/ops"
     return 0
   fi
 
@@ -77,18 +102,18 @@ install_rawdatadir_source_timer() {
   local network active_service source_dir sidecar_dir artifact_base
   local sidecar_content_base
 
-  network="$(env_value BDAG_FASTSNAP_NETWORK mainnet)"
+  network="$(env_value BDAG_RAWDATADIR_NETWORK mainnet)"
   if [[ "${network,,}" != "mainnet" ]]; then
-    warn "Raw datadir services refuse non-mainnet BDAG_FASTSNAP_NETWORK=$network"
+    warn "Raw datadir sidecar refuses non-mainnet BDAG_RAWDATADIR_NETWORK=$network"
     return 1
   fi
   network="mainnet"
-  active_service="$(env_value BDAG_NODE_SERVICES node)"
-  active_service="${active_service%%,*}"
+  active_service="$(env_value BDAG_NODE_SERVICE node)"
   source_dir="$(env_value BDAG_NODE_DATA_DIR ./data/node)/$network"
   sidecar_dir="$(env_value BDAG_RAWDATADIR_SIDECAR_DIR ./data-restore/rawdatadir-sidecar/$network)"
   artifact_base="$(env_value BDAG_RAWDATADIR_ARTIFACT_BASE ./data-restore/rawdatadir)"
   sidecar_content_base="$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE ./data-restore/rawdatadir-sidecar-content)"
+  ensure_ipfs_segment_identity || return 1
 
   mkdir -p "$user_systemd_dir" "$user_config_dir"
   cat > "$user_config_dir/bdag-rawdatadir-sidecar.env" <<EOF
@@ -97,8 +122,7 @@ install_rawdatadir_source_timer() {
 BDAG_PROJECT_ROOT=$ROOT
 BDAG_ENV_FILE=$ROOT/.env
 BDAG_COMPOSE_FILE=$ROOT/docker-compose.yml
-SYNC_SOURCE_NODE=$source_node
-BDAG_RAWDATADIR_SOURCE_MODE=$mode
+BDAG_RAWDATADIR_SIDECAR_MODE=$mode
 BDAG_RAWDATADIR_NETWORK=$network
 BDAG_RAWDATADIR_ACTIVE_SERVICE=$active_service
 BDAG_RAWDATADIR_SIDECAR_SOURCE=$source_dir
@@ -110,53 +134,30 @@ BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE=$sidecar_content_base
 BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP=$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP 2)
 BDAG_RAWDATADIR_SIDECAR_CONTENT_CHUNK_SIZE=$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_CHUNK_SIZE 67108864)
 BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED=$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED 1)
+BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT=$(env_value BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT 4096)
+BDAG_RAWDATADIR_SIDECAR_CATCHUP_RSYNC_BWLIMIT=$(env_value BDAG_RAWDATADIR_SIDECAR_CATCHUP_RSYNC_BWLIMIT 1024)
+BDAG_RAWDATADIR_SIDECAR_DELAY_UPDATES=$(env_value BDAG_RAWDATADIR_SIDECAR_DELAY_UPDATES 0)
 BDAG_RAWDATADIR_REQUIRE_SIGNED=$(env_value BDAG_RAWDATADIR_REQUIRE_SIGNED 1)
 BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH=$(env_value BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH 1)
 BDAG_RAWDATADIR_MAX_EVM_REFERENCE_LAG=$(env_value BDAG_RAWDATADIR_MAX_EVM_REFERENCE_LAG 1000)
 BDAG_PUBLIC_RPC_URLS=$(env_value BDAG_PUBLIC_RPC_URLS blockdag-engineering-rpc=https://rpc.blockdag.engineering,bdagscan-rpc=https://rpc.bdagscan.com)
 BDAG_RAWDATADIR_FINALIZE=$(env_value BDAG_RAWDATADIR_FINALIZE 0)
-BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID=$(env_value BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_ID "")
-BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX=$(env_value BDAG_FASTSYNC_ARTIFACT_SIGNING_KEY_HEX "")
+BDAG_RAWDATADIR_SIGNING_KEY_ID=$(env_value BDAG_RAWDATADIR_SIGNING_KEY_ID "")
+BDAG_RAWDATADIR_SIGNING_KEY_HEX=$(env_value BDAG_RAWDATADIR_SIGNING_KEY_HEX "")
+BDAG_RAWDATADIR_SIGNING_KEY_FILE=$(env_value BDAG_RAWDATADIR_SIGNING_KEY_FILE "$ROOT/ops/runtime/ipfs-content/segment-writer.key")
+BDAG_RAWDATADIR_TRUSTED_SIGNERS=$(env_value BDAG_RAWDATADIR_TRUSTED_SIGNERS "")
+BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER=$(env_value BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER 1)
+BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE=$(env_value BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE "$ROOT/ops/runtime/ipfs-content/segment-writer.key")
+BDAG_IPFS_SEGMENT_WRITER_ID=$(env_value BDAG_IPFS_SEGMENT_WRITER_ID "")
 EOF
-
-  local eligibility_json eligible publish_allowed current_manifest
-  eligibility_json="$("$ROOT/ops/fastartifact_source_eligibility.py" --full --json --status-file "$ROOT/ops/runtime/rawdatadir-source-status.json" 2>/dev/null || true)"
-  eligible="$(printf '%s' "$eligibility_json" | python3 -c 'import json,sys; print(str(bool(json.load(sys.stdin).get("eligible", False))).lower())' 2>/dev/null || printf 'false')"
-  publish_allowed="$(printf '%s' "$eligibility_json" | python3 -c 'import json,sys; print(str(bool(json.load(sys.stdin).get("publish_allowed", False))).lower())' 2>/dev/null || printf 'false')"
-  current_manifest="$artifact_base/current/manifest.json"
-
-  if [[ "$eligible" == "true" ]]; then
-    set_env_value "$ROOT/.env" SYNC_SOURCE_NODE "$source_node"
-    set_env_value "$ROOT/.env" BDAG_RAWDATADIR_SOURCE_MODE "$mode"
-    set_env_value "$ROOT/.env" BDAG_RAWDATADIR_ARTIFACT_BASE "$artifact_base"
-    if [[ -f "$current_manifest" && ! -f "$artifact_base/current/DO_NOT_PUBLISH.txt" && ! -f "$artifact_base/current/DO_NOT_PUBLISH" ]]; then
-      set_env_value "$ROOT/.env" BDAG_FASTSYNC_ARTIFACT_DIRECTORY "/fastartifact/rawdatadir/current"
-      set_env_value "$ROOT/.env" BDAG_FASTSYNC_ARTIFACT_MANIFEST "/fastartifact/rawdatadir/current/manifest.json"
-    else
-      # Do not advertise a raw-datadir artifact until a finalized manifest
-      # exists. The publisher promotes current atomically after verification.
-      set_env_value "$ROOT/.env" BDAG_FASTSYNC_ARTIFACT_DIRECTORY ""
-      set_env_value "$ROOT/.env" BDAG_FASTSYNC_ARTIFACT_MANIFEST ""
-    fi
-  else
-    warn "Raw datadir source sidecar is not currently eligible on this host; retry timers remain active and status is in ops/runtime/rawdatadir-source-status.json"
-    set_env_value "$ROOT/.env" BDAG_FASTSYNC_ARTIFACT_DIRECTORY ""
-    set_env_value "$ROOT/.env" BDAG_FASTSYNC_ARTIFACT_MANIFEST ""
-  fi
 
   install -m 0644 "$ROOT/ops/systemd/user-bdag-rawdatadir-sidecar.service" "$user_systemd_dir/bdag-rawdatadir-sidecar.service"
   install -m 0644 "$ROOT/ops/systemd/user-bdag-rawdatadir-sidecar.timer" "$user_systemd_dir/bdag-rawdatadir-sidecar.timer"
   install -m 0644 "$ROOT/ops/systemd/user-bdag-rawdatadir-sidecar-verify.service" "$user_systemd_dir/bdag-rawdatadir-sidecar-verify.service"
   install -m 0644 "$ROOT/ops/systemd/user-bdag-rawdatadir-sidecar-verify.timer" "$user_systemd_dir/bdag-rawdatadir-sidecar-verify.timer"
-  install -m 0644 "$ROOT/ops/systemd/user-bdag-rawdatadir-source.service" "$user_systemd_dir/bdag-rawdatadir-source.service"
-  install -m 0644 "$ROOT/ops/systemd/user-bdag-rawdatadir-source.timer" "$user_systemd_dir/bdag-rawdatadir-source.timer"
   systemctl --user daemon-reload
   systemctl --user enable --now bdag-rawdatadir-sidecar.timer
   systemctl --user enable --now bdag-rawdatadir-sidecar-verify.timer
-  systemctl --user enable --now bdag-rawdatadir-source.timer
-  if [[ "$publish_allowed" != "true" ]]; then
-    warn "Raw datadir artifact publisher is not allowed yet; timer remains active and the service will retry/defer safely"
-  fi
 }
 
 install_ipfs_content_sidecar_timer() {
@@ -188,9 +189,13 @@ BDAG_IPFS_CONTENT_LATEST_INDEX_PATH=$ROOT/ops/runtime/ipfs-content/latest-index.
 BDAG_IPFS_CONTENT_DISCOVERY_FILE=$ROOT/ops/ipfs-content-discovery.json
 BDAG_IPFS_CONTENT_LATEST_IPNS=$(env_value BDAG_IPFS_CONTENT_LATEST_IPNS /ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk)
 BDAG_IPFS_CONTENT_DEFAULT_INDEX_CID=$(env_value BDAG_IPFS_CONTENT_DEFAULT_INDEX_CID bafkreia7jk2ljqi3raiohugp6nw3633njfp7jmnuvqh47po52et4kupu2a)
+BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH=$(env_value BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH "$ROOT/ops/runtime/ipfs-content/rawdatadir-content-index.json")
+BDAG_IPFS_RAWDATADIR_CONTENT_DEFAULT_INDEX_CID=$(env_value BDAG_IPFS_RAWDATADIR_CONTENT_DEFAULT_INDEX_CID "")
+BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS=$(env_value BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS auto)
+BDAG_IPFS_RAWDATADIR_CONTENT_IPNS_KEY=$(env_value BDAG_IPFS_RAWDATADIR_CONTENT_IPNS_KEY "")
 BDAG_IPFS_CONTENT_DEFAULT_ROOT_CID=$(env_value BDAG_IPFS_CONTENT_DEFAULT_ROOT_CID "")
 BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT=$(env_value BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT 0)
-BDAG_IPFS_CONTENT_PUBLISH_IPNS=$(env_value BDAG_IPFS_CONTENT_PUBLISH_IPNS 0)
+BDAG_IPFS_CONTENT_PUBLISH_IPNS=$(env_value BDAG_IPFS_CONTENT_PUBLISH_IPNS auto)
 BDAG_IPFS_CONTENT_IPNS_KEY=$(env_value BDAG_IPFS_CONTENT_IPNS_KEY "")
 BDAG_IPFS_CONTENT_REPUBLISH_IPNS_WHILE_WAITING=$(env_value BDAG_IPFS_CONTENT_REPUBLISH_IPNS_WHILE_WAITING 1)
 BDAG_IPFS_CONTENT_IPNS_TTL=$(env_value BDAG_IPFS_CONTENT_IPNS_TTL 1m)
@@ -213,6 +218,7 @@ install_ipfs_segment_writer_timer() {
     warn "IPFS segment writer files are missing under $ROOT/ops"
     return 0
   fi
+  ensure_ipfs_segment_identity || return 1
   local user_systemd_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
   local user_config_dir="${XDG_CONFIG_HOME:-$HOME/.config}"
   mkdir -p "$user_systemd_dir" "$user_config_dir"
@@ -223,19 +229,38 @@ install_ipfs_segment_writer_timer() {
 BDAG_PROJECT_ROOT=$ROOT
 BDAG_ENV_FILE=$ROOT/.env
 BDAG_IPFS_SEGMENT_WRITER_MODE=$mode
+BDAG_IPFS_SEGMENT_WRITER_ID=$(env_value BDAG_IPFS_SEGMENT_WRITER_ID "")
+BDAG_IPFS_SEGMENT_WRITER_ROSTER=$(env_value BDAG_IPFS_SEGMENT_WRITER_ROSTER "")
+BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE=$(env_value BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE rendezvous_sha256_v1)
+BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH=$(env_value BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH 0)
 BDAG_IPFS_SEGMENT_START_POLICY=$(env_value BDAG_IPFS_SEGMENT_START_POLICY live_tail)
+BDAG_IPFS_SEGMENT_STALE_HEAD_RESET_ENABLED=$(env_value BDAG_IPFS_SEGMENT_STALE_HEAD_RESET_ENABLED 1)
+BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS=$(env_value BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS 3600)
 BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS=$(env_value BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS 600)
 BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT=$(env_value BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT 300)
+BDAG_CHAIN_INTEGRITY_MAX_SEGMENT_ORDERS=$(env_value BDAG_CHAIN_INTEGRITY_MAX_SEGMENT_ORDERS "$(env_value BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT 300)")
 BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN=$(env_value BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN 1)
 BDAG_IPFS_SEGMENT_MAX_RPC_PER_SECOND=$(env_value BDAG_IPFS_SEGMENT_MAX_RPC_PER_SECOND 25)
 BDAG_IPFS_SEGMENT_RPC_TIMEOUT=$(env_value BDAG_IPFS_SEGMENT_RPC_TIMEOUT 8)
 BDAG_IPFS_SEGMENT_BLOCK_RPC_RETRIES=$(env_value BDAG_IPFS_SEGMENT_BLOCK_RPC_RETRIES 2)
-BDAG_IPFS_SEGMENT_PUBLISH_IPNS=$(env_value BDAG_IPFS_SEGMENT_PUBLISH_IPNS 0)
+BDAG_IPFS_SEGMENT_PUBLISH_IPNS=$(env_value BDAG_IPFS_SEGMENT_PUBLISH_IPNS auto)
 BDAG_IPFS_SEGMENT_IPNS_KEY=$(env_value BDAG_IPFS_SEGMENT_IPNS_KEY "")
+BDAG_IPFS_SEGMENT_RESTORE_DIR=$(env_value BDAG_IPFS_SEGMENT_RESTORE_DIR "$ROOT/ops/runtime/ipfs-segment-restore-drills")
 BDAG_IPFS_SEGMENT_IPNS_TTL=$(env_value BDAG_IPFS_SEGMENT_IPNS_TTL 1m)
 BDAG_IPFS_SEGMENT_IPNS_LIFETIME=$(env_value BDAG_IPFS_SEGMENT_IPNS_LIFETIME 8760h)
+BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE=$(env_value BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE "$ROOT/ops/runtime/ipfs-content/segment-writer.key")
+BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS=$(env_value BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS "")
+BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES=$(env_value BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES 1)
 BDAG_IPFS_SEGMENT_STATUS_FILE=$(env_value BDAG_IPFS_SEGMENT_STATUS_FILE "$ROOT/ops/runtime/ipfs-content/segment-writer-status.json")
 BDAG_IPFS_SEGMENT_INDEX_PATH=$(env_value BDAG_IPFS_SEGMENT_INDEX_PATH "$ROOT/ops/runtime/ipfs-content/latest-index.json")
+BDAG_IPFS_RESTORE_ACCEPTED_HEAD_ENABLED=$(env_value BDAG_IPFS_RESTORE_ACCEPTED_HEAD_ENABLED 1)
+BDAG_IPFS_RESTORE_ACCEPTED_HEAD_STATE_FILE=$(env_value BDAG_IPFS_RESTORE_ACCEPTED_HEAD_STATE_FILE "$ROOT/ops/runtime/ipfs-content/restore-accepted-head.json")
+BDAG_IPFS_RESTORE_CHAIN_ANCHOR_ENABLED=$(env_value BDAG_IPFS_RESTORE_CHAIN_ANCHOR_ENABLED 1)
+BDAG_IPFS_RESTORE_REQUIRE_CHAIN_ANCHOR=$(env_value BDAG_IPFS_RESTORE_REQUIRE_CHAIN_ANCHOR 0)
+BDAG_IPFS_RESTORE_CHAIN_SOURCE_RPC_URL=$(env_value BDAG_IPFS_RESTORE_CHAIN_SOURCE_RPC_URL "")
+BDAG_IPFS_RESTORE_CHAIN_REFERENCE_RPC_URL=$(env_value BDAG_IPFS_RESTORE_CHAIN_REFERENCE_RPC_URL "")
+BDAG_IPFS_RESTORE_CHAIN_ANCHOR_FULL_SPAN_MAX_ORDERS=$(env_value BDAG_IPFS_RESTORE_CHAIN_ANCHOR_FULL_SPAN_MAX_ORDERS 300)
+BDAG_IPFS_RESTORE_CHAIN_ANCHOR_SKIP_ENVIRONMENT_GATES=$(env_value BDAG_IPFS_RESTORE_CHAIN_ANCHOR_SKIP_ENVIRONMENT_GATES 1)
 BDAG_IPFS_CONTENT_DISCOVERY_FILE=$(env_value BDAG_IPFS_CONTENT_DISCOVERY_FILE "$ROOT/ops/ipfs-content-discovery.json")
 BDAG_IPFS_CONTENT_LATEST_IPNS=$(env_value BDAG_IPFS_CONTENT_LATEST_IPNS /ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk)
 EOF
@@ -265,3 +290,6 @@ install_mining_host_tuning() {
 install_firewall
 install_local_peer_timer
 install_mining_host_tuning
+install_rawdatadir_sidecar_timers
+install_ipfs_content_sidecar_timer
+install_ipfs_segment_writer_timer

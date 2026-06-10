@@ -18,8 +18,8 @@ ROOT = Path(os.environ.get("BDAG_PROJECT_ROOT", Path(__file__).resolve().parents
 ENV_FILE = Path(os.environ.get("BDAG_ENV_FILE", ROOT / ".env"))
 STATUS_FILE = Path(
     os.environ.get(
-        "BDAG_RAWDATADIR_SOURCE_STATUS",
-        ROOT / "ops" / "runtime" / "rawdatadir-source-status.json",
+        "BDAG_RAWDATADIR_SIDECAR_SAFETY_STATUS",
+        ROOT / "ops" / "runtime" / "rawdatadir-sidecar-safety-status.json",
     )
 )
 UNSAFE_FSTYPES = {
@@ -371,7 +371,7 @@ def total_memory_bytes() -> int | None:
 
 
 def active_node_service(env: dict[str, str]) -> str:
-    services = split_csv(env.get("BDAG_NODE_SERVICES", "node"))
+    services = split_csv(env.get("BDAG_NODE_SERVICE", "node"))
     return services[0] if services else "node"
 
 
@@ -388,7 +388,7 @@ def node_data_dir(env: dict[str, str], service: str) -> Path:
 
 def build_payload(full: bool) -> dict[str, Any]:
     env = load_env()
-    requested_network = (env.get("BDAG_RAWDATADIR_NETWORK") or env.get("BDAG_FASTSNAP_NETWORK") or "mainnet").strip().lower()
+    requested_network = (env.get("BDAG_RAWDATADIR_NETWORK") or "mainnet").strip().lower()
     network = "mainnet"
     service = active_node_service(env)
     data_dir = node_data_dir(env, service)
@@ -398,8 +398,7 @@ def build_payload(full: bool) -> dict[str, Any]:
     )
     artifact_base = env_path(env, "BDAG_RAWDATADIR_ARTIFACT_BASE", ROOT / "data-restore" / "rawdatadir")
     tmp_dir = env_path(env, "BDAG_RAWDATADIR_TMPDIR", artifact_base / "tmp")
-    source_node_enabled = bool_mode(env.get("SYNC_SOURCE_NODE")) is True
-    legacy_mode = (env.get("BDAG_RAWDATADIR_SOURCE_MODE") or env.get("BDAG_FASTARTIFACT_SOURCE_MODE") or "auto").lower()
+    mode = (env.get("BDAG_RAWDATADIR_SIDECAR_MODE") or "auto").strip().lower()
     storage_profile = (env.get("BDAG_STORAGE_PROFILE") or "").strip().lower()
     network_topology = (env.get("BDAG_DETECTED_NETWORK_TOPOLOGY") or env.get("BDAG_NETWORK_TOPOLOGY") or "").strip().lower()
 
@@ -414,8 +413,8 @@ def build_payload(full: bool) -> dict[str, Any]:
     reasons: list[str] = []
     if requested_network != "mainnet":
         reasons.append(f"non-mainnet raw datadir network is unsupported:{requested_network}")
-    if not source_node_enabled:
-        reasons.append("source_mode_disabled")
+    if bool_mode(mode) is False:
+        reasons.append("sidecar_mode_disabled")
     if storage_profile in LOW_IO_USB_STORAGE_PROFILES:
         reasons.append(f"storage_profile_usb_low_io:{storage_profile}")
     for item in paths:
@@ -454,23 +453,16 @@ def build_payload(full: bool) -> dict[str, Any]:
         elif not evm_sync["fresh"]:
             reasons.append(f"evm_lag_to_reference:{evm_sync['lag_to_reference']}>{evm_sync['max_lag']}")
 
-    publish_mode = (env.get("BDAG_RAWDATADIR_PUBLISH_MODE") or "finalized-sidecar").lower()
-    finalization = (env.get("BDAG_RAWDATADIR_FINALIZE") or "0").lower() in {"1", "true", "yes", "on"}
-    publish_requires_finalization = publish_mode == "finalized-sidecar" and not finalization
-
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "project_root": str(ROOT),
-        "mode": legacy_mode,
-        "sync_source_node": source_node_enabled,
+        "mode": mode,
         "storage_profile": storage_profile,
         "network_topology": network_topology,
         "active_node_service": service,
         "network": network,
-        "eligible": not reasons,
+        "safe": not reasons,
         "reasons": reasons,
-        "publish_allowed": not reasons and not publish_requires_finalization,
-        "publish_requires_finalization": publish_requires_finalization,
         "paths": paths,
         "evm_sync": evm_sync,
         "source_size_bytes": source_size,
@@ -494,7 +486,7 @@ def main() -> int:
     status_file.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
-    return 0 if payload["eligible"] else 2
+    return 0 if payload["safe"] else 2
 
 
 if __name__ == "__main__":

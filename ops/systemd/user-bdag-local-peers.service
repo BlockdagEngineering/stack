@@ -4,10 +4,10 @@ After=default.target docker.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/jeremy/blockdag-asic-pool
+WorkingDirectory=/home/jeremy/blockdag-mining-pool/stack
 Nice=15
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 CPUWeight=25
 IOWeight=25
-ExecStart=/home/jeremy/blockdag-asic-pool/ops/update-local-peers.py --apply
+ExecStart=/home/jeremy/blockdag-mining-pool/stack/ops/update-local-peers.py --apply

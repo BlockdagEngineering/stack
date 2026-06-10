@@ -13,6 +13,7 @@ from typing import Any
 
 from incident_journal import append_incident
 from pool_ops import LOG_DIR, RUNTIME_DIR, ensure_runtime, now_iso
+from pool_ops import normalize_mac
 from stack_status_source import StackStatusUnavailable, collect_stack_status
 
 
@@ -41,7 +42,7 @@ STATUS_URL = (
     or "http://127.0.0.1:9280/api/status"
 )
 STATUS_TIMEOUT = float(os.environ.get("BDAG_MINING_GUARD_STATUS_TIMEOUT", "20"))
-EXPECTED_ASIC_IP = os.environ.get("BDAG_EXPECTED_ASIC_IP", "").strip()
+EXPECTED_ASIC_MAC = normalize_mac(os.environ.get("BDAG_EXPECTED_ASIC_MAC", ""))
 EXPECTED_WALLET = os.environ.get("BDAG_EXPECTED_MINING_WALLET", "").strip()
 MINING_GUARD_ENABLED = os.environ.get(
     "BDAG_MINING_GUARD_ENABLED",
@@ -199,10 +200,10 @@ def fallback_status() -> tuple[dict[str, Any] | None, str]:
 
 def find_expected_miner(status: dict[str, Any]) -> dict[str, Any]:
     miners = ((status.get("miner_health") or {}).get("miners") or [])
-    if not EXPECTED_ASIC_IP:
+    if not EXPECTED_ASIC_MAC:
         return miners[0] if len(miners) == 1 and isinstance(miners[0], dict) else {}
     for miner in miners:
-        if isinstance(miner, dict) and str(miner.get("ip") or "") == EXPECTED_ASIC_IP:
+        if isinstance(miner, dict) and normalize_mac(miner.get("mac")) == EXPECTED_ASIC_MAC:
             return miner
     return {}
 
@@ -250,7 +251,7 @@ def build_sample(status: dict[str, Any] | None, error: str, state: dict[str, Any
     miner_health = status.get("miner_health") if isinstance(status.get("miner_health"), dict) else {}
     miner = find_expected_miner(status)
     hashrate = miner_hashrate(miner)
-    expected_asic_required = bool(EXPECTED_ASIC_IP)
+    expected_asic_required = bool(EXPECTED_ASIC_MAC)
 
     current_block = as_int(sync.get("current_block"), -1)
     highest_block = as_int(sync.get("highest_block"), -1)
@@ -306,7 +307,8 @@ def build_sample(status: dict[str, Any] | None, error: str, state: dict[str, Any
             "pool_valid_share_count": pool.get("valid_share_count"),
             "pool_last_valid_share_age_seconds": last_valid_share_age,
             "mining_guard_enabled": MINING_GUARD_ENABLED,
-            "asic_ip": EXPECTED_ASIC_IP,
+            "asic_mac": EXPECTED_ASIC_MAC,
+            "asic_observed_ip": miner.get("ip") if miner else "",
             "expected_asic_required": expected_asic_required,
             "asic_present": bool(miner),
             "asic_configured": bool(miner.get("configured")) if miner else False,
@@ -426,7 +428,8 @@ def run_once(dry_run: bool = False) -> dict[str, Any]:
                 "pool_connected_miners": sample.get("pool_connected_miners"),
                 "pool_job_notify_count": sample.get("pool_job_notify_count"),
                 "expected_asic_required": sample.get("expected_asic_required"),
-                "asic_ip": sample.get("asic_ip"),
+                "asic_mac": sample.get("asic_mac"),
+                "asic_observed_ip": sample.get("asic_observed_ip"),
                 "asic_configured": sample.get("asic_configured"),
                 "asic_connected": sample.get("asic_connected"),
                 "asic_pool_active": sample.get("asic_pool_active"),

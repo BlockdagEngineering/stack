@@ -21,15 +21,18 @@ for arg in "$@"; do
       cat <<'USAGE'
 Usage: ops/chain-state-self-heal.sh [--force] [--from-systemd]
 
-Fail-closed repair for BlockDAG node chain-state corruption. The script checks
-dashboard status for needs_chain_data_restore / chain_state_blocker, stops the
-pool, stops the node, quarantines the damaged node datadir, restores from a
-configured trusted source or local snapshot, restarts node/dashboard, and leaves
-the pool stopped until normal readiness gates pass.
+Fail-closed repair for BlockDAG node chain-state corruption. This destructive
+restore path is disabled by default and requires an explicitly configured
+trusted rawdatadir/IPFS source. When enabled, the script checks dashboard status for
+needs_chain_data_restore / chain_state_blocker, stops the pool, stops the node,
+quarantines the damaged node datadir, restores from the configured restore
+input, restarts node/dashboard, and leaves the pool stopped until normal
+readiness gates pass.
 
 Configure trusted restore input with one of:
   BDAG_CHAIN_STATE_RESTORE_SOURCE=/local/path/or/user@host:/path/to/mainnet
-  BDAG_CHAIN_STATE_RESTORE_SNAPSHOT=/path/to/latest.bdsnap
+  BDAG_CHAIN_STATE_RESTORE_IPFS_ARTIFACT_CID=bafy...
+  BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_CID=bafy...
 
 Remote restore uses rsync and can set:
   BDAG_CHAIN_STATE_RESTORE_SSH_COMMAND='ssh -i /path/to/key -o BatchMode=yes'
@@ -108,14 +111,14 @@ load_env_file() {
 load_env_file "$ENV_FILE"
 load_env_file "${BDAG_RUNTIME_ENV_FILE:-$RUNTIME_DIR/ops.env}"
 
-enabled="${BDAG_CHAIN_STATE_SELF_HEAL_ENABLED:-1}"
+enabled="${BDAG_CHAIN_STATE_SELF_HEAL_ENABLED:-0}"
 if [[ "$enabled" != "1" && "$FORCE" != "1" ]]; then
   log "self-heal disabled by BDAG_CHAIN_STATE_SELF_HEAL_ENABLED=$enabled"
   json_state "disabled" "BDAG_CHAIN_STATE_SELF_HEAL_ENABLED is not 1"
   exit 0
 fi
 
-REQUESTED_NETWORK="${BDAG_CHAIN_STATE_NETWORK:-${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}}"
+REQUESTED_NETWORK="${BDAG_CHAIN_STATE_NETWORK:-${BDAG_RAWDATADIR_NETWORK:-mainnet}}"
 if [[ "${REQUESTED_NETWORK,,}" != "mainnet" ]]; then
   log "chain-state self-heal refuses non-mainnet network: $REQUESTED_NETWORK"
   json_state "blocked" "non-mainnet chain-state restore network is unsupported:$REQUESTED_NETWORK"
@@ -226,8 +229,6 @@ abs_path() {
 CHAIN_DATA_DIR="$(abs_path "${BDAG_CHAIN_DATA_DIR:-${BDAG_DATA_DIR:-./data}}")"
 if [[ -n "${BDAG_NODE_DATA_DIR:-}" ]]; then
   NODE_DATA_DIR="$(abs_path "$BDAG_NODE_DATA_DIR")"
-elif [[ -d "$CHAIN_DATA_DIR/node1/mainnet" ]]; then
-  NODE_DATA_DIR="$CHAIN_DATA_DIR/node1"
 else
   NODE_DATA_DIR="$CHAIN_DATA_DIR/node"
 fi
@@ -265,17 +266,6 @@ stop_service_best_effort() {
   return 1
 }
 
-copy_existing_snapshot() {
-  local snapshot="$NODE_NETWORK_DIR/snapshot.bdsnap"
-  if [[ "${BDAG_CHAIN_STATE_REUSE_EXISTING_SNAPSHOT:-1}" == "1" && -s "$snapshot" ]]; then
-    cp -a "$snapshot" "$TMP_DIR/snapshot.bdsnap"
-    for companion in "$NODE_NETWORK_DIR/snapshot.bdsnap.manifest" "$NODE_NETWORK_DIR/snapshot.bdsnap.json" "$NODE_NETWORK_DIR/manifest.json"; do
-      [[ -f "$companion" ]] && cp -a "$companion" "$TMP_DIR/$(basename "$companion")"
-    done
-    log "staged existing local snapshot for fallback restore"
-  fi
-}
-
 choose_restore_source() {
   RESTORE_MODE_USED=""
   RESTORE_SOURCE_USED=""
@@ -284,32 +274,125 @@ choose_restore_source() {
     RESTORE_SOURCE_USED="$BDAG_CHAIN_STATE_RESTORE_SOURCE"
     return 0
   fi
-  if [[ -n "${BDAG_CHAIN_STATE_RESTORE_SNAPSHOT:-}" ]]; then
-    RESTORE_MODE_USED="snapshot"
-    RESTORE_SOURCE_USED="$BDAG_CHAIN_STATE_RESTORE_SNAPSHOT"
+  if [[ -n "${BDAG_CHAIN_STATE_RESTORE_IPFS_ARTIFACT_CID:-}" ]]; then
+    RESTORE_MODE_USED="ipfs_artifact"
+    RESTORE_SOURCE_USED="$BDAG_CHAIN_STATE_RESTORE_IPFS_ARTIFACT_CID"
     return 0
   fi
-  local candidates=(
-    "$ROOT/data-restore/rawdatadir-sidecar-content/current/mainnet"
-    "$ROOT/data-restore/rawdatadir-sidecar-content/current"
-    "$ROOT/data-restore/rawdatadir/current/mainnet"
-    "$ROOT/data-restore/rawdatadir/current"
-    "$ROOT/data-restore/latest/mainnet"
-    "$ROOT/data-restore/latest"
-  )
-  for candidate in "${candidates[@]}"; do
-    if [[ -d "$candidate" ]]; then
-      RESTORE_MODE_USED="source"
-      RESTORE_SOURCE_USED="$candidate"
-      return 0
-    fi
-  done
-  if [[ -s "$TMP_DIR/snapshot.bdsnap" ]]; then
-    RESTORE_MODE_USED="snapshot"
-    RESTORE_SOURCE_USED="$TMP_DIR/snapshot.bdsnap"
+  if [[ -n "${BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_CID:-}" ]]; then
+    RESTORE_MODE_USED="ipfs_index"
+    RESTORE_SOURCE_USED="$BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_CID"
     return 0
+  fi
+  if [[ -n "${BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_FILE:-}" ]]; then
+    RESTORE_MODE_USED="ipfs_index_file"
+    RESTORE_SOURCE_USED="$BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_FILE"
+    return 0
+  fi
+  if [[ "${BDAG_CHAIN_STATE_SELF_HEAL_ALLOW_LOCAL_CANDIDATES:-0}" == "1" ]]; then
+    local candidates=(
+      "$ROOT/data-restore/rawdatadir/current/mainnet"
+      "$ROOT/data-restore/rawdatadir/current"
+      "$ROOT/data-restore/latest/mainnet"
+      "$ROOT/data-restore/latest"
+    )
+    for candidate in "${candidates[@]}"; do
+      if [[ -d "$candidate" ]]; then
+        RESTORE_MODE_USED="source"
+        RESTORE_SOURCE_USED="$candidate"
+        return 0
+      fi
+    done
   fi
   return 1
+}
+
+resolve_local_restore_source() {
+  local source="$1"
+  local local_source
+  local_source="$(abs_path "$source")"
+  if [[ -d "$local_source/mainnet" ]]; then
+    local_source="$local_source/mainnet"
+  fi
+  printf '%s\n' "$local_source"
+}
+
+reject_sealed_artifact_source() {
+  local source="$1"
+  case "$source" in
+    *rawdatadir-sidecar-content*)
+      log "restore source $source is sealed rawdatadir-sidecar-content, not a raw node datadir"
+      return 1
+      ;;
+  esac
+  if [[ -f "$source/DO_NOT_PUBLISH.txt" ]]; then
+    log "restore source $source contains DO_NOT_PUBLISH.txt and is not a raw node datadir"
+    return 1
+  fi
+  if [[ -d "$source/chunks" && -f "$source/manifest.json" ]]; then
+    log "restore source $source contains chunks/ plus manifest.json and is not a raw node datadir"
+    return 1
+  fi
+  if [[ -f "$source/manifest.json" ]]; then
+    if python3 - "$source/manifest.json" <<'PY'
+import json
+import sys
+
+try:
+    payload = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+
+artifact_type = str(payload.get("artifact_type") or "")
+chunks = payload.get("chunks")
+if artifact_type in {"raw_datadir_checkpoint", "ipfs_segment_index", "ipfs_segment"}:
+    sys.exit(0)
+if isinstance(chunks, list):
+    sys.exit(0)
+sys.exit(1)
+PY
+    then
+      log "restore source $source manifest describes sealed artifact chunks, not a raw node datadir"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+validate_restore_input() {
+  local mode="$1" source="$2"
+  case "$mode" in
+    source)
+      if [[ "$source" == *:* && "$source" != /* ]]; then
+        return 0
+      fi
+      local local_source
+      local_source="$(resolve_local_restore_source "$source")"
+      if [[ ! -d "$local_source" ]]; then
+        log "configured restore source does not exist or is not a directory: $local_source"
+        return 1
+      fi
+      reject_sealed_artifact_source "$local_source"
+      ;;
+    ipfs_artifact|ipfs_index|ipfs_index_file)
+      if [[ ! -x "$ROOT/ops/restore-rawdatadir-segment-artifact.py" ]]; then
+        log "IPFS rawdatadir restore tool is missing"
+        return 1
+      fi
+      if ! command -v "${BDAG_IPFS_BINARY:-ipfs}" >/dev/null 2>&1; then
+        log "IPFS rawdatadir restore requires Kubo CLI; set BDAG_IPFS_BINARY or install ipfs"
+        return 1
+      fi
+      if [[ "$mode" == "ipfs_index_file" && ! -s "$(abs_path "$source")" ]]; then
+        log "configured IPFS rawdatadir restore index file is missing or empty: $(abs_path "$source")"
+        return 1
+      fi
+      ;;
+    *)
+      log "internal error: unknown restore mode $mode"
+      return 1
+      ;;
+  esac
 }
 
 restore_from_source() {
@@ -321,32 +404,38 @@ restore_from_source() {
     rsync -a --delete -e "$ssh_command" "${source%/}/" "$NODE_NETWORK_DIR/"
   else
     local local_source
-    local_source="$(abs_path "$source")"
-    if [[ -d "$local_source/mainnet" ]]; then
-      local_source="$local_source/mainnet"
-    fi
+    local_source="$(resolve_local_restore_source "$source")"
     log "restoring chain data from local source $local_source"
     rsync -a --delete "$local_source/" "$NODE_NETWORK_DIR/"
   fi
 }
 
-restore_from_snapshot() {
-  local snapshot="$1"
-  local snapshot_path
-  snapshot_path="$(abs_path "$snapshot")"
+restore_from_ipfs_artifact() {
+  local mode="$1" source="$2" status_file timeout args=()
   mkdir -p "$NODE_NETWORK_DIR"
-  log "restoring chain data from snapshot $snapshot_path"
-  cp -a "$snapshot_path" "$NODE_NETWORK_DIR/snapshot.bdsnap"
-  for companion in "${snapshot_path}.manifest" "${snapshot_path}.json" "$(dirname "$snapshot_path")/manifest.json"; do
-    [[ -f "$companion" ]] && cp -a "$companion" "$NODE_NETWORK_DIR/$(basename "$companion")"
-  done
+  status_file="${BDAG_CHAIN_STATE_RESTORE_IPFS_STATUS_FILE:-$RUNTIME_DIR/ipfs-rawdatadir-self-heal-restore-status.json}"
+  timeout="${BDAG_IPFS_RAWDATADIR_RESTORE_IPFS_TIMEOUT:-600}"
+  args=(--target-dir "$NODE_NETWORK_DIR" --status-file "$status_file" --ipfs-timeout "$timeout" --network "$NETWORK")
+  case "$mode" in
+    ipfs_artifact) args+=(--ipfs-artifact-cid "$source") ;;
+    ipfs_index) args+=(--ipfs-index-cid "$source") ;;
+    ipfs_index_file) args+=(--ipfs-index-file "$(abs_path "$source")") ;;
+  esac
+  if [[ -n "${BDAG_RAWDATADIR_TRUSTED_SIGNERS:-}" ]]; then
+    args+=(--trusted-signers "$BDAG_RAWDATADIR_TRUSTED_SIGNERS")
+  fi
+  log "restoring chain data from signed IPFS rawdatadir artifact mode=$mode source=$source"
+  python3 "$ROOT/ops/restore-rawdatadir-segment-artifact.py" "${args[@]}" >>"$LOG_FILE" 2>&1
 }
 
-copy_existing_snapshot
 if ! choose_restore_source; then
-  log "no trusted restore source or local snapshot was found"
-  stop_service_best_effort "$POOL_SERVICE" || true
-  json_state "blocked" "chain-state restore needed but no restore source/snapshot is configured"
+  log "no trusted rawdatadir/IPFS restore source was found"
+  json_state "blocked" "chain-state restore needed but no rawdatadir/IPFS restore source is configured"
+  exit 1
+fi
+if ! validate_restore_input "$RESTORE_MODE_USED" "$RESTORE_SOURCE_USED"; then
+  log "selected restore input is not safe for destructive chain-state restore"
+  json_state "blocked" "selected restore input is not a restore-safe raw datadir/IPFS artifact"
   exit 1
 fi
 
@@ -363,7 +452,7 @@ mkdir -p "$NODE_DATA_DIR"
 
 case "$RESTORE_MODE_USED" in
   source) restore_from_source "$RESTORE_SOURCE_USED" ;;
-  snapshot) restore_from_snapshot "$RESTORE_SOURCE_USED" ;;
+  ipfs_artifact|ipfs_index|ipfs_index_file) restore_from_ipfs_artifact "$RESTORE_MODE_USED" "$RESTORE_SOURCE_USED" ;;
   *)
     log "internal error: unknown restore mode $RESTORE_MODE_USED"
     json_state "failed" "unknown restore mode"

@@ -110,10 +110,10 @@ small log churn. If the internal disk is too small, the installer falls back to
 a single-device USB profile and the preflight reports that all hot writes share
 one device.
 
-USB-backed chain hosts must not act as default bulk chain sources. The release
-default is `SYNC_SOURCE_NODE=0`. The node still syncs and relays found blocks;
-it just does not make the active chain path a bulk download source for other
-clients.
+USB-backed chain hosts must not serve bulk chain-data traffic from the active
+chain path by default. The node still syncs and relays found blocks; IPFS
+archive work stays on the low-priority raw-datadir sidecar so it cannot compete
+aggressively with mining.
 
 Small scratch files that are safe to lose should not use the chain disk either.
 The release defaults create `/run/bdag-pool` through tmpfiles and set:

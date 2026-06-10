@@ -113,7 +113,7 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.value }}"
           OUT="${PACKAGE_NAME}-${VERSION}.tar.gz"
-          # Do not bundle snapshots/latest.bdsnap — exceeds GitHub's 2GiB-per-asset limit.
+          # Do not bundle mutable chain artifacts; release sync is IPFS/P2P owned.
 
           test -f .env.cpu.example && test -f .env.pool.example || { echo "::error::Missing .env.cpu.example or .env.pool.example"; exit 1; }
 
@@ -144,4 +144,3 @@ jobs:
           files: ${{ steps.package.outputs.artifact }}
           draft: false
           prerelease: false
-

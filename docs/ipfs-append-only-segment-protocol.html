@@ -75,15 +75,13 @@
   {
     "document_type": "bdag_ipfs_append_only_segment_protocol_v1",
     "created_at": "2026-05-31T21:10:00+02:00",
-    "source_repo": "/home/jeremy/blockdag-source/pool-stack-docker",
+    "source_repo": "/home/jeremy/blockdag-source/stack-ipfs-sidecar-current",
     "live_stack": "/home/jeremy/blockdag-asic-pool",
     "stable_latest_ipns": "/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk",
-    "current_segment_index_cid": "bafkreia7jk2ljqi3raiohugp6nw3633njfp7jmnuvqh47po52et4kupu2a",
-    "current_segment_count": 2,
-    "current_segment_head_order": 9502504,
-    "deprecated_fastsnap_root_cid": "bafybeidesnyknx4fojvtpu6hctxnlqbw372eqaqh64tl362lwiaih7bkoa",
-    "deprecated_fastsnap_tip_order": 8639851,
-    "recommended_next_phase": "Backfill earlier history and keep local-writer publication deterministic.",
+    "last_verified_runtime_index_cid": "bafkreicyj5hvy33qc5qtikgyfthhbhgtphkbscyp7rz5vz24tyqc37sksi",
+    "last_verified_runtime_head_order": 10500890,
+    "last_verified_runtime_at": "2026-06-09T23:45:36+02:00",
+    "recommended_next_phase": "Backfill earlier history, add a real segment-to-node import path, and expand the signed deterministic writer roster beyond the bootstrap seed.",
     "safety_rule": "IPFS is never allowed to gate mining. Segment build and publish retries are low-priority background work and must defer under mining pressure."
   }
   </script>
@@ -91,10 +89,10 @@
 <body>
 <header>
   <h1>BlockDAG IPFS Append-Only Segment Protocol</h1>
-  <p class="lede">Design for replacing the stale monolithic FastSnap seed with small immutable chain-data segments, a stable IPNS latest pointer, deterministic writer election, and validation rules that let any honest node reproduce and verify the data.</p>
-  <span class="chip good">Status: phase-1 single writer live</span>
+  <p class="lede">Design for using small immutable chain-data segments, a stable IPNS latest pointer, deterministic writer election, and validation rules that let any honest node reproduce and verify the data.</p>
+  <span class="chip good">Status: bootstrap seed with deterministic roster support</span>
   <span class="chip">Segment target: about 5 minutes</span>
-  <span class="chip">Trust: verify, do not trust IPFS/IPNS</span>
+    <span class="chip">Trust: signed indexes plus consensus verification</span>
   <span class="chip">Mining impact: low-priority only</span>
 </header>
 <main>
@@ -114,12 +112,20 @@
         <div class="value">2</div>
       </article>
     </div>
-    <div class="callout warn-callout">
-      The old FastSnap root <code>bafybeidesnyknx4fojvtpu6hctxnlqbw372eqaqh64tl362lwiaih7bkoa</code> at block/order <code>8,639,851</code> is deprecated and unpinned. It must remain only as historical evidence, not as the latest bootstrap source.
+    <p>The active discovery file is <code>ops/ipfs-content-discovery.json</code>. It records the stable IPNS name, the current immutable segment-index CID, and the resolver-cache warning. Fresh consumers should verify the IPNS result against the discovery file and then verify the index and segments themselves.</p>
+    <p>The stable IPNS name is permanent only if it is maintained. This host's <code>bdag-ipfs-segment-writer.timer</code>, <code>bdag-ipfs-content-sidecar.timer</code>, and <code>bdag-rawdatadir-sidecar.timer</code> now run every five minutes at low CPU and idle IO priority. The chain-order segment writer is allowed to checkpoint already-imported finalized data during catch-up, because it reads bounded RPC ranges and writes immutable IPFS objects. Raw datadir copying, raw datadir sealing, and raw datadir content publication remain subordinate to sync priority, mining readiness, and host I/O pressure unless a source is explicitly quiesced or snapshotted.</p>
+    <p>The segment writer publishes one finalized 300-order segment per timer tick by default. Every new index CID now records <code>previous_index_cid</code>, <code>previous_index_link</code>, and <code>append_only_index_policy</code> so that a consumer can walk backward through immutable index versions instead of trusting the mutable latest pointer. Indexes and manifests are signed with an Ed25519 writer identity provisioned by <code>ops/ipfs_segment_identity.py</code>. If the stored live-tail head is stale by more than <code>BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS</code>, the writer starts a new near-tip live-tail epoch and records the old head under deprecated history. The new epoch remains internally contiguous and explicitly marks earlier history as incomplete until verified backfill or a signed checkpoint fills it.</p>
+    <p>New deployments provision a local writer key, add the writer to the roster, and require signatures by default. The same key file signs raw-datadir checkpoint artifacts through <code>BDAG_RAWDATADIR_SIGNING_KEY_FILE</code>, so a node has one local archive identity instead of separate unaudited signing roots. A node may publish chain-order segments only when it is the deterministic writer for the finalized range and its signature verifies against the trusted writer map. Local bootstrap publication without an independent reference RPC is no longer the default; a seed host must enable it explicitly and receivers must still treat those objects as transport evidence until consensus validation passes. Earlier history before the first verified segment still needs backfill before this is a full segment-replay source.</p>
+    <p><code>ops/restore-rawdatadir-segment-artifact.py</code> is the current destructive IPFS bootstrap path for an empty node datadir. It restores only <code>raw_datadir_checkpoint</code> artifacts whose manifest signature verifies against <code>BDAG_RAWDATADIR_TRUSTED_SIGNERS</code>, whose manifest root matches, and whose chunks/files match their declared SHA-256 values. <code>ops/ipfs_restore_drill.py</code> is the read-only consumer drill for chain-order segments. It fetches an index, manifests, and payloads from IPFS, verifies signatures, recursive previous-index lineage, CIDs, sha256 links, manifest chaining, raw-block hashes, and order continuity, and writes a local drill report without mutating chain data. Fresh installs can reconstruct raw datadir artifacts now; chain-order segment replay remains disabled until an importer and scratch-node validation path are implemented.</p>
+  </section>
+
+  <section>
+    <h2>Trust Boundary</h2>
+    <div class="callout">
+      IPFS gives immutable content addressing, not automatic blockchain truth. A CID proves the bytes fetched are the bytes named by that CID. It does not prove those bytes are canonical chain history until the manifest, hashes, order continuity, writer eligibility, and normal chain consensus checks pass.
     </div>
-    <p>The active discovery file is <code>ops/ipfs-content-discovery.json</code>. It records the stable IPNS name, the current immutable segment-index CID, the deprecated FastSnap CIDs, and the resolver-cache warning. Fresh consumers should verify the IPNS result against the discovery file and then verify the index and segments themselves.</p>
-    <p>The stable IPNS name is permanent only if it is maintained. This host's <code>bdag-ipfs-segment-writer.timer</code> publishes new segment indexes at low priority and republishes the current pointer whenever a segment append succeeds. The content sidecar can still republish the discovery CID while waiting, because distributed IPNS records need periodic maintenance even when the pointed-to CID has not changed.</p>
-    <p>Phase 1 is deliberately local-writer: this pool's local node writes live-tail segments. The current published head is order <code>9502504</code>; earlier history before order <code>9502145</code> still needs backfill before this is a full bootstrap source.</p>
+    <p>The user assumption is correct with this boundary: once a segment, manifest, or index is written under a CID, that exact object cannot be silently changed. Any byte change produces a different CID. The latest pointer is different: IPNS is intentionally mutable and only helps a node discover the current index. Therefore IPNS must never be treated as authority by itself.</p>
+    <p>The durable rule is: resolve IPNS only to find a candidate latest index, then verify the object type before choosing a restore path. Raw datadir restore accepts only a <code>bdag_ipfs_content_index_v1</code> or artifact CID that leads to a signed <code>raw_datadir_checkpoint</code>. Chain-order segment catch-up accepts only a <code>bdag_ipfs_segment_index_v1</code> and then recursively verifies <code>previous_index_cid</code> links, segment manifests, payload CIDs, sha256 values, order continuity, and normal chain consensus. Availability is a separate concern and requires local pins, remote pins, or enough provider nodes to keep the CIDs reachable.</p>
   </section>
 
   <section>
@@ -182,14 +188,14 @@
         <tr>
           <td><code>segment index</code></td>
           <td>Immutable CID per version</td>
-          <td>Append-only ordered list of segment manifest CIDs plus index sequence, current head, and deprecated content.</td>
-          <td>Only accept append-only transitions from the previous known index. Never delete or rewrite accepted segment history.</td>
+          <td>Append-only ordered list of segment manifest CIDs plus index sequence, current head, deprecated content, <code>previous_index_cid</code>, and <code>previous_index_link</code>.</td>
+          <td>Only accept append-only transitions from the previous known index. Recursively verify previous index CIDs. Never delete or rewrite accepted segment history.</td>
         </tr>
         <tr>
           <td><code>IPNS latest pointer</code></td>
           <td>Mutable IPNS record</td>
           <td>Pointer to the latest segment-index CID.</td>
-          <td>Use as discovery only. A stale IPNS value is not a consensus failure; compare sequence/head and verify the index.</td>
+          <td>Use as discovery only. A stale IPNS value is not a consensus failure; compare sequence/head and verify recursive index lineage.</td>
         </tr>
         <tr>
           <td><code>publisher registry</code></td>
@@ -217,7 +223,7 @@
 
   <section>
     <h2>Writer Election</h2>
-    <p>The writer should be selected from chain data that every node can independently observe after finality. The recommended schedule is deterministic, fallback-capable, and does not require a shared IPNS private key.</p>
+    <p>The writer should be selected from data that every node can independently derive after finality. The implemented source-level rule is <code>rendezvous_sha256_v1</code> over <code>network || start_order || end_order || previous_manifest_cid || writer_id</code>. The highest score owns the primary slot for that immutable segment range. If no roster is configured, the local node is allowed to seed the archive until a roster exists.</p>
     <h3>Definitions</h3>
     <table>
       <thead><tr><th>Name</th><th>Rule</th></tr></thead>
@@ -251,13 +257,26 @@ rank eligible publishers by weighted rank_score, with win_count as bounded weigh
     <h2>Validation Pipeline</h2>
     <ol>
       <li>Resolve the latest IPNS pointer, preferably uncached for freshness-sensitive sync.</li>
-      <li>Fetch the index CID and validate index schema, network, genesis, sequence, and append-only continuity.</li>
+      <li>Fetch the index CID and validate index schema, network, genesis, sequence, <code>previous_index_cid</code> lineage, and append-only continuity.</li>
       <li>For each new segment, fetch the manifest CID and verify registry binding, deterministic election rank, fallback-slot timing, and previous-segment hash link.</li>
       <li>Fetch payload chunks by CID. Verify chunk hashes and payload root.</li>
       <li>Replay/import into a scratch verifier or deterministic importer. Confirm order continuity, parent links, state roots, EVM roots where available, and final segment head.</li>
       <li>Only after verification, mark the segment usable locally and update local sync state.</li>
       <li>Pin useful verified segments if the node has storage budget; otherwise keep a bounded cache and rely on provider discovery.</li>
     </ol>
+  </section>
+
+  <section>
+    <h2>Restore Paths</h2>
+    <p><code>ops/restore-rawdatadir-segment-artifact.py</code> is the destructive raw-checkpoint restore path. It can read a local artifact directory, an SSH artifact directory, an IPFS raw artifact CID, or a <code>bdag_ipfs_content_index_v1</code> that names the raw artifact CID. It writes into the target datadir only after the artifact root, trusted Ed25519 signature, publishability metadata, chunk hashes, file hashes, path safety rules, and <code>mainnet</code> metadata pass. The release installer calls it before first start only when the node datadir is empty and a raw artifact/index source is configured.</p>
+    <p><code>ops/ipfs_restore_drill.py</code> is the phase-1 consumer boundary. It fetches a local index, a discovery-selected index CID, or fixture CIDs, then verifies every selected manifest and payload before writing <code>ops/runtime/ipfs-content/restore-drill-status.json</code>.</p>
+    <p>The drill is intentionally non-destructive. It never mutates the node datadir, never starts or stops mining services, and always records <code>usable_for_destructive_restore=false</code> until a separate importer can prove a reconstructed candidate with normal consensus validation. This keeps IPFS useful for automated install and recovery readiness without letting untrusted transport bytes become chain authority.</p>
+    <ul>
+      <li>Index checks: document type, <code>mainnet</code>, non-empty segments, contiguous orders, monotonic segment ids, and current-head consistency.</li>
+      <li>Manifest checks: network, segment metadata, payload CID, manifest SHA-256, payload SHA-256, payload format, and previous-manifest CID links.</li>
+      <li>Payload checks: canonical SHA-256, order continuity, start/end hash consistency, block count, and raw-block SHA-256 for each block.</li>
+      <li>Installer defaults: <code>BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART=1</code> for configured raw artifacts, <code>BDAG_IPFS_RESTORE_MODE=verify</code> for chain-order segments, latest 16 segment checks, and no materialized segment candidate unless explicitly enabled.</li>
+    </ul>
   </section>
 
   <section>
@@ -277,7 +296,8 @@ rank eligible publishers by weighted rank_score, with win_count as bounded weigh
     <div class="callout bad-callout">
       IPFS freshness is never allowed to gate mining, template creation, block submission, node catch-up, or ASIC recovery.
     </div>
-    <p>The sidecar's default behavior is continuous lazy retry. It should run with low CPU and IO priority, pause or shrink work under mining pressure, and resume after pressure clears. If the elected writer is under pressure and misses its slot, the deterministic fallback writer takes over. The network keeps moving without blocking the mining path.</p>
+    <p>The sidecar's default behavior is continuous lazy retry. It should run with low CPU and IO priority, pause or shrink work under sync priority, mining pressure, or host I/O pressure, and resume after pressure clears. If the elected writer is under pressure and misses its slot, the deterministic fallback writer takes over. The network keeps moving without blocking the mining path.</p>
+    <p>Chain-order segment checkpoints and raw datadir restore checkpoints have different safety boundaries. Segment checkpoints can be produced from finalized imported orders while the node continues catching up. Raw datadir checkpoints should be considered destructive-restore candidates only when produced from a stopped node, a filesystem snapshot, or another quiesced source; a hot rsync may be useful as a warm copy but must not be advertised as restore-safe without finalization evidence.</p>
   </section>
 
   <section>
@@ -287,13 +307,13 @@ rank eligible publishers by weighted rank_score, with win_count as bounded weigh
       <tbody>
         <tr>
           <td>0. Runtime correction</td>
-          <td>Deprecate and unpin stale FastSnap seed; publish empty segment index through IPNS.</td>
-          <td>Discovery file points to segment index, old FastSnap CIDs are deprecated only, new index CID is pinned.</td>
+          <td>Publish the initial segment index through IPNS and pin it locally.</td>
+          <td>Discovery file points to segment index and the current index CID is pinned.</td>
         </tr>
         <tr>
           <td>1. Single-publisher segments</td>
-          <td>Build canonical segment manifest/payload schema and local safe-copy verifier. This pool publishes first segments only from verified local data.</td>
-          <td>Two independent local builds of the same range produce the same payload CID; importer verifies and catches up from the last segment head.</td>
+          <td>Build canonical segment manifest/payload schema and local safe-copy verifier. This pool publishes first segments only from verified local data. Raw checkpoint restore uses signed <code>bdag_ipfs_content_index_v1</code> inputs until a segment replay importer exists.</td>
+          <td>Two independent local builds of the same range produce the same payload CID; raw IPFS checkpoint restore reconstructs an empty node datadir from a trusted artifact; segment importer remains explicitly disabled until scratch validation exists.</td>
         </tr>
         <tr>
           <td>2. Publisher durability proposals</td>
@@ -329,6 +349,7 @@ rank eligible publishers by weighted rank_score, with win_count as bounded weigh
     <h2>Non-Negotiable Rules</h2>
     <ul>
       <li>Never require a node to trust IPFS, IPNS, a gateway, or a publisher without verifying chain data.</li>
+      <li>Never treat the mutable IPNS latest pointer as archive authority. It is only a discovery path to a candidate immutable index CID.</li>
       <li>Never share one IPNS private key among all writers. Multi-writer authority must be deterministic validation, threshold signing, or chain-visible commitment.</li>
       <li>Never mutate a segment. Append a new segment and a new index CID.</li>
       <li>Never let segment building or publishing take priority over mining-critical CPU, IO, RPC, or network work.</li>

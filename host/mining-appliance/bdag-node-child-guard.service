@@ -7,7 +7,7 @@ Wants=docker.service
 Type=oneshot
 WorkingDirectory=/opt/blockdag-pool
 Environment=BDAG_PROJECT_ROOT=/opt/blockdag-pool
-Environment=BDAG_NODE_CHILD_GUARD_NODES=node
+Environment=BDAG_NODE_CHILD_GUARD_NODE=node
 ExecStart=/usr/local/sbin/bdag-node-child-guard
 Nice=5
 IOSchedulingClass=best-effort

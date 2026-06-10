@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed mining backend readiness and topology gate."""
+"""Fail-closed mining node readiness and topology gate."""
 
 from __future__ import annotations
 
@@ -31,9 +31,9 @@ JSON_RPC_CONTENT_TYPE = "application/json"
 # Policy markers consumed by the governance suite:
 # direct BlockDAG node JSON-RPC endpoints
 # unexpected_extra_service
-# unexpected_extra_pool_backend
+# unexpected_extra_backend
 # unexpected_extra_running_container
-# unexpected_extra_eligible_backend
+# unexpected_extra_eligible_node
 
 HARD_TEMPLATE_ERROR_CODES = {
     "bdag_pool_syncing",
@@ -157,20 +157,6 @@ def parse_backend_arg(value: str) -> Backend:
     if not url.startswith(("http://", "https://")):
         raise argparse.ArgumentTypeError(f"backend {name!r} URL must be http(s), got {url!r}")
     return Backend(name=name, url=url)
-
-
-def parse_backend_list(value: str | None) -> list[str]:
-    if not value:
-        return []
-    names: list[str] = []
-    for item in value.split(","):
-        item = item.strip()
-        if not item:
-            continue
-        if "=" in item:
-            item = item.split("=", 1)[0].strip()
-        names.append(canonical_node_name(item))
-    return names
 
 
 def canonical_node_name(value: str) -> str:
@@ -706,49 +692,42 @@ def evaluate_backend(
 
 def validate_topology(
     *,
-    node_services: list[str] | None = None,
-    pool_rpc_backends: list[str] | None = None,
+    node_service: str | None = None,
+    backend_name: str | None = None,
     running_containers: list[str] | None = None,
-    eligible_backends: list[str] | None = None,
-    excluded_backends: list[str] | None = None,
+    eligible_backend: str | None = None,
     strict_routing: bool = False,
 ) -> dict[str, Any]:
-    normalized_services = sorted({canonical_node_name(item) for item in (node_services or []) if item})
-    normalized_pool_backends = sorted({canonical_node_name(item) for item in (pool_rpc_backends or []) if item})
+    normalized_service = canonical_node_name(node_service or "node")
+    normalized_backend = canonical_node_name(backend_name or "")
     normalized_running = sorted({canonical_node_name(item) for item in (running_containers or []) if item})
-    normalized_eligible = sorted({canonical_node_name(item) for item in (eligible_backends or []) if item})
-    normalized_excluded = sorted({canonical_node_name(item) for item in (excluded_backends or []) if item})
+    normalized_eligible = canonical_node_name(eligible_backend or "")
     failures: list[str] = []
 
-    for label, values in (
-        ("service", normalized_services),
-        ("pool_backend", normalized_pool_backends),
-        ("running_container", normalized_running),
-        ("eligible_backend", normalized_eligible),
-    ):
-        for node in values:
-            if node != "node" and node not in normalized_excluded:
-                failures.append(f"unexpected_extra_{label}:{node}")
+    if normalized_service != "node":
+        failures.append(f"unexpected_extra_service:{normalized_service}")
+    if normalized_backend and normalized_backend != "node":
+        failures.append(f"unexpected_extra_backend:{normalized_backend}")
+    if normalized_eligible and normalized_eligible != "node":
+        failures.append(f"unexpected_extra_eligible_node:{normalized_eligible}")
+    for node in normalized_running:
+        if node != "node":
+            failures.append(f"unexpected_extra_running_container:{node}")
 
-    if running_containers is not None:
-        for node in normalized_running:
-            if node == "node" and node not in normalized_services and node not in normalized_excluded:
-                failures.append(f"running_container_not_declared:{node}")
+    if running_containers is not None and "node" in normalized_running and normalized_service != "node":
+        failures.append("running_container_not_declared:node")
 
-    if strict_routing and normalized_eligible:
-        for backend in normalized_pool_backends:
-            if backend not in normalized_eligible:
-                failures.append(f"pool_routes_ineligible_backend:{backend}")
+    if strict_routing and normalized_backend and normalized_backend != normalized_eligible:
+        failures.append(f"pool_routes_ineligible_backend:{normalized_backend}")
 
     return {
         "ok": not failures,
         "failures": failures,
-        "topology": "active_node",
-        "node_services": normalized_services,
-        "pool_rpc_backends": normalized_pool_backends,
+        "topology": "single_node",
+        "node_service": normalized_service,
+        "backend": normalized_backend,
         "running_containers": normalized_running,
-        "eligible_backends": normalized_eligible,
-        "excluded_backends": normalized_excluded,
+        "eligible_backend": normalized_eligible,
         "strict_routing": strict_routing,
     }
 
@@ -831,7 +810,7 @@ def collect_log_vetoes(
 
 
 def evaluate_gate(
-    backends: list[Backend],
+    backend: Backend,
     *,
     reference_rpc_url: str | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
@@ -842,57 +821,51 @@ def evaluate_gate(
     allow_reference_unavailable: bool = False,
     log_sources: list[str] | None = None,
     log_lookback_minutes: int = DEFAULT_LOG_LOOKBACK_MINUTES,
-    node_services: list[str] | None = None,
-    pool_rpc_backends: list[str] | None = None,
+    node_service: str | None = None,
     running_containers: list[str] | None = None,
-    excluded_backends: list[str] | None = None,
     strict_routing: bool = False,
     pow_type: int = DEFAULT_POW_TYPE,
     mining_address: str | None = None,
 ) -> dict[str, Any]:
     resolved_mining_address = default_mining_address(mining_address)
-    backend_results = {
-        backend.name: evaluate_backend(
-            backend,
-            reference_rpc_url=reference_rpc_url,
-            timeout=timeout,
-            sample_count=sample_count,
-            sample_interval_seconds=sample_interval_seconds,
-            after_chain_incident=after_chain_incident,
-            max_reference_lag=max_reference_lag,
-            allow_reference_unavailable=allow_reference_unavailable,
-            pow_type=pow_type,
-            mining_address=resolved_mining_address,
-        )
-        for backend in backends
-    }
-    eligible_backends = [name for name, result in backend_results.items() if result.get("ready")]
+    backend_result = evaluate_backend(
+        backend,
+        reference_rpc_url=reference_rpc_url,
+        timeout=timeout,
+        sample_count=sample_count,
+        sample_interval_seconds=sample_interval_seconds,
+        after_chain_incident=after_chain_incident,
+        max_reference_lag=max_reference_lag,
+        allow_reference_unavailable=allow_reference_unavailable,
+        pow_type=pow_type,
+        mining_address=resolved_mining_address,
+    )
+    eligible_backend = backend.name if backend_result.get("ready") else ""
 
     topology = validate_topology(
-        node_services=node_services,
-        pool_rpc_backends=pool_rpc_backends,
+        node_service=node_service,
+        backend_name=backend.name,
         running_containers=running_containers,
-        eligible_backends=eligible_backends,
-        excluded_backends=excluded_backends,
+        eligible_backend=eligible_backend,
         strict_routing=strict_routing,
     )
     logs = collect_log_vetoes(log_sources or [], lookback_minutes=log_lookback_minutes)
     failures: list[str] = []
-    if not eligible_backends:
-        failures.append("no_ready_backend")
+    if not eligible_backend:
+        failures.append("node_not_ready")
     failures.extend(logs["failures"])
     failures.extend(topology["failures"])
 
     return {
         "ok": not failures,
         "status": "ready" if not failures else "not_ready",
-        "eligible_backends": eligible_backends,
+        "eligible_backend": eligible_backend,
         "failures": failures,
-        "backends": backend_results,
+        "backend": backend_result,
         "topology": topology,
         "logs": logs,
         "policy": {
-            "direct_backend_urls_only": True,
+            "single_node_backend_only": True,
             "sample_count": sample_count,
             "sample_interval_seconds": sample_interval_seconds,
             "timeout_seconds": timeout,
@@ -907,7 +880,7 @@ def evaluate_gate(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backend", action="append", type=parse_backend_arg, required=True, help="Direct backend name=url")
+    parser.add_argument("--backend", type=parse_backend_arg, required=True, help="Direct node backend name=url")
     parser.add_argument(
         "--reference-rpc-url",
         default=os.environ.get("BDAG_CHAIN_REFERENCE_RPC_URL") or None,
@@ -932,10 +905,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--log-source", action="append", default=[], help="file:/path, plain path, -, or docker:container")
     parser.add_argument("--log-lookback-minutes", type=int, default=DEFAULT_LOG_LOOKBACK_MINUTES)
-    parser.add_argument("--node-services", default=os.environ.get("BDAG_NODE_SERVICES") or None)
-    parser.add_argument("--pool-rpc-backends", default=os.environ.get("POOL_RPC_BACKENDS") or None)
+    parser.add_argument("--node-service", default=os.environ.get("BDAG_NODE_SERVICE") or "node")
     parser.add_argument("--running-container", action="append", default=[])
-    parser.add_argument("--excluded-backend", action="append", default=[])
     parser.add_argument("--strict-routing", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser
@@ -954,10 +925,8 @@ def main(argv: list[str] | None = None) -> int:
         allow_reference_unavailable=args.allow_reference_unavailable,
         log_sources=args.log_source,
         log_lookback_minutes=args.log_lookback_minutes,
-        node_services=parse_backend_list(args.node_services),
-        pool_rpc_backends=parse_backend_list(args.pool_rpc_backends),
+        node_service=args.node_service,
         running_containers=args.running_container,
-        excluded_backends=args.excluded_backend,
         strict_routing=args.strict_routing,
         pow_type=args.pow_type,
         mining_address=args.mining_address,
@@ -966,8 +935,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
         print(f"mining readiness: {result['status']}")
-        if result["eligible_backends"]:
-            print("eligible backends: " + ", ".join(result["eligible_backends"]))
+        if result["eligible_backend"]:
+            print("eligible backend: " + str(result["eligible_backend"]))
         if result["failures"]:
             print("failures:")
             for failure in result["failures"]:

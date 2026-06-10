@@ -29,6 +29,23 @@ REQUIRE_CANONICAL_SAFETY = str(
 ).strip().lower() not in {"0", "false", "no", "off"}
 UNSAFE_MODES = {"catchup_pause", "syncing", "unknown", "waiting_for_status_sample"}
 READY_DOWN_MODES = {"synced", "mining", "ready_no_miners"}
+NODE_STATE_BLOCKER_TERMS = (
+    "missing trie",
+    "restore or resync",
+    "chain state",
+    "node is still syncing",
+    "pool is waiting for node sync",
+    "node is not ready",
+    "selected pool backend is still catching up",
+    "bdag pool syncing",
+    "client in initial download",
+)
+POOL_STOPPED_TERMS = (
+    "pool is not running",
+    "asic-pool is not running",
+    "pool container is stopped",
+    "asic pool container is stopped",
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +63,13 @@ class PoolStartGateDecision:
 def _safe_float(value: Any) -> float | None:
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return None
 
@@ -136,6 +160,58 @@ def canonical_safety_proven(status: dict[str, Any]) -> tuple[bool, str]:
     return False, f"canonical public-chain safety proof is unsafe{suffix}"
 
 
+def _status_nodes(status: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    result: list[tuple[str, dict[str, Any]]] = []
+
+    def append_nodes(value: Any) -> None:
+        if isinstance(value, dict):
+            for name, node in value.items():
+                if isinstance(node, dict):
+                    result.append((str(name), node))
+        elif isinstance(value, list):
+            for index, node in enumerate(value):
+                if isinstance(node, dict):
+                    result.append((str(index), node))
+
+    append_nodes(status.get("nodes"))
+    sync_progress = status.get("sync_progress")
+    if isinstance(sync_progress, dict):
+        append_nodes(sync_progress.get("nodes"))
+    return result
+
+
+def _reason_text(status: dict[str, Any]) -> str:
+    status_reason = str(status.get("status_reason") or "")
+    degraded_reasons = status.get("degraded_reasons")
+    blocking_failures = status.get("blocking_failures")
+    failures = status.get("failures")
+    pieces: list[str] = [status_reason]
+    for value in (degraded_reasons, blocking_failures, failures):
+        if isinstance(value, list):
+            pieces.extend(str(item) for item in value)
+    return " ".join(pieces).lower()
+
+
+def _overall_down_is_pool_only(status: dict[str, Any], reason_text: str) -> bool:
+    if any(term in reason_text for term in NODE_STATE_BLOCKER_TERMS):
+        return False
+    if any(term in reason_text for term in POOL_STOPPED_TERMS):
+        return True
+
+    containers = status.get("containers")
+    if not isinstance(containers, dict):
+        return False
+    pool = containers.get("pool")
+    if not isinstance(pool, dict) or pool.get("running") is not False:
+        return False
+    for name, container in containers.items():
+        if name == "pool" or not isinstance(container, dict):
+            continue
+        if container.get("running") is False:
+            return False
+    return True
+
+
 def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "direct") -> PoolStartGateDecision:
     if not isinstance(status, dict):
         return PoolStartGateDecision(False, ("stack status unavailable; cannot prove pool start is safe",), status_source)
@@ -160,14 +236,31 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
         reasons.append("public-chain divergence containment is active")
     if catchup_policy.get("active") or sync_health.get("catchup_pause_active"):
         reasons.append("chain catch-up pause is active")
+    if sync_health.get("needs_chain_data_restore") or sync_health.get("chain_data_restore_required"):
+        reasons.append("chain data restore is required before mining")
+    if sync_health.get("needs_fast_sync_repair"):
+        reasons.append("chain sync repair is required before mining")
+
+    sync_progress = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
+    remaining_blocks = _safe_int(sync_progress.get("remaining_blocks"))
+    if remaining_blocks is not None and remaining_blocks > 0:
+        reasons.append(f"chain sync still has {remaining_blocks} block(s) remaining")
+
+    for node_name, node in _status_nodes(status):
+        missing_trie_count = _safe_int(node.get("missing_trie_node_warnings")) or 0
+        if node.get("chain_state_blocker"):
+            reasons.append(f"{node_name} reports a chain-state blocker")
+        if missing_trie_count > 0 or node.get("missing_trie_node_lines"):
+            reasons.append(f"{node_name} reports missing trie state")
 
     mode = str(status.get("mode") or "").strip().lower()
     overall = str(status.get("overall") or "").strip().lower()
+    reason_text = _reason_text(status)
     if mode in UNSAFE_MODES:
         reasons.append(f"status mode is not safe for pool start: {mode}")
     if overall == "syncing":
         reasons.append("overall stack status is syncing")
-    if overall == "down" and mode not in READY_DOWN_MODES:
+    if overall == "down" and not (mode in READY_DOWN_MODES and _overall_down_is_pool_only(status, reason_text)):
         reasons.append(f"overall stack status is down with non-ready mode: {mode or 'unknown'}")
 
     rpc_template = status.get("rpc_template_health")
@@ -179,9 +272,6 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
         if not safe:
             reasons.append(canonical_reason)
 
-    status_reason = str(status.get("status_reason") or "")
-    degraded_reasons = status.get("degraded_reasons")
-    reason_text = (status_reason + " " + " ".join(str(item) for item in degraded_reasons or [])).lower()
     text_blockers = (
         ("public-chain divergence", "public-chain divergence is reported in status"),
         ("catch-up pause active", "chain catch-up pause is reported in status"),

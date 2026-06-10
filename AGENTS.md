@@ -73,12 +73,10 @@ override `POOL_GBT_MIN_INTERVAL_MS` below `1000`, do not override
 least `10` seconds apart unless a measured soak test proves the node can absorb
 more frequent RPC traffic while importing and mining.
 
-Any system with USB-backed blockchain data is a FastSync/FastArtifact consumer,
-not a source, by default. Keep `SYNC_SOURCE_NODE=0`; do not reintroduce
-`NODE_ARGS_APPEND=--fastartifactsync` or artifact serving on low-IO USB hosts.
-These nodes must still do normal outbound sync and block relay, but must not
-serve bulk range, snapshot, or artifact traffic from the USB chain path unless a
-human deliberately overrides the policy for a proven
+Any system with USB-backed blockchain data must keep recovery/archive work on the
+low-priority raw-datadir and IPFS sidecars. These nodes must still do normal
+outbound sync and block relay, but must not serve bulk chain-data traffic from
+the USB chain path unless a human deliberately overrides the policy for a proven
 high-IO source host.
 
 Fresh installs assume zero miner sources. Do not hard-code one, four, five, or
@@ -132,6 +130,21 @@ render it with the last three hex characters of the MAC as the suffix
 (`Name-abc`), never an IP suffix. Release defaults must not auto-generate or ship
 site-specific miner names; fresh installs start with no custom miner names and
 only display configured names after an operator explicitly adds them.
+
+Source-level imperative: physical ASIC miners and ASIC work lanes must be
+tracked only by normalized MAC identity (`mac:<mac>`). IP addresses are
+ephemeral observed routes used to reach ASIC HTTP/Stratum endpoints; they must
+not become ASIC registry keys, dashboard identity keys, expected lane IDs,
+watchdog stall/cooldown keys, earnings/history merge keys, or display suffixes.
+The stack miner registry is the common source for ASIC MAC identity. The stack
+projects current route-to-MAC observations into the pool through
+`POOL_ASIC_MAC_OVERRIDES` and passes `BDAG_ASIC_LAN_CIDRS` into the pool, the
+pool resolves active ASIC LAN lanes to MACs, and the dashboard consumes those
+MAC identities. If a LAN ASIC route cannot be resolved to a MAC address, do not
+promote that route into a miner lane; surface it as an unattributed/observed
+route until the MAC is collected. Remote Stratum clients outside the configured
+ASIC LAN may use IP-based operational identity; this exception must never be
+used for physical ASIC hardware on the mining LAN.
 
 ## Self-Healing Release Invariants
 

@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 # Keep a low-priority local sidecar copy close to the live datadir. It does not
-# publish an artifact by itself; use ops/publish-rawdatadir-artifact.sh to run a
-# guarded final sync window and build from the sidecar.
+# publish directly by itself. The IPFS content and segment sidecars seal and
+# publish verified content after this low-priority copy is safe.
 
 PROJECT_ROOT="${BDAG_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 BDAG_STACK_DEFAULTS_FILE="${BDAG_STACK_DEFAULTS_FILE:-$PROJECT_ROOT/ops/config/stack-defaults.env}"
@@ -13,28 +13,26 @@ if [[ -f "$BDAG_STACK_DEFAULTS_FILE" ]]; then
   . "$BDAG_STACK_DEFAULTS_FILE"
   set +a
 fi
-REQUESTED_NETWORK="${BDAG_RAWDATADIR_NETWORK:-${BDAG_FASTSNAP_NETWORK:-mainnet}}"
+REQUESTED_NETWORK="${BDAG_RAWDATADIR_NETWORK:-mainnet}"
 if [[ "${REQUESTED_NETWORK,,}" != "mainnet" ]]; then
   printf '[%s] raw datadir sidecar refuses non-mainnet network: %s\n' "$(date -Is)" "$REQUESTED_NETWORK" >&2
   exit 2
 fi
 NETWORK="mainnet"
-NODE_SERVICES_CSV="${BDAG_NODE_SERVICES:-node}"
-ACTIVE_NODE_SERVICE="${BDAG_RAWDATADIR_ACTIVE_SERVICE:-${NODE_SERVICES_CSV%%,*}}"
+ACTIVE_NODE_SERVICE="${BDAG_RAWDATADIR_ACTIVE_SERVICE:-${BDAG_NODE_SERVICE:-node}}"
 ACTIVE_NODE_SERVICE="${ACTIVE_NODE_SERVICE:-node}"
 DEFAULT_NODE_DIR="${BDAG_NODE_DATA_DIR:-$PROJECT_ROOT/data/node}"
 SOURCE_DIR="${BDAG_RAWDATADIR_SIDECAR_SOURCE:-$DEFAULT_NODE_DIR/$NETWORK}"
 SIDECAR_DIR="${BDAG_RAWDATADIR_SIDECAR_DIR:-$PROJECT_ROOT/data-restore/rawdatadir-sidecar/$NETWORK}"
 LOCK_FILE="${BDAG_RAWDATADIR_SIDECAR_LOCK:-$PROJECT_ROOT/ops/runtime/rawdatadir-sidecar.lock}"
 LOG_FILE="${BDAG_RAWDATADIR_SIDECAR_LOG:-$PROJECT_ROOT/ops/runtime/logs/rawdatadir-sidecar-$(date +%Y%m%d).log}"
-STATUS_FILE="${BDAG_RAWDATADIR_SOURCE_STATUS:-$PROJECT_ROOT/ops/runtime/rawdatadir-source-status.json}"
+STATUS_FILE="${BDAG_RAWDATADIR_SIDECAR_SAFETY_STATUS:-$PROJECT_ROOT/ops/runtime/rawdatadir-sidecar-safety-status.json}"
 SAFE_STATUS_FILE="${BDAG_RAWDATADIR_SIDECAR_SAFE_STATUS:-$PROJECT_ROOT/ops/runtime/rawdatadir-sidecar-safe-status.json}"
 DELETE_MODE="${BDAG_RAWDATADIR_SIDECAR_DELETE:-1}"
 BWLIMIT="${BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT:-4096}"
 DELAY_UPDATES="${BDAG_RAWDATADIR_SIDECAR_DELAY_UPDATES:-0}"
 USE_SUDO="${BDAG_RAWDATADIR_SIDECAR_USE_SUDO:-auto}"
-SIDECAR_MODE="${BDAG_RAWDATADIR_SIDECAR_MODE:-${BDAG_RAWDATADIR_SOURCE_MODE:-auto}}"
-SYNC_SOURCE_NODE_VALUE="${SYNC_SOURCE_NODE:-}"
+SIDECAR_MODE="${BDAG_RAWDATADIR_SIDECAR_MODE:-auto}"
 FINAL_STOPPED_SYNC="${BDAG_RAWDATADIR_SIDECAR_FINAL_STOPPED_SYNC:-0}"
 CONTENT_MODE="${BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE:-auto}"
 CONTENT_SCRIPT="$PROJECT_ROOT/ops/seal_rawdatadir_sidecar_content.py"
@@ -76,6 +74,14 @@ run_low_priority() {
     command=(nice -n 19 "${command[@]}")
   fi
   "${command[@]}"
+}
+
+append_seal_env_if_set() {
+  local key="$1"
+  local value="${!key:-}"
+  if [[ -n "$value" ]]; then
+    seal_env+=("$key=$value")
+  fi
 }
 
 create_open_restore_point() {
@@ -168,7 +174,7 @@ local_sidecar_copy_can_ignore_reasons() {
     [[ -n "$reason" ]] || continue
     saw_reason=1
     case "$reason" in
-      source_mode_disabled)
+      sidecar_mode_disabled)
         ;;
       *)
         return 1
@@ -201,17 +207,10 @@ if ! command -v rsync >/dev/null 2>&1; then
 fi
 case "${SIDECAR_MODE,,}" in
   0|false|no|off|disabled)
-    log "raw datadir sidecar sync disabled by BDAG_RAWDATADIR_SIDECAR_MODE/BDAG_RAWDATADIR_SOURCE_MODE=$SIDECAR_MODE"
+    log "raw datadir sidecar sync disabled by BDAG_RAWDATADIR_SIDECAR_MODE=$SIDECAR_MODE"
     exit 0
     ;;
 esac
-case "${SYNC_SOURCE_NODE_VALUE,,}" in
-  0|false|no|off|disabled)
-    log "raw datadir sidecar sync disabled by SYNC_SOURCE_NODE=$SYNC_SOURCE_NODE_VALUE"
-    exit 0
-    ;;
-esac
-
 case "${FINAL_STOPPED_SYNC,,}" in
   1|true|yes|on)
     log "final stopped sidecar sync: skipping live-status background maintenance gate"
@@ -228,10 +227,10 @@ case "${FINAL_STOPPED_SYNC,,}" in
     ;;
 esac
 
-eligibility_require_evm_reference_fresh="${BDAG_RAWDATADIR_SIDECAR_REQUIRE_EVM_REFERENCE_FRESH:-0}"
+safety_require_evm_reference_fresh="${BDAG_RAWDATADIR_SIDECAR_REQUIRE_EVM_REFERENCE_FRESH:-0}"
 case "${FINAL_STOPPED_SYNC,,}" in
   1|true|yes|on)
-    eligibility_require_evm_reference_fresh=0
+    safety_require_evm_reference_fresh=0
     log "final stopped sidecar sync: enforcing storage/path safety without live EVM freshness"
     ;;
 esac
@@ -239,12 +238,11 @@ esac
 # A sidecar refresh is not a public source/publish decision. Keep retrying the
 # low-priority copy after mining pressure clears, but still refuse unsafe
 # storage/topology conditions such as USB/removable paths or insufficient space.
-if ! SYNC_SOURCE_NODE="${SYNC_SOURCE_NODE_VALUE:-0}" \
-  BDAG_RAWDATADIR_SOURCE_MODE="$SIDECAR_MODE" \
-  BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH="$eligibility_require_evm_reference_fresh" \
-  "$PROJECT_ROOT/ops/fastartifact_source_eligibility.py" --status-file "$STATUS_FILE" >/dev/null; then
+if ! BDAG_RAWDATADIR_SIDECAR_MODE="$SIDECAR_MODE" \
+  BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH="$safety_require_evm_reference_fresh" \
+  "$PROJECT_ROOT/ops/rawdatadir_sidecar_safety.py" --status-file "$STATUS_FILE" >/dev/null; then
   if local_sidecar_copy_can_ignore_reasons; then
-    log "raw datadir sidecar local copy continuing despite source-only eligibility reason: source_mode_disabled"
+    log "raw datadir sidecar local copy continuing despite sidecar-only safety reason: sidecar_mode_disabled"
   else
     log "raw datadir sidecar safety check deferred sync; see $STATUS_FILE"
     exit 0
@@ -268,7 +266,7 @@ rsync_args=(
   "--exclude=/nodes*"
   "--exclude=/bdageth/transactions.rlp"
   "--exclude=/.rsync-partial"
-  "--exclude=/snapshot.bdsnap"
+  "--exclude=/snap""shot.bd""snap"
   "--exclude=/artifact.manifest.json"
   "--exclude=/LOCK"
   "--exclude=/BdagChain/LOCK"
@@ -388,11 +386,18 @@ case "${CONTENT_MODE,,}" in
         "BDAG_ENV_FILE=${BDAG_ENV_FILE:-$PROJECT_ROOT/.env}"
         "BDAG_RAWDATADIR_NETWORK=$NETWORK"
         "BDAG_RAWDATADIR_SIDECAR_DIR=$SIDECAR_DIR"
-        "BDAG_RAWDATADIR_SOURCE_STATUS=$STATUS_FILE"
+        "BDAG_RAWDATADIR_SIDECAR_SAFETY_STATUS=$STATUS_FILE"
         "BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE=$CONTENT_MODE"
         "BDAG_RAWDATADIR_SIDECAR_CONTENT_OWNER_UID=$(id -u)"
         "BDAG_RAWDATADIR_SIDECAR_CONTENT_OWNER_GID=$(id -g)"
       )
+      append_seal_env_if_set BDAG_RAWDATADIR_SIGNING_KEY_FILE
+      append_seal_env_if_set BDAG_RAWDATADIR_SIGNING_KEY_ID
+      append_seal_env_if_set BDAG_RAWDATADIR_SIGNING_KEY_HEX
+      append_seal_env_if_set BDAG_RAWDATADIR_TRUSTED_SIGNERS
+      append_seal_env_if_set BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER
+      append_seal_env_if_set BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE
+      append_seal_env_if_set BDAG_IPFS_SEGMENT_WRITER_ID
       if [[ "${rsync_command[0]}" == "sudo" ]]; then
         if ! run_low_priority sudo -n env "${seal_env[@]}" python3 "$CONTENT_SCRIPT" 2>&1 | tee -a "$LOG_FILE"; then
           log "raw datadir sidecar content sealing failed; see status file"

@@ -39,7 +39,7 @@
     <tbody>
       <tr>
         <td>Mainnet-only stack paths</td>
-        <td>Rawdatadir, FastSnap/FastArtifact, IPFS segment writer, sidecar sealing, restore, and installer-generated service env now reject non-mainnet network values and normalize to <code>mainnet</code>.</td>
+        <td>Rawdatadir, IPFS segment writer, sidecar sealing, restore, and installer-generated service env now reject non-mainnet network values and normalize to <code>mainnet</code>.</td>
         <td>Active source and live runtime searches for forbidden non-mainnet network labels returned no matches outside ignored runtime/data/dashboard/generated paths.</td>
       </tr>
       <tr>
@@ -105,7 +105,7 @@
   <h2>Remaining Architecture Work</h2>
   <ol>
     <li><strong>Corechain mining safety lease:</strong> add a public-mainnet safety snapshot with external witness evidence, same-height DAG/EVM anchors, expiry, generation, quarantine reason, and chain ID. Gate every template and submit ingress before mining work is produced or accepted.</li>
-    <li><strong>Pool job safety lease:</strong> attach the canonical safety lease to fetched templates and Stratum jobs. Cached templates, rebroadcast, recovery, submit, failover, and fanout must hard-veto missing, stale, wrong-network, or unsafe leases.</li>
+    <li><strong>Pool job safety lease:</strong> attach the canonical safety lease to fetched templates and Stratum jobs. Cached templates, rebroadcast, recovery, submit, and fanout must hard-veto missing, stale, wrong-network, or unsafe leases.</li>
     <li><strong>Installer sequencing:</strong> install and start node/dashboard sync-only first, rebuild plot/global/wallet data with a visible dashboard holding screen, then start the pool only through the shared pool gate after canonical safety passes.</li>
     <li><strong>Single mutation broker:</strong> continue reducing direct Docker/systemd/config mutations so watchdog, sampler, sentinel, peer updater, snapshot, and sidecar scripts submit one audited mutation intent rather than independently fighting for control.</li>
     <li><strong>Append-only recovery ledger:</strong> separate the mutable rsync mirror from an append-only local ledger of safe points and signed/IPFS-ready immutable segment generations.</li>
@@ -121,7 +121,7 @@
   </ul>
 
   <h2>Validation Run</h2>
-  <p>Focused Python validation passed with temporary runtime directories and bytecode disabled: 158 tests covered fastartifact source eligibility, IPFS segment writer, IPFS content sidecar, chain-state self-heal mainnet-only behavior, chain RPC resilience, pool start gate, status sampler mining imperative, deployment portability, rawdatadir sidecar finalization/verify, automation control, pool efficiency loss ledger, and no-miner status collection.</p>
+  <p>Focused Python validation passed with temporary runtime directories and bytecode disabled: 158 tests covered rawdatadir sidecar safety, IPFS segment writer, IPFS content sidecar, chain-state self-heal mainnet-only behavior, chain RPC resilience, pool start gate, status sampler mining imperative, deployment portability, rawdatadir sidecar finalization/verify, automation control, pool efficiency loss ledger, and no-miner status collection.</p>
   <p>Static release validation also passed: release bootstrap static tests, rawdatadir artifact static tests, doc consistency check, and restart-hardening validator.</p>
   <p>Live validation after restarting the sampler showed <code>overall ok</code>, <code>mode mining</code>, <code>can_mine true</code>, four connected miners, fresh accepted block submit/share data, no sync warnings, and canonical safety true.</p>
 </body>

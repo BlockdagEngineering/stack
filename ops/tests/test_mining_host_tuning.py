@@ -91,20 +91,20 @@ class MiningHostTuningTests(unittest.TestCase):
     def test_dashboard_installer_persists_priority_env_for_upgrades(self) -> None:
         installer = read("ops/install-dashboard.sh")
 
-        for snippet in (
-            "ensure_env_value BDAG_CONTAINER_TMPFS_SIZE 128m",
-            "ensure_env_value BDAG_NODE_TMPFS_SIZE 512m",
-            "ensure_env_value BDAG_NODE_CPU_SHARES 6144",
-            "ensure_env_value BDAG_POOL_CPU_SHARES 5120",
-            "ensure_env_value BDAG_POOL_DB_CPU_SHARES 4096",
-            "ensure_env_value BDAG_DASHBOARD_CPU_SHARES 128",
-            "ensure_env_value BDAG_NODE_MEMORY_LOW 768M",
-            "ensure_env_value BDAG_POOL_MEMORY_LOW 256M",
-            "ensure_env_value BDAG_POOL_DB_MEMORY_LOW 512M",
-            "ensure_env_value BDAG_DASHBOARD_MEMORY_LOW 64M",
-            "ensure_env_value BDAG_TUNE_NET_QDISC 1",
+        for key in (
+            "BDAG_CONTAINER_TMPFS_SIZE",
+            "BDAG_NODE_TMPFS_SIZE",
+            "BDAG_NODE_CPU_SHARES",
+            "BDAG_POOL_CPU_SHARES",
+            "BDAG_POOL_DB_CPU_SHARES",
+            "BDAG_DASHBOARD_CPU_SHARES",
+            "BDAG_NODE_MEMORY_LOW",
+            "BDAG_POOL_MEMORY_LOW",
+            "BDAG_POOL_DB_MEMORY_LOW",
+            "BDAG_DASHBOARD_MEMORY_LOW",
+            "BDAG_TUNE_NET_QDISC",
         ):
-            self.assertIn(snippet, installer)
+            self.assertIn(f"ensure_stack_default_env_value {key}", installer)
 
 
 if __name__ == "__main__":

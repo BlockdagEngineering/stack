@@ -79,16 +79,49 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
 
     def test_compose_dashboard_targets_stack_container_names(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+        dashboard_block = compose.split("\n  dashboard:\n", 1)[1].split("\n  # --------------------------------------------------------------------------\n  # Optional CPU miner", 1)[0]
 
-        self.assertIn("BDAG_NODE_SERVICES: node", compose)
+        self.assertIn("BDAG_NODE_SERVICE: node", compose)
         self.assertIn("BDAG_NETWORK: mainnet", compose)
-        self.assertIn("BDAG_FASTSNAP_NETWORK: mainnet", compose)
+        self.assertIn("BDAG_RAWDATADIR_NETWORK: ${BDAG_RAWDATADIR_NETWORK:-mainnet}", compose)
         self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool", compose)
         self.assertIn("BDAG_POOL_CONTAINER: pool", compose)
         self.assertIn("BDAG_POOL_DB_CONTAINER: postgres", compose)
-        self.assertIn("BDAG_NODE_RPC_URLS: node=http://node:38131", compose)
-        self.assertIn("DASHBOARD_EVM_RPC_URL: http://node:18545", compose)
+        self.assertIn("BDAG_NODE_RPC_URL: http://node:38131", compose)
+        self.assertIn("BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://collector:9280}", dashboard_block)
+        self.assertNotIn("DASHBOARD_EVM_RPC_URL:", compose)
         self.assertNotIn("BDAG_RPC_URL: http://node:38131", compose)
+        self.assertIn("collector: { condition: service_started }", dashboard_block)
+        self.assertNotIn("node: { condition: service_started }", dashboard_block)
+        self.assertNotIn("pool: { condition: service_started }", dashboard_block)
+
+    def test_mainnet_is_the_only_deployment_network_name(self) -> None:
+        compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("BDAG_NETWORK: mainnet", compose)
+        self.assertNotRegex(compose, r"BDAG_NETWORK:\s*\$\{")
+
+        deployment_files = [
+            ROOT_DIR / "docker-compose.yml",
+            ROOT_DIR / ".env.example",
+            ROOT_DIR / "ops" / "portable.env.example",
+            ROOT_DIR / "ops" / "maintain-rawdatadir-sidecar.sh",
+            ROOT_DIR / "ops" / "install-p2p-services.sh",
+            ROOT_DIR / "ops" / "verify-rawdatadir-sidecar.py",
+            ROOT_DIR / "ops" / "ipfs_segment_writer.py",
+            ROOT_DIR / "ops" / "seal_rawdatadir_sidecar_content.py",
+            ROOT_DIR / "ops" / "chain-state-self-heal.sh",
+        ]
+        alias_re = re.compile(
+            r"\bBDAG_(?:RAWDATADIR_|CHAIN_STATE_)?NETWORK\b[^\n]*(?:\bmain\b|\bprod(?:uction)?\b)",
+            re.IGNORECASE,
+        )
+        default_re = re.compile(r"\bBDAG_(?:RAWDATADIR_|CHAIN_STATE_)?NETWORK:-([A-Za-z0-9_-]+)")
+        for path in deployment_files:
+            text = path.read_text(encoding="utf-8")
+            for line_no, line in enumerate(text.splitlines(), start=1):
+                self.assertIsNone(alias_re.search(line), f"{path}:{line_no}: {line}")
+                for default in default_re.finditer(line):
+                    self.assertEqual(default.group(1), "mainnet", f"{path}:{line_no}: {line}")
 
     def test_dashboard_image_uses_checked_out_dashboard_context(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
@@ -96,26 +129,32 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         dockerfile_dev = (ROOT_DIR / "dockerfile-dev").read_text(encoding="utf-8")
 
         self.assertIn("dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../dashboard}", compose)
-        self.assertIn("COPY --from=dashboard_src . /opt/dashboard", dockerfile)
-        self.assertIn("COPY --from=dashboard_src . /src/dashboard", dockerfile_dev)
+        self.assertIn("collector_src: ${COLLECTOR_SRC_CONTEXT:-../collector}", compose)
+        self.assertIn("test -f ./bin/dashboard", dockerfile)
+        self.assertIn("COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard", dockerfile)
+        self.assertIn("COPY --from=collector_src . /opt/collector", dockerfile)
+        self.assertIn("COPY --from=dashboard_src . .", dockerfile_dev)
 
-    def test_dashboard_ref_build_arg_is_not_hardcoded(self) -> None:
+    def test_dashboard_release_build_has_no_dead_git_ref_arg(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfile = (ROOT_DIR / "dockerfile").read_text(encoding="utf-8")
+        release_validator = (ROOT_DIR / "scripts" / "validate-release-build.sh").read_text(encoding="utf-8")
 
-        self.assertIn("DASHBOARD_REF: ${DASHBOARD_REF:-develop}", compose)
-        self.assertIn('ref="${DASHBOARD_REF:-develop}"', dockerfile)
-        self.assertNotIn('ref="develop"', dockerfile)
+        self.assertNotIn("DASHBOARD_REPO:", compose)
+        self.assertNotIn("DASHBOARD_REF:", compose)
+        self.assertNotIn("DASHBOARD_REF:-", compose)
+        self.assertNotIn('ref="${DASHBOARD_REF:-develop}"', dockerfile)
+        self.assertIn('reject_grep \'DASHBOARD_REF:\' "docker-compose.yml"', release_validator)
 
     def test_host_dashboard_env_uses_host_reachable_chain_rpc(self) -> None:
         installer = (ROOT_DIR / "ops" / "install-dashboard.sh").read_text(encoding="utf-8")
         portable_env = (ROOT_DIR / "ops" / "portable.env.example").read_text(encoding="utf-8")
 
-        self.assertIn("BDAG_NODE_RPC_URLS=node=http://127.0.0.1:38131", installer)
+        self.assertIn("BDAG_NODE_RPC_URL=http://127.0.0.1:38131", installer)
         self.assertIn("BDAG_GLOBAL_CHAIN_RPC_URLS=node=http://127.0.0.1:38131", installer)
-        self.assertIn("BDAG_NODE_RPC_URLS=node=http://127.0.0.1:38131", portable_env)
+        self.assertIn("BDAG_NODE_RPC_URL=http://127.0.0.1:38131", portable_env)
         self.assertIn("BDAG_GLOBAL_CHAIN_RPC_URLS=node=http://127.0.0.1:38131", portable_env)
-        self.assertNotIn("NODE_RPC_URLS=http://node:38131", portable_env)
+        self.assertNotIn("NODE_RPC_URL" "S=", portable_env)
 
     def test_compose_protects_temp_paths_from_overlay_io(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
@@ -147,6 +186,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
     def test_pool_node_health_gate_is_enabled_by_default(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
+        stack_defaults = (ROOT_DIR / "ops" / "config" / "stack-defaults.env").read_text(encoding="utf-8")
         validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
 
         self.assertIn(
@@ -154,7 +194,8 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             compose,
         )
         self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true", env_example)
-        self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true", validator)
+        self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true", stack_defaults)
+        self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=", validator)
 
     def test_live_deploy_copy_contract_covers_live_validator_files(self) -> None:
         deploy = (ROOT_DIR / "ops" / "deploy-live-runtime-update.sh").read_text(encoding="utf-8")
@@ -184,8 +225,8 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
 
         self.assertIn('if [[ "$mode" == "source" && -e "$root/ops/observability" ]]; then', validator)
-        self.assertIn('need_grep \'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS\' "docker-compose.yml"', validator)
-        self.assertIn('need_grep \'NODE_RPC_URLS: .*http://node:38131\' "docker-compose.yml"', validator)
+        self.assertIn('need_grep \'NODE_RPC_URL: http://node:38131\' "docker-compose.yml"', validator)
+        self.assertIn("reject_grep '(^|[^A-Z0-9_])NODE_RPC_URLS([^A-Z0-9_]|$)' \"docker-compose.yml\"", validator)
         self.assertIn('need_grep \'BDAG_STACK_SERVICES=postgres,node,pool\' ".env.example"', validator)
         self.assertIn('reject_grep \'container_name:\' "docker-compose.yml"', validator)
 
@@ -216,10 +257,10 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         ).read_text(encoding="utf-8")
 
         self.assertIn("automation_control.py ensure-normal", local_installer)
-        self.assertIn("compose_cmd up -d --no-build --pull never postgres node dashboard", local_installer)
+        self.assertIn("compose_cmd up -d --no-build --pull never --no-deps postgres node dashboard", local_installer)
         self.assertNotIn("compose_cmd up -d --no-build --pull never\n", local_installer)
         self.assertIn("automation_control.py ensure-normal", payload_installer)
-        self.assertIn("docker compose up -d --no-build --pull never postgres node dashboard", payload_installer)
+        self.assertIn("docker_cli compose up -d --no-build --pull never --no-deps postgres node dashboard", payload_installer)
         self.assertNotIn("docker compose up -d --no-build --pull never\n", payload_installer)
 
     def test_release_installer_extracts_preserved_chain_peer_evidence(self) -> None:
@@ -278,6 +319,144 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("Environment=P2P_PORT=8150", unit)
         self.assertNotIn("BDAG_P2P_PORTS", combined)
         self.assertNotIn("--dports", firewall)
+
+    def test_p2p_installer_enables_ipfs_sidecars_from_stack_defaults(self) -> None:
+        installer = (ROOT_DIR / "ops" / "install-p2p-services.sh").read_text(encoding="utf-8")
+        env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
+        defaults = (ROOT_DIR / "ops" / "config" / "stack-defaults.env").read_text(encoding="utf-8")
+        raw_timer = (ROOT_DIR / "ops" / "systemd" / "user-bdag-rawdatadir-sidecar.timer").read_text(encoding="utf-8")
+        content_timer = (ROOT_DIR / "ops" / "systemd" / "user-bdag-ipfs-content-sidecar.timer").read_text(encoding="utf-8")
+        segment_timer = (ROOT_DIR / "ops" / "systemd" / "user-bdag-ipfs-segment-writer.timer").read_text(encoding="utf-8")
+
+        self.assertIn("BDAG_STACK_DEFAULTS_FILE=", installer)
+        self.assertIn("stack-defaults.env", installer)
+        self.assertIn("env_value()", installer)
+        self.assertIn(
+            "BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT=$(env_value BDAG_RAWDATADIR_SIDECAR_RSYNC_BWLIMIT 4096)",
+            installer,
+        )
+        self.assertIn(
+            "BDAG_RAWDATADIR_SIDECAR_CATCHUP_RSYNC_BWLIMIT=$(env_value BDAG_RAWDATADIR_SIDECAR_CATCHUP_RSYNC_BWLIMIT 1024)",
+            installer,
+        )
+        for config in (env_example, defaults):
+            self.assertIn(
+                "BDAG_BACKGROUND_MAINTENANCE_LAZY_TASKS=dashboard_global_sampler,global_blockchain_scan,global_scan,"
+                "rawdatadir_sidecar,rawdatadir_content_seal,ipfs_content_sidecar,ipfs_segment_writer,"
+                "history_compaction",
+                config,
+            )
+            self.assertIn("BDAG_BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS=ipfs_segment_writer", config)
+            self.assertIn("BDAG_BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS=ipfs_segment_writer", config)
+            self.assertIn(
+                "BDAG_BACKGROUND_MAINTENANCE_POOL_READY_TASKS=rawdatadir_content_seal,ipfs_content_sidecar",
+                config,
+            )
+            self.assertIn("BDAG_RAWDATADIR_SIDECAR_CATCHUP_RSYNC_BWLIMIT=1024", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_STALE_HEAD_RESET_ENABLED=1", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS=3600", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE=rendezvous_sha256_v1", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH=0", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE=./ops/runtime/ipfs-content/segment-writer.key", config)
+            self.assertIn("BDAG_RAWDATADIR_SIGNING_KEY_FILE=./ops/runtime/ipfs-content/segment-writer.key", config)
+            self.assertIn("BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH=./ops/runtime/ipfs-content/rawdatadir-content-index.json", config)
+            self.assertIn("BDAG_IPFS_RAWDATADIR_CONTENT_DEFAULT_INDEX_CID=", config)
+            self.assertIn("BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS=auto", config)
+            self.assertIn("BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER=1", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES=1", config)
+            self.assertIn("BDAG_IPFS_RESTORE_REQUIRE_SIGNATURES=1", config)
+            self.assertIn("BDAG_IPFS_RESTORE_VERIFY_INDEX_LINEAGE=1", config)
+            self.assertIn("BDAG_IPFS_RESTORE_ACCEPTED_HEAD_ENABLED=1", config)
+            self.assertIn(
+                "BDAG_IPFS_RESTORE_ACCEPTED_HEAD_STATE_FILE=./ops/runtime/ipfs-content/restore-accepted-head.json",
+                config,
+            )
+            self.assertIn("BDAG_IPFS_RESTORE_CHAIN_ANCHOR_ENABLED=1", config)
+            self.assertIn("BDAG_IPFS_RESTORE_REQUIRE_CHAIN_ANCHOR=0", config)
+            self.assertIn("BDAG_IPFS_RESTORE_CHAIN_ANCHOR_FULL_SPAN_MAX_ORDERS=300", config)
+            self.assertIn("BDAG_IPFS_RESTORE_CHAIN_ANCHOR_SKIP_ENVIRONMENT_GATES=1", config)
+            self.assertIn("BDAG_IPFS_RAWDATADIR_RESTORE_PRESTART=1", config)
+            self.assertIn("BDAG_IPFS_RAWDATADIR_RESTORE_DISCOVERY_FILE=./ops/ipfs-content-discovery.json", config)
+            self.assertIn("BDAG_IPFS_RAWDATADIR_RESTORE_STATUS_FILE=./ops/runtime/ipfs-content/rawdatadir-restore-status.json", config)
+            self.assertIn("BDAG_IPFS_BACKFILL_INDEX_PATH=./ops/runtime/ipfs-content/backfill-genesis-index.json", config)
+            self.assertIn("BDAG_IPFS_BACKFILL_MAX_SEGMENTS_PER_RUN=1", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN=1", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_PUBLISH_IPNS=auto", config)
+        self.assertIn("install_mining_host_tuning\ninstall_rawdatadir_sidecar_timers", installer)
+        self.assertIn("install_rawdatadir_sidecar_timers\ninstall_ipfs_content_sidecar_timer", installer)
+        self.assertIn("install_ipfs_content_sidecar_timer\ninstall_ipfs_segment_writer_timer", installer)
+        self.assertLess(
+            installer.index("install_rawdatadir_sidecar_timers()"),
+            installer.index("install_ipfs_segment_writer_timer()"),
+        )
+        self.assertLess(
+            installer.index("ensure_ipfs_segment_identity || return 1"),
+            installer.index('cat > "$user_config_dir/bdag-rawdatadir-sidecar.env"'),
+        )
+        self.assertIn("BDAG_IPFS_SEGMENT_WRITER_ROSTER=$(env_value BDAG_IPFS_SEGMENT_WRITER_ROSTER \"\")", installer)
+        self.assertIn(
+            "BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE=$(env_value BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE rendezvous_sha256_v1)",
+            installer,
+        )
+        self.assertIn("ensure_ipfs_segment_identity || return 1", installer)
+        self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH=$(env_value BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH 0)", installer)
+        self.assertIn(
+            'BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE=$(env_value BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE "$ROOT/ops/runtime/ipfs-content/segment-writer.key")',
+            installer,
+        )
+        self.assertIn(
+            'BDAG_RAWDATADIR_SIGNING_KEY_FILE=$(env_value BDAG_RAWDATADIR_SIGNING_KEY_FILE "$ROOT/ops/runtime/ipfs-content/segment-writer.key")',
+            installer,
+        )
+        self.assertIn(
+            'BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE=$(env_value BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE "$ROOT/ops/runtime/ipfs-content/segment-writer.key")',
+            installer,
+        )
+        self.assertIn("BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH=$(env_value BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH", installer)
+        self.assertIn("BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS=$(env_value BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS auto)", installer)
+        self.assertIn("BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER=$(env_value BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER 1)", installer)
+        self.assertIn("BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES=$(env_value BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES 1)", installer)
+        self.assertIn("BDAG_IPFS_SEGMENT_UPDATE_DISCOVERY_FOR_CUSTOM_INDEX", (ROOT_DIR / "ops" / "ipfs_segment_writer.py").read_text(encoding="utf-8"))
+        self.assertIn(
+            'BDAG_CHAIN_INTEGRITY_MAX_SEGMENT_ORDERS=$(env_value BDAG_CHAIN_INTEGRITY_MAX_SEGMENT_ORDERS "$(env_value BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT 300)")',
+            installer,
+        )
+        self.assertIn("BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN=$(env_value BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN 1)", installer)
+        self.assertIn(
+            'BDAG_IPFS_SEGMENT_RESTORE_DIR=$(env_value BDAG_IPFS_SEGMENT_RESTORE_DIR "$ROOT/ops/runtime/ipfs-segment-restore-drills")',
+            installer,
+        )
+        self.assertIn(
+            "BDAG_IPFS_RESTORE_ACCEPTED_HEAD_ENABLED=$(env_value BDAG_IPFS_RESTORE_ACCEPTED_HEAD_ENABLED 1)",
+            installer,
+        )
+        self.assertIn(
+            "BDAG_IPFS_RESTORE_CHAIN_ANCHOR_ENABLED=$(env_value BDAG_IPFS_RESTORE_CHAIN_ANCHOR_ENABLED 1)",
+            installer,
+        )
+        self.assertIn(
+            "BDAG_IPFS_RESTORE_CHAIN_ANCHOR_FULL_SPAN_MAX_ORDERS=$(env_value BDAG_IPFS_RESTORE_CHAIN_ANCHOR_FULL_SPAN_MAX_ORDERS 300)",
+            installer,
+        )
+        self.assertIn("BDAG_IPFS_SEGMENT_PUBLISH_IPNS=$(env_value BDAG_IPFS_SEGMENT_PUBLISH_IPNS auto)", installer)
+        for timer in (raw_timer, content_timer, segment_timer):
+            self.assertIn("OnActiveSec=5m", timer)
+            self.assertIn("OnUnitActiveSec=5m", timer)
+            self.assertIn("RandomizedDelaySec=0", timer)
+
+    def test_release_installer_has_prestart_ipfs_rawdatadir_restore_gate(self) -> None:
+        installer = (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8")
+
+        self.assertIn("run_prestart_ipfs_rawdatadir_restore()", installer)
+        self.assertIn("set_existing_or_stack_default_env_value()", installer)
+        self.assertIn('if grep -q "^${key}=" "$file"; then', installer)
+        self.assertIn("BDAG_IPFS_RAWDATADIR_RESTORE_ARTIFACT_CID", installer)
+        self.assertIn("BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_CID", installer)
+        self.assertIn("BDAG_IPFS_RAWDATADIR_RESTORE_DISCOVERY_FILE", installer)
+        self.assertIn("set_existing_or_stack_default_env_value .env BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS", installer)
+        self.assertIn("set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_TRUSTED_SIGNERS", installer)
+        self.assertIn("ops/restore-rawdatadir-segment-artifact.py", installer)
+        self.assertIn("seed_chain_data\n  run_prestart_ipfs_rawdatadir_restore\n  run_prestart_ipfs_restore_drill", installer)
 
 
 if __name__ == "__main__":

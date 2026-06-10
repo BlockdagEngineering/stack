@@ -753,7 +753,7 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     evidence = {
         "BDAG_NODE_CACHE_MB": env.get("BDAG_NODE_CACHE_MB"),
         "NODE_MAX_PEERS": env.get("NODE_MAX_PEERS"),
-        "SYNC_SOURCE_NODE": env.get("SYNC_SOURCE_NODE"),
+        "BDAG_RAWDATADIR_SIDECAR_MODE": env.get("BDAG_RAWDATADIR_SIDECAR_MODE"),
         "BDAG_STORAGE_PROFILE": env.get("BDAG_STORAGE_PROFILE"),
         "BDAG_DETECTED_NETWORK_TOPOLOGY": env.get("BDAG_DETECTED_NETWORK_TOPOLOGY"),
         "BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS": env.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS"),
@@ -860,11 +860,6 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         )
     else:
         add(checks, "pass", "pool_template_rpc_pressure", "pool template RPC pressure stays within constrained-node defaults", evidence=pool_rpc_pressure)
-
-    if not bool_enabled(env.get("BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC"), True):
-        add(checks, "warn", "fastsync_acceleration", "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC is disabled.", "Enable coordinator acceleration so nodes more than 1000 blocks behind use fastest catch-up defaults.", evidence)
-    else:
-        add(checks, "pass", "fastsync_acceleration", "sync coordinator fastest catch-up is enabled", evidence=evidence)
 
     fast_restart_cooldown = safe_int(env.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS"), 900)
     if fast_restart_cooldown and fast_restart_cooldown > 1800:
@@ -1016,7 +1011,7 @@ def check_route_policy_validator(checks: list[Check], root: Path | None = None) 
 def check_network(checks: list[Check], root: Path | None = None) -> None:
     proc = run(["ip", "-o", "-4", "route", "get", "1.1.1.1"], timeout=3)
     if proc.returncode != 0 or not proc.stdout.strip():
-        add(checks, "warn", "default_route", "no IPv4 default route was detected.", "Configure networking before FastSnap peer discovery or ASIC setup.", {"stderr": proc.stderr.strip()})
+        add(checks, "warn", "default_route", "no IPv4 default route was detected.", "Configure networking before peer discovery, IPFS seeding, or ASIC setup.", {"stderr": proc.stderr.strip()})
         check_route_policy_validator(checks, root)
         return
     line = proc.stdout.strip().splitlines()[0]

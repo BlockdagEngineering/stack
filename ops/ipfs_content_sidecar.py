@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Lazy IPFS publisher for finalized BlockDAG FastArtifact content.
+"""Lazy IPFS publisher for finalized BlockDAG raw-datadir sidecar content.
 
 This process is deliberately not a snapshot builder. It only advertises an
-already-finalized, signed FastArtifact generation after resource pressure clears.
+already-finalized, signed raw-datadir generation after resource pressure clears.
 IPFS is treated as an untrusted byte distribution plane; the signed
-FastArtifact manifest and normal consensus validation remain authoritative.
+sidecar manifest and normal consensus validation remain authoritative.
 """
 
 from __future__ import annotations
@@ -136,48 +136,6 @@ def background_maintenance_allowed(env: dict[str, str]) -> dict[str, Any]:
         return {"allowed": False, "reasons": [f"maintenance gate unavailable: {exc}"], "error": str(exc)}
 
 
-def source_eligibility(env: dict[str, str]) -> dict[str, Any]:
-    script = OPS_DIR / "fastartifact_source_eligibility.py"
-    if not script.exists():
-        return {"eligible": False, "publish_allowed": False, "reasons": ["missing_fastartifact_source_eligibility"]}
-    command = [
-        str(script),
-        "--full",
-        "--json",
-        "--status-file",
-        str(resolve_path(env.get("BDAG_RAWDATADIR_SOURCE_STATUS"), ROOT / "ops/runtime/rawdatadir-source-status.json")),
-    ]
-    result = run_command(command, int(env.get("BDAG_IPFS_CONTENT_ELIGIBILITY_TIMEOUT", "300")), env)
-    try:
-        payload = json.loads(result.stdout or "{}")
-    except json.JSONDecodeError:
-        payload = {
-            "eligible": False,
-            "publish_allowed": False,
-            "reasons": ["eligibility_json_unreadable"],
-            "stdout": result.stdout[-1000:],
-            "stderr": result.stderr[-1000:],
-        }
-    if result.returncode != 0:
-        payload.setdefault("eligible", False)
-        payload.setdefault("publish_allowed", False)
-        payload.setdefault("reasons", []).append(f"eligibility_exit_{result.returncode}")
-    return payload
-
-
-def source_publish_allowed(eligibility: dict[str, Any]) -> bool:
-    return bool(eligibility.get("eligible", False)) and bool(eligibility.get("publish_allowed", False))
-
-
-def source_publish_block_reasons(eligibility: dict[str, Any]) -> list[str]:
-    reasons = eligibility.get("reasons")
-    if isinstance(reasons, list) and reasons:
-        return [str(reason) for reason in reasons]
-    if eligibility.get("eligible", False) and not eligibility.get("publish_allowed", False):
-        return ["source_publish_not_allowed"]
-    return ["source_not_eligible"]
-
-
 def artifact_paths(env: dict[str, str]) -> tuple[Path, Path]:
     sidecar_content_base = resolve_path(
         env.get("BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE") or env.get("BDAG_RAWDATADIR_ARTIFACT_BASE"),
@@ -186,6 +144,20 @@ def artifact_paths(env: dict[str, str]) -> tuple[Path, Path]:
     artifact_dir = resolve_path(env.get("BDAG_IPFS_CONTENT_ARTIFACT_DIR"), sidecar_content_base / "current")
     manifest = resolve_path(env.get("BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST"), artifact_dir / "manifest.json")
     return artifact_dir, manifest
+
+
+def rawdatadir_index_path(env: dict[str, str]) -> Path:
+    """Return the raw checkpoint index path.
+
+    Chain-order segment indexes and raw-datadir checkpoint indexes have
+    different schemas and restore semantics. Keep their local files separate so
+    one writer cannot overwrite the other writer's source of truth.
+    """
+
+    return resolve_path(
+        env.get("BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH") or env.get("BDAG_IPFS_CONTENT_INDEX_PATH"),
+        ROOT / "ops/runtime/ipfs-content/rawdatadir-content-index.json",
+    )
 
 
 def artifact_publish_blockers(artifact_dir: Path, manifest_path: Path, manifest: dict[str, Any], env: dict[str, str]) -> list[str]:
@@ -283,10 +255,31 @@ def build_latest_index(
     }
 
 
+def publish_ipns_enabled(env: dict[str, str]) -> bool:
+    value = str(
+        env.get("BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS")
+        or env.get("BDAG_IPFS_CONTENT_PUBLISH_IPNS")
+        or ""
+    ).strip().lower()
+    if value in FALSE_VALUES:
+        return False
+    if value in TRUE_VALUES:
+        return True
+    if value == "auto":
+        return bool(
+            str(
+                env.get("BDAG_IPFS_RAWDATADIR_CONTENT_IPNS_KEY")
+                or env.get("BDAG_IPFS_CONTENT_IPNS_KEY")
+                or ""
+            ).strip()
+        )
+    return False
+
+
 def publish_ipns(index_cid: str, env: dict[str, str]) -> dict[str, Any] | None:
-    if not env_bool(env, "BDAG_IPFS_CONTENT_PUBLISH_IPNS", False):
+    if not publish_ipns_enabled(env):
         return None
-    key = env.get("BDAG_IPFS_CONTENT_IPNS_KEY")
+    key = env.get("BDAG_IPFS_RAWDATADIR_CONTENT_IPNS_KEY") or env.get("BDAG_IPFS_CONTENT_IPNS_KEY")
     command = [ipfs_binary(env), "name", "publish"]
     if key:
         command.extend(["--key", key])
@@ -316,7 +309,7 @@ def load_existing_index(index_path: Path) -> dict[str, Any]:
 
 
 def current_index_cid(existing: dict[str, Any], env: dict[str, str]) -> str:
-    for key in ("index_cid", "current_latest_index_cid"):
+    for key in ("index_cid", "current_rawdatadir_index_cid", "rawdatadir_latest_index_cid"):
         value = str(existing.get(key) or "").strip()
         if value:
             return value
@@ -324,17 +317,22 @@ def current_index_cid(existing: dict[str, Any], env: dict[str, str]) -> str:
     if discovery_path.exists():
         try:
             discovery = json.loads(discovery_path.read_text(encoding="utf-8"))
-            value = str(discovery.get("current_latest_index_cid") or "").strip()
+            value = str(
+                discovery.get("current_rawdatadir_index_cid")
+                or discovery.get("rawdatadir_latest_index_cid")
+                or discovery.get("current_content_index_cid")
+                or ""
+            ).strip()
             if value:
                 return value
         except json.JSONDecodeError:
             pass
-    return str(env.get("BDAG_IPFS_CONTENT_DEFAULT_INDEX_CID") or "").strip()
+    return str(env.get("BDAG_IPFS_RAWDATADIR_CONTENT_DEFAULT_INDEX_CID") or "").strip()
 
 
 def republish_current_ipns(existing: dict[str, Any], env: dict[str, str]) -> tuple[str, dict[str, Any] | None]:
     index_cid = current_index_cid(existing, env)
-    if not index_cid or not env_bool(env, "BDAG_IPFS_CONTENT_PUBLISH_IPNS", False):
+    if not index_cid or not publish_ipns_enabled(env):
         return index_cid, None
     if not ipfs_pin_present(index_cid, env):
         return index_cid, {
@@ -343,6 +341,46 @@ def republish_current_ipns(existing: dict[str, Any], env: dict[str, str]) -> tup
             "index_cid": index_cid,
         }
     return index_cid, publish_ipns(index_cid, env)
+
+
+def update_discovery(raw_index_cid: str, artifact_cid: str, manifest: dict[str, Any], env: dict[str, str]) -> None:
+    path = resolve_path(env.get("BDAG_IPFS_CONTENT_DISCOVERY_FILE"), ROOT / "ops/ipfs-content-discovery.json")
+    data: dict[str, Any] = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except json.JSONDecodeError:
+            data = {}
+    if not data:
+        data = {
+            "document_type": "bdag_ipfs_content_discovery_v1",
+            "network": "mainnet",
+        }
+    data["updated_at"] = now_iso()
+    data["rawdatadir_latest_index_cid"] = raw_index_cid
+    data["rawdatadir_latest_index_uri"] = f"ipfs://{raw_index_cid}"
+    data["current_rawdatadir_index_cid"] = raw_index_cid
+    data["current_rawdatadir_artifact_cid"] = artifact_cid
+    data["current_rawdatadir_content"] = {
+        "document_type": "bdag_ipfs_content_index_v1",
+        "artifact_type": manifest.get("artifact_type") or manifest.get("type") or "raw_datadir_checkpoint",
+        "network": manifest.get("network"),
+        "chain_id": manifest.get("chain_id"),
+        "tip_order": manifest.get("tip_order") or manifest.get("block_total") or manifest.get("main_order"),
+        "tip_hash": manifest.get("tip_hash") or manifest.get("tip"),
+        "state_root": manifest.get("state_root") or manifest.get("evm_state_root"),
+        "artifact_cid": artifact_cid,
+        "index_cid": raw_index_cid,
+        "updated_at": now_iso(),
+    }
+    data["rawdatadir_trust_model"] = (
+        "Raw checkpoint CIDs are restore candidates only. Consumers must verify the "
+        "content-index schema, manifest root, trusted Ed25519 signature, chunk/file "
+        "hashes, mainnet metadata, and normal chain consensus before import."
+    )
+    atomic_write_json(path, data)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -366,21 +404,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
 
-    source_eligibility_required = env_bool(env, "BDAG_IPFS_CONTENT_REQUIRE_SOURCE_ELIGIBILITY", True)
-    eligibility = source_eligibility(env)
-    if source_eligibility_required and not source_publish_allowed(eligibility):
-        payload = write_status(
-            env,
-            "deferred",
-            reasons=source_publish_block_reasons(eligibility),
-            eligibility=eligibility,
-            source_eligibility_required=source_eligibility_required,
-        )
-        if args.json:
-            print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
-
-    index_path = resolve_path(env.get("BDAG_IPFS_CONTENT_LATEST_INDEX_PATH"), ROOT / "ops/runtime/ipfs-content/latest-index.json")
+    index_path = rawdatadir_index_path(env)
     existing = load_existing_index(index_path)
     artifact_dir, manifest_path = artifact_paths(env)
     manifest: dict[str, Any] = {}
@@ -399,8 +423,6 @@ def main(argv: list[str] | None = None) -> int:
             action="waiting_republish_current_ipns" if ipns else "waiting",
             index_cid=index_cid,
             ipns=ipns,
-            eligibility=eligibility,
-            source_eligibility_required=source_eligibility_required,
             retry_policy="timer_will_retry_after_pressure_or_artifact_state_changes",
             artifact_dir=str(artifact_dir),
             artifact_manifest=str(manifest_path),
@@ -423,8 +445,6 @@ def main(argv: list[str] | None = None) -> int:
             artifact_manifest_sha256=manifest_sha,
             artifact_dir=str(artifact_dir),
             artifact_manifest=str(manifest_path),
-            eligibility=eligibility,
-            source_eligibility_required=source_eligibility_required,
         )
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -438,8 +458,6 @@ def main(argv: list[str] | None = None) -> int:
             artifact_manifest_sha256=manifest_sha,
             artifact_dir=str(artifact_dir),
             artifact_manifest=str(manifest_path),
-            eligibility=eligibility,
-            source_eligibility_required=source_eligibility_required,
         )
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -454,6 +472,7 @@ def main(argv: list[str] | None = None) -> int:
         index_cid = ipfs_add(index_path, env, "BDAG_IPFS_CONTENT_INDEX_ADD_TIMEOUT")
         index["index_cid"] = index_cid
         atomic_write_json(index_path, index)
+        update_discovery(index_cid, artifact_cid, manifest, env)
         ipns = publish_ipns(index_cid, env)
     except Exception as exc:
         payload = write_status(
@@ -463,8 +482,6 @@ def main(argv: list[str] | None = None) -> int:
             artifact_manifest_sha256=manifest_sha,
             artifact_dir=str(artifact_dir),
             artifact_manifest=str(manifest_path),
-            eligibility=eligibility,
-            source_eligibility_required=source_eligibility_required,
         )
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -481,8 +498,6 @@ def main(argv: list[str] | None = None) -> int:
         artifact_dir=str(artifact_dir),
         artifact_manifest=str(manifest_path),
         latest_index_path=str(index_path),
-        eligibility=eligibility,
-        source_eligibility_required=source_eligibility_required,
     )
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))

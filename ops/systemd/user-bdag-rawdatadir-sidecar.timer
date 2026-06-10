@@ -1,11 +1,11 @@
 [Unit]
-Description=Refresh BlockDAG raw datadir sidecar copy every 2 hours
+Description=Refresh BlockDAG raw datadir sidecar copy every 5 minutes
 
 [Timer]
-OnBootSec=30m
-OnActiveSec=2h
-OnUnitActiveSec=2h
-RandomizedDelaySec=10m
+OnBootSec=5m
+OnActiveSec=5m
+OnUnitActiveSec=5m
+RandomizedDelaySec=0
 Persistent=true
 Unit=bdag-rawdatadir-sidecar.service
 

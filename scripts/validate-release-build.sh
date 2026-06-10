@@ -54,14 +54,41 @@ need_grep 'release_install_smoke.py' ".github/workflows/rc-hardening.yml"
 need_grep 'release-payload.env' ".github/workflows/build.yml"
 need_grep 'pool-stack-docker-\*\.zip' ".github/workflows/build.yml"
 reject_grep 'DASHBOARD_REF=' ".env.example"
-need_grep 'DASHBOARD_REF: develop' "docker-compose.yml"
-need_grep 'ref="develop"' "dockerfile"
+reject_grep 'DASHBOARD_REPO:' "docker-compose.yml"
+reject_grep 'DASHBOARD_REF:' "docker-compose.yml"
+need_grep 'test -f \./bin/dashboard' "dockerfile"
+need_grep 'COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard' "dockerfile"
+need_grep 'COPY --from=dashboard_src \. \.' "dockerfile-dev"
 reject_grep 'DASHBOARD_REF:-' "docker-compose.yml"
 reject_grep 'DASHBOARD_REF:-' "dockerfile"
-need_grep '^SNAPSHOT_PATH=docker/no-snapshot\.marker$' ".env.example"
-need_grep 'SNAPSHOT_PATH: \$\{SNAPSHOT_PATH:-docker/no-snapshot\.marker\}' "docker-compose.yml"
-reject_grep 'SNAPSHOT_PATH=.*release-downloads/latest\.bdsnap' ".env.example"
-reject_grep 'SNAPSHOT_PATH:-\./latest\.bdsnap' "docker-compose.yml"
+retired_terms=(
+  'Fast''Artifact'
+  'Fast''Sync'
+  'Fast''Snap'
+  'fast''artifact'
+  'fast''sync'
+  'fast''snap'
+  'SNAP''SHOT_PATH'
+  'BDAG_''SNAP''SHOT'
+  'latest\.bd''snap'
+  'snap''shot\.bd''snap'
+  'snap'' import'
+)
+retired_scope=(
+  ".env.example"
+  "docker-compose.yml"
+  "dockerfile"
+  "dockerfile-dev"
+  "docker/entrypoint-nodeworker.sh"
+  "scripts/release/installers/install-unix-common.sh"
+  "scripts/release/installers/install-windows.ps1"
+  "scripts/release/installers/install-macos.sh"
+)
+for retired_pattern in "${retired_terms[@]}"; do
+  for retired_file in "${retired_scope[@]}"; do
+    reject_grep "$retired_pattern" "$retired_file"
+  done
+done
 need_grep '^BOOTSTRAP_PEER_ADDRESSES=/ip4/13\.57\.132\.47/tcp/8150/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus$' ".env.example"
 need_grep 'BOOTSTRAP_PEER_ADDRESSES: \$\{BOOTSTRAP_PEER_ADDRESSES:-\}' "docker-compose.yml"
 need_grep '^addpeer=/ip4/13\.57\.132\.47/tcp/8150/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus$' "node.conf.example"
