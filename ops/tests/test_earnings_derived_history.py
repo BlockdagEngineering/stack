@@ -48,7 +48,7 @@ class DerivedEarningsHistoryTests(unittest.TestCase):
 
         self.assertEqual(len(history), 1)
         snapshot = history[0]
-        self.assertEqual(snapshot["history_source"], "pool-db-derived-credits")
+        self.assertEqual(snapshot["history_source"], "postgres-derived-credits")
         self.assertEqual(snapshot["total_bdag"], "5.00")
         self.assertEqual(snapshot["miner_estimates"][0]["workers"], [worker])
         self.assertEqual(snapshot["miner_estimates"][0]["blocks_found"], 2)

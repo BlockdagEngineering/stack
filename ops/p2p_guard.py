@@ -15,11 +15,11 @@ from pathlib import Path
 from typing import Any
 
 from incident_journal import append_incident
+from stack_status_source import collect_stack_status
 from pool_ops import (
     LOG_DIR,
     NODES,
     RUNTIME_DIR,
-    collect_status_cached,
     container_peer_ips,
     ensure_runtime,
     is_lan_ipv4,
@@ -47,7 +47,6 @@ INCIDENT_COOLDOWN_SECONDS = int(os.environ.get("BDAG_P2P_GUARD_INCIDENT_COOLDOWN
 
 NODE_METRIC_PORTS = {
     "node": int(os.environ.get("BDAG_NODE_METRICS_PORT", "6060")),
-    "bdag-miner-node-1": int(os.environ.get("BDAG_NODE1_METRICS_PORT", "6061")),
 }
 
 NATIVE_METRICS = {
@@ -340,7 +339,7 @@ def pool_quality(status: dict[str, Any]) -> dict[str, Any]:
 
 def build_snapshot(previous: dict[str, Any] | None = None) -> dict[str, Any]:
     ensure_runtime()
-    status = collect_status_cached(include_logs=True)
+    status = collect_stack_status(include_logs=True)
     route = default_route()
     iface = str(route.get("interface") or "")
     current_iface_stats = iface_stats(iface)

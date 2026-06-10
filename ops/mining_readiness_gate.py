@@ -25,6 +25,7 @@ DEFAULT_SAMPLE_COUNT = 3
 DEFAULT_SAMPLE_INTERVAL_SECONDS = 10.0
 DEFAULT_MAX_REFERENCE_LAG = 120
 DEFAULT_LOG_LOOKBACK_MINUTES = 15
+DEFAULT_POW_TYPE = 10
 JSON_RPC_CONTENT_TYPE = "application/json"
 
 # Policy markers consumed by the governance suite:
@@ -54,6 +55,7 @@ HARD_LOG_PATTERNS = (
     re.compile(r"Head state missing,\s*repairing", re.IGNORECASE),
     re.compile(r"Block state missing", re.IGNORECASE),
     re.compile(r"Genesis block reached", re.IGNORECASE),
+    re.compile(r"node busy syncing", re.IGNORECASE),
     re.compile(r"bdag pool syncing", re.IGNORECASE),
     re.compile(r"missing (trie|state|state-root|state root)", re.IGNORECASE),
     re.compile(r"stale parent", re.IGNORECASE),
@@ -173,11 +175,8 @@ def parse_backend_list(value: str | None) -> list[str]:
 
 def canonical_node_name(value: str) -> str:
     value = value.strip()
-    if value in {"node1", "bdag-miner-node-1"}:
-        return "node1"
-    match = re.fullmatch(r"bdag-miner-node-(\d+)", value)
-    if match:
-        return f"node{match.group(1)}"
+    if value == "node" or re.fullmatch(r".*[-_]node[-_]1", value):
+        return "node"
     return value
 
 
@@ -213,6 +212,49 @@ def request_url_and_auth(url: str) -> tuple[str, str | None]:
         return clean_url, None
     token = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
     return clean_url, f"Basic {token}"
+
+
+def read_env_file_value(path: Path, key: str) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("export "):
+            stripped = stripped[7:].strip()
+        if not stripped.startswith(f"{key}="):
+            continue
+        value = stripped.split("=", 1)[1].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        return value
+    return ""
+
+
+def default_mining_address(explicit: str | None = None) -> str:
+    for value in (
+        explicit,
+        os.environ.get("MINING_ADDRESS"),
+        os.environ.get("BDAG_MINING_ADDRESS"),
+        os.environ.get("BDAG_POOL_MINING_ADDRESS"),
+    ):
+        if value and str(value).strip():
+            return str(value).strip()
+    for path in (Path.cwd() / ".env", Path.cwd() / "asic-pool" / ".env"):
+        value = read_env_file_value(path, "MINING_ADDRESS")
+        if value:
+            return value
+    return ""
+
+
+def get_block_template_params(pow_type: int = DEFAULT_POW_TYPE, mining_address: str = "") -> list[Any]:
+    params: list[Any] = [[], int(pow_type)]
+    if mining_address:
+        params.append(mining_address)
+    return params
 
 
 def _classify_transport_error(error: BaseException) -> str:
@@ -322,8 +364,12 @@ def normalized_health(result: Any) -> dict[str, Any]:
     return flatten_mapping(result)
 
 
-def get_health_bool(health: dict[str, Any], key: str) -> bool | None:
-    return parse_bool(first_present(health, key))
+def get_health_bool(health: dict[str, Any], key: str, *aliases: str) -> bool | None:
+    for candidate in (key, *aliases):
+        value = parse_bool(first_present(health, candidate))
+        if value is not None:
+            return value
+    return None
 
 
 def add_bool_predicate(
@@ -332,11 +378,12 @@ def add_bool_predicate(
     health: dict[str, Any],
     key: str,
     *,
+    aliases: tuple[str, ...] = (),
     required: bool = True,
     required_after_incident: bool = False,
     after_chain_incident: bool = False,
 ) -> None:
-    value = get_health_bool(health, key)
+    value = get_health_bool(health, key, *aliases)
     if value is True:
         return
     if value is False:
@@ -408,6 +455,8 @@ def probe_backend_once(
     after_chain_incident: bool = False,
     max_reference_lag: int = DEFAULT_MAX_REFERENCE_LAG,
     allow_reference_unavailable: bool = False,
+    pow_type: int = DEFAULT_POW_TYPE,
+    mining_address: str = "",
 ) -> dict[str, Any]:
     sample: dict[str, Any] = {
         "backend": backend.name,
@@ -466,6 +515,7 @@ def probe_backend_once(
             warnings,
             health,
             "is_current",
+            aliases=("chain_current",),
             required=True,
             after_chain_incident=after_chain_incident,
         )
@@ -521,7 +571,12 @@ def probe_backend_once(
                 failures.append(f"blocking_template_error:{code}")
 
     try:
-        template_result = json_rpc_call(backend.url, "getBlockTemplate", timeout=timeout)
+        template_result = json_rpc_call(
+            backend.url,
+            "getBlockTemplate",
+            get_block_template_params(pow_type, mining_address),
+            timeout=timeout,
+        )
         if not isinstance(template_result, dict):
             failures.append("getBlockTemplate returned non-object")
         elif not template_result:
@@ -584,6 +639,8 @@ def evaluate_backend(
     after_chain_incident: bool = False,
     max_reference_lag: int = DEFAULT_MAX_REFERENCE_LAG,
     allow_reference_unavailable: bool = False,
+    pow_type: int = DEFAULT_POW_TYPE,
+    mining_address: str = "",
     now: float | None = None,
 ) -> dict[str, Any]:
     started_at = time.time() if now is None else now
@@ -612,6 +669,8 @@ def evaluate_backend(
             after_chain_incident=after_chain_incident,
             max_reference_lag=max_reference_lag,
             allow_reference_unavailable=allow_reference_unavailable,
+            pow_type=pow_type,
+            mining_address=mining_address,
         )
         sample["sample_index"] = index + 1
         height = sample.get("height")
@@ -668,12 +727,12 @@ def validate_topology(
         ("eligible_backend", normalized_eligible),
     ):
         for node in values:
-            if node != "node1" and node not in normalized_excluded:
+            if node != "node" and node not in normalized_excluded:
                 failures.append(f"unexpected_extra_{label}:{node}")
 
     if running_containers is not None:
         for node in normalized_running:
-            if node == "node1" and node not in normalized_services and node not in normalized_excluded:
+            if node == "node" and node not in normalized_services and node not in normalized_excluded:
                 failures.append(f"running_container_not_declared:{node}")
 
     if strict_routing and normalized_eligible:
@@ -788,7 +847,10 @@ def evaluate_gate(
     running_containers: list[str] | None = None,
     excluded_backends: list[str] | None = None,
     strict_routing: bool = False,
+    pow_type: int = DEFAULT_POW_TYPE,
+    mining_address: str | None = None,
 ) -> dict[str, Any]:
+    resolved_mining_address = default_mining_address(mining_address)
     backend_results = {
         backend.name: evaluate_backend(
             backend,
@@ -799,6 +861,8 @@ def evaluate_gate(
             after_chain_incident=after_chain_incident,
             max_reference_lag=max_reference_lag,
             allow_reference_unavailable=allow_reference_unavailable,
+            pow_type=pow_type,
+            mining_address=resolved_mining_address,
         )
         for backend in backends
     }
@@ -835,6 +899,8 @@ def evaluate_gate(
             "after_chain_incident": after_chain_incident,
             "max_reference_lag": max_reference_lag,
             "allow_reference_unavailable": allow_reference_unavailable,
+            "pow_type": pow_type,
+            "mining_address_present": bool(resolved_mining_address),
         },
     }
 
@@ -851,6 +917,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--samples", type=int, default=DEFAULT_SAMPLE_COUNT)
     parser.add_argument("--sample-interval", type=float, default=DEFAULT_SAMPLE_INTERVAL_SECONDS)
     parser.add_argument("--max-reference-lag", type=int, default=DEFAULT_MAX_REFERENCE_LAG)
+    parser.add_argument("--pow-type", type=int, default=DEFAULT_POW_TYPE)
+    parser.add_argument("--mining-address", default=None)
     parser.add_argument(
         "--after-chain-incident",
         action="store_true",
@@ -891,6 +959,8 @@ def main(argv: list[str] | None = None) -> int:
         running_containers=args.running_container,
         excluded_backends=args.excluded_backend,
         strict_routing=args.strict_routing,
+        pow_type=args.pow_type,
+        mining_address=args.mining_address,
     )
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))

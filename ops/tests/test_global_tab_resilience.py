@@ -53,35 +53,35 @@ class GlobalTabRpcSelectionTests(unittest.TestCase):
         pool_ops.docker_container_ip = self.old_docker_container_ip
 
     def test_global_chain_uses_mining_rpc_when_node_rpc_is_configured(self) -> None:
-        os.environ["BDAG_NODE_RPC_URLS"] = "node1=http://127.0.0.1:38131"
+        os.environ["BDAG_NODE_RPC_URLS"] = "node=http://127.0.0.1:38131"
         for key in ("BDAG_GLOBAL_CHAIN_RPC_URLS",):
             os.environ.pop(key, None)
 
-        self.assertEqual(pool_ops.global_chain_rpc_urls(), [("node1", "http://127.0.0.1:38131")])
+        self.assertEqual(pool_ops.global_chain_rpc_urls(), [("node", "http://127.0.0.1:38131")])
 
     def test_global_evm_rpc_stays_separate_for_wallet_reads(self) -> None:
         for key in ("BDAG_GLOBAL_RPC_URLS", "BDAG_EVM_RPC_URLS", "WALLET_RPC_URLS"):
             os.environ.pop(key, None)
-        pool_ops.NODES = ["bdag-miner-node-1"]
-        pool_ops.SERVICES = ["bdag-miner-node-1"]
+        pool_ops.NODES = ["node"]
+        pool_ops.SERVICES = ["node"]
         pool_ops.POOL_CONTAINERS = []
-        pool_ops.docker_container_ip = lambda name: "172.22.0.2" if name == "bdag-miner-node-1" else ""
+        pool_ops.docker_container_ip = lambda name: "172.22.0.2" if name == "node" else ""
 
         self.assertEqual(
             pool_ops.global_evm_rpc_urls(),
-            [("bdag-miner-node-1", "http://172.22.0.2:18545")],
+            [("node", "http://172.22.0.2:18545")],
         )
 
     def test_global_rewrites_compose_service_hostname_for_host_dashboard(self) -> None:
-        os.environ["BDAG_GLOBAL_CHAIN_RPC_URLS"] = "node1=http://bdag-miner-node-1:38131"
-        pool_ops.NODES = ["bdag-miner-node-1"]
-        pool_ops.SERVICES = ["bdag-miner-node-1"]
+        os.environ["BDAG_GLOBAL_CHAIN_RPC_URLS"] = "node=http://node:38131"
+        pool_ops.NODES = ["node"]
+        pool_ops.SERVICES = ["node"]
         pool_ops.POOL_CONTAINERS = []
-        pool_ops.docker_container_ip = lambda name: "172.22.0.2" if name == "bdag-miner-node-1" else ""
+        pool_ops.docker_container_ip = lambda name: "172.22.0.2" if name == "node" else ""
 
         self.assertEqual(
             pool_ops.global_chain_rpc_urls(),
-            [("node1", "http://172.22.0.2:38131")],
+            [("node", "http://172.22.0.2:38131")],
         )
 
 
@@ -261,8 +261,16 @@ class GlobalTabFallbackTests(unittest.TestCase):
 
     def test_global_live_head_promotes_latest_block_without_losing_scan_window(self) -> None:
         old_probe = pool_ops.probe_global_chain_block_count
+        old_display_probe = pool_ops.probe_global_display_block_height
         self.addCleanup(lambda: setattr(pool_ops, "probe_global_chain_block_count", old_probe))
+        self.addCleanup(lambda: setattr(pool_ops, "probe_global_display_block_height", old_display_probe))
         pool_ops.probe_global_chain_block_count = lambda: (150, "chain", "http://chain-rpc", [])
+        pool_ops.probe_global_display_block_height = lambda: (
+            120,
+            "chain:getBlockTemplate",
+            {"template_height": 120},
+            [],
+        )
 
         payload = pool_ops.refresh_global_chain_head(
             {
@@ -274,8 +282,10 @@ class GlobalTabFallbackTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(payload["latest_block"], 150)
-        self.assertEqual(payload["chain_latest_block"], 150)
+        self.assertEqual(payload["latest_block"], 120)
+        self.assertEqual(payload["display_latest_block"], 120)
+        self.assertEqual(payload["chain_latest_block"], 120)
+        self.assertEqual(payload["chain_block_count"], 150)
         self.assertEqual(payload["scan_end_block"], 99)
         self.assertEqual(payload["chain_tip_lag_blocks"], 51)
 
@@ -618,8 +628,8 @@ class EarningsEvmRpcSourceTests(unittest.TestCase):
     def test_wallet_balances_use_evm_rpc_not_mining_rpc(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         called_urls: list[str] = []
-        pool_ops.global_evm_rpc_urls = lambda: [("node1-evm", "http://172.22.0.5:18545")]
-        pool_ops.node_rpc_urls = lambda: [("node1-mining", "http://127.0.0.1:38131")]
+        pool_ops.global_evm_rpc_urls = lambda: [("node-evm", "http://172.22.0.5:18545")]
+        pool_ops.node_rpc_urls = lambda: [("node-mining", "http://127.0.0.1:38131")]
         pool_ops.named_urls_from_env = lambda _name, _defaults: []
         pool_ops.adaptive_worker_count = lambda *_args, **_kwargs: 1
 
@@ -650,9 +660,9 @@ class GlobalLocalPoolOverlayTests(unittest.TestCase):
         pool_ops.read_global_pool_labels = self.old_read_global_pool_labels
         pool_ops.NODES = self.old_nodes
 
-    def test_local_pool_credit_row_uses_asic_worker_identity(self) -> None:
+    def test_local_pool_credit_row_uses_single_asic_worker_identity(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
-        pool_ops.NODES = ["bdag-miner-node-1"]
+        pool_ops.NODES = ["node"]
         pool_ops.pool_db_json = lambda _sql: [
             {
                 "miner_address": wallet,
@@ -671,6 +681,9 @@ class GlobalLocalPoolOverlayTests(unittest.TestCase):
                     "display_name": "Achilles",
                     "device_type": "asic",
                     "last_workers": [wallet],
+                    "last_shares_window": 11,
+                    "last_configured_ok": True,
+                    "last_share_epoch": 200,
                 }
             ]
         }
@@ -685,26 +698,97 @@ class GlobalLocalPoolOverlayTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["address"], wallet)
         self.assertEqual(rows[0]["pool_name"], "Achilles-0b5")
-        self.assertEqual(rows[0]["nodes"], ["bdag-miner-node-1"])
+        self.assertEqual(rows[0]["nodes"], ["node"])
         self.assertTrue(rows[0]["local_pool"])
         self.assertEqual(rows[0]["shares"], 7)
         self.assertEqual(rows[0]["credit_blocks"], 7)
         self.assertEqual(rows[0]["found_blocks"], 7)
         self.assertEqual(rows[0]["credited_bdag"], "70.00")
 
+    def test_local_pool_shared_worker_uses_pool_aggregate_identity(self) -> None:
+        wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        captured_sql = {}
+        pool_ops.NODES = ["node"]
+
+        def fake_pool_db_json(sql: str):
+            captured_sql["sql"] = sql
+            return [
+                {
+                    "miner_address": wallet.lower(),
+                    "credit_count": 11,
+                    "found_blocks": 11,
+                    "total_wei": "110000000000000000000",
+                    "first_seen_at": "2026-05-27T00:00:00Z",
+                    "last_seen_at": "2026-05-27T00:01:00Z",
+                }
+            ]
+
+        pool_ops.pool_db_json = fake_pool_db_json
+        pool_ops.read_miner_registry = lambda: {
+            "miners": [
+                {
+                    "ip": "192.168.1.107",
+                    "mac": "28:e2:97:1e:c0:b5",
+                    "device_type": "asic",
+                    "last_workers": [wallet],
+                    "last_shares_window": 11,
+                    "last_configured_ok": True,
+                    "last_share_epoch": 200,
+                },
+                {
+                    "ip": "192.168.1.108",
+                    "mac": "28:e2:97:1e:c0:b6",
+                    "device_type": "asic",
+                    "last_workers": [wallet.lower()],
+                    "last_shares_window": 9,
+                    "last_configured_ok": True,
+                    "last_share_epoch": 201,
+                },
+            ]
+        }
+
+        rows = pool_ops.collect_local_pool_global_clusters(
+            scan_window_seconds=120,
+            total_global_blocks=100,
+            scan_window_hours=Decimal("0.0333333333"),
+            price={"status": "ok", "usd": "0.01", "zar": "0.18"},
+        )
+
+        self.assertIn("lower(c.miner_address) AS miner_address", captured_sql["sql"])
+        self.assertIn("GROUP BY lower(c.miner_address)", captured_sql["sql"])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["address"], wallet.lower())
+        self.assertEqual(rows[0]["pool_name"], "Local pool (2 ASICs)")
+        self.assertEqual(rows[0]["pool_label"], f"Local pool (2 ASICs) ({pool_ops.short_eth_address(wallet.lower())})")
+        self.assertEqual(rows[0]["device_type"], "pool")
+        self.assertEqual(rows[0]["mac"], "")
+        self.assertEqual(rows[0]["identity_key"], "")
+        self.assertEqual(rows[0]["local_asic_count"], 2)
+        self.assertEqual(rows[0]["local_miner_count"], 2)
+        self.assertEqual(rows[0]["local_macs"], ["28:e2:97:1e:c0:b5", "28:e2:97:1e:c0:b6"])
+        self.assertEqual(rows[0]["credit_blocks"], 11)
+
     def test_local_pool_overlay_is_preserved_when_address_matches_chain_cluster(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         merged = pool_ops.merge_global_local_pool_clusters(
             [{"address": wallet, "blocks": 2, "credit_blocks": 2, "last_seen_at": "2026-05-27T00:01:00Z"}],
-            [{"address": wallet, "blocks": 3, "pool_name": "Achilles-0b5", "local_pool": True, "credit_blocks": 3}],
+            [{
+                "address": wallet,
+                "blocks": 3,
+                "pool_name": "Local pool (2 ASICs)",
+                "local_pool": True,
+                "credit_blocks": 3,
+                "local_asic_count": 2,
+            }],
         )
 
         self.assertEqual(len(merged), 1)
         self.assertTrue(merged[0]["local_pool"])
-        self.assertEqual(merged[0]["pool_name"], "Achilles-0b5")
+        self.assertEqual(merged[0]["pool_name"], "Local pool (2 ASICs)")
         self.assertEqual(merged[0]["blocks"], 2)
         self.assertEqual(merged[0]["credit_blocks"], 2)
         self.assertEqual(merged[0]["local_credit_blocks"], 3)
+        self.assertEqual(merged[0]["local_asic_count"], 2)
 
     def test_local_pool_only_rows_do_not_create_global_chain_production(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
@@ -796,7 +880,7 @@ class GlobalMaintenanceBackoffTests(unittest.TestCase):
             "reasons": ["host io pressure avg10 28.00 >= 20.00"],
             "adaptive_concurrency": {"workers": {"global_rpc": 1}},
         }
-        pool_ops.global_chain_rpc_urls = lambda: [("node1", "http://127.0.0.1:38131")]
+        pool_ops.global_chain_rpc_urls = lambda: [("node", "http://127.0.0.1:38131")]
         pool_ops.mining_rpc_call = lambda _url, method, _params, timeout=0: 123 if method == "getBlockCount" else None
 
         payload = pool_ops.collect_global_blockchain()

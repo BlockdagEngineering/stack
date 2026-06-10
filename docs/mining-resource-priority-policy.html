@@ -16,7 +16,8 @@
       "ops/apply-mining-host-tuning.sh",
       "ops/systemd/bdag-mining-host-tuning.service",
       "ops/systemd/bdag-mining-host-tuning.timer",
-      "ops/install-p2p-services.sh"
+      "ops/install-p2p-services.sh",
+      "scripts/install-mining-appliance-profile.sh"
     ]
   }
   </script>
@@ -52,14 +53,14 @@
   <h2>Policy</h2>
   <table>
     <tr><th>Class</th><th>Examples</th><th>Runtime Treatment</th></tr>
-    <tr><td>Active mining lane</td><td><code>bdag-miner-node-1</code></td><td>Highest Docker CPU/blkio weight, highest process priority, best-effort I/O priority 0.</td></tr>
-    <tr><td>Pool and accounting</td><td><code>asic-pool</code>, <code>pool-db</code>, Postgres worker processes</td><td>High Docker CPU/blkio weight, elevated process priority, best-effort I/O priority 0.</td></tr>
+    <tr><td>Active mining lane</td><td><code>node</code></td><td>Highest Docker CPU/blkio weight, highest process priority, best-effort I/O priority 0.</td></tr>
+    <tr><td>Pool and accounting</td><td><code>asic-pool</code>, <code>postgres</code>, Postgres worker processes</td><td>High Docker CPU/blkio weight, elevated process priority, best-effort I/O priority 0.</td></tr>
     <tr><td>Observability and support</td><td>Grafana, Prometheus, Loki, exporters, dashboard, release seeder, snapshots, browser</td><td>Low CPU/IO weights or idle I/O so they yield under contention.</td></tr>
   </table>
 
   <h2>Implementation</h2>
-  <p><code>ops/apply-mining-host-tuning.sh</code> reads pool metrics to detect the selected backend. It then updates Docker CPU and block I/O weights and applies process <code>nice</code>/<code>ionice</code> values. It intentionally does not restart mining services or ASICs.</p>
-  <p><code>bdag-mining-host-tuning.timer</code> reapplies the policy every five minutes and after boot. <code>/etc/default/bdag-mining-host-tuning</code> records <code>BDAG_PROJECT_ROOT</code> so the installed script can read the active release root.</p>
+  <p><code>ops/apply-mining-host-tuning.sh</code> reads pool metrics to detect the selected backend. It then updates Docker CPU and block I/O weights, applies process <code>nice</code>/<code>ionice</code> values, writes cgroup v2 <code>memory.low</code> protection for the node, pool, and Postgres, and keeps selected host interfaces on <code>fq_codel</code> when <code>tc</code> is available. Docker does not provide a portable per-container network priority control in this release path; network protection is host qdisc tuning plus keeping mining-critical CPU and disk I/O scheduling ahead of dashboard and maintenance work. It intentionally does not restart mining services or ASICs.</p>
+  <p><code>bdag-mining-host-tuning.timer</code> reapplies the policy every five minutes and after boot. <code>/etc/default/bdag-mining-host-tuning</code> records <code>BDAG_PROJECT_ROOT</code> so the installed script can read the active release root. Fresh release installs run <code>scripts/install-mining-appliance-profile.sh</code> in non-destructive mode by default, then install P2P/IPFS support timers and <code>bdag-mining-host-tuning.timer</code>. Compose defaults also put container <code>/tmp</code> and <code>/var/tmp</code> on tmpfs so temporary churn avoids the chain-data disk.</p>
 </main>
 </body>
 </html>

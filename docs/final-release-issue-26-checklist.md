@@ -24,9 +24,10 @@ while removing local assumptions that caused install or sync drift.
   package metadata, mutable data directories, local `.env`, `node.conf`, and
   transient snapshot files do not ship.
 - Payload installers preserve existing node data, peer identity, signer
-  material, and runtime state unless `BDAG_RESET_NODE_DATA=1` is set. They set
-  `DOCKER_PLATFORM` from `release-payload.env`, not from a universal AMD64
-  assumption.
+  material, and runtime state. When a valid snapshot is available and the
+  configured node datadir has no chain markers, installers stage the snapshot
+  into that host datadir for first start. They set `DOCKER_PLATFORM` from
+  `release-payload.env`, not from a universal AMD64 assumption.
 - Installers preflight architecture, Docker Compose, disk, port occupancy, time
   sync, optional `jq`, and seed reachability. Old/orphan Compose cleanup is a
   dry-run unless `BDAG_CLEAN_ORPHAN_CONTAINERS=1` is set.

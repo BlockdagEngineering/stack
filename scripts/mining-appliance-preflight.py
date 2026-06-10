@@ -317,9 +317,8 @@ def env_path(root: Path, env: dict[str, str], key: str, default: str | Path) -> 
     return path if path.is_absolute() else root / path
 
 
-def env_node_data_dir(root: Path, env: dict[str, str], node_name: str) -> Path:
-    key = "BDAG_NODE1_DATA_DIR"
-    return env_path(root, env, key, env_data_dir(root, env) / node_name)
+def env_node_data_dir(root: Path, env: dict[str, str]) -> Path:
+    return env_path(root, env, "BDAG_NODE_DATA_DIR", env_data_dir(root, env) / "node")
 
 
 def env_postgres_dir(root: Path, env: dict[str, str]) -> Path:
@@ -470,7 +469,7 @@ def check_storage_profile(checks: list[Check], root: Path, env: dict[str, str], 
     selected = (env.get("BDAG_STORAGE_PROFILE") or "auto").strip().lower() or "auto"
     known_profiles = {"auto", "single-device", "single-usb-constrained", "usb-chain-internal-runtime", "split-ssd", "dev"}
     chain_base = env_data_dir(root, env)
-    active_node_dir = env_node_data_dir(root, env, "node1")
+    active_node_dir = env_node_data_dir(root, env)
     postgres_dir = env_postgres_dir(root, env)
     runtime_dir = env_runtime_dir(root, env)
 
@@ -735,9 +734,9 @@ def chain_marker_exists(path: Path) -> bool:
 
 def check_node_data_layout(checks: list[Check], root: Path, env: dict[str, str]) -> None:
     data_dir = env_data_dir(root, env)
-    node1 = data_dir / "node1"
-    node1_has = chain_marker_exists(node1 / "mainnet") or chain_marker_exists(node1)
-    evidence = {"data_dir": str(data_dir), "active_node_has_chain_markers": node1_has}
+    node_dir = env_node_data_dir(root, env)
+    node_has = chain_marker_exists(node_dir / "mainnet") or chain_marker_exists(node_dir)
+    evidence = {"data_dir": str(data_dir), "active_node_has_chain_markers": node_has}
     add(checks, "pass", "active_node_data_layout", "active node data layout is inspectable", evidence=evidence)
 
     backup_like = []
@@ -758,6 +757,14 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         "BDAG_STORAGE_PROFILE": env.get("BDAG_STORAGE_PROFILE"),
         "BDAG_DETECTED_NETWORK_TOPOLOGY": env.get("BDAG_DETECTED_NETWORK_TOPOLOGY"),
         "BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS": env.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS"),
+        "BDAG_CATCHUP_PAUSE_ENABLED": env.get("BDAG_CATCHUP_PAUSE_ENABLED"),
+        "BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS": env.get("BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS"),
+        "BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED": env.get("BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED"),
+        "BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS": env.get("BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS"),
+        "BDAG_CATCHUP_IOWAIT_WARN_PERCENT": env.get("BDAG_CATCHUP_IOWAIT_WARN_PERCENT"),
+        "BDAG_CATCHUP_IO_SOME_AVG10_WARN": env.get("BDAG_CATCHUP_IO_SOME_AVG10_WARN"),
+        "BDAG_CATCHUP_IO_FULL_AVG10_WARN": env.get("BDAG_CATCHUP_IO_FULL_AVG10_WARN"),
+        "BDAG_CATCHUP_NODE_CACHE_MB": env.get("BDAG_CATCHUP_NODE_CACHE_MB"),
         "BDAG_STATUS_SAMPLER_ENABLED": env.get("BDAG_STATUS_SAMPLER_ENABLED"),
         "BDAG_ADAPTIVE_CONCURRENCY_ENABLED": env.get("BDAG_ADAPTIVE_CONCURRENCY_ENABLED"),
         "BDAG_ENTRYPOINT_CHOWN_MODE": env.get("BDAG_ENTRYPOINT_CHOWN_MODE"),
@@ -792,25 +799,100 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     node_mining_args = env.get("BDAG_NODE_MINING_ARGS") or ""
     missing_mining_args = [
         flag
-        for flag in ("--allowminingwhennearlysynced", "--allowsubmitwhennotsynced", "--miner", "--miningaddr=")
+        for flag in ("--miner", "--miningaddr=")
         if flag not in node_mining_args
     ]
-    if node_mining_enabled and "miner" not in node_modules:
-        add(checks, "fail", "node_mining_runtime", "node mining is enabled but the miner module is not exposed.", "Set BDAG_NODE_MODULES=Blockdag,miner so the pool can request fresh templates.", evidence)
+    unsafe_mining_bypass_args = [
+        flag
+        for flag in ("--allowminingwhennearlysynced", "--allowsubmitwhennotsynced")
+        if flag in node_mining_args
+    ]
+    if node_mining_enabled and node_modules and "blockdag" not in node_modules:
+        add(checks, "fail", "node_mining_runtime", "node mining is enabled but the Blockdag RPC module is not exposed.", "Set BDAG_NODE_MODULES=Blockdag; miner mode is enabled by --miner in BDAG_NODE_MINING_ARGS.", evidence)
+    elif node_mining_enabled and "miner" in node_modules:
+        add(checks, "fail", "node_mining_runtime", "BDAG_NODE_MODULES includes unsupported miner RPC module for this release image.", "Set BDAG_NODE_MODULES=Blockdag and keep --miner in BDAG_NODE_MINING_ARGS so chain RPC and templates remain available.", evidence)
+    elif node_mining_enabled and unsafe_mining_bypass_args:
+        add(checks, "fail", "node_mining_runtime", "node mining enables unsafe sync bypass args: " + ", ".join(unsafe_mining_bypass_args), "Remove sync bypass args; getTemplateHealth and readiness gates must fail closed until P2P freshness and sync safety are healthy.", evidence)
     elif node_mining_enabled and missing_mining_args:
-        add(checks, "fail", "node_mining_runtime", "node mining is enabled but required mining guard args are missing: " + ", ".join(missing_mining_args), "Set BDAG_NODE_MINING_ARGS with near-sync mining, submit override, miner mode, and the payout mining address.", evidence)
+        add(checks, "fail", "node_mining_runtime", "node mining is enabled but required mining args are missing: " + ", ".join(missing_mining_args), "Set BDAG_NODE_MINING_ARGS with miner mode and the payout mining address.", evidence)
     elif node_mining_enabled and constrained_mining_profile and "--maxinbound=1" not in node_mining_args:
         add(checks, "warn", "node_mining_runtime", "constrained ASIC-router mining is enabled without --maxinbound=1.", "Add --maxinbound=1 so inbound catch-up peers cannot contend with paid block submission on USB/router hosts while P2P remains usable.", evidence)
     elif node_mining_enabled:
-        add(checks, "pass", "node_mining_runtime", "node miner/template runtime guard args are configured", evidence=evidence)
+        add(checks, "pass", "node_mining_runtime", "node miner/template runtime args are configured", evidence=evidence)
     else:
         add(checks, "pass", "node_mining_runtime", "node mining stays disabled until miners are present", evidence=evidence)
+
+    pool_rpc_pressure = {
+        "POOL_GBT_MIN_INTERVAL_MS": env.get("POOL_GBT_MIN_INTERVAL_MS"),
+        "POOL_GBT_PRESSURE_INTERVAL_MS": env.get("POOL_GBT_PRESSURE_INTERVAL_MS"),
+        "POOL_GBT_PRESSURE_WINDOW_SECONDS": env.get("POOL_GBT_PRESSURE_WINDOW_SECONDS"),
+        "POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS": env.get("POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS"),
+        "POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS": env.get("POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS"),
+    }
+    gbt_min_ms = safe_int(pool_rpc_pressure["POOL_GBT_MIN_INTERVAL_MS"], None)
+    gbt_pressure_ms = safe_int(pool_rpc_pressure["POOL_GBT_PRESSURE_INTERVAL_MS"], None)
+    gbt_pressure_window_seconds = safe_int(pool_rpc_pressure["POOL_GBT_PRESSURE_WINDOW_SECONDS"], None)
+    node_health_probe_seconds = safe_int(pool_rpc_pressure["POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS"], None)
+    pressure_failures = []
+    if gbt_min_ms is not None and gbt_min_ms < 1000:
+        pressure_failures.append("POOL_GBT_MIN_INTERVAL_MS below 1000ms")
+    if gbt_pressure_ms is not None and gbt_pressure_ms < 250:
+        pressure_failures.append("POOL_GBT_PRESSURE_INTERVAL_MS below 250ms")
+    if node_health_probe_seconds is not None and node_health_probe_seconds < 10:
+        pressure_failures.append("POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS below 10s")
+    if pressure_failures:
+        add(
+            checks,
+            "fail",
+            "pool_template_rpc_pressure",
+            "pool template RPC settings can saturate the node RPC client limit: " + ", ".join(pressure_failures),
+            "Use POOL_GBT_MIN_INTERVAL_MS=1100, POOL_GBT_PRESSURE_INTERVAL_MS=500, POOL_GBT_PRESSURE_WINDOW_SECONDS=10, and POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS=15.",
+            pool_rpc_pressure,
+        )
+    elif gbt_pressure_window_seconds is not None and gbt_pressure_window_seconds > 15:
+        add(
+            checks,
+            "warn",
+            "pool_template_rpc_pressure",
+            f"pool template pressure window is {gbt_pressure_window_seconds}s.",
+            "Use 10s unless a measured soak test proves the node can absorb sustained template pressure while importing and mining.",
+            pool_rpc_pressure,
+        )
+    else:
+        add(checks, "pass", "pool_template_rpc_pressure", "pool template RPC pressure stays within constrained-node defaults", evidence=pool_rpc_pressure)
+
+    if not bool_enabled(env.get("BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC"), True):
+        add(checks, "warn", "fastsync_acceleration", "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC is disabled.", "Enable coordinator acceleration so nodes more than 1000 blocks behind use fastest catch-up defaults.", evidence)
+    else:
+        add(checks, "pass", "fastsync_acceleration", "sync coordinator fastest catch-up is enabled", evidence=evidence)
 
     fast_restart_cooldown = safe_int(env.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS"), 900)
     if fast_restart_cooldown and fast_restart_cooldown > 1800:
         add(checks, "warn", "sync_restart_cooldown", f"sync restart cooldown is {fast_restart_cooldown}s.", "Use 900s so a stale importer does not remain down-level for too long.", evidence)
     else:
         add(checks, "pass", "sync_restart_cooldown", f"sync restart cooldown={fast_restart_cooldown}s", evidence=evidence)
+
+    catchup_pause_threshold = safe_int(env.get("BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS"), 300)
+    catchup_io_min_lag = safe_int(env.get("BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS"), 25)
+    catchup_iowait_warn = safe_int(env.get("BDAG_CATCHUP_IOWAIT_WARN_PERCENT"), 15)
+    catchup_io_full_warn = safe_int(env.get("BDAG_CATCHUP_IO_FULL_AVG10_WARN"), 10)
+    if not bool_enabled(env.get("BDAG_CATCHUP_PAUSE_ENABLED"), True):
+        add(checks, "warn", "catchup_pause", "BDAG_CATCHUP_PAUSE_ENABLED is disabled.", "Enable catch-up pause so I/O-bound nodes behind peers stop mining/template churn and prioritize import.", evidence)
+    elif catchup_pause_threshold and catchup_pause_threshold > 300:
+        add(checks, "warn", "catchup_pause", f"catch-up pause threshold is {catchup_pause_threshold} blocks.", "Use 300 blocks so stale mining work stops before a node falls materially behind peers.", evidence)
+    else:
+        add(checks, "pass", "catchup_pause", f"catch-up pause threshold={catchup_pause_threshold} blocks", evidence=evidence)
+
+    if not bool_enabled(env.get("BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED"), True):
+        add(checks, "warn", "catchup_io_pause", "BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED is disabled.", "Keep I/O-pressure catch-up pause enabled so the stack reacts before the 300-block backup threshold when the node is I/O-bound.", evidence)
+    elif catchup_io_min_lag and catchup_io_min_lag > 100:
+        add(checks, "warn", "catchup_io_pause", f"I/O pressure pause minimum lag is {catchup_io_min_lag} blocks.", "Use 25 blocks so I/O-bound catch-up reduces stale mining work early.", evidence)
+    elif catchup_iowait_warn and catchup_iowait_warn > 15:
+        add(checks, "warn", "catchup_io_pause", f"I/O pressure iowait threshold is {catchup_iowait_warn}%.", "Use 15% so sustained disk contention pauses mining before the peer gap grows.", evidence)
+    elif catchup_io_full_warn and catchup_io_full_warn > 10:
+        add(checks, "warn", "catchup_io_pause", f"I/O full pressure threshold is {catchup_io_full_warn}.", "Use 10.0 so full I/O stalls pause mining before the peer gap grows.", evidence)
+    else:
+        add(checks, "pass", "catchup_io_pause", f"I/O-pressure catch-up pause enabled min_lag={catchup_io_min_lag}", evidence=evidence)
 
     if not bool_enabled(env.get("BDAG_STATUS_SAMPLER_ENABLED"), True):
         add(checks, "warn", "status_sampler", "BDAG_STATUS_SAMPLER_ENABLED is disabled.", "Enable the sampler so dashboard, watchdog, and guards share one low-overhead status collection.", evidence)
@@ -843,10 +925,99 @@ def check_swap(checks: list[Check], profile: HostProfile) -> None:
         add(checks, "pass", "swap_budget", f"swap total={round(total / GIB, 2)}GiB used={round(used / GIB, 2)}GiB", evidence=evidence)
 
 
-def check_network(checks: list[Check]) -> None:
+def route_policy_script(root: Path | None = None) -> Path | None:
+    candidates = []
+    if root is not None:
+        candidates.extend(
+            [
+                root / "scripts" / "validate-network-route-policy.py",
+                root / "validate-network-route-policy.py",
+            ]
+        )
+    candidates.append(Path(__file__).resolve().with_name("validate-network-route-policy.py"))
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def check_route_policy_validator(checks: list[Check], root: Path | None = None) -> None:
+    script = route_policy_script(root)
+    if script is None:
+        add(
+            checks,
+            "warn",
+            "wired_route_policy",
+            "wired-first route policy validator is missing from this package.",
+            "Include scripts/validate-network-route-policy.py in releases so installers can verify Ethernet remains preferred over Wi-Fi.",
+        )
+        return
+    proc = run(["python3", str(script), "--json", "--warn-only"], timeout=8)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        add(
+            checks,
+            "warn",
+            "wired_route_policy",
+            "wired-first route policy validator could not run.",
+            "Run scripts/validate-network-route-policy.py on the host and correct any route or DNS priority drift.",
+            {"stdout": proc.stdout.strip(), "stderr": proc.stderr.strip()},
+        )
+        return
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        add(
+            checks,
+            "warn",
+            "wired_route_policy",
+            "wired-first route policy validator returned invalid JSON.",
+            "Run scripts/validate-network-route-policy.py directly and inspect its output.",
+            {"stdout": proc.stdout.strip()[:2000]},
+        )
+        return
+    issues = payload.get("issues") if isinstance(payload.get("issues"), list) else []
+    failure_count = safe_int(payload.get("failure_count"), 0) or 0
+    warning_count = safe_int(payload.get("warning_count"), 0) or 0
+    evidence = {
+        "selected_default_route": payload.get("selected_default_route", ""),
+        "route_get": payload.get("route_get", ""),
+        "failure_count": failure_count,
+        "warning_count": warning_count,
+        "issues": issues,
+    }
+    if failure_count:
+        add(
+            checks,
+            "fail",
+            "wired_route_policy",
+            f"wired-first route policy has {failure_count} failure(s).",
+            "Apply scripts/validate-network-route-policy.py --apply so Ethernet is the preferred route and Wi-Fi remains fallback-only.",
+            evidence,
+        )
+    elif warning_count:
+        add(
+            checks,
+            "warn",
+            "wired_route_policy",
+            f"wired-first route policy has {warning_count} warning(s).",
+            "Apply scripts/validate-network-route-policy.py --apply to persist Ethernet route and DNS priority.",
+            evidence,
+        )
+    else:
+        add(
+            checks,
+            "pass",
+            "wired_route_policy",
+            "Ethernet route and DNS priority are preferred over Wi-Fi fallback.",
+            evidence=evidence,
+        )
+
+
+def check_network(checks: list[Check], root: Path | None = None) -> None:
     proc = run(["ip", "-o", "-4", "route", "get", "1.1.1.1"], timeout=3)
     if proc.returncode != 0 or not proc.stdout.strip():
-        add(checks, "warn", "default_route", "no IPv4 default route was detected.", "Configure networking before peer discovery or ASIC setup.", {"stderr": proc.stderr.strip()})
+        add(checks, "warn", "default_route", "no IPv4 default route was detected.", "Configure networking before FastSnap peer discovery or ASIC setup.", {"stderr": proc.stderr.strip()})
+        check_route_policy_validator(checks, root)
         return
     line = proc.stdout.strip().splitlines()[0]
     parts = line.split()
@@ -857,6 +1028,7 @@ def check_network(checks: list[Check]) -> None:
         add(checks, "warn", "default_route", f"default route uses Wi-Fi interface {dev} with source {src}.", "Keep ASIC and trusted peers on the same low-latency LAN; prefer wired Ethernet if shares or submits stall.", evidence)
     else:
         add(checks, "pass", "default_route", f"default route uses {dev or 'unknown'} source {src or 'unknown'}", evidence=evidence)
+    check_route_policy_validator(checks, root)
 
 
 def docker_root_dir() -> str:
@@ -964,7 +1136,7 @@ def run_preflight(root: Path, env_file: Path) -> dict[str, Any]:
     check_node_data_layout(checks, root, env)
     check_env_defaults(checks, env, profile)
     check_swap(checks, profile)
-    check_network(checks)
+    check_network(checks, root)
     check_docker_storage(checks, root, env, profile)
     check_live_node_child(checks, root)
     check_schema_file(checks, root)

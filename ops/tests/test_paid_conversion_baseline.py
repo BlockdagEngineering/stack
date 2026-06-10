@@ -15,13 +15,13 @@ class PaidConversionBaselineTests(unittest.TestCase):
         metrics = baseline.parse_prometheus(
             """
 pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"} 10
-pool_rpc_backend_node_health_submit_ready{backend="node1",pool_id="0"} 0
+pool_rpc_backend_node_health_submit_ready{backend="node",pool_id="0"} 0
 process_cpu_seconds_total 99
 """
         )
 
         self.assertEqual(10.0, metrics['pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"}'])
-        self.assertEqual(0.0, metrics['pool_rpc_backend_node_health_submit_ready{backend="node1",pool_id="0"}'])
+        self.assertEqual(0.0, metrics['pool_rpc_backend_node_health_submit_ready{backend="node",pool_id="0"}'])
         self.assertNotIn("process_cpu_seconds_total", metrics)
 
     def test_summarize_metrics_counts_local_drops_and_tip_overdue(self) -> None:
