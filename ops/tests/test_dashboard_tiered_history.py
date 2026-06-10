@@ -112,6 +112,40 @@ class DashboardTieredHistoryTests(unittest.TestCase):
         self.assertEqual([row["generated_at"] for row in minute_payload["rows"]], [new["generated_at"]])
         self.assertEqual([row["generated_at"] for row in hour_payload["rows"]], [old["generated_at"]])
 
+    def test_compacted_earnings_history_preserves_local_asic_visibility_fields(self) -> None:
+        snapshot = earnings_snapshot(1_781_000_000)
+        miner = snapshot["miner_estimates"][0]
+        miner.update(
+            {
+                "device_type": "asic",
+                "connected": True,
+                "pool_active": True,
+                "work_pool_active": True,
+                "expected_work_lane": True,
+                "expected_work_percent": "100.00",
+                "lane_status": "balanced",
+                "credited_blocks": 7,
+                "last_share_at": "2026/06/10 15:17:26",
+                "hashrate_available": True,
+                "hashrate_source": "asic-cgminer-devs",
+            }
+        )
+
+        compacted = pool_ops.compact_earnings_snapshot(snapshot)
+        compacted_miner = compacted["miner_estimates"][0]
+
+        self.assertEqual(compacted_miner["device_type"], "asic")
+        self.assertTrue(compacted_miner["connected"])
+        self.assertTrue(compacted_miner["pool_active"])
+        self.assertTrue(compacted_miner["work_pool_active"])
+        self.assertTrue(compacted_miner["expected_work_lane"])
+        self.assertEqual(compacted_miner["expected_work_percent"], "100.00")
+        self.assertEqual(compacted_miner["lane_status"], "balanced")
+        self.assertEqual(compacted_miner["credited_blocks"], 7)
+        self.assertEqual(compacted_miner["last_share_at"], "2026/06/10 15:17:26")
+        self.assertTrue(compacted_miner["hashrate_available"])
+        self.assertEqual(compacted_miner["hashrate_source"], "asic-cgminer-devs")
+
     def test_history_tiers_do_not_exceed_frontend_gap_thresholds(self) -> None:
         tiers = {tier.name: tier for tier in pool_ops.dashboard_history_tiers()}
 
