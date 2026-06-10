@@ -1666,6 +1666,10 @@ def boot_repair(
     return result
 
 
+def collect_status_cached() -> dict[str, Any]:
+    return collect_stack_status(include_logs=True)
+
+
 def check_once(
     threshold: int,
     clean_restore_cooldown: int,
@@ -1676,7 +1680,7 @@ def check_once(
     repair: bool = True,
 ) -> dict[str, Any]:
     state = read_state()
-    status = collect_stack_status(include_logs=True)
+    status = collect_status_cached()
     stack_failures = status.get("stack_failures", status["failures"])
     miner_failures = status.get("miner_failures", [])
     failures = stack_failures + miner_failures

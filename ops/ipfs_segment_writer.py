@@ -24,6 +24,8 @@ ROOT = Path(os.environ.get("BDAG_PROJECT_ROOT") or Path(__file__).resolve().pare
 ENV_FILE = Path(os.environ.get("BDAG_ENV_FILE") or ROOT / ".env")
 OPS_DIR = ROOT / "ops"
 MAINNET_NETWORK = "mainnet"
+sys.path.insert(0, str(OPS_DIR))
+import ipfs_segment_trust  # type: ignore  # noqa: E402
 
 FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
@@ -614,6 +616,10 @@ def parse_writer_roster(value: str | None) -> list[str]:
     roster: list[str] = []
     for raw in value.replace("\n", ",").split(","):
         writer = raw.strip()
+        if "=" in writer:
+            writer = writer.split("=", 1)[0].strip()
+        elif ":" in writer:
+            writer = writer.split(":", 1)[0].strip()
         if not writer or writer in seen:
             continue
         seen.add(writer)
@@ -863,6 +869,7 @@ def build_segment(
         "publication_integrity": dict(publication_integrity or {}),
         "trust_model": "CID and sha256 verify bytes; receivers must still verify chain consensus and segment continuity.",
     }
+    manifest = ipfs_segment_trust.sign_payload(manifest, env, signature_field="manifest_signatures")
     manifest_cid, manifest_sha, manifest_size = add_checked_json(manifest_path, manifest, env)
     return {
         "segment_id": seg_id,
@@ -883,6 +890,8 @@ def build_segment(
         "writer_mode": election_payload.get("mode") or "bootstrap_single_writer",
         "writer_election": election_payload,
         "publication_integrity": dict(publication_integrity or {}),
+        "manifest_signature_status": manifest.get("signature_status"),
+        "manifest_signatures": manifest.get("manifest_signatures") or [],
     }
 
 
@@ -957,19 +966,22 @@ def update_index(index: dict[str, Any], segment_record: dict[str, Any], env: Map
             "history_completeness": {
                 "complete_from_order": first_start,
                 "backfill_required_before_order": first_start if first_start and int(first_start) > 1 else None,
-                "note": "Phase-1 writer starts from configured/current tail. Earlier history must be backfilled or supplied by a verified snapshot before full bootstrap use.",
+                "note": "Phase-1 writer starts from configured/current tail. Earlier history must be backfilled through verified IPFS segments or supplied by a signed checkpoint before full bootstrap use.",
             },
             "notes": [
                 "This index contains live-tail chain-order segments written by the deterministic elected writer, or by the bootstrap seed when no roster is configured.",
-                "Earlier history before history_completeness.complete_from_order is not complete yet and must be backfilled or supplied by a verified snapshot before full bootstrap use.",
+                "Earlier history before history_completeness.complete_from_order is not complete yet and must be backfilled through verified IPFS segments or supplied by a signed checkpoint before full bootstrap use.",
                 "New nodes should resolve the stable IPNS pointer, fetch this index, verify every segment CID/sha256/order link, and then rely on normal chain consensus.",
             ],
             "publisher_policy": {
                 "phase": "deterministic_roster_or_bootstrap_seed",
                 "rule": env.get("BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE", "rendezvous_sha256_v1"),
                 "configured_roster_size": len(parse_writer_roster(env.get("BDAG_IPFS_SEGMENT_WRITER_ROSTER"))),
+                "writer_roster": parse_writer_roster(env.get("BDAG_IPFS_SEGMENT_WRITER_ROSTER")),
+                "trusted_writer_ids": sorted(ipfs_segment_trust.trusted_signers(env)),
                 "cadence": "timer attempts every five minutes; chain finality and maintenance gates decide whether a segment is publishable",
                 "conflict_policy": "only the elected roster writer should publish each immutable finalized range; identical honest content still verifies to the same canonical bytes",
+                "signature_requirement": "ed25519 signatures required unless explicitly disabled for non-production drills",
             },
         }
     )
@@ -1004,6 +1016,10 @@ def update_discovery(index_cid: str, index: Mapping[str, Any], env: Mapping[str,
         "append_only_index_policy": index.get("append_only_index_policy"),
     }
     atomic_write_json(path, data)
+
+
+def custom_index_discovery_enabled(env: Mapping[str, str]) -> bool:
+    return env_bool(env, "BDAG_IPFS_SEGMENT_UPDATE_DISCOVERY_FOR_CUSTOM_INDEX", False)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1204,10 +1220,18 @@ def main(argv: list[str] | None = None) -> int:
                 index,
                 "stale_head_live_tail_reset" if live_tail_epoch_reset else "segment_append",
             )
+            current_index = ipfs_segment_trust.sign_payload(current_index, env, signature_field="index_signatures")
             atomic_write_json(index_path, current_index)
         index_cid, index_sha, index_size = add_checked_json(index_path, current_index, env)
-        update_discovery(index_cid, current_index, env)
-        ipns = publish_ipns(index_cid, env)
+        if args.index and not custom_index_discovery_enabled(env):
+            ipns = {
+                "published": False,
+                "reason": "custom_index_discovery_disabled",
+                "policy": "custom --index paths are candidate/backfill workspaces unless BDAG_IPFS_SEGMENT_UPDATE_DISCOVERY_FOR_CUSTOM_INDEX=1",
+            }
+        else:
+            update_discovery(index_cid, current_index, env)
+            ipns = publish_ipns(index_cid, env)
         state = "published" if written else "waiting_for_finalized_range"
         payload = write_status(
             env,

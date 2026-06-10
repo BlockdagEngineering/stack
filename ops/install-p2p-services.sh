@@ -28,6 +28,16 @@ env_value() {
   printf '%s\n' "${value:-$fallback}"
 }
 
+ensure_ipfs_segment_identity() {
+  if [[ ! -f "$ROOT/.env" || ! -x "$ROOT/ops/ipfs_segment_identity.py" ]]; then
+    return 0
+  fi
+  if ! python3 "$ROOT/ops/ipfs_segment_identity.py" --env-file "$ROOT/.env" --json >/dev/null; then
+    warn "Could not provision IPFS segment writer identity. Install python3-cryptography and rerun support-service setup."
+    return 1
+  fi
+}
+
 need_sudo() {
   if [[ "$(id -u)" == "0" ]]; then
     "$@"
@@ -198,6 +208,7 @@ install_ipfs_segment_writer_timer() {
     warn "IPFS segment writer files are missing under $ROOT/ops"
     return 0
   fi
+  ensure_ipfs_segment_identity || return 1
   local user_systemd_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
   local user_config_dir="${XDG_CONFIG_HOME:-$HOME/.config}"
   mkdir -p "$user_systemd_dir" "$user_config_dir"
@@ -211,7 +222,7 @@ BDAG_IPFS_SEGMENT_WRITER_MODE=$mode
 BDAG_IPFS_SEGMENT_WRITER_ID=$(env_value BDAG_IPFS_SEGMENT_WRITER_ID "")
 BDAG_IPFS_SEGMENT_WRITER_ROSTER=$(env_value BDAG_IPFS_SEGMENT_WRITER_ROSTER "")
 BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE=$(env_value BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE rendezvous_sha256_v1)
-BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH=$(env_value BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH 1)
+BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH=$(env_value BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH 0)
 BDAG_IPFS_SEGMENT_START_POLICY=$(env_value BDAG_IPFS_SEGMENT_START_POLICY live_tail)
 BDAG_IPFS_SEGMENT_STALE_HEAD_RESET_ENABLED=$(env_value BDAG_IPFS_SEGMENT_STALE_HEAD_RESET_ENABLED 1)
 BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS=$(env_value BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS 3600)
@@ -227,6 +238,9 @@ BDAG_IPFS_SEGMENT_IPNS_KEY=$(env_value BDAG_IPFS_SEGMENT_IPNS_KEY "")
 BDAG_IPFS_SEGMENT_RESTORE_DIR=$(env_value BDAG_IPFS_SEGMENT_RESTORE_DIR "$ROOT/ops/runtime/ipfs-segment-restore-drills")
 BDAG_IPFS_SEGMENT_IPNS_TTL=$(env_value BDAG_IPFS_SEGMENT_IPNS_TTL 1m)
 BDAG_IPFS_SEGMENT_IPNS_LIFETIME=$(env_value BDAG_IPFS_SEGMENT_IPNS_LIFETIME 8760h)
+BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE=$(env_value BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE "$ROOT/ops/runtime/ipfs-content/segment-writer.key")
+BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS=$(env_value BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS "")
+BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES=$(env_value BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES 1)
 BDAG_IPFS_SEGMENT_STATUS_FILE=$(env_value BDAG_IPFS_SEGMENT_STATUS_FILE "$ROOT/ops/runtime/ipfs-content/segment-writer-status.json")
 BDAG_IPFS_SEGMENT_INDEX_PATH=$(env_value BDAG_IPFS_SEGMENT_INDEX_PATH "$ROOT/ops/runtime/ipfs-content/latest-index.json")
 BDAG_IPFS_CONTENT_DISCOVERY_FILE=$(env_value BDAG_IPFS_CONTENT_DISCOVERY_FILE "$ROOT/ops/ipfs-content-discovery.json")

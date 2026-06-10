@@ -351,7 +351,13 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             self.assertIn("BDAG_IPFS_SEGMENT_STALE_HEAD_RESET_ENABLED=1", config)
             self.assertIn("BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS=3600", config)
             self.assertIn("BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE=rendezvous_sha256_v1", config)
-            self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH=1", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH=0", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE=./ops/runtime/ipfs-content/segment-writer.key", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES=1", config)
+            self.assertIn("BDAG_IPFS_RESTORE_REQUIRE_SIGNATURES=1", config)
+            self.assertIn("BDAG_IPFS_RESTORE_VERIFY_INDEX_LINEAGE=1", config)
+            self.assertIn("BDAG_IPFS_BACKFILL_INDEX_PATH=./ops/runtime/ipfs-content/backfill-genesis-index.json", config)
+            self.assertIn("BDAG_IPFS_BACKFILL_MAX_SEGMENTS_PER_RUN=1", config)
             self.assertIn("BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN=1", config)
             self.assertIn("BDAG_IPFS_SEGMENT_PUBLISH_IPNS=auto", config)
         self.assertIn("install_mining_host_tuning\ninstall_rawdatadir_sidecar_timers", installer)
@@ -362,7 +368,14 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             "BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE=$(env_value BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE rendezvous_sha256_v1)",
             installer,
         )
-        self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH=$(env_value BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH 1)", installer)
+        self.assertIn("ensure_ipfs_segment_identity || return 1", installer)
+        self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH=$(env_value BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH 0)", installer)
+        self.assertIn(
+            'BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE=$(env_value BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE "$ROOT/ops/runtime/ipfs-content/segment-writer.key")',
+            installer,
+        )
+        self.assertIn("BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES=$(env_value BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES 1)", installer)
+        self.assertIn("BDAG_IPFS_SEGMENT_UPDATE_DISCOVERY_FOR_CUSTOM_INDEX", (ROOT_DIR / "ops" / "ipfs_segment_writer.py").read_text(encoding="utf-8"))
         self.assertIn(
             'BDAG_CHAIN_INTEGRITY_MAX_SEGMENT_ORDERS=$(env_value BDAG_CHAIN_INTEGRITY_MAX_SEGMENT_ORDERS "$(env_value BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT 300)")',
             installer,

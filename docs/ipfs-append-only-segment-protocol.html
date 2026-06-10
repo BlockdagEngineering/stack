@@ -81,7 +81,7 @@
     "last_verified_runtime_index_cid": "bafkreicyj5hvy33qc5qtikgyfthhbhgtphkbscyp7rz5vz24tyqc37sksi",
     "last_verified_runtime_head_order": 10500890,
     "last_verified_runtime_at": "2026-06-09T23:45:36+02:00",
-    "recommended_next_phase": "Backfill earlier history and expand the deterministic writer roster beyond the bootstrap seed.",
+    "recommended_next_phase": "Backfill earlier history, add a real segment-to-node import path, and expand the signed deterministic writer roster beyond the bootstrap seed.",
     "safety_rule": "IPFS is never allowed to gate mining. Segment build and publish retries are low-priority background work and must defer under mining pressure."
   }
   </script>
@@ -92,7 +92,7 @@
   <p class="lede">Design for using small immutable chain-data segments, a stable IPNS latest pointer, deterministic writer election, and validation rules that let any honest node reproduce and verify the data.</p>
   <span class="chip good">Status: bootstrap seed with deterministic roster support</span>
   <span class="chip">Segment target: about 5 minutes</span>
-  <span class="chip">Trust: verify, do not trust IPFS/IPNS</span>
+    <span class="chip">Trust: signed indexes plus consensus verification</span>
   <span class="chip">Mining impact: low-priority only</span>
 </header>
 <main>
@@ -114,9 +114,9 @@
     </div>
     <p>The active discovery file is <code>ops/ipfs-content-discovery.json</code>. It records the stable IPNS name, the current immutable segment-index CID, and the resolver-cache warning. Fresh consumers should verify the IPNS result against the discovery file and then verify the index and segments themselves.</p>
     <p>The stable IPNS name is permanent only if it is maintained. This host's <code>bdag-ipfs-segment-writer.timer</code>, <code>bdag-ipfs-content-sidecar.timer</code>, and <code>bdag-rawdatadir-sidecar.timer</code> now run every five minutes at low CPU and idle IO priority. The chain-order segment writer is allowed to checkpoint already-imported finalized data during catch-up, because it reads bounded RPC ranges and writes immutable IPFS objects. Raw datadir copying, raw datadir sealing, and raw datadir content publication remain subordinate to sync priority, mining readiness, and host I/O pressure unless a source is explicitly quiesced or snapshotted.</p>
-    <p>The segment writer publishes one finalized 300-order segment per timer tick by default. Every new index CID now records <code>previous_index_cid</code>, <code>previous_index_link</code>, and <code>append_only_index_policy</code> so that a consumer can walk backward through immutable index versions instead of trusting the mutable latest pointer. If the stored live-tail head is stale by more than <code>BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS</code>, the writer starts a new near-tip live-tail epoch and records the old head under deprecated history. The new epoch remains internally contiguous and explicitly marks earlier history as incomplete until verified backfill or a signed checkpoint fills it. This keeps an emergency catch-up checkpoint close to the local importer even before the node reaches the public tip.</p>
-    <p>The current deployment acts as the bootstrap seed when no writer roster is configured. If no independent native reference RPC is reachable, bootstrap segments may still be published as immutable local recovery material, but they are marked <code>bootstrap_local_reference_absent</code> and consumers must verify them against normal consensus before restore. As more nodes join, <code>BDAG_IPFS_SEGMENT_WRITER_ROSTER</code> enables deterministic one-writer-per-range selection with <code>rendezvous_sha256_v1</code>. Earlier history before the first verified segment still needs backfill before this is a full bootstrap source.</p>
-    <p><code>ops/ipfs_restore_drill.py</code> is the read-only consumer drill for these segments. It fetches an index, manifests, and payloads from IPFS, verifies CIDs, sha256 links, manifest chaining, raw-block hashes, and order continuity, and writes a local drill report without mutating chain data.</p>
+    <p>The segment writer publishes one finalized 300-order segment per timer tick by default. Every new index CID now records <code>previous_index_cid</code>, <code>previous_index_link</code>, and <code>append_only_index_policy</code> so that a consumer can walk backward through immutable index versions instead of trusting the mutable latest pointer. Indexes and manifests are signed with an Ed25519 writer identity provisioned by <code>ops/ipfs_segment_identity.py</code>. If the stored live-tail head is stale by more than <code>BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS</code>, the writer starts a new near-tip live-tail epoch and records the old head under deprecated history. The new epoch remains internally contiguous and explicitly marks earlier history as incomplete until verified backfill or a signed checkpoint fills it.</p>
+    <p>New deployments provision a local writer key, add the writer to the roster, and require signatures by default. A node may publish only when it is the deterministic writer for the finalized range and its signature verifies against the trusted writer map. Local bootstrap publication without an independent reference RPC is no longer the default; a seed host must enable it explicitly and receivers must still treat those objects as transport evidence until consensus validation passes. Earlier history before the first verified segment still needs backfill before this is a full bootstrap source.</p>
+    <p><code>ops/ipfs_restore_drill.py</code> is the read-only consumer drill for these segments. It fetches an index, manifests, and payloads from IPFS, verifies signatures, recursive previous-index lineage, CIDs, sha256 links, manifest chaining, raw-block hashes, and order continuity, and writes a local drill report without mutating chain data. Fresh installs run this drill for empty datadirs, but segment-to-node import remains disabled until an importer and scratch-node validation path are implemented.</p>
   </section>
 
   <section>

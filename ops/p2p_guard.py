@@ -337,9 +337,13 @@ def pool_quality(status: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def collect_status_cached() -> dict[str, Any]:
+    return collect_stack_status(include_logs=True)
+
+
 def build_snapshot(previous: dict[str, Any] | None = None) -> dict[str, Any]:
     ensure_runtime()
-    status = collect_stack_status(include_logs=True)
+    status = collect_status_cached()
     route = default_route()
     iface = str(route.get("interface") or "")
     current_iface_stats = iface_stats(iface)

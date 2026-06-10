@@ -49,8 +49,9 @@ bash install.sh
 ```
 
 The payload installer writes `.env` and `node.conf`, generates a strong Postgres
-password unless `POSTGRES_PASSWORD` is already set, downloads `latest.bdsnap`
-when needed, sets `DOCKER_PLATFORM` from the downloaded payload's
+password unless `POSTGRES_PASSWORD` is already set, provisions a signed IPFS
+segment-writer identity, verifies any configured IPFS archive evidence for an
+empty datadir, sets `DOCKER_PLATFORM` from the downloaded payload's
 `release-payload.env`, and runs
 `docker compose build && docker compose up -d --no-build --pull never --no-deps postgres node dashboard`.
 
@@ -59,26 +60,14 @@ work with no ASICs or Stratum miners configured; operators can opt in to the
 miner wizard after sync and may configure 0..N miner sources. The RC must not
 treat this host's five X100 devices as a release default.
 
-On macOS, the installer uses `aria2c` for faster, resumable snapshot downloads and installs it with Homebrew when missing. If that path fails, it opens a browser download link and Finder at the installer folder, then waits for `latest.bdsnap` to appear there. Browsers may still save to Downloads unless you choose the installer folder. To skip the dependency install, force curl with `BDAG_SNAPSHOT_DOWNLOADER=curl bash install.sh`; to go straight to the browser helper, use `BDAG_SNAPSHOT_DOWNLOADER=browser bash install.sh`. On Windows, the installer uses `aria2c` when available, tries to install it with `winget`, then falls back to BITS and PowerShell download.
-
 The installer uses host-path chain storage at `BDAG_NODE_DATA_DIR` and preserves
-existing chain data. When a valid `latest.bdsnap` is available and the configured
-node datadir has no chain markers, the installer stages that snapshot into the
-host datadir so the container can import it on first start. To replace existing
-chain data, stop the stack and move the configured datadir aside deliberately
-before running the installer.
-
-If the default snapshot host is unavailable, point the installer at the snapshot URL you want to use:
-
-```bash
-BDAG_SNAPSHOT_URL=https://your-host.example/latest.bdsnap bash install.sh
-```
-
-The installer requires a valid snapshot by default. To allow the node to sync from P2P when no valid snapshot can be downloaded, use:
-
-```bash
-BDAG_REQUIRE_SNAPSHOT=0 bash install.sh
-```
+existing chain data. If the configured node datadir has no chain markers, the
+installer runs the IPFS restore drill in verification-only mode and records the
+result under `ops/runtime/ipfs-content/restore-drill-status.json`. Segment data
+is not promoted into the live datadir until a segment-to-node importer and
+scratch-node validation path exists, so first start still uses normal P2P sync
+after the verification drill. To replace existing chain data, stop the stack and
+move the configured datadir aside deliberately before running the installer.
 
 On macOS, if Docker reports an `xattr` error for files such as `._.env.example`, those are AppleDouble metadata files from the extracted folder or external drive. Current release packages include `.dockerignore` and the installer removes those files before building. For an older extracted folder, clean it manually and run the installer again:
 
@@ -149,8 +138,12 @@ peer handshakes, sync freshness, RPC health, and template checks.
 IPFS is the only supported chain-data bootstrap, archive, and recovery source.
 The stack keeps a conservative, low-priority raw-datadir sidecar copy near the
 live node, seals safe generations into content-addressed chunks, and publishes
-verified indexes and live-tail segments through IPFS/IPNS. The node startup path
-does not fetch alternate archive formats or serve chain ranges.
+verified indexes and live-tail segments through IPFS/IPNS. Segment manifests
+and indexes are signed with a local Ed25519 writer key provisioned by
+`ops/ipfs_segment_identity.py`; receivers must trust the writer public key before
+using any archive object. The node startup path runs a verification-only IPFS
+restore drill on empty datadirs, then continues normal P2P sync until a
+destructive segment import path exists.
 
 ## IPFS Content Discovery
 
@@ -161,9 +154,10 @@ immutable latest-index CID is
 recorded in that discovery file. The current implementation writes append-only
 live-tail chain-order segments from the local node. The durable protocol design is recorded in
 `docs/ipfs-append-only-segment-protocol.html`. IPFS and IPNS are
-not chain trust. Receivers must verify segment CIDs, payload hashes, order
-continuity, network/genesis identity, tip/state roots, and normal consensus
-before using the data.
+not chain trust. Receivers must verify Ed25519 signatures against a trusted
+writer roster, recursive previous-index lineage, segment CIDs, payload hashes,
+order continuity, network/genesis identity, tip/state roots, finality, and
+normal consensus before using the data.
 
 ## Runtime Stability Defaults
 
@@ -297,16 +291,18 @@ watching. On Linux, that process needs Docker API access for container status
 and logs; use a system service account with Docker socket access or an explicit
 `DOCKER_HOST`.
 
-Source checkout tests require Python's standard library test runner plus
-`pytest`. On Ubuntu/Debian hosts, install the test dependency with:
+Source checkout tests require Python's standard library test runner,
+`cryptography` for signed IPFS archive metadata, and `pytest`. On
+Ubuntu/Debian hosts, install the test dependencies with:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y python3-pytest
+sudo apt-get install -y python3-cryptography python3-pytest
 ```
 
 Agents should verify it with `python3 -m pytest --version` before running
-`ops/tests` through pytest-backed deployment checks.
+`ops/tests` through pytest-backed deployment checks. Verify the signing
+dependency with `python3 -c 'import cryptography'`.
 
 The collector runtime uses Python's standard HTTP client for local
 pool metrics and public enrichment calls. Do not make live status depend on

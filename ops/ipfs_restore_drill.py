@@ -23,7 +23,10 @@ from typing import Any, Mapping
 
 ROOT = Path(os.environ.get("BDAG_PROJECT_ROOT") or Path(__file__).resolve().parents[1]).resolve()
 ENV_FILE = Path(os.environ.get("BDAG_ENV_FILE") or ROOT / ".env")
+OPS_DIR = ROOT / "ops"
 MAINNET_NETWORK = "mainnet"
+sys.path.insert(0, str(OPS_DIR))
+import ipfs_segment_trust  # type: ignore  # noqa: E402
 
 FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
@@ -218,7 +221,7 @@ def index_segments(index: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [item for item in raw if isinstance(item, dict)]
 
 
-def verify_index(index: Mapping[str, Any], network: str) -> list[dict[str, Any]]:
+def verify_index(index: Mapping[str, Any], network: str, env: Mapping[str, str]) -> list[dict[str, Any]]:
     errors: list[str] = []
     require(index.get("document_type") == "bdag_ipfs_segment_index_v1", "index document_type mismatch", errors)
     require(index.get("network") == network, f"index network must be {network}", errors)
@@ -250,10 +253,79 @@ def verify_index(index: Mapping[str, Any], network: str) -> list[dict[str, Any]]
         require(head.get("manifest_cid") == last.get("manifest_cid"), "current_head.manifest_cid does not match last segment", errors)
     if errors:
         raise VerificationError("; ".join(errors))
+    try:
+        ipfs_segment_trust.verify_payload_signature(
+            index,
+            env,
+            signature_field="index_signatures",
+            context="segment index",
+        )
+    except RuntimeError as exc:
+        raise VerificationError(str(exc)) from exc
     return segments
 
 
-def verify_manifest(record: Mapping[str, Any], manifest: Mapping[str, Any], raw: bytes, network: str, previous_manifest_cid: str | None) -> None:
+def verify_index_lineage(index: Mapping[str, Any], env: Mapping[str, str], cid_dir: Path | None) -> dict[str, Any]:
+    if not env_bool(env, "BDAG_IPFS_RESTORE_VERIFY_INDEX_LINEAGE", True):
+        return {"index_lineage_verified": False, "index_lineage_reason": "disabled_by_policy", "index_lineage_depth": 0}
+
+    max_depth = max(0, env_int(env, "BDAG_IPFS_RESTORE_MAX_INDEX_LINEAGE_DEPTH", 256))
+    current = index
+    previous_cid = str(current.get("previous_index_cid") or "").strip()
+    seen: set[str] = set()
+    depth = 0
+    verified_links: list[dict[str, Any]] = []
+    while previous_cid:
+        if max_depth and depth >= max_depth:
+            raise VerificationError(f"index lineage exceeds BDAG_IPFS_RESTORE_MAX_INDEX_LINEAGE_DEPTH={max_depth}")
+        if previous_cid in seen:
+            raise VerificationError(f"index lineage cycle detected at {previous_cid}")
+        seen.add(previous_cid)
+        link = current.get("previous_index_link")
+        if not isinstance(link, Mapping):
+            raise VerificationError("index has previous_index_cid but missing previous_index_link")
+        if str(link.get("index_cid") or "").strip() != previous_cid:
+            raise VerificationError("previous_index_link.index_cid does not match previous_index_cid")
+        previous, _previous_raw = fetch_json_by_cid(previous_cid, env, cid_dir)
+        verify_index(previous, MAINNET_NETWORK, env)
+        link_head = link.get("previous_current_head")
+        previous_head = previous.get("current_head")
+        if isinstance(link_head, Mapping) and link_head and dict(link_head) != dict(previous_head or {}):
+            raise VerificationError("previous_index_link.previous_current_head does not match fetched previous index")
+
+        reason = str(link.get("reason") or "")
+        if reason != "stale_head_live_tail_reset":
+            previous_segments = index_segments(previous)
+            current_segments = index_segments(current)
+            if previous_segments and current_segments[: len(previous_segments)] != previous_segments:
+                raise VerificationError("previous index segments are not an immutable prefix of the current index")
+
+        verified_links.append(
+            {
+                "previous_index_cid": previous_cid,
+                "reason": reason or "segment_append",
+                "previous_end_order": (previous_head or {}).get("end_order") if isinstance(previous_head, Mapping) else None,
+            }
+        )
+        current = previous
+        previous_cid = str(current.get("previous_index_cid") or "").strip()
+        depth += 1
+    return {
+        "index_lineage_verified": True,
+        "index_lineage_depth": depth,
+        "index_lineage_links": verified_links,
+        "index_lineage_max_depth": max_depth,
+    }
+
+
+def verify_manifest(
+    record: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    raw: bytes,
+    network: str,
+    previous_manifest_cid: str | None,
+    env: Mapping[str, str],
+) -> None:
     errors: list[str] = []
     require(manifest.get("document_type") == "bdag_ipfs_segment_manifest_v1", "manifest document_type mismatch", errors)
     require(manifest.get("network") == network, f"manifest network must be {network}", errors)
@@ -271,6 +343,15 @@ def verify_manifest(record: Mapping[str, Any], manifest: Mapping[str, Any], raw:
     require(manifest.get("payload_format") == "bdag_chain_order_segment_payload_v1", "manifest payload_format mismatch", errors)
     if errors:
         raise VerificationError("; ".join(errors))
+    try:
+        ipfs_segment_trust.verify_payload_signature(
+            manifest,
+            env,
+            signature_field="manifest_signatures",
+            context=f"segment manifest {record.get('segment_id')}",
+        )
+    except RuntimeError as exc:
+        raise VerificationError(str(exc)) from exc
 
 
 def verify_payload(record: Mapping[str, Any], manifest: Mapping[str, Any], payload: Mapping[str, Any], raw: bytes, network: str) -> dict[str, Any]:
@@ -338,7 +419,8 @@ def verify_archive(
     network = str(env.get("BDAG_NETWORK") or MAINNET_NETWORK).strip().lower()
     if network != MAINNET_NETWORK:
         raise VerificationError(f"IPFS restore drill refuses non-mainnet network: {network}")
-    records = verify_index(index, MAINNET_NETWORK)
+    records = verify_index(index, MAINNET_NETWORK, env)
+    lineage = verify_index_lineage(index, env, cid_dir)
     if max_segments > 0:
         records = records[-max_segments:]
     verified: list[dict[str, Any]] = []
@@ -352,7 +434,7 @@ def verify_archive(
         manifest_cid = str(record.get("manifest_cid") or "")
         payload_cid = str(record.get("payload_cid") or "")
         manifest, manifest_raw = fetch_json_by_cid(manifest_cid, env, cid_dir)
-        verify_manifest(record, manifest, manifest_raw, MAINNET_NETWORK, previous_manifest_cid or None)
+        verify_manifest(record, manifest, manifest_raw, MAINNET_NETWORK, previous_manifest_cid or None, env)
         payload, payload_raw = fetch_json_by_cid(payload_cid, env, cid_dir)
         verified.append(verify_payload(record, manifest, payload, payload_raw, MAINNET_NETWORK))
         if materialize_dir:
@@ -364,6 +446,7 @@ def verify_archive(
         "verified_segments": verified,
         "first_verified_order": verified[0]["start_order"] if verified else None,
         "last_verified_order": verified[-1]["end_order"] if verified else None,
+        **lineage,
     }
 
 

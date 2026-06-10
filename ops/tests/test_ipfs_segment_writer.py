@@ -14,6 +14,17 @@ ipfs_segment_writer = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
 SPEC.loader.exec_module(ipfs_segment_writer)
 
+SIGNING_KEY_HEX = "11" * 32
+SIGNING_PUBLIC_HEX = ipfs_segment_writer.ipfs_segment_trust.public_key_hex(
+    ipfs_segment_writer.ipfs_segment_trust.load_private_key(SIGNING_KEY_HEX)
+)
+SIGNING_ENV = {
+    "BDAG_NETWORK": "mainnet",
+    "BDAG_IPFS_SEGMENT_WRITER_ID": "writer-a",
+    "BDAG_IPFS_SEGMENT_SIGNING_KEY_HEX": SIGNING_KEY_HEX,
+    "BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS": f"writer-a={SIGNING_PUBLIC_HEX}",
+}
+
 
 class IPFSSegmentWriterTest(unittest.TestCase):
     def test_choose_next_range_starts_live_tail_by_default(self) -> None:
@@ -251,7 +262,7 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         self.assertEqual(payload["current_content"]["previous_index_cid"], "baf-old-index")
         self.assertTrue(payload["current_content"]["append_only_index_policy"]["immutable_index_cids"])
 
-    def test_build_segment_publishes_unsigned_manifest_metadata(self) -> None:
+    def test_build_segment_publishes_signed_manifest_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             captured: dict[str, dict] = {}
 
@@ -291,16 +302,49 @@ class IPFSSegmentWriterTest(unittest.TestCase):
                     1,
                     1,
                     {},
-                    {"BDAG_NETWORK": "mainnet"},
+                    SIGNING_ENV,
                 )
 
         manifest = captured["bdag_ipfs_segment_manifest_v1"]
         self.assertNotIn("manifest_cid", manifest)
-        self.assertNotIn("signature_status", manifest)
-        self.assertNotIn("manifest_root", manifest)
-        self.assertNotIn("signatures", manifest)
-        self.assertNotIn("manifest_root", record)
-        self.assertNotIn("manifest_signatures", record)
+        self.assertEqual(manifest["signature_status"], "signed")
+        self.assertEqual(manifest["manifest_signatures"][0]["writer_id"], "writer-a")
+        self.assertEqual(manifest["manifest_signatures"][0]["public_key_hex"], SIGNING_PUBLIC_HEX)
+        self.assertEqual(record["manifest_signature_status"], "signed")
+        self.assertEqual(record["manifest_signatures"][0]["writer_id"], "writer-a")
+
+    def test_build_segment_requires_signing_key_by_default(self) -> None:
+        blocks = [
+            {
+                "order": 1,
+                "hash": "0x1",
+                "header": {"timestamp": 123},
+                "raw_block_hex": "abcd",
+                "raw_block_sha256": "raw-sha",
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            ipfs_segment_writer,
+            "fetch_segment_blocks",
+            return_value=blocks,
+        ), mock.patch.object(
+            ipfs_segment_writer,
+            "segment_dir",
+            return_value=Path(tmp),
+        ), self.assertRaisesRegex(
+            RuntimeError,
+            "signing is required",
+        ):
+            ipfs_segment_writer.build_segment(
+                mock.Mock(),
+                "unit",
+                "http://source:38131",
+                1,
+                1,
+                {},
+                {"BDAG_NETWORK": "mainnet"},
+            )
 
     def test_canonical_json_bytes_are_stable(self) -> None:
         left = ipfs_segment_writer.canonical_json_bytes({"b": 1, "a": [2, 3]})
@@ -381,6 +425,7 @@ class IPFSSegmentWriterTest(unittest.TestCase):
             index = base / "latest-index.json"
             index.write_text("{}", encoding="utf-8")
             env = {
+                **SIGNING_ENV,
                 "BDAG_PROJECT_ROOT": str(ROOT),
                 "BDAG_IPFS_SEGMENT_STATUS_FILE": str(status),
                 "BDAG_IPFS_SEGMENT_SKIP_MAINTENANCE_DECISION": "1",
@@ -441,6 +486,7 @@ class IPFSSegmentWriterTest(unittest.TestCase):
             index = base / "latest-index.json"
             index.write_text("{}", encoding="utf-8")
             env = {
+                **SIGNING_ENV,
                 "BDAG_PROJECT_ROOT": str(ROOT),
                 "BDAG_IPFS_SEGMENT_STATUS_FILE": str(status),
                 "BDAG_IPFS_SEGMENT_SKIP_MAINTENANCE_DECISION": "1",
@@ -495,6 +541,7 @@ class IPFSSegmentWriterTest(unittest.TestCase):
             index = base / "latest-index.json"
             index.write_text("{}", encoding="utf-8")
             env = {
+                **SIGNING_ENV,
                 "BDAG_PROJECT_ROOT": str(ROOT),
                 "BDAG_IPFS_SEGMENT_STATUS_FILE": str(status),
                 "BDAG_IPFS_SEGMENT_SKIP_MAINTENANCE_DECISION": "1",
@@ -550,6 +597,7 @@ class IPFSSegmentWriterTest(unittest.TestCase):
             index = base / "latest-index.json"
             index.write_text("{}", encoding="utf-8")
             env = {
+                **SIGNING_ENV,
                 "BDAG_PROJECT_ROOT": str(ROOT),
                 "BDAG_IPFS_SEGMENT_STATUS_FILE": str(status),
                 "BDAG_IPFS_SEGMENT_SKIP_MAINTENANCE_DECISION": "1",
@@ -594,6 +642,7 @@ class IPFSSegmentWriterTest(unittest.TestCase):
             index = base / "latest-index.json"
             index.write_text("{}", encoding="utf-8")
             env = {
+                **SIGNING_ENV,
                 "BDAG_PROJECT_ROOT": str(ROOT),
                 "BDAG_IPFS_SEGMENT_STATUS_FILE": str(status),
                 "BDAG_IPFS_SEGMENT_SKIP_MAINTENANCE_DECISION": "1",
@@ -632,11 +681,11 @@ class IPFSSegmentWriterTest(unittest.TestCase):
                 ipfs_segment_writer,
                 "update_discovery",
                 return_value=None,
-            ), mock.patch.object(
+            ) as update_discovery, mock.patch.object(
                 ipfs_segment_writer,
                 "publish_ipns",
                 return_value={"published": False, "reason": "disabled"},
-            ):
+            ) as publish_ipns:
                 pool_ops = mock.Mock()
                 pool_ops.mining_rpc_urls.return_value = [("node", "http://source:38131")]
                 pool_ops.fetch_chain_order_tip.return_value = (2, "test-tip")
@@ -652,9 +701,12 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         self.assertEqual(payload["writer_election"]["mode"], "bootstrap_single_writer")
         self.assertEqual(payload["segments_written"], 1)
         self.assertEqual(payload["current_head"]["end_order"], 2)
+        self.assertEqual(payload["ipns"]["reason"], "custom_index_discovery_disabled")
         self.assertTrue(payload["append_only_index_policy"]["immutable_index_cids"])
         self.assertEqual(written_index["current_head"]["end_order"], 2)
         self.assertTrue(written_index["append_only_index_policy"]["latest_pointer_is_mutable_discovery_only"])
+        update_discovery.assert_not_called()
+        publish_ipns.assert_not_called()
 
     def test_normal_publish_preflights_each_segment_before_build(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -663,6 +715,7 @@ class IPFSSegmentWriterTest(unittest.TestCase):
             index = base / "latest-index.json"
             index.write_text("{}", encoding="utf-8")
             env = {
+                **SIGNING_ENV,
                 "BDAG_PROJECT_ROOT": str(ROOT),
                 "BDAG_IPFS_SEGMENT_STATUS_FILE": str(status),
                 "BDAG_IPFS_SEGMENT_SKIP_MAINTENANCE_DECISION": "1",

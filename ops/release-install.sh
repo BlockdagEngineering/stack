@@ -504,17 +504,25 @@ guard_runtime_compose() {
 }
 
 install_packages() {
-  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  local packages=()
+  if ! command -v python3 >/dev/null 2>&1; then
+    packages+=(python3)
+  elif ! python3 -c 'import cryptography' >/dev/null 2>&1; then
+    packages+=(python3-cryptography)
+  fi
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && (( ${#packages[@]} == 0 )); then
     return 0
   fi
   say "Installing Docker and helper packages"
   if ! command -v apt-get >/dev/null 2>&1; then
-    echo "This installer expects Debian/Ubuntu with apt-get. Install Docker and rerun ./install.sh." >&2
+    echo "This installer expects Debian/Ubuntu with apt-get. Install Docker, Python cryptography, and rerun ./install.sh." >&2
     exit 1
   fi
+  if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
+    packages+=(docker.io docker-compose-plugin curl jq rsync unzip zip zstd openssl iproute2)
+  fi
   need_sudo apt-get update
-  need_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    docker.io docker-compose-plugin python3 curl jq rsync unzip zip zstd openssl iproute2
+  need_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
   if [[ "$(id -u)" != "0" ]]; then
     need_sudo usermod -aG docker "$USER" || true
     warn "If Docker permission fails, log out and back in, or rerun with: sudo ./install.sh"
@@ -596,11 +604,16 @@ configure_env() {
   set_env_value .env BDAG_IPFS_CONTENT_STATUS_FILE "./ops/runtime/ipfs-content-sidecar-status.json"
   set_env_value .env BDAG_IPFS_CONTENT_LATEST_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_MODE
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_ID
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_ROSTER
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_START_POLICY
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_STALE_HEAD_RESET_ENABLED
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT
+  set_stack_default_env_value .env BDAG_CHAIN_INTEGRITY_MAX_SEGMENT_ORDERS
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_MAX_RPC_PER_SECOND
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_RPC_TIMEOUT
@@ -609,11 +622,23 @@ configure_env() {
   set_env_value .env BDAG_IPFS_SEGMENT_IPNS_KEY ""
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_IPNS_TTL
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_IPNS_LIFETIME
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES
   set_env_value .env BDAG_IPFS_SEGMENT_STATUS_FILE "./ops/runtime/ipfs-content/segment-writer-status.json"
   set_env_value .env BDAG_IPFS_SEGMENT_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
   set_stack_default_env_value .env BDAG_IPFS_RESTORE_MODE
   set_stack_default_env_value .env BDAG_IPFS_RESTORE_MAX_SEGMENTS
   set_stack_default_env_value .env BDAG_IPFS_RESTORE_MATERIALIZE
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_REQUIRE_SIGNATURES
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_VERIFY_INDEX_LINEAGE
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_MAX_INDEX_LINEAGE_DEPTH
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_PRESTART_DRILL
+  set_stack_default_env_value .env BDAG_IPFS_RESTORE_PRESTART_STRICT
+  set_stack_default_env_value .env BDAG_IPFS_BACKFILL_INDEX_PATH
+  set_stack_default_env_value .env BDAG_IPFS_BACKFILL_STATUS_FILE
+  set_stack_default_env_value .env BDAG_IPFS_BACKFILL_START_ORDER
+  set_stack_default_env_value .env BDAG_IPFS_BACKFILL_MAX_SEGMENTS_PER_RUN
   set_env_value .env BDAG_IPFS_RESTORE_STATUS_FILE "./ops/runtime/ipfs-content/restore-drill-status.json"
   set_env_value .env BDAG_IPFS_RESTORE_CANDIDATE_DIR "./ops/runtime/ipfs-content/restore-candidate"
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOTS
@@ -651,6 +676,18 @@ configure_env() {
     set_env_value .env BDAG_DASHBOARD_BIND "0.0.0.0"
   fi
 
+}
+
+provision_ipfs_segment_identity() {
+  if [[ ! -x ops/ipfs_segment_identity.py ]]; then
+    warn "Cannot provision IPFS segment writer identity: ops/ipfs_segment_identity.py is missing."
+    return 0
+  fi
+  say "Provisioning signed IPFS segment writer identity"
+  if ! python3 ops/ipfs_segment_identity.py --env-file "$ROOT/.env" --json >/dev/null; then
+    echo "IPFS segment writer identity provisioning failed. Install python3-cryptography and rerun ./install.sh." >&2
+    exit 1
+  fi
 }
 
 install_appliance_host_profile() {
@@ -798,6 +835,50 @@ seed_chain_data() {
   else
     rsync -a "$template_dir/" "$node_dir/"
   fi
+}
+
+node_chain_markers_present() {
+  local chain_base node_dir network_dir
+  chain_base="$(env_path_value BDAG_CHAIN_DATA_DIR data)"
+  node_dir="$(env_path_value BDAG_NODE_DATA_DIR "$chain_base/node")"
+  network_dir="$node_dir/mainnet"
+  [[ -d "$network_dir/BdagChain" || -d "$network_dir/bdageth/chaindata" || -d "$network_dir/chaindata" ]]
+}
+
+run_prestart_ipfs_restore_drill() {
+  local enabled strict status_file max_segments args=()
+  enabled="$(env_value BDAG_IPFS_RESTORE_PRESTART_DRILL 1)"
+  case "$enabled" in
+    0|false|False|no|No|off|Off)
+      return 0
+      ;;
+  esac
+  if node_chain_markers_present; then
+    say "Existing mainnet chain markers found; skipping pre-start IPFS restore drill"
+    return 0
+  fi
+  if [[ ! -x ops/ipfs_restore_drill.py ]]; then
+    warn "Cannot run pre-start IPFS restore drill: ops/ipfs_restore_drill.py is missing."
+    return 0
+  fi
+  status_file="$(env_path_value BDAG_IPFS_RESTORE_STATUS_FILE "ops/runtime/ipfs-content/restore-drill-status.json")"
+  max_segments="$(env_value BDAG_IPFS_RESTORE_MAX_SEGMENTS 16)"
+  args=(--status-file "$status_file" --max-segments "$max_segments")
+  if [[ "$(env_value BDAG_IPFS_RESTORE_MATERIALIZE 0)" =~ ^(1|true|True|yes|Yes|on|On)$ ]]; then
+    args+=(--materialize)
+  fi
+
+  say "Running pre-start IPFS restore drill for empty node datadir"
+  if python3 ops/ipfs_restore_drill.py "${args[@]}"; then
+    warn "IPFS archive verified into restore drill status. Segment-to-node import is not enabled yet, so install will continue with normal sync."
+    return 0
+  fi
+  strict="$(env_value BDAG_IPFS_RESTORE_PRESTART_STRICT 0)"
+  if [[ "$strict" =~ ^(1|true|True|yes|Yes|on|On)$ ]]; then
+    echo "Pre-start IPFS restore drill failed and BDAG_IPFS_RESTORE_PRESTART_STRICT=1." >&2
+    exit 1
+  fi
+  warn "Pre-start IPFS restore drill failed. Continuing because BDAG_IPFS_RESTORE_PRESTART_STRICT=0."
 }
 
 start_stack() {
@@ -950,10 +1031,12 @@ main() {
   init_docker_access
   enforce_wired_route_policy
   configure_env
+  provision_ipfs_segment_identity
   install_appliance_host_profile
   run_appliance_preflight
   load_or_build_images "$arch"
   seed_chain_data
+  run_prestart_ipfs_restore_drill
   start_stack
   install_stack_support_services
   discover_preserved_chain_peers
