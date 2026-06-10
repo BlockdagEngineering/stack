@@ -399,6 +399,16 @@ gates pass. Configure
 `BDAG_IPFS_RAWDATADIR_RESTORE_ARTIFACT_CID` for unattended fresh-node bootstrap
 from a trusted IPFS raw checkpoint.
 
+Plan bounded chain-order backfill without RPC/IPFS mutation with:
+
+```bash
+./ops/ipfs_segment_backfill.py --plan --stop-order <safe-finalized-order> --json
+```
+
+The current segment format treats order `0` as genesis identity for validation;
+candidate backfill payloads start at order `1` and remain candidate-only until a
+separate full-coverage verification and promotion path exists.
+
 The archive seed timer is not part of this stack because IPFS segments and
 finalized raw-datadir sidecars own source publication.
 

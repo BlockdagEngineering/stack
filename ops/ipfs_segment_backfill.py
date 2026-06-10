@@ -9,6 +9,7 @@ sets BDAG_IPFS_SEGMENT_UPDATE_DISCOVERY_FOR_CUSTOM_INDEX=1.
 from __future__ import annotations
 
 import argparse
+import math
 import json
 import os
 import sys
@@ -64,6 +65,16 @@ def next_start_order(index: Mapping[str, Any], default_start: int) -> int:
     if head and isinstance(head.get("end_order"), int):
         return int(head["end_order"]) + 1
     return default_start
+
+
+def normalized_start_order(value: int) -> int:
+    """Backfill segment payloads start at order 1.
+
+    Order 0 is genesis identity for validation, not a backfilled order-range
+    payload in the current segment format.
+    """
+
+    return max(1, value)
 
 
 def backfill_status_path(env: Mapping[str, str]) -> Path:
@@ -128,6 +139,42 @@ def run_backfill_batch(env: dict[str, str], *, index_path: Path, start: int, sto
     }
 
 
+def build_plan(
+    *,
+    index_path: Path,
+    status_file: Path,
+    index: Mapping[str, Any],
+    default_start: int,
+    stop: int,
+    max_segments: int,
+    orders_per_segment: int,
+) -> dict[str, Any]:
+    start = next_start_order(index, normalized_start_order(default_start))
+    remaining_orders = max(0, stop - start + 1) if stop > 0 else 0
+    segments_remaining = math.ceil(remaining_orders / orders_per_segment) if remaining_orders else 0
+    planned_segments_this_run = min(max_segments, segments_remaining) if stop > 0 else 0
+    return {
+        "generated_at": now_iso(),
+        "state": "planned" if stop > 0 else "blocked",
+        "reason": "" if stop > 0 else "stop_order_required",
+        "index_path": str(index_path),
+        "status_file": str(status_file),
+        "next_start_order": start,
+        "stop_order": stop,
+        "orders_per_segment": orders_per_segment,
+        "max_segments_per_run": max_segments,
+        "remaining_orders": remaining_orders,
+        "segments_remaining": segments_remaining,
+        "planned_segments_this_run": planned_segments_this_run,
+        "last_planned_end_order": min(stop, start + planned_segments_this_run * orders_per_segment - 1)
+        if planned_segments_this_run
+        else None,
+        "genesis_order_policy": "order_0_is_genesis_identity_only; segment backfill payloads start at order 1",
+        "promotion_policy": "candidate_only_no_discovery_or_ipns_until_full_verification",
+        "mutation_policy": "plan_only_no_rpc_no_ipfs_no_index_write_except_status",
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--index", default="", help="candidate backfill index path")
@@ -135,16 +182,33 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stop-order", type=int, default=0, help="inclusive stop order for this bounded run")
     parser.add_argument("--max-segments", type=int, default=0, help="maximum segments to append in this run")
     parser.add_argument("--status-file", default="", help="status JSON path")
+    parser.add_argument("--plan", action="store_true", help="write a read-only backfill plan without RPC/IPFS/index mutation")
     parser.add_argument("--json", action="store_true", help="print status JSON")
     args = parser.parse_args(argv)
 
     env = ipfs_segment_writer.load_env()
     index_path = Path(args.index).expanduser().resolve() if args.index else candidate_index_path(env)
     status_file = Path(args.status_file).expanduser().resolve() if args.status_file else backfill_status_path(env)
-    default_start = args.start_order or env_int(env, "BDAG_IPFS_BACKFILL_START_ORDER", 1)
+    default_start = normalized_start_order(args.start_order or env_int(env, "BDAG_IPFS_BACKFILL_START_ORDER", 1))
     stop = args.stop_order or env_int(env, "BDAG_IPFS_BACKFILL_STOP_ORDER", 0)
     max_segments = args.max_segments or env_int(env, "BDAG_IPFS_BACKFILL_MAX_SEGMENTS_PER_RUN", 1)
     orders_per_segment = max(1, env_int(env, "BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT", 300))
+    index = ipfs_segment_writer.load_json(index_path)
+
+    if args.plan:
+        payload = build_plan(
+            index_path=index_path,
+            status_file=status_file,
+            index=index,
+            default_start=default_start,
+            stop=stop,
+            max_segments=max_segments,
+            orders_per_segment=orders_per_segment,
+        )
+        atomic_write_json(status_file, payload)
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0 if payload["state"] == "planned" else 1
 
     if stop <= 0:
         payload = {
@@ -159,7 +223,6 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
         return 1
 
-    index = ipfs_segment_writer.load_json(index_path)
     start = next_start_order(index, default_start)
     if start > stop:
         payload = {
