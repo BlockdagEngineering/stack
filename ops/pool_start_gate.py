@@ -138,11 +138,11 @@ def canonical_safety_proven(status: dict[str, Any]) -> tuple[bool, str]:
 
 def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "direct") -> PoolStartGateDecision:
     if not isinstance(status, dict):
-        return PoolStartGateDecision(False, ("dashboard status unavailable; cannot prove pool start is safe",), status_source)
+        return PoolStartGateDecision(False, ("stack status unavailable; cannot prove pool start is safe",), status_source)
 
     status, source, sampled_epoch = _unwrap_status_payload(status)
     if status is None:
-        return PoolStartGateDecision(False, ("dashboard status unavailable; cannot prove pool start is safe",), source)
+        return PoolStartGateDecision(False, ("stack status unavailable; cannot prove pool start is safe",), source)
 
     reasons: list[str] = []
     age_seconds = _safe_float(status.get("age_seconds"))
@@ -150,9 +150,9 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
     if sampled_epoch is not None:
         age_seconds = max(0.0, time.time() - sampled_epoch)
     if status.get("fresh") is False:
-        reasons.append("dashboard status is stale; cannot prove pool start is safe")
+        reasons.append("stack status is stale; cannot prove pool start is safe")
     elif age_seconds is not None and stale_after is not None and age_seconds > stale_after:
-        reasons.append("dashboard status is stale; cannot prove pool start is safe")
+        reasons.append("stack status is stale; cannot prove pool start is safe")
 
     sync_health = status.get("sync_health") if isinstance(status.get("sync_health"), dict) else {}
     catchup_policy = status.get("catchup_policy") if isinstance(status.get("catchup_policy"), dict) else {}

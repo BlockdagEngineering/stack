@@ -50,3 +50,39 @@ jobs:
 
       - name: Release build validator
         run: bash scripts/validate-release-build.sh .
+
+  release-matrix-smoke:
+    name: Release matrix smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Bootstrap renderer checks
+        shell: bash
+        if: runner.os != 'Windows'
+        run: python scripts/release_bootstrap_static_test.py
+
+      - name: Bootstrap renderer checks
+        shell: pwsh
+        if: runner.os == 'Windows'
+        run: python scripts/release_bootstrap_static_test.py
+
+      - name: Release installer smoke
+        shell: bash
+        if: runner.os != 'Windows'
+        run: python scripts/release_install_smoke.py
+
+      - name: Release installer smoke
+        shell: pwsh
+        if: runner.os == 'Windows'
+        run: python scripts/release_install_smoke.py

@@ -13,6 +13,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from pool_ops import collect_status_cached
@@ -34,6 +35,23 @@ def _env_urls() -> list[str]:
         or DEFAULT_COLLECTOR_STATUS_URL
     )
     return [item.strip() for item in raw.replace(";", ",").split(",") if item.strip()]
+
+
+def _fixture_payload() -> dict[str, Any] | None:
+    raw = os.environ.get("BDAG_STATUS_SOURCE_FIXTURE") or os.environ.get("BDAG_STATUS_SOURCE_FIXTURE_FILE")
+    if not raw:
+        return None
+    candidate = Path(raw).expanduser()
+    try:
+        if candidate.exists():
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        else:
+            payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError):
+        raise StackStatusUnavailable(f"fixture status payload is unreadable: {raw}")
+    if not isinstance(payload, dict):
+        raise StackStatusUnavailable("fixture status payload must be a JSON object")
+    return payload
 
 
 def _annotate(payload: dict[str, Any], source: str, errors: list[str]) -> dict[str, Any]:
@@ -73,6 +91,10 @@ def collect_stack_status(
 
     errors: list[str] = []
     force_live_local = max_age_seconds is not None and max_age_seconds <= 0
+
+    fixture = _fixture_payload()
+    if fixture is not None:
+        return _annotate(fixture, "fixture", errors)
 
     if prefer_collector and not force_live_local:
         urls = [collector_url] if collector_url else _env_urls()
