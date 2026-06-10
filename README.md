@@ -7,7 +7,7 @@ This stack can be run in any environment where docker is installed. It includes 
 | --- | --- | --- |
 | `node` | BlockDAG node, supervised by nodeworker | Consensus, P2P, and RPC |
 | `pool` | Mining pool (Stratum :3334) | ASIC Stratum and block submission |
-| `pool-db` | Postgres | Pool persistence, schema auto-loaded |
+| `postgres` | Postgres | Pool persistence, schema auto-loaded |
 | `collector` | Python collector | Read-only status API and normalized logs |
 | `dashboard` | Go dashboard | Browser UI over the status API |
 
