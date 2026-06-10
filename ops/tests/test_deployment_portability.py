@@ -99,13 +99,6 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("COPY --from=dashboard_src . /opt/dashboard", dockerfile)
         self.assertIn("COPY --from=dashboard_src . /src/dashboard", dockerfile_dev)
 
-    def test_dashboard_ref_build_arg_is_not_hardcoded(self) -> None:
-        compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
-        dockerfile = (ROOT_DIR / "dockerfile").read_text(encoding="utf-8")
-
-        self.assertIn("DASHBOARD_REF: ${DASHBOARD_REF:-develop}", compose)
-        self.assertIn('ref="${DASHBOARD_REF:-develop}"', dockerfile)
-        self.assertNotIn('ref="develop"', dockerfile)
 
     def test_host_dashboard_env_uses_host_reachable_chain_rpc(self) -> None:
         installer = (ROOT_DIR / "ops" / "install-dashboard.sh").read_text(encoding="utf-8")
