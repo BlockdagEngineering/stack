@@ -3937,6 +3937,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.send_response(status)
             self.send_header("content-type", content_type)
+            self.send_header("cache-control", "no-store, no-cache, max-age=0, must-revalidate")
+            self.send_header("pragma", "no-cache")
+            self.send_header("expires", "0")
             self.send_header("content-length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
