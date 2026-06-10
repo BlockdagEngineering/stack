@@ -238,7 +238,7 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
         reasons.append("chain catch-up pause is active")
     if sync_health.get("needs_chain_data_restore") or sync_health.get("chain_data_restore_required"):
         reasons.append("chain data restore is required before mining")
-    if sync_health.get("needs_fast_sync_repair"):
+    if sync_health.get("needs_chain_sync_repair"):
         reasons.append("chain sync repair is required before mining")
 
     sync_progress = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}

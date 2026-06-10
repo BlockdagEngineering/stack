@@ -45,9 +45,9 @@ Field report from the `/home/hpool` mining host on 2026-05-26.
    filesystem, then split small frequent writes back to internal storage where
    there was enough free space.
 2. Used the default one-node stack for the appliance.
-3. Downloaded and verified the snapshot artifact before import.
+3. Downloaded and verified the legacy restore bundle before import.
 4. Parked old datadirs with timestamped names instead of deleting them, then
-   imported the verified V2 snapshot into a clean datadir.
+   imported the verified legacy restore bundle into a clean datadir.
 5. Applied `sql/pool-schema.sql` so `block_submissions` and credit idempotency
    indexes existed before relying on dashboard earnings.
 6. Verified health through node RPC, pool accepted-share and accepted-block logs,

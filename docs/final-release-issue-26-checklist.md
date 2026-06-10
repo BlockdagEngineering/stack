@@ -22,26 +22,27 @@ while removing local assumptions that caused install or sync drift.
   runtime payload zips and generate pinned bootstrap scripts for the same tag.
 - Release archives are audited by `scripts/check-release-archive.py` so `.git`,
   package metadata, mutable data directories, local `.env`, `node.conf`, and
-  transient snapshot files do not ship.
+  transient chain restore working files do not ship.
 - Payload installers preserve existing node data, peer identity, signer
-  material, and runtime state. When a valid snapshot is available and the
-  configured node datadir has no chain markers, installers stage the snapshot
-  into that host datadir for first start. They set `DOCKER_PLATFORM` from
-  `release-payload.env`, not from a universal AMD64 assumption.
+  material, and runtime state. IPFS segment restore is the only supported
+  accelerated chain-sync path for new installs once chain data is absent. They
+  set `DOCKER_PLATFORM` from `release-payload.env`, not from a universal AMD64
+  assumption.
 - Installers preflight architecture, Docker Compose, disk, port occupancy, time
   sync, optional `jq`, and seed reachability. Old/orphan Compose cleanup is a
   dry-run unless `BDAG_CLEAN_ORPHAN_CONTAINERS=1` is set.
 - Installs configure one direct submit endpoint and do not enable endpoint
   fanout by default.
-- Fast Artifact Sync V2 is default. When more than 1000 blocks behind, the sync
-  coordinator accelerates the leader and restarts stale or non-V2 catch-up after
-  the cooldown.
-- V2 peer selection is latency/usefulness-first over libp2p. Address class is
-  not a sync option or priority signal; complete P2P multiaddrs are the only
-  sync candidates.
-- Directory artifact serving must use a valid `artifact.manifest.json`; otherwise
-  startup reports archive fallback instead of silently pretending directory mode
-  is active.
+- IPFS segment sync is the default restore path. When a node falls materially
+  behind, the sync coordinator protects mining and allows only the shared sync
+  control plane to decide whether the node should keep catching up from peers or
+  recover from verified IPFS chain segments.
+- Peer selection is latency/usefulness-first over libp2p. Address class is not a
+  sync option or priority signal; complete P2P multiaddrs are the only sync
+  candidates.
+- Directory restore sources must publish a signed IPFS segment manifest;
+  otherwise startup reports the restore source as unavailable instead of
+  silently pretending a local archive mode is active.
 - Scripts that still need `jq` preflight it explicitly. Release installers avoid
   `jq` for required JSON parsing.
 - Live data scans must avoid mutable Postgres/node paths; release packaging uses

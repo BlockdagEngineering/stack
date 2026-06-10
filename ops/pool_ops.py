@@ -5824,7 +5824,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
                 "import_stale_seconds": NODE_IMPORT_STALE_SECONDS,
                 "p2p_error_warn_count": NODE_P2P_ERROR_WARN_COUNT,
                 "nodes_with_recent_imports": 0,
-                "needs_fast_sync_repair": False,
+                "needs_chain_sync_repair": False,
             },
             "pool": empty_pool,
             "pool_metrics": {
@@ -5853,7 +5853,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
                 **empty_pool,
                 "connected_miners": 0,
                 "managed_miners": 0,
-                "needs_fast_repair": False,
+                "needs_pool_repair": False,
             },
             "failures": [f"docker access unavailable: {docker_error}"],
             "stack_failures": [f"docker access unavailable: {docker_error}"],
@@ -6175,7 +6175,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "import_stale_seconds": NODE_IMPORT_STALE_SECONDS,
         "p2p_error_warn_count": NODE_P2P_ERROR_WARN_COUNT,
         "nodes_with_recent_imports": sum(1 for item in managed_node_details.values() if item.get("importing")),
-        "needs_fast_sync_repair": False,
+        "needs_chain_sync_repair": False,
         "planned_sync_service": planned_sync_service_name,
         "planned_pause_leader": planned_pause_leader,
     }
@@ -6456,7 +6456,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "node_template_probe_failing": bool(template_probe_health.get("failing_nodes")),
         "share_stall": bool(pool.get("share_stall") and connected_miners > 0),
         "job_stall": effective_job_stall,
-        "needs_fast_repair": bool(
+        "needs_pool_repair": bool(
             pool_initial_download_needs_repair
             or (pool.get("rpc_refused_recent") and connected_miners > 0)
             or (
@@ -6481,7 +6481,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             or effective_job_stall
         ),
     }
-    sync_health["needs_fast_sync_repair"] = bool(sync_warnings and not failures) or pool_health["needs_fast_repair"]
+    sync_health["needs_chain_sync_repair"] = bool(sync_warnings and not failures) or pool_health["needs_pool_repair"]
 
     pool_port = read_env_value("POOL_PORT") or "3334"
     local_ips = local_ipv4_addresses()
@@ -6611,8 +6611,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         pool_health["rpc_template_failing"] = False
         pool_health["node_template_probe_failing"] = False
         pool_health["initial_download_needs_repair"] = False
-        pool_health["needs_fast_repair"] = False
-        sync_health["needs_fast_sync_repair"] = False
+        pool_health["needs_pool_repair"] = False
+        sync_health["needs_chain_sync_repair"] = False
         if isinstance(template_probe_health, dict):
             template_probe_health["suppressed_for_no_miners"] = True
             template_probe_health["failing_nodes"] = []
@@ -6635,12 +6635,12 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             int(sync_health.get("nodes_with_recent_imports") or 0),
             int(sync_progress_health.get("active_node_count") or 0),
         )
-        hard_pool_needs_repair = bool(pool_health.get("needs_fast_repair"))
+        hard_pool_needs_repair = bool(pool_health.get("needs_pool_repair"))
         if sync_progress.get("status") == "syncing" and pool_health.get("initial_download"):
             pool_health["initial_download_needs_repair"] = False
-            pool_health["needs_fast_repair"] = hard_pool_needs_repair
-        if sync_progress.get("status") == "syncing" and not failures and not pool_health["needs_fast_repair"]:
-            sync_health["needs_fast_sync_repair"] = False
+            pool_health["needs_pool_repair"] = hard_pool_needs_repair
+        if sync_progress.get("status") == "syncing" and not failures and not pool_health["needs_pool_repair"]:
+            sync_health["needs_chain_sync_repair"] = False
     sync_health["sync_progress_health"] = sync_progress_health
 
     overall = "ok"
@@ -6663,7 +6663,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         else ("sync_only_no_miners" if no_miner_sync_only else "ready_no_miners")
     )
     can_accept_shares = bool(connected_miners > 0 and containers.get(POOL_CONTAINER, {}).get("running") and not failures)
-    can_submit_blocks = bool(can_accept_shares and not pool_health.get("needs_fast_repair") and not sync_warnings)
+    can_submit_blocks = bool(can_accept_shares and not pool_health.get("needs_pool_repair") and not sync_warnings)
     can_mine = bool(can_accept_shares and can_submit_blocks)
     truth_sources = {
         "chain_block_count": "getBlockCount chain RPC",

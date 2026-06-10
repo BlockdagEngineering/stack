@@ -35,7 +35,7 @@ def node_status(*, importing: bool, last_import_age_seconds: int, latest_block: 
             }
         },
         "pool_health": {"initial_download": True},
-        "sync_health": {"needs_fast_sync_repair": True},
+        "sync_health": {"needs_chain_sync_repair": True},
     }
 
 

@@ -1421,7 +1421,7 @@ def suppress_sync_restart_for_active_import(
     sync_health = status.get("sync_health", {}) if isinstance(status.get("sync_health"), dict) else {}
     expected_sync_wait = bool(
         pool_health.get("initial_download")
-        or sync_health.get("needs_fast_sync_repair")
+        or sync_health.get("needs_chain_sync_repair")
         or "waiting for node sync" in reason.lower()
         or "initial download" in reason.lower()
     )
@@ -2638,7 +2638,7 @@ def check_once(
                 f"(grace {DEFAULT_POOL_RESTART_GRACE_SECONDS}s)"
             )
         sync_repair_needed = bool(
-            (status.get("sync_health") or {}).get("needs_fast_sync_repair")
+            (status.get("sync_health") or {}).get("needs_chain_sync_repair")
             or pool_health.get("initial_download")
         )
         state["consecutive_failures"] = 0
@@ -2807,7 +2807,7 @@ def check_once(
             state["last_share_repair_at"] = int(time.time())
             if ok:
                 state["consecutive_share_stalls"] = 0
-    elif status.get("sync_health", {}).get("needs_fast_sync_repair"):
+    elif status.get("sync_health", {}).get("needs_chain_sync_repair"):
         sync_warnings = status.get("sync_warnings", status.get("warnings", []))
         recent_mining_work = pool_has_recent_mining_work(status)
         state["consecutive_failures"] = 0
