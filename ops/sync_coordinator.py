@@ -58,13 +58,35 @@ def collect_status_cached() -> dict[str, Any]:
     return collect_stack_status(include_logs=False)
 
 
+def mapping_value(mapping: Any, key: str) -> dict[str, Any]:
+    if not isinstance(mapping, dict):
+        return {}
+    value = mapping.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def node_remaining_blocks(
+    sync_progress: dict[str, Any],
+    active_node: str,
+    node_info: dict[str, Any],
+) -> int:
+    sync_nodes = sync_progress.get("nodes")
+    sync_node = mapping_value(sync_nodes, active_node)
+    return safe_int(
+        sync_node.get("remaining_blocks"),
+        safe_int(node_info.get("remaining_blocks"), safe_int(sync_progress.get("remaining_blocks"))),
+    )
+
+
 def build_state() -> dict[str, Any]:
     status = collect_status_cached()
     nodes = status.get("nodes") if isinstance(status, dict) else {}
+    containers = status.get("containers") if isinstance(status, dict) else {}
     sync_progress = status.get("sync_progress") if isinstance(status, dict) else {}
     active_node = NODES[0] if NODES else "node"
-    node_info = nodes.get(active_node, {}) if isinstance(nodes, dict) else {}
-    remaining = safe_int(node_info.get("remaining_blocks"), safe_int(sync_progress.get("remaining_blocks") if isinstance(sync_progress, dict) else 0))
+    node_info = mapping_value(nodes, active_node)
+    container_info = mapping_value(containers, active_node)
+    remaining = node_remaining_blocks(sync_progress if isinstance(sync_progress, dict) else {}, active_node, node_info)
     state = {
         "updated_at": now_iso(),
         "mode": "active_node_catchup",
@@ -74,8 +96,8 @@ def build_state() -> dict[str, Any]:
         "active_node": active_node,
         "nodes": {
             active_node: {
-                "running": bool(node_info.get("running")),
-                "height": safe_int(node_info.get("latest_block")),
+                "running": bool(container_info.get("running", node_info.get("running"))),
+                "height": safe_int(node_info.get("chain_block_count"), safe_int(node_info.get("latest_block"))),
                 "remaining_blocks": remaining,
                 "importing": bool(node_info.get("importing")),
                 "last_import_age_seconds": safe_int(node_info.get("last_import_age_seconds")),
