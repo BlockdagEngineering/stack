@@ -271,7 +271,20 @@ apply_node_mining_runtime_args() {
 }
 
 apply_bootstrap_peers "$@"
+
+apply_archival_flag() {
+  case "${BDAG_NODE_ARCHIVAL:-0}" in
+    1|true|True|yes) ;;
+    *) return 0 ;;
+  esac
+  local node_args
+  node_args="$(node_args_from_argv "$@" || true)"
+  append_node_arg_once "--archival" "$node_args ${NODE_ARGS_APPEND:-}"
+  log "archival mode enabled; node keeps full block history (--archival)"
+}
+
 apply_node_mining_runtime_args "$@"
+apply_archival_flag "$@"
 
 if [ -n "${NODE_ARGS_APPEND:-}" ]; then
   args=("$@")

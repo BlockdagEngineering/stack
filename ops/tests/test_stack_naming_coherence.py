@@ -207,10 +207,7 @@ class StackNamingCoherenceTests(unittest.TestCase):
             '${INSTANCE}-mining-30min-guard.timer',
             installer,
         )
-        self.assertNotIn(
-            '${INSTANCE}-chain-presync.timer,${INSTANCE}-hourly-snapshot.timer',
-            installer,
-        )
+        self.assertIn('${INSTANCE}-local-peers.timer', installer)
         self.assertIn(
             '"bdag-stack-sentinel.timer,bdag-sync-coordinator.timer,bdag-chain-restore-guard.timer,"',
             sentinel,
@@ -220,7 +217,7 @@ class StackNamingCoherenceTests(unittest.TestCase):
             '"bdag-dashboard.service,bdag-watchdog.service,bdag-p2p-guard.service"',
             sentinel,
         )
-        self.assertNotIn("bdag-chain-presync.timer,bdag-hourly-snapshot.timer", sentinel)
+        self.assertNotIn("bdag-dashboard.service,bdag-watchdog.service,bdag-p2p-guard.service", sentinel)
 
     def test_validator_locks_current_topology_into_build_checks(self) -> None:
         validator = read("scripts/validate-pi5-restart-hardening.sh")

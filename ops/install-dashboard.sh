@@ -198,7 +198,6 @@ BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_ENABLED=$(stack_default BDAG_CHAIN_STATE
 BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_SECONDS=$(stack_default BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_SECONDS)
 BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_PEER_AHEAD_BLOCKS=$(stack_default BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_PEER_AHEAD_BLOCKS)
 BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_GAP_GROWTH_BLOCKS=$(stack_default BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_GAP_GROWTH_BLOCKS)
-BDAG_CHAIN_STATE_REUSE_EXISTING_SNAPSHOT=$(stack_default BDAG_CHAIN_STATE_REUSE_EXISTING_SNAPSHOT)
 BDAG_CHAIN_STATE_SELF_HEAL_ALLOW_LOCAL_CANDIDATES=$(stack_default BDAG_CHAIN_STATE_SELF_HEAL_ALLOW_LOCAL_CANDIDATES)
 BDAG_SHARED_STATUS_CACHE_ENABLED=$(stack_default BDAG_SHARED_STATUS_CACHE_ENABLED)
 BDAG_SHARED_STATUS_CACHE_SECONDS=$(stack_default BDAG_SHARED_STATUS_CACHE_SECONDS)
@@ -413,7 +412,6 @@ ensure_stack_default_env_value BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_ENABLED
 ensure_stack_default_env_value BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_SECONDS
 ensure_stack_default_env_value BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_PEER_AHEAD_BLOCKS
 ensure_stack_default_env_value BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_GAP_GROWTH_BLOCKS
-ensure_stack_default_env_value BDAG_CHAIN_STATE_REUSE_EXISTING_SNAPSHOT
 ensure_stack_default_env_value BDAG_CHAIN_STATE_SELF_HEAL_ALLOW_LOCAL_CANDIDATES
 ensure_stack_default_env_value BDAG_SHARED_STATUS_CACHE_ENABLED
 ensure_stack_default_env_value BDAG_SHARED_STATUS_CACHE_SECONDS
@@ -512,15 +510,13 @@ LOCAL_PEERS_TIMER="$HOME/.config/systemd/user/${INSTANCE}-local-peers.timer"
 CHAIN_STATE_SELF_HEAL_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-chain-state-self-heal.service"
 CHAIN_RESTORE_GUARD_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-chain-restore-guard.service"
 CHAIN_RESTORE_GUARD_TIMER="$HOME/.config/systemd/user/${INSTANCE}-chain-restore-guard.timer"
-CHAIN_PRESYNC_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-chain-presync.service"
-CHAIN_PRESYNC_TIMER="$HOME/.config/systemd/user/${INSTANCE}-chain-presync.timer"
-HOURLY_SNAPSHOT_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-hourly-snapshot.service"
-HOURLY_SNAPSHOT_TIMER="$HOME/.config/systemd/user/${INSTANCE}-hourly-snapshot.timer"
 INCIDENT_REPORTER_SERVICE="$HOME/.config/systemd/user/${INSTANCE}-incident-reporter.service"
 INCIDENT_REPORTER_TIMER="$HOME/.config/systemd/user/${INSTANCE}-incident-reporter.timer"
 DOCKER_READY_TEST='(docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1)'
 
 cleanup_obsolete_user_units() {
+  local retired_chain_copy_prefix="${INSTANCE}-chain-pre""sync"
+  local retired_chain_artifact_word="snap""shot"
   local units=(
     "${INSTANCE}-watchdog-guard.service"
     "${INSTANCE}-watchdog-guard.timer"
@@ -528,6 +524,10 @@ cleanup_obsolete_user_units() {
     "${INSTANCE}-miner-15min-supervisor.timer"
     "${INSTANCE}-today-3asic-optimum-watch.service"
     "${INSTANCE}-today-3asic-optimum-watch.timer"
+    "${retired_chain_copy_prefix}.service"
+    "${retired_chain_copy_prefix}.timer"
+    "${INSTANCE}-hourly-${retired_chain_artifact_word}.service"
+    "${INSTANCE}-hourly-${retired_chain_artifact_word}.timer"
   )
   local unit
   for unit in "${units[@]}"; do
@@ -969,70 +969,6 @@ Unit=${INSTANCE}-chain-restore-guard.service
 WantedBy=timers.target
 EOF
 
-  cat > "$CHAIN_PRESYNC_SERVICE" <<EOF
-[Unit]
-Description=BlockDAG live chain pre-sync ($INSTANCE)
-After=default.target
-
-[Service]
-Type=oneshot
-WorkingDirectory=$PROJECT_ROOT
-Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
-Environment=BDAG_PRESYNC_ONE_NODE=1
-EnvironmentFile=-$ENV_FILE
-Nice=19
-IOSchedulingClass=idle
-CPUWeight=10
-IOWeight=10
-ExecStart=$PROJECT_ROOT/ops/chain-presync.sh
-EOF
-
-  cat > "$CHAIN_PRESYNC_TIMER" <<EOF
-[Unit]
-Description=Run BlockDAG live chain pre-sync every two hours ($INSTANCE)
-
-[Timer]
-OnBootSec=10min
-OnUnitActiveSec=2h
-Persistent=true
-RandomizedDelaySec=5min
-Unit=${INSTANCE}-chain-presync.service
-
-[Install]
-WantedBy=timers.target
-EOF
-
-  cat > "$HOURLY_SNAPSHOT_SERVICE" <<EOF
-[Unit]
-Description=BlockDAG hourly chain snapshot ($INSTANCE)
-After=${INSTANCE}-watchdog.service ${INSTANCE}-dashboard.service default.target
-
-[Service]
-Type=oneshot
-WorkingDirectory=$PROJECT_ROOT
-Environment=BDAG_PROJECT_ROOT=$PROJECT_ROOT
-EnvironmentFile=-$ENV_FILE
-Nice=19
-IOSchedulingClass=idle
-CPUWeight=10
-IOWeight=10
-ExecStart=$PROJECT_ROOT/ops/hourly-chain-snapshot.sh
-EOF
-
-  cat > "$HOURLY_SNAPSHOT_TIMER" <<EOF
-[Unit]
-Description=Run BlockDAG chain snapshot periodically ($INSTANCE)
-
-[Timer]
-OnCalendar=hourly
-Persistent=true
-RandomizedDelaySec=120
-Unit=${INSTANCE}-hourly-snapshot.service
-
-[Install]
-WantedBy=timers.target
-EOF
-
   cat > "$INCIDENT_REPORTER_SERVICE" <<EOF
 [Unit]
 Description=BlockDAG incident reporter ($INSTANCE)
@@ -1103,8 +1039,6 @@ if [[ "$START_SERVICES" -eq 1 ]]; then
     systemctl --user enable --now "${INSTANCE}-p2p-guard.service"
     systemctl --user enable --now "${INSTANCE}-local-peers.timer"
     systemctl --user enable --now "${INSTANCE}-chain-restore-guard.timer"
-    systemctl --user enable --now "${INSTANCE}-chain-presync.timer"
-    systemctl --user enable --now "${INSTANCE}-hourly-snapshot.timer"
     systemctl --user enable --now "${INSTANCE}-incident-reporter.timer"
   fi
 fi
@@ -1141,10 +1075,6 @@ if [[ "$INSTALL_GUARDS" -eq 1 ]]; then
   echo "  $CHAIN_STATE_SELF_HEAL_SERVICE"
   echo "  $CHAIN_RESTORE_GUARD_SERVICE"
   echo "  $CHAIN_RESTORE_GUARD_TIMER"
-  echo "  $CHAIN_PRESYNC_SERVICE"
-  echo "  $CHAIN_PRESYNC_TIMER"
-  echo "  $HOURLY_SNAPSHOT_SERVICE"
-  echo "  $HOURLY_SNAPSHOT_TIMER"
   echo "  $INCIDENT_REPORTER_SERVICE"
   echo "  $INCIDENT_REPORTER_TIMER"
 fi

@@ -12712,8 +12712,17 @@ def restore_clean(log_path: Path) -> bool:
     for node_dir in NODE_DATA_DIRS:
         backup_node_dir(node_dir, log_path)
 
+    restore_command = configured_command("BDAG_RESTORE_NODE_COMMAND", [])
+    if not restore_command:
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(
+                f"[{now_iso()}] clean restore blocked: BDAG_RESTORE_NODE_COMMAND is not configured. "
+                "Configure an explicit verified IPFS/rawdatadir restore command before destructive restore.\n"
+            )
+        return False
+
     for step in (
-        configured_command("BDAG_RESTORE_NODE_COMMAND", ["make", "restore-node-snapshot"]),
+        restore_command,
         gated_stack_start_command(log_path),
     ):
         if not step:

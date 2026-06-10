@@ -55,7 +55,6 @@ DEFAULT_LOCK_RELATIVE_PATHS = (
     "ops/runtime/rawdatadir-artifact.lock",
     "ops/runtime/rawdatadir-publish.lock",
     "ops/runtime/repair.lock",
-    "ops/runtime/hourly-chain-snapshot.lock",
 )
 
 RpcCall = Callable[[str, str, list[Any], float, Mapping[str, str]], Any]

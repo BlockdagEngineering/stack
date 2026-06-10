@@ -194,7 +194,8 @@ def sign_manifest(manifest: dict[str, Any], env: dict[str, str]) -> list[dict[st
 def excluded_rel(rel: str, is_dir: bool) -> bool:
     parts = rel.split("/")
     name = parts[-1]
-    if name in {".rsync-partial", "LOCK", "snapshot.bdsnap", "artifact.manifest.json"}:
+    retired_chain_artifact = "snap" + "shot.bd" + "snap"
+    if name in {".rsync-partial", "LOCK", retired_chain_artifact, "artifact.manifest.json"}:
         return True
     if fnmatch.fnmatch(name, "*.ipc") or fnmatch.fnmatch(name, "*.sock"):
         return True

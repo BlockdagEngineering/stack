@@ -23,7 +23,7 @@ Usage: ops/chain-state-self-heal.sh [--force] [--from-systemd]
 
 Fail-closed repair for BlockDAG node chain-state corruption. This destructive
 restore path is disabled by default and requires an explicitly configured
-trusted source or snapshot. When enabled, the script checks dashboard status for
+trusted rawdatadir/IPFS source. When enabled, the script checks dashboard status for
 needs_chain_data_restore / chain_state_blocker, stops the pool, stops the node,
 quarantines the damaged node datadir, restores from the configured restore
 input, restarts node/dashboard, and leaves the pool stopped until normal
@@ -31,7 +31,6 @@ readiness gates pass.
 
 Configure trusted restore input with one of:
   BDAG_CHAIN_STATE_RESTORE_SOURCE=/local/path/or/user@host:/path/to/mainnet
-  BDAG_CHAIN_STATE_RESTORE_SNAPSHOT=/path/to/latest.bdsnap
   BDAG_CHAIN_STATE_RESTORE_IPFS_ARTIFACT_CID=bafy...
   BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_CID=bafy...
 
@@ -267,28 +266,12 @@ stop_service_best_effort() {
   return 1
 }
 
-copy_existing_snapshot() {
-  local snapshot="$NODE_NETWORK_DIR/snapshot.bdsnap"
-  if [[ "${BDAG_CHAIN_STATE_REUSE_EXISTING_SNAPSHOT:-0}" == "1" && -s "$snapshot" ]]; then
-    cp -a "$snapshot" "$TMP_DIR/snapshot.bdsnap"
-    for companion in "$NODE_NETWORK_DIR/snapshot.bdsnap.manifest" "$NODE_NETWORK_DIR/snapshot.bdsnap.json" "$NODE_NETWORK_DIR/manifest.json"; do
-      [[ -f "$companion" ]] && cp -a "$companion" "$TMP_DIR/$(basename "$companion")"
-    done
-    log "staged existing local snapshot for fallback restore"
-  fi
-}
-
 choose_restore_source() {
   RESTORE_MODE_USED=""
   RESTORE_SOURCE_USED=""
   if [[ -n "${BDAG_CHAIN_STATE_RESTORE_SOURCE:-}" ]]; then
     RESTORE_MODE_USED="source"
     RESTORE_SOURCE_USED="$BDAG_CHAIN_STATE_RESTORE_SOURCE"
-    return 0
-  fi
-  if [[ -n "${BDAG_CHAIN_STATE_RESTORE_SNAPSHOT:-}" ]]; then
-    RESTORE_MODE_USED="snapshot"
-    RESTORE_SOURCE_USED="$BDAG_CHAIN_STATE_RESTORE_SNAPSHOT"
     return 0
   fi
   if [[ -n "${BDAG_CHAIN_STATE_RESTORE_IPFS_ARTIFACT_CID:-}" ]]; then
@@ -320,11 +303,6 @@ choose_restore_source() {
         return 0
       fi
     done
-  fi
-  if [[ -s "$TMP_DIR/snapshot.bdsnap" ]]; then
-    RESTORE_MODE_USED="snapshot"
-    RESTORE_SOURCE_USED="$TMP_DIR/snapshot.bdsnap"
-    return 0
   fi
   return 1
 }
@@ -396,14 +374,6 @@ validate_restore_input() {
       fi
       reject_sealed_artifact_source "$local_source"
       ;;
-    snapshot)
-      local snapshot_path
-      snapshot_path="$(abs_path "$source")"
-      if [[ ! -s "$snapshot_path" ]]; then
-        log "configured restore snapshot does not exist or is empty: $snapshot_path"
-        return 1
-      fi
-      ;;
     ipfs_artifact|ipfs_index|ipfs_index_file)
       if [[ ! -x "$ROOT/ops/restore-rawdatadir-segment-artifact.py" ]]; then
         log "IPFS rawdatadir restore tool is missing"
@@ -440,18 +410,6 @@ restore_from_source() {
   fi
 }
 
-restore_from_snapshot() {
-  local snapshot="$1"
-  local snapshot_path
-  snapshot_path="$(abs_path "$snapshot")"
-  mkdir -p "$NODE_NETWORK_DIR"
-  log "restoring chain data from snapshot $snapshot_path"
-  cp -a "$snapshot_path" "$NODE_NETWORK_DIR/snapshot.bdsnap"
-  for companion in "${snapshot_path}.manifest" "${snapshot_path}.json" "$(dirname "$snapshot_path")/manifest.json"; do
-    [[ -f "$companion" ]] && cp -a "$companion" "$NODE_NETWORK_DIR/$(basename "$companion")"
-  done
-}
-
 restore_from_ipfs_artifact() {
   local mode="$1" source="$2" status_file timeout args=()
   mkdir -p "$NODE_NETWORK_DIR"
@@ -470,15 +428,14 @@ restore_from_ipfs_artifact() {
   python3 "$ROOT/ops/restore-rawdatadir-segment-artifact.py" "${args[@]}" >>"$LOG_FILE" 2>&1
 }
 
-copy_existing_snapshot
 if ! choose_restore_source; then
-  log "no trusted restore source or local snapshot was found"
-  json_state "blocked" "chain-state restore needed but no restore source/snapshot is configured"
+  log "no trusted rawdatadir/IPFS restore source was found"
+  json_state "blocked" "chain-state restore needed but no rawdatadir/IPFS restore source is configured"
   exit 1
 fi
 if ! validate_restore_input "$RESTORE_MODE_USED" "$RESTORE_SOURCE_USED"; then
   log "selected restore input is not safe for destructive chain-state restore"
-  json_state "blocked" "selected restore input is not a restore-safe raw datadir or snapshot"
+  json_state "blocked" "selected restore input is not a restore-safe raw datadir/IPFS artifact"
   exit 1
 fi
 
@@ -495,7 +452,6 @@ mkdir -p "$NODE_DATA_DIR"
 
 case "$RESTORE_MODE_USED" in
   source) restore_from_source "$RESTORE_SOURCE_USED" ;;
-  snapshot) restore_from_snapshot "$RESTORE_SOURCE_USED" ;;
   ipfs_artifact|ipfs_index|ipfs_index_file) restore_from_ipfs_artifact "$RESTORE_MODE_USED" "$RESTORE_SOURCE_USED" ;;
   *)
     log "internal error: unknown restore mode $RESTORE_MODE_USED"

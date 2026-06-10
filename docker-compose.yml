@@ -5,9 +5,6 @@ x-mining-logging: &mining-logging
     max-size: "10m"
     max-file: "2"
 
-x-build-args: &build-args
-  SNAPSHOT_PATH: ${SNAPSHOT_PATH:-docker/no-snapshot.marker}
-
 x-collector-build-args: &collector-build-args
   COLLECTOR_REPO: ${COLLECTOR_REPO:-https://github.com/BlockdagEngineering/collector.git}
   COLLECTOR_REF: ${COLLECTOR_REF:-develop}
@@ -93,7 +90,7 @@ services:
       retries: 20
 
   # --------------------------------------------------------------------------
-  # BlockDAG node + nodeworker supervisor. Optional SNAPSHOT_PATH at build time.
+  # BlockDAG node + nodeworker supervisor. Chain bootstrap is IPFS/P2P owned.
   # --------------------------------------------------------------------------
   node:
     <<: *node-critical
@@ -104,8 +101,6 @@ services:
       target: node
       additional_contexts:
         <<: *dev-source-contexts
-      args:
-        <<: *build-args
     restart: unless-stopped
     logging: *mining-logging
     ports:
@@ -121,6 +116,7 @@ services:
       BDAG_NETWORK: mainnet
       BDAG_RAWDATADIR_NETWORK: ${BDAG_RAWDATADIR_NETWORK:-mainnet}
       BDAG_EPHEMERAL_DIR: /run/bdag-ephemeral
+      BDAG_NODE_ARCHIVAL: ${BDAG_NODE_ARCHIVAL:-0}
       NODE_ARGS_APPEND: ${NODE_ARGS_APPEND:-}
       BDAG_STORAGE_PROFILE: ${BDAG_STORAGE_PROFILE:-auto}
       BDAG_NETWORK_TOPOLOGY: ${BDAG_NETWORK_TOPOLOGY:-auto}

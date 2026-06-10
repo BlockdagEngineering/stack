@@ -184,7 +184,7 @@ mining/template flags only when real miners are attached. Do not add unsynced
 mining bypass flags; readiness gates must fail closed until node sync and P2P
 freshness are healthy. The dashboard,
 watchdog, stack sentinel, P2P guard, peer refresh, chain restore guard, and
-snapshot timers are installed by `ops/install-dashboard.sh` unless explicitly
+IPFS sidecar timers are installed by `ops/install-dashboard.sh` unless explicitly
 disabled. Runtime tooling uses the current stack service names: `node`, `pool`,
 and `postgres`. Concrete Compose container names may include project and ordinal
 suffixes.
@@ -229,13 +229,20 @@ That module prefers the collector status API, then falls back to the shared
 status sampler/direct collection path, so watchdogs and sentinels do not each
 recreate their own monitoring fallback order.
 
+For offline triage testing, `ops/stack_status_source.py` also accepts a fixture
+payload via `BDAG_STATUS_SOURCE_FIXTURE` or `BDAG_STATUS_SOURCE_FIXTURE_FILE`.
+Capture a live payload with `ops/capture_status_payload.py`, then replay it
+through the guards with `ops/replay_triage.py`. Watchdog, sentinel, and the
+30-minute mining guard all support dry-run execution so they can classify
+incidents without mutating the stack.
+
 If a node stops importing while peers continue advancing, the dashboard must not
 describe the state as ordinary catch-up. Node logs that contain `Irreparable
 error`, `Not DAG block`, DAG tip/block damage, or repeated `missing trie node`
 warnings are chain-data restore triggers. The status sampler fails mining closed,
 starts the one-shot `${INSTANCE}-chain-state-self-heal.service`, and the script
 `ops/chain-state-self-heal.sh` quarantines the damaged node datadir, restores
-from `BDAG_CHAIN_STATE_RESTORE_SOURCE` or `BDAG_CHAIN_STATE_RESTORE_SNAPSHOT`,
+from `BDAG_CHAIN_STATE_RESTORE_SOURCE` or the signed IPFS rawdatadir restore settings,
 restarts `node` and `dashboard` with `--no-build --pull never`, and leaves
 `pool` stopped until readiness gates pass. A softer adjacent detector records
 sustained stuck height while peer lag grows; by default it requires 900 seconds,
@@ -265,7 +272,7 @@ ephemeral scratch is kept on bounded tmpfs through `BDAG_EPHEMERAL_DIR`,
 `BDAG_CONTAINER_TMPFS_SIZE`, and node-specific `BDAG_NODE_TMPFS_SIZE`; service
 containers also mount `/var/tmp` as tmpfs and export `TMPDIR`, `TMP`, and
 `TEMP` to avoid accidental temp spillover into overlay layers. Large
-snapshot and chain-artifact staging stays on capacity storage unless
+IPFS/rawdatadir restore staging stays on capacity storage unless
 deliberately overridden. The installer reports
 warnings and continues by default. Set `BDAG_APPLIANCE_PREFLIGHT_STRICT=1` to
 make hard failures stop the install, or `BDAG_APPLIANCE_PREFLIGHT=0` to skip it

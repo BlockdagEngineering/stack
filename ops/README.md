@@ -96,7 +96,7 @@ Action buttons are intentionally limited to known maintenance tasks:
 
 - Start stack
 - Restart stack
-- Clean restore from latest snapshot
+- Clean restore from an explicitly configured verified restore source
 - Write a Codex handoff file
 - Scan/configure LAN miners from the Miners tab
 
@@ -126,6 +126,13 @@ status-probe I/O while the node is busy importing. Use `max_age_seconds=0` only
 for explicit live diagnostics or hard repair paths that must bypass cached
 state.
 
+For safe incident testing, `ops/stack_status_source.py` can replay a recorded
+status payload from `BDAG_STATUS_SOURCE_FIXTURE` or
+`BDAG_STATUS_SOURCE_FIXTURE_FILE`. Use `ops/capture_status_payload.py` to save a
+live `/api/status` response, then run `ops/replay_triage.py` to exercise
+watchdog, sentinel, and mining-guard dry-run paths in an isolated runtime
+directory.
+
 The sampler is also the backstop for the mining imperative. If the user-systemd
 guard units drift disabled, it re-enables them. If `pool` is stopped while
 miner demand is visible, an ASIC LAN neighbor is present, or the chain is synced
@@ -138,8 +145,8 @@ default. When status reports `needs_chain_data_restore`,
 `chain_data_restore_required`, an irreparable sync block, DAG tip/block damage,
 or repeated missing-trie state warnings, the sampler starts
 `bdag-chain-state-self-heal.service`; the script exits without mutating data
-unless `BDAG_CHAIN_STATE_SELF_HEAL_ENABLED=1` and a trusted restore source or
-snapshot is explicitly configured. When enabled, the repair script quarantines
+unless `BDAG_CHAIN_STATE_SELF_HEAL_ENABLED=1` and a trusted rawdatadir/IPFS
+restore source is explicitly configured. When enabled, the repair script quarantines
 damaged chain data, restores from that configured input, restarts `node` and
 `dashboard`, and leaves `pool` stopped until normal readiness gates make mining
 safe again. A stateful adjacent detector watches for height staying frozen while
@@ -246,7 +253,7 @@ The watchdog performs a staged repair:
 2. Restart if the node wrapper is up but the `bdag` child process is gone.
 3. Clean restore only after repeated hard failures, such as critical database startup errors.
 
-Clean restore stops the stack, moves existing active chain data to a timestamped backup, restores the newest snapshot from `data-restore/`, and starts the stack.
+Clean restore stops the stack, moves existing active chain data to a timestamped backup, runs the explicitly configured verified restore command, and starts the stack. Without `BDAG_RESTORE_NODE_COMMAND`, clean restore fails closed before mutating chain data.
 
 Boot-time recovery is handled by `bdag-boot-repair.service`, which waits for Docker, checks the dirty-shutdown marker, and preserves existing chain data by default. A dirty marker now triggers a conservative start/restart path; automatic clean restore is disabled unless `BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE=1` is set explicitly.
 
@@ -309,8 +316,6 @@ Installed unit files:
 ~/.config/systemd/user/bdag-watchdog.service
 ~/.config/systemd/user/bdag-sync-coordinator.timer
 ~/.config/systemd/user/bdag-chain-restore-guard.timer
-~/.config/systemd/user/bdag-chain-presync.timer
-~/.config/systemd/user/bdag-hourly-snapshot.timer
 ~/.config/systemd/user/bdag-local-peers.timer
 ```
 

@@ -343,7 +343,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             self.assertIn(
                 "BDAG_BACKGROUND_MAINTENANCE_LAZY_TASKS=dashboard_global_sampler,global_blockchain_scan,global_scan,"
                 "rawdatadir_sidecar,rawdatadir_content_seal,ipfs_content_sidecar,ipfs_segment_writer,"
-                "history_compaction,snapshot",
+                "history_compaction",
                 config,
             )
             self.assertIn("BDAG_BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS=ipfs_segment_writer", config)

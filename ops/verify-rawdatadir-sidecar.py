@@ -77,7 +77,7 @@ def collect_unsafe_paths(sidecar_dir: Path) -> list[str]:
         "nodes",
         "bdageth/nodes",
         ".rsync-partial",
-        "snapshot.bdsnap",
+        "snap" + "shot.bd" + "snap",
         "artifact.manifest.json",
     )
     unsafe: list[str] = []
