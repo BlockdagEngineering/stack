@@ -113,4 +113,10 @@ reject_grep 'build-pi5-arm64-release\.sh' "docs/adr/0001-pinned-bootstrap-runtim
 reject_grep 'validate-pi5-restart-hardening\.sh' ".github/workflows/build.yml"
 reject_grep 'validate-pi5-restart-hardening\.sh' ".github/workflows/rc-hardening.yml"
 
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  docker compose --env-file "$root/.env.example" -f "$root/docker-compose.yml" config --services >/dev/null
+else
+  printf 'warning: docker compose unavailable; skipped compose syntax validation\n' >&2
+fi
+
 printf 'release build validation passed for %s\n' "$root"

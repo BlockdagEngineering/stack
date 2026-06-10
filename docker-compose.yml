@@ -155,8 +155,6 @@ services:
       target: pool
       additional_contexts:
         <<: *dev-source-contexts
-      args:
-        <<: *build-args
     restart: unless-stopped
     logging: *mining-logging
     tmpfs:
@@ -340,8 +338,6 @@ services:
       target: miner
       additional_contexts:
         <<: *dev-source-contexts
-      args:
-        <<: *build-args
     restart: unless-stopped
     logging: *mining-logging
     tmpfs:
