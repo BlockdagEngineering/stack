@@ -45,6 +45,7 @@ from stack_status_source import collect_stack_status  # noqa: E402
 
 
 STATE_FILE = RUNTIME_DIR / "sync-coordinator-state.json"
+STATUS_MAX_AGE_SECONDS = float(os.environ.get("BDAG_SYNC_COORDINATOR_STATUS_MAX_AGE_SECONDS", "30"))
 
 
 def safe_int(value: Any, default: int = 0) -> int:
@@ -55,7 +56,11 @@ def safe_int(value: Any, default: int = 0) -> int:
 
 
 def collect_status_cached() -> dict[str, Any]:
-    return collect_stack_status(include_logs=False)
+    return collect_stack_status(
+        include_logs=False,
+        max_age_seconds=STATUS_MAX_AGE_SECONDS,
+        prefer_collector=False,
+    )
 
 
 def mapping_value(mapping: Any, key: str) -> dict[str, Any]:

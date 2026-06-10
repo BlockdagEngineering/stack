@@ -15,6 +15,16 @@ import sync_coordinator  # noqa: E402
 
 
 class SyncCoordinatorStateTests(unittest.TestCase):
+    def test_status_source_uses_local_sampler_before_collector(self) -> None:
+        with mock.patch.object(sync_coordinator, "collect_stack_status", return_value={"overall": "ok"}) as collect:
+            self.assertEqual({"overall": "ok"}, sync_coordinator.collect_status_cached())
+
+        collect.assert_called_once_with(
+            include_logs=False,
+            max_age_seconds=sync_coordinator.STATUS_MAX_AGE_SECONDS,
+            prefer_collector=False,
+        )
+
     def test_build_state_uses_container_liveness_and_chain_height(self) -> None:
         status = {
             "overall": "syncing",
