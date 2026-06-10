@@ -292,6 +292,7 @@ class GlobalTabFallbackTests(unittest.TestCase):
 
 class GlobalHistoryWriteTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.old_env = os.environ.copy()
         self.originals = {
             name: getattr(pool_ops, name)
             for name in (
@@ -299,6 +300,7 @@ class GlobalHistoryWriteTests(unittest.TestCase):
                 "GLOBAL_HISTORY_STATE_FILE",
                 "GLOBAL_HISTORY_LIMIT",
                 "GLOBAL_HISTORY_COMPACT_MULTIPLIER",
+                "DASHBOARD_HISTORY_DISK_DIR",
                 "ensure_runtime",
             )
         }
@@ -307,6 +309,8 @@ class GlobalHistoryWriteTests(unittest.TestCase):
     def restore_globals(self) -> None:
         for name, value in self.originals.items():
             setattr(pool_ops, name, value)
+        os.environ.clear()
+        os.environ.update(self.old_env)
 
     def test_global_history_appends_and_compacts_only_after_threshold(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -315,6 +319,8 @@ class GlobalHistoryWriteTests(unittest.TestCase):
             pool_ops.GLOBAL_HISTORY_STATE_FILE = root / "global-history-state.json"
             pool_ops.GLOBAL_HISTORY_LIMIT = 3
             pool_ops.GLOBAL_HISTORY_COMPACT_MULTIPLIER = 2
+            pool_ops.DASHBOARD_HISTORY_DISK_DIR = root / "dashboard-history"
+            os.environ["BDAG_DASHBOARD_HISTORY_RAM_DIR"] = str(root / "dashboard-history-ram")
             pool_ops.ensure_runtime = lambda: None
 
             for block in range(6):

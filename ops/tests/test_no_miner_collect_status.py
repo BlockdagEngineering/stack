@@ -646,9 +646,11 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertFalse(status["pool_health"]["needs_fast_repair"])
         self.assertFalse(status["sync_health"]["needs_fast_sync_repair"])
         self.assertTrue(status["pool_health"]["node_template_probe_failing"])
+        self.assertTrue(status["pool_health"]["initial_download_transient"])
+        self.assertTrue(status["pool_health"]["source_health_advisory_suppressed"])
         joined_maintenance = "\n".join(status["maintenance_warnings"])
         self.assertIn("accepted block submission remains fresh", joined_maintenance)
-        self.assertIn("transient initial-download", joined_maintenance)
+        self.assertNotIn("transient initial-download", joined_maintenance)
         self.assertIn("miner repair required but active mining continues", joined_maintenance)
 
     def test_miner_failures_block_when_no_active_mining_evidence(self) -> None:

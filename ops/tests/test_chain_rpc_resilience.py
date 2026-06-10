@@ -186,6 +186,26 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.assertFalse(safety["public_chain_diverged"])
         self.assertIn("diagnostic", safety["reason"])
 
+    def test_canonical_safety_allows_public_reference_below_unsafe_lag(self) -> None:
+        pool_ops.EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE = False
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG = 1000
+
+        def fake_json_rpc(url, method, params, timeout):
+            if method == "eth_blockNumber":
+                return "0x3f2" if url == "http://public:18545" else "0x3e8"
+            raise AssertionError(method)
+
+        pool_ops.json_rpc_call = fake_json_rpc
+        pool_ops.evm_reference_rpc_urls = lambda: [("public", "http://public:18545")]
+
+        snapshot = pool_ops.evm_rpc_lag_snapshot("node", "http://local:18545", 1200, timeout=8.0)
+
+        safety = snapshot["canonical_mining_safety"]
+        self.assertTrue(safety["safe"], safety)
+        self.assertEqual(safety["reference_lag_blocks"], 10)
+        self.assertEqual(safety["compared_count"], 0)
+        self.assertIn("below the unsafe threshold", safety["reason"])
+
     def test_rpc_refused_is_recent_only_inside_warning_window(self) -> None:
         now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()
         pool_ops.time.time = lambda: now

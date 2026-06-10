@@ -697,6 +697,9 @@ configure_env() {
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MB
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MIN_MB
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT
+  set_stack_default_env_value .env BDAG_MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED
+  set_stack_default_env_value .env BDAG_CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS
+  set_stack_default_env_value .env BDAG_CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS
   configure_active_node_env
   configure_node_mining_env "$node_mining_enabled" "$mining_address"
 

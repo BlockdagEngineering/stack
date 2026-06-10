@@ -25,6 +25,7 @@ from pool_ops import (
     collect_pool_activity,
     collect_status_cached,
     detect_total_memory_bytes,
+    compose_service_name,
     docker_compose_command,
     ensure_runtime,
     env_bool,
@@ -121,8 +122,13 @@ CHAIN_STATE_SELF_HEAL_UNIT = os.environ.get(
 CHAIN_STATE_IMPORT_WATCH_FILE = STATUS_SAMPLER_FILE.parent / "chain-state-import-watch.json"
 CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS = env_int(
     "BDAG_CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS",
-    1,
+    3,
     minimum=1,
+)
+CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS = env_int(
+    "BDAG_CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS",
+    180,
+    minimum=0,
 )
 CHAIN_STATE_STALLED_IMPORT_RESTORE_ENABLED = env_bool(
     "BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_ENABLED",
@@ -329,12 +335,16 @@ def node_mining_runtime_args(address: str) -> str:
         *NODE_MINING_REQUIRED_BOOL_FLAGS,
         f"--miningaddr={address}",
     ]
-    if constrained_storage_profile():
+    existing_args = config_value("BDAG_NODE_MINING_ARGS") or config_value("NODE_ARGS_APPEND")
+    existing_maxinbound = node_args_assignment_value(existing_args, "--maxinbound")
+    if constrained_storage_profile() or existing_maxinbound is not None:
         # A USB-backed ASIC router should mine and relay blocks, not serve as a
         # catch-up source for other peers while it is trying to convert shares
         # into accepted blocks. Keep one inbound slot because this node build
         # treats a zero inbound budget as an unusable P2P server.
-        parts.extend(f"{key}={value}" for key, value in NODE_MINING_CONSTRAINED_ASSIGNMENTS.items())
+        for key, value in NODE_MINING_CONSTRAINED_ASSIGNMENTS.items():
+            wanted = existing_maxinbound if key == "--maxinbound" and existing_maxinbound is not None else value
+            parts.append(f"{key}={wanted}")
     return " ".join(parts)
 
 
@@ -552,25 +562,35 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     io_pressure_enabled = bool(policy.get("io_pressure_pause_enabled", CATCHUP_IO_PRESSURE_PAUSE_ENABLED))
     io_min_lag = safe_int(policy.get("io_pressure_min_lag_blocks"), CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS)
     mining_ready = bool(policy.get("mining_ready", payload.get("can_mine") is True))
+    sync_health = dict_value(payload.get("sync_health"))
+    pool = dict_value(payload.get("pool"))
+    pool_has_recent_paid_work = bool(
+        sync_health.get("pool_has_recent_paid_work")
+        or sync_health.get("pool_has_recent_mining")
+        or (
+            safe_int(pool.get("block_submit_success_count"), 0) > 0
+            and pool.get("last_block_submit_age_seconds") is not None
+            and safe_int(pool.get("last_block_submit_age_seconds"), 999999) <= 60
+        )
+        or bool(policy.get("pool_has_recent_paid_work"))
+    )
     backend_unready_under_pressure = bool(
         policy.get("backend_unready_under_pressure")
         or (io_pressure_reasons and not mining_ready and payload.get("can_mine") is False)
     )
+    if pool_has_recent_paid_work:
+        backend_unready_under_pressure = False
     io_pressure_lag_active = lag >= io_min_lag
-    io_pressure_active = bool(
+    io_pressure_candidate_active = bool(
         io_pressure_enabled
         and io_pressure_reasons
         and not mining_ready
         and io_pressure_lag_active
     )
+    io_pressure_active = bool(io_pressure_candidate_active and not pool_has_recent_paid_work)
     lag_threshold_active = bool(lag > threshold and (not chain_ready_for_mining(payload) or not mining_ready))
-    pause_candidate_active = bool(io_pressure_active or lag_threshold_active)
-    recent_paid_work = bool(
-        policy.get("pool_has_recent_paid_work")
-        or sync_health.get("pool_has_recent_paid_work")
-        or sync_health.get("pool_has_recent_mining")
-    )
-    recent_paid_work_suppressed = bool(recent_paid_work and pause_candidate_active)
+    pause_candidate_active = bool(io_pressure_candidate_active or lag_threshold_active)
+    recent_paid_work_suppressed = bool(pool_has_recent_paid_work and pause_candidate_active)
     active = bool(CATCHUP_PAUSE_ENABLED and pause_candidate_active and not recent_paid_work_suppressed)
     trigger = str(policy.get("trigger") or "")
     if not trigger and active:
@@ -589,9 +609,9 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "io_pressure_reasons": io_pressure_reasons,
         "io_pressure_min_lag_blocks": io_min_lag,
         "backend_unready_under_pressure": backend_unready_under_pressure,
+        "pool_has_recent_paid_work": pool_has_recent_paid_work,
         "lag_threshold_active": lag_threshold_active,
         "mining_ready": mining_ready,
-        "pool_has_recent_paid_work": recent_paid_work,
         "recent_paid_work_suppressed": recent_paid_work_suppressed,
     }
 
@@ -600,27 +620,33 @@ def catchup_pause_active(payload: dict[str, Any]) -> bool:
     return bool(catchup_policy_from_payload(payload).get("active"))
 
 
-def chain_state_restore_hard_reasons(payload: dict[str, Any]) -> list[str]:
-    reasons: list[str] = []
+def chain_state_restore_reason_details(payload: dict[str, Any]) -> list[dict[str, str]]:
+    details: list[dict[str, str]] = []
     sync_health = dict_value(payload.get("sync_health"))
     if sync_health.get("needs_chain_data_restore") or sync_health.get("chain_data_restore_required"):
         restore_nodes = dict_value(sync_health.get("chain_data_restore_nodes"))
         for node, info in restore_nodes.items():
             node_reasons = info.get("reasons") if isinstance(info, dict) else None
             if isinstance(node_reasons, list) and node_reasons:
-                reasons.extend(str(item) for item in node_reasons if item)
+                details.extend({"kind": "chain_data_restore", "reason": str(item)} for item in node_reasons if item)
             else:
-                reasons.append(f"{node} requires chain data restore")
+                details.append({"kind": "chain_data_restore", "reason": f"{node} requires chain data restore"})
         if not restore_nodes:
-            reasons.append("status reports chain data restore is required")
+            details.append(
+                {
+                    "kind": "chain_data_restore",
+                    "reason": "status reports chain data restore is required",
+                }
+            )
     if sync_health.get("chain_state_blocker"):
         blocker_nodes = dict_value(sync_health.get("chain_state_blocker_nodes"))
         for node, info in blocker_nodes.items():
             block_hash = info.get("hash") if isinstance(info, dict) else ""
             if block_hash:
-                reasons.append(f"{node} is stuck on irreparable sync block {block_hash}")
+                reason = f"{node} is stuck on irreparable sync block {block_hash}"
             else:
-                reasons.append(f"{node} is stuck on an irreparable sync block")
+                reason = f"{node} is stuck on an irreparable sync block"
+            details.append({"kind": "chain_state_blocker", "reason": reason})
 
     nodes = dict_value(payload.get("nodes"))
     for node, info in nodes.items():
@@ -628,13 +654,40 @@ def chain_state_restore_hard_reasons(payload: dict[str, Any]) -> list[str]:
             continue
         if info.get("chain_state_blocker"):
             block_hash = info.get("chain_state_blocker_hash") or "unknown block"
-            reasons.append(f"{node} is stuck on irreparable sync block {block_hash}")
+            details.append(
+                {
+                    "kind": "chain_state_blocker",
+                    "reason": f"{node} is stuck on irreparable sync block {block_hash}",
+                }
+            )
         if info.get("dag_tip_damage"):
-            reasons.append(f"{node} DAG tip/block data is damaged")
+            details.append({"kind": "dag_tip_damage", "reason": f"{node} DAG tip/block data is damaged"})
         missing_trie = safe_int(info.get("missing_trie_node_warnings"), 0)
         if missing_trie >= CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS:
-            reasons.append(f"{node} has {missing_trie} missing-trie state warning(s)")
-    return sorted(set(reasons))
+            details.append(
+                {
+                    "kind": "missing_trie",
+                    "reason": f"{node} has {missing_trie} missing-trie state warning(s)",
+                }
+            )
+    unique: dict[tuple[str, str], dict[str, str]] = {}
+    for item in details:
+        unique[(item["kind"], item["reason"])] = item
+    return [unique[key] for key in sorted(unique)]
+
+
+def chain_state_restore_hard_reasons(payload: dict[str, Any]) -> list[str]:
+    return [item["reason"] for item in chain_state_restore_reason_details(payload)]
+
+
+def status_payload_has_recent_paid_work(payload: dict[str, Any], max_age_seconds: int) -> bool:
+    sync_health = dict_value(payload.get("sync_health"))
+    if sync_health.get("pool_has_recent_paid_work") or sync_health.get("pool_has_recent_mining"):
+        return True
+    pool = dict_value(payload.get("pool"))
+    success_count = safe_int(pool.get("block_submit_success_count"), 0)
+    last_age = safe_int(pool.get("last_block_submit_age_seconds"), 999999)
+    return bool(success_count > 0 and last_age <= max_age_seconds)
 
 
 def sync_progress_height(payload: dict[str, Any]) -> int:
@@ -738,10 +791,36 @@ def update_stalled_import_watch(payload: dict[str, Any]) -> dict[str, Any]:
 def chain_state_restore_decision(payload: dict[str, Any]) -> dict[str, Any]:
     if not MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED:
         return {"should_repair": False, "reasons": [], "stalled_import": {}, "disabled": True}
-    reasons = chain_state_restore_hard_reasons(payload)
+    details = chain_state_restore_reason_details(payload)
+    reasons = [item["reason"] for item in details]
     stalled_import = update_stalled_import_watch(payload)
     if reasons:
-        return {"should_repair": True, "reasons": reasons, "stalled_import": stalled_import, "hard": True}
+        missing_trie_only = all(item.get("kind") == "missing_trie" for item in details)
+        active_paid_mining = bool(
+            missing_trie_only
+            and status_payload_has_miner_demand(payload)
+            and status_payload_has_recent_paid_work(payload, CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS)
+        )
+        if active_paid_mining:
+            return {
+                "should_repair": False,
+                "reasons": reasons,
+                "reason_details": details,
+                "stalled_import": stalled_import,
+                "hard": True,
+                "deferred": True,
+                "defer_reason": (
+                    "missing-trie-only restore signal deferred because active miners have "
+                    "fresh accepted block submissions"
+                ),
+            }
+        return {
+            "should_repair": True,
+            "reasons": reasons,
+            "reason_details": details,
+            "stalled_import": stalled_import,
+            "hard": True,
+        }
     if stalled_import.get("restore_required"):
         return {
             "should_repair": True,
@@ -975,9 +1054,21 @@ def constrained_storage_profile() -> bool:
         or storage_profile == "single-usb-constrained"
     )
 
+def node_services_for_recreate() -> list[str]:
+    configured = config_value("BDAG_NODE_SERVICES") or config_value("BDAG_NODE_SERVICE", "node")
+    services: list[str] = []
+    for item in configured.replace(" ", ",").split(","):
+        name = item.strip()
+        if not name:
+            continue
+        service = compose_service_name(name) or name
+        if service not in services:
+            services.append(service)
+    return services or ["node"]
+
 
 def node_service_for_recreate() -> str:
-    return config_value("BDAG_NODE_SERVICE", "node").strip() or "node"
+    return node_services_for_recreate()[0]
 
 
 def node_command_line(node_service: str) -> str | None:
@@ -1019,9 +1110,10 @@ def node_mining_template_support_should_repair(payload: dict[str, Any]) -> bool:
     append_args = config_value("NODE_ARGS_APPEND")
     if append_args and not node_mining_args_are_safe_and_complete(append_args, address):
         return True
-    command_line = node_command_line(node_service_for_recreate())
-    if command_line and not node_mining_args_are_safe_and_complete(command_line, address):
-        return True
+    for service in node_services_for_recreate():
+        command_line = node_command_line(service)
+        if command_line and not node_mining_args_are_safe_and_complete(command_line, address):
+            return True
     return False
 
 
@@ -1077,8 +1169,7 @@ def automation_repair_mutation_allowed(
 def recreate_node_service(payload: dict[str, Any], reason: str) -> tuple[bool, list[dict[str, Any]]]:
     node_results = []
     ok = True
-    service = node_service_for_recreate()
-    if service:
+    for service in node_services_for_recreate():
         if not automation_repair_mutation_allowed(
             automation_control.ACTION_CONTAINER_RECREATE,
             target=service,
@@ -1088,7 +1179,8 @@ def recreate_node_service(payload: dict[str, Any], reason: str) -> tuple[bool, l
             message=f"Mining imperative left {service} unchanged because automation control blocked recreate",
         ):
             node_results.append({"service": service, "returncode": None, "ok": False, "blocked": True})
-            return False, node_results
+            ok = False
+            continue
         result = run(
             docker_compose_command("up", "-d", "--no-deps", "--force-recreate", "--no-build", "--pull", "never", service),
             timeout=240,
@@ -1761,6 +1853,10 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
         if start_chain_state_self_heal(payload, chain_restore_decision):
             actions.append("started_chain_state_self_heal")
         return {"enabled": True, "actions": actions}
+    if chain_restore_decision.get("deferred"):
+        reason = chain_restore_decision.get("defer_reason") or "chain-state restore deferred"
+        details = "; ".join(chain_restore_decision.get("reasons") or [])
+        log(f"{reason}: {details}")
 
     if status_payload_has_tracking_gap(payload):
         if repair_missing_tracked_miners(payload):

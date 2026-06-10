@@ -321,7 +321,7 @@ NODE_IRREPARABLE_SYNC_RE = re.compile(
 NODE_MISSING_TRIE_RE = re.compile(r"missing trie node\s+([0-9a-fA-F]+)", re.IGNORECASE)
 CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS = env_int(
     "BDAG_CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS",
-    1,
+    3,
     minimum=1,
 )
 CHAIN_STATE_ORPHAN_STORM_RESTORE_PEER_AHEAD_BLOCKS = env_int(
@@ -469,6 +469,7 @@ POOL_ACCEPTED_JOB_EXPIRED_STORM_RATIO = int(
 )
 POOL_METRICS_PORT = int(os.environ.get("BDAG_POOL_METRICS_PORT", "9090"))
 POOL_METRICS_TIMEOUT = float(os.environ.get("BDAG_POOL_METRICS_TIMEOUT", "2.0"))
+POOL_TEMPLATE_DELIVERY_FRESH_SECONDS = env_float("BDAG_POOL_TEMPLATE_DELIVERY_FRESH_SECONDS", 5.0, minimum=0.1)
 POOL_SUBMIT_RECOVERY_RECENT_SECONDS = int(os.environ.get("BDAG_POOL_SUBMIT_RECOVERY_RECENT_SECONDS", "180"))
 POOL_SUBMIT_RECOVERY_ACCEPTED_RESUME_SECONDS = int(
     os.environ.get("BDAG_POOL_SUBMIT_RECOVERY_ACCEPTED_RESUME_SECONDS", "90")
@@ -538,7 +539,11 @@ BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS = env_float(
 BACKGROUND_MAINTENANCE_LAZY_TASKS = set(
     split_env_list(
         "BDAG_BACKGROUND_MAINTENANCE_LAZY_TASKS",
-        "rawdatadir_sidecar",
+        (
+            "dashboard_global_sampler,global_blockchain_scan,global_scan,"
+            "rawdatadir_sidecar,rawdatadir_content_seal,ipfs_content_sidecar,"
+            "ipfs_segment_writer,history_compaction,snapshot"
+        ),
     )
 )
 BACKGROUND_MAINTENANCE_POOL_READY_TASKS = set(
@@ -1306,7 +1311,6 @@ def compose_service_name(name: str) -> str:
                 if candidate:
                     return candidate
     return name
-
 
 _COMPOSE_CONTAINER_NAME_CACHE: dict[str, str] = {}
 
@@ -3064,6 +3068,7 @@ def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
         }
         record = {
             "name": name,
+            "runtime_name": name,
             "image": config.get("Image", ""),
             "running": bool(state.get("Running")),
             "status": state.get("Status", "unknown"),
@@ -3955,7 +3960,15 @@ def selected_backend_readiness_contract(
     source = selected_source_health if isinstance(selected_source_health, dict) else {}
     job_health = source_job_health if isinstance(source_job_health, dict) else {}
     checks: dict[str, bool] = {}
-    for key in ("node_mineable", "node_submit_ready", "node_p2p_mining_fresh", "healthy", "ws_connected"):
+    for key in (
+        "node_mineable",
+        "node_submit_ready",
+        "node_p2p_mining_fresh",
+        "healthy",
+        "ws_connected",
+        "ws_connected_observed",
+        "template_delivery_effective",
+    ):
         if key in source:
             checks[key] = bool(source.get(key))
     if source.get("node_last_template_build_error_blocking") is True:
@@ -3992,6 +4005,50 @@ def selected_backend_source_degradation(selected_source_degraded: bool, pool_has
         "hard": bool(degraded and not recent_paid),
         "advisory": bool(degraded and recent_paid),
     }
+
+
+def annotate_template_delivery_state(source_backend_health: dict[str, dict[str, Any]]) -> None:
+    for row in source_backend_health.values():
+        if not isinstance(row, dict):
+            continue
+        if "ws_connected" in row and "ws_connected_observed" not in row:
+            row["ws_connected_observed"] = bool(row.get("ws_connected"))
+        template_ages = [
+            value
+            for value in (
+                safe_float(row.get("template_age_seconds")),
+                safe_float(row.get("node_template_age_seconds")),
+                safe_float(row.get("node_last_template_build_age_seconds")),
+            )
+            if value is not None
+        ]
+        freshest_template_age = min(template_ages) if template_ages else None
+        template_fresh = bool(
+            freshest_template_age is not None
+            and freshest_template_age <= POOL_TEMPLATE_DELIVERY_FRESH_SECONDS
+        )
+        health_ready = bool(
+            row.get("healthy") is True
+            and row.get("node_mineable") is True
+            and row.get("node_submit_ready") is True
+            and row.get("node_p2p_mining_fresh") is not False
+        )
+        effective = bool(row.get("ws_connected") or (template_fresh and health_ready))
+        row["template_delivery_effective"] = effective
+        row["template_delivery_fresh_age_seconds"] = (
+            round(freshest_template_age, 3) if freshest_template_age is not None else None
+        )
+        if row.get("ws_connected"):
+            row["template_delivery_mode"] = "websocket"
+            row["template_delivery_reason"] = "backend reports websocket template stream connected"
+        elif effective:
+            row["template_delivery_mode"] = "fresh-template-fallback"
+            row["template_delivery_reason"] = (
+                "backend websocket metric is disconnected, but fresh templates and submit readiness are observed"
+            )
+        else:
+            row["template_delivery_mode"] = "polling-or-stale"
+            row["template_delivery_reason"] = "backend websocket metric is disconnected and fresh templates are not proven"
 
 
 def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -4165,6 +4222,7 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
         if source_backend_health and not template_backend_source:
             template_backend_source = endpoint
 
+    annotate_template_delivery_state(source_backend_health)
     payload["status"] = "ok" if any_ok else "unavailable"
     payload["error"] = "; ".join(errors[:3])
     payload["active_connections"] = active_connections
@@ -5394,6 +5452,7 @@ def build_catchup_policy(
         io_pressure_reasons
         and backend_unready_reasons
         and not mining_ready_for_policy
+        and not pool_has_recent_paid_work
     )
     io_pressure_lag_active = bool(peer_catchup and lag >= CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS)
     io_pressure_active = bool(
@@ -6135,9 +6194,22 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         pool_has_recent_paid_work,
     )
     pool["selected_backend_readiness_contract"] = readiness_contract
+    source_advisory_suppressed = bool(
+        connected_miners > 0
+        and pool_has_recent_paid_work
+        and (
+            readiness_contract.get("contradiction")
+            or source_selected_backend_advisory_degraded
+            or source_health_transient_degraded
+            or pool_initial_download_transient
+        )
+    )
+    pool["source_health_advisory_suppressed"] = source_advisory_suppressed
+    if source_advisory_suppressed:
+        pool["source_health_suppressed_reasons"] = selected_source_unready_reasons
     if pool_initial_download_needs_repair:
         add_sync_warning("pool is waiting for node sync to finish")
-    elif pool_initial_download_transient:
+    elif pool_initial_download_transient and not source_advisory_suppressed:
         add_maintenance_warning(
             "pool saw a transient initial-download template response while accepted block submission stayed fresh"
         )
@@ -6145,7 +6217,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         ledger_warnings = [str(item) for item in pool_loss_ledger.get("warnings", []) if item]
         if ledger_warnings:
             add_maintenance_warning("pool efficiency loss ledger: " + "; ".join(ledger_warnings[:3]))
-    if connected_miners > 0 and readiness_contract.get("contradiction"):
+    if connected_miners > 0 and readiness_contract.get("contradiction") and not source_advisory_suppressed:
         backend = readiness_contract.get("selected_backend") or "selected backend"
         checks = readiness_contract.get("checks") if isinstance(readiness_contract.get("checks"), dict) else {}
         add_maintenance_warning(
@@ -6155,7 +6227,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         )
     if connected_miners > 0 and source_job_hard_degraded:
         add_sync_warning("pool source job health reports not-ok and accepted block submission is stale")
-    elif connected_miners > 0 and source_job_health_ok is False:
+    elif connected_miners > 0 and source_job_health_ok is False and not source_advisory_suppressed:
         add_maintenance_warning("pool source job health is advisory-degraded while accepted block submission remains fresh")
     if connected_miners > 0 and source_selected_backend_hard_degraded:
         backend = pool.get("selected_backend") or "selected backend"
@@ -6163,13 +6235,13 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             f"pool source health says {backend} is not ready for mining "
             f"({', '.join(selected_source_unready_reasons)})"
         )
-    elif connected_miners > 0 and source_selected_backend_advisory_degraded:
+    elif connected_miners > 0 and source_selected_backend_advisory_degraded and not source_advisory_suppressed:
         backend = pool.get("selected_backend") or "selected backend"
         add_maintenance_warning(
             f"pool source health says {backend} is degraded, but accepted block submission remains fresh "
             f"({', '.join(selected_source_unready_reasons)})"
         )
-    elif connected_miners > 0 and source_health_transient_degraded:
+    elif connected_miners > 0 and source_health_transient_degraded and not source_advisory_suppressed:
         backend = pool.get("selected_backend") or "selected backend"
         add_maintenance_warning(f"pool source health says {backend} is degraded, but accepted block submission remains fresh")
     if connected_miners > 0 and pool.get("share_stall"):
@@ -6376,9 +6448,9 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             sync_health["node_importing_nodes"] = active_import_nodes
     catchup_mining_ready = bool(
         sync_progress.get("status") == "synced"
-        and not selected_source_unready_reasons
+        and (not selected_source_unready_reasons or pool_has_recent_paid_work)
         and source_job_health_ok is not False
-        and not pool.get("initial_download")
+        and not pool_initial_download_needs_repair
     )
     catchup_policy = build_catchup_policy(
         sync_progress,
@@ -7588,11 +7660,17 @@ def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int,
     sample_heights = alignment.get("sample_heights") if isinstance(alignment.get("sample_heights"), list) else []
     required_samples = min(EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES, max(1, len(sample_heights)))
     hash_mismatch_count = safe_int(alignment.get("hash_mismatch_count"), 0)
+    reference_lag_below_unsafe_threshold = bool(
+        external_url
+        and alignment.get("enabled")
+        and reference_lag < EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG
+        and not snapshot["public_chain_diverged"]
+    )
     safety_safe = bool(
         external_url
         and alignment.get("enabled")
-        and compared_count >= required_samples
         and not snapshot["public_chain_diverged"]
+        and (reference_lag_below_unsafe_threshold or compared_count >= required_samples)
     )
     if safety_safe:
         if hash_mismatch_count:
@@ -7600,6 +7678,8 @@ def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int,
                 "local/public EVM miner samples align and the public reference is not materially ahead; "
                 "block-hash mismatch is retained as diagnostic only for this node build"
             )
+        elif reference_lag_below_unsafe_threshold:
+            safety_reason = str(alignment.get("reason") or "public EVM reference lag is below the unsafe threshold")
         else:
             safety_reason = "local EVM headers match an independent public reference at sampled heights"
     elif not external_url:

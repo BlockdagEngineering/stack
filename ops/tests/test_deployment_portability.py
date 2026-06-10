@@ -340,7 +340,12 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             installer,
         )
         for config in (env_example, defaults):
-            self.assertIn("BDAG_BACKGROUND_MAINTENANCE_LAZY_TASKS=rawdatadir_sidecar", config)
+            self.assertIn(
+                "BDAG_BACKGROUND_MAINTENANCE_LAZY_TASKS=dashboard_global_sampler,global_blockchain_scan,global_scan,"
+                "rawdatadir_sidecar,rawdatadir_content_seal,ipfs_content_sidecar,ipfs_segment_writer,"
+                "history_compaction,snapshot",
+                config,
+            )
             self.assertIn("BDAG_BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS=ipfs_segment_writer", config)
             self.assertIn("BDAG_BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS=ipfs_segment_writer", config)
             self.assertIn(

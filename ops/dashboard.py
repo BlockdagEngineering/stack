@@ -425,6 +425,23 @@ def run_global_refresh(reason: str) -> None:
 
 
 def trigger_global_refresh(reason: str) -> bool:
+    started = time.time()
+    try:
+        maintenance_decision = background_maintenance_decision("dashboard_global_sampler")
+    except Exception:  # noqa: BLE001 - the worker will record the full failure if it cannot run.
+        maintenance_decision = {"allowed": True, "reasons": []}
+    if not maintenance_decision.get("allowed", True):
+        write_global_sampler_state(
+            {
+                "updated_at": now_iso(),
+                "status": "deferred",
+                "reason": reason,
+                "duration_seconds": round(time.time() - started, 3),
+                "maintenance_decision": maintenance_decision,
+                "error": "; ".join(str(item) for item in maintenance_decision.get("reasons", []) if item),
+            }
+        )
+        return False
     if not GLOBAL_REFRESH_LOCK.acquire(blocking=False):
         return False
 
@@ -1875,11 +1892,47 @@ HTML = r"""<!doctype html>
       return role === "observer" ? "advisory" : "production";
     }
     function templateProbeStatusText(data) {
+      const poolHealth = data.pool_health || {};
+      const metrics = data.pool_metrics || {};
+      const selected = selectedBackendSourceHealth(data);
+      const selectedBackend = selectedBackendName(data);
+      const hasTemplateSignal = ["healthy", "ws_connected", "template_delivery_effective", "template_delivery_mode"].some((key) => hasValue(selected[key]));
+      if (hasTemplateSignal) {
+        const parts = [];
+        if (hasValue(selected.healthy)) {
+          parts.push(`template_backends=${metricEnabled(selected.healthy) ? "1" : "0"}/1`);
+        }
+        if (hasValue(selected.ws_connected)) {
+          if (metricEnabled(selected.ws_connected)) parts.push(`template_ws=${selectedBackend}`);
+          else if (metricEnabled(selected.template_delivery_effective)) parts.push(`template_fresh=${selectedBackend}`);
+          else parts.push("template_ws=off");
+        } else if (metricEnabled(selected.template_delivery_effective)) {
+          parts.push(`template_fresh=${selectedBackend}`);
+        }
+        if (hasValue(selected.template_delivery_mode)) {
+          parts.push(`template_mode=${selected.template_delivery_mode}`);
+        }
+        return parts.join(" ");
+      }
       const probeNodes = data.rpc_template_health?.nodes || {};
       const probeNames = Object.keys(probeNodes).sort();
       if (!probeNames.length) return "";
       const healthy = probeNames.filter(name => !probeNodes[name]?.failing).length;
       return `template_probes=${healthy}/${probeNames.length}`;
+    }
+    function selectedBackendName(data) {
+      const poolHealth = data.pool_health || {};
+      const metrics = data.pool_metrics || {};
+      return poolHealth.selected_backend || metrics.selected_backend || "selected";
+    }
+    function backendKeyForNode(name) {
+      const match = String(name || "").match(/node[-_]?(\d+)$/);
+      return match ? `node${match[1]}` : String(name || "");
+    }
+    function selectedBackendMatchesNode(name, backendName) {
+      const nodeName = String(name || "");
+      const backend = String(backendName || "");
+      return backend === nodeName || backend === backendKeyForNode(nodeName) || (backend === "node" && nodeName.includes("node"));
     }
     function selectedBackendSourceHealth(data) {
       const poolHealth = data.pool_health || {};
@@ -1887,8 +1940,12 @@ HTML = r"""<!doctype html>
       return poolHealth.selected_backend_source_health || metrics.selected_backend_source_health || {};
     }
     function selectedBackendTemplateReady(data) {
+      const poolHealth = data.pool_health || {};
+      const contract = poolHealth.selected_backend_readiness_contract || {};
+      if (poolHealth.source_health_advisory_suppressed || (contract.contradiction && !contract.hard_unready)) return true;
+      if (contract.hard_unready) return false;
       const selected = selectedBackendSourceHealth(data);
-      const readinessKeys = ["healthy", "node_mineable", "node_submit_ready", "node_p2p_mining_fresh"];
+      const readinessKeys = ["healthy", "node_mineable", "node_submit_ready", "node_p2p_mining_fresh", "template_delivery_effective"];
       const hasReadinessSignal = readinessKeys.some((key) => hasValue(selected[key]));
       if (!hasReadinessSignal) return true;
       return readinessKeys.every((key) => !hasValue(selected[key]) || metricEnabled(selected[key]));
@@ -1905,10 +1962,12 @@ HTML = r"""<!doctype html>
       if (hasValue(selected.node_mineable)) sourceFlags.push(`mineable=${metricEnabled(selected.node_mineable) ? "yes" : "no"}`);
       if (hasValue(selected.node_submit_ready)) sourceFlags.push(`submit=${metricEnabled(selected.node_submit_ready) ? "ready" : "not-ready"}`);
       if (hasValue(selected.node_p2p_mining_fresh)) sourceFlags.push(`p2p=${metricEnabled(selected.node_p2p_mining_fresh) ? "fresh" : "stale"}`);
+      if (hasValue(selected.template_delivery_mode)) sourceFlags.push(`template=${selected.template_delivery_mode}`);
       if (hasValue(selected.node_template_age_seconds)) sourceFlags.push(`node_template_age=${fmt(selected.node_template_age_seconds)}s`);
       if (sourceFlags.length) parts.push(`source_health=${sourceFlags.join("/")}`);
       if (poolHealth.source_selected_backend_hard_degraded) parts.push("source_fault=hard");
       else if (poolHealth.source_health_transient_degraded) parts.push("source_fault=advisory");
+      if (poolHealth.source_health_advisory_suppressed) parts.push("source_advisory=suppressed");
       if (contract.contradiction) parts.push("readiness=contradiction");
       return parts.join(" ");
     }
@@ -2338,7 +2397,17 @@ HTML = r"""<!doctype html>
         for (const entry of entries) {
           const {name, node, roleValue, healthScope} = entry;
           const isObserver = roleValue === "observer" || healthScope === "advisory";
-        const roleHtml = `<span class="node-role">${escapeHtml(roleValue)}</span>`;
+          const selectedBackend = selectedBackendName(data);
+          const selectedHealth = selectedBackendSourceHealth(data);
+          const selectedForNode = selectedBackendMatchesNode(name, selectedBackend);
+          const roleHtml = `<span class="node-role">${escapeHtml(roleValue)}</span>`
+            + (selectedForNode ? `<span class="node-role">selected</span>` : "");
+          const wsText = selectedForNode && hasValue(selectedHealth.ws_connected)
+            ? ` ws=${metricEnabled(selectedHealth.ws_connected) ? "on" : (metricEnabled(selectedHealth.template_delivery_effective) ? "fresh" : "off")}`
+            : "";
+          const templateAge = selectedForNode && hasValue(selectedHealth.template_delivery_fresh_age_seconds)
+            ? ` template_age=${fmt(selectedHealth.template_delivery_fresh_age_seconds)}s`
+            : "";
         const syncNode = syncNodes[name] || {};
         const syncHtml = isObserver && !hasValue(syncNode.status)
           ? `<div class="subtle">Advisory observer; not included in production sync health.</div>`
@@ -2354,7 +2423,7 @@ HTML = r"""<!doctype html>
           </div>
           <div class="kpi-value">${escapeHtml(blockHeightText)}</div>
           <div class="sync-progress sync-progress-node">${syncHtml}</div>
-          <div class="subtle">${escapeHtml(healthScope)} scope | ${escapeHtml(nodeSummaryText(node))}</div>`;
+          <div class="subtle">${escapeHtml(healthScope)} scope | ${escapeHtml(nodeSummaryText(node) + wsText + templateAge)}</div>`;
           group.appendChild(div);
         }
         container.appendChild(group);

@@ -195,6 +195,9 @@ pool_rpc_backend_selected{backend="node",pool_id="0"} 1
 pool_rpc_backend_healthy{backend="node",pool_id="0"} 1
 pool_rpc_backend_node_health_mineable{backend="node",pool_id="0"} 0
 pool_rpc_backend_node_health_submit_ready{backend="node",pool_id="0"} 0
+pool_rpc_backend_node_health_p2p_mining_fresh{backend="node",pool_id="0"} 1
+pool_rpc_backend_node_health_template_age_seconds{backend="node",pool_id="0"} 0.2
+pool_rpc_backend_ws_connected{backend="node",pool_id="0"} 0
 pool_job_health_ok{pool_id="0"} 0
 pool_job_health_ready_miners{pool_id="0"} 5
 pool_template_conversion_stall_active_miners{pool_id="0"} 5
@@ -222,8 +225,34 @@ pool_shares_rejected_total{pool_id="0",reason="invalidated_job"} 15
         self.assertEqual(payload["active_connections"], 5)
         self.assertEqual(payload["selected_backend"], "node")
         self.assertFalse(payload["selected_backend_source_health"]["node_mineable"])
+        self.assertFalse(payload["selected_backend_source_health"]["ws_connected"])
+        self.assertFalse(payload["selected_backend_source_health"]["template_delivery_effective"])
         self.assertEqual(payload["loss_ledger"]["severity"], "critical")
         self.assertEqual(payload["loss_ledger"]["share_outcomes"]["accepted_ratio_percent"], 25.0)
+
+    def test_pool_metrics_marks_fresh_template_delivery_when_ws_metric_is_off(self) -> None:
+        metrics = """
+pool_active_connections 1
+pool_rpc_backend_selected{backend="node",pool_id="0"} 1
+pool_rpc_backend_healthy{backend="node",pool_id="0"} 1
+pool_rpc_backend_ws_connected{backend="node",pool_id="0"} 0
+pool_rpc_backend_node_health_mineable{backend="node",pool_id="0"} 1
+pool_rpc_backend_node_health_submit_ready{backend="node",pool_id="0"} 1
+pool_rpc_backend_node_health_p2p_mining_fresh{backend="node",pool_id="0"} 1
+pool_rpc_backend_node_health_template_age_seconds{backend="node",pool_id="0"} 0.2
+pool_rpc_backend_node_health_last_template_build_age_seconds{backend="node",pool_id="0"} 0.1
+"""
+        pool_ops.fetch_text_url = lambda *_args, **_kwargs: metrics
+
+        payload = pool_ops.collect_pool_prometheus_metrics(
+            {"asic-pool": {"running": True, "network_ips": ["10.0.0.2"]}}
+        )
+
+        selected = payload["selected_backend_source_health"]
+        self.assertFalse(selected["ws_connected"])
+        self.assertFalse(selected["ws_connected_observed"])
+        self.assertTrue(selected["template_delivery_effective"])
+        self.assertEqual(selected["template_delivery_mode"], "fresh-template-fallback")
 
 
 if __name__ == "__main__":

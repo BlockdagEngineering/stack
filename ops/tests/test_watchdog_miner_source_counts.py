@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import pathlib
+import os
 import sys
 import unittest
 from unittest import mock
@@ -91,10 +92,21 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
     def setUp(self) -> None:
         self.now = 1_779_180_000
         self.old_time = watchdog.time.time
+        self.old_env = {
+            "BDAG_ASIC_LAN_CIDRS": os.environ.get("BDAG_ASIC_LAN_CIDRS"),
+            "BDAG_MINER_SCAN_TARGET": os.environ.get("BDAG_MINER_SCAN_TARGET"),
+        }
+        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.1.0/24"
+        os.environ.pop("BDAG_MINER_SCAN_TARGET", None)
         watchdog.time.time = lambda: self.now
 
     def tearDown(self) -> None:
         watchdog.time.time = self.old_time
+        for key, value in self.old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def test_zero_miners_do_not_create_degradation(self) -> None:
         status = status_for([], expected=0, imbalanced=0)
