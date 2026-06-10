@@ -60,7 +60,7 @@ P2P_GUARD_STATE = RUNTIME_DIR / "p2p-health-state.json"
 REPORTS_DIR = RUNTIME_DIR / "reports"
 DEFAULT_STATUS_CACHE_SECONDS = os.environ.get("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS", "120")
 STATUS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_STATUS_CACHE_SECONDS", DEFAULT_STATUS_CACHE_SECONDS))
-EARNINGS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_EARNINGS_CACHE_SECONDS", "30"))
+EARNINGS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_EARNINGS_CACHE_SECONDS", "0"))
 SAMPLER_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS", DEFAULT_STATUS_CACHE_SECONDS))
 DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS = max(
     5.0,
@@ -95,6 +95,8 @@ GLOBAL_REFRESH_LOCK = threading.Lock()
 
 
 def cached_payload(key: str, ttl: float, factory):
+    if ttl <= 0:
+        return factory()
     now = time.time()
     with API_CACHE_LOCK:
         cached = API_CACHE.get(key)
