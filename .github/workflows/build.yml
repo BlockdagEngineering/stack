@@ -163,6 +163,10 @@ jobs:
             { echo "::error::Compose must resolve dockerfile for pool tarball env"; exit 1; }
           scripts/validate-release-build.sh .
 
+      - name: Bootstrap renderer tests
+        shell: bash
+        run: python3 scripts/release_bootstrap_static_test.py
+
       - name: Create runtime payload zip
         id: package
         shell: bash
@@ -193,6 +197,8 @@ jobs:
           cp -a bin sql docker scripts asic-pool tools "${ROOT}/"
           rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
           chmod +x "${ROOT}/install.sh" "${ROOT}/installers/"*.sh
+
+          python3 scripts/release_install_smoke.py --package-root "${ROOT}"
 
           zip -qr "${OUT}" "${ROOT}"
           python3 scripts/check-release-archive.py "${OUT}"

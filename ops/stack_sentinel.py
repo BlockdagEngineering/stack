@@ -4,12 +4,11 @@
 from __future__ import annotations
 
 import fcntl
+import argparse
 import json
 import os
 import subprocess
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -41,12 +40,9 @@ LOCK_FILE = RUNTIME_DIR / "stack-sentinel.lock"
 STATUS_URL = (
     os.environ.get("BDAG_SENTINEL_STATUS_URL")
     or os.environ.get("BDAG_SENTINEL_COLLECTOR_URL")
-    or os.environ.get("BDAG_SENTINEL_DASHBOARD_URL")
     or "http://127.0.0.1:9280/api/status"
 )
-STATUS_TIMEOUT = float(
-    os.environ.get("BDAG_SENTINEL_STATUS_TIMEOUT", os.environ.get("BDAG_SENTINEL_DASHBOARD_TIMEOUT", "20"))
-)
+STATUS_TIMEOUT = float(os.environ.get("BDAG_SENTINEL_STATUS_TIMEOUT", "20"))
 INCIDENT_COOLDOWN_SECONDS = int(os.environ.get("BDAG_SENTINEL_INCIDENT_COOLDOWN_SECONDS", "300"))
 SHARE_STALE_SECONDS = int(os.environ.get("BDAG_SENTINEL_SHARE_STALE_SECONDS", "180"))
 NODE_LOG_LOOKBACK_SECONDS = int(os.environ.get("BDAG_SENTINEL_NODE_LOG_LOOKBACK_SECONDS", "300"))
@@ -423,7 +419,10 @@ def check_node_log_red_flags(state: dict[str, Any], now: int) -> None:
                 notify_user("BlockDAG node red-flag logs", message)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dry-run", action="store_true", help="evaluate incidents without starting or repairing services")
+    args = parser.parse_args(argv)
     ensure_runtime()
     lock_handle = acquire_run_lock()
     if lock_handle is None:
@@ -434,8 +433,11 @@ def main() -> int:
     state = read_state()
 
     try:
-        for unit in [*USER_SERVICES, *USER_TIMERS]:
-            start_unit(unit, state, now, log=log, incident_source="stack-sentinel", cooldown_seconds=INCIDENT_COOLDOWN_SECONDS)
+        if not args.dry_run:
+            for unit in [*USER_SERVICES, *USER_TIMERS]:
+                start_unit(unit, state, now, log=log, incident_source="stack-sentinel", cooldown_seconds=INCIDENT_COOLDOWN_SECONDS)
+        else:
+            log("dry-run: skipped user service and timer start checks")
 
         status, error = status_api()
         state["stack_status_ok"] = status is not None
@@ -460,12 +462,13 @@ def main() -> int:
             failures = status.get("failures") if isinstance(status.get("failures"), list) else []
             if overall == "down":
                 signature = stable_failure_signature(failures)
-                if should_emit(state, "dashboard_overall_down", signature, now, INCIDENT_COOLDOWN_SECONDS):
+                if should_emit(state, "stack_overall_down", signature, now, INCIDENT_COOLDOWN_SECONDS):
+                    state["stack_overall_down_signature"] = signature
                     append_incident(
-                        "sentinel_dashboard_overall_down",
+                        "sentinel_stack_overall_down",
                         "critical",
                         "stack-sentinel",
-                        "Dashboard status is down",
+                        "Stack status is down",
                         {
                             "overall": overall,
                             "failures": failures,
@@ -475,7 +478,10 @@ def main() -> int:
                     )
                     notify_user("BlockDAG mining degradation", signature[:220])
 
-        inspect_and_repair_containers(status, state, now)
+        if not args.dry_run:
+            inspect_and_repair_containers(status, state, now)
+        else:
+            log("dry-run: skipped container repair actions")
         check_node_log_red_flags(state, now)
         state["updated_at"] = now_iso()
         write_state(state)

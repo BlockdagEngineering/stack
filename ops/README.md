@@ -126,6 +126,13 @@ status-probe I/O while the node is busy importing. Use `max_age_seconds=0` only
 for explicit live diagnostics or hard repair paths that must bypass cached
 state.
 
+For safe incident testing, `ops/stack_status_source.py` can replay a recorded
+status payload from `BDAG_STATUS_SOURCE_FIXTURE` or
+`BDAG_STATUS_SOURCE_FIXTURE_FILE`. Use `ops/capture_status_payload.py` to save a
+live `/api/status` response, then run `ops/replay_triage.py` to exercise
+watchdog, sentinel, and mining-guard dry-run paths in an isolated runtime
+directory.
+
 The sampler is also the backstop for the mining imperative. If the user-systemd
 guard units drift disabled, it re-enables them. If `pool` is stopped while
 miner demand is visible, an ASIC LAN neighbor is present, or the chain is synced

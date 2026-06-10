@@ -233,6 +233,13 @@ That module prefers the collector status API, then falls back to the shared
 status sampler/direct collection path, so watchdogs and sentinels do not each
 recreate their own monitoring fallback order.
 
+For offline triage testing, `ops/stack_status_source.py` also accepts a fixture
+payload via `BDAG_STATUS_SOURCE_FIXTURE` or `BDAG_STATUS_SOURCE_FIXTURE_FILE`.
+Capture a live payload with `ops/capture_status_payload.py`, then replay it
+through the guards with `ops/replay_triage.py`. Watchdog, sentinel, and the
+30-minute mining guard all support dry-run execution so they can classify
+incidents without mutating the stack.
+
 If a node stops importing while peers continue advancing, the dashboard must not
 describe the state as ordinary catch-up. Node logs that contain `Irreparable
 error`, `Not DAG block`, DAG tip/block damage, or repeated `missing trie node`

@@ -23,8 +23,8 @@ HEALTH_FILE = RUNTIME_DIR / "chain-restore-health.json"
 LOG_FILE = LOG_DIR / "chain-restore-guard.log"
 SNAPSHOT_ROOT = PROJECT_ROOT / "data-restore"
 LATEST_SNAPSHOT = SNAPSHOT_ROOT / "latest-hourly"
-DASHBOARD_URL = os.environ.get("BDAG_RESTORE_GUARD_STATUS_URL", "http://127.0.0.1:8088/api/status")
-DASHBOARD_TIMEOUT = float(os.environ.get("BDAG_RESTORE_GUARD_STATUS_TIMEOUT", "20"))
+STATUS_URL = os.environ.get("BDAG_RESTORE_GUARD_STATUS_URL", "http://127.0.0.1:8088/api/status")
+STATUS_TIMEOUT = float(os.environ.get("BDAG_RESTORE_GUARD_STATUS_TIMEOUT", "20"))
 MAX_PUBLISHED_AGE_SECONDS = int(os.environ.get("BDAG_RESTORE_POINT_MAX_AGE_SECONDS", str(6 * 3600)))
 MAX_STAGE_AGE_SECONDS = int(os.environ.get("BDAG_RESTORE_STAGE_MAX_AGE_SECONDS", str(90 * 60)))
 INCIDENT_COOLDOWN_SECONDS = int(os.environ.get("BDAG_RESTORE_GUARD_INCIDENT_COOLDOWN_SECONDS", "1800"))
@@ -86,7 +86,7 @@ def start_unit_no_block(unit: str) -> subprocess.CompletedProcess[str]:
 
 def status_api() -> tuple[dict[str, Any] | None, str]:
     try:
-        with urllib.request.urlopen(DASHBOARD_URL, timeout=DASHBOARD_TIMEOUT) as response:
+        with urllib.request.urlopen(STATUS_URL, timeout=STATUS_TIMEOUT) as response:
             return json.loads(response.read(4_000_000).decode("utf-8", "replace")), ""
     except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         return None, str(exc)
@@ -296,8 +296,8 @@ def main() -> int:
 
     health = {
         "generated_at": now_iso(),
-        "dashboard_status_ok": status is not None,
-        "dashboard_status_error": status_error,
+        "status_ok": status is not None,
+        "status_error": status_error,
         "stack_overall": status.get("overall") if isinstance(status, dict) else None,
         "sync_progress": status.get("sync_progress") if isinstance(status, dict) else None,
         "published_restore_point": published,

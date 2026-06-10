@@ -19,6 +19,7 @@ import automation_control
 from incident_journal import append_incident
 from guard_core import automation_mutation_allowed
 import pool_start_gate
+from mining_health_triage import build_mining_health_triage
 from stack_status_source import collect_stack_status
 from pool_ops import (
     LOG_DIR,
@@ -1747,6 +1748,7 @@ def check_once(
     template_nodes = template_failing_nodes(status)
     orphan_nodes = orphan_storm_nodes(status)
     dag_tip_nodes = dag_tip_damage_nodes(status)
+    pool_start_blocked, pool_start_blocked_reason = pool_start_blocked_by_status(status)
     node_template_restart_by_node = (
         state.get("last_node_template_restart_at_by_node")
         if isinstance(state.get("last_node_template_restart_at_by_node"), dict)
@@ -1761,6 +1763,72 @@ def check_once(
     snapshot_active = lock_is_held(HOURLY_SNAPSHOT_LOCK_FILE)
     autonomous_lab_active = lock_is_held(AUTONOMOUS_STACK_LAB_LOCK_FILE)
     refresh_maintenance_state(state, snapshot_active, autonomous_lab_active)
+    triage = build_mining_health_triage(
+        status=status,
+        now=now,
+        stack_failures=stack_failures,
+        miner_failures=miner_failures,
+        failures=failures,
+        pool_health=pool_health,
+        miner_health=miner_health,
+        miner_rows=miner_rows,
+        mining_address=mining_address,
+        down_miners=down_miners,
+        down_ips=sorted(down_ips),
+        pool_started_age_seconds=pool_started_age_seconds,
+        pool_in_startup_grace=pool_in_startup_grace,
+        share_stall=share_stall,
+        pool_template_frozen=pool_template_frozen,
+        duplicate_block_storm=duplicate_block_storm,
+        submit_path_zero_success_storm=submit_path_zero_success_storm,
+        accepted_job_expired_storm=accepted_job_expired_storm,
+        expired_job_reconnect_failed=expired_job_reconnect_failed,
+        submit_path_recovery_recent=submit_path_recovery_recent,
+        submit_path_self_healed_recently=submit_path_self_healed_recently,
+        submit_path_recovery_age=submit_path_recovery_age,
+        low_diff_asics=low_diff_asics,
+        api_stall_asics=api_stall_asics,
+        useful_work_stalled_asics=useful_work_stalled_asics,
+        hashrate_issue_asics=hashrate_issue_asics,
+        degraded_asics=degraded_asics,
+        primary_miner_count=primary_miner_count,
+        template_nodes=template_nodes,
+        orphan_nodes=orphan_nodes,
+        dag_tip_nodes=dag_tip_nodes,
+        pool_start_blocked=pool_start_blocked,
+        pool_start_blocked_reason=pool_start_blocked_reason,
+        docker_access_error=docker_access_error,
+    )
+    stack_failures = triage["stack_failures"]
+    miner_failures = triage["miner_failures"]
+    failures = triage["failures"]
+    pool_health = triage["pool_health"]
+    miner_health = triage["miner_health"]
+    miner_rows = triage["miner_rows"]
+    mining_address = triage["mining_address"]
+    down_miners = triage["down_miners"]
+    down_ips = set(triage["down_ips"])
+    pool_started_age_seconds = triage["pool_started_age_seconds"]
+    pool_in_startup_grace = triage["pool_in_startup_grace"]
+    share_stall = triage["share_stall"]
+    pool_template_frozen = triage["pool_template_frozen"]
+    duplicate_block_storm = triage["duplicate_block_storm"]
+    submit_path_zero_success_storm = triage["submit_path_zero_success_storm"]
+    accepted_job_expired_storm = triage["accepted_job_expired_storm"]
+    expired_job_reconnect_failed = triage["expired_job_reconnect_failed"]
+    submit_path_recovery_recent = triage["submit_path_recovery_recent"]
+    submit_path_self_healed_recently = triage["submit_path_self_healed_recently"]
+    submit_path_recovery_age = triage["submit_path_recovery_age"]
+    low_diff_asics = triage["low_diff_asics"]
+    api_stall_asics = triage["api_stall_asics"]
+    useful_work_stalled_asics = triage["useful_work_stalled_asics"]
+    hashrate_issue_asics = triage["hashrate_issue_asics"]
+    degraded_asics = triage["degraded_asics"]
+    primary_miner_count = triage["primary_miner_count"]
+    template_nodes = triage["template_nodes"]
+    orphan_nodes = triage["orphan_nodes"]
+    dag_tip_nodes = triage["dag_tip_nodes"]
+    docker_access_error = triage["docker_access_error"]
     useful_work_stall_since = update_useful_work_stall_since(
         state,
         useful_work_stalled_asics,
@@ -1790,8 +1858,8 @@ def check_once(
         except Exception as exc:  # noqa: BLE001 - earnings logging should not stop repairs.
             log(f"earnings snapshot failed: {exc}")
 
-    if docker_access_error:
-        failure = f"docker access unavailable: {docker_access_error}"
+    if triage["docker_access_error"]:
+        failure = f"docker access unavailable: {triage['docker_access_error']}"
         state["consecutive_failures"] = 1
         state["consecutive_syncing"] = 0
         state["consecutive_share_stalls"] = 0
@@ -1853,7 +1921,6 @@ def check_once(
         }
         log("stack repair suppressed during hourly snapshot: " + "; ".join(stack_failures))
     elif stack_failures:
-        pool_start_blocked, pool_start_blocked_reason = pool_start_blocked_by_status(status)
         if pool_start_blocked and pool_stopped_is_only_stack_failure(stack_failures):
             state["consecutive_failures"] = 0
             state["consecutive_syncing"] = 0
@@ -2805,6 +2872,7 @@ def loop(
     syncing_restart_cooldown: int,
     miner_down_restart_seconds: int,
     miner_restart_cooldown: int,
+    repair: bool = True,
 ) -> None:
     ensure_efficiency_event_log()
     write_dirty_shutdown_marker("watchdog loop running")
@@ -2834,7 +2902,7 @@ def loop(
                 syncing_restart_cooldown,
                 miner_down_restart_seconds,
                 miner_restart_cooldown,
-                repair=True,
+                repair=repair,
             )
         except Exception as exc:  # noqa: BLE001 - watchdog should keep running.
             log(f"watchdog check crashed: {exc}")
@@ -2847,6 +2915,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--loop", action="store_true", help="run continuously")
     parser.add_argument("--once", action="store_true", help="run one check")
     parser.add_argument("--boot-repair", action="store_true", help="run boot-time recovery")
+    parser.add_argument("--dry-run", action="store_true", help="evaluate triage without performing repairs")
     parser.add_argument("--repair", choices=["start", "restart", "clean"], help="run a repair immediately")
     parser.add_argument("--reason", default="manual request", help="repair reason")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS)
@@ -2880,6 +2949,7 @@ def main(argv: list[str]) -> int:
             args.syncing_restart_cooldown,
             args.miner_down_restart_seconds,
             args.miner_restart_cooldown,
+            repair=not args.dry_run,
         )
         return 0
 
@@ -2890,7 +2960,7 @@ def main(argv: list[str]) -> int:
         args.syncing_restart_cooldown,
         args.miner_down_restart_seconds,
         args.miner_restart_cooldown,
-        repair=args.once or not args.loop,
+        repair=(args.once or not args.loop) and not args.dry_run,
     )
     print(json.dumps(result, indent=2))
     return 0
