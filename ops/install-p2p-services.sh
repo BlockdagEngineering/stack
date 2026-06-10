@@ -113,6 +113,7 @@ install_rawdatadir_sidecar_timers() {
   sidecar_dir="$(env_value BDAG_RAWDATADIR_SIDECAR_DIR ./data-restore/rawdatadir-sidecar/$network)"
   artifact_base="$(env_value BDAG_RAWDATADIR_ARTIFACT_BASE ./data-restore/rawdatadir)"
   sidecar_content_base="$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE ./data-restore/rawdatadir-sidecar-content)"
+  ensure_ipfs_segment_identity || return 1
 
   mkdir -p "$user_systemd_dir" "$user_config_dir"
   cat > "$user_config_dir/bdag-rawdatadir-sidecar.env" <<EOF
@@ -146,6 +147,8 @@ BDAG_RAWDATADIR_SIGNING_KEY_HEX=$(env_value BDAG_RAWDATADIR_SIGNING_KEY_HEX "")
 BDAG_RAWDATADIR_SIGNING_KEY_FILE=$(env_value BDAG_RAWDATADIR_SIGNING_KEY_FILE "$ROOT/ops/runtime/ipfs-content/segment-writer.key")
 BDAG_RAWDATADIR_TRUSTED_SIGNERS=$(env_value BDAG_RAWDATADIR_TRUSTED_SIGNERS "")
 BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER=$(env_value BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER 1)
+BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE=$(env_value BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE "$ROOT/ops/runtime/ipfs-content/segment-writer.key")
+BDAG_IPFS_SEGMENT_WRITER_ID=$(env_value BDAG_IPFS_SEGMENT_WRITER_ID "")
 EOF
 
   install -m 0644 "$ROOT/ops/systemd/user-bdag-rawdatadir-sidecar.service" "$user_systemd_dir/bdag-rawdatadir-sidecar.service"
@@ -186,6 +189,10 @@ BDAG_IPFS_CONTENT_LATEST_INDEX_PATH=$ROOT/ops/runtime/ipfs-content/latest-index.
 BDAG_IPFS_CONTENT_DISCOVERY_FILE=$ROOT/ops/ipfs-content-discovery.json
 BDAG_IPFS_CONTENT_LATEST_IPNS=$(env_value BDAG_IPFS_CONTENT_LATEST_IPNS /ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk)
 BDAG_IPFS_CONTENT_DEFAULT_INDEX_CID=$(env_value BDAG_IPFS_CONTENT_DEFAULT_INDEX_CID bafkreia7jk2ljqi3raiohugp6nw3633njfp7jmnuvqh47po52et4kupu2a)
+BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH=$(env_value BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH "$ROOT/ops/runtime/ipfs-content/rawdatadir-content-index.json")
+BDAG_IPFS_RAWDATADIR_CONTENT_DEFAULT_INDEX_CID=$(env_value BDAG_IPFS_RAWDATADIR_CONTENT_DEFAULT_INDEX_CID "")
+BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS=$(env_value BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS auto)
+BDAG_IPFS_RAWDATADIR_CONTENT_IPNS_KEY=$(env_value BDAG_IPFS_RAWDATADIR_CONTENT_IPNS_KEY "")
 BDAG_IPFS_CONTENT_DEFAULT_ROOT_CID=$(env_value BDAG_IPFS_CONTENT_DEFAULT_ROOT_CID "")
 BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT=$(env_value BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT 0)
 BDAG_IPFS_CONTENT_PUBLISH_IPNS=$(env_value BDAG_IPFS_CONTENT_PUBLISH_IPNS auto)

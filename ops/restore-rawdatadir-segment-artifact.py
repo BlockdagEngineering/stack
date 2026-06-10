@@ -305,6 +305,27 @@ def clean_cid(value: str) -> str:
     return cid
 
 
+def clean_ipfs_index_path(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raise RestoreError("empty IPFS index path")
+    if raw.startswith("ipfs://"):
+        return f"/ipfs/{clean_cid(raw)}"
+    if raw.startswith("/ipfs/"):
+        return f"/ipfs/{clean_cid(raw)}"
+    if raw.startswith("ipns://"):
+        name = raw.removeprefix("ipns://").strip("/")
+        if not name or "/" in name or "\\" in name or ".." in name:
+            raise RestoreError(f"unsafe IPNS name: {value!r}")
+        return f"/ipns/{name}"
+    if raw.startswith("/ipns/"):
+        name = raw.removeprefix("/ipns/").strip("/")
+        if not name or "/" in name or "\\" in name or ".." in name:
+            raise RestoreError(f"unsafe IPNS name: {value!r}")
+        return f"/ipns/{name}"
+    return f"/ipfs/{clean_cid(raw)}"
+
+
 def ipfs_binary(args: argparse.Namespace) -> str:
     return str(args.ipfs_binary or os.environ.get("BDAG_IPFS_BINARY") or "ipfs")
 
@@ -342,9 +363,21 @@ def load_ipfs_content_index(args: argparse.Namespace) -> dict[str, Any]:
             or discovery.get("current_content_index_cid")
             or discovery.get("current_latest_content_index_cid")
         )
-        if not index_cid:
-            raise RestoreError("discovery file does not contain a raw-datadir content index CID")
-        raw = run_ipfs_cat(args, f"/ipfs/{clean_cid(str(index_cid))}")
+        index_path = (
+            discovery.get("rawdatadir_latest_index_uri")
+            or discovery.get("current_rawdatadir_index_uri")
+            or discovery.get("rawdatadir_latest_index_ipns")
+            or discovery.get("current_rawdatadir_index_ipns")
+            or discovery.get("rawdatadir_latest_ipns_name")
+            or discovery.get("current_rawdatadir_ipns_name")
+            or ""
+        )
+        if index_cid:
+            raw = run_ipfs_cat(args, f"/ipfs/{clean_cid(str(index_cid))}")
+        elif index_path:
+            raw = run_ipfs_cat(args, clean_ipfs_index_path(str(index_path)))
+        else:
+            raise RestoreError("discovery file does not contain a raw-datadir content index CID or IPNS path")
     else:
         raise RestoreError("no IPFS content index source configured")
     try:

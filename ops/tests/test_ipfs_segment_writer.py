@@ -418,6 +418,21 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         self.assertEqual(result["state"], "bootstrap_local_reference_absent")
         self.assertEqual(result["mutation_policy"], "allowed_for_bootstrap_seed_without_roster_only")
 
+    def test_bootstrap_local_publish_is_fail_closed_by_default(self) -> None:
+        election = {
+            "allowed": True,
+            "mode": "bootstrap_single_writer",
+            "roster_size": 0,
+        }
+
+        self.assertFalse(ipfs_segment_writer.bootstrap_local_publish_allowed({}, election))
+        self.assertTrue(
+            ipfs_segment_writer.bootstrap_local_publish_allowed(
+                {"BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH": "1"},
+                election,
+            )
+        )
+
     def test_preflight_runs_chain_gate_without_ipfs_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

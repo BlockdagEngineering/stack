@@ -60,7 +60,7 @@
   <p class="warn">Installer logic keeps retry timers active in <code>auto</code> mode. The services self-defer when mining pressure, unsafe storage, missing finalization, unsigned manifests, or <code>DO_NOT_PUBLISH</code> markers make work unsafe. Single active-node mining systems remain fail-closed for publication unless a finalized artifact already exists and resource pressure has cleared.</p>
 
   <h2>Status</h2>
-  <p>The sidecar writes <code>ops/runtime/ipfs-content-sidecar-status.json</code> and <code>ops/runtime/ipfs-content/latest-index.json</code>. Dashboard/watchdog code can consume those files without probing IPFS on every refresh.</p>
+  <p>The raw checkpoint sidecar writes <code>ops/runtime/ipfs-content-sidecar-status.json</code> and <code>ops/runtime/ipfs-content/rawdatadir-content-index.json</code>. The chain-order segment writer owns <code>ops/runtime/ipfs-content/latest-index.json</code>. Dashboard/watchdog code can consume those files without probing IPFS on every refresh.</p>
   <p>Pre-start raw IPFS restore writes <code>ops/runtime/ipfs-content/rawdatadir-restore-status.json</code>. The chain-order segment restore drill writes <code>ops/runtime/ipfs-content/restore-drill-status.json</code> and remains non-destructive.</p>
 
   <h2>Permanent Discovery</h2>

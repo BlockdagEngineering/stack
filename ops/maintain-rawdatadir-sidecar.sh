@@ -76,6 +76,14 @@ run_low_priority() {
   "${command[@]}"
 }
 
+append_seal_env_if_set() {
+  local key="$1"
+  local value="${!key:-}"
+  if [[ -n "$value" ]]; then
+    seal_env+=("$key=$value")
+  fi
+}
+
 create_open_restore_point() {
   case "${OPEN_RESTORE_ENABLED,,}" in
     0|false|no|off|disabled)
@@ -383,6 +391,13 @@ case "${CONTENT_MODE,,}" in
         "BDAG_RAWDATADIR_SIDECAR_CONTENT_OWNER_UID=$(id -u)"
         "BDAG_RAWDATADIR_SIDECAR_CONTENT_OWNER_GID=$(id -g)"
       )
+      append_seal_env_if_set BDAG_RAWDATADIR_SIGNING_KEY_FILE
+      append_seal_env_if_set BDAG_RAWDATADIR_SIGNING_KEY_ID
+      append_seal_env_if_set BDAG_RAWDATADIR_SIGNING_KEY_HEX
+      append_seal_env_if_set BDAG_RAWDATADIR_TRUSTED_SIGNERS
+      append_seal_env_if_set BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER
+      append_seal_env_if_set BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE
+      append_seal_env_if_set BDAG_IPFS_SEGMENT_WRITER_ID
       if [[ "${rsync_command[0]}" == "sudo" ]]; then
         if ! run_low_priority sudo -n env "${seal_env[@]}" python3 "$CONTENT_SCRIPT" 2>&1 | tee -a "$LOG_FILE"; then
           log "raw datadir sidecar content sealing failed; see status file"

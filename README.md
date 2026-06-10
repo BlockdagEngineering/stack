@@ -66,8 +66,10 @@ existing chain data. If the configured node datadir has no chain markers, the
 installer first tries `ops/restore-rawdatadir-segment-artifact.py` when
 `BDAG_IPFS_RAWDATADIR_RESTORE_ARTIFACT_CID`,
 `BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_CID`, or
-`BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_FILE` is configured. That path reconstructs
-a raw `mainnet` datadir only after the artifact manifest signature verifies
+`BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_FILE` is configured, or when
+`BDAG_IPFS_RAWDATADIR_RESTORE_DISCOVERY_FILE` names a raw-datadir checkpoint
+index. That path reconstructs a raw `mainnet` datadir only after the artifact
+manifest signature verifies
 against `BDAG_RAWDATADIR_TRUSTED_SIGNERS`, the manifest root matches, and every
 chunk/file hash matches. The installer then runs the chain-order IPFS restore
 drill in verification-only mode and records the result under
@@ -160,11 +162,14 @@ exists.
 ## IPFS Content Discovery
 
 Future systems should read `ops/ipfs-content-discovery.json` for the durable
-IPFS/IPNS discovery contract. The stable latest pointer is
+IPFS/IPNS discovery contract. The stable segment latest pointer is
 `/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk`; the current
-immutable latest-index CID is
-recorded in that discovery file. The current implementation writes append-only
-live-tail chain-order segments from the local node. The durable protocol design is recorded in
+immutable chain-order segment index CID is recorded in `current_latest_index_cid`.
+Raw checkpoint restore uses separate discovery keys such as
+`current_rawdatadir_index_cid` and a separate local
+`ops/runtime/ipfs-content/rawdatadir-content-index.json` file. The current
+implementation writes append-only live-tail chain-order segments from the local node.
+The durable protocol design is recorded in
 `docs/ipfs-append-only-segment-protocol.html`. IPFS and IPNS are
 not chain trust. Receivers must verify Ed25519 signatures against a trusted
 writer roster, recursive previous-index lineage, raw artifact manifests, segment
@@ -380,12 +385,16 @@ networks default to `172.16.0.0/12` and are filtered from ASIC discovery and
 displayed Stratum endpoints; seeing `172.*` as a miner IP or pool endpoint is a
 configuration failure, not a valid physical miner.
 
-## Default V2 Sync Source
+## Default IPFS Sync Source
 
-New installs use IPFS sidecar content and append-only segment indexes as the
-bootstrap path. Active mining hosts maintain a low-priority raw datadir sidecar,
-seal signed restore artifacts, and publish signed, verified sidecar content only
-after the safety and finalization gates pass. Configure
+New installs can use trusted IPFS raw checkpoint content as the destructive
+bootstrap path when a raw checkpoint artifact, index, or discovery source is
+configured. Append-only chain-order segment indexes are the continuous signed
+verification mirror; they are not replayed into the node datadir until a
+segment importer and scratch-node validation path exists. Active mining hosts
+maintain a low-priority raw datadir sidecar, seal signed restore artifacts, and
+publish signed, verified sidecar content only after the safety and finalization
+gates pass. Configure
 `BDAG_IPFS_RAWDATADIR_RESTORE_INDEX_CID` or
 `BDAG_IPFS_RAWDATADIR_RESTORE_ARTIFACT_CID` for unattended fresh-node bootstrap
 from a trusted IPFS raw checkpoint.

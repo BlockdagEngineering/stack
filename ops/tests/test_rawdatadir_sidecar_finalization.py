@@ -48,6 +48,21 @@ class RawdatadirSidecarFinalizationPipelineTest(unittest.TestCase):
         self.assertIn('BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH="$safety_require_evm_reference_fresh"', script)
         self.assertIn("verify-rawdatadir-sidecar.py", script)
 
+    def test_content_seal_receives_signing_identity_from_timer_env(self) -> None:
+        script = (ROOT / "ops" / "maintain-rawdatadir-sidecar.sh").read_text(encoding="utf-8")
+
+        self.assertIn("append_seal_env_if_set", script)
+        self.assertIn("append_seal_env_if_set BDAG_RAWDATADIR_SIGNING_KEY_FILE", script)
+        self.assertIn("append_seal_env_if_set BDAG_RAWDATADIR_SIGNING_KEY_ID", script)
+        self.assertIn("append_seal_env_if_set BDAG_RAWDATADIR_SIGNING_KEY_HEX", script)
+        self.assertIn("append_seal_env_if_set BDAG_RAWDATADIR_TRUSTED_SIGNERS", script)
+        self.assertIn("append_seal_env_if_set BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE", script)
+        self.assertIn("append_seal_env_if_set BDAG_IPFS_SEGMENT_WRITER_ID", script)
+        self.assertLess(
+            script.index("append_seal_env_if_set BDAG_RAWDATADIR_SIGNING_KEY_FILE"),
+            script.index('sudo -n env "${seal_env[@]}"'),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

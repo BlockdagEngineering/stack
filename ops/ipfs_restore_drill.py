@@ -221,6 +221,95 @@ def index_segments(index: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [item for item in raw if isinstance(item, dict)]
 
 
+def parse_writer_roster(value: str | None) -> list[str]:
+    if not value:
+        return []
+    seen: set[str] = set()
+    roster: list[str] = []
+    for raw in value.replace("\n", ",").split(","):
+        writer = raw.strip()
+        if "=" in writer:
+            writer = writer.split("=", 1)[0].strip()
+        elif ":" in writer:
+            writer = writer.split(":", 1)[0].strip()
+        if not writer or writer in seen:
+            continue
+        seen.add(writer)
+        roster.append(writer)
+    return sorted(roster)
+
+
+def selected_writer_id(
+    env: Mapping[str, str],
+    start: int,
+    end: int,
+    previous_manifest_cid: str | None,
+) -> tuple[str, list[str], str]:
+    rule = str(env.get("BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE") or "rendezvous_sha256_v1").strip()
+    roster = parse_writer_roster(str(env.get("BDAG_IPFS_SEGMENT_WRITER_ROSTER") or env.get("BDAG_IPFS_WRITER_ROSTER") or ""))
+    if not roster:
+        return "", [], rule
+    seed = f"{MAINNET_NETWORK}|{start}|{end}|{previous_manifest_cid or '-'}"
+    scores = [
+        {
+            "writer_id": candidate,
+            "score": hashlib.sha256(f"{rule}|{seed}|{candidate}".encode("utf-8")).hexdigest(),
+        }
+        for candidate in roster
+    ]
+    return max(scores, key=lambda item: (item["score"], item["writer_id"]))["writer_id"], roster, rule
+
+
+def verify_manifest_writer_authority(
+    manifest: Mapping[str, Any],
+    signature_result: Mapping[str, Any],
+    env: Mapping[str, str],
+    previous_manifest_cid: str | None,
+) -> dict[str, Any]:
+    selected, roster, rule = selected_writer_id(
+        env,
+        int(manifest.get("start_order") or 0),
+        int(manifest.get("end_order") or 0),
+        previous_manifest_cid,
+    )
+    verified = signature_result.get("verified_signers")
+    verified_ids = [
+        str(item.get("writer_id") or "").strip()
+        for item in verified
+        if isinstance(item, Mapping) and str(item.get("writer_id") or "").strip()
+    ] if isinstance(verified, list) else []
+    declared_writer = ""
+    writer = manifest.get("writer")
+    if isinstance(writer, Mapping):
+        declared_writer = str(writer.get("writer_id") or "").strip()
+    if not roster:
+        return {
+            "state": "not_enforced_no_roster",
+            "rule": rule,
+            "roster_size": 0,
+            "verified_signers": verified_ids,
+            "declared_writer_id": declared_writer,
+        }
+    if selected not in verified_ids:
+        raise VerificationError(
+            "segment manifest was not signed by the elected writer: "
+            f"selected={selected!r} verified={','.join(verified_ids) or 'none'}"
+        )
+    if declared_writer and declared_writer != selected:
+        raise VerificationError(
+            "segment manifest declared writer does not match elected writer: "
+            f"declared={declared_writer!r} selected={selected!r}"
+        )
+    return {
+        "state": "enforced",
+        "rule": rule,
+        "roster_size": len(roster),
+        "selected_writer_id": selected,
+        "verified_signers": verified_ids,
+        "declared_writer_id": declared_writer,
+    }
+
+
 def verify_index(index: Mapping[str, Any], network: str, env: Mapping[str, str]) -> list[dict[str, Any]]:
     errors: list[str] = []
     require(index.get("document_type") == "bdag_ipfs_segment_index_v1", "index document_type mismatch", errors)
@@ -325,7 +414,7 @@ def verify_manifest(
     network: str,
     previous_manifest_cid: str | None,
     env: Mapping[str, str],
-) -> None:
+) -> dict[str, Any]:
     errors: list[str] = []
     require(manifest.get("document_type") == "bdag_ipfs_segment_manifest_v1", "manifest document_type mismatch", errors)
     require(manifest.get("network") == network, f"manifest network must be {network}", errors)
@@ -344,7 +433,7 @@ def verify_manifest(
     if errors:
         raise VerificationError("; ".join(errors))
     try:
-        ipfs_segment_trust.verify_payload_signature(
+        signature_result = ipfs_segment_trust.verify_payload_signature(
             manifest,
             env,
             signature_field="manifest_signatures",
@@ -352,6 +441,11 @@ def verify_manifest(
         )
     except RuntimeError as exc:
         raise VerificationError(str(exc)) from exc
+    writer_authority = verify_manifest_writer_authority(manifest, signature_result, env, previous_manifest_cid)
+    return {
+        "signature": signature_result,
+        "writer_authority": writer_authority,
+    }
 
 
 def verify_payload(record: Mapping[str, Any], manifest: Mapping[str, Any], payload: Mapping[str, Any], raw: bytes, network: str) -> dict[str, Any]:
@@ -434,9 +528,11 @@ def verify_archive(
         manifest_cid = str(record.get("manifest_cid") or "")
         payload_cid = str(record.get("payload_cid") or "")
         manifest, manifest_raw = fetch_json_by_cid(manifest_cid, env, cid_dir)
-        verify_manifest(record, manifest, manifest_raw, MAINNET_NETWORK, previous_manifest_cid or None, env)
+        manifest_verification = verify_manifest(record, manifest, manifest_raw, MAINNET_NETWORK, previous_manifest_cid or None, env)
         payload, payload_raw = fetch_json_by_cid(payload_cid, env, cid_dir)
-        verified.append(verify_payload(record, manifest, payload, payload_raw, MAINNET_NETWORK))
+        verified_record = verify_payload(record, manifest, payload, payload_raw, MAINNET_NETWORK)
+        verified_record["writer_authority"] = manifest_verification["writer_authority"]
+        verified.append(verified_record)
         if materialize_dir:
             write_candidate_object(materialize_dir / "manifests", manifest_cid, manifest_raw)
             write_candidate_object(materialize_dir / "payloads", payload_cid, payload_raw)

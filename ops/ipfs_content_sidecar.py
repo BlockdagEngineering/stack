@@ -146,6 +146,20 @@ def artifact_paths(env: dict[str, str]) -> tuple[Path, Path]:
     return artifact_dir, manifest
 
 
+def rawdatadir_index_path(env: dict[str, str]) -> Path:
+    """Return the raw checkpoint index path.
+
+    Chain-order segment indexes and raw-datadir checkpoint indexes have
+    different schemas and restore semantics. Keep their local files separate so
+    one writer cannot overwrite the other writer's source of truth.
+    """
+
+    return resolve_path(
+        env.get("BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH") or env.get("BDAG_IPFS_CONTENT_INDEX_PATH"),
+        ROOT / "ops/runtime/ipfs-content/rawdatadir-content-index.json",
+    )
+
+
 def artifact_publish_blockers(artifact_dir: Path, manifest_path: Path, manifest: dict[str, Any], env: dict[str, str]) -> list[str]:
     blockers: list[str] = []
     if not artifact_dir.exists():
@@ -241,10 +255,31 @@ def build_latest_index(
     }
 
 
+def publish_ipns_enabled(env: dict[str, str]) -> bool:
+    value = str(
+        env.get("BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS")
+        or env.get("BDAG_IPFS_CONTENT_PUBLISH_IPNS")
+        or ""
+    ).strip().lower()
+    if value in FALSE_VALUES:
+        return False
+    if value in TRUE_VALUES:
+        return True
+    if value == "auto":
+        return bool(
+            str(
+                env.get("BDAG_IPFS_RAWDATADIR_CONTENT_IPNS_KEY")
+                or env.get("BDAG_IPFS_CONTENT_IPNS_KEY")
+                or ""
+            ).strip()
+        )
+    return False
+
+
 def publish_ipns(index_cid: str, env: dict[str, str]) -> dict[str, Any] | None:
-    if not env_bool(env, "BDAG_IPFS_CONTENT_PUBLISH_IPNS", False):
+    if not publish_ipns_enabled(env):
         return None
-    key = env.get("BDAG_IPFS_CONTENT_IPNS_KEY")
+    key = env.get("BDAG_IPFS_RAWDATADIR_CONTENT_IPNS_KEY") or env.get("BDAG_IPFS_CONTENT_IPNS_KEY")
     command = [ipfs_binary(env), "name", "publish"]
     if key:
         command.extend(["--key", key])
@@ -274,7 +309,7 @@ def load_existing_index(index_path: Path) -> dict[str, Any]:
 
 
 def current_index_cid(existing: dict[str, Any], env: dict[str, str]) -> str:
-    for key in ("index_cid", "current_latest_index_cid"):
+    for key in ("index_cid", "current_rawdatadir_index_cid", "rawdatadir_latest_index_cid"):
         value = str(existing.get(key) or "").strip()
         if value:
             return value
@@ -282,17 +317,22 @@ def current_index_cid(existing: dict[str, Any], env: dict[str, str]) -> str:
     if discovery_path.exists():
         try:
             discovery = json.loads(discovery_path.read_text(encoding="utf-8"))
-            value = str(discovery.get("current_latest_index_cid") or "").strip()
+            value = str(
+                discovery.get("current_rawdatadir_index_cid")
+                or discovery.get("rawdatadir_latest_index_cid")
+                or discovery.get("current_content_index_cid")
+                or ""
+            ).strip()
             if value:
                 return value
         except json.JSONDecodeError:
             pass
-    return str(env.get("BDAG_IPFS_CONTENT_DEFAULT_INDEX_CID") or "").strip()
+    return str(env.get("BDAG_IPFS_RAWDATADIR_CONTENT_DEFAULT_INDEX_CID") or "").strip()
 
 
 def republish_current_ipns(existing: dict[str, Any], env: dict[str, str]) -> tuple[str, dict[str, Any] | None]:
     index_cid = current_index_cid(existing, env)
-    if not index_cid or not env_bool(env, "BDAG_IPFS_CONTENT_PUBLISH_IPNS", False):
+    if not index_cid or not publish_ipns_enabled(env):
         return index_cid, None
     if not ipfs_pin_present(index_cid, env):
         return index_cid, {
@@ -301,6 +341,46 @@ def republish_current_ipns(existing: dict[str, Any], env: dict[str, str]) -> tup
             "index_cid": index_cid,
         }
     return index_cid, publish_ipns(index_cid, env)
+
+
+def update_discovery(raw_index_cid: str, artifact_cid: str, manifest: dict[str, Any], env: dict[str, str]) -> None:
+    path = resolve_path(env.get("BDAG_IPFS_CONTENT_DISCOVERY_FILE"), ROOT / "ops/ipfs-content-discovery.json")
+    data: dict[str, Any] = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except json.JSONDecodeError:
+            data = {}
+    if not data:
+        data = {
+            "document_type": "bdag_ipfs_content_discovery_v1",
+            "network": "mainnet",
+        }
+    data["updated_at"] = now_iso()
+    data["rawdatadir_latest_index_cid"] = raw_index_cid
+    data["rawdatadir_latest_index_uri"] = f"ipfs://{raw_index_cid}"
+    data["current_rawdatadir_index_cid"] = raw_index_cid
+    data["current_rawdatadir_artifact_cid"] = artifact_cid
+    data["current_rawdatadir_content"] = {
+        "document_type": "bdag_ipfs_content_index_v1",
+        "artifact_type": manifest.get("artifact_type") or manifest.get("type") or "raw_datadir_checkpoint",
+        "network": manifest.get("network"),
+        "chain_id": manifest.get("chain_id"),
+        "tip_order": manifest.get("tip_order") or manifest.get("block_total") or manifest.get("main_order"),
+        "tip_hash": manifest.get("tip_hash") or manifest.get("tip"),
+        "state_root": manifest.get("state_root") or manifest.get("evm_state_root"),
+        "artifact_cid": artifact_cid,
+        "index_cid": raw_index_cid,
+        "updated_at": now_iso(),
+    }
+    data["rawdatadir_trust_model"] = (
+        "Raw checkpoint CIDs are restore candidates only. Consumers must verify the "
+        "content-index schema, manifest root, trusted Ed25519 signature, chunk/file "
+        "hashes, mainnet metadata, and normal chain consensus before import."
+    )
+    atomic_write_json(path, data)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -324,7 +404,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
 
-    index_path = resolve_path(env.get("BDAG_IPFS_CONTENT_LATEST_INDEX_PATH"), ROOT / "ops/runtime/ipfs-content/latest-index.json")
+    index_path = rawdatadir_index_path(env)
     existing = load_existing_index(index_path)
     artifact_dir, manifest_path = artifact_paths(env)
     manifest: dict[str, Any] = {}
@@ -392,6 +472,7 @@ def main(argv: list[str] | None = None) -> int:
         index_cid = ipfs_add(index_path, env, "BDAG_IPFS_CONTENT_INDEX_ADD_TIMEOUT")
         index["index_cid"] = index_cid
         atomic_write_json(index_path, index)
+        update_discovery(index_cid, artifact_cid, manifest, env)
         ipns = publish_ipns(index_cid, env)
     except Exception as exc:
         payload = write_status(

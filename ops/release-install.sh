@@ -618,6 +618,10 @@ configure_env() {
   set_env_value .env BDAG_IPFS_CONTENT_DISCOVERY_FILE "./ops/ipfs-content-discovery.json"
   set_env_value .env BDAG_IPFS_CONTENT_LATEST_IPNS "/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk"
   set_env_value .env BDAG_IPFS_CONTENT_DEFAULT_INDEX_CID "bafkreia7jk2ljqi3raiohugp6nw3633njfp7jmnuvqh47po52et4kupu2a"
+  set_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_CONTENT_DEFAULT_INDEX_CID
+  set_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_CONTENT_IPNS_KEY
   set_stack_default_env_value .env BDAG_IPFS_CONTENT_DEFAULT_ROOT_CID
   set_env_value .env BDAG_IPFS_CONTENT_STATUS_FILE "./ops/runtime/ipfs-content-sidecar-status.json"
   set_env_value .env BDAG_IPFS_CONTENT_LATEST_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"

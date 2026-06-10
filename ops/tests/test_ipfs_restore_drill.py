@@ -82,7 +82,7 @@ def segment_fixture(segment_id: int, start: int, end: int, previous_manifest_cid
         "payload_size_bytes": len(payload_raw),
         "payload_format": "bdag_chain_order_segment_payload_v1",
         "source": {"rpc_source": "unit", "rpc_method": "getBlockByOrder"},
-        "writer": {"mode": "local_writer", "kubo_peer_id": "peer", "ipns_name": ""},
+        "writer": {"mode": "local_writer", "kubo_peer_id": "peer", "writer_id": "writer-a", "ipns_name": ""},
         "election": {"phase": "local_writer", "rule": "unit", "fallback": "unit"},
         "trust_model": "unit",
     }
@@ -201,9 +201,72 @@ class IPFSRestoreDrillTest(unittest.TestCase):
         self.assertEqual(payload["segments_verified"], 2)
         self.assertEqual(payload["first_verified_order"], 1)
         self.assertEqual(payload["last_verified_order"], 4)
+        self.assertEqual(payload["verified_segments"][0]["writer_authority"]["state"], "not_enforced_no_roster")
         self.assertTrue(payload["index_lineage_verified"])
         self.assertEqual(payload["index_lineage_depth"], 0)
         self.assertFalse(payload["usable_for_destructive_restore"])
+
+    def test_enforces_roster_elected_writer_for_manifest_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            record, fixtures = segment_fixture(1, 1, 2, None)
+            cid_dir = base / "cid-fixtures"
+            self.write_fixtures(cid_dir, fixtures)
+            index = self.write_index(base, [record])
+            status = base / "status.json"
+
+            env = {
+                **SIGNING_ENV,
+                "BDAG_IPFS_SEGMENT_WRITER_ROSTER": "writer-a",
+                "BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE": "rendezvous_sha256_v1",
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                rc = ipfs_restore_drill.main(
+                    [
+                        "--index",
+                        str(index),
+                        "--cid-dir",
+                        str(cid_dir),
+                        "--status-file",
+                        str(status),
+                    ]
+                )
+            payload = json.loads(status.read_text(encoding="utf-8"))
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["verified_segments"][0]["writer_authority"]["state"], "enforced")
+        self.assertEqual(payload["verified_segments"][0]["writer_authority"]["selected_writer_id"], "writer-a")
+
+    def test_rejects_trusted_but_non_elected_manifest_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            record, fixtures = segment_fixture(1, 1, 2, None)
+            cid_dir = base / "cid-fixtures"
+            self.write_fixtures(cid_dir, fixtures)
+            index = self.write_index(base, [record])
+            status = base / "status.json"
+
+            env = {
+                **SIGNING_ENV,
+                "BDAG_IPFS_SEGMENT_WRITER_ROSTER": "writer-b",
+                "BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE": "rendezvous_sha256_v1",
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                rc = ipfs_restore_drill.main(
+                    [
+                        "--index",
+                        str(index),
+                        "--cid-dir",
+                        str(cid_dir),
+                        "--status-file",
+                        str(status),
+                    ]
+                )
+            payload = json.loads(status.read_text(encoding="utf-8"))
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(payload["state"], "failed")
+        self.assertTrue(any("not signed by the elected writer" in reason for reason in payload["reasons"]))
 
     def test_verifies_recursive_previous_index_lineage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

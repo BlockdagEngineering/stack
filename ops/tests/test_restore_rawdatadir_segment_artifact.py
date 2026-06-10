@@ -9,6 +9,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -300,6 +301,36 @@ class RestoreRawdatadirSegmentArtifactTest(unittest.TestCase):
                 "unsupported IPFS content index",
             ):
                 restore_rawdatadir_segment_artifact.resolve_ipfs_artifact_cid(args)
+
+    def test_discovery_can_resolve_rawdatadir_index_ipns_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            discovery = base / "discovery.json"
+            discovery.write_text(
+                json.dumps({"rawdatadir_latest_index_ipns": "/ipns/k51qzi5uqu5dexample"}),
+                encoding="utf-8",
+            )
+            args = self.make_args(base, trusted_signers="unit-test=" + "00" * 32)
+            args.local_artifact_dir = None
+            args.discovery = str(discovery)
+            seen: list[str] = []
+
+            def fake_cat(_args, ipfs_path):
+                seen.append(ipfs_path)
+                return json.dumps(
+                    {
+                        "document_type": "bdag_ipfs_content_index_v1",
+                        "network": "mainnet",
+                        "artifact_type": "raw_datadir_checkpoint",
+                        "artifact_cid": "bafyartifact",
+                    }
+                ).encode("utf-8")
+
+            with mock.patch.object(restore_rawdatadir_segment_artifact, "run_ipfs_cat", side_effect=fake_cat):
+                cid = restore_rawdatadir_segment_artifact.resolve_ipfs_artifact_cid(args)
+
+        self.assertEqual(cid, "bafyartifact")
+        self.assertEqual(seen, ["/ipns/k51qzi5uqu5dexample"])
 
 
 if __name__ == "__main__":
