@@ -1695,6 +1695,7 @@ def check_once(
         and is_lan_ipv4(str(item.get("ip", "")))
         and (item.get("device_type") != "asic" or asic_row_has_mac_identity(item))
     ]
+    down_ips = {str(item.get("ip")) for item in down_miners if is_lan_ipv4(str(item.get("ip", "")))}
     down_identities = {miner_stall_identity_key(item) for item in down_miners if miner_stall_identity_key(item)}
     miner_down_since = state.get("miner_down_since") if isinstance(state.get("miner_down_since"), dict) else {}
     miner_restart_by_identity = (

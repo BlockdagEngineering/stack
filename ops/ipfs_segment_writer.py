@@ -800,6 +800,10 @@ def build_segment(
     election: Mapping[str, Any] | None = None,
     publication_integrity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if ipfs_segment_trust.signature_required(env) and not ipfs_segment_trust.signing_key_hex(env):
+        raise RuntimeError(
+            "IPFS segment signing is required but no BDAG_IPFS_SEGMENT_SIGNING_KEY_HEX/FILE is configured"
+        )
     blocks = fetch_segment_blocks(pool_ops, source_url, start, end, env)
     if len(blocks) != end - start + 1:
         raise RuntimeError(f"expected {end - start + 1} blocks, fetched {len(blocks)}")

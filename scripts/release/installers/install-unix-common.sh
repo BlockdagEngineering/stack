@@ -6,6 +6,10 @@ PACKAGE_ROOT="$(cd "$INSTALLER_DIR/.." && pwd)"
 cd "$PACKAGE_ROOT"
 
 OS_NAME="${BDAG_INSTALL_OS:-$(uname -s | tr '[:upper:]' '[:lower:]')}"
+case "$OS_NAME" in
+    darwin) OS_NAME=macos ;;
+    linux) OS_NAME=linux ;;
+esac
 ARCH_NAME="${BDAG_INSTALL_ARCH:-$(uname -m)}"
 PAYLOAD_METADATA_FILE="$PACKAGE_ROOT/release-payload.env"
 BDAG_RELEASE_PAYLOAD_TARGET=""
