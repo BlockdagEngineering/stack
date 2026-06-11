@@ -8238,8 +8238,8 @@ def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int,
     if safety_safe:
         if hash_mismatch_count:
             safety_reason = (
-                "local/public EVM miner samples align and the public reference is not materially ahead; "
-                "block-hash mismatch is retained as diagnostic only for this node build"
+                "local/public EVM miner and timestamp samples align; block-hash mismatch is diagnostic "
+                "for this node build while catch-up lag controls mining readiness"
             )
         elif reference_lag_below_unsafe_threshold:
             safety_reason = str(alignment.get("reason") or "public EVM reference lag is below the unsafe threshold")
