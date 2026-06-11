@@ -273,7 +273,9 @@ services:
   # collector image (python3 + docker CLI + compose plugin) and run the stack
   # repo's ops scripts against the host Docker socket. The repo is mounted at
   # its host-identical absolute path so sentinel compose recreates resolve
-  # bind mounts correctly.
+  # bind mounts correctly. BDAG_STACK_HOST_ROOT defaults to the directory
+  # compose is invoked from ($PWD); override it when running compose from
+  # outside the stack checkout (e.g. with -f).
   # --------------------------------------------------------------------------
   watchdog:
     <<: *ops-low
@@ -294,7 +296,7 @@ services:
     user: "1001:969"
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
-    working_dir: ${BDAG_STACK_HOST_ROOT:?set BDAG_STACK_HOST_ROOT to the absolute stack checkout path}
+    working_dir: ${BDAG_STACK_HOST_ROOT:-${PWD}}
     entrypoint:
       - /bin/sh
       - -c
@@ -306,9 +308,9 @@ services:
     environment:
       TMPDIR: /tmp
       COMPOSE_PROJECT_NAME: stack
-      BDAG_PROJECT_ROOT: ${BDAG_STACK_HOST_ROOT}
-      BDAG_RUNTIME_DIR: ${BDAG_STACK_HOST_ROOT}/ops/runtime
-      BDAG_POOL_ENV_FILE: ${BDAG_STACK_HOST_ROOT}/.env
+      BDAG_PROJECT_ROOT: ${BDAG_STACK_HOST_ROOT:-${PWD}}
+      BDAG_RUNTIME_DIR: ${BDAG_STACK_HOST_ROOT:-${PWD}}/ops/runtime
+      BDAG_POOL_ENV_FILE: ${BDAG_STACK_HOST_ROOT:-${PWD}}/.env
       BDAG_STATUS_SOURCE_URL: http://collector:9280/api/status
       BDAG_NODE_SERVICES: node
       BDAG_STACK_SERVICES: postgres,node,pool
@@ -321,7 +323,7 @@ services:
       BDAG_WATCHDOG_INTERVAL: ${BDAG_WATCHDOG_INTERVAL:-60}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${BDAG_STACK_HOST_ROOT}:${BDAG_STACK_HOST_ROOT}
+      - ${BDAG_STACK_HOST_ROOT:-${PWD}}:${BDAG_STACK_HOST_ROOT:-${PWD}}
 
   sentinel:
     <<: *ops-low
@@ -342,7 +344,7 @@ services:
     user: "1001:969"
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
-    working_dir: ${BDAG_STACK_HOST_ROOT:?set BDAG_STACK_HOST_ROOT to the absolute stack checkout path}
+    working_dir: ${BDAG_STACK_HOST_ROOT:-${PWD}}
     entrypoint:
       - /bin/sh
       - -c
@@ -357,9 +359,9 @@ services:
     environment:
       TMPDIR: /tmp
       COMPOSE_PROJECT_NAME: stack
-      BDAG_PROJECT_ROOT: ${BDAG_STACK_HOST_ROOT}
-      BDAG_RUNTIME_DIR: ${BDAG_STACK_HOST_ROOT}/ops/runtime
-      BDAG_POOL_ENV_FILE: ${BDAG_STACK_HOST_ROOT}/.env
+      BDAG_PROJECT_ROOT: ${BDAG_STACK_HOST_ROOT:-${PWD}}
+      BDAG_RUNTIME_DIR: ${BDAG_STACK_HOST_ROOT:-${PWD}}/ops/runtime
+      BDAG_POOL_ENV_FILE: ${BDAG_STACK_HOST_ROOT:-${PWD}}/.env
       BDAG_SENTINEL_STATUS_URL: http://collector:9280/api/status
       BDAG_SENTINEL_INTERVAL_SECONDS: ${BDAG_SENTINEL_INTERVAL_SECONDS:-60}
       # systemd unit checks do not apply inside a container; empty lists skip them.
@@ -374,7 +376,7 @@ services:
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${BDAG_STACK_HOST_ROOT}:${BDAG_STACK_HOST_ROOT}
+      - ${BDAG_STACK_HOST_ROOT:-${PWD}}:${BDAG_STACK_HOST_ROOT:-${PWD}}
 
   # --------------------------------------------------------------------------
   # Keeps the host route to the remote miner LAN (via the ZeroTier peer)
