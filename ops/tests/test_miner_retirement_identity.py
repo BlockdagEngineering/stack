@@ -1276,6 +1276,66 @@ class MinerHealthConfiguredScopeTests(unittest.TestCase):
         self.assertEqual(miner["submits"], 0)
         self.assertFalse(miner["work_pool_active"])
 
+    def test_stale_activity_row_does_not_count_as_connected_miner(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        mac = "28:e2:97:3d:95:13"
+        last_seen = "2026/06/11 16:57:07"
+        last_share = "2026/06/11 16:56:45"
+        last_epoch = int(pool_ops._pool_log_epoch(last_seen) or 0)
+        now_epoch = int(pool_ops._pool_log_epoch("2026/06/11 18:07:07") or 0)
+        pool_ops.collect_pool_activity = lambda lines=0: {
+            "miners": [
+                {
+                    "ip": "192.168.100.102",
+                    "mac": mac,
+                    "identity_key": f"mac:{mac}",
+                    "workers": [worker],
+                    "submits": 10,
+                    "shares": 8,
+                    "share_work": 700,
+                    "blocks_found": 1,
+                    "last_seen_at": last_seen,
+                    "last_submit_at": last_share,
+                    "last_share_at": last_share,
+                }
+            ]
+        }
+        pool_ops.upsert_pool_activity_miners = lambda activity: {
+            "updated_at": "2026-06-11T18:07:07+0000",
+            "miners": [
+                {
+                    "ip": "192.168.100.102",
+                    "mac": mac,
+                    "device_id": f"mac:{mac}",
+                    "device_type": "asic",
+                    "expected_pool_url": pool_ops.default_miner_pool_settings()["pool_url"],
+                    "expected_worker_user": worker,
+                    "last_workers": [worker],
+                    "last_pool_seen_epoch": last_epoch,
+                    "last_submit_epoch": last_epoch,
+                    "last_share_epoch": last_epoch,
+                    "last_submits_window": 10,
+                    "last_shares_window": 8,
+                    "last_share_work_window": 700,
+                    "last_blocks_window": 1,
+                    "managed": True,
+                    "last_configured_ok": True,
+                }
+            ],
+        }
+        pool_ops.seconds_since_epoch = lambda: now_epoch
+
+        health = pool_ops.collect_miner_health()
+        miner = health["miners"][0]
+
+        self.assertEqual(health["connected_count"], 0)
+        self.assertFalse(miner["connected"])
+        self.assertEqual(miner["shares"], 0)
+        self.assertEqual(miner["share_work"], 0)
+        self.assertEqual(miner["blocks_found"], 0)
+        self.assertEqual(miner["submits"], 0)
+        self.assertFalse(miner["work_pool_active"])
+
     def test_managed_pool_log_stratum_miner_is_ok_when_expected_worker_is_active(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
         pool_ops.collect_pool_activity = lambda lines=0: {

@@ -30,8 +30,6 @@ REQUIRE_CANONICAL_SAFETY = str(
 UNSAFE_MODES = {"catchup_pause", "syncing", "unknown", "waiting_for_status_sample"}
 READY_DOWN_MODES = {"synced", "mining", "ready_no_miners"}
 NODE_STATE_BLOCKER_TERMS = (
-    "missing trie",
-    "restore or resync",
     "chain state",
     "node is still syncing",
     "pool is waiting for node sync",
@@ -271,11 +269,8 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
         reasons.append(f"chain sync still has {remaining_blocks} block(s) remaining")
 
     for node_name, node in _status_nodes(status):
-        missing_trie_count = _safe_int(node.get("missing_trie_node_warnings")) or 0
         if node.get("chain_state_blocker"):
             reasons.append(f"{node_name} reports a chain-state blocker")
-        if missing_trie_count > 0 or node.get("missing_trie_node_lines"):
-            reasons.append(f"{node_name} reports missing trie state")
 
     mode = str(status.get("mode") or "").strip().lower()
     overall = str(status.get("overall") or "").strip().lower()

@@ -202,6 +202,55 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertTrue(any(item[0] == "pool_start_blocked" for item in events))
         self.assertTrue(written)
 
+    def test_check_once_suppresses_repairs_while_chain_state_self_heal_is_active(self) -> None:
+        now = 1_779_200_000
+        status = {
+            **node_status(importing=False, last_import_age_seconds=999),
+            "failures": ["stack-node-1 is not running", f"{watchdog.POOL_CONTAINER} is not running"],
+            "stack_failures": ["stack-node-1 is not running", f"{watchdog.POOL_CONTAINER} is not running"],
+            "miner_failures": [],
+            "warnings": [],
+            "overall": "down",
+            "mining_address": "0x1111111111111111111111111111111111111111",
+            "pool_health": {},
+            "miner_health": {"connected_count": 0, "connected_count_effective": 0, "miners": []},
+        }
+        state: dict[str, object] = {}
+        written: list[dict[str, object]] = []
+        restore_state = {"status": "started", "reason": "chain-state restore started"}
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "read_state", return_value=state
+        ), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_status_cached", return_value=status
+        ), mock.patch.object(
+            watchdog,
+            "lock_is_held",
+            side_effect=lambda path: path == watchdog.CHAIN_STATE_SELF_HEAL_LOCK_FILE,
+        ), mock.patch.object(
+            watchdog, "read_chain_state_self_heal_state", return_value=restore_state
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_repair", side_effect=AssertionError("self-heal active must suppress stack repair")
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("self-heal active must suppress node restart")
+        ), mock.patch.object(
+            watchdog, "run_pool_restart", side_effect=AssertionError("self-heal active must suppress pool restart")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("chain_state_restore_active", result["watchdog_state"]["last_status"])
+        self.assertEqual([], result["watchdog_state"]["last_failures"])
+        self.assertEqual(restore_state, result["watchdog_state"]["chain_state_self_heal"])
+        self.assertTrue(written)
+
     def test_targeted_node_restart_uses_runtime_container_name(self) -> None:
         commands: list[list[str]] = []
 

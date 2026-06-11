@@ -80,7 +80,7 @@ ops/runtime/earnings-snapshots.jsonl
 
 The postgres database credits the wallet/worker address, not the ASIC IP. Per-miner earnings are therefore estimated from accepted share work in the recent pool log window. The dashboard shows estimated per-miner totals, average BDAG per hour, and a USD/ZAR bar plot when a live price is available.
 
-The dashboard checks wallet balance from the local BlockDAG nodes and attempts best-effort cross-checks against public explorer/API endpoints. Some explorer endpoints may block server-side requests or may not expose an Etherscan-compatible API; those failures are shown in the Wallet Cross-Check table without stopping local monitoring.
+The dashboard checks wallet balance from the local BlockDAG nodes and attempts best-effort cross-checks against public explorer/API endpoints. While the local node is syncing, in catch-up pause, or carrying an advisory chain-state restore candidate, local `eth_getBalance` probes are paused and wallet checks use explorer/public/reference RPC sources instead. Some explorer endpoints may block server-side requests or may not expose an Etherscan-compatible API; those failures are shown in the Wallet Cross-Check table without stopping local monitoring.
 
 For CoinMarketCap prices, set an API key in the dashboard/watchdog service environment file:
 
@@ -143,17 +143,22 @@ window where mining must remain stopped.
 It can request chain-state self-heal, but destructive restore is disabled by
 default. When status reports `needs_chain_data_restore`,
 `chain_data_restore_required`, an irreparable sync block, DAG tip/block damage,
-or repeated missing-trie state warnings, the sampler starts
-`bdag-chain-state-self-heal.service`; the script exits without mutating data
-unless `BDAG_CHAIN_STATE_SELF_HEAL_ENABLED=1` and a trusted rawdatadir/IPFS
-restore source is explicitly configured. When enabled, the repair script quarantines
-damaged chain data, restores from that configured input, restarts `node` and
-`dashboard`, and leaves `pool` stopped until normal readiness gates make mining
-safe again. A stateful adjacent detector watches for height staying frozen while
-peer lag grows; after the configured sustained threshold it follows the same
-flow instead of leaving the dashboard stuck in a misleading syncing state.
-Sealed rawdatadir/IPFS artifact folders are verifier inputs, not raw node
-datadirs, and the self-heal script rejects them before any destructive action.
+or repeated raw chain database misses while imports are stalled, the sampler
+starts `bdag-chain-state-self-heal.service`; the script exits without mutating
+data unless `BDAG_CHAIN_STATE_SELF_HEAL_ENABLED=1` and a trusted rawdatadir/IPFS
+restore source is explicitly configured. Missing-trie EVM state warnings are
+tracked as advisory restore candidates, not destructive restore triggers, unless
+they are corroborated by stalled imports or hard chain-state corruption. Local
+wallet balance probes are suppressed while that advisory candidate is active so
+dashboard earnings sampling does not keep generating more missing-trie warnings.
+When enabled, the repair script quarantines damaged chain data, restores from that
+configured input, restarts `node`, attempts to restart `dashboard`, and leaves
+`pool` stopped until normal readiness gates make mining safe again. A stateful
+adjacent detector watches for height staying frozen while peer lag grows; after
+the configured sustained threshold it follows the same flow instead of leaving
+the dashboard stuck in a misleading syncing state. Sealed rawdatadir/IPFS
+artifact folders are verifier inputs, not raw node datadirs, and the self-heal
+script rejects them before any destructive action.
 
 Run the chain-state self-heal manually only for an approved data repair:
 

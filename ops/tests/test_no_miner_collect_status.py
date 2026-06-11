@@ -118,6 +118,23 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertTrue(parsed["critical"])
         self.assertTrue(any("state history freezer" in reason for reason in reasons))
 
+    def test_node_log_missing_trie_only_is_restore_candidate_not_hard_restore(self) -> None:
+        log = "\n".join(
+            [
+                "2026-06-11|18:14:24.415 [WARN ] Served eth_getBalance "
+                f"err=\"missing trie node {second:064x} (path ) state 0x{second:064x} is not available\""
+                for second in range(pool_ops.CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS)
+            ]
+        )
+
+        parsed = pool_ops.parse_node_log(log)
+        hard_reasons = pool_ops.chain_data_restore_hard_reasons("node", parsed)
+        candidate_reasons = pool_ops.chain_data_restore_candidate_reasons("node", parsed)
+
+        self.assertEqual(parsed["missing_trie_node_warnings"], pool_ops.CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS)
+        self.assertEqual(hard_reasons, [])
+        self.assertIn("missing-trie state warning", candidate_reasons[0])
+
     def test_node_log_marks_busy_syncing_template_block(self) -> None:
         parsed = pool_ops.parse_node_log(
             "\n".join(
@@ -1131,6 +1148,8 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
                 "cpu_some_avg10": 0.0,
                 "memory_available_percent": 30.0,
                 "memory_warning_active": False,
+                "memory_some_avg10": 1.0,
+                "memory_full_avg10": 0.0,
                 "swap_used_percent": 9.0,
                 "swap_warning_active": True,
             },
@@ -1140,7 +1159,31 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
 
         self.assertFalse(decision["allowed"])
         self.assertEqual(decision["swap_used_warn_percent"], 5.0)
-        self.assertTrue(any("host swap use" in reason for reason in decision["reasons"]))
+        self.assertTrue(any("host swap pressure" in reason for reason in decision["reasons"]))
+
+    def test_background_maintenance_allows_stale_swap_without_memory_pressure(self) -> None:
+        pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
+        pool_ops.BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT = 12.0
+        pool_ops.BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT = 5.0
+        status = {
+            "sync_progress": {"status": "synced", "remaining_blocks": 0},
+            "host_pressure": {
+                "iowait_percent": 1.0,
+                "io_some_avg10": 0.0,
+                "cpu_some_avg10": 0.0,
+                "memory_available_percent": 67.0,
+                "memory_warning_active": False,
+                "memory_some_avg10": 0.0,
+                "memory_full_avg10": 0.0,
+                "swap_used_percent": 88.0,
+                "swap_warning_active": False,
+            },
+        }
+
+        decision = pool_ops.background_maintenance_decision("snapshot", status)
+
+        self.assertTrue(decision["allowed"])
+        self.assertFalse(any("host swap" in reason for reason in decision["reasons"]))
 
     def test_ipfs_segment_writer_ignores_io_pressure_only_when_explicitly_exempt_and_pool_ready(self) -> None:
         pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
@@ -1492,6 +1535,26 @@ class AdaptiveConcurrencyTests(unittest.TestCase):
         workers = pool_ops.adaptive_worker_count("global_rpc", 24, 2048, pressure)
 
         self.assertEqual(workers, 1)
+
+    def test_adaptive_workers_ignore_stale_swap_without_memory_pressure(self) -> None:
+        pool_ops.HOST_PROFILE_OVERRIDE = "large"
+        pool_ops.ADAPTIVE_CONCURRENCY_ENABLED = True
+        pool_ops.ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT = 12.0
+        pool_ops.ADAPTIVE_SWAP_USED_WARN_PERCENT = 5.0
+        pool_ops._HOST_RUNTIME_PROFILE_CACHE = None
+        pool_ops.os.cpu_count = lambda: 16
+        pressure = {
+            "memory_available_percent": 67.0,
+            "memory_warning_active": False,
+            "memory_some_avg10": 0.0,
+            "memory_full_avg10": 0.0,
+            "swap_used_percent": 88.0,
+            "swap_warning_active": False,
+        }
+
+        workers = pool_ops.adaptive_worker_count("global_rpc", 24, 2048, pressure)
+
+        self.assertEqual(workers, 24)
 
     def test_adaptive_workers_expand_on_large_idle_hosts(self) -> None:
         pool_ops.HOST_PROFILE_OVERRIDE = "large"

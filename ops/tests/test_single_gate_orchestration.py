@@ -136,6 +136,38 @@ class SingleGateOrchestrationTests(unittest.TestCase):
 
         self.assertTrue(decision.allowed, decision.reason)
 
+    def test_shared_gate_allows_ready_status_with_advisory_missing_trie_signal(self) -> None:
+        status = safe_canonical_status()
+        status["nodes"] = {"node": {"missing_trie_node_warnings": 3}}
+        status["sync_health"] = {
+            "chain_data_restore_candidate": True,
+            "chain_data_restore_candidate_nodes": {
+                "node": {"reasons": ["node reported missing-trie state warning(s)"]}
+            },
+        }
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertTrue(decision.allowed, decision.reason)
+
+    def test_shared_gate_allows_pool_only_down_with_advisory_missing_trie_text(self) -> None:
+        status = safe_pool_only_down_status()
+        status["status_reason"] = (
+            "node EVM trie state is unavailable (4 missing-trie warning(s)); "
+            "restore or resync node data before mining"
+        )
+        status["nodes"] = {"node": {"missing_trie_node_warnings": 4}}
+        status["sync_health"] = {
+            "chain_data_restore_candidate": True,
+            "chain_data_restore_candidate_nodes": {
+                "node": {"reasons": ["node reported missing-trie state warning(s)"]}
+            },
+        }
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertTrue(decision.allowed, decision.reason)
+
     def test_shared_gate_allows_pool_only_down_status_with_canonical_proof(self) -> None:
         decision = pool_start_gate.pool_start_decision(safe_pool_only_down_status())
 
@@ -145,7 +177,6 @@ class SingleGateOrchestrationTests(unittest.TestCase):
         decision = pool_start_gate.pool_start_decision(transient_down_mining_missing_trie_status())
 
         self.assertFalse(decision.allowed)
-        self.assertIn("node reports missing trie state", decision.reason)
         self.assertIn("overall stack status is down", decision.reason)
 
     def test_status_sampler_cannot_direct_start_pool_when_gate_blocks(self) -> None:

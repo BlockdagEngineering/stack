@@ -59,6 +59,8 @@ EFFICIENCY_EVENTS_FILE = LOG_DIR / "efficiency-events.jsonl"
 LOCK_FILE = RUNTIME_DIR / "repair.lock"
 DIRTY_SHUTDOWN_MARKER = RUNTIME_DIR / "dirty-shutdown.marker"
 AUTONOMOUS_STACK_LAB_LOCK_FILE = RUNTIME_DIR / "autonomous-stack-lab.lock"
+CHAIN_STATE_SELF_HEAL_STATE_FILE = RUNTIME_DIR / "chain-state-self-heal-state.json"
+CHAIN_STATE_SELF_HEAL_LOCK_FILE = RUNTIME_DIR / "chain-state-self-heal.lock"
 
 DEFAULT_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_INTERVAL", "60"))
 DEFAULT_FAILURE_THRESHOLD = int(os.environ.get("BDAG_WATCHDOG_FAILURE_THRESHOLD", "3"))
@@ -837,6 +839,18 @@ def lock_is_held(path: Path) -> bool:
     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     handle.close()
     return False
+
+
+def read_chain_state_self_heal_state() -> dict[str, Any]:
+    try:
+        payload = json.loads(CHAIN_STATE_SELF_HEAL_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def chain_state_self_heal_active() -> bool:
+    return lock_is_held(CHAIN_STATE_SELF_HEAL_LOCK_FILE)
 
 
 def refresh_maintenance_state(state: dict, autonomous_lab_active: bool) -> None:
@@ -1774,6 +1788,27 @@ def check_once(
     docker_access_error = status.get("docker_access_error")
     autonomous_lab_active = lock_is_held(AUTONOMOUS_STACK_LAB_LOCK_FILE)
     refresh_maintenance_state(state, autonomous_lab_active)
+    if chain_state_self_heal_active():
+        restore_state = read_chain_state_self_heal_state()
+        reason = str(restore_state.get("reason") or "chain-state self-heal is active")
+        state["consecutive_failures"] = 0
+        state["consecutive_syncing"] = 0
+        state["consecutive_share_stalls"] = 0
+        state["consecutive_submit_path_stalls"] = 0
+        state["last_status"] = "chain_state_restore_active"
+        state["last_failures"] = []
+        state["last_sync_warnings"] = [reason]
+        state["chain_state_self_heal"] = restore_state
+        log(f"watchdog standing down while chain-state self-heal is active: {reason}")
+        record_efficiency_event(
+            "chain_state_restore_active",
+            "warning",
+            "Watchdog suppressed stack repairs while chain-state self-heal is active",
+            {"self_heal_state": restore_state},
+        )
+        state["updated_at"] = now_iso()
+        write_state(state)
+        return {"status": status, "watchdog_state": state}
     triage = build_mining_health_triage(
         status=status,
         now=now,

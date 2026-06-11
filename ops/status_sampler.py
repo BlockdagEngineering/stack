@@ -9,6 +9,7 @@ import json
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 import automation_control
@@ -21,6 +22,7 @@ from pool_ops import (
     POOL_CONTAINER,
     POOL_ENV_FILE,
     PROJECT_ROOT,
+    RUNTIME_DIR,
     STATUS_SAMPLER_FILE,
     collect_pool_activity,
     collect_status_cached,
@@ -110,6 +112,10 @@ MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS = env_int(
 MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED = env_bool(
     "BDAG_MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED",
     True,
+)
+MINING_IMPERATIVE_NODE_COMMAND_LINE_REPAIR_ENABLED = env_bool(
+    "BDAG_MINING_IMPERATIVE_NODE_COMMAND_LINE_REPAIR_ENABLED",
+    False,
 )
 MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED = env_bool(
     "BDAG_MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED",
@@ -264,7 +270,10 @@ def set_env_file_value(path: Any, key: str, value: str) -> bool:
 def set_runtime_env_value(key: str, value: str) -> list[str]:
     changed_paths: list[str] = []
     seen: set[Any] = set()
-    for path in (PROJECT_ROOT / ".env", POOL_ENV_FILE):
+    ops_env_file = Path(os.environ.get("BDAG_OPS_ENV_FILE") or RUNTIME_DIR / "ops.env")
+    if not ops_env_file.is_absolute():
+        ops_env_file = PROJECT_ROOT / ops_env_file
+    for path in (PROJECT_ROOT / ".env", POOL_ENV_FILE, ops_env_file):
         if path in seen:
             continue
         seen.add(path)
@@ -691,12 +700,36 @@ def chain_state_restore_reason_details(payload: dict[str, Any]) -> list[dict[str
             )
         if info.get("dag_tip_damage"):
             details.append({"kind": "dag_tip_damage", "reason": f"{node} DAG tip/block data is damaged"})
+    unique: dict[tuple[str, str], dict[str, str]] = {}
+    for item in details:
+        unique[(item["kind"], item["reason"])] = item
+    return [unique[key] for key in sorted(unique)]
+
+
+def chain_state_restore_candidate_details(payload: dict[str, Any]) -> list[dict[str, str]]:
+    details: list[dict[str, str]] = []
+    sync_health = dict_value(payload.get("sync_health"))
+    candidate_nodes = dict_value(sync_health.get("chain_data_restore_candidate_nodes"))
+    for node, info in candidate_nodes.items():
+        node_reasons = info.get("reasons") if isinstance(info, dict) else None
+        if isinstance(node_reasons, list) and node_reasons:
+            details.extend({"kind": "chain_data_restore_candidate", "reason": str(item)} for item in node_reasons if item)
+        else:
+            details.append({"kind": "chain_data_restore_candidate", "reason": f"{node} has chain-state restore candidate signals"})
+
+    nodes = dict_value(payload.get("nodes"))
+    for node, info in nodes.items():
+        if not isinstance(info, dict):
+            continue
         missing_trie = safe_int(info.get("missing_trie_node_warnings"), 0)
         if missing_trie >= CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS:
             details.append(
                 {
-                    "kind": "missing_trie",
-                    "reason": f"{node} has {missing_trie} missing-trie state warning(s)",
+                    "kind": "missing_trie_candidate",
+                    "reason": (
+                        f"{node} has {missing_trie} missing-trie state warning(s); "
+                        "waiting for import stall or hard chain-state corruption before restore"
+                    ),
                 }
             )
     unique: dict[tuple[str, str], dict[str, str]] = {}
@@ -822,31 +855,16 @@ def chain_state_restore_decision(payload: dict[str, Any]) -> dict[str, Any]:
         return {"should_repair": False, "reasons": [], "stalled_import": {}, "disabled": True}
     details = chain_state_restore_reason_details(payload)
     reasons = [item["reason"] for item in details]
+    candidate_details = chain_state_restore_candidate_details(payload)
+    candidate_reasons = [item["reason"] for item in candidate_details]
     stalled_import = update_stalled_import_watch(payload)
     if reasons:
-        missing_trie_only = all(item.get("kind") == "missing_trie" for item in details)
-        active_paid_mining = bool(
-            missing_trie_only
-            and status_payload_has_miner_demand(payload)
-            and status_payload_has_recent_paid_work(payload, CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS)
-        )
-        if active_paid_mining:
-            return {
-                "should_repair": False,
-                "reasons": reasons,
-                "reason_details": details,
-                "stalled_import": stalled_import,
-                "hard": True,
-                "deferred": True,
-                "defer_reason": (
-                    "missing-trie-only restore signal deferred because active miners have "
-                    "fresh accepted block submissions"
-                ),
-            }
         return {
             "should_repair": True,
             "reasons": reasons,
             "reason_details": details,
+            "candidate_reasons": candidate_reasons,
+            "candidate_details": candidate_details,
             "stalled_import": stalled_import,
             "hard": True,
         }
@@ -854,8 +872,20 @@ def chain_state_restore_decision(payload: dict[str, Any]) -> dict[str, Any]:
         return {
             "should_repair": True,
             "reasons": [str(stalled_import.get("reason") or "sustained stalled import")],
+            "candidate_reasons": candidate_reasons,
+            "candidate_details": candidate_details,
             "stalled_import": stalled_import,
             "hard": False,
+        }
+    if candidate_reasons:
+        return {
+            "should_repair": False,
+            "reasons": candidate_reasons,
+            "reason_details": candidate_details,
+            "stalled_import": stalled_import,
+            "hard": False,
+            "deferred": True,
+            "defer_reason": "chain-state restore candidate requires corroboration before destructive restore",
         }
     return {"should_repair": False, "reasons": [], "stalled_import": stalled_import, "hard": False}
 
@@ -1139,6 +1169,13 @@ def node_mining_template_support_should_repair(payload: dict[str, Any]) -> bool:
     append_args = config_value("NODE_ARGS_APPEND")
     if append_args and not node_mining_args_are_safe_and_complete(append_args, address):
         return True
+    if pool_has_recent_share_evidence(payload) or status_payload_has_recent_paid_work(
+        payload,
+        CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS,
+    ):
+        return False
+    if not MINING_IMPERATIVE_NODE_COMMAND_LINE_REPAIR_ENABLED:
+        return False
     for service in node_services_for_recreate():
         command_line = node_command_line(service)
         if command_line and not node_mining_args_are_safe_and_complete(command_line, address):
@@ -1876,9 +1913,6 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
     chain_restore_decision = chain_state_restore_decision(payload)
     if chain_restore_decision.get("should_repair"):
         clear_pool_start_stability()
-        reason = "; ".join(chain_restore_decision.get("reasons") or []) or "chain-state restore required"
-        if pool_container_running(payload) and stop_pool_container(payload, reason, containment="chain_state_restore"):
-            actions.append(f"stopped_container:{POOL_CONTAINER}:chain_state_restore")
         if start_chain_state_self_heal(payload, chain_restore_decision):
             actions.append("started_chain_state_self_heal")
         return {"enabled": True, "actions": actions}

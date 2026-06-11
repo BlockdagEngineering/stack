@@ -39,6 +39,24 @@ class ChainStateSelfHealMainnetOnlyTest(unittest.TestCase):
         pre_restore_start = script.split('json_state "started" "chain-state restore started"', 1)[0]
         self.assertNotIn('stop_service_best_effort "$POOL_SERVICE"', pre_restore_start)
 
+    def test_self_heal_quarantine_stays_outside_node_data_dir(self) -> None:
+        script = (ROOT / "ops" / "chain-state-self-heal.sh").read_text(encoding="utf-8")
+
+        self.assertIn('DEFAULT_QUARANTINE_ROOT="$CHAIN_DATA_DIR/chain-quarantine"', script)
+        self.assertIn('DEFAULT_QUARANTINE_ROOT="$(dirname "$NODE_DATA_DIR")/chain-quarantine"', script)
+        self.assertIn('chain-state quarantine dir must not be inside node data dir', script)
+        self.assertIn("mv_path", script)
+        self.assertIn("rsync_path", script)
+        self.assertIn('BDAG_CHAIN_STATE_RESTORE_CHOWN:-999:999', script)
+
+    def test_self_heal_dashboard_restart_is_not_restore_fatal(self) -> None:
+        script = (ROOT / "ops" / "chain-state-self-heal.sh").read_text(encoding="utf-8")
+
+        self.assertIn('compose up -d --no-build --pull never "$NODE_SERVICE"', script)
+        self.assertIn("dashboard restart failed after chain-state restore; continuing", script)
+        self.assertIn('json_state "failed" "node restart failed after restore"', script)
+        self.assertNotIn('json_state "failed" "node/dashboard restart failed after restore"', script)
+
 
 if __name__ == "__main__":
     unittest.main()

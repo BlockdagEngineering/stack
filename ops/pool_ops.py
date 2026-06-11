@@ -449,6 +449,12 @@ EARNINGS_HISTORY_RETENTION_SECONDS = int(os.environ.get("BDAG_EARNINGS_HISTORY_R
 EARNINGS_DASHBOARD_HISTORY_SECONDS = int(os.environ.get("BDAG_EARNINGS_DASHBOARD_HISTORY_SECONDS", str(31 * 86400)))
 EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_EARNINGS_SNAPSHOT_INTERVAL_SECONDS", "60"))
 EARNINGS_ONCHAIN_CACHE_SECONDS = int(os.environ.get("BDAG_EARNINGS_ONCHAIN_CACHE_SECONDS", "120"))
+LOCAL_EVM_BALANCE_PROBE_PAUSE_DURING_SYNC = env_bool("BDAG_LOCAL_EVM_BALANCE_PROBE_PAUSE_DURING_SYNC", True)
+LOCAL_EVM_BALANCE_PROBE_STATUS_MAX_AGE_SECONDS = env_float(
+    "BDAG_LOCAL_EVM_BALANCE_PROBE_STATUS_MAX_AGE_SECONDS",
+    180.0,
+    minimum=0.0,
+)
 EARNINGS_DERIVED_HISTORY_ENABLED = env_bool("BDAG_EARNINGS_DERIVED_HISTORY_ENABLED", True)
 EARNINGS_DERIVED_HISTORY_RUNTIME_FALLBACK_ENABLED = env_bool("BDAG_EARNINGS_DERIVED_HISTORY_RUNTIME_FALLBACK_ENABLED", False)
 EARNINGS_DERIVED_HISTORY_BUCKET_SECONDS = env_int("BDAG_EARNINGS_DERIVED_HISTORY_BUCKET_SECONDS", 300, minimum=60)
@@ -546,6 +552,11 @@ HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT = env_float(
 HOST_PRESSURE_SWAP_USED_WARN_PERCENT = env_float(
     "BDAG_HOST_PRESSURE_SWAP_USED_WARN_PERCENT",
     5.0,
+    minimum=0.0,
+)
+HOST_PRESSURE_SWAP_MEMORY_PSI_WARN_AVG10 = env_float(
+    "BDAG_HOST_PRESSURE_SWAP_MEMORY_PSI_WARN_AVG10",
+    1.0,
     minimum=0.0,
 )
 HOST_PRESSURE_IOWAIT_WARN_SAMPLES = env_int("BDAG_HOST_PRESSURE_IOWAIT_WARN_SAMPLES", 3, minimum=2)
@@ -1058,6 +1069,30 @@ def host_pressure_iowait_sustained(samples: list[dict[str, Any]], threshold: flo
     return all(value is not None and value >= threshold for value in values)
 
 
+def host_pressure_swap_active(
+    pressure: dict[str, Any] | None,
+    swap_warn_percent: float = HOST_PRESSURE_SWAP_USED_WARN_PERCENT,
+    memory_warn_percent: float = HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT,
+    memory_psi_warn_avg10: float = HOST_PRESSURE_SWAP_MEMORY_PSI_WARN_AVG10,
+) -> bool:
+    if not isinstance(pressure, dict):
+        return False
+    swap_used_percent = safe_float(pressure.get("swap_used_percent"))
+    if swap_used_percent is None or swap_used_percent < swap_warn_percent:
+        return False
+    memory_available_percent = safe_float(pressure.get("memory_available_percent"))
+    if pressure.get("memory_warning_active"):
+        return True
+    if memory_available_percent is not None and memory_available_percent <= memory_warn_percent:
+        return True
+
+    memory_some = safe_float(pressure.get("memory_some_avg10"))
+    memory_full = safe_float(pressure.get("memory_full_avg10"))
+    if memory_some is None and memory_full is None:
+        return memory_available_percent is None
+    return bool((memory_some or 0.0) >= memory_psi_warn_avg10 or (memory_full or 0.0) >= memory_psi_warn_avg10)
+
+
 def host_pressure_warning_messages(pressure: dict[str, Any]) -> list[str]:
     messages: list[str] = []
     memory_available_percent = safe_float(pressure.get("memory_available_percent"))
@@ -1067,9 +1102,9 @@ def host_pressure_warning_messages(pressure: dict[str, Any]) -> list[str]:
             f"({memory_available_percent:.2f}% <= {HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT:.2f}%)"
         )
     swap_used_percent = safe_float(pressure.get("swap_used_percent"))
-    if pressure.get("swap_warning_active") and swap_used_percent is not None:
+    if host_pressure_swap_active(pressure) and swap_used_percent is not None:
         messages.append(
-            "host swap use is active "
+            "host swap pressure is active "
             f"({swap_used_percent:.2f}% >= {HOST_PRESSURE_SWAP_USED_WARN_PERCENT:.2f}%)"
         )
     samples = pressure.get("samples") if isinstance(pressure.get("samples"), list) else []
@@ -1160,7 +1195,7 @@ def collect_host_pressure() -> dict[str, Any]:
         if swap_total > 0:
             swap_used_percent = round(max(0.0, swap_used * 100.0 / swap_total), 2)
             pressure["swap_used_percent"] = swap_used_percent
-            pressure["swap_warning_active"] = swap_used_percent >= HOST_PRESSURE_SWAP_USED_WARN_PERCENT
+            pressure["swap_warning_active"] = host_pressure_swap_active(pressure)
 
     try:
         cpu = parse_proc_stat_cpu(Path("/proc/stat").read_text(encoding="utf-8"))
@@ -1252,11 +1287,20 @@ def adaptive_pressure_level(pressure: dict[str, Any] | None) -> str:
     cpu_some = safe_float(pressure.get("cpu_some_avg10"))
     chain_rpc_latency = safe_float(pressure.get("chain_rpc_latency_ms"))
     memory_available_percent = safe_float(pressure.get("memory_available_percent"))
-    swap_used_percent = safe_float(pressure.get("swap_used_percent"))
+    swap_pressure_high = host_pressure_swap_active(
+        pressure,
+        ADAPTIVE_SWAP_USED_WARN_PERCENT,
+        ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT,
+    )
+    swap_pressure_moderate = host_pressure_swap_active(
+        pressure,
+        max(ADAPTIVE_SWAP_USED_WARN_PERCENT / 2, 1.0),
+        max(ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT * 2, ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT),
+    )
     if (
         bool(pressure.get("iowait_warning_active"))
         or bool(pressure.get("memory_warning_active"))
-        or bool(pressure.get("swap_warning_active"))
+        or swap_pressure_high
         or (iowait is not None and iowait >= ADAPTIVE_IOWAIT_WARN_PERCENT)
         or (io_some is not None and io_some >= ADAPTIVE_IO_SOME_AVG10_WARN)
         or (cpu_some is not None and cpu_some >= ADAPTIVE_CPU_SOME_AVG10_WARN)
@@ -1265,7 +1309,6 @@ def adaptive_pressure_level(pressure: dict[str, Any] | None) -> str:
             memory_available_percent is not None
             and memory_available_percent <= ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT
         )
-        or (swap_used_percent is not None and swap_used_percent >= ADAPTIVE_SWAP_USED_WARN_PERCENT)
     ):
         return "high"
     if (
@@ -1277,7 +1320,7 @@ def adaptive_pressure_level(pressure: dict[str, Any] | None) -> str:
             memory_available_percent is not None
             and memory_available_percent <= max(ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT * 2, ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT)
         )
-        or (swap_used_percent is not None and swap_used_percent >= max(ADAPTIVE_SWAP_USED_WARN_PERCENT / 2, 1.0))
+        or swap_pressure_moderate
     ):
         return "moderate"
     return "low"
@@ -2344,6 +2387,45 @@ def miner_observation_epoch(miner: dict[str, Any]) -> int:
         except (TypeError, ValueError):
             pass
     return max(values or [0])
+
+
+def miner_activity_epoch(item: Mapping[str, Any], epoch_keys: tuple[str, ...], timestamp_keys: tuple[str, ...]) -> int:
+    values: list[int] = []
+    for key in epoch_keys:
+        epoch = safe_int(item.get(key), 0)
+        if epoch > 0:
+            values.append(epoch)
+    for key in timestamp_keys:
+        raw = item.get(key)
+        if not raw:
+            continue
+        epoch = _pool_log_epoch(str(raw))
+        if epoch is not None and epoch > 0:
+            values.append(int(epoch))
+    return max(values or [0])
+
+
+def miner_activity_has_timestamp(
+    item: Mapping[str, Any],
+    epoch_keys: tuple[str, ...],
+    timestamp_keys: tuple[str, ...],
+) -> bool:
+    return any(safe_int(item.get(key), 0) > 0 for key in epoch_keys) or any(bool(item.get(key)) for key in timestamp_keys)
+
+
+def miner_activity_is_fresh(
+    item: Mapping[str, Any],
+    now_epoch: int,
+    epoch_keys: tuple[str, ...],
+    timestamp_keys: tuple[str, ...],
+    stale_seconds: int = POOL_CONNECTED_STALE_SECONDS,
+) -> bool:
+    if not item:
+        return False
+    epoch = miner_activity_epoch(item, epoch_keys, timestamp_keys)
+    if epoch > 0:
+        return now_epoch - epoch <= stale_seconds
+    return not miner_activity_has_timestamp(item, epoch_keys, timestamp_keys)
 
 
 def merge_miner_records(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
@@ -3654,12 +3736,6 @@ def chain_data_restore_hard_reasons(node: str, info: Mapping[str, Any]) -> list[
         reasons.append(
             f"{node} EVM state history freezer is inconsistent; restore or resync from a verified source"
         )
-    missing_trie_count = safe_int(info.get("missing_trie_node_warnings"), 0)
-    if missing_trie_count >= CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS:
-        reasons.append(
-            f"{node} EVM trie state is unavailable "
-            f"({missing_trie_count} missing-trie warning(s))"
-        )
     rawdb_not_found_count = safe_int(info.get("rawdb_pebble_not_found_warnings"), 0)
     if info.get("rawdb_pebble_not_found_storm"):
         reasons.append(
@@ -3671,6 +3747,12 @@ def chain_data_restore_hard_reasons(node: str, info: Mapping[str, Any]) -> list[
 
 def chain_data_restore_candidate_reasons(node: str, info: Mapping[str, Any]) -> list[str]:
     reasons: list[str] = []
+    missing_trie_count = safe_int(info.get("missing_trie_node_warnings"), 0)
+    if missing_trie_count >= CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS:
+        reasons.append(
+            f"{node} reported {missing_trie_count} missing-trie state warning(s); "
+            "treating as diagnostic unless imports stall or hard chain-state corruption is also present"
+        )
     peer_ahead = safe_int(info.get("peer_ahead_blocks"), 0)
     if (
         info.get("orphan_block_error_storm")
@@ -5532,30 +5614,50 @@ def collect_miner_health(source_job_health: Mapping[str, Any] | None = None) -> 
             registered.get("last_ports"),
             limit=MINER_REGISTRY_MAX_PORTS,
         )
+        activity_current_fresh = miner_activity_is_fresh(
+            activity_item,
+            now_epoch,
+            ("last_seen_epoch", "last_pool_seen_epoch"),
+            ("last_seen_at", "last_job_at", "last_submit_at", "last_share_at", "last_block_at"),
+        )
+        activity_submit_fresh = miner_activity_is_fresh(
+            activity_item,
+            now_epoch,
+            ("last_submit_epoch",),
+            ("last_submit_at", "last_share_at", "last_block_at"),
+        )
+        activity_share_fresh = miner_activity_is_fresh(
+            activity_item,
+            now_epoch,
+            ("last_share_epoch",),
+            ("last_share_at", "last_block_at"),
+        )
         pool_window_fresh = bool(
-            not activity_item
+            not activity_current_fresh
             and last_pool_seen_epoch
             and now_epoch - last_pool_seen_epoch <= POOL_CONNECTED_STALE_SECONDS
         )
         submit_window_fresh = bool(
-            not activity_item
+            not activity_submit_fresh
             and last_submit_epoch
             and now_epoch - last_submit_epoch <= POOL_CONNECTED_STALE_SECONDS
         )
         share_window_fresh = bool(
-            not activity_item
+            not activity_share_fresh
             and last_share_epoch
             and now_epoch - last_share_epoch <= POOL_CONNECTED_STALE_SECONDS
         )
-        connected = bool(activity_item) or pool_window_fresh
+        connected = activity_current_fresh or pool_window_fresh
         managed = bool(registered.get("managed"))
         configured_record = bool(registered.get("configured") or registered.get("managed") or registered.get("last_configured_ok"))
-        current_submits = int(activity_item.get("submits", 0) or 0)
-        current_shares = int(activity_item.get("shares", 0) or 0)
-        current_blocks_found = int(activity_item.get("blocks_found", 0) or 0)
-        current_share_work = int(activity_item.get("share_work", 0) or 0) if activity_item else 0
-        current_share_difficulty = activity_item.get("share_difficulty", 0) if activity_item else 0
-        current_jobs = activity_item.get("jobs", registered.get("last_jobs_window", 0))
+        current_submits = int(activity_item.get("submits", 0) or 0) if activity_submit_fresh else 0
+        current_shares = int(activity_item.get("shares", 0) or 0) if activity_share_fresh else 0
+        current_blocks_found = int(activity_item.get("blocks_found", 0) or 0) if activity_share_fresh else 0
+        current_share_work = int(activity_item.get("share_work", 0) or 0) if activity_share_fresh else 0
+        current_share_difficulty = activity_item.get("share_difficulty", 0) if activity_share_fresh else 0
+        current_jobs = activity_item.get("jobs", 0) if activity_current_fresh else 0
+        if pool_window_fresh:
+            current_jobs = max(int(current_jobs or 0), int(registered.get("last_jobs_window", 0) or 0))
         if submit_window_fresh:
             current_submits = max(current_submits, int(registered.get("last_submits_window", 0) or 0))
         if share_window_fresh:
@@ -5567,7 +5669,9 @@ def collect_miner_health(source_job_health: Mapping[str, Any] | None = None) -> 
         has_recent_shares = current_shares > 0
         has_recent_blocks = current_blocks_found > 0
         expected_worker_seen = str(expected_user).lower() in {str(worker).lower() for worker in workers}
-        current_pool_activity = (bool(activity_item) or submit_window_fresh or share_window_fresh) and expected_url == defaults["pool_url"] and (
+        current_pool_activity = (
+            activity_current_fresh or submit_window_fresh or share_window_fresh
+        ) and expected_url == defaults["pool_url"] and (
             expected_worker_seen or current_submits > 0 or has_recent_shares or has_recent_blocks
         )
         primary_pool_log = configured_record and is_known_primary_pool_log_miner({**registered, "last_workers": workers})
@@ -5619,9 +5723,7 @@ def collect_miner_health(source_job_health: Mapping[str, Any] | None = None) -> 
             if not pool_lane_authorized:
                 pool_active = False
                 work_pool_active = False
-        pool_log_recent = bool(
-            activity_item or (last_pool_seen_epoch and now_epoch - last_pool_seen_epoch <= POOL_CONNECTED_STALE_SECONDS)
-        )
+        pool_log_recent = bool(activity_current_fresh or pool_window_fresh)
         retirement_decision = retired_miner_identity_decision({**registered, **activity_item}, ip, mac)
         if retirement_decision.get("conflict") and pool_log_recent:
             label = miner_display_label({**registered, "mac": mac})
@@ -5640,7 +5742,9 @@ def collect_miner_health(source_job_health: Mapping[str, Any] | None = None) -> 
         submit_age = now_epoch - last_submit_epoch if last_submit_epoch else None
         share_age = now_epoch - last_share_epoch if last_share_epoch else None
         expected_worker_seen = str(expected_user).lower() in {str(worker).lower() for worker in workers}
-        current_pool_activity = bool(activity_item) and expected_url == defaults["pool_url"] and (
+        current_pool_activity = (
+            activity_current_fresh or submit_window_fresh or share_window_fresh
+        ) and expected_url == defaults["pool_url"] and (
             expected_worker_seen or current_submits > 0 or has_recent_shares or has_recent_blocks
         )
         work_pool_active = bool(
@@ -6744,6 +6848,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "orphan_block_errors": info.get("orphan_block_errors") or 0,
             "orphan_block_error_lines": info.get("orphan_block_error_lines") or [],
             "peer_ahead_blocks": info.get("peer_ahead_blocks"),
+            "missing_trie_node_warnings": info.get("missing_trie_node_warnings") or 0,
+            "missing_trie_node_lines": info.get("missing_trie_node_lines") or [],
         }
         for node, info in managed_node_details.items()
         if (reasons := chain_data_restore_candidate_reasons(node, info))
@@ -7570,11 +7676,14 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
             f"{memory_available_percent:.2f}% <= {BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT:.2f}%"
         )
     swap_used_percent = safe_float(host_pressure.get("swap_used_percent"))
-    if bool(host_pressure.get("swap_warning_active")):
-        reasons.append("host swap use warning is active")
-    elif swap_used_percent is not None and swap_used_percent >= BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT:
+    if host_pressure_swap_active(
+        host_pressure,
+        BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT,
+        BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT,
+    ):
         reasons.append(
-            f"host swap used {swap_used_percent:.2f}% >= {BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT:.2f}%"
+            f"host swap pressure is active {swap_used_percent:.2f}% >= "
+            f"{BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT:.2f}%"
         )
     if (
         chain_rpc_latency_ms is not None
@@ -7922,6 +8031,81 @@ def evm_reference_rpc_urls() -> list[tuple[str, str]]:
     if configured:
         return _dedupe_rpc_urls([(source, url) for source, url in configured])
     return public_evm_rpc_urls()
+
+
+def local_evm_balance_probe_pause_from_status(status: Mapping[str, Any]) -> dict[str, Any]:
+    reasons: list[str] = []
+    overall = str(status.get("overall") or "").strip().lower()
+    mode = str(status.get("mode") or "").strip().lower()
+    if overall == "syncing":
+        reasons.append("status is syncing")
+    if mode == "catchup_pause":
+        reasons.append("catch-up pause is active")
+
+    sync_progress = status.get("sync_progress") if isinstance(status.get("sync_progress"), Mapping) else {}
+    sync_status = str(sync_progress.get("status") or "").strip().lower()
+    remaining_blocks = safe_int(sync_progress.get("remaining_blocks"), 0)
+    if sync_status == "syncing" and remaining_blocks > 0:
+        reasons.append(f"node is {remaining_blocks} blocks behind")
+
+    sync_health = status.get("sync_health") if isinstance(status.get("sync_health"), Mapping) else {}
+    if bool(sync_health.get("catchup_pause_active")):
+        reasons.append("sync health reports catch-up pause")
+    if bool(sync_health.get("chain_data_restore_candidate")):
+        reasons.append("chain-state restore candidate is under observation")
+    if bool(sync_health.get("needs_chain_data_restore") or sync_health.get("chain_data_restore_required")):
+        reasons.append("chain-state restore is required")
+
+    nodes = status.get("nodes") if isinstance(status.get("nodes"), Mapping) else {}
+    for node_name, node in nodes.items():
+        if not isinstance(node, Mapping):
+            continue
+        if bool(node.get("node_busy_syncing")):
+            reasons.append(f"{node_name} reports busy syncing")
+        if bool(node.get("node_template_frozen")):
+            reasons.append(f"{node_name} reports frozen mining templates")
+
+    deduped = unique_names(reasons)
+    return {
+        "paused": bool(deduped),
+        "reason": "; ".join(deduped),
+        "reasons": deduped,
+    }
+
+
+def local_evm_balance_probe_pause() -> dict[str, Any]:
+    if not LOCAL_EVM_BALANCE_PROBE_PAUSE_DURING_SYNC:
+        return {"paused": False, "reason": "", "reasons": []}
+    status = read_status_sampler_payload(
+        include_logs=False,
+        max_age_seconds=LOCAL_EVM_BALANCE_PROBE_STATUS_MAX_AGE_SECONDS,
+    )
+    if not isinstance(status, dict):
+        return {"paused": False, "reason": "", "reasons": []}
+    pause = local_evm_balance_probe_pause_from_status(status)
+    pause["status_generated_at"] = status.get("generated_at")
+    pause["status_overall"] = status.get("overall")
+    pause["status_mode"] = status.get("mode")
+    return pause
+
+
+def local_evm_rpc_pause_skipped_source(source: str, pause: Mapping[str, Any]) -> dict[str, Any]:
+    reason = str(pause.get("reason") or "local EVM balance probes are paused")
+    return {
+        "source": source,
+        "type": "local-rpc",
+        "status": "skipped",
+        "error": reason,
+        "pause_reason": reason,
+    }
+
+
+def filter_local_evm_rpc_urls(
+    sources: list[tuple[str, str]],
+    local_sources: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    local_urls = {url for _source, url in local_sources}
+    return [(source, url) for source, url in sources if url not in local_urls]
 
 
 def unknown_sync_progress(source: str = "node", error: str = "") -> dict[str, Any]:
@@ -11551,12 +11735,18 @@ def collect_wallet_balances(address: str | None = None) -> dict[str, Any]:
         return {"address": None, "sources": []}
 
     sources: list[dict[str, Any]] = []
-    for name, url in global_evm_rpc_urls():
-        try:
-            balance = json_rpc_balance(url, wallet)
-            sources.append({"source": name, "type": "local-rpc", "status": "ok", **balance})
-        except Exception as exc:  # noqa: BLE001 - report source failures independently.
-            sources.append({"source": name, "type": "local-rpc", "status": "failed", "error": str(exc)})
+    local_sources = global_evm_rpc_urls()
+    local_evm_pause = local_evm_balance_probe_pause()
+    if bool(local_evm_pause.get("paused")):
+        for name, _url in local_sources:
+            sources.append(local_evm_rpc_pause_skipped_source(name, local_evm_pause))
+    else:
+        for name, url in local_sources:
+            try:
+                balance = json_rpc_balance(url, wallet)
+                sources.append({"source": name, "type": "local-rpc", "status": "ok", **balance})
+            except Exception as exc:  # noqa: BLE001 - report source failures independently.
+                sources.append({"source": name, "type": "local-rpc", "status": "failed", "error": str(exc)})
 
     for source, base_url in named_urls_from_env("BDAG_EXPLORER_API_URLS", [("bdagscan-api", "https://bdagscan.com")]):
         try:
@@ -11614,6 +11804,11 @@ def collect_wallet_balances(address: str | None = None) -> dict[str, Any]:
         "balance_spread_bdag": decimal_to_str(wei_to_bdag(primary_spread)) if primary_spread is not None else None,
         "all_sources_balance_spread_bdag": decimal_to_str(wei_to_bdag(all_spread)) if all_spread is not None else None,
         "ok_source_count": len(ok_sources),
+        "local_evm_rpc": {
+            "paused": bool(local_evm_pause.get("paused")),
+            "reason": local_evm_pause.get("reason"),
+            "skipped_source_count": len(local_sources) if bool(local_evm_pause.get("paused")) else 0,
+        },
         "sources": sources,
     }
 
@@ -11659,7 +11854,9 @@ def collect_wallet_balances_for_addresses(addresses: list[str]) -> dict[str, Any
             "addresses": [],
         }
 
-    rpc_sources = [(source, url, "evm-rpc") for source, url in global_evm_rpc_urls()]
+    local_evm_pause = local_evm_balance_probe_pause()
+    local_rpc_sources = [(source, url, "evm-rpc") for source, url in global_evm_rpc_urls()]
+    rpc_sources = [] if bool(local_evm_pause.get("paused")) else list(local_rpc_sources)
     rpc_sources.extend(
         (source, url, "public-rpc")
         for source, url in named_urls_from_env(
@@ -11718,6 +11915,11 @@ def collect_wallet_balances_for_addresses(addresses: list[str]) -> dict[str, Any
         "total_wei": str(total_wei),
         "total_bdag": decimal_to_str(wei_to_bdag(total_wei)),
         "worker_count": worker_count,
+        "local_evm_rpc": {
+            "paused": bool(local_evm_pause.get("paused")),
+            "reason": local_evm_pause.get("reason"),
+            "skipped_source_count": len(local_rpc_sources) if bool(local_evm_pause.get("paused")) else 0,
+        },
         "addresses": balances,
     }
 
@@ -11823,24 +12025,62 @@ def collect_onchain_wallet_window_earnings(address: str | None, hours: int = 24)
     if isinstance(cached, dict) and now_epoch - int(cached.get("generated_epoch", 0)) < EARNINGS_ONCHAIN_CACHE_SECONDS:
         return {**cached, "cache_hit": True}
 
+    local_evm_pause = local_evm_balance_probe_pause()
     local_sources = global_evm_rpc_urls()
-    if not local_sources:
-        return {"status": "failed", "hours": hours, "address": address, "error": "no local EVM RPC sources"}
-    local_name, local_url = local_sources[0]
+    latest_sources = evm_reference_rpc_urls() if bool(local_evm_pause.get("paused")) else local_sources
+    if not latest_sources:
+        source_kind = "reference" if bool(local_evm_pause.get("paused")) else "local"
+        return {
+            "status": "failed",
+            "hours": hours,
+            "address": address,
+            "local_evm_rpc": {
+                "paused": bool(local_evm_pause.get("paused")),
+                "reason": local_evm_pause.get("reason"),
+            },
+            "error": f"no {source_kind} EVM RPC sources",
+        }
+    latest_source = freshest_evm_rpc_source(latest_sources, timeout=8.0)
+    if latest_source is None:
+        source_kind = "reference" if bool(local_evm_pause.get("paused")) else "local"
+        return {
+            "status": "failed",
+            "hours": hours,
+            "address": address,
+            "local_evm_rpc": {
+                "paused": bool(local_evm_pause.get("paused")),
+                "reason": local_evm_pause.get("reason"),
+            },
+            "error": f"no {source_kind} EVM RPC returned eth_blockNumber",
+        }
+    latest_name, latest_url, latest_block, latest_errors = latest_source
     try:
-        latest_block = int(str(json_rpc_call(local_url, "eth_blockNumber", [], timeout=8.0)), 16)
-        latest_timestamp = rpc_block_timestamp(local_url, latest_block)
+        latest_timestamp = rpc_block_timestamp(latest_url, latest_block)
         target_timestamp = latest_timestamp - (hours * 3600)
-        start_block = first_block_at_or_after(local_url, latest_block, target_timestamp)
-        start_timestamp = rpc_block_timestamp(local_url, start_block)
-        latest_balance = json_rpc_balance_at(local_url, address, latest_block, timeout=8.0)
+        start_block = first_block_at_or_after(latest_url, latest_block, target_timestamp)
+        start_timestamp = rpc_block_timestamp(latest_url, start_block)
+        latest_balance = json_rpc_balance_at(latest_url, address, latest_block, timeout=8.0)
     except Exception as exc:  # noqa: BLE001
-        return {"status": "failed", "hours": hours, "address": address, "source": local_name, "error": str(exc)}
+        errors = [*latest_errors, str(exc)]
+        return {
+            "status": "failed",
+            "hours": hours,
+            "address": address,
+            "source": latest_name,
+            "local_evm_rpc": {
+                "paused": bool(local_evm_pause.get("paused")),
+                "reason": local_evm_pause.get("reason"),
+            },
+            "error": "; ".join(errors[-3:]),
+        }
 
     start_balance = None
     start_source = None
     start_errors: list[str] = []
-    for source, url in archive_rpc_urls():
+    archive_sources = archive_rpc_urls()
+    if bool(local_evm_pause.get("paused")):
+        archive_sources = filter_local_evm_rpc_urls(archive_sources, local_sources)
+    for source, url in archive_sources:
         try:
             start_balance = json_rpc_balance_at(url, address, max(0, start_block - 1), timeout=10.0)
             start_source = source
@@ -11909,11 +12149,16 @@ def collect_onchain_wallet_window_earnings(address: str | None, hours: int = 24)
         "address": address,
         "latest_block": latest_block,
         "latest_block_time": datetime.fromtimestamp(latest_timestamp, timezone.utc).isoformat(),
-        "latest_balance_source": local_name,
+        "latest_balance_source": latest_name,
         "start_block": start_block,
         "start_block_time": datetime.fromtimestamp(start_timestamp, timezone.utc).isoformat(),
         "start_balance_source": start_source,
         "transfer_source": transfer_source,
+        "local_evm_rpc": {
+            "paused": bool(local_evm_pause.get("paused")),
+            "reason": local_evm_pause.get("reason"),
+            "latest_source_scope": "reference-rpc" if bool(local_evm_pause.get("paused")) else "local-rpc",
+        },
         "balance_start_bdag": decimal_to_str(wei_to_bdag(start_wei)),
         "balance_latest_bdag": decimal_to_str(wei_to_bdag(latest_wei)),
         "net_balance_change_bdag": decimal_to_str(wei_to_bdag(latest_wei - start_wei)),
