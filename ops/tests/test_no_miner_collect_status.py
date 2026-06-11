@@ -46,6 +46,8 @@ class NoMinerCollectStatusTests(unittest.TestCase):
                 "read_neighbor_macs",
                 "save_miner_registry",
                 "collect_miner_health_from_registry",
+                "CATCHUP_PAUSE_ENABLED",
+                "CATCHUP_PAUSE_THRESHOLD_BLOCKS",
             )
         }
         self.old_time = pool_ops.time.time
@@ -91,6 +93,41 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertTrue(parsed["critical"])
         self.assertFalse(parsed["importing"])
         self.assertIn("raw chain database", reasons[0])
+
+    def test_node_log_rawdb_freezer_missing_header_storm_requires_restore(self) -> None:
+        log = "\n".join(
+            [
+                '2026-06-11|20:01:14.759 [ERROR] Error in block freeze operation '
+                'module=RAWDB err="block header missing, can\'t freeze block 9458816 0x477984"',
+                '2026-06-11|20:02:14.780 [ERROR] Error in block freeze operation '
+                'module=RAWDB err="block header missing, can\'t freeze block 9458816 0x477984"',
+            ]
+        )
+
+        parsed = pool_ops.parse_node_log(log)
+        reasons = pool_ops.chain_data_restore_hard_reasons("node", parsed)
+
+        self.assertTrue(parsed["rawdb_freezer_missing_header_storm"])
+        self.assertTrue(parsed["critical"])
+        self.assertFalse(parsed["importing"])
+        self.assertTrue(any("raw chain freezer" in reason for reason in reasons))
+
+    def test_node_log_single_rawdb_freezer_warning_during_import_is_not_restore(self) -> None:
+        log = "\n".join(
+            [
+                '2026-06-11|20:01:14.759 [ERROR] Error in block freeze operation '
+                'module=RAWDB err="block header missing, can\'t freeze block 9458816 0x477984"',
+                "2026-06-11|20:01:20.000 [INFO ] Imported new chain segment number=10,658,990 module=CHAIN",
+            ]
+        )
+
+        parsed = pool_ops.parse_node_log(log)
+        reasons = pool_ops.chain_data_restore_hard_reasons("node", parsed)
+
+        self.assertFalse(parsed["rawdb_freezer_missing_header_storm"])
+        self.assertFalse(parsed["critical"])
+        self.assertTrue(parsed["importing"])
+        self.assertEqual([], reasons)
 
     def test_node_log_dag_order_missing_requires_restore(self) -> None:
         parsed = pool_ops.parse_node_log(
@@ -179,6 +216,53 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertTrue(parsed["node_template_frozen"])
         self.assertTrue(parsed["node_busy_syncing"])
         self.assertEqual(parsed["node_template_freeze_age_seconds"], 170.0)
+
+    def test_catchup_template_stall_requires_frozen_inactive_import(self) -> None:
+        managed_nodes = {
+            "node": {
+                "importing": False,
+                "node_template_frozen": True,
+                "node_template_freeze_age_seconds": 1132,
+                "node_template_freeze_count": 8,
+                "node_template_freeze_lines": ["TEMPLATE FREEZE DETECTED"],
+            }
+        }
+        sync_progress = {
+            "status": "syncing",
+            "remaining_blocks": 2289,
+            "nodes": {"node": {"remaining_blocks": 2289}},
+        }
+        catchup_policy = {"active": True, "lag_blocks": 2289}
+
+        stalled = pool_ops.catchup_template_stall_nodes(
+            managed_nodes,
+            sync_progress,
+            {"active_nodes": []},
+            catchup_policy,
+        )
+        active = pool_ops.catchup_template_stall_nodes(
+            managed_nodes,
+            sync_progress,
+            {"active_nodes": ["node"]},
+            catchup_policy,
+        )
+
+        self.assertIn("node", stalled)
+        self.assertEqual(2289, stalled["node"]["remaining_blocks"])
+        self.assertEqual({}, active)
+
+    def test_node_log_marks_empty_block_storm_as_repairable_not_critical(self) -> None:
+        parsed = pool_ops.parse_node_log(
+            "\n".join(
+                f"2026-06-11|19:50:38.862 [WARN ] get block module=DAG error=empty blockID={8_564_000 + idx}"
+                for idx in range(pool_ops.NODE_DAG_EMPTY_BLOCK_STORM_COUNT)
+            )
+        )
+
+        self.assertTrue(parsed["dag_empty_block_storm"])
+        self.assertEqual(pool_ops.NODE_DAG_EMPTY_BLOCK_STORM_COUNT, parsed["dag_empty_block_warnings"])
+        self.assertFalse(parsed["critical"])
+        self.assertFalse(parsed["dag_tip_damage"])
 
     def test_pool_activity_uses_registry_without_lan_hint_augmentation(self) -> None:
         calls = []
@@ -485,6 +569,132 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertEqual(status["sync_progress"]["status"], "syncing")
         self.assertTrue(status["sync_health"]["node_readiness_unavailable"])
         self.assertIn("node chain RPC/template readiness is unavailable", "\n".join(status["sync_warnings"]))
+
+    def test_catchup_template_freeze_without_import_progress_needs_sync_repair(self) -> None:
+        now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+        pool_ops.time.time = lambda: now
+        pool_ops.NODES = ["node"]
+        pool_ops.OBSERVER_NODES = []
+        pool_ops.STACK_SERVICES = ["postgres", "node", "asic-pool"]
+        pool_ops.SERVICES = list(pool_ops.STACK_SERVICES)
+        pool_ops.POOL_CONTAINER = "asic-pool"
+        pool_ops.POOL_CONTAINERS = ["asic-pool"]
+        pool_ops.CATCHUP_PAUSE_ENABLED = True
+        pool_ops.CATCHUP_PAUSE_THRESHOLD_BLOCKS = 300
+        pool_ops.ensure_runtime = lambda: None
+        pool_ops.docker_access_error = lambda: None
+        pool_ops.local_ipv4_addresses = lambda: ["192.168.68.55"]
+        pool_ops.default_miner_pool_settings = lambda: {
+            "pool_url": "stratum+tcp://192.168.68.55:3334",
+            "worker_user": "0x0000000000000000000000000000000000000000",
+            "pool_password": "1234",
+        }
+        pool_ops.run = lambda command, timeout=20: pool_ops.CommandResult(command, 0, "", "", 0.0)
+        pool_ops.read_latest_action = lambda: None
+        pool_ops.discover_observer_node_services = lambda: []
+        pool_ops.docker_top = lambda _name: (
+            "UID PID PPID C STIME TTY TIME CMD\n"
+            "root 1 0 0 12:00 ? 00:00:01 /usr/local/bin/bdag\n"
+        )
+        empty_block_lines = [
+            f"2026-06-11|19:50:38.862 [WARN ] get block module=DAG error=empty blockID={8_564_000 + idx}"
+            for idx in range(pool_ops.NODE_DAG_EMPTY_BLOCK_STORM_COUNT)
+        ]
+        node_log = "\n".join(
+            empty_block_lines
+            + [
+                "2026-06-11|19:41:35.218 [ERROR] Error in block freeze operation module=RAWDB err=\"block header missing, can't freeze block 9458816 0x477984\"",
+                "2026-06-11|19:42:35.219 [ERROR] Error in block freeze operation module=RAWDB err=\"block header missing, can't freeze block 9458816 0x477984\"",
+                "2026-06-11|19:42:01.605 [WARN ] TEMPLATE FREEZE DETECTED module=miner",
+                "2026-06-11|19:42:01.606 [WARN ] Same parent hash for 1132.0 seconds! module=miner",
+            ]
+        )
+        pool_ops.docker_logs = lambda name, lines=160: node_log if name == "node" else ""
+        pool_ops.docker_logs_many = lambda _names, lines=160: ""
+        pool_ops.collect_host_pressure = lambda: {"samples": []}
+
+        def fake_inspect(names):
+            return {
+                name: {
+                    "name": name,
+                    "image": "test",
+                    "running": name != "asic-pool",
+                    "status": "exited" if name == "asic-pool" else "running",
+                    "restart_count": 0,
+                    "exit_code": 0,
+                    "error": "",
+                    "ports": {},
+                }
+                for name in names
+            }
+
+        pool_ops.docker_inspect = fake_inspect
+        pool_ops.collect_template_probe_health = lambda: {
+            "generated_at": "2026-05-25T12:00:00+0000",
+            "cached": False,
+            "nodes": {"node": {"sample_count": 1, "ok_count": 1, "error_count": 0, "failing": False}},
+            "failing_nodes": [],
+            "all_nodes_failing": False,
+        }
+        pool_ops.collect_pool_prometheus_metrics = lambda _containers: {
+            "generated_at": "2026-05-25T12:00:00+0000",
+            "status": "ok",
+            "active_connections": 0,
+            "selected_backend": "node",
+            "source_job_health": {},
+            "source_backend_health": {},
+            "selected_backend_source_health": {},
+            "template_conversion_stall": {},
+            "loss_ledger": {},
+        }
+        pool_ops.collect_miner_health = lambda *_args, **_kwargs: {
+            "managed_count": 1,
+            "connected_count": 0,
+            "failures": [],
+            "warnings": [],
+            "miners": [],
+        }
+        pool_ops.collect_sync_progress = lambda: {
+            "status": "syncing",
+            "percent": 99.98,
+            "current_block": 10_658_989,
+            "highest_block": 10_661_278,
+            "remaining_blocks": 2289,
+            "source": "nodes",
+            "error": "",
+            "nodes": {
+                "node": {
+                    "status": "syncing",
+                    "percent": 99.98,
+                    "current_block": 10_658_989,
+                    "highest_block": 10_661_278,
+                    "remaining_blocks": 2289,
+                    "source": "node:evm-head-lag",
+                    "error": "",
+                }
+            },
+        }
+        pool_ops.observe_sync_progress_health = lambda _sync_progress: {
+            "active_nodes": [],
+            "active_node_count": 0,
+            "node_rates_blocks_per_second": {},
+            "lookback_seconds": 2700,
+        }
+        pool_ops.read_sync_coordinator_state = lambda: {}
+
+        status = pool_ops.collect_status(include_logs=True)
+
+        self.assertEqual(status["mode"], "catchup_pause")
+        self.assertTrue(status["sync_health"]["node_template_frozen"])
+        self.assertTrue(status["sync_health"]["catchup_template_stall"])
+        self.assertTrue(status["sync_health"]["dag_empty_block_storm"])
+        self.assertTrue(status["sync_health"]["rawdb_freezer_missing_header_storm"])
+        self.assertTrue(status["sync_health"]["chain_data_restore_required"])
+        self.assertTrue(status["sync_health"]["needs_chain_sync_repair"])
+        self.assertIn("node", status["sync_health"]["catchup_template_stall_nodes"])
+        self.assertIn("node", status["sync_health"]["dag_empty_block_storm_nodes"])
+        self.assertIn("node", status["sync_health"]["rawdb_freezer_missing_header_storm_nodes"])
+        self.assertIn("node", status["sync_health"]["chain_data_restore_nodes"])
 
     def test_no_miner_status_promotes_busy_syncing_to_syncing(self) -> None:
         now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()

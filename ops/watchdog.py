@@ -29,6 +29,7 @@ from pool_ops import (
     PROJECT_ROOT,
     RUNTIME_DIR,
     action_log_path,
+    compose_container_name,
     configure_miner,
     default_miner_pool_settings,
     ensure_runtime,
@@ -1025,9 +1026,12 @@ def run_node_restart(node_service: str, reason: str) -> bool:
     write_action_state(state_payload)
     log(f"starting targeted restart for {node_service}: {reason}; log={log_path}")
 
-    # NODES contains runtime container names. The Compose service may be named
-    # differently after topology migration, so restart the concrete container.
-    command = ["docker", "restart", node_service]
+    container_name = compose_container_name(node_service)
+    if container_name != node_service:
+        state_payload["container"] = container_name
+        write_action_state(state_payload)
+
+    command = ["docker", "restart", container_name]
     result = run_logged(command, log_path, timeout=180)
     ok = result.ok
 
@@ -1085,7 +1089,12 @@ def run_node_dag_tip_cleanup(node_service: str, reason: str) -> bool:
     write_action_state(state_payload)
     log(f"starting node DAG tip cleanup for {node_service}: {reason}; log={log_path}")
 
-    node_arg = shlex.quote(node_service)
+    container_name = compose_container_name(node_service)
+    if container_name != node_service:
+        state_payload["container"] = container_name
+        write_action_state(state_payload)
+
+    node_arg = shlex.quote(container_name)
     script = f"""set -euo pipefail
 node={node_arg}
 image=$(docker inspect "$node" --format '{{{{.Config.Image}}}}')
@@ -1537,6 +1546,19 @@ def dag_tip_damage_nodes(status: dict[str, Any]) -> list[str]:
     return damaged
 
 
+def dag_empty_block_storm_nodes(status: dict[str, Any]) -> list[str]:
+    nodes = status.get("nodes", {}) if isinstance(status.get("nodes"), dict) else {}
+    sync_health = status.get("sync_health", {}) if isinstance(status.get("sync_health"), dict) else {}
+    storm_nodes = sync_health.get("dag_empty_block_storm_nodes")
+    if isinstance(storm_nodes, dict) and storm_nodes:
+        return [node for node in NODES if node in storm_nodes]
+    return [
+        node
+        for node in NODES
+        if isinstance(nodes.get(node), dict) and nodes[node].get("dag_empty_block_storm")
+    ]
+
+
 def should_cleanup_dag_tips(state: dict[str, Any], node: str, cooldown: int | None = None) -> bool:
     cooldown_seconds = DEFAULT_NODE_DAG_TIP_CLEANUP_COOLDOWN if cooldown is None else cooldown
     by_node = (
@@ -1832,6 +1854,7 @@ def check_once(
     template_nodes = template_failing_nodes(status)
     orphan_nodes = orphan_storm_nodes(status)
     dag_tip_nodes = dag_tip_damage_nodes(status)
+    dag_empty_nodes = dag_empty_block_storm_nodes(status)
     pool_start_blocked, pool_start_blocked_reason = pool_start_blocked_by_status(status)
     node_template_restart_by_node = (
         state.get("last_node_template_restart_at_by_node")
@@ -2156,6 +2179,63 @@ def check_once(
                 if ok:
                     state["consecutive_syncing"] = 0
                     state["consecutive_node_orphan_storm"] = 0
+    elif dag_empty_nodes:
+        nodes = status.get("nodes", {}) if isinstance(status.get("nodes"), dict) else {}
+        target_node = dag_empty_nodes[0]
+        target_info = nodes.get(target_node, {}) if isinstance(nodes.get(target_node), dict) else {}
+        reason = (
+            f"{target_node} is logging repeated DAG empty-block lookups "
+            f"({target_info.get('dag_empty_block_warnings')} recent warnings, no recent imports)"
+        )
+        state["consecutive_failures"] = 0
+        state["consecutive_syncing"] = int(state.get("consecutive_dag_empty_block_storm", 0) or 0) + 1
+        state["consecutive_dag_empty_block_storm"] = state["consecutive_syncing"]
+        state["consecutive_share_stalls"] = 0
+        state["last_status"] = "dag_empty_block_storm"
+        state["last_failures"] = []
+        state["last_sync_warnings"] = [reason]
+        log(
+            "dag_empty_block_storm "
+            f"consecutive={state['consecutive_dag_empty_block_storm']} "
+            f"affected={dag_empty_nodes} target={target_node}"
+        )
+        record_efficiency_event(
+            "dag_empty_block_storm",
+            "warning",
+            reason,
+            {
+                "affected_nodes": dag_empty_nodes,
+                "target_node": target_node,
+                "target_node_status": target_info,
+            },
+        )
+        if repair:
+            if autonomous_lab_active:
+                log(f"DAG empty-block cleanup for {target_node} suppressed during autonomous stack lab")
+                record_efficiency_event(
+                    "repair_suppressed",
+                    "warning",
+                    f"DAG empty-block cleanup for {target_node} suppressed during autonomous stack lab",
+                    {"reason": reason, "target_node": target_node},
+                )
+            elif int(state["consecutive_dag_empty_block_storm"]) < 2:
+                log(f"DAG empty-block cleanup for {target_node} waiting for confirmation")
+            elif should_cleanup_dag_tips(state, target_node):
+                ok = run_node_dag_tip_cleanup(target_node, "DAG empty-block storm: " + reason)
+                state["last_repair_at"] = int(time.time())
+                state["last_sync_repair_at"] = int(time.time())
+                mark_dag_tip_cleanup_attempt(state, target_node)
+                if ok:
+                    state["consecutive_syncing"] = 0
+                    state["consecutive_dag_empty_block_storm"] = 0
+            else:
+                log(f"DAG empty-block cleanup for {target_node} suppressed by cooldown; reason={reason}")
+                record_efficiency_event(
+                    "repair_suppressed",
+                    "warning",
+                    f"DAG empty-block cleanup for {target_node} suppressed by cooldown",
+                    {"reason": reason, "target_node": target_node},
+                )
     elif api_stall_asics:
         affected = [
             {

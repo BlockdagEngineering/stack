@@ -272,12 +272,14 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         ), mock.patch.object(
             watchdog, "log", lambda _message: None
         ), mock.patch.object(
+            watchdog, "compose_container_name", return_value="stack-node-1"
+        ), mock.patch.object(
             watchdog, "run_logged", side_effect=lambda command, *_args, **_kwargs: commands.append(command) or Result()
         ):
             ok = watchdog.run_node_restart("node", "unit test")
 
         self.assertTrue(ok)
-        self.assertEqual([["docker", "restart", "node"]], commands)
+        self.assertEqual([["docker", "restart", "stack-node-1"]], commands)
 
     def test_node_log_marks_missing_dag_tip_as_critical_repairable_damage(self) -> None:
         parsed = pool_ops.parse_node_log(
@@ -314,6 +316,8 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         ), mock.patch.object(
             watchdog, "log", lambda _message: None
         ), mock.patch.object(
+            watchdog, "compose_container_name", return_value="stack-node-1"
+        ), mock.patch.object(
             watchdog, "run_logged", side_effect=lambda command, *_args, **_kwargs: commands.append(command) or Result()
         ):
             ok = watchdog.run_node_dag_tip_cleanup("node", "unit test")
@@ -323,8 +327,68 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         script = commands[0][2]
         self.assertIn("--cleanuptips", script)
         self.assertNotIn("--cleanup\n", script)
+        self.assertIn("node=stack-node-1", script)
         self.assertIn("docker stop", script)
         self.assertIn("docker start", script)
+
+    def test_check_once_repairs_confirmed_empty_block_storm_with_cleanuptips(self) -> None:
+        now = 1_779_200_000
+        status = {
+            "failures": [],
+            "stack_failures": [],
+            "miner_failures": [],
+            "warnings": ["node is logging repeated DAG empty-block lookups"],
+            "sync_warnings": ["node is logging repeated DAG empty-block lookups"],
+            "overall": "syncing",
+            "mining_address": "0x1111111111111111111111111111111111111111",
+            "pool_health": {},
+            "miner_health": {"connected_count": 0, "connected_count_effective": 0, "miners": []},
+            "nodes": {
+                "node": {
+                    "child_running": True,
+                    "dag_empty_block_storm": True,
+                    "dag_empty_block_warnings": 80,
+                    "dag_empty_block_lines": ["get block module=DAG error=empty blockID=8564000"],
+                }
+            },
+            "sync_health": {
+                "needs_chain_sync_repair": True,
+                "dag_empty_block_storm": True,
+                "dag_empty_block_storm_nodes": {"node": {"warnings": 80}},
+            },
+            "sync_progress": {
+                "nodes": {"node": {"current_block": 10_658_989, "remaining_blocks": 2289, "status": "syncing"}}
+            },
+        }
+        state: dict[str, object] = {"consecutive_dag_empty_block_storm": 1}
+        cleanup_calls: list[tuple[str, str]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", lambda _payload: None
+        ), mock.patch.object(watchdog, "collect_status_cached", return_value=status), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(watchdog, "record_earnings_snapshot", return_value={}), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(watchdog, "log", lambda _message: None), mock.patch.object(
+            watchdog,
+            "run_node_dag_tip_cleanup",
+            side_effect=lambda node, reason: cleanup_calls.append((node, reason)) or True,
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("empty-block storm should clean tips first")
+        ), mock.patch.object(
+            watchdog, "run_repair", side_effect=AssertionError("empty-block storm should not use stack repair")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual([("node", cleanup_calls[0][1])], cleanup_calls)
+        self.assertIn("DAG empty-block storm", cleanup_calls[0][1])
+        self.assertEqual(0, result["watchdog_state"]["consecutive_dag_empty_block_storm"])
 
     def test_check_once_repairs_missing_dag_tip_before_generic_restart(self) -> None:
         now = 1_779_200_000

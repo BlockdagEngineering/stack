@@ -100,7 +100,7 @@ def docker_top_has_bdag_child(output: str) -> bool:
         if len(parts) < 2:
             continue
         command = parts[1]
-        if command == "bdag" or command.endswith("/bdag"):
+        if command in {"bdag", "blockdag-node"} or command.endswith(("/bdag", "/blockdag-node")):
             return True
     return False
 

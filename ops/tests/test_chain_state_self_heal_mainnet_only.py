@@ -39,6 +39,14 @@ class ChainStateSelfHealMainnetOnlyTest(unittest.TestCase):
         pre_restore_start = script.split('json_state "started" "chain-state restore started"', 1)[0]
         self.assertNotIn('stop_service_best_effort "$POOL_SERVICE"', pre_restore_start)
 
+    def test_self_heal_rejects_live_hot_rsync_mirror_of_same_node(self) -> None:
+        script = (ROOT / "ops" / "chain-state-self-heal.sh").read_text(encoding="utf-8")
+
+        self.assertIn("reject_live_hot_rsync_source", script)
+        self.assertIn('"live_hot_rsync"', script)
+        self.assertIn('"$NODE_NETWORK_DIR"', script)
+        self.assertIn("is a live_hot_rsync mirror of this node data", script)
+
     def test_self_heal_quarantine_stays_outside_node_data_dir(self) -> None:
         script = (ROOT / "ops" / "chain-state-self-heal.sh").read_text(encoding="utf-8")
 

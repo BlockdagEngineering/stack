@@ -408,6 +408,42 @@ PY
   return 0
 }
 
+reject_live_hot_rsync_source() {
+  local source="$1" manifest
+  for manifest in "$source/manifest.json" "$(dirname "$source")/manifest.json"; do
+    [[ -f "$manifest" ]] || continue
+    if python3 - "$manifest" "$NODE_NETWORK_DIR" <<'PY'
+import json
+import os
+import sys
+
+manifest_path, node_network_dir = sys.argv[1:3]
+try:
+    payload = json.load(open(manifest_path, encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+
+mode = str(payload.get("mode") or "")
+source = str(payload.get("source") or "")
+if mode != "live_hot_rsync" or not source:
+    sys.exit(1)
+
+try:
+    source_real = os.path.realpath(source)
+    node_real = os.path.realpath(node_network_dir)
+except Exception:
+    sys.exit(1)
+
+sys.exit(0 if source_real == node_real else 1)
+PY
+    then
+      log "restore source $source is a live_hot_rsync mirror of this node data according to $manifest"
+      return 1
+    fi
+  done
+  return 0
+}
+
 validate_restore_input() {
   local mode="$1" source="$2"
   case "$mode" in
@@ -422,6 +458,7 @@ validate_restore_input() {
         return 1
       fi
       reject_sealed_artifact_source "$local_source"
+      reject_live_hot_rsync_source "$local_source"
       ;;
     ipfs_artifact|ipfs_index|ipfs_index_file)
       if [[ ! -x "$ROOT/ops/restore-rawdatadir-segment-artifact.py" ]]; then

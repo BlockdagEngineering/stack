@@ -354,6 +354,11 @@ NODE_IRREPARABLE_SYNC_RE = re.compile(
 )
 NODE_MISSING_TRIE_RE = re.compile(r"missing trie node\s+([0-9a-fA-F]+)", re.IGNORECASE)
 NODE_RAWDB_PEBBLE_NOT_FOUND_RE = re.compile(r"\bpebble:\s+not found\b.*\bmodule=RAWDB\b", re.IGNORECASE)
+NODE_RAWDB_FREEZER_MISSING_HEADER_RE = re.compile(
+    r"block header missing,\s*can't freeze block\s+([0-9,]+)",
+    re.IGNORECASE,
+)
+NODE_DAG_EMPTY_BLOCK_RE = re.compile(r"\bempty blockID=(\d+)\b", re.IGNORECASE)
 NODE_DAG_ORDER_MISSING_RE = re.compile(r"DAG can't find block in order\(([\d,]+)\)", re.IGNORECASE)
 NODE_STATE_HISTORY_TRUNCATE_RE = re.compile(
     r"Failed to truncate extra state histories.*?out of range",
@@ -367,6 +372,11 @@ CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS = env_int(
 CHAIN_STATE_RAWDB_NOT_FOUND_RESTORE_WARNINGS = env_int(
     "BDAG_CHAIN_STATE_RAWDB_NOT_FOUND_RESTORE_WARNINGS",
     20,
+    minimum=1,
+)
+CHAIN_STATE_RAWDB_FREEZER_MISSING_HEADER_WARNINGS = env_int(
+    "BDAG_CHAIN_STATE_RAWDB_FREEZER_MISSING_HEADER_WARNINGS",
+    2,
     minimum=1,
 )
 CHAIN_STATE_ORPHAN_STORM_RESTORE_PEER_AHEAD_BLOCKS = env_int(
@@ -534,6 +544,7 @@ NODE_LAG_WARN_BLOCKS = int(os.environ.get("BDAG_NODE_LAG_WARN_BLOCKS", "5"))
 NODE_P2P_ERROR_WARN_COUNT = int(os.environ.get("BDAG_NODE_P2P_ERROR_WARN_COUNT", "10"))
 NODE_ORPHAN_ERROR_STORM_COUNT = int(os.environ.get("BDAG_NODE_ORPHAN_ERROR_STORM_COUNT", "20"))
 NODE_GRAPH_SYNC_CHURN_COUNT = int(os.environ.get("BDAG_NODE_GRAPH_SYNC_CHURN_COUNT", "8"))
+NODE_DAG_EMPTY_BLOCK_STORM_COUNT = env_int("BDAG_NODE_DAG_EMPTY_BLOCK_STORM_COUNT", 40, minimum=1)
 NODE_MINING_RPC_PORT = int(os.environ.get("BDAG_NODE_MINING_RPC_PORT", "38131"))
 NODE_MINING_RPC_USER = os.environ.get("BDAG_NODE_MINING_RPC_USER") or os.environ.get("NODE_RPC_USER", "test")
 NODE_MINING_RPC_PASS = os.environ.get("BDAG_NODE_MINING_RPC_PASS") or os.environ.get("NODE_RPC_PASS", "test")
@@ -3622,10 +3633,22 @@ def parse_node_log(log: str) -> dict[str, Any]:
     irreparable_sync_lines = [line for line in recent if NODE_IRREPARABLE_SYNC_RE.search(line)]
     missing_trie_lines = [line for line in recent if NODE_MISSING_TRIE_RE.search(line)]
     rawdb_not_found_lines = [line for line in recent if NODE_RAWDB_PEBBLE_NOT_FOUND_RE.search(line)]
+    rawdb_freezer_missing_header_lines = [
+        line for line in recent if NODE_RAWDB_FREEZER_MISSING_HEADER_RE.search(line)
+    ]
+    dag_empty_block_lines = [line for line in recent if NODE_DAG_EMPTY_BLOCK_RE.search(line)]
     dag_order_missing_lines = [line for line in recent if NODE_DAG_ORDER_MISSING_RE.search(line)]
     state_history_truncate_lines = [line for line in recent if NODE_STATE_HISTORY_TRUNCATE_RE.search(line)]
     rawdb_not_found_storm = bool(
         len(rawdb_not_found_lines) >= CHAIN_STATE_RAWDB_NOT_FOUND_RESTORE_WARNINGS
+        and len(imported_lines) == 0
+    )
+    rawdb_freezer_missing_header_storm = bool(
+        len(rawdb_freezer_missing_header_lines) >= CHAIN_STATE_RAWDB_FREEZER_MISSING_HEADER_WARNINGS
+        and len(imported_lines) == 0
+    )
+    dag_empty_block_storm = bool(
+        len(dag_empty_block_lines) >= NODE_DAG_EMPTY_BLOCK_STORM_COUNT
         and len(imported_lines) == 0
     )
     blocker_hash = ""
@@ -3662,6 +3685,7 @@ def parse_node_log(log: str) -> dict[str, Any]:
         or "The dag data was damaged" in line
         or "Can't find tip:" in line
         or (rawdb_not_found_storm and NODE_RAWDB_PEBBLE_NOT_FOUND_RE.search(line))
+        or (rawdb_freezer_missing_header_storm and NODE_RAWDB_FREEZER_MISSING_HEADER_RE.search(line))
         or "fatal" in line.lower()
     ]
     return {
@@ -3691,6 +3715,14 @@ def parse_node_log(log: str) -> dict[str, Any]:
         "rawdb_pebble_not_found_storm": rawdb_not_found_storm,
         "rawdb_pebble_not_found_threshold": CHAIN_STATE_RAWDB_NOT_FOUND_RESTORE_WARNINGS,
         "rawdb_pebble_not_found_lines": rawdb_not_found_lines[-5:],
+        "rawdb_freezer_missing_header_warnings": len(rawdb_freezer_missing_header_lines),
+        "rawdb_freezer_missing_header_storm": rawdb_freezer_missing_header_storm,
+        "rawdb_freezer_missing_header_threshold": CHAIN_STATE_RAWDB_FREEZER_MISSING_HEADER_WARNINGS,
+        "rawdb_freezer_missing_header_lines": rawdb_freezer_missing_header_lines[-5:],
+        "dag_empty_block_warnings": len(dag_empty_block_lines),
+        "dag_empty_block_storm": dag_empty_block_storm,
+        "dag_empty_block_threshold": NODE_DAG_EMPTY_BLOCK_STORM_COUNT,
+        "dag_empty_block_lines": dag_empty_block_lines[-5:],
         "dag_order_missing": bool(dag_order_missing_lines),
         "dag_order_missing_lines": dag_order_missing_lines[-5:],
         "state_history_truncate_failure": bool(state_history_truncate_lines),
@@ -3741,6 +3773,12 @@ def chain_data_restore_hard_reasons(node: str, info: Mapping[str, Any]) -> list[
         reasons.append(
             f"{node} raw chain database is repeatedly missing Pebble keys "
             f"({rawdb_not_found_count} RAWDB not-found warning(s)); restore or resync from a verified source"
+        )
+    rawdb_freezer_missing_header_count = safe_int(info.get("rawdb_freezer_missing_header_warnings"), 0)
+    if info.get("rawdb_freezer_missing_header_storm"):
+        reasons.append(
+            f"{node} raw chain freezer is repeatedly missing block headers "
+            f"({rawdb_freezer_missing_header_count} freezer warning(s)); restore or resync from a verified source"
         )
     return reasons
 
@@ -6235,6 +6273,38 @@ def build_catchup_policy(
     }
 
 
+def catchup_template_stall_nodes(
+    managed_node_details: Mapping[str, Any],
+    sync_progress: Mapping[str, Any],
+    sync_progress_health: Mapping[str, Any],
+    catchup_policy: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    if not catchup_policy.get("active"):
+        return {}
+    lag = safe_int(catchup_policy.get("lag_blocks"), -1)
+    if lag <= CATCHUP_PAUSE_THRESHOLD_BLOCKS:
+        return {}
+    active_nodes = set(str(node) for node in (sync_progress_health.get("active_nodes") or []))
+    progress_nodes = sync_progress.get("nodes") if isinstance(sync_progress.get("nodes"), Mapping) else {}
+    stalled: dict[str, dict[str, Any]] = {}
+    for node, info in managed_node_details.items():
+        if not isinstance(info, Mapping) or node in active_nodes:
+            continue
+        if info.get("importing") or not info.get("node_template_frozen"):
+            continue
+        node_progress = progress_nodes.get(node) if isinstance(progress_nodes.get(node), Mapping) else {}
+        remaining = safe_int(node_progress.get("remaining_blocks"), safe_int(sync_progress.get("remaining_blocks"), lag))
+        if remaining <= CATCHUP_PAUSE_THRESHOLD_BLOCKS:
+            continue
+        stalled[node] = {
+            "remaining_blocks": remaining,
+            "template_freeze_age_seconds": info.get("node_template_freeze_age_seconds"),
+            "template_freeze_count": info.get("node_template_freeze_count") or 0,
+            "lines": info.get("node_template_freeze_lines") or [],
+        }
+    return stalled
+
+
 def node_import_blocks_mining(
     sync_progress: Mapping[str, Any],
     node_name: str,
@@ -6568,6 +6638,11 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
                 f"{node} is logging repeated already-have-block orphan sync errors "
                 f"({parsed['orphan_block_errors']} recent errors, no recent imports)"
             )
+        if managed_node and parsed["dag_empty_block_storm"]:
+            add_sync_warning(
+                f"{node} is logging repeated DAG empty-block lookups "
+                f"({parsed['dag_empty_block_warnings']} recent warnings, no recent imports)"
+            )
         if managed_node and parsed["mining_template_failing"]:
             add_sync_warning(
                 f"{node} cannot create fresh mining templates "
@@ -6613,6 +6688,14 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "rawdb_pebble_not_found_storm": parsed["rawdb_pebble_not_found_storm"],
             "rawdb_pebble_not_found_threshold": parsed["rawdb_pebble_not_found_threshold"],
             "rawdb_pebble_not_found_lines": parsed["rawdb_pebble_not_found_lines"],
+            "rawdb_freezer_missing_header_warnings": parsed["rawdb_freezer_missing_header_warnings"],
+            "rawdb_freezer_missing_header_storm": parsed["rawdb_freezer_missing_header_storm"],
+            "rawdb_freezer_missing_header_threshold": parsed["rawdb_freezer_missing_header_threshold"],
+            "rawdb_freezer_missing_header_lines": parsed["rawdb_freezer_missing_header_lines"],
+            "dag_empty_block_warnings": parsed["dag_empty_block_warnings"],
+            "dag_empty_block_storm": parsed["dag_empty_block_storm"],
+            "dag_empty_block_threshold": parsed["dag_empty_block_threshold"],
+            "dag_empty_block_lines": parsed["dag_empty_block_lines"],
             "p2p_error_lines": parsed["p2p_error_lines"],
             "node_graph_sync_count": parsed["node_graph_sync_count"],
             "node_graph_sync_churn": parsed["node_graph_sync_churn"],
@@ -6815,6 +6898,49 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "import_stale_seconds": NODE_IMPORT_STALE_SECONDS,
         "p2p_error_warn_count": NODE_P2P_ERROR_WARN_COUNT,
         "nodes_with_recent_imports": sum(1 for item in managed_node_details.values() if item.get("importing")),
+        "node_template_frozen": any(
+            bool(item.get("node_template_frozen"))
+            for item in managed_node_details.values()
+            if isinstance(item, Mapping)
+        ),
+        "node_template_frozen_nodes": {
+            node: {
+                "template_freeze_age_seconds": info.get("node_template_freeze_age_seconds"),
+                "template_freeze_count": info.get("node_template_freeze_count") or 0,
+                "lines": info.get("node_template_freeze_lines") or [],
+            }
+            for node, info in managed_node_details.items()
+            if isinstance(info, Mapping) and info.get("node_template_frozen")
+        },
+        "dag_empty_block_storm": any(
+            bool(item.get("dag_empty_block_storm"))
+            for item in managed_node_details.values()
+            if isinstance(item, Mapping)
+        ),
+        "dag_empty_block_storm_nodes": {
+            node: {
+                "warnings": info.get("dag_empty_block_warnings") or 0,
+                "threshold": info.get("dag_empty_block_threshold") or NODE_DAG_EMPTY_BLOCK_STORM_COUNT,
+                "lines": info.get("dag_empty_block_lines") or [],
+            }
+            for node, info in managed_node_details.items()
+            if isinstance(info, Mapping) and info.get("dag_empty_block_storm")
+        },
+        "rawdb_freezer_missing_header_storm": any(
+            bool(item.get("rawdb_freezer_missing_header_storm"))
+            for item in managed_node_details.values()
+            if isinstance(item, Mapping)
+        ),
+        "rawdb_freezer_missing_header_storm_nodes": {
+            node: {
+                "warnings": info.get("rawdb_freezer_missing_header_warnings") or 0,
+                "threshold": info.get("rawdb_freezer_missing_header_threshold")
+                or CHAIN_STATE_RAWDB_FREEZER_MISSING_HEADER_WARNINGS,
+                "lines": info.get("rawdb_freezer_missing_header_lines") or [],
+            }
+            for node, info in managed_node_details.items()
+            if isinstance(info, Mapping) and info.get("rawdb_freezer_missing_header_storm")
+        },
         "needs_chain_sync_repair": False,
         "planned_sync_service": planned_sync_service_name,
         "planned_pause_leader": planned_pause_leader,
@@ -6838,6 +6964,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "missing_trie_node_lines": info.get("missing_trie_node_lines") or [],
             "rawdb_pebble_not_found_warnings": info.get("rawdb_pebble_not_found_warnings") or 0,
             "rawdb_pebble_not_found_lines": info.get("rawdb_pebble_not_found_lines") or [],
+            "rawdb_freezer_missing_header_warnings": info.get("rawdb_freezer_missing_header_warnings") or 0,
+            "rawdb_freezer_missing_header_lines": info.get("rawdb_freezer_missing_header_lines") or [],
         }
         for node, info in managed_node_details.items()
         if (reasons := chain_data_restore_hard_reasons(node, info))
@@ -7322,6 +7450,24 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         if sync_progress.get("status") == "syncing" and not failures and not pool_health["needs_pool_repair"]:
             sync_health["needs_chain_sync_repair"] = False
     sync_health["sync_progress_health"] = sync_progress_health
+    stalled_template_nodes = catchup_template_stall_nodes(
+        managed_node_details,
+        sync_progress,
+        sync_progress_health,
+        catchup_policy,
+    )
+    if stalled_template_nodes:
+        sync_health["catchup_template_stall"] = True
+        sync_health["catchup_template_stall_nodes"] = stalled_template_nodes
+        sync_health["needs_chain_sync_repair"] = True
+    dag_empty_block_nodes = {
+        node: info
+        for node, info in (sync_health.get("dag_empty_block_storm_nodes") or {}).items()
+        if node not in active_sync_progress_nodes
+    }
+    if dag_empty_block_nodes:
+        sync_health["dag_empty_block_storm_nodes"] = dag_empty_block_nodes
+        sync_health["needs_chain_sync_repair"] = True
 
     overall = "ok"
     if failures:

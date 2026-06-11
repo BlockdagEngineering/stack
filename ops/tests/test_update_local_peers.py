@@ -113,6 +113,17 @@ class UpdateLocalPeersActiveMiningGuardTest(unittest.TestCase):
         self.assertIn(["docker", "compose", "ps", "-q", "node"], calls)
         self.assertIn(["docker", "logs", "--tail", "5000", "compose-node-id"], calls)
 
+    def test_docker_top_detects_blockdag_node_child(self) -> None:
+        output = "\n".join(
+            [
+                "PID                 COMMAND             COMMAND",
+                "1128104             nodeworker          /usr/local/bin/nodeworker --node-binary=/usr/local/bin/blockdag-node",
+                "1128116             blockdag-node       /usr/local/bin/blockdag-node --configfile /etc/bdagStack/node.conf",
+            ]
+        )
+
+        self.assertTrue(update_local_peers.docker_top_has_bdag_child(output))
+
     def test_generated_node_peer_addresses_do_not_reseed_candidates(self) -> None:
         generated_peer = "/ip4/199.229.220.118/tcp/60001/p2p/generatedPeer"
         bootstrap_peer = "/ip4/13.57.132.47/tcp/8150/p2p/bootstrapPeer"
