@@ -186,6 +186,87 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.assertFalse(safety["public_chain_diverged"])
         self.assertIn("diagnostic", safety["reason"])
 
+    def test_public_alignment_treats_hash_only_mismatch_as_diagnostic_during_lag(self) -> None:
+        pool_ops.EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS = 3
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES = 2
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG = 1000
+
+        def fake_json_rpc(url, method, params, timeout):
+            if method == "eth_getBlockByNumber":
+                height = int(params[0], 16)
+                suffix = "local" if url == "http://local:18545" else "reference"
+                return {
+                    "number": params[0],
+                    "hash": f"0x{height:060x}{1 if suffix == 'local' else 2:04x}",
+                    "miner": "0x05518e03e148c56e426ff9e1cbdb962b4fc5250a",
+                    "timestamp": hex(1780784000 + height),
+                }
+            raise AssertionError(method)
+
+        pool_ops.json_rpc_call = fake_json_rpc
+
+        alignment = pool_ops.evm_public_chain_alignment(
+            local_url="http://local:18545",
+            reference_source="public",
+            reference_url="http://public:18545",
+            local_block=8000,
+            reference_block=10000,
+            reference_lag=2000,
+            mining_address="0x05518e03e148c56e426ff9e1cbdb962b4fc5250a",
+            timeout=8.0,
+        )
+
+        self.assertEqual(alignment["hash_mismatch_count"], 3)
+        self.assertEqual(alignment["miner_mismatch_count"], 0)
+        self.assertEqual(alignment["timestamp_mismatch_count"], 0)
+        self.assertFalse(alignment["hash_divergence_suspected"])
+        self.assertFalse(alignment["public_chain_diverged"])
+        self.assertIn("hash mismatch is diagnostic", alignment["reason"])
+
+    def test_public_alignment_rejects_identity_mismatch_during_lag(self) -> None:
+        pool_ops.EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS = 3
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES = 2
+        pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG = 1000
+
+        def fake_json_rpc(url, method, params, timeout):
+            if method == "eth_getBlockByNumber":
+                height = int(params[0], 16)
+                if url == "http://local:18545":
+                    miner = "0x05518e03e148c56e426ff9e1cbdb962b4fc5250a"
+                    timestamp = 1780784000 + height
+                    suffix = 1
+                else:
+                    miner = "0x12d8377d571cebf2da043fbcad94f4bd85157a78"
+                    timestamp = 1780785000 + height
+                    suffix = 2
+                return {
+                    "number": params[0],
+                    "hash": f"0x{height:060x}{suffix:04x}",
+                    "miner": miner,
+                    "timestamp": hex(timestamp),
+                }
+            raise AssertionError(method)
+
+        pool_ops.json_rpc_call = fake_json_rpc
+
+        alignment = pool_ops.evm_public_chain_alignment(
+            local_url="http://local:18545",
+            reference_source="public",
+            reference_url="http://public:18545",
+            local_block=8000,
+            reference_block=10000,
+            reference_lag=2000,
+            mining_address="0x05518e03e148c56e426ff9e1cbdb962b4fc5250a",
+            timeout=8.0,
+        )
+
+        self.assertEqual(alignment["hash_mismatch_count"], 3)
+        self.assertEqual(alignment["miner_mismatch_count"], 3)
+        self.assertEqual(alignment["timestamp_mismatch_count"], 3)
+        self.assertTrue(alignment["hash_divergence_suspected"])
+        self.assertTrue(alignment["public_chain_diverged"])
+        self.assertIn("identity differs", alignment["reason"])
+
     def test_canonical_safety_allows_public_reference_below_unsafe_lag(self) -> None:
         pool_ops.EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE = False
         pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG = 1000

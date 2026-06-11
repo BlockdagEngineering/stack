@@ -7970,6 +7970,7 @@ def evm_public_chain_alignment(
         "reference_sample_count": 0,
         "hash_mismatch_count": 0,
         "miner_mismatch_count": 0,
+        "timestamp_mismatch_count": 0,
         "local_miners": [],
         "reference_miners": [],
         "local_solo_miner": False,
@@ -8016,6 +8017,12 @@ def evm_public_chain_alignment(
                 and local_summary["miner"] != reference_summary["miner"]
             ):
                 alignment["miner_mismatch_count"] += 1
+            if (
+                local_summary.get("timestamp") is not None
+                and reference_summary.get("timestamp") is not None
+                and local_summary["timestamp"] != reference_summary["timestamp"]
+            ):
+                alignment["timestamp_mismatch_count"] += 1
     alignment["local_samples"] = local_samples
     alignment["reference_samples"] = reference_samples
     alignment["sample_errors"] = errors[:6]
@@ -8052,6 +8059,7 @@ def evm_public_chain_alignment(
         compared_count > 0
         and lag_is_unsafe
         and int(alignment["hash_mismatch_count"]) >= hash_divergence_threshold
+        and (int(alignment["miner_mismatch_count"]) > 0 or int(alignment["timestamp_mismatch_count"]) > 0)
     )
     solo_mining_suspected = bool(
         enough_samples
@@ -8064,7 +8072,7 @@ def evm_public_chain_alignment(
     alignment["public_chain_diverged"] = bool(hash_divergence_suspected or solo_mining_suspected)
     if hash_divergence_suspected:
         alignment["reason"] = (
-            "same-height local EVM block hashes differ from an ahead public reference; "
+            "same-height local EVM block identity differs from an ahead public reference; "
             "the local node must not mine until it rejoins the public chain"
         )
     elif solo_mining_suspected:
@@ -8076,6 +8084,11 @@ def evm_public_chain_alignment(
         alignment["reason"] = "not enough comparable local/public EVM headers"
     elif not lag_is_unsafe:
         alignment["reason"] = "public EVM reference lag is below the unsafe threshold"
+    elif int(alignment["hash_mismatch_count"]) >= hash_divergence_threshold:
+        alignment["reason"] = (
+            "local/public EVM block hashes differ but miner and timestamp samples align; "
+            "hash mismatch is diagnostic for this node build while catch-up lag controls mining readiness"
+        )
     elif not local_solo_miner:
         alignment["reason"] = "local sampled EVM headers are not a solo signature for the configured mining address"
     elif not reference_has_other_miners:
