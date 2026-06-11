@@ -86,6 +86,37 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertEqual(2, len(parsed["node_busy_syncing_lines"]))
         self.assertIn("node busy syncing", parsed["node_busy_syncing_lines"][0].lower())
 
+    def test_node_log_marks_graph_sync_churn_as_busy_syncing(self) -> None:
+        parsed = pool_ops.parse_node_log(
+            "\n".join(
+                [
+                    f"2026-06-11|06:32:{second:02d}.001 [INFO ] Syncing graph state module=SYNC cur=(1,2,3,4,1) target=(5,6,7,8,2)"
+                    for second in range(pool_ops.NODE_GRAPH_SYNC_CHURN_COUNT)
+                ]
+            )
+        )
+
+        self.assertTrue(parsed["node_graph_sync_churn"])
+        self.assertTrue(parsed["node_busy_syncing"])
+        self.assertGreaterEqual(
+            parsed["node_graph_sync_count"],
+            pool_ops.NODE_GRAPH_SYNC_CHURN_COUNT,
+        )
+
+    def test_node_log_marks_template_freeze_as_busy_syncing(self) -> None:
+        parsed = pool_ops.parse_node_log(
+            "\n".join(
+                [
+                    "2026-06-11|06:24:01.074 [WARN ] TEMPLATE FREEZE DETECTED module=miner",
+                    "2026-06-11|06:24:01.074 [WARN ] Same parent hash for 170.0 seconds! module=miner",
+                ]
+            )
+        )
+
+        self.assertTrue(parsed["node_template_frozen"])
+        self.assertTrue(parsed["node_busy_syncing"])
+        self.assertEqual(parsed["node_template_freeze_age_seconds"], 170.0)
+
     def test_no_miner_status_suppresses_template_and_rpc_noise(self) -> None:
         now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()
         pool_ops.time.time = lambda: now

@@ -495,6 +495,7 @@ NODE_IMPORT_STALE_SECONDS = int(os.environ.get("BDAG_NODE_IMPORT_STALE_SECONDS",
 NODE_LAG_WARN_BLOCKS = int(os.environ.get("BDAG_NODE_LAG_WARN_BLOCKS", "5"))
 NODE_P2P_ERROR_WARN_COUNT = int(os.environ.get("BDAG_NODE_P2P_ERROR_WARN_COUNT", "10"))
 NODE_ORPHAN_ERROR_STORM_COUNT = int(os.environ.get("BDAG_NODE_ORPHAN_ERROR_STORM_COUNT", "20"))
+NODE_GRAPH_SYNC_CHURN_COUNT = int(os.environ.get("BDAG_NODE_GRAPH_SYNC_CHURN_COUNT", "8"))
 NODE_MINING_RPC_PORT = int(os.environ.get("BDAG_NODE_MINING_RPC_PORT", "38131"))
 NODE_MINING_RPC_USER = os.environ.get("BDAG_NODE_MINING_RPC_USER") or os.environ.get("NODE_RPC_USER", "test")
 NODE_MINING_RPC_PASS = os.environ.get("BDAG_NODE_MINING_RPC_PASS") or os.environ.get("NODE_RPC_PASS", "test")
@@ -3313,6 +3314,19 @@ def parse_node_log(log: str) -> dict[str, Any]:
         for line in recent
         if "ErrStreamRead" in line or "stream reset" in line
     ]
+    graph_sync_lines = [
+        line
+        for line in recent
+        if "Syncing graph state" in line or "The sync of graph state has ended" in line
+    ]
+    template_freeze_lines = [
+        line
+        for line in recent
+        if "TEMPLATE FREEZE DETECTED" in line or "Same parent hash for" in line
+    ]
+    last_template_freeze_line = template_freeze_lines[-1] if template_freeze_lines else None
+    freeze_age_match = FREEZE_RE.search(last_template_freeze_line or "")
+    template_freeze_age_seconds = float(freeze_age_match.group(1)) if freeze_age_match else None
     orphan_error_lines = [
         line
         for line in recent
@@ -3330,6 +3344,14 @@ def parse_node_log(log: str) -> dict[str, Any]:
         for line in recent
         if "node busy syncing" in line.lower()
     ]
+    graph_sync_churn = bool(
+        len(graph_sync_lines) >= NODE_GRAPH_SYNC_CHURN_COUNT
+        and len(imported_lines) == 0
+    )
+    template_freeze = bool(
+        template_freeze_age_seconds is not None
+        and template_freeze_age_seconds >= POOL_TEMPLATE_FREEZE_SECONDS
+    )
     not_dag_block_lines = [line for line in recent if NODE_NOT_DAG_BLOCK_RE.search(line)]
     irreparable_sync_lines = [line for line in recent if NODE_IRREPARABLE_SYNC_RE.search(line)]
     missing_trie_lines = [line for line in recent if NODE_MISSING_TRIE_RE.search(line)]
@@ -3391,6 +3413,14 @@ def parse_node_log(log: str) -> dict[str, Any]:
         "missing_trie_node_warnings": len(missing_trie_lines),
         "missing_trie_node_lines": missing_trie_lines[-5:],
         "p2p_error_lines": (invalid_peer_lines + p2p_stream_lines)[-5:],
+        "node_graph_sync_count": len(graph_sync_lines),
+        "node_graph_sync_churn": graph_sync_churn,
+        "node_graph_sync_churn_threshold": NODE_GRAPH_SYNC_CHURN_COUNT,
+        "node_graph_sync_churn_lines": graph_sync_lines[-5:],
+        "node_template_freeze_count": len(template_freeze_lines),
+        "node_template_freeze_age_seconds": template_freeze_age_seconds,
+        "node_template_frozen": template_freeze,
+        "node_template_freeze_lines": template_freeze_lines[-5:],
         "mining_template_error_count": len(template_error_lines),
         "mining_template_hard_error_count": len(template_hard_error_lines),
         "mining_template_transient_tx_error_count": len(template_transient_tx_error_lines),
@@ -3398,8 +3428,8 @@ def parse_node_log(log: str) -> dict[str, Any]:
         "mining_template_error_lines": template_error_lines[-5:],
         "mining_template_hard_error_lines": template_hard_error_lines[-5:],
         "mining_template_failing": len(template_hard_error_lines) >= 3,
-        "node_busy_syncing": bool(busy_syncing_lines),
-        "node_busy_syncing_lines": busy_syncing_lines[-5:],
+        "node_busy_syncing": bool(busy_syncing_lines or graph_sync_churn or template_freeze),
+        "node_busy_syncing_lines": (busy_syncing_lines + graph_sync_lines + template_freeze_lines)[-5:],
         "critical": bool(critical_lines),
         "critical_lines": critical_lines[-5:],
         "tail": recent[-24:],
@@ -6020,7 +6050,16 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
                 f"({parsed['mining_template_error_count']} recent errors)"
             )
         if managed_node and parsed["node_busy_syncing"]:
-            add_sync_warning(f"{node} reports node busy syncing; mining template updates are blocked")
+            if parsed.get("node_graph_sync_churn"):
+                add_sync_warning(
+                    f"{node} is churning graph-state sync without recent imports; mining template updates are blocked"
+                )
+            elif parsed.get("node_template_frozen"):
+                add_sync_warning(
+                    f"{node} reports frozen mining templates; mining template updates are blocked"
+                )
+            else:
+                add_sync_warning(f"{node} reports node busy syncing; mining template updates are blocked")
 
         node_details[node] = {
             "role": node_role(node),
@@ -6047,6 +6086,14 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "missing_trie_node_warnings": parsed["missing_trie_node_warnings"],
             "missing_trie_node_lines": parsed["missing_trie_node_lines"],
             "p2p_error_lines": parsed["p2p_error_lines"],
+            "node_graph_sync_count": parsed["node_graph_sync_count"],
+            "node_graph_sync_churn": parsed["node_graph_sync_churn"],
+            "node_graph_sync_churn_threshold": parsed["node_graph_sync_churn_threshold"],
+            "node_graph_sync_churn_lines": parsed["node_graph_sync_churn_lines"],
+            "node_template_freeze_count": parsed["node_template_freeze_count"],
+            "node_template_freeze_age_seconds": parsed["node_template_freeze_age_seconds"],
+            "node_template_frozen": parsed["node_template_frozen"],
+            "node_template_freeze_lines": parsed["node_template_freeze_lines"],
             "mining_template_error_count": parsed["mining_template_error_count"],
             "mining_template_hard_error_count": parsed["mining_template_hard_error_count"],
             "mining_template_transient_tx_error_count": parsed["mining_template_transient_tx_error_count"],
@@ -6606,12 +6653,12 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
                 updated_node_progress["error"] = "node busy syncing" if node in busy_syncing_nodes else "node importing blocks"
                 nodes_progress[node] = updated_node_progress
         sync_progress["nodes"] = nodes_progress
-        sync_health["node_busy_syncing"] = bool(busy_syncing_nodes)
-        if busy_syncing_nodes:
-            sync_health["node_busy_syncing_nodes"] = busy_syncing_nodes
-        sync_health["node_importing"] = bool(active_import_nodes)
-        if active_import_nodes:
-            sync_health["node_importing_nodes"] = active_import_nodes
+    sync_health["node_busy_syncing"] = bool(busy_syncing_nodes)
+    if busy_syncing_nodes:
+        sync_health["node_busy_syncing_nodes"] = busy_syncing_nodes
+    sync_health["node_importing"] = bool(active_import_nodes)
+    if active_import_nodes:
+        sync_health["node_importing_nodes"] = active_import_nodes
     catchup_mining_ready = bool(
         sync_progress.get("status") == "synced"
         and (not selected_source_unready_reasons or pool_has_recent_paid_work)
