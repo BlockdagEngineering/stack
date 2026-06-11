@@ -76,7 +76,8 @@ def bootstrap_stack_env() -> None:
     if not stack_defaults.is_absolute():
         stack_defaults = project_root / stack_defaults
 
-    for path in (stack_defaults, ops_env, pool_env, project_root / ".env"):
+    protected_env = set(os.environ)
+    for index, path in enumerate((stack_defaults, ops_env, pool_env, project_root / ".env")):
         if path is None or not path.exists():
             continue
         for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -90,7 +91,12 @@ def bootstrap_stack_env() -> None:
             value = value.strip()
             if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
                 value = value[1:-1]
-            os.environ.setdefault(key, value)
+            if key in protected_env:
+                continue
+            if index == 0:
+                os.environ.setdefault(key, value)
+            else:
+                os.environ[key] = value
     apply_stack_env_aliases()
 
 

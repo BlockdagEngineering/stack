@@ -326,6 +326,42 @@ class MinerRegistryIdentityTests(unittest.TestCase):
         self.assertIn("192.168.1.103=28:e2:97:1e:c0:b5", override_value)
         self.assertIn("192.168.1.100=28:e2:97:4d:44:3a", override_value)
 
+    def test_project_env_overrides_blank_stack_default_for_expected_macs(self) -> None:
+        keys = (
+            "BDAG_PROJECT_ROOT",
+            "BDAG_RUNTIME_DIR",
+            "BDAG_POOL_ENV_FILE",
+            "BDAG_OPS_ENV_FILE",
+            "BDAG_STACK_DEFAULTS_FILE",
+            "BDAG_ASIC_EXPECTED_MACS",
+        )
+        original = {key: os.environ.get(key) for key in keys}
+        self.addCleanup(
+            lambda: [
+                os.environ.pop(key, None) if value is None else os.environ.__setitem__(key, value)
+                for key, value in original.items()
+            ]
+        )
+        project_root = pathlib.Path(self.tmp.name) / "project"
+        runtime_dir = project_root / "ops" / "runtime"
+        config_dir = project_root / "ops" / "config"
+        config_dir.mkdir(parents=True)
+        runtime_dir.mkdir(parents=True)
+        stack_defaults = config_dir / "stack-defaults.env"
+        pool_env = project_root / ".env"
+        stack_defaults.write_text("BDAG_ASIC_EXPECTED_MACS=\n", encoding="utf-8")
+        pool_env.write_text("BDAG_ASIC_EXPECTED_MACS=28:e2:97:1e:c0:b5\n", encoding="utf-8")
+        for key in keys:
+            os.environ.pop(key, None)
+        os.environ["BDAG_PROJECT_ROOT"] = str(project_root)
+        os.environ["BDAG_RUNTIME_DIR"] = str(runtime_dir)
+        os.environ["BDAG_POOL_ENV_FILE"] = str(pool_env)
+        os.environ["BDAG_STACK_DEFAULTS_FILE"] = str(stack_defaults)
+
+        pool_ops.bootstrap_stack_env()
+
+        self.assertEqual(os.environ["BDAG_ASIC_EXPECTED_MACS"], "28:e2:97:1e:c0:b5")
+
     def test_lan_hint_updates_same_mac_current_route(self) -> None:
         old_target = os.environ.get("BDAG_MINER_SCAN_TARGET")
         os.environ["BDAG_MINER_SCAN_TARGET"] = "192.168.1.0/24"
