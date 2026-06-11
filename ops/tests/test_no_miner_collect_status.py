@@ -313,7 +313,7 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             "template_conversion_stall": {},
             "loss_ledger": {},
         }
-        pool_ops.collect_miner_health = lambda: {
+        pool_ops.collect_miner_health = lambda *_args, **_kwargs: {
             "managed_count": 0,
             "connected_count": 0,
             "failures": [],
@@ -444,7 +444,7 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             "template_conversion_stall": {},
             "loss_ledger": {},
         }
-        pool_ops.collect_miner_health = lambda: {
+        pool_ops.collect_miner_health = lambda *_args, **_kwargs: {
             "managed_count": 0,
             "connected_count": 0,
             "failures": [],
@@ -568,7 +568,7 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             "template_conversion_stall": {},
             "loss_ledger": {},
         }
-        pool_ops.collect_miner_health = lambda: {
+        pool_ops.collect_miner_health = lambda *_args, **_kwargs: {
             "managed_count": 0,
             "connected_count": 0,
             "failures": [],
@@ -753,7 +753,7 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             "stale-lane mac=38:1f:8d:fb:ea:fc observed_ip=192.168.1.103 "
             "ASIC API/health check is unreachable and no recent pool submissions were seen"
         )
-        pool_ops.collect_miner_health = lambda: {
+        pool_ops.collect_miner_health = lambda *_args, **_kwargs: {
             "managed_count": 2,
             "connected_count": 0,
             "failures": [stale_lane_failure],

@@ -192,6 +192,23 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         pool_fault_status["pool_health"]["expired_job_reconnect_failed_no_share"] = True
         self.assertEqual([], watchdog.asic_api_stall_primary_miners(pool_fault_status, stale_seconds=180))
 
+    def test_api_stall_detector_uses_authorized_mac_lane_absence_over_fresh_chatter(self) -> None:
+        row = api_stalled_asic_row(stale_age=3)
+        row["connected"] = True
+        row["pool_lane_expected"] = True
+        row["pool_lane_authorized"] = False
+        row["issue"] = (
+            "miner request failed for 192.168.1.16/mcb/cgminer?cgminercmd=devs: "
+            "connection reset by peer"
+        )
+        status = status_for([row], expected=1, imbalanced=0)
+
+        affected = watchdog.asic_api_stall_primary_miners(status, stale_seconds=180)
+
+        self.assertEqual(1, len(affected))
+        self.assertTrue(affected[0]["pool_authorized_missing"])
+        self.assertTrue(affected[0]["restart_open_first"])
+
     def test_api_stall_watchdog_restarts_one_asic_open_first_after_confirmation(self) -> None:
         row = api_stalled_asic_row()
         status = {

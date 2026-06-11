@@ -908,6 +908,48 @@ def effective_connected_miner_count(
     )
 
 
+def source_job_health_lane_summary(source_job_health: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return current Stratum lane state from the pool's authoritative job-health feed."""
+    if not isinstance(source_job_health, Mapping):
+        return {
+            "job_state_available": False,
+            "active_lane_ids": [],
+            "authorized_lane_ids": [],
+            "ready_lane_ids": [],
+            "clients_by_lane": {},
+        }
+    active: set[str] = set()
+    authorized: set[str] = set()
+    ready: set[str] = set()
+    clients_by_lane: dict[str, list[dict[str, Any]]] = {}
+    for client in source_job_health.get("clients") or []:
+        if not isinstance(client, Mapping):
+            continue
+        lane_id = str(client.get("lane_id") or "").strip()
+        mac = normalize_mac(client.get("asic_mac"))
+        if not lane_id and mac:
+            lane_id = f"mac:{mac}"
+        if not lane_id:
+            continue
+        item = dict(client)
+        item["lane_id"] = lane_id
+        if mac:
+            item["asic_mac"] = mac
+        clients_by_lane.setdefault(lane_id, []).append(item)
+        active.add(lane_id)
+        if item.get("authorized"):
+            authorized.add(lane_id)
+        if item.get("ready"):
+            ready.add(lane_id)
+    return {
+        "job_state_available": bool(source_job_health.get("job_state_available")),
+        "active_lane_ids": sorted(active),
+        "authorized_lane_ids": sorted(authorized),
+        "ready_lane_ids": sorted(ready),
+        "clients_by_lane": clients_by_lane,
+    }
+
+
 def miner_failures_block_stack(
     miner_failures: list[str],
     connected_miners: int,
@@ -4543,10 +4585,43 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
                 share_processing_sum += value
             elif metric_name == "pool_submit_stall_recoveries_total":
                 submit_recoveries[_metric_counter_key(labels, "action", "reason")] += value
+
+        try:
+            raw_job_state = fetch_text_url(
+                f"http://{endpoint}/health/job-state",
+                {"accept": "application/json", "user-agent": HTTP_USER_AGENT},
+                timeout=POOL_METRICS_TIMEOUT,
+            )
+            job_state = json.loads(raw_job_state)
+            if isinstance(job_state, dict):
+                row["job_state_status"] = "ok"
+                source_job_health["job_state_available"] = True
+                source_job_health["status"] = str(job_state.get("status") or "")
+                source_job_health["reason_code"] = str(job_state.get("reason_code") or "")
+                source_job_health["active_connections"] = safe_int(job_state.get("active_connections"), 0)
+                source_job_health["authorized_miners"] = safe_int(job_state.get("authorized_connections"), 0)
+                source_job_health["subscribed_miners"] = safe_int(job_state.get("subscribed_connections"), 0)
+                source_job_health["ready_miners"] = safe_int(job_state.get("ready_connections"), 0)
+                source_job_health["current_template_seq"] = safe_int(job_state.get("current_template_seq"), 0)
+                source_job_health["current_parent"] = str(job_state.get("current_parent") or "")
+                source_job_health["last_broadcast_age_ms"] = safe_int(job_state.get("last_broadcast_age_ms"), 0)
+                clients = source_job_health.setdefault("clients", [])
+                if isinstance(clients, list):
+                    clients.extend(
+                        dict(client)
+                        for client in (job_state.get("clients") or [])
+                        if isinstance(client, dict)
+                    )
+            else:
+                row["job_state_status"] = "invalid"
+        except Exception as exc:  # noqa: BLE001 - job-state augments Prometheus and must not hide metrics.
+            row["job_state_status"] = "unavailable"
+            row["job_state_error"] = str(exc)
         payload["containers"][name] = row
         if source_backend_health and not template_backend_source:
             template_backend_source = endpoint
 
+    source_job_health.update(source_job_health_lane_summary(source_job_health))
     annotate_template_delivery_state(source_backend_health)
     payload["status"] = "ok" if any_ok else "unavailable"
     payload["error"] = "; ".join(errors[:3])
@@ -5389,7 +5464,7 @@ def pool_worker_user_matches(actual: Any, expected: Any) -> bool:
     return str(actual or "").lower() == str(expected or "").lower()
 
 
-def collect_miner_health() -> dict[str, Any]:
+def collect_miner_health(source_job_health: Mapping[str, Any] | None = None) -> dict[str, Any]:
     defaults = default_miner_pool_settings()
     activity = collect_pool_activity(lines=POOL_ACTIVITY_LOG_LINES)
     registry = upsert_pool_activity_miners(activity)
@@ -5417,6 +5492,14 @@ def collect_miner_health() -> dict[str, Any]:
             f"{sample}{suffix}; IP addresses remain observations only and are not used as ASIC lanes"
         )
     now_epoch = seconds_since_epoch()
+    pool_lane_summary = source_job_health_lane_summary(source_job_health)
+    pool_job_state_available = bool(pool_lane_summary.get("job_state_available"))
+    active_lane_ids = set(pool_lane_summary.get("active_lane_ids") or [])
+    authorized_lane_ids = set(pool_lane_summary.get("authorized_lane_ids") or [])
+    ready_lane_ids = set(pool_lane_summary.get("ready_lane_ids") or [])
+    clients_by_lane = pool_lane_summary.get("clients_by_lane")
+    if not isinstance(clients_by_lane, dict):
+        clients_by_lane = {}
 
     for registered in miners:
         ip = str(registered.get("ip", ""))
@@ -5525,6 +5608,17 @@ def collect_miner_health() -> dict[str, Any]:
             # Docker bridge clients can appear in pool logs during local health/API calls.
             # They are not physical ASICs and should not affect miner counts or repairs.
             continue
+        lane_id = miner_identity_key({**registered, "mac": mac}) or (f"mac:{mac}" if mac else "")
+        pool_lane_expected = bool(pool_job_state_available and device_type == "asic" and mac and (managed or configured_record))
+        source_lane_clients = clients_by_lane.get(lane_id, []) if lane_id else []
+        pool_lane_seen = bool(pool_lane_expected and lane_id in active_lane_ids)
+        pool_lane_authorized = bool(pool_lane_expected and lane_id in authorized_lane_ids)
+        pool_lane_ready = bool(pool_lane_expected and lane_id in ready_lane_ids)
+        if pool_lane_expected:
+            connected = pool_lane_seen
+            if not pool_lane_authorized:
+                pool_active = False
+                work_pool_active = False
         pool_log_recent = bool(
             activity_item or (last_pool_seen_epoch and now_epoch - last_pool_seen_epoch <= POOL_CONNECTED_STALE_SECONDS)
         )
@@ -5577,7 +5671,20 @@ def collect_miner_health() -> dict[str, Any]:
 
         status = "inactive"
         if managed:
-            if (api_error or debug_error) and not has_recent_shares and not has_recent_blocks and not connected:
+            if pool_lane_expected and not pool_lane_authorized:
+                status = "down" if (api_error or debug_error) else "degraded"
+                label = miner_display_label({**registered, "mac": mac})
+                message = (
+                    f"{label} mac={mac or 'unknown-mac'} observed_ip={ip} is configured/managed "
+                    "but is absent from the pool's current authorized Stratum MAC lanes"
+                    + (f": {api_error or debug_error}" if (api_error or debug_error) else "")
+                )
+                if api_error or debug_error:
+                    failures.append(message)
+                else:
+                    warnings.append(message)
+                issue = issue or message
+            elif (api_error or debug_error) and not has_recent_shares and not has_recent_blocks and not connected:
                 status = "down"
                 label = miner_display_label({**registered, "mac": mac})
                 failures.append(
@@ -5657,6 +5764,12 @@ def collect_miner_health() -> dict[str, Any]:
                 "connected": connected,
                 "pool_active": pool_active,
                 "work_pool_active": work_pool_active,
+                "pool_lane_expected": pool_lane_expected,
+                "pool_lane_seen": pool_lane_seen,
+                "pool_lane_authorized": pool_lane_authorized,
+                "pool_lane_ready": pool_lane_ready,
+                "pool_lane_id": lane_id,
+                "pool_lane_clients": source_lane_clients,
                 "api_error": api_error,
                 "debug_error": debug_error,
                 "issue": issue,
@@ -6512,7 +6625,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         add_sync_warning("pool recently saw RPC connection refused")
 
     if include_logs and running_pool_containers:
-        miner_health = collect_miner_health()
+        miner_health = collect_miner_health(source_job_health)
     elif include_logs:
         miner_health = collect_miner_health_from_registry("pool_container_not_running")
     else:

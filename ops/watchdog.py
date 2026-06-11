@@ -549,7 +549,11 @@ def asic_api_stall_primary_miners(
             continue
         if not is_primary_pool_identity(row, mining_address):
             continue
-        if row.get("connected") or row.get("pool_active") is True or row.get("work_pool_active") is True:
+        pool_authorized_missing = bool(row.get("pool_lane_expected") and not row.get("pool_lane_authorized"))
+        if (
+            (row.get("connected") or row.get("pool_active") is True or row.get("work_pool_active") is True)
+            and not pool_authorized_missing
+        ):
             continue
         if row.get("status") not in {"down", "degraded"}:
             continue
@@ -558,7 +562,7 @@ def asic_api_stall_primary_miners(
             or int_or_none(row.get("last_share_age_seconds"))
             or int_or_none(row.get("last_submit_age_seconds"))
         )
-        if stale_age is not None and stale_age < stale_seconds:
+        if stale_age is not None and stale_age < stale_seconds and not pool_authorized_missing:
             continue
         debug = row.get("debug") if isinstance(row.get("debug"), dict) else {}
         issue_text = " ".join(
@@ -578,6 +582,7 @@ def asic_api_stall_primary_miners(
         item = dict(row)
         item["api_stall_issue"] = issue_text.strip()
         item["api_stall_stale_age_seconds"] = stale_age
+        item["pool_authorized_missing"] = pool_authorized_missing
         item["restart_open_first"] = True
         affected.append(item)
     return affected
