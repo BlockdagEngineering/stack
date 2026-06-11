@@ -156,6 +156,10 @@ jobs:
 
       - name: Validate compose (pool Dockerfile)
         shell: bash
+        env:
+          # docker-compose.yml hard-fails (:?) without the absolute checkout path
+          # for the watchdog/sentinel services.
+          BDAG_STACK_HOST_ROOT: ${{ github.workspace }}
         run: |
           set -euo pipefail
           test -f .env.example
