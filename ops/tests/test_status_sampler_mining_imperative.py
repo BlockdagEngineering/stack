@@ -340,6 +340,33 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertEqual(policy["trigger"], "io_pressure")
         self.assertIn("memory_available_warning", policy["io_pressure_reasons"])
 
+    def test_backend_syncing_catchup_policy_stops_pool_without_known_lag(self) -> None:
+        commands = []
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=None)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["can_mine"] = False
+        payload["can_submit_blocks"] = False
+        payload["sync_health"] = {"node_importing": True}
+        payload["catchup_policy"] = {
+            "active": True,
+            "trigger": "backend_syncing",
+            "lag_blocks": 0,
+            "threshold_blocks": 300,
+            "backend_sync_active": True,
+            "node_sync_busy": True,
+            "mining_ready": False,
+        }
+        status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
+
+        repair = status_sampler.mining_imperative_repair(payload)
+        policy = status_sampler.catchup_policy_from_payload(payload)
+
+        self.assertTrue(policy["active"])
+        self.assertEqual(policy["trigger"], "backend_syncing")
+        self.assertIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
+        self.assertTrue(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
+
     def test_catchup_pause_does_not_stop_pool_with_recent_paid_work(self) -> None:
         commands = []
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []

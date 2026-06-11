@@ -5558,6 +5558,16 @@ def build_catchup_policy(
     mining_ready_for_policy = bool(mining_ready) if mining_ready is not None else not bool(
         backend_unready_reasons
     )
+    node_sync_busy = any(
+        bool(info.get("node_busy_syncing"))
+        or bool(info.get("importing"))
+        or (
+            info.get("last_import_age_seconds") is not None
+            and safe_int(info.get("last_import_age_seconds"), NODE_IMPORT_STALE_SECONDS + 1) <= NODE_IMPORT_STALE_SECONDS
+        )
+        for info in node_details.values()
+        if isinstance(info, Mapping)
+    )
     backend_unready_under_pressure = bool(
         io_pressure_reasons
         and backend_unready_reasons
@@ -5572,11 +5582,21 @@ def build_catchup_policy(
         and io_pressure_lag_active
     )
     lag_threshold_active = bool(lag > CATCHUP_PAUSE_THRESHOLD_BLOCKS and (status != "synced" or not mining_ready_for_policy))
-    pause_candidate_active = bool(io_pressure_active or lag_threshold_active)
+    backend_sync_active = bool(
+        status == "syncing"
+        and node_sync_busy
+        and not mining_ready_for_policy
+        and not pool_has_recent_paid_work
+    )
+    pause_candidate_active = bool(io_pressure_active or lag_threshold_active or backend_sync_active)
     recent_paid_work_suppressed = bool(pool_has_recent_paid_work and pause_candidate_active)
     active = bool(CATCHUP_PAUSE_ENABLED and pause_candidate_active and not recent_paid_work_suppressed)
     pool_running = bool((containers.get(POOL_CONTAINER) or {}).get("running")) if isinstance(containers, Mapping) else False
-    trigger = ("io_pressure" if io_pressure_active else ("lag_threshold" if lag_threshold_active else "")) if active else ""
+    trigger = (
+        "io_pressure"
+        if io_pressure_active
+        else ("lag_threshold" if lag_threshold_active else ("backend_syncing" if backend_sync_active else ""))
+    ) if active else ""
     summary = (
         (
             f"catch-up pause active: chain node is I/O-bound while {lag} blocks behind peers; "
@@ -5588,6 +5608,11 @@ def build_catchup_policy(
         else (
             f"catch-up pause active: chain node is {lag} blocks behind peers "
             f"(threshold {CATCHUP_PAUSE_THRESHOLD_BLOCKS}); mining work is intentionally paused"
+        )
+        if trigger == "lag_threshold"
+        else (
+            "catch-up pause active: chain node is importing or busy syncing while mining templates are not ready; "
+            "mining work is intentionally paused"
         )
         if active
         else ""
@@ -5618,11 +5643,13 @@ def build_catchup_policy(
             "The sampler will allow mining again when I/O pressure drops, peer lag is inside the safe window, "
             "and backend template checks are ready."
         )
-    else:
+    elif trigger == "lag_threshold":
         next_step = (
             f"The sampler will allow mining again when peer lag is at or below "
             f"{CATCHUP_PAUSE_THRESHOLD_BLOCKS} blocks and backend template checks are ready."
         )
+    else:
+        next_step = "The sampler will allow mining again when chain RPC/template checks are healthy and import pressure clears."
     return {
         "enabled": CATCHUP_PAUSE_ENABLED,
         "active": active,
@@ -5639,6 +5666,8 @@ def build_catchup_policy(
         "mining_ready": mining_ready_for_policy,
         "backend_unready_under_pressure": backend_unready_under_pressure,
         "backend_unready_reasons": backend_unready_reasons,
+        "backend_sync_active": backend_sync_active,
+        "node_sync_busy": node_sync_busy,
         "lag_threshold_active": lag_threshold_active,
         "pool_has_recent_paid_work": bool(pool_has_recent_paid_work),
         "recent_paid_work_suppressed": recent_paid_work_suppressed,
@@ -5650,6 +5679,37 @@ def build_catchup_policy(
         "user_message": user_message,
         "next_step": next_step,
     }
+
+
+def node_import_blocks_mining(
+    sync_progress: Mapping[str, Any],
+    node_name: str,
+    node_info: Mapping[str, Any],
+) -> bool:
+    importing = bool(node_info.get("importing"))
+    recent_import = bool(
+        node_info.get("last_import_age_seconds") is not None
+        and safe_int(node_info.get("last_import_age_seconds"), NODE_IMPORT_STALE_SECONDS + 1) <= NODE_IMPORT_STALE_SECONDS
+    )
+    if not (importing or recent_import):
+        return False
+
+    progress_nodes = sync_progress.get("nodes") if isinstance(sync_progress.get("nodes"), Mapping) else {}
+    node_progress = progress_nodes.get(node_name) if isinstance(progress_nodes.get(node_name), Mapping) else {}
+    remaining = safe_int(node_progress.get("remaining_blocks"), safe_int(sync_progress.get("remaining_blocks"), -1))
+    peer_ahead = max(
+        safe_int(node_progress.get("peer_ahead_blocks"), -1),
+        safe_int(sync_progress.get("peer_ahead_blocks"), -1),
+        safe_int(node_info.get("peer_ahead_blocks"), -1),
+    )
+    if remaining > 0 or peer_ahead > 0:
+        return True
+
+    status = str(node_progress.get("status") or sync_progress.get("status") or "").strip().lower()
+    rpc_error = str(node_progress.get("chain_rpc_error") or sync_progress.get("chain_rpc_error") or "").strip()
+    if status in {"synced", "ok"} and remaining == 0 and not rpc_error:
+        return False
+    return status in {"syncing", "unknown", "waiting_for_status_sample", ""} or bool(rpc_error)
 
 
 def collect_status(include_logs: bool = True) -> dict[str, Any]:
@@ -6529,11 +6589,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     active_import_nodes = [
         node
         for node in managed_node_details
-        if bool(node_details.get(node, {}).get("importing"))
-        or (
-            node_details.get(node, {}).get("last_import_age_seconds") is not None
-            and safe_int(node_details.get(node, {}).get("last_import_age_seconds"), NODE_IMPORT_STALE_SECONDS + 1) <= NODE_IMPORT_STALE_SECONDS
-        )
+        if node_import_blocks_mining(sync_progress, node, node_details.get(node, {}))
     ]
     sync_blocked_nodes = unique_names([*busy_syncing_nodes, *active_import_nodes])
     if sync_blocked_nodes and sync_progress.get("status") != "syncing":

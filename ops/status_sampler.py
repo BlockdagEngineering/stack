@@ -605,12 +605,23 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     io_pressure_active = bool(io_pressure_candidate_active and not pool_has_recent_paid_work)
     lag_threshold_active = bool(lag > threshold and (not chain_ready_for_mining(payload) or not mining_ready))
-    pause_candidate_active = bool(io_pressure_candidate_active or lag_threshold_active)
+    sync_progress = dict_value(payload.get("sync_progress"))
+    node_sync_busy = bool(
+        policy.get("node_sync_busy")
+        or sync_health.get("node_busy_syncing")
+        or sync_health.get("node_importing")
+        or sync_progress.get("status") == "syncing"
+    )
+    backend_sync_candidate_active = bool(
+        (policy.get("backend_sync_active") or (sync_progress.get("status") == "syncing" and node_sync_busy))
+        and not mining_ready
+    )
+    pause_candidate_active = bool(io_pressure_candidate_active or lag_threshold_active or backend_sync_candidate_active)
     recent_paid_work_suppressed = bool(pool_has_recent_paid_work and pause_candidate_active)
     active = bool(CATCHUP_PAUSE_ENABLED and pause_candidate_active and not recent_paid_work_suppressed)
     trigger = str(policy.get("trigger") or "")
     if not trigger and active:
-        trigger = "io_pressure" if io_pressure_active else "lag_threshold"
+        trigger = "io_pressure" if io_pressure_active else ("lag_threshold" if lag_threshold_active else "backend_syncing")
     if not active:
         trigger = ""
     return {
@@ -625,6 +636,8 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "io_pressure_reasons": io_pressure_reasons,
         "io_pressure_min_lag_blocks": io_min_lag,
         "backend_unready_under_pressure": backend_unready_under_pressure,
+        "backend_sync_active": bool(backend_sync_candidate_active and not pool_has_recent_paid_work),
+        "node_sync_busy": node_sync_busy,
         "pool_has_recent_paid_work": pool_has_recent_paid_work,
         "lag_threshold_active": lag_threshold_active,
         "mining_ready": mining_ready,

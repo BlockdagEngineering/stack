@@ -176,6 +176,41 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
         self.assertEqual(policy["summary"], "")
         self.assertEqual(policy["user_message"], "")
 
+    def test_catchup_policy_pauses_importing_backend_without_known_lag(self) -> None:
+        policy = pool_ops.build_catchup_policy(
+            {"status": "syncing", "remaining_blocks": None},
+            {"node": {"importing": True, "last_import_age_seconds": 4}},
+            {"pool": {"running": True}},
+            {"node_mineable": False, "node_submit_ready": False},
+            {},
+            mining_ready=False,
+        )
+
+        self.assertTrue(policy["active"])
+        self.assertEqual(policy["trigger"], "backend_syncing")
+        self.assertTrue(policy["backend_sync_active"])
+        self.assertTrue(policy["node_sync_busy"])
+        self.assertFalse(policy["pool_pause_active"])
+        self.assertIn("mining templates are not ready", policy["summary"])
+
+    def test_live_import_does_not_block_when_sync_status_is_synced(self) -> None:
+        self.assertFalse(
+            pool_ops.node_import_blocks_mining(
+                {"status": "synced", "remaining_blocks": 0, "nodes": {"node": {"status": "synced", "remaining_blocks": 0}}},
+                "node",
+                {"importing": True, "last_import_age_seconds": 2},
+            )
+        )
+
+    def test_import_blocks_when_rpc_status_is_unknown(self) -> None:
+        self.assertTrue(
+            pool_ops.node_import_blocks_mining(
+                {"status": "unknown", "remaining_blocks": None, "nodes": {"node": {"status": "unknown"}}},
+                "node",
+                {"importing": True, "last_import_age_seconds": 2},
+            )
+        )
+
 
 class PoolPrometheusMetricsParsingTests(unittest.TestCase):
     def setUp(self) -> None:
