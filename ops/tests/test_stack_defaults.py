@@ -47,6 +47,21 @@ class StackDefaultsTests(unittest.TestCase):
             release_installer,
         )
 
+    def test_native_reference_rpc_defaults_are_stack_owned(self) -> None:
+        defaults = parse_env(ROOT_DIR / "ops/config/stack-defaults.env")
+        self.assertEqual(defaults["BDAG_NATIVE_REFERENCE_RPC_MODE"], "auto")
+        self.assertEqual(defaults["BDAG_NATIVE_REFERENCE_RPC_REMOTE_HOST"], "127.0.0.1")
+        self.assertEqual(defaults["BDAG_NATIVE_REFERENCE_RPC_REMOTE_PORT"], "38131")
+        self.assertEqual(defaults["BDAG_NATIVE_REFERENCE_RPC_LOCAL_BIND"], "127.0.0.1")
+        self.assertEqual(defaults["BDAG_NATIVE_REFERENCE_RPC_LOCAL_PORT"], "38141")
+        self.assertEqual(defaults["BDAG_CHAIN_REFERENCE_RPC_URL"], "")
+        self.assertEqual(defaults["BDAG_IPFS_SEGMENT_REFERENCE_RPC_URL"], "")
+
+        installer = (ROOT_DIR / "ops/install-p2p-services.sh").read_text(encoding="utf-8")
+        self.assertIn("install_native_reference_rpc", installer)
+        self.assertIn("BDAG_NATIVE_REFERENCE_RPC_SSH_TARGET", installer)
+        self.assertIn("setup_native_reference_rpc.py", installer)
+
     def test_compose_tip_lag_fallback_matches_stack_default(self) -> None:
         defaults = parse_env(ROOT_DIR / "ops/config/stack-defaults.env")
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")

@@ -47,6 +47,7 @@ FILES=(
   "ops/ipfs_segment_identity.py"
   "ops/ipfs_segment_trust.py"
   "ops/ipfs_segment_writer.py"
+  "ops/setup_native_reference_rpc.py"
   "ops/restore-rawdatadir-segment-artifact.py"
   "ops/usb-sidecar-restore-from-drive.sh"
   "ops/usb-sidecar-sync-to-drive.sh"

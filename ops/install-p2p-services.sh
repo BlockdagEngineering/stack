@@ -38,8 +38,8 @@ env_value() {
     value="${!key:-}"
   fi
   value="${value:-$fallback}"
-  strip_env_quotes "$value"
-  printf '\n'
+  value="$(strip_env_quotes "$value")"
+  printf '%s\n' "$value"
 }
 
 ensure_ipfs_segment_identity() {
@@ -49,6 +49,56 @@ ensure_ipfs_segment_identity() {
   if ! python3 "$ROOT/ops/ipfs_segment_identity.py" --env-file "$ROOT/.env" --json >/dev/null; then
     warn "Could not provision IPFS segment writer identity. Install python3-cryptography and rerun support-service setup."
     return 1
+  fi
+}
+
+install_native_reference_rpc() {
+  local mode reference_url ssh_target source_rpc_url args=()
+  mode="$(env_value BDAG_NATIVE_REFERENCE_RPC_MODE auto)"
+  if [[ "$mode" =~ ^(0|false|no|off|disabled)$ ]]; then
+    warn "Native reference RPC setup disabled by BDAG_NATIVE_REFERENCE_RPC_MODE=$mode"
+    return 0
+  fi
+  if [[ ! -x "$ROOT/ops/setup_native_reference_rpc.py" ]]; then
+    warn "Native reference RPC setup helper is missing under $ROOT/ops"
+    return 0
+  fi
+  reference_url="$(env_value BDAG_NATIVE_REFERENCE_RPC_URL "$(env_value BDAG_CHAIN_REFERENCE_RPC_URL "")")"
+  ssh_target="$(env_value BDAG_NATIVE_REFERENCE_RPC_SSH_TARGET "")"
+  if [[ -z "$reference_url" && -z "$ssh_target" ]]; then
+    return 0
+  fi
+  source_rpc_url="$(env_value BDAG_CHAIN_SOURCE_RPC_URL "http://127.0.0.1:38131")"
+  args=(--env-file "$ROOT/.env" --source-rpc-url "$source_rpc_url")
+  if [[ -n "$reference_url" ]]; then
+    args+=(--reference-rpc-url "$reference_url")
+  fi
+  if [[ -n "$ssh_target" ]]; then
+    args+=(
+      --ssh-target "$ssh_target"
+      --remote-rpc-host "$(env_value BDAG_NATIVE_REFERENCE_RPC_REMOTE_HOST 127.0.0.1)"
+      --remote-rpc-port "$(env_value BDAG_NATIVE_REFERENCE_RPC_REMOTE_PORT 38131)"
+      --local-bind "$(env_value BDAG_NATIVE_REFERENCE_RPC_LOCAL_BIND 127.0.0.1)"
+      --local-port "$(env_value BDAG_NATIVE_REFERENCE_RPC_LOCAL_PORT 38141)"
+      --key "$(env_value BDAG_NATIVE_REFERENCE_RPC_KEY_PATH "$ROOT/ops/runtime/native-reference-rpc/id_ed25519")"
+      --known-hosts "$(env_value BDAG_NATIVE_REFERENCE_RPC_KNOWN_HOSTS "$ROOT/ops/runtime/native-reference-rpc/known_hosts")"
+    )
+    if [[ "$(env_value BDAG_NATIVE_REFERENCE_RPC_START_TUNNEL 1)" =~ ^(1|true|yes|on)$ ]]; then
+      args+=(--start-tunnel)
+    fi
+  fi
+  local strict=0 output
+  if [[ "$(env_value BDAG_NATIVE_REFERENCE_RPC_STRICT 0)" =~ ^(1|true|yes|on)$ ]]; then
+    strict=1
+    args+=(--strict)
+  fi
+  if ! output="$(python3 "$ROOT/ops/setup_native_reference_rpc.py" "${args[@]}" --json)"; then
+    warn "Native reference RPC validation failed; IPFS segment publication will keep deferring until a native reference is configured."
+    return 1
+  fi
+  if ! python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("ok") else 1)' <<<"$output"; then
+    warn "Native reference RPC validation failed; IPFS segment publication will keep deferring until a native reference is configured."
+    [[ "$strict" -eq 1 ]] && return 1
   fi
 }
 
@@ -70,7 +120,7 @@ retire_legacy_rawdatadir_source_timer() {
     rm -f "$user_systemd_dir/bdag-rawdatadir-source.service" "$user_systemd_dir/bdag-rawdatadir-source.timer"
     removed=1
   fi
-  if [[ "$removed" -eq 1 && command -v systemctl >/dev/null 2>&1 ]]; then
+  if [[ "$removed" -eq 1 ]] && command -v systemctl >/dev/null 2>&1; then
     systemctl --user daemon-reload >/dev/null 2>&1 || true
     warn "Removed retired bdag-rawdatadir-source systemd unit; IPFS raw checkpoints are published by bdag-ipfs-content-sidecar."
   fi
@@ -349,4 +399,5 @@ install_local_peer_timer
 install_mining_host_tuning
 install_rawdatadir_sidecar_timers
 install_ipfs_content_sidecar_timer
+install_native_reference_rpc
 install_ipfs_segment_writer_timer

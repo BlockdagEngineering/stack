@@ -188,6 +188,13 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             compose.count("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED: ${POOL_RPC_ROUTER_NODE_HEALTH_ENABLED:-true}"),
         )
 
+    def test_p2p_installer_env_value_prints_resolved_value(self) -> None:
+        installer = (ROOT_DIR / "ops" / "install-p2p-services.sh").read_text(encoding="utf-8")
+
+        self.assertIn('value="$(strip_env_quotes "$value")"', installer)
+        self.assertIn('printf \'%s\\n\' "$value"', installer)
+        self.assertNotIn("strip_env_quotes \"$value\"\n  printf '\\n'", installer)
+
     def test_pool_node_health_gate_is_enabled_by_default(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
@@ -407,7 +414,8 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             self.assertIn("BDAG_IPFS_SEGMENT_PUBLISH_IPNS=auto", config)
         self.assertIn("install_mining_host_tuning\ninstall_rawdatadir_sidecar_timers", installer)
         self.assertIn("install_rawdatadir_sidecar_timers\ninstall_ipfs_content_sidecar_timer", installer)
-        self.assertIn("install_ipfs_content_sidecar_timer\ninstall_ipfs_segment_writer_timer", installer)
+        self.assertIn("install_ipfs_content_sidecar_timer\ninstall_native_reference_rpc", installer)
+        self.assertIn("install_native_reference_rpc\ninstall_ipfs_segment_writer_timer", installer)
         self.assertLess(
             installer.index("install_rawdatadir_sidecar_timers()"),
             installer.index("install_ipfs_segment_writer_timer()"),
