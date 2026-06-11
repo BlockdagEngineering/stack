@@ -331,6 +331,35 @@ def pool_initial_download_effective(status: dict[str, Any]) -> bool:
     return True
 
 
+def pool_backend_ready_for_miner_diagnostics(status: dict[str, Any]) -> bool:
+    """Return true when the selected backend is mineable even with zero active miners."""
+    pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
+    selected = pool_health.get("selected_backend_source_health")
+    if not isinstance(selected, dict):
+        metrics = pool_health.get("metrics") if isinstance(pool_health.get("metrics"), dict) else {}
+        selected = metrics.get("selected_backend_source_health")
+    if not isinstance(selected, dict):
+        selected = (
+            status.get("selected_backend_source_health")
+            if isinstance(status.get("selected_backend_source_health"), dict)
+            else {}
+        )
+    if isinstance(selected, dict) and selected:
+        if (
+            selected.get("healthy") is not False
+            and selected.get("node_mineable") is True
+            and selected.get("node_submit_ready") is True
+            and selected.get("template_delivery_effective") is True
+        ):
+            return True
+
+    return bool(
+        pool_health.get("source_selected_backend_mineable") is True
+        and pool_health.get("source_selected_backend_submit_ready") is True
+        and pool_health.get("source_selected_backend_p2p_fresh") is not False
+    )
+
+
 def pool_has_recent_mining_work(status: dict[str, Any], freshness_seconds: int = 60) -> bool:
     """Return true only for recent accepted block submissions, not accepted shares."""
     sync_health = status.get("sync_health") if isinstance(status.get("sync_health"), dict) else {}
@@ -510,6 +539,21 @@ ASIC_API_STALL_TEXT_FRAGMENTS = (
 )
 
 
+def miner_restart_error_needs_physical_power_cycle(*errors: object) -> bool:
+    text = " ".join(str(error or "") for error in errors).lower()
+    return any(
+        fragment in text
+        for fragment in (
+            "connection reset",
+            "remote end closed",
+            "timed out",
+            "timeout",
+            "connection refused",
+            "server error",
+        )
+    )
+
+
 def asic_api_stall_primary_miners(
     status: dict[str, Any],
     stale_seconds: int = DEFAULT_ASIC_API_STALL_STALE_SECONDS,
@@ -517,7 +561,10 @@ def asic_api_stall_primary_miners(
     pool_health = status.get("pool_health", status.get("pool", {}))
     if not isinstance(pool_health, dict):
         pool_health = {}
-    if pool_initial_download_effective(status) or int(pool_health.get("job_notify_count") or 0) <= 0:
+    backend_ready = pool_backend_ready_for_miner_diagnostics(status)
+    if pool_initial_download_effective(status) and not backend_ready:
+        return []
+    if int(pool_health.get("job_notify_count") or 0) <= 0 and not backend_ready:
         return []
     if any(
         bool(pool_health.get(key))
@@ -531,7 +578,6 @@ def asic_api_stall_primary_miners(
             "accepted_job_expired_storm",
             "expired_job_reconnect_failed_no_share",
             "block_submit_zero_success_storm",
-            "initial_download",
             "rpc_refused",
         )
     ):
@@ -1222,6 +1268,7 @@ def run_miner_restarts(targets: list[dict[str, Any]], reason: str) -> dict[str, 
                                         "open_restart_error": str(exc),
                                     }
                                 except Exception as auth_exc:  # noqa: BLE001
+                                    needs_power_cycle = miner_restart_error_needs_physical_power_cycle(exc, auth_exc)
                                     result = {
                                         "ip": ip,
                                         "status": "failed",
@@ -1229,13 +1276,24 @@ def run_miner_restarts(targets: list[dict[str, Any]], reason: str) -> dict[str, 
                                         "error": str(exc),
                                         "auth_restart_error": str(auth_exc),
                                     }
+                                    if needs_power_cycle:
+                                        result["physical_power_cycle_required"] = True
+                                        result["operator_action"] = (
+                                            "Power-cycle the ASIC; its HTTP/cgminer control plane refused software restart."
+                                        )
                             else:
+                                needs_power_cycle = miner_restart_error_needs_physical_power_cycle(exc)
                                 result = {
                                     "ip": ip,
                                     "status": "failed",
                                     "action": "restart-open-api-stall",
                                     "error": str(exc),
                                 }
+                                if needs_power_cycle:
+                                    result["physical_power_cycle_required"] = True
+                                    result["operator_action"] = (
+                                        "Power-cycle the ASIC; its HTTP/cgminer control plane refused software restart."
+                                    )
                     elif target.get("configured") is False and password:
                         result = configure_miner(
                             ip=ip,

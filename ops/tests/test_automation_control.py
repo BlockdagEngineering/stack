@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -32,6 +33,14 @@ class AutomationControlTests(unittest.TestCase):
         self.lock_path = self.root / "automation-control.lock"
         self.event_path = self.root / "automation-control-events.jsonl"
         self.now = datetime(2026, 5, 31, 21, 0, tzinfo=timezone.utc)
+        self.old_asic_lan_cidrs = os.environ.get("BDAG_ASIC_LAN_CIDRS")
+        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.1.0/24"
+
+    def tearDown(self) -> None:
+        if self.old_asic_lan_cidrs is None:
+            os.environ.pop("BDAG_ASIC_LAN_CIDRS", None)
+        else:
+            os.environ["BDAG_ASIC_LAN_CIDRS"] = self.old_asic_lan_cidrs
 
     def control_state(
         self,
@@ -383,6 +392,45 @@ class AutomationControlTests(unittest.TestCase):
         lock_handle.close.assert_called_once()
         self.assertEqual("running", writes[0]["status"])
         self.assertEqual("ok", writes[-1]["status"])
+
+    def test_watchdog_api_stall_restart_failure_requests_physical_power_cycle(self) -> None:
+        self.write_state(
+            self.control_state(
+                "transition_hold",
+                allowed_mutations=[f"{automation_control.ACTION_ASIC_MINER_OPEN_RESTART}:*"],
+            )
+        )
+        action_log = self.root / "action-restart-miners.log"
+        lock_handle = unittest.mock.Mock()
+
+        with self.patch_default_control_paths(), unittest.mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), unittest.mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), unittest.mock.patch.object(
+            watchdog, "read_miner_admin_password", return_value="redacted"
+        ), unittest.mock.patch.object(
+            watchdog, "acquire_lock", return_value=lock_handle
+        ), unittest.mock.patch.object(
+            watchdog, "action_log_path", return_value=action_log
+        ), unittest.mock.patch.object(
+            watchdog, "write_action_state", lambda _payload: None
+        ), unittest.mock.patch.object(
+            watchdog, "restart_miner_open", side_effect=RuntimeError("connection reset by peer")
+        ), unittest.mock.patch.object(
+            watchdog, "restart_miner", side_effect=RuntimeError("timed out")
+        ), unittest.mock.patch.object(
+            watchdog, "configure_miner", side_effect=AssertionError("API-stall repair must not rewrite config first")
+        ):
+            result = watchdog.run_miner_restarts(
+                [{"ip": "192.168.1.16", "configured": False, "restart_open_first": True}],
+                "ASIC API-stall watchdog: local API timed out",
+            )
+
+        self.assertEqual("failed", result["status"])
+        self.assertTrue(result["results"][0]["physical_power_cycle_required"])
+        self.assertIn("Power-cycle", result["results"][0]["operator_action"])
+        lock_handle.close.assert_called_once()
 
     def test_sentinel_suppresses_pool_starts_when_control_missing(self) -> None:
         incidents: list[tuple[str, str, str, str]] = []

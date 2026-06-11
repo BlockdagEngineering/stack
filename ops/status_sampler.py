@@ -579,6 +579,7 @@ def catchup_io_pressure_reasons(payload: dict[str, Any]) -> list[str]:
 def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     policy = dict_value(payload.get("catchup_policy"))
     sync_health = dict_value(payload.get("sync_health"))
+    sync_progress = dict_value(payload.get("sync_progress"))
     threshold = safe_int(policy.get("threshold_blocks"), CATCHUP_PAUSE_THRESHOLD_BLOCKS)
     lag = catchup_lag_blocks(payload)
     io_pressure_reasons = policy.get("io_pressure_reasons")
@@ -599,6 +600,14 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
         or bool(policy.get("pool_has_recent_paid_work"))
     )
+    sync_error_text = str(sync_progress.get("error") or sync_progress.get("chain_rpc_error") or "").lower()
+    node_readiness_unavailable = bool(
+        sync_health.get("node_readiness_unavailable")
+        or sync_health.get("chain_rpc_unavailable")
+        or sync_health.get("template_probe_unavailable")
+        or str(sync_progress.get("source") or "") == "nodes:readiness-unavailable"
+        or "readiness unavailable" in sync_error_text
+    )
     backend_unready_under_pressure = bool(
         policy.get("backend_unready_under_pressure")
         or (io_pressure_reasons and not mining_ready and payload.get("can_mine") is False)
@@ -614,23 +623,43 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     io_pressure_active = bool(io_pressure_candidate_active and not pool_has_recent_paid_work)
     lag_threshold_active = bool(lag > threshold and (not chain_ready_for_mining(payload) or not mining_ready))
-    sync_progress = dict_value(payload.get("sync_progress"))
     node_sync_busy = bool(
         policy.get("node_sync_busy")
         or sync_health.get("node_busy_syncing")
         or sync_health.get("node_importing")
         or sync_progress.get("status") == "syncing"
     )
-    backend_sync_candidate_active = bool(
-        (policy.get("backend_sync_active") or (sync_progress.get("status") == "syncing" and node_sync_busy))
+    node_readiness_candidate_active = bool(
+        sync_progress.get("status") == "syncing"
+        and node_readiness_unavailable
         and not mining_ready
     )
-    pause_candidate_active = bool(io_pressure_candidate_active or lag_threshold_active or backend_sync_candidate_active)
+    backend_sync_candidate_active = bool(
+        (policy.get("backend_sync_active") or (sync_progress.get("status") == "syncing" and node_sync_busy))
+        and not node_readiness_candidate_active
+        and not mining_ready
+    )
+    pause_candidate_active = bool(
+        io_pressure_candidate_active
+        or lag_threshold_active
+        or node_readiness_candidate_active
+        or backend_sync_candidate_active
+    )
     recent_paid_work_suppressed = bool(pool_has_recent_paid_work and pause_candidate_active)
     active = bool(CATCHUP_PAUSE_ENABLED and pause_candidate_active and not recent_paid_work_suppressed)
     trigger = str(policy.get("trigger") or "")
-    if not trigger and active:
-        trigger = "io_pressure" if io_pressure_active else ("lag_threshold" if lag_threshold_active else "backend_syncing")
+    if active and node_readiness_candidate_active and trigger in {"", "backend_syncing"} and lag <= 0:
+        trigger = "node_readiness_unavailable"
+    elif not trigger and active:
+        trigger = (
+            "io_pressure"
+            if io_pressure_active
+            else (
+                "lag_threshold"
+                if lag_threshold_active
+                else ("node_readiness_unavailable" if node_readiness_candidate_active else "backend_syncing")
+            )
+        )
     if not active:
         trigger = ""
     return {
@@ -646,6 +675,8 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "io_pressure_min_lag_blocks": io_min_lag,
         "backend_unready_under_pressure": backend_unready_under_pressure,
         "backend_sync_active": bool(backend_sync_candidate_active and not pool_has_recent_paid_work),
+        "node_readiness_unavailable": node_readiness_unavailable,
+        "node_readiness_candidate_active": bool(node_readiness_candidate_active and not pool_has_recent_paid_work),
         "node_sync_busy": node_sync_busy,
         "pool_has_recent_paid_work": pool_has_recent_paid_work,
         "lag_threshold_active": lag_threshold_active,
@@ -656,6 +687,55 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def catchup_pause_active(payload: dict[str, Any]) -> bool:
     return bool(catchup_policy_from_payload(payload).get("active"))
+
+
+def catchup_policy_containment(policy: dict[str, Any]) -> str:
+    if policy.get("trigger") == "node_readiness_unavailable":
+        return "node_readiness_unavailable"
+    return "catchup_pause"
+
+
+def catchup_policy_stop_reason(policy: dict[str, Any], payload: dict[str, Any]) -> str:
+    summary = str(policy.get("summary") or "").strip()
+    if summary:
+        return summary
+
+    trigger = str(policy.get("trigger") or "")
+    lag = safe_int(policy.get("lag_blocks"), -1)
+    threshold = safe_int(policy.get("threshold_blocks"), CATCHUP_PAUSE_THRESHOLD_BLOCKS)
+    sync_health = dict_value(payload.get("sync_health"))
+
+    if trigger == "node_readiness_unavailable":
+        unavailable = []
+        if sync_health.get("chain_rpc_unavailable"):
+            unavailable.append("chain RPC")
+        if sync_health.get("template_probe_unavailable"):
+            unavailable.append("template probe")
+        detail = "/".join(unavailable) if unavailable else "chain RPC/template"
+        return f"node {detail} readiness unavailable; mining work is intentionally paused"
+
+    if trigger == "io_pressure":
+        if lag > 0:
+            return f"node is I/O-bound while {lag} blocks behind peers"
+        return "backend is not ready while the host is I/O-bound"
+
+    if trigger == "lag_threshold" and lag > 0:
+        return f"node is {lag} blocks behind peers (pause threshold {threshold})"
+
+    if trigger == "backend_syncing":
+        if lag > 0:
+            return f"node is {lag} blocks behind peers (pause threshold {threshold})"
+        return "node is importing or busy syncing while mining templates are not ready"
+
+    if lag > 0:
+        return f"node is {lag} blocks behind peers (pause threshold {threshold})"
+    return "chain node is not ready for mining templates"
+
+
+def catchup_policy_allows_node_runtime_adjustment(policy: dict[str, Any]) -> bool:
+    if policy.get("trigger") == "node_readiness_unavailable":
+        return safe_int(policy.get("lag_blocks"), 0) > 0 and bool(policy.get("node_sync_busy"))
+    return True
 
 
 def chain_state_restore_reason_details(payload: dict[str, Any]) -> list[dict[str, str]]:
@@ -1935,13 +2015,14 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
 
     if catchup_active:
         clear_pool_start_stability()
-        reason = (
-            f"node is {catchup_policy.get('lag_blocks')} blocks behind peers "
-            f"(pause threshold {catchup_policy.get('threshold_blocks')})"
-        )
-        if pool_container_running(payload) and stop_pool_container(payload, reason, containment="catchup_pause"):
-            actions.append(f"stopped_container:{POOL_CONTAINER}:catchup_pause")
-        if apply_catchup_node_runtime(payload, catchup_policy):
+        reason = catchup_policy_stop_reason(catchup_policy, payload)
+        containment = catchup_policy_containment(catchup_policy)
+        if pool_container_running(payload) and stop_pool_container(payload, reason, containment=containment):
+            actions.append(f"stopped_container:{POOL_CONTAINER}:{containment}")
+        if (
+            catchup_policy_allows_node_runtime_adjustment(catchup_policy)
+            and apply_catchup_node_runtime(payload, catchup_policy)
+        ):
             actions.append("applied_catchup_node_runtime")
 
     if not catchup_active and node_mining_template_support_should_repair(payload):
@@ -1967,9 +2048,10 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
             if start_pool_container(payload, "; ".join(reasons) or "mining service is required"):
                 actions.append(f"started_container:{POOL_CONTAINER}")
         elif catchup_active:
+            reason = catchup_policy_stop_reason(catchup_policy, payload)
+            containment = catchup_policy_containment(catchup_policy).replace("_", " ")
             log(
-                f"mining imperative left {POOL_CONTAINER} stopped for catch-up pause: "
-                f"lag={catchup_policy.get('lag_blocks')} threshold={catchup_policy.get('threshold_blocks')}"
+                f"mining imperative left {POOL_CONTAINER} stopped for {containment}: {reason}"
             )
         else:
             clear_pool_start_stability()
