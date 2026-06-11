@@ -94,11 +94,11 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--addpeer=/ip4/198.51.100.30/tcp/8150/p2p/peerD", result.stdout)
         self.assertIn("--addpeer=/ip4/16.28.133.168/tcp/8150/p2p/peerA", result.stdout)
-        self.assertIn("--addpeer=/dns4/node.example/tcp/8150/p2p/peerB", result.stdout)
         self.assertNotIn("203.0.113.10", result.stdout)
+        self.assertNotIn("peerB", result.stdout)
         self.assertNotIn("peerC", result.stdout)
-        self.assertNotIn("peerD", result.stdout)
 
 
 if __name__ == "__main__":

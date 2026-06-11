@@ -132,9 +132,9 @@ peer_identity_key() {
 }
 
 bootstrap_peer_limit() {
-  local limit="${BDAG_NODE_PEER_LIMIT:-24}"
+  local limit="${BDAG_NODE_PEER_LIMIT:-8}"
   case "$limit" in
-    ''|*[!0-9]*) printf '24\n' ;;
+    ''|*[!0-9]*) printf '8\n' ;;
     *) printf '%s\n' "$limit" ;;
   esac
 }
@@ -206,7 +206,7 @@ ordered_bootstrap_peers() {
   config_file="${config_file:-/etc/bdagStack/node.conf}"
   config_peers="$(config_addpeer_values "$config_file" | paste -sd, - || true)"
 
-  generic_peers="${BDAG_NODE_PEER_ADDRESSES:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $config_peers $(addpeer_values "$node_args" | paste -sd, - || true)"
+  generic_peers="${BOOTSTRAP_PEER_ADDRESSES:-} $config_peers ${BDAG_NODE_PEER_ADDRESSES:-} $(addpeer_values "$node_args" | paste -sd, - || true)"
   append_peer_list bootstrap_peers "$generic_peers"
 
   join_peer_array
