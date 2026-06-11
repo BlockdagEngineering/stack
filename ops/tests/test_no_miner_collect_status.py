@@ -42,6 +42,9 @@ class NoMinerCollectStatusTests(unittest.TestCase):
                 "observe_sync_progress_health",
                 "read_sync_coordinator_state",
                 "collect_host_pressure",
+                "read_miner_registry",
+                "read_neighbor_macs",
+                "save_miner_registry",
             )
         }
         self.old_time = pool_ops.time.time
@@ -116,6 +119,41 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertTrue(parsed["node_template_frozen"])
         self.assertTrue(parsed["node_busy_syncing"])
         self.assertEqual(parsed["node_template_freeze_age_seconds"], 170.0)
+
+    def test_pool_activity_uses_registry_without_lan_hint_augmentation(self) -> None:
+        calls = []
+
+        def fake_read_miner_registry(*, augment_lan_hints=True):
+            calls.append(augment_lan_hints)
+            return {"miners": []}
+
+        pool_ops.read_miner_registry = fake_read_miner_registry
+        pool_ops.read_neighbor_macs = lambda: {}
+
+        activity = pool_ops.parse_pool_activity("")
+
+        self.assertEqual(activity["miners"], [])
+        self.assertEqual(calls, [False])
+
+    def test_pool_activity_upsert_uses_registry_without_lan_hint_augmentation(self) -> None:
+        calls = []
+
+        def fake_read_miner_registry(*, augment_lan_hints=True):
+            calls.append(augment_lan_hints)
+            return {"miners": []}
+
+        pool_ops.read_miner_registry = fake_read_miner_registry
+        pool_ops.read_neighbor_macs = lambda: {}
+        pool_ops.default_miner_pool_settings = lambda: {
+            "pool_url": "stratum+tcp://192.168.1.120:3334",
+            "worker_user": "0x05518e03e148c56e426ff9e1cbdb962b4fc5250a",
+            "pool_password": "1234",
+        }
+
+        registry = pool_ops.upsert_pool_activity_miners({"miners": []})
+
+        self.assertEqual(registry["miners"], [])
+        self.assertEqual(calls, [False])
 
     def test_no_miner_status_suppresses_template_and_rpc_noise(self) -> None:
         now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()

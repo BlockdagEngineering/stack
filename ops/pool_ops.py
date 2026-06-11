@@ -504,6 +504,7 @@ NODE_TEMPLATE_PROBE_SAMPLES = max(1, int(os.environ.get("BDAG_NODE_TEMPLATE_PROB
 NODE_TEMPLATE_PROBE_TIMEOUT = float(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_TIMEOUT", "1.5"))
 NODE_CHAIN_RPC_TIMEOUT = float(os.environ.get("BDAG_NODE_CHAIN_RPC_TIMEOUT", "8.0"))
 NODE_CHAIN_RPC_RETRIES = max(1, int(os.environ.get("BDAG_NODE_CHAIN_RPC_RETRIES", "2")))
+NEIGHBOR_MAC_CACHE_SECONDS = env_float("BDAG_NEIGHBOR_MAC_CACHE_SECONDS", 2.0, minimum=0.0)
 HOST_PRESSURE_IOWAIT_WARN_PERCENT = env_float("BDAG_HOST_PRESSURE_IOWAIT_WARN_PERCENT", 25.0, minimum=0.0)
 HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT = env_float(
     "BDAG_HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT",
@@ -2008,10 +2009,24 @@ def normalize_mac(value: Any) -> str:
     return text if MAC_RE.fullmatch(text) else ""
 
 
-def read_neighbor_macs() -> dict[str, str]:
+_NEIGHBOR_MACS_CACHE_EPOCH = 0.0
+_NEIGHBOR_MACS_CACHE: dict[str, str] = {}
+
+
+def read_neighbor_macs(*, use_cache: bool = True) -> dict[str, str]:
+    global _NEIGHBOR_MACS_CACHE_EPOCH, _NEIGHBOR_MACS_CACHE
+    now = time.time()
+    if (
+        use_cache
+        and NEIGHBOR_MAC_CACHE_SECONDS > 0
+        and _NEIGHBOR_MACS_CACHE
+        and now - _NEIGHBOR_MACS_CACHE_EPOCH <= NEIGHBOR_MAC_CACHE_SECONDS
+    ):
+        return dict(_NEIGHBOR_MACS_CACHE)
+
     result = run(["ip", "neigh", "show"], timeout=5)
     if not result.ok:
-        return {}
+        return dict(_NEIGHBOR_MACS_CACHE) if use_cache else {}
     neighbors: dict[str, str] = {}
     for line in result.stdout.splitlines():
         parts = line.split()
@@ -2025,6 +2040,9 @@ def read_neighbor_macs() -> dict[str, str]:
         mac = normalize_mac(parts[index + 1])
         if mac:
             neighbors[parts[0]] = mac
+    if use_cache:
+        _NEIGHBOR_MACS_CACHE_EPOCH = now
+        _NEIGHBOR_MACS_CACHE = dict(neighbors)
     return neighbors
 
 
@@ -2547,14 +2565,26 @@ def is_retired_miner_identity(item: dict[str, Any], ip: str = "", mac: str = "")
     return bool(retired_miner_identity_decision(item, ip, mac).get("retired"))
 
 
-def read_miner_registry() -> dict[str, Any]:
+def read_miner_registry(*, augment_lan_hints: bool = True) -> dict[str, Any]:
     registry = read_json_file(MINER_REGISTRY_FILE, {"updated_at": None, "miners": []})
     if not isinstance(registry, dict):
         return {"updated_at": None, "miners": []}
     miners = registry.get("miners")
     if not isinstance(miners, list):
         registry["miners"] = []
+    if not augment_lan_hints:
+        return registry
     return augment_miner_registry_with_lan_hints(registry)
+
+
+def read_miner_registry_without_lan_hints() -> dict[str, Any]:
+    try:
+        return read_miner_registry(augment_lan_hints=False)
+    except TypeError:
+        # Some unit tests monkeypatch read_miner_registry with a zero-argument
+        # fixture. Preserve that test seam while production callers use the
+        # bounded no-augmentation path above.
+        return read_miner_registry()
 
 
 def save_miner_registry(miners: list[dict[str, Any]]) -> dict[str, Any]:
@@ -4423,7 +4453,7 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
     registered_by_ip: dict[str, dict[str, Any]] = {}
     registered_by_mac: dict[str, dict[str, Any]] = {}
 
-    for row in read_miner_registry().get("miners", []):
+    for row in read_miner_registry_without_lan_hints().get("miners", []):
         if not isinstance(row, dict):
             continue
         registered = dict(row)
@@ -4944,7 +4974,7 @@ def collect_pool_activity(lines: int = 2500) -> dict[str, Any]:
 
 def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
     """Persist miners seen passively in the stratum pool logs."""
-    registry = read_miner_registry()
+    registry = read_miner_registry_without_lan_hints()
     registry_had_bridge_pseudo_miners = any(is_docker_bridge_pseudo_miner(item) for item in registry.get("miners", []))
     existing_miners = [dict(item) for item in registry.get("miners", []) if not is_docker_bridge_pseudo_miner(item)]
     existing = {str(item.get("ip")): dict(item) for item in existing_miners if item.get("ip")}
