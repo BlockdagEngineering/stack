@@ -156,6 +156,13 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertEqual(registry["miners"], [])
         self.assertEqual(calls, [False])
 
+    def test_merge_unique_strings_supports_bounded_volatile_lists(self) -> None:
+        values = [str(item) for item in range(100)] + ["1", "2"]
+
+        merged = pool_ops.merge_unique_strings(values, ["100", "101"], limit=5)
+
+        self.assertEqual(merged, ["0", "1", "2", "3", "4"])
+
     def test_registry_only_miner_health_preserves_managed_mac_demand(self) -> None:
         pool_ops.default_miner_pool_settings = lambda: {
             "pool_url": "stratum+tcp://192.168.1.120:3334",
@@ -172,6 +179,7 @@ class NoMinerCollectStatusTests(unittest.TestCase):
                     "managed": True,
                     "last_configured_ok": True,
                     "last_workers": ["0x05518e03e148c56e426ff9e1cbdb962b4fc5250a"],
+                    "last_ports": [str(item) for item in range(100)],
                 }
             ],
         }
@@ -184,6 +192,7 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertEqual(health["connected_count"], 0)
         self.assertEqual(health["miners"][0]["identity_key"], "mac:28:e2:97:1e:c0:b5")
         self.assertEqual(health["miners"][0]["lane_status"], "paused")
+        self.assertEqual(len(health["miners"][0]["ports"]), pool_ops.MINER_REGISTRY_MAX_PORTS)
 
     def test_no_miner_status_suppresses_template_and_rpc_noise(self) -> None:
         now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()

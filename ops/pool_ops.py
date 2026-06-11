@@ -458,6 +458,8 @@ MINER_REGISTRY_POOL_LOG_STALE_SECONDS = int(
 MINER_REGISTRY_EXPECTED_ASIC_STALE_SECONDS = int(
     os.environ.get("BDAG_MINER_REGISTRY_EXPECTED_ASIC_STALE_SECONDS", "86400")
 )
+MINER_REGISTRY_MAX_PORTS = env_int("BDAG_MINER_REGISTRY_MAX_PORTS", 16, minimum=1)
+MINER_REGISTRY_MAX_JOB_EXTRANONCES = env_int("BDAG_MINER_REGISTRY_MAX_JOB_EXTRANONCES", 64, minimum=1)
 try:
     MINER_LOW_DIFF_THRESHOLD = Decimal(os.environ.get("BDAG_MINER_LOW_DIFF_THRESHOLD", "0.02"))
 except InvalidOperation:
@@ -1835,16 +1837,20 @@ def warm_dashboard_history_caches() -> dict[str, Any]:
     return warmed
 
 
-def merge_unique_strings(*values: Any) -> list[str]:
+def merge_unique_strings(*values: Any, limit: int | None = None) -> list[str]:
     result: list[str] = []
+    seen: set[str] = set()
     for value in values:
         if value is None:
             continue
         items = value if isinstance(value, list) else [value]
         for item in items:
             text = str(item or "").strip()
-            if text and text not in result:
+            if text and text not in seen:
                 result.append(text)
+                seen.add(text)
+                if limit is not None and len(result) >= limit:
+                    return result
     return result
 
 
@@ -2232,10 +2238,22 @@ def merge_miner_records(existing: dict[str, Any], incoming: dict[str, Any]) -> d
     result["ip"] = new_ip
     result["sources"] = merge_unique_strings(existing.get("sources"), incoming.get("sources"))
     result["last_workers"] = merge_unique_strings(existing.get("last_workers"), incoming.get("last_workers"))
-    result["last_ports"] = merge_unique_strings(existing.get("last_ports"), incoming.get("last_ports"))
-    incoming_extranonces = merge_unique_strings(incoming.get("last_pool_job_extranonces"))
+    result["last_ports"] = merge_unique_strings(
+        existing.get("last_ports"),
+        incoming.get("last_ports"),
+        limit=MINER_REGISTRY_MAX_PORTS,
+    )
+    incoming_extranonces = merge_unique_strings(
+        incoming.get("last_pool_job_extranonces"),
+        limit=MINER_REGISTRY_MAX_JOB_EXTRANONCES,
+    )
     result["last_pool_job_extranonces"] = (
-        incoming_extranonces if incoming_extranonces else merge_unique_strings(existing.get("last_pool_job_extranonces"))
+        incoming_extranonces
+        if incoming_extranonces
+        else merge_unique_strings(
+            existing.get("last_pool_job_extranonces"),
+            limit=MINER_REGISTRY_MAX_JOB_EXTRANONCES,
+        )
     )
     result["ip_history"] = merge_unique_strings(existing.get("ip_history"), old_ip, incoming.get("ip_history"), new_ip)
     result["managed"] = bool(existing.get("managed") or incoming.get("managed"))
@@ -5012,12 +5030,22 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
         item = dict(item or existing.get(ip, {"ip": ip}))
         previous_ip = str(item.get("ip") or "")
         workers = merge_unique_strings(item.get("last_workers"), miner.get("workers"))
-        ports = merge_unique_strings(item.get("last_ports"), miner.get("ports"))
-        incoming_job_extranonces = merge_unique_strings(miner.get("job_extranonces"))
+        ports = merge_unique_strings(
+            item.get("last_ports"),
+            miner.get("ports"),
+            limit=MINER_REGISTRY_MAX_PORTS,
+        )
+        incoming_job_extranonces = merge_unique_strings(
+            miner.get("job_extranonces"),
+            limit=MINER_REGISTRY_MAX_JOB_EXTRANONCES,
+        )
         job_extranonces = (
             incoming_job_extranonces
             if incoming_job_extranonces
-            else merge_unique_strings(item.get("last_pool_job_extranonces"))
+            else merge_unique_strings(
+                item.get("last_pool_job_extranonces"),
+                limit=MINER_REGISTRY_MAX_JOB_EXTRANONCES,
+            )
         )
         last_seen_log_at = str(miner.get("last_seen_at") or "")
         previous_seen_log_at = str(item.get("last_pool_seen_log_at") or "")
@@ -5167,7 +5195,7 @@ def collect_miner_health_from_registry(reason: str = "pool_container_not_running
                 "expected_pool_url": registered.get("expected_pool_url") or defaults["pool_url"],
                 "expected_worker_user": registered.get("expected_worker_user") or defaults["worker_user"],
                 "workers": merge_unique_strings(registered.get("last_workers")),
-                "ports": merge_unique_strings(registered.get("last_ports")),
+                "ports": merge_unique_strings(registered.get("last_ports"), limit=MINER_REGISTRY_MAX_PORTS),
                 "jobs": int(registered.get("last_jobs_window", 0) or 0),
                 "submits": int(registered.get("last_submits_window", 0) or 0),
                 "shares": int(registered.get("last_shares_window", 0) or 0),
@@ -5279,7 +5307,11 @@ def collect_miner_health() -> dict[str, Any]:
         last_submit_epoch = int(registered.get("last_submit_epoch", 0) or 0)
         last_share_epoch = int(registered.get("last_share_epoch", 0) or 0)
         workers = merge_unique_strings(activity_item.get("workers"), registered.get("last_workers"))
-        ports = merge_unique_strings(activity_item.get("ports"), registered.get("last_ports"))
+        ports = merge_unique_strings(
+            activity_item.get("ports"),
+            registered.get("last_ports"),
+            limit=MINER_REGISTRY_MAX_PORTS,
+        )
         pool_window_fresh = bool(
             not activity_item
             and last_pool_seen_epoch
