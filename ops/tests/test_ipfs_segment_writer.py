@@ -148,6 +148,15 @@ class IPFSSegmentWriterTest(unittest.TestCase):
 
         self.assertEqual("https://rpc.blockdag.engineering", url)
 
+    def test_chain_reference_rpc_candidates_keep_all_public_fallbacks(self) -> None:
+        env = {
+            "BDAG_PUBLIC_RPC_URLS": "bad=https://bad.example,local=http://source:38131,good=https://good.example",
+        }
+
+        urls = ipfs_segment_writer.chain_reference_rpc_candidates(env, "http://source:38131")
+
+        self.assertEqual(["https://bad.example", "https://good.example"], urls)
+
     def test_chain_reference_rpc_url_prefers_explicit_value(self) -> None:
         env = {
             "BDAG_CHAIN_REFERENCE_RPC_URL": "http://reference:38131",
@@ -439,6 +448,55 @@ class IPFSSegmentWriterTest(unittest.TestCase):
 
         self.assertEqual(result["state"], "bootstrap_local_reference_absent")
         self.assertEqual(result["mutation_policy"], "allowed_for_bootstrap_seed_without_roster_only")
+
+    def test_publication_gate_tries_next_public_reference_when_reference_unavailable(self) -> None:
+        env = {
+            "BDAG_PUBLIC_RPC_URLS": "bad=https://bad.example,good=https://good.example",
+        }
+        deferred = {"state": "deferred_reference_unavailable", "trusted": False, "reasons": ["http_403"]}
+        trusted = {"state": "trusted", "trusted": True, "reasons": []}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            ipfs_segment_writer,
+            "run_preflight",
+            side_effect=[deferred, trusted],
+        ) as run_preflight:
+            result = ipfs_segment_writer.publication_integrity_gate(
+                env,
+                Path(tmp) / "index.json",
+                "http://source:38131",
+                "",
+                1,
+                2,
+                {},
+            )
+
+        self.assertEqual("trusted", result["state"])
+        self.assertEqual("https://good.example", result["selected_reference_url"])
+        self.assertEqual(["https://bad.example", "https://good.example"], [call.args[3] for call in run_preflight.call_args_list])
+        self.assertEqual("deferred_reference_unavailable", result["reference_attempts"][0]["state"])
+
+    def test_publication_gate_does_not_fallback_from_explicit_reference(self) -> None:
+        env = {
+            "BDAG_PUBLIC_RPC_URLS": "good=https://good.example",
+        }
+        deferred = {"state": "deferred_reference_unavailable", "trusted": False, "reasons": ["http_403"]}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            ipfs_segment_writer,
+            "run_preflight",
+            return_value=deferred,
+        ) as run_preflight:
+            with self.assertRaises(ipfs_segment_writer.RetryableDefer):
+                ipfs_segment_writer.publication_integrity_gate(
+                    env,
+                    Path(tmp) / "index.json",
+                    "http://source:38131",
+                    "https://explicit.example",
+                    1,
+                    2,
+                    {},
+                )
+
+        run_preflight.assert_called_once()
 
     def test_bootstrap_local_publish_is_fail_closed_by_default(self) -> None:
         election = {
