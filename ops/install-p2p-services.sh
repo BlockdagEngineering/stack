@@ -309,7 +309,16 @@ install_mining_host_tuning() {
   # The installed script runs from /usr/local/sbin under systemd, so persist
   # the release root explicitly. This lets active/passive tuning read the pool
   # metrics/env and prioritize the currently selected mining-template lane.
-  printf 'BDAG_PROJECT_ROOT=%s\n' "$ROOT" | need_sudo tee /etc/default/bdag-mining-host-tuning >/dev/null
+  {
+    printf 'BDAG_PROJECT_ROOT=%s\n' "$ROOT"
+    printf 'BDAG_NODE_MEMORY_LOW=%s\n' "$(env_value BDAG_NODE_MEMORY_LOW 768M)"
+    printf 'BDAG_NODE_MEMORY_HIGH=%s\n' "$(env_value BDAG_NODE_MEMORY_HIGH auto)"
+    printf 'BDAG_NODE_MEMORY_HIGH_PERCENT=%s\n' "$(env_value BDAG_NODE_MEMORY_HIGH_PERCENT 60)"
+    printf 'BDAG_NODE_MEMORY_HIGH_MIN=%s\n' "$(env_value BDAG_NODE_MEMORY_HIGH_MIN 3072M)"
+    printf 'BDAG_POOL_MEMORY_LOW=%s\n' "$(env_value BDAG_POOL_MEMORY_LOW 256M)"
+    printf 'BDAG_POOL_DB_MEMORY_LOW=%s\n' "$(env_value BDAG_POOL_DB_MEMORY_LOW 512M)"
+    printf 'BDAG_DASHBOARD_MEMORY_LOW=%s\n' "$(env_value BDAG_DASHBOARD_MEMORY_LOW 64M)"
+  } | need_sudo tee /etc/default/bdag-mining-host-tuning >/dev/null
   need_sudo systemctl daemon-reload
   need_sudo systemctl enable --now bdag-mining-host-tuning.service
   need_sudo systemctl enable --now bdag-mining-host-tuning.timer

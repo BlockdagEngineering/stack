@@ -20,6 +20,8 @@ class MiningHostTuningTests(unittest.TestCase):
         self.assertIn("label=com.docker.compose.service=$service", script)
         self.assertIn("container_cgroup_root()", script)
         self.assertIn("memory.low", script)
+        self.assertIn('node_memory_high_percent="${BDAG_NODE_MEMORY_HIGH_PERCENT:-60}"', script)
+        self.assertIn('node_memory_high_min="${BDAG_NODE_MEMORY_HIGH_MIN:-3072M}"', script)
         self.assertIn("cpu.weight", script)
         self.assertIn("io.weight", script)
         self.assertIn("BDAG_TUNE_NET_QDISC", script)
@@ -60,6 +62,7 @@ class MiningHostTuningTests(unittest.TestCase):
 
     def test_release_installer_persists_priority_knobs(self) -> None:
         installer = read("ops/release-install.sh")
+        p2p_installer = read("ops/install-p2p-services.sh")
 
         for snippet in (
             "set_env_value .env BDAG_NODE_CPU_SHARES",
@@ -79,6 +82,9 @@ class MiningHostTuningTests(unittest.TestCase):
             "BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT",
         ):
             self.assertIn(snippet, installer)
+        self.assertIn("BDAG_NODE_MEMORY_HIGH_PERCENT=%s", p2p_installer)
+        self.assertIn("$(env_value BDAG_NODE_MEMORY_HIGH_PERCENT 60)", p2p_installer)
+        self.assertIn("$(env_value BDAG_NODE_MEMORY_HIGH_MIN 3072M)", p2p_installer)
 
     def test_host_profile_installer_preserves_invalid_docker_daemon_config(self) -> None:
         installer = read("scripts/install-mining-appliance-profile.sh")

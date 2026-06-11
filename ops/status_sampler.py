@@ -167,9 +167,9 @@ NODE_MINING_CONSTRAINED_ASSIGNMENTS = {
 CATCHUP_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_PAUSE_ENABLED", True)
 CATCHUP_PAUSE_THRESHOLD_BLOCKS = env_int("BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS", 300, minimum=1)
 CATCHUP_NODE_RECREATE_ENABLED = env_bool("BDAG_CATCHUP_NODE_RECREATE_ENABLED", True)
-CATCHUP_NODE_CACHE_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MB", 6144, minimum=0)
-CATCHUP_NODE_CACHE_MIN_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MIN_MB", 1024, minimum=256)
-CATCHUP_NODE_CACHE_MEMORY_PERCENT = env_float("BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT", 40.0, minimum=5.0)
+CATCHUP_NODE_CACHE_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MB", 1024, minimum=0)
+CATCHUP_NODE_CACHE_MIN_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MIN_MB", 512, minimum=256)
+CATCHUP_NODE_CACHE_MEMORY_PERCENT = env_float("BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT", 15.0, minimum=5.0)
 CATCHUP_IO_PRESSURE_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED", True)
 CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS = env_int("BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS", 25, minimum=1)
 CATCHUP_IOWAIT_WARN_PERCENT = env_float("BDAG_CATCHUP_IOWAIT_WARN_PERCENT", 15.0, minimum=0.0)
@@ -1587,7 +1587,7 @@ def node_conf_cache_mb() -> int:
     return safe_int(match.group(1), 0) if match else 0
 
 
-def update_node_conf_cache(cache_mb: int) -> list[str]:
+def update_node_conf_cache(cache_mb: int, evm_cache_mb: int | None = None) -> list[str]:
     path = node_conf_path()
     if not path.exists() or cache_mb <= 0:
         return []
@@ -1597,15 +1597,18 @@ def update_node_conf_cache(cache_mb: int) -> list[str]:
         text, count = re.subn(r"(?m)^cache\.database=", f"cache={cache_mb}\ncache.database=", text, count=1)
         if count == 0:
             text = text.rstrip() + f"\ncache={cache_mb}\n"
-    if re.search(r"--cache\s+\d+", text):
-        text = re.sub(r"--cache\s+\d+", f"--cache {cache_mb}", text)
-    elif re.search(r'(?m)^evmenv="', text):
-        text = re.sub(
-            r'(?m)^evmenv="([^"]*)"',
-            lambda match: f'evmenv="{match.group(1).rstrip()} --cache {cache_mb}"',
-            text,
-            count=1,
-        )
+    if evm_cache_mb is None:
+        evm_cache_mb = safe_int(config_value("BDAG_EVM_CACHE_MB"), 0)
+    if evm_cache_mb > 0:
+        if re.search(r"--cache\s+\d+", text):
+            text = re.sub(r"--cache\s+\d+", f"--cache {evm_cache_mb}", text)
+        elif re.search(r'(?m)^evmenv="', text):
+            text = re.sub(
+                r'(?m)^evmenv="([^"]*)"',
+                lambda match: f'evmenv="{match.group(1).rstrip()} --cache {evm_cache_mb}"',
+                text,
+                count=1,
+            )
     return [str(path)] if write_text_if_changed(path, text) else []
 
 

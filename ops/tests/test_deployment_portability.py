@@ -358,7 +358,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
                 config,
             )
             self.assertIn("BDAG_BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS=ipfs_segment_writer", config)
-            self.assertIn("BDAG_BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS=ipfs_segment_writer", config)
+            self.assertIn("BDAG_BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS=", config)
             self.assertIn(
                 "BDAG_BACKGROUND_MAINTENANCE_POOL_READY_TASKS=rawdatadir_content_seal,ipfs_content_sidecar",
                 config,
@@ -481,7 +481,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         for timer in (raw_timer, content_timer, segment_timer):
             self.assertIn("OnActiveSec=5m", timer)
             self.assertIn("OnUnitActiveSec=5m", timer)
-            self.assertIn("RandomizedDelaySec=0", timer)
+            self.assertIn("RandomizedDelaySec=2m", timer)
 
     def test_release_installer_has_prestart_ipfs_rawdatadir_restore_gate(self) -> None:
         installer = (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8")

@@ -92,9 +92,9 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         status_sampler.CATCHUP_PAUSE_ENABLED = True
         status_sampler.CATCHUP_PAUSE_THRESHOLD_BLOCKS = 300
         status_sampler.CATCHUP_NODE_RECREATE_ENABLED = True
-        status_sampler.CATCHUP_NODE_CACHE_MB = 6144
-        status_sampler.CATCHUP_NODE_CACHE_MIN_MB = 1024
-        status_sampler.CATCHUP_NODE_CACHE_MEMORY_PERCENT = 40.0
+        status_sampler.CATCHUP_NODE_CACHE_MB = 1024
+        status_sampler.CATCHUP_NODE_CACHE_MIN_MB = 512
+        status_sampler.CATCHUP_NODE_CACHE_MEMORY_PERCENT = 15.0
         status_sampler.CATCHUP_IO_PRESSURE_PAUSE_ENABLED = True
         status_sampler.CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS = 25
         status_sampler.CATCHUP_IOWAIT_WARN_PERCENT = 15.0
@@ -447,7 +447,8 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["BDAG_NODE_MODULES"] = "Blockdag,miner"
         os.environ["BDAG_NODE_MINING_ARGS"] = "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
         os.environ["NODE_ARGS_APPEND"] = os.environ["BDAG_NODE_MINING_ARGS"]
-        os.environ["BDAG_NODE_CACHE_MB"] = "2048"
+        os.environ["BDAG_NODE_CACHE_MB"] = "512"
+        os.environ["BDAG_EVM_CACHE_MB"] = "512"
         os.environ["BDAG_NODE_SERVICE"] = "node"
         payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=450)
         payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
@@ -464,7 +465,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
             (root / "node.conf").write_text(
                 "\n".join(
                     [
-                        "cache=2048",
+                        "cache=512",
                         "cache.database=70",
                         "miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc",
                         "modules=Blockdag",
@@ -495,7 +496,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         self.assertIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
         self.assertIn("applied_catchup_node_runtime", repair["actions"])
-        self.assertEqual(env_updates, {"BDAG_NODE_CACHE_MB": "6144"})
+        self.assertEqual(env_updates, {"BDAG_NODE_CACHE_MB": "1024"})
         self.assertEqual(os.environ["BDAG_ENABLE_NODE_MINING"], "1")
         self.assertEqual(os.environ["BDAG_NODE_MODULES"], "Blockdag,miner")
         self.assertEqual(
@@ -503,8 +504,8 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
             "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc",
         )
         self.assertEqual(os.environ["NODE_ARGS_APPEND"], os.environ["BDAG_NODE_MINING_ARGS"])
-        self.assertIn("cache=6144", node_conf)
-        self.assertIn("--cache 6144", node_conf)
+        self.assertIn("cache=1024", node_conf)
+        self.assertIn("--cache 512", node_conf)
         self.assertIn("miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc", node_conf)
         self.assertIn("modules=miner", node_conf)
         self.assertIn("miner=true", node_conf)
