@@ -10,6 +10,7 @@ manifest first, chunk hash/size checks, file hash checks, then node consensus.
 from __future__ import annotations
 
 import argparse
+import copy
 import base64
 import binascii
 import fnmatch
@@ -22,6 +23,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, BinaryIO, Mapping
 
@@ -188,19 +191,16 @@ def canonical_manifest_value(field: str, value: Any) -> Any:
 def signable_manifest_payload(manifest: dict[str, Any]) -> bytes:
     """Return the canonical bytes used for artifact_root and Ed25519 signing.
 
-    This mirrors the raw-datadir sidecar manifest canonicalization:
-    signatures and artifact_root are excluded, struct fields are serialized in
-    manifest order, optional empty fields are omitted, and maps are stable.
+    This mirrors seal_rawdatadir_sidecar_content.py: artifact_root and
+    signatures are excluded, then the remaining manifest is serialized with
+    sorted keys. The raw checkpoint publisher and restore path must agree on
+    this byte sequence or IPFS checkpoints are not safe recovery candidates.
     """
 
-    payload: dict[str, Any] = {}
-    for field, required in SIGNABLE_MANIFEST_FIELDS:
-        if field not in manifest:
-            continue
-        value = manifest[field]
-        if required or value not in ("", None, [], {}):
-            payload[field] = canonical_manifest_value(field, value)
-    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    payload = copy.deepcopy(manifest)
+    payload.pop("artifact_root", None)
+    payload.pop("signatures", None)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
 
 
 def manifest_digest(manifest: dict[str, Any]) -> bytes:
@@ -296,6 +296,119 @@ def read_manifest(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
 def env_bool(env: Mapping[str, str], key: str, default: bool = False) -> bool:
     parsed = parse_bool(env.get(key))
     return default if parsed is None else parsed
+
+
+def quantity(value: Any) -> int:
+    if isinstance(value, int):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    return int(text, 16) if text.lower().startswith("0x") else int(text)
+
+
+def evm_rpc(url: str, method: str, params: list[Any], timeout: int) -> Any:
+    payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode("utf-8")
+    request = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            decoded = json.loads(response.read().decode("utf-8", "replace"))
+    except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise RestoreError(f"{method} reference RPC failed: {exc}") from exc
+    if decoded.get("error"):
+        raise RestoreError(f"{method} reference RPC error: {decoded['error']}")
+    return decoded.get("result")
+
+
+def chain_anchor_reference_url(args: argparse.Namespace) -> str:
+    return str(
+        getattr(args, "reference_evm_rpc_url", "")
+        or os.environ.get("BDAG_RAWDATADIR_CHAIN_ANCHOR_REFERENCE_EVM_URL")
+        or os.environ.get("BDAG_IPFS_RAWDATADIR_RESTORE_REFERENCE_EVM_RPC_URL")
+        or os.environ.get("BDAG_PUBLIC_EVM_RPC_URL")
+        or ""
+    ).strip()
+
+
+def manifest_evm_anchor(manifest: dict[str, Any]) -> dict[str, Any]:
+    metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+    for key in ("evm_anchor", "chain_anchor", "live_chain_anchor"):
+        value = metadata.get(key) if isinstance(metadata, dict) else None
+        if isinstance(value, dict):
+            return dict(value)
+    value = manifest.get("evm_anchor")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def hex_block_number(number: int) -> str:
+    return hex(max(0, int(number)))
+
+
+def verify_live_chain_anchor(manifest: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    require_anchor = bool(getattr(args, "require_chain_anchor", False))
+    reference_url = chain_anchor_reference_url(args)
+    if not require_anchor and not reference_url:
+        return {"state": "skipped", "required": False, "reason": "chain_anchor_not_required"}
+    if not reference_url:
+        if require_anchor:
+            raise RestoreError("rawdatadir live-chain anchor requires an independent EVM reference RPC URL")
+        return {"state": "skipped", "required": False, "reason": "reference_evm_rpc_url_missing"}
+
+    anchor = manifest_evm_anchor(manifest)
+    if not anchor:
+        if require_anchor:
+            raise RestoreError("manifest missing signed EVM chain anchor")
+        return {"state": "missing", "required": False, "reason": "manifest_evm_anchor_missing"}
+
+    timeout = int(getattr(args, "chain_anchor_timeout", 8) or 8)
+    finality_blocks = int(getattr(args, "chain_anchor_finality_blocks", 0) or 0)
+    expected_chain_id = int(manifest.get("chain_id") or 0)
+    actual_chain_id = quantity(evm_rpc(reference_url, "eth_chainId", [], timeout))
+    if expected_chain_id and actual_chain_id != expected_chain_id:
+        raise RestoreError(f"EVM chainId mismatch: reference={actual_chain_id} manifest={expected_chain_id}")
+
+    block_number = quantity(anchor.get("block_number") or anchor.get("evm_block_number"))
+    if block_number <= 0:
+        raise RestoreError("manifest EVM chain anchor missing block_number")
+    latest_number = quantity(evm_rpc(reference_url, "eth_blockNumber", [], timeout))
+    if latest_number < block_number:
+        raise RestoreError(f"EVM reference behind manifest anchor: latest={latest_number} anchor={block_number}")
+    if finality_blocks and latest_number - block_number < finality_blocks:
+        raise RestoreError(
+            f"EVM chain anchor is not final enough: latest={latest_number} anchor={block_number} "
+            f"required_lag={finality_blocks}"
+        )
+
+    reference_block = evm_rpc(reference_url, "eth_getBlockByNumber", [hex_block_number(block_number), False], timeout)
+    if not isinstance(reference_block, dict):
+        raise RestoreError(f"EVM reference returned no block for anchor {block_number}")
+    expected_hash = str(anchor.get("block_hash") or anchor.get("evm_block_hash") or "").strip().lower()
+    actual_hash = str(reference_block.get("hash") or "").strip().lower()
+    if expected_hash and actual_hash != expected_hash:
+        raise RestoreError(f"EVM block hash mismatch at {block_number}: reference={actual_hash} manifest={expected_hash}")
+    expected_state_root = str(anchor.get("state_root") or anchor.get("evm_state_root") or "").strip().lower()
+    actual_state_root = str(reference_block.get("stateRoot") or "").strip().lower()
+    if expected_state_root and actual_state_root != expected_state_root:
+        raise RestoreError(
+            f"EVM state root mismatch at {block_number}: reference={actual_state_root} manifest={expected_state_root}"
+        )
+    expected_genesis = str(anchor.get("genesis_hash") or anchor.get("evm_genesis_hash") or "").strip().lower()
+    if expected_genesis:
+        reference_genesis = evm_rpc(reference_url, "eth_getBlockByNumber", ["0x0", False], timeout)
+        actual_genesis = str(reference_genesis.get("hash") if isinstance(reference_genesis, dict) else "").strip().lower()
+        if actual_genesis != expected_genesis:
+            raise RestoreError(f"EVM genesis hash mismatch: reference={actual_genesis} manifest={expected_genesis}")
+    return {
+        "state": "verified",
+        "required": require_anchor,
+        "reference_url": reference_url,
+        "chain_id": actual_chain_id,
+        "latest_block_number": latest_number,
+        "anchor_block_number": block_number,
+        "anchor_block_hash": actual_hash,
+        "anchor_state_root": actual_state_root,
+        "finality_lag_blocks": latest_number - block_number,
+    }
 
 
 def clean_cid(value: str) -> str:
@@ -616,11 +729,13 @@ def validate_manifest(manifest: dict[str, Any], args: argparse.Namespace) -> dic
     metadata_blockers = unsafe_metadata_blockers(manifest, args)
     if metadata_blockers:
         raise RestoreError("artifact metadata is not publishable: " + ", ".join(metadata_blockers))
+    chain_anchor = verify_live_chain_anchor(manifest, args)
     artifact_root = verify_manifest_artifact_root(manifest, args)
     verified_signature_key_ids = verify_manifest_signatures(manifest, args)
     return {
         "artifact_root": artifact_root,
         "verified_signature_key_ids": verified_signature_key_ids,
+        "chain_anchor": chain_anchor,
     }
 
 
@@ -834,6 +949,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-unsigned", action="store_true")
     parser.add_argument("--trusted-signers", default="", help="trusted key_id=ed25519_public_key_hex pairs")
     parser.add_argument("--require-trusted-signer", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--reference-evm-rpc-url", default="", help="independent EVM RPC used to verify the signed checkpoint chain anchor")
+    parser.add_argument("--require-chain-anchor", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--chain-anchor-timeout", type=int, default=int(os.environ.get("BDAG_RAWDATADIR_CHAIN_ANCHOR_TIMEOUT", "8")))
+    parser.add_argument(
+        "--chain-anchor-finality-blocks",
+        type=int,
+        default=int(os.environ.get("BDAG_RAWDATADIR_CHAIN_ANCHOR_FINALITY_BLOCKS", "600")),
+    )
     parser.add_argument(
         "--allow-test-unsafe-metadata",
         action="store_true",
@@ -853,6 +976,15 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.require_trusted_signer is None:
         args.require_trusted_signer = env_bool(env, "BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER", True)
+    if args.require_chain_anchor is None:
+        args.require_chain_anchor = env_bool(env, "BDAG_RAWDATADIR_REQUIRE_CHAIN_ANCHOR", True)
+    if not args.reference_evm_rpc_url:
+        args.reference_evm_rpc_url = (
+            env.get("BDAG_RAWDATADIR_CHAIN_ANCHOR_REFERENCE_EVM_URL")
+            or env.get("BDAG_IPFS_RAWDATADIR_RESTORE_REFERENCE_EVM_RPC_URL")
+            or env.get("BDAG_PUBLIC_EVM_RPC_URL")
+            or ""
+        )
     if str(args.network or "").strip().lower() != "mainnet":
         raise RestoreError(f"raw datadir restore refuses non-mainnet network: {args.network!r}")
 
@@ -885,6 +1017,7 @@ def main(argv: list[str] | None = None) -> int:
             "signatures_present": bool(manifest.get("signatures")),
             "artifact_root": verification["artifact_root"],
             "verified_signature_key_ids": verification["verified_signature_key_ids"],
+            "chain_anchor": verification["chain_anchor"],
             "do_not_publish_marker_observed": None,
         },
         "restore": result,

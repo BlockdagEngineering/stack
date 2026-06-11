@@ -738,6 +738,7 @@ def require_trusted_preflight(
 def bootstrap_local_publish_allowed(env: Mapping[str, str], election: Mapping[str, Any]) -> bool:
     return (
         env_bool(env, "BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH", False)
+        and env_bool(env, "BDAG_IPFS_SEGMENT_BOOTSTRAP_UNTRUSTED_PUBLISH", False)
         and election.get("mode") == "bootstrap_single_writer"
         and int(election.get("roster_size") or 0) == 0
     )

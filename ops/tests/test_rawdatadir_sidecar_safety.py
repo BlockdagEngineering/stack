@@ -22,7 +22,7 @@ class RawDatadirSidecarSafetyTest(unittest.TestCase):
         env = {"BDAG_NODE_SERVICE": "node", "BDAG_NODE_DATA_DIR": "./data/node"}
 
         self.assertEqual(safety.active_node_service(env), "node")
-        self.assertTrue(str(safety.node_data_dir(env, "node")).endswith("data/node"))
+        self.assertEqual(safety.node_data_dir(env, "node"), safety.resolve_path("./data/node"))
 
     def test_empty_path_env_values_use_defaults(self) -> None:
         env = {

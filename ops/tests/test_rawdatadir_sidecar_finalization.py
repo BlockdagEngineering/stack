@@ -44,6 +44,7 @@ class RawdatadirSidecarFinalizationPipelineTest(unittest.TestCase):
         self.assertIn("final stopped sidecar sync: skipping live-status background maintenance gate", script)
         self.assertIn("final stopped sidecar sync: skipping content-seal live pressure gate", script)
         self.assertIn("safety_require_evm_reference_fresh=0", script)
+        self.assertIn("BDAG_RAWDATADIR_SIDECAR_CONTENT_FINALIZED=1", script)
         self.assertIn("rawdatadir_sidecar_safety.py", script)
         self.assertIn('BDAG_RAWDATADIR_REQUIRE_EVM_REFERENCE_FRESH="$safety_require_evm_reference_fresh"', script)
         self.assertIn("verify-rawdatadir-sidecar.py", script)

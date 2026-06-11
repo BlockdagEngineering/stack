@@ -460,8 +460,8 @@ configure_storage_profile() {
   set_env_value .env BDAG_DASHBOARD_CPU_SHARES "$(env_value BDAG_DASHBOARD_CPU_SHARES 128)"
   set_env_value .env BDAG_NODE_MEMORY_LOW "$(env_value BDAG_NODE_MEMORY_LOW 768M)"
   set_env_value .env BDAG_NODE_MEMORY_HIGH "$(env_value BDAG_NODE_MEMORY_HIGH auto)"
-  set_env_value .env BDAG_NODE_MEMORY_HIGH_PERCENT "$(env_value BDAG_NODE_MEMORY_HIGH_PERCENT 82)"
-  set_env_value .env BDAG_NODE_MEMORY_HIGH_MIN "$(env_value BDAG_NODE_MEMORY_HIGH_MIN 4096M)"
+  set_env_value .env BDAG_NODE_MEMORY_HIGH_PERCENT "$(env_value BDAG_NODE_MEMORY_HIGH_PERCENT 60)"
+  set_env_value .env BDAG_NODE_MEMORY_HIGH_MIN "$(env_value BDAG_NODE_MEMORY_HIGH_MIN 3072M)"
   set_env_value .env BDAG_POOL_MEMORY_LOW "$(env_value BDAG_POOL_MEMORY_LOW 256M)"
   set_env_value .env BDAG_POOL_DB_MEMORY_LOW "$(env_value BDAG_POOL_DB_MEMORY_LOW 512M)"
   set_env_value .env BDAG_DASHBOARD_MEMORY_LOW "$(env_value BDAG_DASHBOARD_MEMORY_LOW 64M)"
@@ -587,6 +587,8 @@ configure_env() {
   apply_stack_defaults_env .env
   set_stack_default_env_value .env BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED
   set_stack_default_env_value .env BDAG_CHAIN_PEERSTORE_LOG_TAIL
+  set_stack_default_env_value .env BDAG_NODE_PEER_LIMIT
+  set_stack_default_env_value .env BDAG_NODE_PEER_STABLE_PORTS
   set_env_value .env BDAG_INSTALL_APPLIANCE_HOST_PROFILE "$(env_value BDAG_INSTALL_APPLIANCE_HOST_PROFILE 1)"
   set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_DISABLE_SERVICES "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_DISABLE_SERVICES 0)"
   set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_RELOAD_DOCKER "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_RELOAD_DOCKER 1)"
@@ -606,6 +608,10 @@ configure_env() {
   set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_SIGNING_KEY_FILE
   set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_TRUSTED_SIGNERS
   set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER
+  set_stack_default_env_value .env BDAG_RAWDATADIR_REQUIRE_CHAIN_ANCHOR
+  set_stack_default_env_value .env BDAG_RAWDATADIR_CHAIN_ANCHOR_REFERENCE_EVM_URL
+  set_stack_default_env_value .env BDAG_RAWDATADIR_CHAIN_ANCHOR_TIMEOUT
+  set_stack_default_env_value .env BDAG_RAWDATADIR_CHAIN_ANCHOR_FINALITY_BLOCKS
   set_env_value .env BDAG_RAWDATADIR_ACTIVE_SERVICE "node"
   set_stack_default_env_value .env BDAG_RAWDATADIR_FINALIZE
   set_env_value .env BDAG_RAWDATADIR_PEERS ""
@@ -625,6 +631,18 @@ configure_env() {
   set_existing_or_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_CONTENT_DEFAULT_INDEX_CID
   set_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS
   set_existing_or_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_CONTENT_IPNS_KEY
+  set_stack_default_env_value .env BDAG_IPFS_STATE_CHECKPOINT_REQUIRED
+  set_stack_default_env_value .env BDAG_RESTORE_POINT_MAX_AGE_SECONDS
+  set_stack_default_env_value .env BDAG_RESTORE_GUARD_IPFS_TIMERS
+  set_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_ENABLED
+  set_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_INDEX_PATH
+  set_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_STATUS_FILE
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_DEFAULT_CID
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_IPNS
+  set_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_PUBLISH_IPFS
+  set_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_MAX_PEERS
+  set_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_REQUIRE_SIGNATURES
+  set_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_ADD_ARGS
   set_stack_default_env_value .env BDAG_IPFS_CONTENT_DEFAULT_ROOT_CID
   set_env_value .env BDAG_IPFS_CONTENT_STATUS_FILE "./ops/runtime/ipfs-content-sidecar-status.json"
   set_env_value .env BDAG_IPFS_CONTENT_LATEST_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
@@ -633,6 +651,7 @@ configure_env() {
   set_existing_or_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_ROSTER
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_BOOTSTRAP_UNTRUSTED_PUBLISH
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_START_POLICY
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_STALE_HEAD_RESET_ENABLED
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS

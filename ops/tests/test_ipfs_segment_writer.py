@@ -406,7 +406,10 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         }
 
         result = ipfs_segment_writer.publication_integrity_gate(
-            {"BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH": "1"},
+            {
+                "BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH": "1",
+                "BDAG_IPFS_SEGMENT_BOOTSTRAP_UNTRUSTED_PUBLISH": "1",
+            },
             Path("/tmp/index.json"),
             "http://source:38131",
             "",
@@ -426,9 +429,18 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         }
 
         self.assertFalse(ipfs_segment_writer.bootstrap_local_publish_allowed({}, election))
-        self.assertTrue(
+        self.assertFalse(
             ipfs_segment_writer.bootstrap_local_publish_allowed(
                 {"BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH": "1"},
+                election,
+            )
+        )
+        self.assertTrue(
+            ipfs_segment_writer.bootstrap_local_publish_allowed(
+                {
+                    "BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH": "1",
+                    "BDAG_IPFS_SEGMENT_BOOTSTRAP_UNTRUSTED_PUBLISH": "1",
+                },
                 election,
             )
         )

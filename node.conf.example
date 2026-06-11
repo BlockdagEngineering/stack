@@ -22,7 +22,7 @@ addpeer=/ip4/16.28.133.168/tcp/8150/p2p/16Uiu2HAm9UcTayJDSajjJYsWwVaN2qqGeczcs9k
 
 
 # Peer limit
-maxpeers=350
+maxpeers=80
 cache=2048
 cache.database=70
 

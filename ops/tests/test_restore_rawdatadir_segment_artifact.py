@@ -32,6 +32,9 @@ class RestoreRawdatadirSegmentArtifactTest(unittest.TestCase):
         allow_test_unsafe_metadata: bool = False,
         trusted_signers: str = "",
         require_trusted_signer: bool = True,
+        reference_evm_rpc_url: str = "",
+        require_chain_anchor: bool = False,
+        chain_anchor_finality_blocks: int = 0,
     ) -> argparse.Namespace:
         if not trusted_signers and (artifact / "manifest.json").exists():
             try:
@@ -56,6 +59,10 @@ class RestoreRawdatadirSegmentArtifactTest(unittest.TestCase):
             allow_unsigned=allow_unsigned,
             trusted_signers=trusted_signers,
             require_trusted_signer=require_trusted_signer,
+            reference_evm_rpc_url=reference_evm_rpc_url,
+            require_chain_anchor=require_chain_anchor,
+            chain_anchor_timeout=8,
+            chain_anchor_finality_blocks=chain_anchor_finality_blocks,
             allow_test_unsafe_metadata=allow_test_unsafe_metadata,
         )
 
@@ -63,7 +70,8 @@ class RestoreRawdatadirSegmentArtifactTest(unittest.TestCase):
         self,
         root: Path,
         *,
-        metadata: dict[str, str] | None = None,
+        metadata: dict[str, object] | None = None,
+        evm_anchor: dict[str, object] | None = None,
         marker: str | None = None,
     ) -> tuple[Path, dict[str, object]]:
         artifact = root / "artifact"
@@ -74,6 +82,14 @@ class RestoreRawdatadirSegmentArtifactTest(unittest.TestCase):
             (chunks_dir / f"{index}.bin").write_bytes(body)
         file_body = b"".join(chunks)
         file_digest = hashlib.sha256(file_body).hexdigest()
+        manifest_metadata: dict[str, object] = {
+            "raw_datadir_source": "unit-test-sidecar",
+            "publishable": "1",
+            "finalized_sidecar": "1",
+            **(metadata or {}),
+        }
+        if evm_anchor:
+            manifest_metadata["evm_anchor"] = evm_anchor
         manifest: dict[str, object] = {
             "format_version": 2,
             "artifact_type": "raw_datadir_checkpoint",
@@ -87,12 +103,7 @@ class RestoreRawdatadirSegmentArtifactTest(unittest.TestCase):
             "chunk_hash_algo": "sha256",
             "layout": "directory",
             "created_at": "2026-06-01T00:00:00Z",
-            "metadata": {
-                "raw_datadir_source": "unit-test-sidecar",
-                "publishable": "1",
-                "finalized_sidecar": "1",
-                **(metadata or {}),
-            },
+            "metadata": manifest_metadata,
             "sources": [{"name": "raw_datadir", "chunk_start": 0, "chunk_count": len(chunks)}],
             "chunks": [
                 {
@@ -156,6 +167,7 @@ class RestoreRawdatadirSegmentArtifactTest(unittest.TestCase):
                         str(status),
                         "--trusted-signers",
                         f"unit-test={manifest['signatures'][0]['public_key']}",
+                        "--no-require-chain-anchor",
                         "--progress-every",
                         "0",
                     ]
@@ -224,6 +236,7 @@ class RestoreRawdatadirSegmentArtifactTest(unittest.TestCase):
                         str(base / "status.json"),
                         "--trusted-signers",
                         f"unit-test={_manifest['signatures'][0]['public_key']}",
+                        "--no-require-chain-anchor",
                         "--progress-every",
                         "0",
                     ]
@@ -260,6 +273,100 @@ class RestoreRawdatadirSegmentArtifactTest(unittest.TestCase):
             )
 
         self.assertEqual(verification["verified_signature_key_ids"], ["unit-test"])
+
+    def test_signed_evm_chain_anchor_is_verified_against_reference_rpc(self) -> None:
+        anchor_hash = "0x" + "d" * 64
+        anchor_state = "0x" + "e" * 64
+        genesis = "0x" + "a" * 64
+        evm_anchor = {
+            "chain_id": 1404,
+            "block_number": 100,
+            "block_hash": anchor_hash,
+            "state_root": anchor_state,
+            "genesis_hash": genesis,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact, manifest = self.write_signed_artifact(Path(tmp), evm_anchor=evm_anchor)
+
+            def fake_evm_rpc(_url: str, method: str, params: list[object], _timeout: int) -> object:
+                if method == "eth_chainId":
+                    return "0x57c"
+                if method == "eth_blockNumber":
+                    return "0x3e8"
+                if method == "eth_getBlockByNumber" and params[0] == "0x64":
+                    return {"hash": anchor_hash, "stateRoot": anchor_state}
+                if method == "eth_getBlockByNumber" and params[0] == "0x0":
+                    return {"hash": genesis}
+                raise AssertionError(f"unexpected RPC {method} {params}")
+
+            with mock.patch.object(restore_rawdatadir_segment_artifact, "evm_rpc", side_effect=fake_evm_rpc):
+                verification = restore_rawdatadir_segment_artifact.validate_manifest(
+                    manifest,
+                    self.make_args(
+                        artifact,
+                        reference_evm_rpc_url="http://reference-rpc",
+                        require_chain_anchor=True,
+                        chain_anchor_finality_blocks=600,
+                    ),
+                )
+
+        self.assertEqual(verification["chain_anchor"]["state"], "verified")
+        self.assertEqual(verification["chain_anchor"]["anchor_block_number"], 100)
+        self.assertEqual(verification["chain_anchor"]["finality_lag_blocks"], 900)
+
+    def test_required_evm_chain_anchor_rejects_mismatch(self) -> None:
+        evm_anchor = {
+            "chain_id": 1404,
+            "block_number": 100,
+            "block_hash": "0x" + "d" * 64,
+            "state_root": "0x" + "e" * 64,
+            "genesis_hash": "0x" + "a" * 64,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact, manifest = self.write_signed_artifact(Path(tmp), evm_anchor=evm_anchor)
+
+            def fake_evm_rpc(_url: str, method: str, params: list[object], _timeout: int) -> object:
+                if method == "eth_chainId":
+                    return "0x57c"
+                if method == "eth_blockNumber":
+                    return "0x3e8"
+                if method == "eth_getBlockByNumber" and params[0] == "0x64":
+                    return {"hash": "0x" + "f" * 64, "stateRoot": "0x" + "e" * 64}
+                if method == "eth_getBlockByNumber" and params[0] == "0x0":
+                    return {"hash": "0x" + "a" * 64}
+                raise AssertionError(f"unexpected RPC {method} {params}")
+
+            with mock.patch.object(restore_rawdatadir_segment_artifact, "evm_rpc", side_effect=fake_evm_rpc):
+                with self.assertRaisesRegex(
+                    restore_rawdatadir_segment_artifact.RestoreError,
+                    "EVM block hash mismatch",
+                ):
+                    restore_rawdatadir_segment_artifact.validate_manifest(
+                        manifest,
+                        self.make_args(
+                            artifact,
+                            reference_evm_rpc_url="http://reference-rpc",
+                            require_chain_anchor=True,
+                            chain_anchor_finality_blocks=600,
+                        ),
+                    )
+
+    def test_required_evm_chain_anchor_rejects_missing_anchor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact, manifest = self.write_signed_artifact(Path(tmp))
+
+            with self.assertRaisesRegex(
+                restore_rawdatadir_segment_artifact.RestoreError,
+                "manifest missing signed EVM chain anchor",
+            ):
+                restore_rawdatadir_segment_artifact.validate_manifest(
+                    manifest,
+                    self.make_args(
+                        artifact,
+                        reference_evm_rpc_url="http://reference-rpc",
+                        require_chain_anchor=True,
+                    ),
+                )
 
     def test_ipfs_content_index_resolves_rawdatadir_artifact_cid(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

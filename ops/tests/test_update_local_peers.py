@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import pathlib
 import subprocess
+import tempfile
 import unittest
 from unittest import mock
 
@@ -13,6 +15,11 @@ assert SPEC is not None
 assert SPEC.loader is not None
 update_local_peers = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(update_local_peers)
+TRUST_SPEC = importlib.util.spec_from_file_location("ipfs_segment_trust", ROOT / "ops" / "ipfs_segment_trust.py")
+assert TRUST_SPEC is not None
+assert TRUST_SPEC.loader is not None
+ipfs_segment_trust = importlib.util.module_from_spec(TRUST_SPEC)
+TRUST_SPEC.loader.exec_module(ipfs_segment_trust)
 
 
 class UpdateLocalPeersActiveMiningGuardTest(unittest.TestCase):
@@ -105,6 +112,122 @@ class UpdateLocalPeersActiveMiningGuardTest(unittest.TestCase):
 
         self.assertIn(["docker", "compose", "ps", "-q", "node"], calls)
         self.assertIn(["docker", "logs", "--tail", "5000", "compose-node-id"], calls)
+
+    def test_generated_node_peer_addresses_do_not_reseed_candidates(self) -> None:
+        generated_peer = "/ip4/199.229.220.118/tcp/60001/p2p/generatedPeer"
+        bootstrap_peer = "/ip4/13.57.132.47/tcp/8150/p2p/bootstrapPeer"
+
+        with mock.patch.object(update_local_peers, "read_peer_file", return_value=[]):
+            with mock.patch.object(update_local_peers, "node_peerstore_log_candidates", return_value=[]):
+                with mock.patch.object(update_local_peers, "peer_tcp_latency", return_value=(True, 1.0)):
+                    candidates = update_local_peers.p2p_peer_candidates(
+                        {
+                            "BDAG_NODE_PEER_ADDRESSES": generated_peer,
+                            "BOOTSTRAP_PEER_ADDRESSES": bootstrap_peer,
+                        }
+                    )
+
+        self.assertEqual([bootstrap_peer], candidates.peers)
+        self.assertNotIn("BDAG_NODE_PEER_ADDRESSES", candidates.source_counts)
+
+    def test_curated_node_launch_peers_are_bounded_public_and_peer_id_deduped(self) -> None:
+        peers = [
+            "/ip4/172.18.0.3/tcp/8150/p2p/privatePeer",
+            "/ip4/199.229.220.118/tcp/60001/p2p/peerOne",
+            "/ip4/199.229.220.118/tcp/8150/p2p/peerOne",
+            "/ip4/199.229.220.118/tcp/8151/p2p/peerOne",
+            "/dns4/example.blockdag.test/tcp/8152/p2p/peerTwo",
+            "/ip4/13.57.132.47/tcp/8150/p2p/localPeer",
+            "/ip4/102.182.77.21/tcp/8151/p2p/peerThree",
+            "/ip4/121.91.173.235/tcp/8150/p2p/peerFour",
+        ]
+
+        self.assertEqual(
+            [
+                "/ip4/199.229.220.118/tcp/8150/p2p/peerOne",
+                "/dns4/example.blockdag.test/tcp/8152/p2p/peerTwo",
+                "/ip4/102.182.77.21/tcp/8151/p2p/peerThree",
+            ],
+            update_local_peers.curated_node_launch_peers(
+                peers,
+                {"BDAG_NODE_PEER_LIMIT": "3"},
+                {"localPeer"},
+            ),
+        )
+
+    def test_unsigned_ipfs_peer_roster_does_not_seed_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            values = {
+                "BDAG_IPFS_PEER_ROSTER_DEFAULT_CID": "bafk-roster",
+                "BDAG_IPFS_PEER_ROSTER_STATUS_FILE": str(pathlib.Path(tmp) / "peer-roster-status.json"),
+                "BDAG_IPFS_PEER_ROSTER_REQUIRE_SIGNATURES": "1",
+            }
+            payload = {
+                "document_type": "bdag_ipfs_peer_roster_v1",
+                "network": "mainnet",
+                "peers": [
+                    {"multiaddr": "/ip4/13.57.132.47/tcp/8150/p2p/peerOne"},
+                ],
+            }
+
+            with mock.patch.object(update_local_peers, "ipfs_cat_json", return_value=payload):
+                self.assertEqual([], update_local_peers.ipfs_peer_roster_candidates(values))
+
+            status = json.loads(pathlib.Path(values["BDAG_IPFS_PEER_ROSTER_STATUS_FILE"]).read_text(encoding="utf-8"))
+
+        self.assertEqual(status["state"], "consume_failed")
+        self.assertIn("missing required roster_signatures", status["errors"][0])
+
+    def test_publish_peer_roster_writes_signed_bounded_roster(self) -> None:
+        seed = "00" * 32
+        private_key = ipfs_segment_trust.load_private_key(seed)
+        public_hex = ipfs_segment_trust.public_key_hex(private_key)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            key_file = base / "writer.key"
+            key_file.write_text(f"BDAG_IPFS_SEGMENT_SIGNING_KEY_HEX={seed}\n", encoding="utf-8")
+            values = {
+                "BDAG_IPFS_SEGMENT_WRITER_ID": "writer-a",
+                "BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE": str(key_file),
+                "BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS": f"writer-a={public_hex}",
+                "BDAG_IPFS_PEER_ROSTER_INDEX_PATH": str(base / "peer-roster.json"),
+                "BDAG_IPFS_PEER_ROSTER_STATUS_FILE": str(base / "peer-roster-status.json"),
+                "BDAG_IPFS_CONTENT_DISCOVERY_FILE": str(base / "discovery.json"),
+                "BDAG_IPFS_PEER_ROSTER_PUBLISH_IPFS": "0",
+                "BDAG_IPFS_PEER_ROSTER_MAX_PEERS": "1",
+            }
+            discovery = {
+                "peers": [
+                    {"status": "tcp-open", "multiaddr": "/ip4/172.18.0.3/tcp/8150/p2p/privatePeer"},
+                    {"status": "tcp-open", "multiaddr": "/ip4/127.0.0.1/tcp/8150/p2p/loopbackPeer"},
+                    {"status": "tcp-open", "multiaddr": "/ip4/199.229.220.118/tcp/60001/p2p/nonStablePortPeer"},
+                    {"status": "tcp-open", "multiaddr": "/ip4/13.57.132.47/tcp/8150/p2p/peerOne"},
+                    {"status": "tcp-open", "multiaddr": "/ip4/54.214.229.250/tcp/8151/p2p/peerTwo"},
+                    {"status": "closed", "multiaddr": "/ip4/54.214.229.250/tcp/8151/p2p/peerClosed"},
+                ]
+            }
+
+            update_local_peers.publish_peer_roster(values, discovery)
+
+            roster = json.loads((base / "peer-roster.json").read_text(encoding="utf-8"))
+            status = json.loads((base / "peer-roster-status.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(status["state"], "ready")
+        self.assertEqual(roster["document_type"], "bdag_ipfs_peer_roster_v1")
+        self.assertEqual(roster["network"], "mainnet")
+        self.assertEqual(len(roster["peers"]), 1)
+        self.assertEqual(roster["peers"][0]["peer_id"], "peerOne")
+        self.assertEqual(roster["peers"][0]["publication_filter"], "public_or_dns_stable_p2p_port_one_address_per_peer_id")
+        verification = ipfs_segment_trust.verify_payload_signature(
+            roster,
+            {
+                "BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS": f"writer-a={public_hex}",
+                "BDAG_IPFS_RESTORE_REQUIRE_SIGNATURES": "1",
+            },
+            signature_field="roster_signatures",
+            context="unit-test roster",
+        )
+        self.assertEqual(verification["state"], "verified")
 
 
 if __name__ == "__main__":

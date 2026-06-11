@@ -362,12 +362,24 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             self.assertIn("BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS=3600", config)
             self.assertIn("BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE=rendezvous_sha256_v1", config)
             self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH=0", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_UNTRUSTED_PUBLISH=0", config)
             self.assertIn("BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE=./ops/runtime/ipfs-content/segment-writer.key", config)
             self.assertIn("BDAG_RAWDATADIR_SIGNING_KEY_FILE=./ops/runtime/ipfs-content/segment-writer.key", config)
             self.assertIn("BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH=./ops/runtime/ipfs-content/rawdatadir-content-index.json", config)
             self.assertIn("BDAG_IPFS_RAWDATADIR_CONTENT_DEFAULT_INDEX_CID=", config)
             self.assertIn("BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS=auto", config)
+            self.assertIn("BDAG_IPFS_STATE_CHECKPOINT_REQUIRED=1", config)
+            self.assertIn("BDAG_RESTORE_POINT_MAX_AGE_SECONDS=600", config)
+            self.assertIn("BDAG_RESTORE_GUARD_IPFS_TIMERS=bdag-rawdatadir-sidecar.timer,bdag-rawdatadir-sidecar-verify.timer,bdag-ipfs-content-sidecar.timer", config)
+            self.assertIn("BDAG_IPFS_PEER_ROSTER_ENABLED=1", config)
+            self.assertIn("BDAG_IPFS_PEER_ROSTER_INDEX_PATH=./ops/runtime/ipfs-content/peer-roster.json", config)
+            self.assertIn("BDAG_IPFS_PEER_ROSTER_STATUS_FILE=./ops/runtime/ipfs-content/peer-roster-status.json", config)
+            self.assertIn("BDAG_IPFS_PEER_ROSTER_PUBLISH_IPFS=1", config)
+            self.assertIn("BDAG_IPFS_PEER_ROSTER_MAX_PEERS=64", config)
+            self.assertIn("BDAG_IPFS_PEER_ROSTER_REQUIRE_SIGNATURES=1", config)
             self.assertIn("BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER=1", config)
+            self.assertIn("BDAG_RAWDATADIR_REQUIRE_CHAIN_ANCHOR=1", config)
+            self.assertIn("BDAG_RAWDATADIR_CHAIN_ANCHOR_REFERENCE_EVM_URL=https://rpc.blockdag.engineering", config)
             self.assertIn("BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES=1", config)
             self.assertIn("BDAG_IPFS_RESTORE_REQUIRE_SIGNATURES=1", config)
             self.assertIn("BDAG_IPFS_RESTORE_VERIFY_INDEX_LINEAGE=1", config)
@@ -405,6 +417,15 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         )
         self.assertIn("ensure_ipfs_segment_identity || return 1", installer)
         self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH=$(env_value BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH 0)", installer)
+        self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_UNTRUSTED_PUBLISH=$(env_value BDAG_IPFS_SEGMENT_BOOTSTRAP_UNTRUSTED_PUBLISH 0)", installer)
+        self.assertIn("BDAG_IPFS_STATE_CHECKPOINT_REQUIRED=$(env_value BDAG_IPFS_STATE_CHECKPOINT_REQUIRED 1)", installer)
+        self.assertIn("BDAG_RESTORE_POINT_MAX_AGE_SECONDS=$(env_value BDAG_RESTORE_POINT_MAX_AGE_SECONDS 600)", installer)
+        self.assertIn(
+            'BDAG_RESTORE_GUARD_IPFS_TIMERS=$(env_value BDAG_RESTORE_GUARD_IPFS_TIMERS "bdag-rawdatadir-sidecar.timer,bdag-rawdatadir-sidecar-verify.timer,bdag-ipfs-content-sidecar.timer")',
+            installer,
+        )
+        self.assertIn("BDAG_IPFS_PEER_ROSTER_ENABLED=1", defaults)
+        self.assertIn("BDAG_IPFS_PEER_ROSTER_REQUIRE_SIGNATURES=1", defaults)
         self.assertIn(
             'BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE=$(env_value BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE "$ROOT/ops/runtime/ipfs-content/segment-writer.key")',
             installer,
@@ -420,6 +441,11 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH=$(env_value BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH", installer)
         self.assertIn("BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS=$(env_value BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS auto)", installer)
         self.assertIn("BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER=$(env_value BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER 1)", installer)
+        self.assertIn("BDAG_RAWDATADIR_REQUIRE_CHAIN_ANCHOR=$(env_value BDAG_RAWDATADIR_REQUIRE_CHAIN_ANCHOR 1)", installer)
+        self.assertIn(
+            "BDAG_RAWDATADIR_CHAIN_ANCHOR_REFERENCE_EVM_URL=$(env_value BDAG_RAWDATADIR_CHAIN_ANCHOR_REFERENCE_EVM_URL https://rpc.blockdag.engineering)",
+            installer,
+        )
         self.assertIn("BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES=$(env_value BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES 1)", installer)
         self.assertIn("BDAG_IPFS_SEGMENT_UPDATE_DISCOVERY_FOR_CUSTOM_INDEX", (ROOT_DIR / "ops" / "ipfs_segment_writer.py").read_text(encoding="utf-8"))
         self.assertIn(

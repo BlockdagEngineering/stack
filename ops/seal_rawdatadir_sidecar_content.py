@@ -332,6 +332,33 @@ def env_quantity(env: dict[str, str], key: str, default: int = 0) -> int:
         return default
 
 
+def collect_evm_chain_anchor(env: dict[str, str]) -> dict[str, Any]:
+    evm_url = env.get("BDAG_RAWDATADIR_EVM_RPC_URL") or env.get("LOCAL_EVM_RPC_URL") or "http://127.0.0.1:18545"
+    finality_blocks = max(0, env_int(env, "BDAG_RAWDATADIR_CHAIN_ANCHOR_FINALITY_BLOCKS", 600))
+    try:
+        chain_id = quantity(evm_rpc(evm_url, "eth_chainId"))
+        latest = quantity(evm_rpc(evm_url, "eth_blockNumber"))
+        anchor_number = max(0, latest - finality_blocks)
+        block = evm_rpc(evm_url, "eth_getBlockByNumber", [hex(anchor_number), False])
+        genesis = evm_rpc(evm_url, "eth_getBlockByNumber", ["0x0", False])
+        if not isinstance(block, dict):
+            return {"state": "unavailable", "reason": f"missing_evm_block:{anchor_number}"}
+        return {
+            "state": "available",
+            "source_url": evm_url,
+            "chain_id": chain_id,
+            "latest_block_number": latest,
+            "block_number": anchor_number,
+            "block_hash": block.get("hash") or "",
+            "state_root": block.get("stateRoot") or "",
+            "genesis_hash": genesis.get("hash") if isinstance(genesis, dict) else "",
+            "finality_lag_blocks": max(0, latest - anchor_number),
+            "method": "eth_getBlockByNumber",
+        }
+    except Exception as exc:
+        return {"state": "unavailable", "source_url": evm_url, "reason": str(exc)}
+
+
 def zero_hash(value: Any) -> bool:
     text = str(value or "").strip().lower()
     return not text or text in {ZERO_HASH, ZERO_HASH[2:]}
@@ -595,6 +622,7 @@ def seal_sidecar(env: dict[str, str]) -> dict[str, Any]:
             "finalized_sidecar": "1" if finalized else "0",
             "publishable": "1" if finalized or allow_hot_publish else "0",
             "canonical_json": "json_sort_keys_sha256_v1",
+            "evm_anchor": collect_evm_chain_anchor(env),
         },
         "sources": [
             {

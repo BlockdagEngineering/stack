@@ -398,6 +398,14 @@ case "${CONTENT_MODE,,}" in
       append_seal_env_if_set BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER
       append_seal_env_if_set BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE
       append_seal_env_if_set BDAG_IPFS_SEGMENT_WRITER_ID
+      case "${FINAL_STOPPED_SYNC,,}" in
+        1|true|yes|on)
+          seal_env+=("BDAG_RAWDATADIR_SIDECAR_CONTENT_FINALIZED=1")
+          ;;
+        *)
+          append_seal_env_if_set BDAG_RAWDATADIR_SIDECAR_CONTENT_FINALIZED
+          ;;
+      esac
       if [[ "${rsync_command[0]}" == "sudo" ]]; then
         if ! run_low_priority sudo -n env "${seal_env[@]}" python3 "$CONTENT_SCRIPT" 2>&1 | tee -a "$LOG_FILE"; then
           log "raw datadir sidecar content sealing failed; see status file"
