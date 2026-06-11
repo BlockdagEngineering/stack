@@ -102,6 +102,18 @@ def split_env_list(name: str, default: str) -> list[str]:
     return [item.strip() for item in re.split(r"[,;]", raw) if item.strip()]
 
 
+def split_mac_env_list(name: str, default: str = "") -> list[str]:
+    macs: list[str] = []
+    seen: set[str] = set()
+    for item in split_env_list(name, default):
+        candidate = item.split("=", 1)[-1].strip() if "=" in item else item
+        mac = normalize_mac(candidate)
+        if mac and mac not in seen:
+            macs.append(mac)
+            seen.add(mac)
+    return macs
+
+
 def single_env_value(name: str, default: str) -> str:
     value = os.environ.get(name, default).strip()
     return value or default
@@ -2190,18 +2202,65 @@ def augment_miner_registry_with_lan_hints(registry: dict[str, Any]) -> dict[str,
             }
             miners.append(item)
             changed = True
+        old_ip = str(item.get("ip") or "")
+        if item.get("ip") != ip:
+            item["ip"] = ip
+            changed = True
+        if normalize_mac(item.get("mac")) != mac:
+            item["mac"] = mac
+            item["device_id"] = f"mac:{mac}"
+            changed = True
         for key in ("hostname", "lease_expires_epoch", "lease_active", "lease_file"):
             if hint.get(key) not in (None, "", []):
                 item[key] = hint[key]
         before_sources = list(item.get("sources") or [])
         item["sources"] = merge_unique_strings(item.get("sources"), hint.get("sources"), "lan-hint")
-        item["ip_history"] = merge_unique_strings(item.get("ip_history"), ip)
+        item["ip_history"] = merge_unique_strings(item.get("ip_history"), old_ip, ip)
         item["expected_pool_url"] = item.get("expected_pool_url") or defaults["pool_url"]
         item["expected_worker_user"] = item.get("expected_worker_user") or defaults["worker_user"]
         if item.get("sources") != before_sources:
             changed = True
         existing_by_mac[mac] = item
         existing_by_ip[ip] = item
+    if changed:
+        assign_miner_display_names(miners)
+    return {**registry, "miners": miners}
+
+
+def augment_miner_registry_with_expected_macs(registry: dict[str, Any]) -> dict[str, Any]:
+    expected = expected_asic_macs()
+    if not expected:
+        return registry
+    miners = [dict(item) for item in registry.get("miners", []) if isinstance(item, dict)]
+    by_mac = {normalize_mac(item.get("mac")): item for item in miners if normalize_mac(item.get("mac"))}
+    defaults = default_miner_pool_settings()
+    changed = False
+    for mac in expected:
+        item = by_mac.get(mac)
+        if item is None:
+            item = {
+                "ip": "",
+                "mac": mac,
+                "device_id": f"mac:{mac}",
+                "device_type": "asic",
+                "discovered_by": "expected-mac",
+                "sources": ["expected-mac"],
+                "managed": True,
+                "last_configured_ok": False,
+            }
+            miners.append(item)
+            by_mac[mac] = item
+            changed = True
+        before = dict(item)
+        item["mac"] = mac
+        item["device_id"] = f"mac:{mac}"
+        item["device_type"] = "asic"
+        item["managed"] = True
+        item["expected_pool_url"] = item.get("expected_pool_url") or defaults["pool_url"]
+        item["expected_worker_user"] = item.get("expected_worker_user") or defaults["worker_user"]
+        item["sources"] = merge_unique_strings(item.get("sources"), "expected-mac")
+        if item != before:
+            changed = True
     if changed:
         assign_miner_display_names(miners)
     return {**registry, "miners": miners}
@@ -2306,6 +2365,20 @@ def miner_identity_key(item: dict[str, Any]) -> str:
     return f"mac:{mac}" if mac else ""
 
 
+def expected_asic_macs() -> list[str]:
+    """Return the canonical MAC-only expected ASIC lane list."""
+    return split_mac_env_list("BDAG_ASIC_EXPECTED_MACS", "")
+
+
+def expected_asic_mac_set() -> set[str]:
+    return set(expected_asic_macs())
+
+
+def is_expected_asic_mac(value: Any) -> bool:
+    mac = normalize_mac(value)
+    return bool(mac and mac in expected_asic_mac_set())
+
+
 def asic_mac_override_entries(registry: dict[str, Any] | None = None) -> list[tuple[str, str]]:
     """Return verified host-visible ASIC IP to MAC mappings for the pool.
 
@@ -2318,6 +2391,7 @@ def asic_mac_override_entries(registry: dict[str, Any] | None = None) -> list[tu
     by_ip: dict[str, str] = {}
     neighbors = read_neighbor_macs()
     now_epoch = seconds_since_epoch()
+    expected_macs = expected_asic_mac_set()
     miners = registry.get("miners") if isinstance(registry, dict) else []
     for row in miners if isinstance(miners, list) else []:
         if not isinstance(row, dict):
@@ -2337,6 +2411,7 @@ def asic_mac_override_entries(registry: dict[str, Any] | None = None) -> list[tu
             or row.get("pool_active")
             or row.get("work_pool_active")
             or recent_pool_route
+            or normalize_mac(row.get("mac")) in expected_macs
         )
         if not active_or_configured:
             continue
@@ -2596,6 +2671,7 @@ def read_miner_registry(*, augment_lan_hints: bool = True) -> dict[str, Any]:
     miners = registry.get("miners")
     if not isinstance(miners, list):
         registry["miners"] = []
+    registry = augment_miner_registry_with_expected_macs(registry)
     if not augment_lan_hints:
         return registry
     return augment_miner_registry_with_lan_hints(registry)

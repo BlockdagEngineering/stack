@@ -49,7 +49,7 @@
     <section class="card">
       <h2>Decision</h2>
       <p>Physical ASIC miners and ASIC work lanes are identified only as <code>mac:&lt;normalized-mac&gt;</code>. IP addresses, Stratum ports, worker names, wallet addresses, display names, and pool-log connection suffixes are observations or payout fields, not ASIC identities.</p>
-      <p>The stack miner registry owns the common MAC identity source. It projects current route-to-MAC observations into the pool through <code>POOL_ASIC_MAC_OVERRIDES</code> and passes the physical ASIC LAN scope through <code>BDAG_ASIC_LAN_CIDRS</code>. The pool uses that projection to expose active local ASIC lanes as MAC lanes. The dashboard consumes registry and pool MAC lane data; it must not invent a different ASIC identity.</p>
+      <p><code>BDAG_ASIC_EXPECTED_MACS</code> is the canonical expected physical ASIC lane list. The stack miner registry overlays that MAC-only list onto current observations, then projects current route-to-MAC observations into the pool through <code>POOL_ASIC_MAC_OVERRIDES</code> and passes the physical ASIC LAN scope through <code>BDAG_ASIC_LAN_CIDRS</code>. The pool uses that projection to expose active local ASIC lanes as MAC lanes. The dashboard consumes registry and pool MAC lane data; it must not invent a different ASIC identity.</p>
     </section>
 
     <section>
@@ -57,7 +57,7 @@
       <table>
         <thead><tr><th>Concept</th><th>Allowed Role</th><th>Not Allowed</th></tr></thead>
         <tbody>
-          <tr><td>MAC address</td><td>Durable physical ASIC identity, registry key, expected lane key, watchdog stall/cooldown key, earnings/history ASIC merge key.</td><td>None for physical ASIC identity.</td></tr>
+          <tr><td>MAC address</td><td>Durable physical ASIC identity, <code>BDAG_ASIC_EXPECTED_MACS</code> lane entry, registry key, expected lane key, watchdog stall/cooldown key, earnings/history ASIC merge key.</td><td>None for physical ASIC identity.</td></tr>
           <tr><td>IP address</td><td>Observed route used to contact ASIC HTTP/Stratum endpoints and build the current <code>POOL_ASIC_MAC_OVERRIDES</code> projection. Remote Stratum clients outside <code>BDAG_ASIC_LAN_CIDRS</code> may use IP-based operational identity.</td><td>ASIC registry key, dashboard identity key, expected work lane, watchdog state key, display suffix, earnings/history merge key for physical ASICs on the mining LAN.</td></tr>
           <tr><td>Worker or wallet</td><td>Payout and credit attribution context.</td><td>Physical ASIC identity or lane identity.</td></tr>
           <tr><td>Stratum port or extranonce suffix</td><td>Current connection/job correlation inside the bounded pool-log window.</td><td>Durable ASIC identity or stale lane ownership after reconnect.</td></tr>
@@ -75,8 +75,8 @@
       <h2>Control Plane Flow</h2>
       <ol>
         <li>LAN discovery, ASIC API reads, neighbor table reads, and configured miner results collect current route observations.</li>
-        <li>The stack registry stores physical ASIC records only when a MAC address is known.</li>
-        <li><code>pool_asic_mac_overrides_value()</code> builds <code>ip=mac</code> projection entries from verified registry rows.</li>
+        <li>The stack registry stores physical ASIC records only when a MAC address is known, and marks entries in <code>BDAG_ASIC_EXPECTED_MACS</code> as managed lanes even if their route changes.</li>
+        <li><code>pool_asic_mac_overrides_value()</code> builds derived <code>ip=mac</code> projection entries from verified registry rows. This is a route map, not the authoritative lane list.</li>
         <li>Compose passes <code>BDAG_ASIC_LAN_CIDRS</code> into the pool so unresolved local ASIC routes cannot become IP lanes.</li>
         <li>The status sampler keeps <code>POOL_ASIC_MAC_OVERRIDES</code> in runtime env and recreates the pool container when the projection changes.</li>
         <li>The pool reports each ASIC connection as a MAC lane. The dashboard and watchdog consume those MAC identities.</li>

@@ -136,13 +136,14 @@ tracked only by normalized MAC identity (`mac:<mac>`). IP addresses are
 ephemeral observed routes used to reach ASIC HTTP/Stratum endpoints; they must
 not become ASIC registry keys, dashboard identity keys, expected lane IDs,
 watchdog stall/cooldown keys, earnings/history merge keys, or display suffixes.
-The stack miner registry is the common source for ASIC MAC identity. The stack
-projects current route-to-MAC observations into the pool through
-`POOL_ASIC_MAC_OVERRIDES` and passes `BDAG_ASIC_LAN_CIDRS` into the pool, the
-pool resolves active ASIC LAN lanes to MACs, and the dashboard consumes those
-MAC identities. If a LAN ASIC route cannot be resolved to a MAC address, do not
-promote that route into a miner lane; surface it as an unattributed/observed
-route until the MAC is collected. Remote Stratum clients outside the configured
+`BDAG_ASIC_EXPECTED_MACS` is the canonical expected physical ASIC lane list.
+The stack miner registry overlays that MAC-only list onto current observations,
+projects current route-to-MAC observations into the pool through the derived
+`POOL_ASIC_MAC_OVERRIDES` route map, and passes `BDAG_ASIC_LAN_CIDRS` into the
+pool. The pool resolves active ASIC LAN lanes to MACs, and the dashboard
+consumes those MAC identities. If a LAN ASIC route cannot be resolved to a MAC
+address, do not promote that route into a miner lane; surface it as an
+unattributed/observed route until the MAC is collected. Remote Stratum clients outside the configured
 ASIC LAN may use IP-based operational identity; this exception must never be
 used for physical ASIC hardware on the mining LAN.
 

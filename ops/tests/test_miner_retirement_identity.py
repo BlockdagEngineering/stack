@@ -158,6 +158,7 @@ class MinerRegistryIdentityTests(unittest.TestCase):
         self.old_retirements_file = pool_ops.MINER_RETIREMENTS_FILE
         self.old_read_neighbors = pool_ops.read_neighbor_macs
         self.old_discover_miner = pool_ops.discover_miner
+        self.old_expected_macs = os.environ.get("BDAG_ASIC_EXPECTED_MACS")
         pool_ops.MINER_REGISTRY_FILE = self.registry_file
         pool_ops.MINER_RETIREMENTS_FILE = self.retirements_file
         pool_ops.read_neighbor_macs = lambda: {}
@@ -168,6 +169,10 @@ class MinerRegistryIdentityTests(unittest.TestCase):
         pool_ops.MINER_RETIREMENTS_FILE = self.old_retirements_file
         pool_ops.read_neighbor_macs = self.old_read_neighbors
         pool_ops.discover_miner = self.old_discover_miner
+        if self.old_expected_macs is None:
+            os.environ.pop("BDAG_ASIC_EXPECTED_MACS", None)
+        else:
+            os.environ["BDAG_ASIC_EXPECTED_MACS"] = self.old_expected_macs
 
     def test_registry_keeps_distinct_macs_when_ip_is_reused(self) -> None:
         registry = pool_ops.save_miner_registry(
@@ -272,6 +277,88 @@ class MinerRegistryIdentityTests(unittest.TestCase):
         self.assertEqual(miner["mac"], "28:e2:97:1e:c0:b5")
         self.assertEqual(miner["device_type"], "asic")
         self.assertIn("lan-hint", miner["sources"])
+
+    def test_expected_asic_macs_are_managed_lanes_without_ip_identity(self) -> None:
+        os.environ["BDAG_ASIC_EXPECTED_MACS"] = (
+            "28:e2:97:1e:c0:b5,2a:71:c7:f5:1f:1e,28:e2:97:4d:44:3a,28:e2:97:3e:39:63"
+        )
+        self.registry_file.write_text(
+            json.dumps(
+                {
+                    "updated_at": "2026-06-11T08:00:00+0200",
+                    "miners": [
+                        {
+                            "ip": "192.168.1.103",
+                            "mac": "28:e2:97:1e:c0:b5",
+                            "device_type": "asic",
+                            "managed": False,
+                            "last_configured_ok": False,
+                        },
+                        {
+                            "ip": "192.168.1.100",
+                            "mac": "28:e2:97:4d:44:3a",
+                            "device_type": "asic",
+                            "managed": False,
+                            "last_configured_ok": False,
+                        },
+                        {
+                            "ip": "192.168.1.109",
+                            "mac": "c8:d3:ff:a3:f4:e1",
+                            "device_type": "asic",
+                            "managed": False,
+                            "last_configured_ok": False,
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        registry = pool_ops.read_miner_registry(augment_lan_hints=False)
+        by_mac = {item["mac"]: item for item in registry["miners"] if item.get("mac")}
+
+        self.assertTrue(by_mac["28:e2:97:1e:c0:b5"]["managed"])
+        self.assertTrue(by_mac["28:e2:97:4d:44:3a"]["managed"])
+        self.assertTrue(by_mac["2a:71:c7:f5:1f:1e"]["managed"])
+        self.assertEqual(by_mac["2a:71:c7:f5:1f:1e"]["ip"], "")
+        self.assertFalse(by_mac["c8:d3:ff:a3:f4:e1"].get("managed"))
+        override_value = pool_ops.pool_asic_mac_overrides_value(registry)
+        self.assertIn("192.168.1.103=28:e2:97:1e:c0:b5", override_value)
+        self.assertIn("192.168.1.100=28:e2:97:4d:44:3a", override_value)
+
+    def test_lan_hint_updates_same_mac_current_route(self) -> None:
+        old_target = os.environ.get("BDAG_MINER_SCAN_TARGET")
+        os.environ["BDAG_MINER_SCAN_TARGET"] = "192.168.1.0/24"
+        self.addCleanup(
+            lambda: os.environ.pop("BDAG_MINER_SCAN_TARGET", None)
+            if old_target is None
+            else os.environ.__setitem__("BDAG_MINER_SCAN_TARGET", old_target)
+        )
+        mac = "28:e2:97:4d:44:3a"
+        pool_ops.read_neighbor_macs = lambda: {"192.168.1.105": mac}
+        self.registry_file.write_text(
+            json.dumps(
+                {
+                    "miners": [
+                        {
+                            "ip": "192.168.1.100",
+                            "mac": mac,
+                            "device_type": "asic",
+                            "managed": True,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        registry = pool_ops.read_miner_registry()
+
+        self.assertEqual(len(registry["miners"]), 1)
+        miner = registry["miners"][0]
+        self.assertEqual(miner["mac"], mac)
+        self.assertEqual(miner["ip"], "192.168.1.105")
+        self.assertEqual(set(miner["ip_history"]), {"192.168.1.100", "192.168.1.105"})
 
     def test_registry_ignores_docker_bridge_neighbor_hints(self) -> None:
         old_target = os.environ.get("BDAG_MINER_SCAN_TARGET")
