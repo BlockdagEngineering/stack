@@ -192,14 +192,14 @@ jobs:
           mkdir "${ROOT}"
           cp docker-compose.yml dockerfile .dockerignore .env.example node.conf.example README.md checksums.txt release-payload.env "${ROOT}/"
           echo "${VERSION}" > "${ROOT}/version.txt"
-          cp scripts/release/install.sh scripts/release/install.ps1 scripts/release/install.cmd "${ROOT}/"
+          cp scripts/release/install.sh scripts/release/install-node.sh scripts/release/install.ps1 scripts/release/install.cmd "${ROOT}/"
           cp -a scripts/release/installers "${ROOT}/installers"
           cp -a bin sql docker tools "${ROOT}/"
           # Earlier test steps generate scripts/__pycache__ in the workspace;
           # check-release-archive.py rejects cache dirs inside the zip.
           rsync -a --exclude='__pycache__/' --exclude='*.pyc' scripts "${ROOT}/"
           rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
-          chmod +x "${ROOT}/install.sh" "${ROOT}/installers/"*.sh
+          chmod +x "${ROOT}/install.sh" "${ROOT}/install-node.sh" "${ROOT}/installers/"*.sh
 
           # Smoke-test a disposable copy: install.sh writes .env and __pycache__,
           # which check-release-archive.py rejects if they leak into the zip.

@@ -54,7 +54,13 @@ $dockerPlatform = "linux/$payloadArch"
 if ($payloadMetadata['DOCKER_PLATFORM'] -and $payloadMetadata['DOCKER_PLATFORM'] -ne $dockerPlatform) {
     throw "release-payload.env has inconsistent DOCKER_PLATFORM=$($payloadMetadata['DOCKER_PLATFORM']); expected $dockerPlatform."
 }
-$snapshotUrl = if ($env:BDAG_SNAPSHOT_URL) { $env:BDAG_SNAPSHOT_URL } else { 'https://bdagstack.bdagdev.xyz/latest.bdsnap' }
+$installMode = $env:BDAG_INSTALL_MODE
+$deployKind = $env:BDAG_DEPLOY_KIND
+$chainMode = $env:BDAG_CHAIN_MODE
+$nodeOnlyInstall = $false
+$nodeArchival = '0'
+$snapshotBaseUrl = if ($env:BDAG_SNAPSHOT_BASE_URL) { $env:BDAG_SNAPSHOT_BASE_URL } else { 'https://bdagstack.bdagdev.xyz' }
+$snapshotUrl = $env:BDAG_SNAPSHOT_URL
 $snapshotMinBytes = if ($env:BDAG_SNAPSHOT_MIN_BYTES) { [int64]$env:BDAG_SNAPSHOT_MIN_BYTES } else { [int64]1048576 }
 $requireSnapshot = $env:BDAG_REQUIRE_SNAPSHOT -ne '0'
 $requestedSnapshotDownloader = if ($env:BDAG_SNAPSHOT_DOWNLOADER) { $env:BDAG_SNAPSHOT_DOWNLOADER.ToLowerInvariant() } else { 'auto' }
@@ -392,6 +398,89 @@ if (-not (Test-Path .env.example) -or -not (Test-Path node.conf.example) -or -no
     throw "Run this installer from the extracted pool-stack-docker release folder."
 }
 
+function Convert-DeployKind([string]$Value) {
+    switch ($Value) {
+        { $_ -in @('1', 'pool', 'pool-stack') } { return 'pool' }
+        { $_ -in @('2', 'node', 'standalone', 'standalone-node') } { return 'node' }
+        default { return $null }
+    }
+}
+
+function Convert-ChainMode([string]$Value) {
+    switch ($Value) {
+        { $_ -in @('1', 'non-archive', 'nonarchive', 'pruned') } { return 'non-archive' }
+        { $_ -in @('2', 'archive', 'full') } { return 'archive' }
+        default { return $null }
+    }
+}
+
+# Legacy combined override pre-seeds both dimensions; explicit
+# BDAG_DEPLOY_KIND/BDAG_CHAIN_MODE take precedence.
+if ($installMode) {
+    switch ($installMode) {
+        { $_ -in @('pool', 'pool-stack') } {
+            if (-not $deployKind) { $deployKind = 'pool' }
+        }
+        'archive-node' {
+            if (-not $deployKind) { $deployKind = 'node' }
+            if (-not $chainMode) { $chainMode = 'archive' }
+        }
+        { $_ -in @('node', 'non-archive-node') } {
+            if (-not $deployKind) { $deployKind = 'node' }
+            if (-not $chainMode) { $chainMode = 'non-archive' }
+        }
+        default { throw "Invalid BDAG_INSTALL_MODE '$installMode'. Use pool, archive-node, or node." }
+    }
+}
+
+# Step 1/2 - deployment.
+if ($deployKind) {
+    $deployKind = Convert-DeployKind $deployKind
+    if (-not $deployKind) { throw "Invalid deployment '$($env:BDAG_DEPLOY_KIND)'. Use pool or node." }
+    Write-Host "Deployment: $deployKind (preselected)"
+} else {
+    Write-Host "Step 1/2 - Select what to install:"
+    Write-Host "  1) Mining pool stack with dashboard (default)"
+    Write-Host "  2) Standalone node only"
+    while (-not $deployKind) {
+        $choice = Read-Host "Choice [1]"
+        if (-not $choice) { $choice = '1' }
+        $deployKind = Convert-DeployKind $choice
+        if (-not $deployKind) { Write-Host "Please enter 1 or 2." -ForegroundColor Yellow }
+    }
+    Write-Host ""
+}
+
+# Step 2/2 - chain data type.
+if ($chainMode) {
+    $chainMode = Convert-ChainMode $chainMode
+    if (-not $chainMode) { throw "Invalid chain mode '$($env:BDAG_CHAIN_MODE)'. Use archive or non-archive." }
+    Write-Host "Chain data: $chainMode (preselected)"
+    Write-Host ""
+} else {
+    Write-Host "Step 2/2 - Select chain data type:"
+    Write-Host "  1) Non-archive (pruned chain data, default)"
+    Write-Host "  2) Archive (keeps full block history, no pruning)"
+    while (-not $chainMode) {
+        $choice = Read-Host "Choice [1]"
+        if (-not $choice) { $choice = '1' }
+        $chainMode = Convert-ChainMode $choice
+        if (-not $chainMode) { Write-Host "Please enter 1 or 2." -ForegroundColor Yellow }
+    }
+    Write-Host ""
+}
+
+$nodeOnlyInstall = $deployKind -eq 'node'
+if ($chainMode -eq 'archive') { $nodeArchival = '1' }
+# Snapshot host convention: latest.bdsnap is the non-archive (pruned) snapshot,
+# latest-archive.bdsnap is the archive (full history) snapshot.
+if (-not $snapshotUrl) {
+    $snapshotFile = if ($chainMode -eq 'archive') { 'latest-archive.bdsnap' } else { 'latest.bdsnap' }
+    $snapshotUrl = "$($snapshotBaseUrl.TrimEnd('/'))/$snapshotFile"
+}
+Write-Host "Snapshot source: $snapshotUrl"
+Write-Host ""
+
 Invoke-ReleasePreflight
 
 $snapshotPath = 'docker/no-snapshot.marker'
@@ -493,33 +582,43 @@ if ($env:POSTGRES_PASSWORD) {
     Write-Host "Generated Postgres password."
 }
 
-$miningAddr = Read-Host "Mining/earnings wallet address (0x...)"
-$poolPrivateKey = Read-PlainPassword "Pool operator private key (optional, hidden; press Enter to skip)"
-
 Copy-Item .env.example .env -Force
-$poolLanIpDefault = if ($env:BDAG_POOL_HOST) { $env:BDAG_POOL_HOST } else { '192.168.1.10' }
-$poolLanIp = Read-WithDefault "Pool LAN IP miners should connect to" $poolLanIpDefault
-$minerScanTargetDefault = if ($env:BDAG_MINER_SCAN_TARGET) { $env:BDAG_MINER_SCAN_TARGET } elseif ($env:BDAG_ASIC_LAN_CIDRS) { $env:BDAG_ASIC_LAN_CIDRS } else { Get-DefaultCidr $poolLanIp }
-$minerScanTarget = Read-WithDefault "LAN scan range for ASIC discovery" $minerScanTargetDefault
 Set-EnvValue .env POSTGRES_PASSWORD $pgPassword
-Set-EnvValue .env MINING_POOL_ADDRESS $miningAddr
 Set-EnvValue .env DOCKER_PLATFORM $dockerPlatform
 Set-EnvValue .env SNAPSHOT_PATH $snapshotPath
-Set-EnvValue .env BDAG_POOL_HOST $poolLanIp
-Set-EnvValue .env BDAG_POOL_URL "stratum+tcp://${poolLanIp}:3334"
-Set-EnvValue .env BDAG_MINER_SCAN_TARGET $minerScanTarget
-Set-EnvValue .env BDAG_ASIC_LAN_CIDRS $minerScanTarget
-Assert-PoolLanConfig
-if ($poolPrivateKey) {
-    Set-EnvValue .env POOL_PRIVATE_KEY $poolPrivateKey
+Set-EnvValue .env BDAG_SNAPSHOT_URL $snapshotUrl
+Set-EnvValue .env BDAG_NODE_ARCHIVAL $nodeArchival
+
+$miningAddr = ''
+if ($nodeOnlyInstall) {
+    Write-Host "Node-only install: skipping pool, dashboard, and ASIC configuration."
+} else {
+    $miningAddr = Read-Host "Mining/earnings wallet address (0x...)"
+    $poolPrivateKey = Read-PlainPassword "Pool operator private key (optional, hidden; press Enter to skip)"
+
+    $poolLanIpDefault = if ($env:BDAG_POOL_HOST) { $env:BDAG_POOL_HOST } else { '192.168.1.10' }
+    $poolLanIp = Read-WithDefault "Pool LAN IP miners should connect to" $poolLanIpDefault
+    $minerScanTargetDefault = if ($env:BDAG_MINER_SCAN_TARGET) { $env:BDAG_MINER_SCAN_TARGET } elseif ($env:BDAG_ASIC_LAN_CIDRS) { $env:BDAG_ASIC_LAN_CIDRS } else { Get-DefaultCidr $poolLanIp }
+    $minerScanTarget = Read-WithDefault "LAN scan range for ASIC discovery" $minerScanTargetDefault
+    Set-EnvValue .env MINING_POOL_ADDRESS $miningAddr
+    Set-EnvValue .env BDAG_POOL_HOST $poolLanIp
+    Set-EnvValue .env BDAG_POOL_URL "stratum+tcp://${poolLanIp}:3334"
+    Set-EnvValue .env BDAG_MINER_SCAN_TARGET $minerScanTarget
+    Set-EnvValue .env BDAG_ASIC_LAN_CIDRS $minerScanTarget
+    Assert-PoolLanConfig
+    if ($poolPrivateKey) {
+        Set-EnvValue .env POOL_PRIVATE_KEY $poolPrivateKey
+    }
 }
 
 Copy-Item node.conf.example node.conf -Force
 $nodeText = [System.IO.File]::ReadAllText((Get-Item node.conf).FullName)
-if ($nodeText -match '(?m)^miningaddr=') {
-    $nodeText = [regex]::Replace($nodeText, '(?m)^miningaddr=.*', "miningaddr=$miningAddr")
-} else {
-    $nodeText = $nodeText.TrimEnd() + "`nminingaddr=$miningAddr`n"
+if (-not $nodeOnlyInstall) {
+    if ($nodeText -match '(?m)^miningaddr=') {
+        $nodeText = [regex]::Replace($nodeText, '(?m)^miningaddr=.*', "miningaddr=$miningAddr")
+    } else {
+        $nodeText = $nodeText.TrimEnd() + "`nminingaddr=$miningAddr`n"
+    }
 }
 
 Write-Host ""
@@ -550,7 +649,9 @@ if ($externalIp) {
 $nodeText = $nodeText -replace "`r`n", "`n"
 [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'node.conf'), $nodeText, [System.Text.Encoding]::UTF8)
 
-New-Item -ItemType Directory -Force -Path 'collector\logs' | Out-Null
+if (-not $nodeOnlyInstall) {
+    New-Item -ItemType Directory -Force -Path 'collector\logs' | Out-Null
+}
 Clean-BuildContextMetadata
 Stage-SnapshotForNodeDatadir
 Plan-OrphanContainerCleanup
@@ -558,24 +659,44 @@ $env:DOCKER_DEFAULT_PLATFORM = $dockerPlatform
 
 Write-Host ""
 Write-Host "=== Building Docker images ($dockerPlatform) ===" -ForegroundColor Cyan
-& docker compose build
+if ($nodeOnlyInstall) {
+    & docker compose build node
+} else {
+    & docker compose build
+}
 if ($LASTEXITCODE -ne 0) { throw "docker compose build failed." }
 
 Write-Host ""
-Write-Host "=== Starting services ===" -ForegroundColor Cyan
-& docker compose up -d --no-build --pull never
+if ($nodeOnlyInstall) {
+    Write-Host "=== Starting node ===" -ForegroundColor Cyan
+    & docker compose up -d --no-build --pull never node
+} else {
+    Write-Host "=== Starting services ===" -ForegroundColor Cyan
+    & docker compose up -d --no-build --pull never
+}
 if ($LASTEXITCODE -ne 0) { throw "docker compose up failed." }
 
 Write-Host ""
 Write-Host "=================================================" -ForegroundColor Green
-Write-Host "  BlockDAG Pool Stack is running." -ForegroundColor Green
-Write-Host "=================================================" -ForegroundColor Green
-Write-Host "  Dashboard:  http://localhost:8080"
-Write-Host "  Collector:  http://localhost:9280"
-Write-Host "  Stratum:    stratum+tcp://localhost:3334"
-Write-Host "  EVM RPC:    http://localhost:18545"
-Write-Host ""
-Write-Host "  View logs:  docker compose logs -f"
+if ($nodeOnlyInstall) {
+    $nodeKind = if ($nodeArchival -eq '1') { 'archive' } else { 'non-archive' }
+    Write-Host "  BlockDAG $nodeKind node is running." -ForegroundColor Green
+    Write-Host "=================================================" -ForegroundColor Green
+    Write-Host "  P2P:        port 8150"
+    Write-Host "  Chain RPC:  http://localhost:38131"
+    Write-Host "  EVM RPC:    http://localhost:18545"
+    Write-Host ""
+    Write-Host "  View logs:  docker compose logs -f node"
+} else {
+    Write-Host "  BlockDAG Pool Stack is running." -ForegroundColor Green
+    Write-Host "=================================================" -ForegroundColor Green
+    Write-Host "  Dashboard:  http://localhost:8080"
+    Write-Host "  Collector:  http://localhost:9280"
+    Write-Host "  Stratum:    stratum+tcp://localhost:3334"
+    Write-Host "  EVM RPC:    http://localhost:18545"
+    Write-Host ""
+    Write-Host "  View logs:  docker compose logs -f"
+}
 Write-Host "  Stop:       docker compose down"
 Write-Host "=================================================" -ForegroundColor Green
 
