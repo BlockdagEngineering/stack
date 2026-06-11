@@ -912,8 +912,14 @@ configure_env() {
   set_stack_default_env_value .env BDAG_HOST_PRESSURE_SWAP_USED_WARN_PERCENT
   set_stack_default_env_value .env BDAG_ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT
   set_stack_default_env_value .env BDAG_ADAPTIVE_SWAP_USED_WARN_PERCENT
+  set_stack_default_env_value .env BDAG_SHARED_STATUS_CACHE_ENABLED
+  set_stack_default_env_value .env BDAG_SHARED_STATUS_CACHE_SECONDS
+  set_stack_default_env_value .env BDAG_STATUS_SAMPLER_ENABLED
+  set_stack_default_env_value .env BDAG_STATUS_SAMPLER_INTERVAL_SECONDS
+  set_stack_default_env_value .env BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS
   set_stack_default_env_value .env BDAG_BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT
   set_stack_default_env_value .env BDAG_BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT
+  set_stack_default_env_value .env BDAG_BACKGROUND_MAINTENANCE_POOL_READY_STATUS_MAX_AGE_SECONDS
   set_stack_default_env_value .env BDAG_MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED
   set_stack_default_env_value .env BDAG_CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS
   set_stack_default_env_value .env BDAG_CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS

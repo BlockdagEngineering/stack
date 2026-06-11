@@ -28,6 +28,25 @@ class StackDefaultsTests(unittest.TestCase):
         self.assertIn("BDAG_GLOBAL_BLOCK_WINDOW=$(stack_default BDAG_GLOBAL_BLOCK_WINDOW)", installer)
         self.assertIn("ensure_stack_default_env_value BDAG_GLOBAL_BLOCK_WINDOW", installer)
 
+    def test_shared_status_sampler_is_forced_on_by_installer(self) -> None:
+        defaults = parse_env(ROOT_DIR / "ops/config/stack-defaults.env")
+        self.assertEqual(defaults["BDAG_STATUS_SAMPLER_ENABLED"], "1")
+        self.assertEqual(defaults["BDAG_BACKGROUND_MAINTENANCE_POOL_READY_STATUS_MAX_AGE_SECONDS"], "30")
+
+        installer = (ROOT_DIR / "ops/install-dashboard.sh").read_text(encoding="utf-8")
+        self.assertIn("force_stack_default_env_value BDAG_STATUS_SAMPLER_ENABLED", installer)
+        self.assertIn(
+            "ensure_stack_default_env_value BDAG_BACKGROUND_MAINTENANCE_POOL_READY_STATUS_MAX_AGE_SECONDS",
+            installer,
+        )
+
+        release_installer = (ROOT_DIR / "ops/release-install.sh").read_text(encoding="utf-8")
+        self.assertIn("set_stack_default_env_value .env BDAG_STATUS_SAMPLER_ENABLED", release_installer)
+        self.assertIn(
+            "set_stack_default_env_value .env BDAG_BACKGROUND_MAINTENANCE_POOL_READY_STATUS_MAX_AGE_SECONDS",
+            release_installer,
+        )
+
     def test_compose_tip_lag_fallback_matches_stack_default(self) -> None:
         defaults = parse_env(ROOT_DIR / "ops/config/stack-defaults.env")
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")

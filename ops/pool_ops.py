@@ -638,6 +638,11 @@ BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT = env_float(
     HOST_PRESSURE_SWAP_USED_WARN_PERCENT,
     minimum=0.0,
 )
+BACKGROUND_MAINTENANCE_POOL_READY_STATUS_MAX_AGE_SECONDS = env_float(
+    "BDAG_BACKGROUND_MAINTENANCE_POOL_READY_STATUS_MAX_AGE_SECONDS",
+    30.0,
+    minimum=0.0,
+)
 BACKGROUND_MAINTENANCE_LAZY_TASKS = set(
     split_env_list(
         "BDAG_BACKGROUND_MAINTENANCE_LAZY_TASKS",
@@ -1468,6 +1473,9 @@ def read_status_sampler_payload(include_logs: bool, max_age_seconds: float | Non
     payload = snapshot.get("payload")
     if not isinstance(payload, dict):
         return None
+    sample_include_logs = bool(snapshot.get("include_logs"))
+    if include_logs and not sample_include_logs:
+        return None
     sampled_at = safe_float(snapshot.get("epoch"), 0.0) or 0.0
     age = max(0.0, time.time() - sampled_at)
     if age > sampler_max_age:
@@ -1482,7 +1490,7 @@ def read_status_sampler_payload(include_logs: bool, max_age_seconds: float | Non
         "enabled": True,
         "hit": True,
         "file": str(STATUS_SAMPLER_FILE),
-        "include_logs": bool(snapshot.get("include_logs")),
+        "include_logs": sample_include_logs,
         "requested_include_logs": include_logs,
         "age_seconds": round(age, 3),
         "max_age_seconds": sampler_max_age,
@@ -7808,6 +7816,36 @@ def _background_task_selected(task: str, selected: set[str]) -> bool:
     return "*" in selected or normalized in selected
 
 
+def _pool_ready_payload_requires_log_truth(payload: Mapping[str, Any]) -> bool:
+    mode = str(payload.get("mode") or "unknown").strip().lower()
+    if mode in {"down", "degraded", "syncing", "unknown", "ready_no_miners"}:
+        return True
+    return any(payload.get(key) is False for key in ("can_mine", "can_accept_shares", "can_submit_blocks"))
+
+
+def background_pool_ready_payload(payload: dict[str, Any], status_supplied: bool) -> dict[str, Any]:
+    """Use recent log-derived sampler truth before accepting a cheap no-log no-miner state."""
+    if status_supplied or not _pool_ready_payload_requires_log_truth(payload):
+        return payload
+    sampled = read_status_sampler_payload(
+        include_logs=True,
+        max_age_seconds=BACKGROUND_MAINTENANCE_POOL_READY_STATUS_MAX_AGE_SECONDS,
+    )
+    if not isinstance(sampled, dict):
+        return payload
+    selected = dict(sampled)
+    selected["background_pool_ready_status_source"] = {
+        "selected": "status_sampler_with_logs",
+        "max_age_seconds": BACKGROUND_MAINTENANCE_POOL_READY_STATUS_MAX_AGE_SECONDS,
+        "previous_mode": payload.get("mode"),
+        "previous_can_mine": payload.get("can_mine"),
+        "previous_can_accept_shares": payload.get("can_accept_shares"),
+        "previous_can_submit_blocks": payload.get("can_submit_blocks"),
+        "reason": "no_logs_status_cannot_prove_stratum_lane_activity",
+    }
+    return selected
+
+
 def background_maintenance_decision(task: str, status: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return whether optional background work should run on this tick."""
     task_is_lazy = _background_task_selected(task, BACKGROUND_MAINTENANCE_LAZY_TASKS)
@@ -7828,7 +7866,10 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
             "io_pressure_exempt": io_pressure_exempt,
         }
 
-    payload = status if isinstance(status, dict) else collect_status_cached(include_logs=False)
+    status_supplied = isinstance(status, dict)
+    payload = status if status_supplied else collect_status_cached(include_logs=False)
+    if pool_ready_required:
+        payload = background_pool_ready_payload(payload, status_supplied)
     sync_progress = payload.get("sync_progress") if isinstance(payload.get("sync_progress"), dict) else {}
     host_pressure = payload.get("host_pressure") if isinstance(payload.get("host_pressure"), dict) else {}
     reasons: list[str] = []
@@ -7954,6 +7995,7 @@ def background_maintenance_decision(task: str, status: dict[str, Any] | None = N
         "host_profile": profile,
         "adaptive_concurrency": adaptive_worker_budgets({**host_pressure, "chain_rpc_latency_ms": chain_rpc_latency_ms}),
         "shared_status_cache": payload.get("shared_status_cache"),
+        "background_pool_ready_status_source": payload.get("background_pool_ready_status_source"),
     }
 
 

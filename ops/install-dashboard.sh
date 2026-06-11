@@ -359,6 +359,22 @@ ensure_stack_default_env_value() {
   ensure_env_value "$key" "$(stack_default "$key" "$fallback")"
 }
 
+force_env_value() {
+  local key="$1" value="$2" escaped
+  value="$(quote_env_assignment_value "$value")"
+  escaped="$(printf '%s' "$value" | sed -e 's/[\/&|\\]/\\&/g')"
+  if grep -q "^${key}=" "$ENV_FILE"; then
+    sed -i "s|^${key}=.*|${key}=${escaped}|" "$ENV_FILE"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+  fi
+}
+
+force_stack_default_env_value() {
+  local key="$1" fallback="${2:-}"
+  force_env_value "$key" "$(stack_default "$key" "$fallback")"
+}
+
 ensure_env_value BDAG_PROJECT_ROOT "$PROJECT_ROOT"
 ensure_env_value BDAG_RUNTIME_DIR "$RUNTIME_DIR"
 ensure_env_value BDAG_POOL_ENV_FILE "$PROJECT_ROOT/.env"
@@ -492,7 +508,7 @@ ensure_stack_default_env_value BDAG_ADAPTIVE_SWAP_USED_WARN_PERCENT
 ensure_stack_default_env_value BDAG_HOST_PRESSURE_IOWAIT_WARN_PERCENT
 ensure_stack_default_env_value BDAG_HOST_PRESSURE_MEMORY_AVAILABLE_WARN_PERCENT
 ensure_stack_default_env_value BDAG_HOST_PRESSURE_SWAP_USED_WARN_PERCENT
-ensure_stack_default_env_value BDAG_STATUS_SAMPLER_ENABLED
+force_stack_default_env_value BDAG_STATUS_SAMPLER_ENABLED
 ensure_stack_default_env_value BDAG_STATUS_SAMPLER_INTERVAL_SECONDS
 ensure_stack_default_env_value BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS
 ensure_stack_default_env_value BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK
@@ -535,6 +551,7 @@ ensure_stack_default_env_value BDAG_BACKGROUND_MAINTENANCE_CPU_SOME_AVG10_WARN
 ensure_stack_default_env_value BDAG_BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS
 ensure_stack_default_env_value BDAG_BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT
 ensure_stack_default_env_value BDAG_BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT
+ensure_stack_default_env_value BDAG_BACKGROUND_MAINTENANCE_POOL_READY_STATUS_MAX_AGE_SECONDS
 ensure_stack_default_env_value BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER
 ensure_stack_default_env_value BDAG_ENTRYPOINT_CHOWN_MODE
 ensure_stack_default_env_value BDAG_NODEWORKER_LIVENESS_TIMEOUT

@@ -1324,6 +1324,31 @@ class SharedStatusCacheTests(unittest.TestCase):
             self.assertTrue(status["status_sampler"]["hit"])
             self.assertEqual(status["status_sampler"]["requested_include_logs"], True)
 
+    def test_status_sampler_no_logs_sample_does_not_satisfy_with_logs_request(self) -> None:
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp:
+            pool_ops.SHARED_STATUS_CACHE_FILE = pathlib.Path(tmp) / "shared-status-cache.json"
+            pool_ops.STATUS_SAMPLER_FILE = pathlib.Path(tmp) / "status-sampler.json"
+            pool_ops.SHARED_STATUS_CACHE_ENABLED = True
+            pool_ops.SHARED_STATUS_CACHE_SECONDS = 60.0
+            pool_ops.STATUS_SAMPLER_ENABLED = True
+            pool_ops.STATUS_SAMPLER_MAX_AGE_SECONDS = 60.0
+            pool_ops.STATUS_SAMPLER_BYPASS = False
+            pool_ops.ensure_runtime = lambda: None
+            pool_ops.write_status_sampler_payload({"overall": "ready_no_miners"}, include_logs=False)
+
+            def fake_collect_status(include_logs=True):
+                calls.append(include_logs)
+                return {"overall": "ok", "include_logs": include_logs}
+
+            pool_ops.collect_status = fake_collect_status
+
+            status = pool_ops.collect_status_cached(include_logs=True)
+
+            self.assertEqual(calls, [True])
+            self.assertEqual(status["overall"], "ok")
+            self.assertFalse(status["status_sampler"]["hit"])
+
     def test_zero_max_age_bypasses_status_sampler(self) -> None:
         calls = []
         with tempfile.TemporaryDirectory() as tmp:
@@ -1363,12 +1388,15 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
                 "BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS",
                 "BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT",
                 "BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT",
+                "BACKGROUND_MAINTENANCE_POOL_READY_STATUS_MAX_AGE_SECONDS",
                 "BACKGROUND_MAINTENANCE_LAZY_TASKS",
                 "BACKGROUND_MAINTENANCE_POOL_READY_TASKS",
                 "BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS",
                 "BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS",
                 "BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN",
                 "SYNC_PRIORITY_MIN_LAG_BLOCKS",
+                "collect_status_cached",
+                "read_status_sampler_payload",
                 "host_runtime_profile",
             )
         }
@@ -1550,6 +1578,65 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
         self.assertFalse(decision["sync_priority_exempt"])
         self.assertTrue(decision["io_pressure_exempt"])
         self.assertEqual([], decision["reasons"])
+
+    def test_pool_ready_archive_task_uses_recent_with_logs_status_before_no_logs_no_miners(self) -> None:
+        pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
+        pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = {"ipfs_segment_writer"}
+        pool_ops.BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS = {"ipfs_segment_writer"}
+        pool_ops.BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS = {"ipfs_segment_writer"}
+        pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_STATUS_MAX_AGE_SECONDS = 30.0
+        pool_ops.host_runtime_profile = lambda: {"cpu_count": 8}
+
+        def fake_collect_status_cached(include_logs=True, max_age_seconds=None):
+            self.assertFalse(include_logs)
+            return {
+                "overall": "ok",
+                "mode": "ready_no_miners",
+                "can_mine": False,
+                "can_accept_shares": False,
+                "can_submit_blocks": False,
+                "sync_progress": {"status": "synced", "remaining_blocks": 0},
+                "host_pressure": {
+                    "iowait_percent": 1.0,
+                    "io_some_avg10": 0.0,
+                    "io_full_avg10": 0.0,
+                    "cpu_some_avg10": 0.0,
+                    "loadavg_1m": 1.0,
+                },
+                "shared_status_cache": {"key": "no_logs"},
+            }
+
+        def fake_read_status_sampler_payload(include_logs, max_age_seconds=None):
+            self.assertTrue(include_logs)
+            self.assertEqual(max_age_seconds, 30.0)
+            return {
+                "overall": "ok",
+                "mode": "mining",
+                "can_mine": True,
+                "can_accept_shares": True,
+                "can_submit_blocks": True,
+                "sync_progress": {"status": "synced", "remaining_blocks": 0},
+                "host_pressure": {
+                    "iowait_percent": 1.0,
+                    "io_some_avg10": 0.0,
+                    "io_full_avg10": 0.0,
+                    "cpu_some_avg10": 0.0,
+                    "loadavg_1m": 1.0,
+                },
+                "status_sampler": {"hit": True, "include_logs": True},
+            }
+
+        pool_ops.collect_status_cached = fake_collect_status_cached
+        pool_ops.read_status_sampler_payload = fake_read_status_sampler_payload
+
+        decision = pool_ops.background_maintenance_decision("ipfs_segment_writer")
+
+        self.assertTrue(decision["allowed"])
+        self.assertEqual([], decision["reasons"])
+        self.assertEqual(
+            "status_sampler_with_logs",
+            decision["background_pool_ready_status_source"]["selected"],
+        )
 
     def test_ipfs_segment_writer_still_defers_during_sync_when_io_exempt(self) -> None:
         pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
