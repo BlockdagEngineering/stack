@@ -677,10 +677,105 @@ configure_directory_artifact_serving() {
   fi
 }
 
+apply_archival_flag() {
+  case "${BDAG_NODE_ARCHIVAL:-0}" in
+    1|true|True|yes) ;;
+    *) return 0 ;;
+  esac
+  local node_args
+  node_args="$(node_args_from_argv "$@" || true)"
+  append_node_arg_once "--archival" "$node_args ${NODE_ARGS_APPEND:-}"
+  log "archival mode enabled; node keeps full block history (--archival)"
+}
+
+node_binary_from_argv() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --node-binary=*)
+        printf '%s\n' "${arg#*=}"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+# Bootstrap chain data from an HTTP(S) snapshot link before node startup.
+# Order of precedence on an empty datadir: locally staged snapshot.bdsnap,
+# then BDAG_SNAPSHOT_URL download, then the normal P2P/legacy sync paths.
+maybe_http_snapshot_bootstrap() {
+  if [ "${BDAG_ENTRYPOINT_PRINT_NODE_FLAGS:-0}" = "1" ]; then
+    return 0
+  fi
+
+  local node_binary
+  node_binary="$(node_binary_from_argv "$@" || true)"
+  node_binary="${BDAG_FASTSNAP_NODE_BINARY:-${node_binary:-/usr/local/bin/blockdag-node}}"
+  [ -x "$node_binary" ] || {
+    log "node binary missing at $node_binary; skipping snapshot bootstrap"
+    return 0
+  }
+
+  local node_args network config_file data_parent data_dir archive tmp min_bytes size
+  node_args="$(node_args_from_argv "$@" || true)"
+  network="$(mainnet_only_network "${BDAG_FASTSNAP_NETWORK:-mainnet}")"
+  config_file="$(node_arg_value configfile "$node_args" || true)"
+  data_parent="${BDAG_FASTSNAP_DATADIR:-$(node_arg_value datadir "$node_args" || true)}"
+  if [ -z "$data_parent" ] && [ -n "$config_file" ]; then
+    data_parent="$(read_config_value "$config_file" datadir || true)"
+  fi
+  data_parent="${data_parent:-/var/lib/bdagStack/node}"
+  data_dir="$(network_datadir "$data_parent" "$network")"
+
+  if [ -d "$data_dir/BdagChain" ]; then
+    return 0
+  fi
+
+  archive="$data_dir/snapshot.bdsnap"
+  mkdir -p "$data_dir"
+  if [ -s "$archive" ]; then
+    log "importing staged snapshot before node startup: $archive"
+    if ! "$node_binary" snap import --datadir "$data_dir" --path "$archive"; then
+      log "staged snapshot import failed; continuing with normal sync"
+    fi
+    return 0
+  fi
+
+  [ -n "${BDAG_SNAPSHOT_URL:-}" ] || return 0
+  command -v curl >/dev/null 2>&1 || {
+    log "curl missing; skipping HTTP snapshot download"
+    return 0
+  }
+
+  min_bytes="${BDAG_SNAPSHOT_MIN_BYTES:-1048576}"
+  tmp="$archive.download.$$"
+  log "no chain data found; downloading snapshot from ${BDAG_SNAPSHOT_URL}"
+  if ! curl --fail --location --silent --show-error --connect-timeout 20 --retry 2 --retry-delay 2 -o "$tmp" "$BDAG_SNAPSHOT_URL"; then
+    rm -f "$tmp"
+    log "snapshot download failed; continuing with P2P/legacy sync"
+    return 0
+  fi
+  size="$(stat -c%s "$tmp" 2>/dev/null || echo 0)"
+  if [ "$size" -lt "$min_bytes" ]; then
+    rm -f "$tmp"
+    log "downloaded snapshot too small ($size bytes < $min_bytes); continuing with P2P/legacy sync"
+    return 0
+  fi
+  mv "$tmp" "$archive"
+  log "importing downloaded snapshot before node startup ($size bytes)"
+  if ! "$node_binary" snap import --datadir "$data_dir" --path "$archive"; then
+    rm -f "$archive"
+    log "downloaded snapshot import failed; continuing with normal sync"
+  fi
+}
+
 apply_ordered_fastsync_peers "$@"
 apply_no_fastsync_serve_guard "$@"
 apply_default_fastsync_flags "$@"
 apply_node_mining_runtime_args "$@"
+apply_archival_flag "$@"
+maybe_http_snapshot_bootstrap "$@"
 
 if [ -n "${NODE_ARGS_APPEND:-}" ]; then
   args=("$@")

@@ -53,6 +53,25 @@ def copy_payload_root(dest: Path) -> None:
     )
 
 
+def expected_docker_platform(package_root: Path) -> str:
+    """The installer writes the payload's platform, not the host's, so a
+    cross-built payload (e.g. arm64 packaged on an amd64 runner) must be
+    checked against release-payload.env."""
+    metadata_path = package_root / "release-payload.env"
+    metadata: dict[str, str] = {}
+    if metadata_path.exists():
+        for line in metadata_path.read_text(encoding="utf-8").splitlines():
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            metadata[key.strip()] = value.strip()
+    if metadata.get("DOCKER_PLATFORM"):
+        return metadata["DOCKER_PLATFORM"]
+    if metadata.get("BDAG_RELEASE_PAYLOAD_ARCH"):
+        return f"linux/{metadata['BDAG_RELEASE_PAYLOAD_ARCH']}"
+    return f"linux/{host_arch()}"
+
+
 def run_command(args: list[str], cwd: Path, env: dict[str, str]) -> dict[str, Any]:
     result = subprocess.run(
         args,
@@ -95,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
 
     env_path = package_root / ".env"
     env_text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
-    expected_platform = f"DOCKER_PLATFORM=linux/{host_arch()}"
+    expected_platform = f"DOCKER_PLATFORM={expected_docker_platform(package_root)}"
     ok = result["returncode"] == 0 and expected_platform in env_text
     payload: dict[str, Any] = {
         "package_root": str(package_root),
