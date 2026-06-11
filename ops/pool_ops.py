@@ -10458,6 +10458,17 @@ def write_global_cache(payload: dict[str, Any]) -> None:
         return
 
 
+def global_scan_tip_count(payload: Mapping[str, Any]) -> int | None:
+    """Return the chain block count implied by the scanned production window."""
+    scan_order = safe_int(payload.get("scan_end_order"), None)
+    if scan_order is not None:
+        return max(0, scan_order + 1)
+    scan_block = safe_int(payload.get("scan_end_block"), None)
+    if scan_block is not None:
+        return max(0, scan_block)
+    return safe_int(payload.get("chain_block_count"), safe_int(payload.get("latest_block"), None))
+
+
 def refresh_global_chain_head(payload: dict[str, Any]) -> dict[str, Any]:
     """Add a live displayed block height without changing scan-window data."""
     try:
@@ -10481,11 +10492,13 @@ def refresh_global_chain_head(payload: dict[str, Any]) -> dict[str, Any]:
             payload["head_probe_errors"] = [*existing_errors, *errors][:20]
         return payload
 
-    scanned_tip = safe_int(payload.get("scan_end_block"), None)
-    if scanned_tip is None:
+    has_scan_tip = payload.get("scan_end_order") is not None or payload.get("scan_end_block") is not None
+    scanned_tip_count = global_scan_tip_count(payload)
+    if not has_scan_tip:
         scanned_tip = safe_int(payload.get("latest_block"), 0)
         if scanned_tip is not None:
             payload["scan_end_block"] = scanned_tip
+            scanned_tip_count = max(0, scanned_tip)
     if block_count is not None:
         payload["chain_block_count"] = block_count
         payload["chain_block_count_source"] = source_name or "getBlockCount"
@@ -10497,7 +10510,7 @@ def refresh_global_chain_head(payload: dict[str, Any]) -> dict[str, Any]:
     payload["display_latest_block"] = display_height
     payload["chain_latest_block_source"] = display_source or "live-height"
     payload["chain_latest_block_updated_at"] = now_iso()
-    payload["chain_tip_lag_blocks"] = max(0, block_count - (scanned_tip or 0)) if block_count is not None else 0
+    payload["chain_tip_lag_blocks"] = max(0, block_count - (scanned_tip_count or 0)) if block_count is not None else 0
     payload["latest_block"] = display_height
     payload["display_latest_block_metadata"] = display_metadata
     return payload
@@ -11030,14 +11043,15 @@ def collect_global_blockchain() -> dict[str, Any]:
     if cached_valid and seconds_since_epoch() - cached_at <= GLOBAL_CACHE_TTL_SECONDS:
         live_count, live_source, _live_url, live_errors = probe_global_chain_block_count()
         if live_count is not None:
-            cached_count = safe_int(cached.get("chain_block_count"), safe_int(cached.get("latest_block"), 0))
-            if cached_count > live_count:
+            cached_head_count = safe_int(cached.get("chain_block_count"), safe_int(cached.get("latest_block"), 0))
+            cached_scan_count = global_scan_tip_count(cached) or cached_head_count
+            if max(cached_head_count, cached_scan_count) > live_count:
                 cached_valid = False
                 invalid_cache_error = (
-                    f"ignored global cache ahead of live chain tip cached={cached_count} "
+                    f"ignored global cache ahead of live chain tip cached={max(cached_head_count, cached_scan_count)} "
                     f"live={live_count}; refreshing from chain RPC"
                 )
-            cache_tip_lag = max(0, live_count - cached_count)
+            cache_tip_lag = max(0, live_count - cached_scan_count)
             if cached_valid and cache_tip_lag == 0:
                 cache_meta = dict(cached.get("cache") or {}) if isinstance(cached.get("cache"), dict) else {}
                 cache_meta.update(
