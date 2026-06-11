@@ -738,24 +738,38 @@ def catchup_policy_allows_node_runtime_adjustment(policy: dict[str, Any]) -> boo
     return True
 
 
+def chain_state_reason_is_missing_trie(reason: Any) -> bool:
+    text = str(reason or "").lower()
+    return "missing-trie" in text or "missing trie" in text or "missing_trie" in text
+
+
 def chain_state_restore_reason_details(payload: dict[str, Any]) -> list[dict[str, str]]:
     details: list[dict[str, str]] = []
+    defer_missing_trie = status_payload_has_recent_paid_work(payload, CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS)
     sync_health = dict_value(payload.get("sync_health"))
     if sync_health.get("needs_chain_data_restore") or sync_health.get("chain_data_restore_required"):
         restore_nodes = dict_value(sync_health.get("chain_data_restore_nodes"))
         for node, info in restore_nodes.items():
             node_reasons = info.get("reasons") if isinstance(info, dict) else None
             if isinstance(node_reasons, list) and node_reasons:
-                details.extend({"kind": "chain_data_restore", "reason": str(item)} for item in node_reasons if item)
+                details.extend(
+                    {"kind": "chain_data_restore", "reason": str(item)}
+                    for item in node_reasons
+                    if item and not (defer_missing_trie and chain_state_reason_is_missing_trie(item))
+                )
             else:
-                details.append({"kind": "chain_data_restore", "reason": f"{node} requires chain data restore"})
+                reason = f"{node} requires chain data restore"
+                if not (defer_missing_trie and chain_state_reason_is_missing_trie(reason)):
+                    details.append({"kind": "chain_data_restore", "reason": reason})
         if not restore_nodes:
-            details.append(
-                {
-                    "kind": "chain_data_restore",
-                    "reason": "status reports chain data restore is required",
-                }
-            )
+            reason = "status reports chain data restore is required"
+            if not (defer_missing_trie and chain_state_reason_is_missing_trie(reason)):
+                details.append(
+                    {
+                        "kind": "chain_data_restore",
+                        "reason": reason,
+                    }
+                )
     if sync_health.get("chain_state_blocker"):
         blocker_nodes = dict_value(sync_health.get("chain_state_blocker_nodes"))
         for node, info in blocker_nodes.items():
@@ -789,6 +803,20 @@ def chain_state_restore_reason_details(payload: dict[str, Any]) -> list[dict[str
 def chain_state_restore_candidate_details(payload: dict[str, Any]) -> list[dict[str, str]]:
     details: list[dict[str, str]] = []
     sync_health = dict_value(payload.get("sync_health"))
+    defer_missing_trie = status_payload_has_recent_paid_work(payload, CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS)
+    restore_nodes = dict_value(sync_health.get("chain_data_restore_nodes"))
+    for node, info in restore_nodes.items():
+        node_reasons = info.get("reasons") if isinstance(info, dict) else None
+        if not isinstance(node_reasons, list):
+            continue
+        for reason in node_reasons:
+            if defer_missing_trie and chain_state_reason_is_missing_trie(reason):
+                details.append(
+                    {
+                        "kind": "missing_trie_candidate",
+                        "reason": f"{reason}; deferring restore because accepted block submission is fresh",
+                    }
+                )
     candidate_nodes = dict_value(sync_health.get("chain_data_restore_candidate_nodes"))
     for node, info in candidate_nodes.items():
         node_reasons = info.get("reasons") if isinstance(info, dict) else None

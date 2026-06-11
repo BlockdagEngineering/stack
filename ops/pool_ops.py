@@ -5496,8 +5496,13 @@ def collect_miner_health_from_registry(reason: str = "pool_container_not_running
         device_type = str(registered.get("device_type") or ("asic" if mac else "stratum"))
         managed = bool(registered.get("managed"))
         configured = bool(registered.get("configured") or registered.get("last_configured_ok") or managed)
-        if not (managed or configured or mac):
+        if not (managed or configured):
             continue
+        last_known_jobs = int(registered.get("last_jobs_window", 0) or 0)
+        last_known_submits = int(registered.get("last_submits_window", 0) or 0)
+        last_known_shares = int(registered.get("last_shares_window", 0) or 0)
+        last_known_share_work = int(registered.get("last_share_work_window", 0) or 0)
+        last_known_blocks = int(registered.get("last_blocks_window", 0) or 0)
         health.append(
             {
                 "ip": ip,
@@ -5528,15 +5533,21 @@ def collect_miner_health_from_registry(reason: str = "pool_container_not_running
                 "expected_worker_user": registered.get("expected_worker_user") or defaults["worker_user"],
                 "workers": merge_unique_strings(registered.get("last_workers")),
                 "ports": merge_unique_strings(registered.get("last_ports"), limit=MINER_REGISTRY_MAX_PORTS),
-                "jobs": int(registered.get("last_jobs_window", 0) or 0),
-                "submits": int(registered.get("last_submits_window", 0) or 0),
-                "shares": int(registered.get("last_shares_window", 0) or 0),
-                "share_work": int(registered.get("last_share_work_window", 0) or 0),
+                "jobs": 0,
+                "submits": 0,
+                "shares": 0,
+                "share_work": 0,
                 "work_percent": "0.00",
                 "relevant_for_work_share": bool(managed or configured),
                 "low_difficulty_flood": False,
-                "share_difficulty": registered.get("last_share_difficulty_window", 0),
-                "blocks_found": int(registered.get("last_blocks_window", 0) or 0),
+                "share_difficulty": 0,
+                "blocks_found": 0,
+                "last_known_jobs": last_known_jobs,
+                "last_known_submits": last_known_submits,
+                "last_known_shares": last_known_shares,
+                "last_known_share_work": last_known_share_work,
+                "last_known_blocks_found": last_known_blocks,
+                "last_known_share_difficulty": registered.get("last_share_difficulty_window", 0),
                 "last_difficulty": registered.get("last_difficulty"),
                 "last_job_at": registered.get("last_job_at"),
                 "last_submit_at": registered.get("last_submit_at"),
@@ -5563,6 +5574,17 @@ def collect_miner_health_from_registry(reason: str = "pool_container_not_running
         )
     )
     counts = miner_health_count_summary(health)
+    hidden_inactive = sum(
+        1
+        for registered in registry.get("miners", [])
+        if isinstance(registered, dict)
+        and is_ipv4(str(registered.get("ip") or ""))
+        and not is_docker_bridge_ipv4(str(registered.get("ip") or ""))
+        and not (
+            bool(registered.get("managed"))
+            or bool(registered.get("configured") or registered.get("last_configured_ok") or registered.get("managed"))
+        )
+    )
     return {
         "generated_at": now_iso(),
         "registry_updated_at": registry.get("updated_at"),
@@ -5572,6 +5594,8 @@ def collect_miner_health_from_registry(reason: str = "pool_container_not_running
         "expected_lane_count": sum(1 for item in health if item.get("expected_work_lane")),
         "expected_lane_percent": "0.00",
         "imbalanced_lane_count": 0,
+        "hidden_inactive_count": hidden_inactive,
+        "hidden_inactive": hidden_inactive,
         "work_total": 0,
         "total_work_includes_all_rows": False,
         "failures": [],

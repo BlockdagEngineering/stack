@@ -323,6 +323,22 @@ class NoMinerCollectStatusTests(unittest.TestCase):
                     "last_configured_ok": True,
                     "last_workers": ["0x05518e03e148c56e426ff9e1cbdb962b4fc5250a"],
                     "last_ports": [str(item) for item in range(100)],
+                    "last_jobs_window": 7,
+                    "last_submits_window": 6,
+                    "last_shares_window": 5,
+                    "last_share_work_window": 12345,
+                    "last_blocks_window": 4,
+                },
+                {
+                    "ip": "192.168.1.111",
+                    "mac": "10:27:f5:90:a4:2c",
+                    "device_type": "asic",
+                    "managed": False,
+                    "last_configured_ok": False,
+                    "last_workers": ["0x05518e03e148c56e426ff9e1cbdb962b4fc5250a"],
+                    "last_shares_window": 99,
+                    "last_share_work_window": 99999,
+                    "last_blocks_window": 9,
                 }
             ],
         }
@@ -332,9 +348,17 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertEqual(health["status_source"], "registry_only")
         self.assertEqual(health["managed_count"], 1)
         self.assertEqual(health["tracked_count"], 1)
+        self.assertEqual(health["hidden_inactive_count"], 1)
         self.assertEqual(health["connected_count"], 0)
         self.assertEqual(health["miners"][0]["identity_key"], "mac:28:e2:97:1e:c0:b5")
         self.assertEqual(health["miners"][0]["lane_status"], "paused")
+        self.assertEqual(health["miners"][0]["shares"], 0)
+        self.assertEqual(health["miners"][0]["share_work"], 0)
+        self.assertEqual(health["miners"][0]["blocks_found"], 0)
+        self.assertEqual(health["miners"][0]["submits"], 0)
+        self.assertEqual(health["miners"][0]["last_known_shares"], 5)
+        self.assertEqual(health["miners"][0]["last_known_share_work"], 12345)
+        self.assertEqual(health["miners"][0]["last_known_blocks_found"], 4)
         self.assertEqual(len(health["miners"][0]["ports"]), pool_ops.MINER_REGISTRY_MAX_PORTS)
 
     def test_pool_log_initial_download_must_be_recent(self) -> None:

@@ -603,6 +603,40 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertEqual(repair["actions"], [])
         self.assertFalse(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
 
+    def test_sync_health_missing_trie_restore_defers_during_fresh_paid_mining(self) -> None:
+        commands = []
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["miner_health"] = {"tracked_count": 4, "connected_count": 4, "managed_count": 4}
+        payload["pool"] = {
+            **payload["pool"],
+            "block_submit_success_count": 11,
+            "last_block_submit_age_seconds": 2,
+        }
+        payload["sync_health"] = {
+            "pool_has_recent_paid_work": True,
+            "needs_chain_data_restore": True,
+            "chain_data_restore_required": True,
+            "chain_data_restore_nodes": {
+                "node": {
+                    "reasons": ["node EVM trie state is unavailable (4 missing-trie warning(s))"],
+                    "missing_trie_node_warnings": 4,
+                }
+            },
+        }
+        status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
+
+        decision = status_sampler.chain_state_restore_decision(payload)
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertFalse(decision["should_repair"])
+        self.assertTrue(decision["deferred"])
+        self.assertIn("accepted block submission is fresh", "; ".join(decision["reasons"]))
+        self.assertEqual(repair["actions"], [])
+        self.assertFalse(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
+        self.assertFalse(any(command[:4] == ["systemctl", "--user", "start", "--no-block"] for command in commands))
+
     def test_missing_trie_only_requires_corroboration_before_chain_state_restore(self) -> None:
         commands = []
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
