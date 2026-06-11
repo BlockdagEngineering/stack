@@ -92,6 +92,32 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertFalse(parsed["importing"])
         self.assertIn("raw chain database", reasons[0])
 
+    def test_node_log_dag_order_missing_requires_restore(self) -> None:
+        parsed = pool_ops.parse_node_log(
+            "\n".join(
+                [
+                    "2026-06-11|07:52:19.823 [ERROR] pebble: not found module=RAWDB",
+                    "panic: DAG can't find block in order(10888173)",
+                ]
+            )
+        )
+        reasons = pool_ops.chain_data_restore_hard_reasons("node", parsed)
+
+        self.assertTrue(parsed["dag_order_missing"])
+        self.assertTrue(parsed["critical"])
+        self.assertTrue(any("DAG order index" in reason for reason in reasons))
+
+    def test_node_log_state_history_truncate_failure_requires_restore(self) -> None:
+        parsed = pool_ops.parse_node_log(
+            '2026-06-11|07:59:09.396 [CRIT ] Failed to truncate extra state histories '
+            'err="out of range, tail: 10503469, head: 10533023, target: 10572025"'
+        )
+        reasons = pool_ops.chain_data_restore_hard_reasons("node", parsed)
+
+        self.assertTrue(parsed["state_history_truncate_failure"])
+        self.assertTrue(parsed["critical"])
+        self.assertTrue(any("state history freezer" in reason for reason in reasons))
+
     def test_node_log_marks_busy_syncing_template_block(self) -> None:
         parsed = pool_ops.parse_node_log(
             "\n".join(

@@ -354,6 +354,11 @@ NODE_IRREPARABLE_SYNC_RE = re.compile(
 )
 NODE_MISSING_TRIE_RE = re.compile(r"missing trie node\s+([0-9a-fA-F]+)", re.IGNORECASE)
 NODE_RAWDB_PEBBLE_NOT_FOUND_RE = re.compile(r"\bpebble:\s+not found\b.*\bmodule=RAWDB\b", re.IGNORECASE)
+NODE_DAG_ORDER_MISSING_RE = re.compile(r"DAG can't find block in order\(([\d,]+)\)", re.IGNORECASE)
+NODE_STATE_HISTORY_TRUNCATE_RE = re.compile(
+    r"Failed to truncate extra state histories.*?out of range",
+    re.IGNORECASE,
+)
 CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS = env_int(
     "BDAG_CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS",
     3,
@@ -3493,6 +3498,8 @@ def parse_node_log(log: str) -> dict[str, Any]:
     irreparable_sync_lines = [line for line in recent if NODE_IRREPARABLE_SYNC_RE.search(line)]
     missing_trie_lines = [line for line in recent if NODE_MISSING_TRIE_RE.search(line)]
     rawdb_not_found_lines = [line for line in recent if NODE_RAWDB_PEBBLE_NOT_FOUND_RE.search(line)]
+    dag_order_missing_lines = [line for line in recent if NODE_DAG_ORDER_MISSING_RE.search(line)]
+    state_history_truncate_lines = [line for line in recent if NODE_STATE_HISTORY_TRUNCATE_RE.search(line)]
     rawdb_not_found_storm = bool(
         len(rawdb_not_found_lines) >= CHAIN_STATE_RAWDB_NOT_FOUND_RESTORE_WARNINGS
         and len(imported_lines) == 0
@@ -3525,6 +3532,7 @@ def parse_node_log(log: str) -> dict[str, Any]:
         for line in recent
         if "[CRIT" in line
         or "Failed to truncate extra state histories" in line
+        or NODE_DAG_ORDER_MISSING_RE.search(line)
         or "Irreparable error" in line
         or "Not DAG block:" in line
         or "The dag data was damaged" in line
@@ -3559,6 +3567,10 @@ def parse_node_log(log: str) -> dict[str, Any]:
         "rawdb_pebble_not_found_storm": rawdb_not_found_storm,
         "rawdb_pebble_not_found_threshold": CHAIN_STATE_RAWDB_NOT_FOUND_RESTORE_WARNINGS,
         "rawdb_pebble_not_found_lines": rawdb_not_found_lines[-5:],
+        "dag_order_missing": bool(dag_order_missing_lines),
+        "dag_order_missing_lines": dag_order_missing_lines[-5:],
+        "state_history_truncate_failure": bool(state_history_truncate_lines),
+        "state_history_truncate_lines": state_history_truncate_lines[-5:],
         "p2p_error_lines": (invalid_peer_lines + p2p_stream_lines)[-5:],
         "node_graph_sync_count": len(graph_sync_lines),
         "node_graph_sync_churn": graph_sync_churn,
@@ -3592,6 +3604,14 @@ def chain_data_restore_hard_reasons(node: str, info: Mapping[str, Any]) -> list[
         )
     if info.get("dag_tip_damage"):
         reasons.append(f"{node} DAG tip/block data is damaged")
+    if info.get("dag_order_missing"):
+        reasons.append(
+            f"{node} DAG order index is missing block data; restore or resync from a verified source"
+        )
+    if info.get("state_history_truncate_failure"):
+        reasons.append(
+            f"{node} EVM state history freezer is inconsistent; restore or resync from a verified source"
+        )
     missing_trie_count = safe_int(info.get("missing_trie_node_warnings"), 0)
     if missing_trie_count >= CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS:
         reasons.append(
