@@ -377,6 +377,36 @@ services:
       - ${BDAG_STACK_HOST_ROOT}:${BDAG_STACK_HOST_ROOT}
 
   # --------------------------------------------------------------------------
+  # Keeps the host route to the remote miner LAN (via the ZeroTier peer)
+  # in place so the watchdog can reach the miner HTTP API for health checks
+  # and restarts. No-op unless BDAG_MINER_ROUTE_SUBNET is set in .env.
+  # --------------------------------------------------------------------------
+  miner-route:
+    image: alpine:3.20
+    container_name: miner-route
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+    logging: *mining-logging
+    environment:
+      BDAG_MINER_ROUTE_SUBNET: ${BDAG_MINER_ROUTE_SUBNET:-}
+      BDAG_MINER_ROUTE_GATEWAY: ${BDAG_MINER_ROUTE_GATEWAY:-}
+      BDAG_MINER_ROUTE_DEV: ${BDAG_MINER_ROUTE_DEV:-}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        while true; do
+        if [ -n "$$BDAG_MINER_ROUTE_SUBNET" ] && [ -n "$$BDAG_MINER_ROUTE_GATEWAY" ]; then
+        cmd="ip route replace $$BDAG_MINER_ROUTE_SUBNET via $$BDAG_MINER_ROUTE_GATEWAY";
+        [ -n "$$BDAG_MINER_ROUTE_DEV" ] && cmd="$$cmd dev $$BDAG_MINER_ROUTE_DEV";
+        $$cmd || echo "miner-route: failed: $$cmd";
+        fi;
+        sleep 60;
+        done
+
+  # --------------------------------------------------------------------------
   # Dashboard UI over the collector API.
   # --------------------------------------------------------------------------
   dashboard:
