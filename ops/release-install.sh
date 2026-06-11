@@ -544,6 +544,12 @@ ensure_btrfs_subvolume_or_dir() {
   need_sudo mkdir -p "$path"
 }
 
+ensure_btrfs_checkpoint_owned_dir() {
+  local path="$1"
+  need_sudo mkdir -p "$path"
+  need_sudo chown "$(id -u):$(id -g)" "$path" || true
+}
+
 ensure_btrfs_fstab_entry() {
   local image="$1" mountpoint="$2" options="$3" image_parent entry escaped_image escaped_mount
   image_parent="$(dirname "$image")"
@@ -626,7 +632,13 @@ configure_btrfs_checkpoint_volume() {
   ensure_btrfs_subvolume_or_dir "$mountpoint/rawdatadir-sidecar-content"
   ensure_btrfs_subvolume_or_dir "$mountpoint/rawdatadir-sidecar-open"
   ensure_btrfs_subvolume_or_dir "$mountpoint/rawdatadir-artifacts"
-  need_sudo chown "$(id -u):$(id -g)" "$mountpoint/rawdatadir-sidecar" "$mountpoint/rawdatadir-sidecar-content" "$mountpoint/rawdatadir-sidecar-open" "$mountpoint/rawdatadir-artifacts" || true
+  ensure_btrfs_checkpoint_owned_dir "$mountpoint/rawdatadir-sidecar"
+  ensure_btrfs_checkpoint_owned_dir "$mountpoint/rawdatadir-sidecar-content"
+  ensure_btrfs_checkpoint_owned_dir "$mountpoint/rawdatadir-sidecar-content/artifacts"
+  ensure_btrfs_checkpoint_owned_dir "$mountpoint/rawdatadir-sidecar-content/chunk-store"
+  ensure_btrfs_checkpoint_owned_dir "$mountpoint/rawdatadir-sidecar-content/chunk-store/sha256"
+  ensure_btrfs_checkpoint_owned_dir "$mountpoint/rawdatadir-sidecar-open"
+  ensure_btrfs_checkpoint_owned_dir "$mountpoint/rawdatadir-artifacts"
 
   set_env_value .env BDAG_BTRFS_CHECKPOINT_VOLUME_MODE "$mode"
   set_env_value .env BDAG_BTRFS_CHECKPOINT_VOLUME_SIZE_GIB "$size_gib"

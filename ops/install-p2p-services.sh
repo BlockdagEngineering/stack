@@ -60,6 +60,22 @@ need_sudo() {
   fi
 }
 
+retire_legacy_rawdatadir_source_timer() {
+  local user_systemd_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  local removed=0
+  if [[ -f "$user_systemd_dir/bdag-rawdatadir-source.service" || -f "$user_systemd_dir/bdag-rawdatadir-source.timer" ]]; then
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl --user disable --now bdag-rawdatadir-source.timer bdag-rawdatadir-source.service >/dev/null 2>&1 || true
+    fi
+    rm -f "$user_systemd_dir/bdag-rawdatadir-source.service" "$user_systemd_dir/bdag-rawdatadir-source.timer"
+    removed=1
+  fi
+  if [[ "$removed" -eq 1 && command -v systemctl >/dev/null 2>&1 ]]; then
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+    warn "Removed retired bdag-rawdatadir-source systemd unit; IPFS raw checkpoints are published by bdag-ipfs-content-sidecar."
+  fi
+}
+
 install_firewall() {
   if [[ ! -f "$ROOT/ops/allow-p2p-iptables.sh" || ! -f "$ROOT/ops/systemd/bdag-p2p-firewall.service" ]]; then
     warn "P2P firewall files are missing under $ROOT/ops"
@@ -101,6 +117,7 @@ EOF
 
 install_rawdatadir_sidecar_timers() {
   local mode
+  retire_legacy_rawdatadir_source_timer
   mode="$(env_value BDAG_RAWDATADIR_SIDECAR_MODE auto)"
   if [[ "$mode" =~ ^(0|false|no|off|disabled)$ ]]; then
     warn "Raw datadir sidecar disabled by BDAG_RAWDATADIR_SIDECAR_MODE=$mode"
@@ -271,6 +288,9 @@ BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN=$(env_value BDAG_IPFS_SEGMENT_MAX_SEGMENT
 BDAG_IPFS_SEGMENT_MAX_RPC_PER_SECOND=$(env_value BDAG_IPFS_SEGMENT_MAX_RPC_PER_SECOND 25)
 BDAG_IPFS_SEGMENT_RPC_TIMEOUT=$(env_value BDAG_IPFS_SEGMENT_RPC_TIMEOUT 8)
 BDAG_IPFS_SEGMENT_BLOCK_RPC_RETRIES=$(env_value BDAG_IPFS_SEGMENT_BLOCK_RPC_RETRIES 2)
+BDAG_CHAIN_REFERENCE_RPC_URL=$(env_value BDAG_CHAIN_REFERENCE_RPC_URL "")
+BDAG_IPFS_SEGMENT_REFERENCE_RPC_URL=$(env_value BDAG_IPFS_SEGMENT_REFERENCE_RPC_URL "")
+BDAG_PUBLIC_RPC_URLS=$(env_value BDAG_PUBLIC_RPC_URLS "$BDAG_PUBLIC_RPC_URLS")
 BDAG_IPFS_SEGMENT_PUBLISH_IPNS=$(env_value BDAG_IPFS_SEGMENT_PUBLISH_IPNS auto)
 BDAG_IPFS_SEGMENT_IPNS_KEY=$(env_value BDAG_IPFS_SEGMENT_IPNS_KEY "")
 BDAG_IPFS_SEGMENT_RESTORE_DIR=$(env_value BDAG_IPFS_SEGMENT_RESTORE_DIR "$ROOT/ops/runtime/ipfs-segment-restore-drills")

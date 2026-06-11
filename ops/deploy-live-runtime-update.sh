@@ -17,6 +17,8 @@ DRY_RUN=0
 MARK_RUNTIME_COMPOSE=0
 ROLLBACK_DIR=""
 COMPOSE_BACKUP_BEFORE_MARK=""
+DEPLOY_TRANSITION_ACTIVE=0
+DEPLOY_TRANSITION_CORRELATION=""
 FILES=(
   "AGENTS.md"
   "sql/pool-schema.sql"
@@ -149,6 +151,31 @@ say() { printf '\n==> %s\n' "$*"; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
 die() { printf 'deploy-live-runtime-update failed: %s\n' "$*" >&2; exit 1; }
 
+target_control_state_path() {
+  printf '%s\n' "$TARGET_ROOT/ops/runtime/automation-control.json"
+}
+
+target_control_lock_path() {
+  printf '%s\n' "$TARGET_ROOT/ops/runtime/automation-control.lock"
+}
+
+release_deploy_transition_hold() {
+  if [[ "$DEPLOY_TRANSITION_ACTIVE" -ne 1 || -z "$DEPLOY_TRANSITION_CORRELATION" ]]; then
+    return 0
+  fi
+  python3 "$SOURCE_ROOT/ops/automation_control.py" release-transition \
+    --state-path "$(target_control_state_path)" \
+    --lock-path "$(target_control_lock_path)" \
+    --owner "deploy-live-runtime-update" \
+    --owner-unit "ops/deploy-live-runtime-update.sh" \
+    --reason "Release live runtime update transition hold" \
+    --correlation-id "$DEPLOY_TRANSITION_CORRELATION" >/dev/null || \
+    warn "Could not release automation transition hold; inspect $(target_control_state_path)"
+  DEPLOY_TRANSITION_ACTIVE=0
+}
+
+trap release_deploy_transition_hold EXIT
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --source)
@@ -268,11 +295,29 @@ run_target_validation() {
 
 ensure_target_automation_control() {
   say "Ensuring automation-control gate exists"
-  python3 "$TARGET_ROOT/ops/automation_control.py" ensure-normal \
+  python3 "$SOURCE_ROOT/ops/automation_control.py" ensure-normal \
+    --state-path "$(target_control_state_path)" \
+    --lock-path "$(target_control_lock_path)" \
     --owner "deploy-live-runtime-update" \
     --owner-unit "ops/deploy-live-runtime-update.sh" \
     --reason "Provision default automation control state for watchdog and sentinel repairs" \
     --correlation-id "live-runtime-update-${commit}-${stamp}"
+}
+
+begin_deploy_transition_hold() {
+  [[ "$DRY_RUN" -eq 0 ]] || return 0
+  DEPLOY_TRANSITION_CORRELATION="live-runtime-update-${commit}-${stamp}"
+  say "Entering automation transition hold: $DEPLOY_TRANSITION_CORRELATION"
+  python3 "$SOURCE_ROOT/ops/automation_control.py" begin-transition \
+    --state-path "$(target_control_state_path)" \
+    --lock-path "$(target_control_lock_path)" \
+    --owner "deploy-live-runtime-update" \
+    --owner-unit "ops/deploy-live-runtime-update.sh" \
+    --reason "Controlled live runtime update; sentinel/watchdog repairs are observe-only until release" \
+    --correlation-id "$DEPLOY_TRANSITION_CORRELATION" \
+    --allowed-mutation "deploy-live-runtime-update:systemd_restart:*" \
+    --expires-seconds 1800 >/dev/null
+  DEPLOY_TRANSITION_ACTIVE=1
 }
 
 target_env_value() {
@@ -491,18 +536,23 @@ rollback_from_backup() {
   say "Rollback complete"
 }
 
+stamp="$(date +%Y%m%d-%H%M%S)"
+commit="$(git -C "$SOURCE_ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf 'nogit')"
+backup_dir="$BACKUP_ROOT/live-runtime-update-${commit}-${stamp}"
+
 if [[ -n "$ROLLBACK_DIR" ]]; then
   rollback_from_backup
   exit 0
 fi
 
+if [[ "$DRY_RUN" -eq 0 ]]; then
+  ensure_target_automation_control
+  begin_deploy_transition_hold
+fi
+
 runtime_compose_guard
 preflight_copy_contract
 run_source_validation
-
-stamp="$(date +%Y%m%d-%H%M%S)"
-commit="$(git -C "$SOURCE_ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf 'nogit')"
-backup_dir="$BACKUP_ROOT/live-runtime-update-${commit}-${stamp}"
 
 say "Preparing backup: $backup_dir"
 if [[ "$DRY_RUN" -eq 0 ]]; then
@@ -547,8 +597,6 @@ if ! run_target_validation; then
   rollback_from_backup
   exit 1
 fi
-
-ensure_target_automation_control
 
 if [[ -n "$RESTART_SERVICES" ]]; then
   say "Restarting user services: $RESTART_SERVICES"

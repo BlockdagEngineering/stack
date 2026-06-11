@@ -1866,6 +1866,23 @@ def stop_pool_container(payload: dict[str, Any], reason: str, *, containment: st
     containment_label = containment.replace("_", " ")
     event_prefix = containment if containment else "containment"
     control_payload = control.as_dict() if hasattr(control, "as_dict") else dict(vars(control))
+    if not control.allowed:
+        action = {
+            "reason": reason,
+            "container": POOL_CONTAINER,
+            "containment": containment,
+            "control_decision": control_payload,
+            "method": "automation-control",
+        }
+        log(f"{containment_label} stop suppressed by automation control for {POOL_CONTAINER}: {control.reason}")
+        record_incident(
+            f"{event_prefix}_pool_stop_blocked",
+            "warning",
+            f"{containment_label} stop suppressed by automation control: {control.reason}",
+            action,
+            payload,
+        )
+        return False
     compose = run(docker_compose_command("stop", POOL_CONTAINER), timeout=120)
     action = {
         "reason": reason,

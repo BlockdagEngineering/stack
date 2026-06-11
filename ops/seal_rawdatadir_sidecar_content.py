@@ -510,6 +510,30 @@ def prune_generations(artifact_base: Path, keep: int) -> None:
         shutil.rmtree(stale, ignore_errors=True)
 
 
+def publish_current_symlink(artifact_base: Path, stage: Path) -> Path:
+    current = artifact_base / "current"
+    artifact_base.mkdir(parents=True, exist_ok=True)
+    tmp_link = artifact_base / f".current.{os.getpid()}.tmp"
+    if tmp_link.exists() or tmp_link.is_symlink():
+        if tmp_link.is_dir() and not tmp_link.is_symlink():
+            shutil.rmtree(tmp_link)
+        else:
+            tmp_link.unlink()
+    tmp_link.symlink_to(Path("artifacts") / stage.name)
+    if current.exists() and current.is_dir() and not current.is_symlink():
+        old_current = artifact_base / f".current.replaced.{now_stamp()}.{os.getpid()}"
+        current.rename(old_current)
+        try:
+            tmp_link.replace(current)
+        except OSError:
+            old_current.rename(current)
+            raise
+        shutil.rmtree(old_current, ignore_errors=True)
+        return current
+    tmp_link.replace(current)
+    return current
+
+
 def write_status(env: dict[str, str], payload: dict[str, Any]) -> None:
     status = resolve_path(
         env.get("BDAG_RAWDATADIR_SIDECAR_CONTENT_STATUS_FILE"),
@@ -688,13 +712,7 @@ def seal_sidecar(env: dict[str, str]) -> dict[str, Any]:
         marker.write_text("\n".join(reasons or ["not_publishable"]) + "\n", encoding="utf-8")
         make_public_file(marker, uid, gid)
 
-    current = artifact_base / "current"
-    current.parent.mkdir(parents=True, exist_ok=True)
-    tmp_link = artifact_base / f".current.{os.getpid()}.tmp"
-    if tmp_link.exists() or tmp_link.is_symlink():
-        tmp_link.unlink()
-    tmp_link.symlink_to(Path("artifacts") / stage.name)
-    tmp_link.replace(current)
+    current = publish_current_symlink(artifact_base, stage)
     make_public_dir(artifact_base, uid, gid)
     make_public_dir(artifact_base / "artifacts", uid, gid)
 

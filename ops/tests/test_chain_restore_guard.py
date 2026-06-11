@@ -152,6 +152,35 @@ class ChainRestoreGuardTest(unittest.TestCase):
             status["raw_state_checkpoint"]["reasons"],
         )
 
+    def test_timer_start_respects_automation_control(self) -> None:
+        now = int(time.time())
+        decision = mock.Mock()
+        decision.allowed = False
+        decision.reason = "transition_hold does not allow this mutation"
+        decision.as_dict.return_value = {"allowed": False, "reason": decision.reason}
+
+        with mock.patch.object(chain_restore_guard, "configured_timers", return_value=["bdag-ipfs-content-sidecar.timer"]), mock.patch.object(
+            chain_restore_guard,
+            "unit_active",
+            return_value=False,
+        ), mock.patch.object(
+            chain_restore_guard,
+            "unit_start_allowed",
+            return_value=decision,
+        ), mock.patch.object(
+            chain_restore_guard,
+            "start_unit",
+            side_effect=AssertionError("systemctl start must not run"),
+        ), mock.patch.object(
+            chain_restore_guard,
+            "append_incident",
+        ) as append_incident:
+            result = chain_restore_guard.ensure_ipfs_timers({}, now)
+
+        self.assertFalse(result["bdag-ipfs-content-sidecar.timer"]["started"])
+        self.assertEqual(decision.reason, result["bdag-ipfs-content-sidecar.timer"]["stderr"])
+        append_incident.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

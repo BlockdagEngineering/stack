@@ -4,6 +4,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from types import SimpleNamespace
 
 
@@ -80,7 +81,8 @@ class NodeChildGuardTests(unittest.TestCase):
 
         try:
             node_child_guard.run = fake_run
-            ok = node_child_guard.restart_node("node", "child missing", {}, 1000)
+            with mock.patch.object(node_child_guard, "node_mutation_allowed", return_value=True):
+                ok = node_child_guard.restart_node("node", "child missing", {}, 1000)
         finally:
             node_child_guard.run = original_run
 
@@ -102,12 +104,71 @@ class NodeChildGuardTests(unittest.TestCase):
 
         try:
             node_child_guard.run = fake_run
-            ok = node_child_guard.restart_node("node", "child missing", {}, 1000)
+            with mock.patch.object(node_child_guard, "node_mutation_allowed", return_value=True):
+                ok = node_child_guard.restart_node("node", "child missing", {}, 1000)
         finally:
             node_child_guard.run = original_run
 
         self.assertTrue(ok)
         self.assertIn(["docker", "restart", "node"], calls)
+
+    def test_restart_is_suppressed_when_automation_control_denies(self) -> None:
+        calls: list[list[str]] = []
+        decision = SimpleNamespace(
+            allowed=False,
+            reason="transition_hold does not allow this mutation",
+            control_state="transition_hold",
+            control_status="ok",
+        )
+
+        with mock.patch.object(
+            node_child_guard.automation_control,
+            "check_mutation_allowed",
+            return_value=decision,
+        ), mock.patch.object(
+            node_child_guard,
+            "run",
+            side_effect=lambda command, **_kwargs: calls.append(command) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ), mock.patch.object(
+            node_child_guard,
+            "log",
+            lambda _message: None,
+        ):
+            state: dict[str, object] = {}
+            ok = node_child_guard.restart_node("node", "child missing", state, 1000)
+
+        self.assertFalse(ok)
+        self.assertEqual([], calls)
+        self.assertEqual("transition_hold", state["automation_suppressed_by_node"]["node"]["control_state"])
+
+    def test_start_is_suppressed_when_automation_control_denies(self) -> None:
+        calls: list[list[str]] = []
+        decision = SimpleNamespace(
+            allowed=False,
+            reason="controlled_stop denies high-risk mutation",
+            control_state="controlled_stop",
+            control_status="ok",
+        )
+
+        with mock.patch.object(
+            node_child_guard.automation_control,
+            "check_mutation_allowed",
+            return_value=decision,
+        ), mock.patch.object(
+            node_child_guard,
+            "run",
+            side_effect=lambda command, **_kwargs: calls.append(command) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ), mock.patch.object(
+            node_child_guard,
+            "log",
+            lambda _message: None,
+        ):
+            state: dict[str, object] = {}
+            ok = node_child_guard.start_node("node", "container stopped", state, 1000)
+
+        self.assertFalse(ok)
+        self.assertEqual([], calls)
+        self.assertEqual("controlled_stop", state["automation_suppressed_by_node"]["node"]["control_state"])
 
     def test_default_guard_node_covers_current_service_name(self) -> None:
         self.assertEqual(node_child_guard.DEFAULT_NODE_CHILD_GUARD_NODE, "node")

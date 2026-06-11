@@ -12,6 +12,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import automation_control
 from incident_journal import append_incident
 from pool_ops import LOG_DIR, PROJECT_ROOT, RUNTIME_DIR, ensure_runtime, now_iso
 
@@ -122,6 +123,15 @@ def unit_active(unit: str) -> bool:
 
 def start_unit(unit: str) -> subprocess.CompletedProcess[str]:
     return systemctl_user("start", unit)
+
+
+def unit_start_allowed(unit: str, reason: str) -> automation_control.ControlDecision:
+    return automation_control.check_mutation_allowed(
+        automation_control.ACTION_SYSTEMD_START,
+        actor="chain-restore-guard",
+        target=unit,
+        reason=reason,
+    )
 
 
 def status_api() -> tuple[dict[str, Any] | None, str]:
@@ -260,6 +270,24 @@ def ensure_ipfs_timers(state: dict[str, Any], now: int) -> dict[str, Any]:
     for timer in configured_timers():
         if unit_active(timer):
             results[timer] = {"active": True}
+            continue
+        decision = unit_start_allowed(timer, "ensure IPFS recovery timer is active")
+        if not decision.allowed:
+            results[timer] = {
+                "active": False,
+                "started": False,
+                "returncode": None,
+                "stderr": decision.reason,
+                "control_decision": decision.as_dict(),
+            }
+            if should_emit(state, f"{timer}_automation_blocked", decision.reason, now):
+                append_incident(
+                    "restore_guard_ipfs_timer_start_blocked",
+                    "warning",
+                    "chain-restore-guard",
+                    f"Restore guard start of {timer} was blocked by automation control",
+                    {"timer": timer, "control_decision": decision.as_dict()},
+                )
             continue
         result = start_unit(timer)
         results[timer] = {

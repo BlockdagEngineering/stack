@@ -227,6 +227,29 @@ class SingleGateOrchestrationTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual([("mining_imperative_pool_start_blocked", "warning")], incidents)
 
+    def test_status_sampler_cannot_stop_pool_when_automation_control_blocks(self) -> None:
+        incidents: list[tuple[str, str]] = []
+        decision = SimpleNamespace(
+            allowed=False,
+            reason="transition_hold does not allow this mutation",
+            as_dict=lambda: {"allowed": False, "reason": "transition_hold does not allow this mutation"},
+        )
+        with mock.patch.object(status_sampler, "run", side_effect=AssertionError("docker stop must not run")), mock.patch.object(
+            status_sampler, "log", lambda _message: None
+        ), mock.patch.object(
+            status_sampler.automation_control,
+            "check_mutation_allowed",
+            return_value=decision,
+        ), mock.patch.object(
+            status_sampler,
+            "record_incident",
+            side_effect=lambda event_type, severity, *_args: incidents.append((event_type, severity)),
+        ):
+            ok = status_sampler.stop_pool_container(unsafe_catchup_status(), "unit test", containment="catchup_pause")
+
+        self.assertFalse(ok)
+        self.assertEqual([("catchup_pause_pool_stop_blocked", "warning")], incidents)
+
     def test_stack_sentinel_cannot_start_pool_when_latest_status_blocks(self) -> None:
         incidents: list[tuple[str, str]] = []
         with mock.patch.object(

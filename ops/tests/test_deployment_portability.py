@@ -483,6 +483,40 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             self.assertIn("OnUnitActiveSec=5m", timer)
             self.assertIn("RandomizedDelaySec=2m", timer)
 
+    def test_p2p_installer_removes_retired_rawdatadir_source_unit(self) -> None:
+        installer = (ROOT_DIR / "ops" / "install-p2p-services.sh").read_text(encoding="utf-8")
+
+        self.assertIn("retire_legacy_rawdatadir_source_timer()", installer)
+        self.assertIn("bdag-rawdatadir-source.service", installer)
+        self.assertIn("bdag-rawdatadir-source.timer", installer)
+        self.assertIn("disable --now bdag-rawdatadir-source.timer bdag-rawdatadir-source.service", installer)
+        self.assertIn("bdag-ipfs-content-sidecar", installer)
+        self.assertNotIn("publish-" "rawdatadir-artifact.sh", installer)
+
+    def test_btrfs_checkpoint_volume_owns_content_chunk_paths(self) -> None:
+        installer = (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8")
+
+        self.assertIn("ensure_btrfs_checkpoint_owned_dir", installer)
+        self.assertIn("$mountpoint/rawdatadir-sidecar-content/artifacts", installer)
+        self.assertIn("$mountpoint/rawdatadir-sidecar-content/chunk-store", installer)
+        self.assertIn("$mountpoint/rawdatadir-sidecar-content/chunk-store/sha256", installer)
+        self.assertNotIn("chown -R", installer)
+
+    def test_live_deploy_enters_transition_hold_before_target_mutations(self) -> None:
+        deploy = (ROOT_DIR / "ops" / "deploy-live-runtime-update.sh").read_text(encoding="utf-8")
+        main = deploy.split('if [[ -n "$ROLLBACK_DIR" ]]; then', 1)[1]
+
+        self.assertLess(main.index("begin_deploy_transition_hold"), main.index("runtime_compose_guard"))
+        self.assertLess(main.index("begin_deploy_transition_hold"), main.index("migrate_runtime_compose"))
+        self.assertIn('--allowed-mutation "deploy-live-runtime-update:systemd_restart:*"', deploy)
+
+    def test_host_node_child_guard_delegates_to_shared_guard(self) -> None:
+        host_guard = (ROOT_DIR / "host" / "mining-appliance" / "bdag-node-child-guard").read_text(encoding="utf-8")
+
+        self.assertIn('script = project_root / "ops" / "node_child_guard.py"', host_guard)
+        self.assertIn("os.execv", host_guard)
+        self.assertNotIn("def repair_node", host_guard)
+
     def test_release_installer_has_prestart_ipfs_rawdatadir_restore_gate(self) -> None:
         installer = (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8")
 

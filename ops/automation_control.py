@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import json
 import os
@@ -210,30 +210,54 @@ def write_control_state(
 ) -> None:
     path = _state_path(state_path)
     lock = _lock_path(lock_path)
+    handle = _with_lock(lock)
+    try:
+        _write_control_state_unlocked(state, path=path, now=now)
+    finally:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def _write_control_state_unlocked(
+    state: dict[str, Any],
+    *,
+    path: Path,
+    now: datetime | None = None,
+) -> None:
     valid, status, reason = validate_control_state(state, now=now)
     if valid is None:
         raise ValueError(f"invalid automation control state: {status}: {reason}")
     ensure_runtime(path.parent)
-    handle = _with_lock(lock)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    payload = json.dumps(state, indent=2, sort_keys=True) + "\n"
+    with temp_path.open("w", encoding="utf-8") as temp:
+        temp.write(payload)
+        temp.flush()
+        os.fsync(temp.fileno())
+    os.replace(temp_path, path)
     try:
-        temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        payload = json.dumps(state, indent=2, sort_keys=True) + "\n"
-        with temp_path.open("w", encoding="utf-8") as temp:
-            temp.write(payload)
-            temp.flush()
-            os.fsync(temp.fileno())
-        os.replace(temp_path, path)
+        dir_fd = os.open(str(path.parent), os.O_DIRECTORY)
         try:
-            dir_fd = os.open(str(path.parent), os.O_DIRECTORY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-        except OSError:
-            pass
-    finally:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        handle.close()
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
+
+
+def _read_control_state_unlocked(
+    path: Path,
+    *,
+    now: datetime | None = None,
+) -> tuple[dict[str, Any] | None, str, str]:
+    text, read_status = _read_text_with_retry(path)
+    if text is None:
+        return None, read_status, "automation control file is missing" if read_status == "missing" else read_status
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return None, "corrupt", f"automation control JSON is corrupt: {exc.msg}"
+    return validate_control_state(raw, now=now)
 
 
 def default_normal_control_state(
@@ -262,6 +286,36 @@ def default_normal_control_state(
     }
 
 
+def default_transition_hold_control_state(
+    *,
+    owner: str,
+    owner_unit: str,
+    reason: str,
+    correlation_id: str = "",
+    allowed_mutations: list[str] | None = None,
+    expires_seconds: int = 900,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    current = now or datetime.now(timezone.utc)
+    timestamp = current.astimezone().isoformat(timespec="seconds")
+    expires_at = (current + timedelta(seconds=max(1, expires_seconds))).astimezone().isoformat(timespec="seconds")
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "state": STATE_TRANSITION_HOLD,
+        "owner": owner,
+        "owner_unit": owner_unit,
+        "pid": os.getpid(),
+        "reason": reason,
+        "correlation_id": correlation_id or f"{owner_unit}-{int(time.time())}",
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "expires_at": expires_at,
+        "allowed_mutations": allowed_mutations or [],
+        "suppressed_count": 0,
+        "last_transition": {"from": STATE_NORMAL, "to": STATE_TRANSITION_HOLD, "at": timestamp, "by": owner_unit},
+    }
+
+
 def ensure_normal_control_state(
     *,
     state_path: Path | None = None,
@@ -274,28 +328,136 @@ def ensure_normal_control_state(
     now: datetime | None = None,
 ) -> tuple[bool, str, str]:
     path = _state_path(state_path)
-    control, status, status_reason = read_control_state(state_path=path, now=now)
-    if control is not None and status == "ok":
-        return False, status, str(path)
-    if status != "missing" and not repair_invalid:
-        return False, status, str(path)
-    state = default_normal_control_state(
-        owner=owner,
-        owner_unit=owner_unit,
-        reason=reason,
-        correlation_id=correlation_id,
-        now=now,
-    )
-    previous = status
-    state["last_transition"] = {
-        "from": previous,
-        "to": STATE_NORMAL,
-        "at": state["updated_at"],
-        "by": owner_unit,
-        "reason": status_reason,
-    }
-    write_control_state(state, state_path=path, lock_path=lock_path, now=now)
-    return True, previous, str(path)
+    lock = _lock_path(lock_path)
+    handle = _with_lock(lock)
+    try:
+        control, status, status_reason = _read_control_state_unlocked(path, now=now)
+        if control is not None and status == "ok":
+            return False, status, str(path)
+        if status != "missing" and not repair_invalid:
+            return False, status, str(path)
+        state = default_normal_control_state(
+            owner=owner,
+            owner_unit=owner_unit,
+            reason=reason,
+            correlation_id=correlation_id,
+            now=now,
+        )
+        previous = status
+        state["last_transition"] = {
+            "from": previous,
+            "to": STATE_NORMAL,
+            "at": state["updated_at"],
+            "by": owner_unit,
+            "reason": status_reason,
+        }
+        _write_control_state_unlocked(state, path=path, now=now)
+        return True, previous, str(path)
+    finally:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def begin_transition_hold(
+    *,
+    state_path: Path | None = None,
+    lock_path: Path | None = None,
+    owner: str = "operator",
+    owner_unit: str = "automation-control",
+    reason: str = "Controlled stack transition",
+    correlation_id: str = "",
+    allowed_mutations: list[str] | None = None,
+    expires_seconds: int = 900,
+    now: datetime | None = None,
+) -> tuple[bool, str, str]:
+    path = _state_path(state_path)
+    lock = _lock_path(lock_path)
+    handle = _with_lock(lock)
+    try:
+        control, status, status_reason = _read_control_state_unlocked(path, now=now)
+        if control is not None and status == "ok" and control.get("state") != STATE_NORMAL:
+            return False, str(control.get("state") or status), str(path)
+        if control is None and status != "missing":
+            return False, status, str(path)
+        state = default_transition_hold_control_state(
+            owner=owner,
+            owner_unit=owner_unit,
+            reason=reason,
+            correlation_id=correlation_id,
+            allowed_mutations=allowed_mutations,
+            expires_seconds=expires_seconds,
+            now=now,
+        )
+        previous = str(control.get("state") if control else status)
+        state["last_transition"] = {
+            "from": previous,
+            "to": STATE_TRANSITION_HOLD,
+            "at": state["updated_at"],
+            "by": owner_unit,
+            "reason": status_reason,
+        }
+        _write_control_state_unlocked(state, path=path, now=now)
+        return True, previous, str(path)
+    finally:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def _read_raw_control_state(path: Path) -> tuple[dict[str, Any] | None, str, str]:
+    text, read_status = _read_text_with_retry(path)
+    if text is None:
+        return None, read_status, read_status
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return None, "corrupt", f"automation control JSON is corrupt: {exc.msg}"
+    if not isinstance(raw, dict):
+        return None, "schema_invalid", "control state is not an object"
+    return raw, "ok", "ok"
+
+
+def release_transition_hold(
+    *,
+    state_path: Path | None = None,
+    lock_path: Path | None = None,
+    owner: str = "operator",
+    owner_unit: str = "automation-control",
+    reason: str = "Release controlled stack transition",
+    correlation_id: str = "",
+    now: datetime | None = None,
+) -> tuple[bool, str, str]:
+    path = _state_path(state_path)
+    lock = _lock_path(lock_path)
+    handle = _with_lock(lock)
+    try:
+        control, status, _status_reason = _read_raw_control_state(path)
+        if control is None:
+            return False, status, str(path)
+        current_state = str(control.get("state") or "")
+        if current_state != STATE_TRANSITION_HOLD:
+            return False, current_state or status, str(path)
+        current_correlation = str(control.get("correlation_id") or "")
+        if correlation_id and current_correlation and current_correlation != correlation_id:
+            return False, "correlation_mismatch", str(path)
+        state = default_normal_control_state(
+            owner=owner,
+            owner_unit=owner_unit,
+            reason=reason,
+            correlation_id=correlation_id or current_correlation,
+            now=now,
+        )
+        state["last_transition"] = {
+            "from": STATE_TRANSITION_HOLD,
+            "to": STATE_NORMAL,
+            "at": state["updated_at"],
+            "by": owner_unit,
+            "reason": reason,
+        }
+        _write_control_state_unlocked(state, path=path, now=now)
+        return True, current_state, str(path)
+    finally:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
 
 
 def append_control_event(
@@ -339,7 +501,7 @@ def _transition_hold_allows(control: dict[str, Any], action: str, actor: str, ta
 
 
 def is_high_risk_action(action: str) -> bool:
-    if action in LOW_RISK_ACTIONS or action in CONTAINMENT_ACTIONS:
+    if action in LOW_RISK_ACTIONS:
         return False
     return True
 
@@ -360,7 +522,7 @@ def check_mutation_allowed(
     control, status, status_reason = read_control_state(state_path=path, now=now)
     high_risk = is_high_risk_action(action)
 
-    if action in LOW_RISK_ACTIONS or action in CONTAINMENT_ACTIONS:
+    if action in LOW_RISK_ACTIONS:
         control_state = str(control.get("state") if control else "invalid")
         return ControlDecision(
             True,
@@ -369,7 +531,7 @@ def check_mutation_allowed(
             target,
             control_state,
             status,
-            "allowed low-risk or containment action",
+            "allowed low-risk action",
             str(path),
         )
 
@@ -484,6 +646,28 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Replace an invalid/expired control file with normal state. Use only during explicit recovery.",
     )
+    begin_parser = subparsers.add_parser(
+        "begin-transition",
+        help="Enter a bounded transition hold before controlled deploy or restart work.",
+    )
+    begin_parser.add_argument("--state-path", type=Path, default=None)
+    begin_parser.add_argument("--lock-path", type=Path, default=None)
+    begin_parser.add_argument("--owner", default="operator")
+    begin_parser.add_argument("--owner-unit", default="automation-control")
+    begin_parser.add_argument("--reason", default="Controlled stack transition")
+    begin_parser.add_argument("--correlation-id", default="")
+    begin_parser.add_argument("--expires-seconds", type=int, default=900)
+    begin_parser.add_argument("--allowed-mutation", action="append", default=[])
+    release_parser = subparsers.add_parser(
+        "release-transition",
+        help="Release a transition hold created by begin-transition.",
+    )
+    release_parser.add_argument("--state-path", type=Path, default=None)
+    release_parser.add_argument("--lock-path", type=Path, default=None)
+    release_parser.add_argument("--owner", default="operator")
+    release_parser.add_argument("--owner-unit", default="automation-control")
+    release_parser.add_argument("--reason", default="Release controlled stack transition")
+    release_parser.add_argument("--correlation-id", default="")
     args = parser.parse_args(argv)
 
     if args.command == "ensure-normal":
@@ -507,6 +691,48 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
+    if args.command == "begin-transition":
+        created, previous_status, path = begin_transition_hold(
+            state_path=args.state_path,
+            lock_path=args.lock_path,
+            owner=args.owner,
+            owner_unit=args.owner_unit,
+            reason=args.reason,
+            correlation_id=args.correlation_id,
+            allowed_mutations=list(args.allowed_mutation or []),
+            expires_seconds=args.expires_seconds,
+        )
+        print(
+            json.dumps(
+                {
+                    "created": created,
+                    "previous_status": previous_status,
+                    "path": path,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0 if created else 1
+    if args.command == "release-transition":
+        released, previous_status, path = release_transition_hold(
+            state_path=args.state_path,
+            lock_path=args.lock_path,
+            owner=args.owner,
+            owner_unit=args.owner_unit,
+            reason=args.reason,
+            correlation_id=args.correlation_id,
+        )
+        print(
+            json.dumps(
+                {
+                    "released": released,
+                    "previous_status": previous_status,
+                    "path": path,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0 if released else 1
     parser.error(f"unknown command: {args.command}")
     return 2
 

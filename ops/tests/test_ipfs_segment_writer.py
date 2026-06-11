@@ -139,6 +139,25 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "refuses non-mainnet"):
             ipfs_segment_writer.update_index({}, record, {"BDAG_NETWORK": "not-mainnet"})
 
+    def test_chain_reference_rpc_url_falls_back_to_public_rpc_list(self) -> None:
+        env = {
+            "BDAG_PUBLIC_RPC_URLS": "local=http://source:38131,engineering=https://rpc.blockdag.engineering",
+        }
+
+        url = ipfs_segment_writer.chain_reference_rpc_url(env, "http://source:38131")
+
+        self.assertEqual("https://rpc.blockdag.engineering", url)
+
+    def test_chain_reference_rpc_url_prefers_explicit_value(self) -> None:
+        env = {
+            "BDAG_CHAIN_REFERENCE_RPC_URL": "http://reference:38131",
+            "BDAG_PUBLIC_RPC_URLS": "engineering=https://rpc.blockdag.engineering",
+        }
+
+        url = ipfs_segment_writer.chain_reference_rpc_url(env, "http://source:38131")
+
+        self.assertEqual("http://reference:38131", url)
+
     def test_update_index_rejects_non_contiguous_append(self) -> None:
         index = {
             "segments": [

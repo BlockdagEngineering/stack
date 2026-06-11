@@ -125,6 +125,48 @@ class SidecarContentSealTest(unittest.TestCase):
         self.assertTrue(marker_exists)
         self.assertIn("hot_sidecar_not_finalized", marker_text)
 
+    def test_existing_current_directory_is_replaced_by_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            sidecar = self.make_sidecar(base)
+            content_base = base / "content"
+            (content_base / "current").mkdir(parents=True)
+            (content_base / "current" / "stale.txt").write_text("stale\n", encoding="utf-8")
+            status = base / "status.json"
+            env = {
+                "BDAG_PROJECT_ROOT": str(ROOT),
+                "BDAG_RAWDATADIR_SIDECAR_DIR": str(sidecar),
+                "BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE": str(content_base),
+                "BDAG_RAWDATADIR_SIDECAR_CONTENT_STATUS_FILE": str(status),
+                "BDAG_RAWDATADIR_SIDECAR_CONTENT_FINALIZED": "1",
+                "BDAG_RAWDATADIR_SIGNING_KEY_ID": "test-key",
+                "BDAG_RAWDATADIR_SIGNING_KEY_HEX": "00" * 32,
+                "BDAG_RAWDATADIR_STATE_ROOT": "0x" + ("1" * 64),
+                "BDAG_RAWDATADIR_GENESIS_HASH": "0x" + ("2" * 64),
+            }
+
+            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
+                seal,
+                "collect_anchor",
+                return_value={
+                    "network": "mainnet",
+                    "chain_id": 1404,
+                    "block_total": 10,
+                    "tip_order": 9,
+                    "tip_hash": "0x" + ("3" * 64),
+                    "state_root": "0x" + ("1" * 64),
+                    "genesis_hash": "0x" + ("2" * 64),
+                },
+            ):
+                rc = seal.main([])
+
+            current_is_symlink = (content_base / "current").is_symlink()
+            manifest_exists = (content_base / "current" / "manifest.json").exists()
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(current_is_symlink)
+        self.assertTrue(manifest_exists)
+
     def test_configured_finalization_anchor_does_not_need_live_rpc(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

@@ -605,8 +605,37 @@ def select_rpc_source(
     raise RuntimeError(message)
 
 
-def chain_reference_rpc_url(env: Mapping[str, str]) -> str:
-    return str(env.get("BDAG_CHAIN_REFERENCE_RPC_URL") or env.get("BDAG_IPFS_SEGMENT_REFERENCE_RPC_URL") or "").strip()
+def public_rpc_urls(env: Mapping[str, str]) -> list[tuple[str, str]]:
+    configured = str(env.get("BDAG_PUBLIC_RPC_URLS") or "").strip()
+    result: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for raw in configured.replace("\n", ",").split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        if "=" in item:
+            name, url = item.split("=", 1)
+        else:
+            name, url = item, item
+        name = name.strip() or url.strip()
+        url = url.strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        result.append((name, url))
+    return result
+
+
+def chain_reference_rpc_url(env: Mapping[str, str], source_url: str = "") -> str:
+    explicit = str(env.get("BDAG_CHAIN_REFERENCE_RPC_URL") or env.get("BDAG_IPFS_SEGMENT_REFERENCE_RPC_URL") or "").strip()
+    if explicit:
+        return explicit
+    source = source_url.strip().rstrip("/")
+    for _name, url in public_rpc_urls(env):
+        candidate = url.strip()
+        if candidate and candidate.rstrip("/") != source:
+            return candidate
+    return ""
 
 
 def parse_writer_roster(value: str | None) -> list[str]:
@@ -1117,7 +1146,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
         if args.preflight:
-            reference_url = str(args.reference_rpc_url or chain_reference_rpc_url(env)).strip()
+            reference_url = str(args.reference_rpc_url or chain_reference_rpc_url(env, source_url)).strip()
             preflight = run_preflight(env, index_path, source_url, reference_url, start, end)
             payload = write_status(
                 env,
@@ -1156,7 +1185,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
 
-        reference_url = chain_reference_rpc_url(env)
+        reference_url = chain_reference_rpc_url(env, source_url)
         publish_preflight: dict[str, Any] = {}
         publish_preflights: list[dict[str, Any]] = []
         max_segments = max(1, env_int(env, "BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN", 1))

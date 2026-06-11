@@ -140,6 +140,28 @@ os.replace(tmp, path)
 PY
 }
 
+automation_allows_self_heal() {
+  local reason="$1"
+  python3 - "$ROOT" "$reason" <<'PY'
+import sys
+
+root, reason = sys.argv[1], sys.argv[2]
+sys.path.insert(0, f"{root}/ops")
+import automation_control  # type: ignore
+
+decision = automation_control.check_mutation_allowed(
+    automation_control.ACTION_STACK_CLEAN_RESTORE,
+    actor="chain-state-self-heal",
+    target="chain-state-self-heal",
+    reason=reason,
+)
+if decision.allowed:
+    raise SystemExit(0)
+print(decision.reason)
+raise SystemExit(1)
+PY
+}
+
 load_env_file() {
   local file="$1"
   [[ -f "$file" ]] || return 0
@@ -522,6 +544,11 @@ fi
 if ! validate_restore_input "$RESTORE_MODE_USED" "$RESTORE_SOURCE_USED"; then
   log "selected restore input is not safe for destructive chain-state restore"
   json_state "blocked" "selected restore input is not a restore-safe raw datadir/IPFS artifact"
+  exit 1
+fi
+if ! control_reason="$(automation_allows_self_heal "destructive chain-state restore mode=$RESTORE_MODE_USED source=$RESTORE_SOURCE_USED" 2>&1)"; then
+  log "automation control blocked chain-state self-heal: $control_reason"
+  json_state "blocked" "automation control blocked chain-state self-heal: $control_reason"
   exit 1
 fi
 mkdir_p "$TMP_DIR" "$QUARANTINE_ROOT"

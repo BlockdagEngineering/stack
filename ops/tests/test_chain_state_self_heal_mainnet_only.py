@@ -39,6 +39,16 @@ class ChainStateSelfHealMainnetOnlyTest(unittest.TestCase):
         pre_restore_start = script.split('json_state "started" "chain-state restore started"', 1)[0]
         self.assertNotIn('stop_service_best_effort "$POOL_SERVICE"', pre_restore_start)
 
+    def test_self_heal_checks_automation_control_before_stopping_services(self) -> None:
+        script = (ROOT / "ops" / "chain-state-self-heal.sh").read_text(encoding="utf-8")
+
+        self.assertIn("automation_allows_self_heal", script)
+        self.assertIn("automation_control.ACTION_STACK_CLEAN_RESTORE", script)
+        self.assertIn('json_state "blocked" "automation control blocked chain-state self-heal', script)
+        pre_restore_start = script.split('json_state "started" "chain-state restore started"', 1)[0]
+        self.assertIn("automation_allows_self_heal", pre_restore_start)
+        self.assertIn("automation control blocked chain-state self-heal", pre_restore_start)
+
     def test_self_heal_rejects_live_hot_rsync_mirror_of_same_node(self) -> None:
         script = (ROOT / "ops" / "chain-state-self-heal.sh").read_text(encoding="utf-8")
 
