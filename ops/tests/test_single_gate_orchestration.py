@@ -150,6 +150,36 @@ class SingleGateOrchestrationTests(unittest.TestCase):
 
         self.assertTrue(decision.allowed, decision.reason)
 
+    def test_shared_gate_blocks_unknown_sync_with_chain_rpc_error(self) -> None:
+        status = safe_canonical_status()
+        status["sync_progress"] = {
+            "status": "unknown",
+            "error": "getBlockCount failed for node after 2 attempt(s): timed out",
+            "nodes": {
+                "node": {
+                    "chain_rpc_error": "getBlockCount failed for node after 2 attempt(s): timed out",
+                    "canonical_mining_safety": {
+                        "safe": True,
+                        "schema": "stack_evm_public_reference_v1",
+                    },
+                }
+            },
+        }
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertFalse(decision.allowed)
+        self.assertIn("chain sync status is unknown because node chain RPC is unavailable", decision.reason)
+
+    def test_shared_gate_blocks_all_nodes_failing_template_probe(self) -> None:
+        status = safe_canonical_status()
+        status["rpc_template_health"] = {"all_nodes_failing": True, "failing_nodes": ["node"]}
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertFalse(decision.allowed)
+        self.assertIn("node template health is not ready", decision.reason)
+
     def test_shared_gate_allows_pool_only_down_with_advisory_missing_trie_text(self) -> None:
         status = safe_pool_only_down_status()
         status["status_reason"] = (

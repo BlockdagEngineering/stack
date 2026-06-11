@@ -267,6 +267,16 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
     remaining_blocks = _safe_int(sync_progress.get("remaining_blocks"))
     if remaining_blocks is not None and remaining_blocks > 0:
         reasons.append(f"chain sync still has {remaining_blocks} block(s) remaining")
+    sync_status = str(sync_progress.get("status") or "").strip().lower()
+    sync_error = str(sync_progress.get("error") or sync_progress.get("chain_rpc_error") or "").strip()
+    sync_nodes = sync_progress.get("nodes") if isinstance(sync_progress.get("nodes"), dict) else {}
+    node_rpc_errors = [
+        str(node.get("chain_rpc_error") or node.get("error") or "").strip()
+        for node in sync_nodes.values()
+        if isinstance(node, dict) and str(node.get("chain_rpc_error") or node.get("error") or "").strip()
+    ]
+    if sync_status in {"", "unknown", "waiting_for_status_sample"} and (sync_error or node_rpc_errors):
+        reasons.append("chain sync status is unknown because node chain RPC is unavailable")
 
     for node_name, node in _status_nodes(status):
         if node.get("chain_state_blocker"):
@@ -283,7 +293,11 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
         reasons.append(f"overall stack status is down with non-ready mode: {mode or 'unknown'}")
 
     rpc_template = status.get("rpc_template_health")
-    if isinstance(rpc_template, dict) and rpc_template.get("all_nodes_ready") is False:
+    if isinstance(rpc_template, dict) and (
+        rpc_template.get("all_nodes_ready") is False
+        or rpc_template.get("all_nodes_failing") is True
+        or bool(rpc_template.get("failing_nodes"))
+    ):
         reasons.append("node template health is not ready")
 
     if REQUIRE_CANONICAL_SAFETY:

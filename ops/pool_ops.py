@@ -7196,6 +7196,45 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     sync_health["node_importing"] = bool(active_import_nodes)
     if active_import_nodes:
         sync_health["node_importing_nodes"] = active_import_nodes
+    sync_progress_nodes = sync_progress.get("nodes") if isinstance(sync_progress.get("nodes"), Mapping) else {}
+    chain_rpc_unavailable = bool(
+        str(sync_progress.get("status") or "").strip().lower() in {"", "unknown", "waiting_for_status_sample"}
+        and (
+            str(sync_progress.get("error") or sync_progress.get("chain_rpc_error") or "").strip()
+            or any(
+                str(node_progress.get("chain_rpc_error") or node_progress.get("error") or "").strip()
+                for node_progress in sync_progress_nodes.values()
+                if isinstance(node_progress, Mapping)
+            )
+        )
+    )
+    template_probe_unavailable = bool(
+        template_probe_health.get("all_nodes_failing")
+        or template_probe_health.get("all_nodes_ready") is False
+        or template_probe_health.get("failing_nodes")
+    )
+    node_readiness_unavailable = bool(
+        (chain_rpc_unavailable or template_probe_unavailable)
+        and not pool_has_recent_paid_work
+    )
+    if node_readiness_unavailable and sync_progress.get("status") != "syncing":
+        sync_progress = dict(sync_progress)
+        sync_progress["status"] = "syncing"
+        sync_progress["error"] = "node chain RPC/template readiness unavailable"
+        sync_progress["source"] = "nodes:readiness-unavailable"
+        nodes_progress = dict(sync_progress.get("nodes") or {})
+        for node in managed_node_details:
+            node_progress = nodes_progress.get(node)
+            if isinstance(node_progress, dict):
+                updated_node_progress = dict(node_progress)
+                updated_node_progress["status"] = "syncing"
+                updated_node_progress["error"] = "node chain RPC/template readiness unavailable"
+                nodes_progress[node] = updated_node_progress
+        sync_progress["nodes"] = nodes_progress
+        add_sync_warning("node chain RPC/template readiness is unavailable; mining work is intentionally paused")
+    sync_health["node_readiness_unavailable"] = node_readiness_unavailable
+    sync_health["chain_rpc_unavailable"] = chain_rpc_unavailable
+    sync_health["template_probe_unavailable"] = template_probe_unavailable
     catchup_mining_ready = bool(
         sync_progress.get("status") == "synced"
         and (not selected_source_unready_reasons or pool_has_recent_paid_work)
@@ -7235,6 +7274,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         and any(containers.get(node, {}).get("running") for node in NODES)
     )
     no_miner_sync_only = bool(no_miner_node_only and sync_progress.get("status") == "syncing")
+    node_readiness_sync_only = bool(connected_miners == 0 and sync_progress.get("status") == "syncing")
     no_miner_after_expired_reconnect_failure = bool(
         no_miner_node_only and pool.get("expired_job_reconnect_failed_no_share")
     )
@@ -7300,7 +7340,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         if catchup_policy.get("active")
         else "mining"
         if connected_miners > 0
-        else ("sync_only_no_miners" if no_miner_sync_only else "ready_no_miners")
+        else ("sync_only_no_miners" if no_miner_sync_only or node_readiness_sync_only else "ready_no_miners")
     )
     can_accept_shares = bool(connected_miners > 0 and containers.get(POOL_CONTAINER, {}).get("running") and not failures)
     can_submit_blocks = bool(can_accept_shares and not pool_health.get("needs_pool_repair") and not sync_warnings)

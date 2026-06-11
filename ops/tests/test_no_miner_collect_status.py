@@ -389,6 +389,103 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertNotIn("live mining template probes", joined_warnings)
         self.assertNotIn("pool recently saw RPC connection refused", joined_warnings)
 
+    def test_managed_miner_status_keeps_node_readiness_unavailable_as_sync_only(self) -> None:
+        now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+        pool_ops.time.time = lambda: now
+        pool_ops.NODES = ["node"]
+        pool_ops.OBSERVER_NODES = []
+        pool_ops.STACK_SERVICES = ["postgres", "node", "asic-pool"]
+        pool_ops.SERVICES = list(pool_ops.STACK_SERVICES)
+        pool_ops.POOL_CONTAINER = "asic-pool"
+        pool_ops.POOL_CONTAINERS = ["asic-pool"]
+        pool_ops.ensure_runtime = lambda: None
+        pool_ops.docker_access_error = lambda: None
+        pool_ops.local_ipv4_addresses = lambda: ["192.168.68.55"]
+        pool_ops.default_miner_pool_settings = lambda: {
+            "pool_url": "stratum+tcp://192.168.68.55:3334",
+            "worker_user": "0x0000000000000000000000000000000000000000",
+            "pool_password": "1234",
+        }
+        pool_ops.run = lambda command, timeout=20: pool_ops.CommandResult(command, 0, "", "", 0.0)
+        pool_ops.read_latest_action = lambda: None
+        pool_ops.discover_observer_node_services = lambda: []
+        pool_ops.docker_top = lambda _name: "UID PID PPID C STIME TTY TIME CMD\nroot 1 0 0 12:00 ? 00:00:01 /usr/local/bin/bdag\n"
+        pool_ops.docker_logs = lambda _name, lines=160: ""
+        pool_ops.docker_logs_many = lambda _names, lines=160: ""
+        pool_ops.collect_host_pressure = lambda: {"samples": []}
+
+        def fake_inspect(names):
+            return {
+                name: {
+                    "name": name,
+                    "image": "test",
+                    "running": name != "asic-pool",
+                    "status": "exited" if name == "asic-pool" else "running",
+                    "restart_count": 0,
+                    "exit_code": 0,
+                    "error": "",
+                    "ports": {},
+                }
+                for name in names
+            }
+
+        pool_ops.docker_inspect = fake_inspect
+        pool_ops.collect_template_probe_health = lambda: {
+            "generated_at": "2026-05-25T12:00:00+0000",
+            "cached": False,
+            "nodes": {"node": {"sample_count": 1, "ok_count": 0, "error_count": 1, "failing": True, "last_error": "timed out"}},
+            "failing_nodes": ["node"],
+            "all_nodes_failing": True,
+        }
+        pool_ops.collect_pool_prometheus_metrics = lambda _containers: {
+            "generated_at": "2026-05-25T12:00:00+0000",
+            "status": "ok",
+            "active_connections": 0,
+            "selected_backend": "node",
+            "source_job_health": {},
+            "source_backend_health": {},
+            "selected_backend_source_health": {},
+            "template_conversion_stall": {},
+            "loss_ledger": {},
+        }
+        pool_ops.collect_miner_health = lambda *_args, **_kwargs: {
+            "managed_count": 1,
+            "connected_count": 0,
+            "failures": ["managed miner has no recent submissions"],
+            "warnings": [],
+            "miners": [],
+        }
+        pool_ops.collect_sync_progress = lambda: {
+            "status": "unknown",
+            "percent": None,
+            "current_block": None,
+            "highest_block": None,
+            "remaining_blocks": None,
+            "source": "nodes",
+            "error": "getBlockCount failed for node after 2 attempt(s): timed out",
+            "nodes": {
+                "node": {
+                    "status": "unknown",
+                    "error": "getBlockCount failed for node after 2 attempt(s): timed out",
+                    "chain_rpc_error": "getBlockCount failed for node after 2 attempt(s): timed out",
+                }
+            },
+        }
+        pool_ops.observe_sync_progress_health = lambda _sync_progress: {
+            "active_nodes": [],
+            "active_node_count": 0,
+            "node_rates_blocks_per_second": {},
+            "lookback_seconds": 2700,
+        }
+        pool_ops.read_sync_coordinator_state = lambda: {}
+
+        status = pool_ops.collect_status(include_logs=True)
+
+        self.assertEqual(status["mode"], "sync_only_no_miners")
+        self.assertEqual(status["sync_progress"]["status"], "syncing")
+        self.assertTrue(status["sync_health"]["node_readiness_unavailable"])
+        self.assertIn("node chain RPC/template readiness is unavailable", "\n".join(status["sync_warnings"]))
+
     def test_no_miner_status_promotes_busy_syncing_to_syncing(self) -> None:
         now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()
         pool_ops.time.time = lambda: now
