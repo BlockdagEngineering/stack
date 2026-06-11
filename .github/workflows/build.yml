@@ -277,7 +277,6 @@ jobs:
             release-assets/pool-stack-docker-*.zip
             release-assets/pool-stack-docker-*.zip.sha256
             release-assets/install.sh
-            release-assets/install.ps1
             release-assets/version.txt
           draft: false
           prerelease: false

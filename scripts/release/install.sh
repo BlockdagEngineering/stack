@@ -21,14 +21,11 @@ case "$OS_NAME" in
     exec sh "$SCRIPT_DIR/installers/install-linux.sh" "$@"
     ;;
   Darwin)
-    export BDAG_INSTALL_OS=macos
-    exec sh "$SCRIPT_DIR/installers/install-macos.sh" "$@"
+    echo "macOS is not supported in this release yet. Only Linux is currently supported." >&2
+    exit 1
     ;;
   MINGW*|MSYS*|CYGWIN*)
-    if command -v powershell.exe >/dev/null 2>&1; then
-      exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$SCRIPT_DIR/install.ps1" "$@"
-    fi
-    echo "Windows detected, but powershell.exe was not found. Run install.cmd or install.ps1 from Windows." >&2
+    echo "Windows is not supported in this release yet. Only Linux is currently supported." >&2
     exit 1
     ;;
   *)
