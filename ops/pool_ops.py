@@ -517,6 +517,7 @@ POOL_SUBMIT_RECOVERY_ACCEPTED_RESUME_SECONDS = int(
     os.environ.get("BDAG_POOL_SUBMIT_RECOVERY_ACCEPTED_RESUME_SECONDS", "90")
 )
 POOL_RPC_REFUSED_WARN_SECONDS = int(os.environ.get("BDAG_POOL_RPC_REFUSED_WARN_SECONDS", "120"))
+POOL_INITIAL_DOWNLOAD_RECENT_SECONDS = env_int("BDAG_POOL_INITIAL_DOWNLOAD_RECENT_SECONDS", 120, minimum=0)
 NODE_IMPORT_STALE_SECONDS = int(os.environ.get("BDAG_NODE_IMPORT_STALE_SECONDS", "180"))
 NODE_LAG_WARN_BLOCKS = int(os.environ.get("BDAG_NODE_LAG_WARN_BLOCKS", "5"))
 NODE_P2P_ERROR_WARN_COUNT = int(os.environ.get("BDAG_NODE_P2P_ERROR_WARN_COUNT", "10"))
@@ -3623,7 +3624,16 @@ def parse_pool_log(log: str) -> dict[str, Any]:
     lines = [line for line in strip_ansi(log).splitlines() if line.strip()]
     recent = lines[-600:]
     text = "\n".join(recent)
-    initial_download = "Client in initial download" in text
+    initial_download_lines = [line for line in recent if "Client in initial download" in line]
+    last_initial_download_line = initial_download_lines[-1] if initial_download_lines else None
+    last_initial_download_age_seconds = _pool_log_age_seconds(last_initial_download_line)
+    initial_download = bool(
+        last_initial_download_line
+        and (
+            last_initial_download_age_seconds is None
+            or last_initial_download_age_seconds <= POOL_INITIAL_DOWNLOAD_RECENT_SECONDS
+        )
+    )
     rpc_refused_lines = [line for line in recent if "connect: connection refused" in line]
     rpc_refused = bool(rpc_refused_lines)
     last_rpc_refused_line = rpc_refused_lines[-1] if rpc_refused_lines else None
@@ -3785,6 +3795,9 @@ def parse_pool_log(log: str) -> dict[str, Any]:
     )
     return {
         "initial_download": initial_download,
+        "initial_download_count": len(initial_download_lines),
+        "last_initial_download_age_seconds": last_initial_download_age_seconds,
+        "initial_download_recent_seconds": POOL_INITIAL_DOWNLOAD_RECENT_SECONDS,
         "rpc_refused": rpc_refused,
         "rpc_refused_recent": rpc_refused_recent,
         "last_rpc_refused_age_seconds": last_rpc_refused_age_seconds,

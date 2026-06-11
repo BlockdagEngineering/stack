@@ -210,6 +210,18 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertEqual(health["miners"][0]["lane_status"], "paused")
         self.assertEqual(len(health["miners"][0]["ports"]), pool_ops.MINER_REGISTRY_MAX_PORTS)
 
+    def test_pool_log_initial_download_must_be_recent(self) -> None:
+        now = datetime(2026, 6, 11, 7, 35, 0, tzinfo=timezone.utc).timestamp()
+        pool_ops.time.time = lambda: now
+
+        stale = pool_ops.parse_pool_log("2026/06/11 07:30:00 Client in initial download")
+        recent = pool_ops.parse_pool_log("2026/06/11 07:34:30 Client in initial download")
+
+        self.assertFalse(stale["initial_download"])
+        self.assertEqual(stale["last_initial_download_age_seconds"], 300)
+        self.assertTrue(recent["initial_download"])
+        self.assertEqual(recent["last_initial_download_age_seconds"], 30)
+
     def test_no_miner_status_suppresses_template_and_rpc_noise(self) -> None:
         now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()
         pool_ops.time.time = lambda: now
@@ -458,7 +470,7 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertIn("node busy syncing", "\n".join(status["sync_warnings"]).lower())
         self.assertTrue(status["nodes"]["node"]["node_busy_syncing"])
 
-    def test_no_miner_status_promotes_active_imports_to_syncing(self) -> None:
+    def test_no_miner_status_does_not_promote_live_tip_imports_to_syncing(self) -> None:
         now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()
         pool_ops.time.time = lambda: now
         pool_ops.NODES = ["node"]
@@ -543,7 +555,6 @@ class NoMinerCollectStatusTests(unittest.TestCase):
             "current_block": 8_658_598,
             "highest_block": 8_658_598,
             "remaining_blocks": 0,
-            "peer_ahead_blocks": 42,
             "source": "nodes",
             "error": "",
             "nodes": {
@@ -553,7 +564,6 @@ class NoMinerCollectStatusTests(unittest.TestCase):
                     "current_block": 8_658_598,
                     "highest_block": 8_658_598,
                     "remaining_blocks": 0,
-                    "peer_ahead_blocks": 42,
                     "source": "node",
                     "error": "",
                     "chain_block_count": 8_658_598,
@@ -576,11 +586,10 @@ class NoMinerCollectStatusTests(unittest.TestCase):
 
         status = pool_ops.collect_status(include_logs=True)
 
-        self.assertEqual(status["overall"], "syncing")
-        self.assertEqual(status["sync_progress"]["status"], "syncing")
-        self.assertEqual(status["sync_progress"]["source"], "nodes:importing")
-        self.assertEqual(status["sync_progress"]["error"], "node importing blocks")
-        self.assertTrue(status["sync_health"]["node_importing"])
+        self.assertEqual(status["overall"], "ok")
+        self.assertEqual(status["sync_progress"]["status"], "synced")
+        self.assertEqual(status["sync_progress"]["remaining_blocks"], 0)
+        self.assertFalse(status["sync_health"]["node_importing"])
         self.assertTrue(status["nodes"]["node"]["importing"])
 
     def test_pool_log_detects_failed_expired_job_reconnect(self) -> None:

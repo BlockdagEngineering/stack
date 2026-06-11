@@ -54,6 +54,19 @@ def safe_canonical_status() -> dict[str, object]:
     }
 
 
+def safe_pool_only_down_status() -> dict[str, object]:
+    status = safe_canonical_status()
+    status.update(
+        {
+            "mode": "mining",
+            "overall": "down",
+            "failures": ["stack-pool-1 is not running"],
+            "stack_failures": ["stack-pool-1 is not running"],
+        }
+    )
+    return status
+
+
 def transient_down_mining_missing_trie_status() -> dict[str, object]:
     return {
         "fresh": True,
@@ -120,6 +133,11 @@ class SingleGateOrchestrationTests(unittest.TestCase):
 
     def test_shared_gate_allows_ready_status_with_canonical_proof(self) -> None:
         decision = pool_start_gate.pool_start_decision(safe_canonical_status())
+
+        self.assertTrue(decision.allowed, decision.reason)
+
+    def test_shared_gate_allows_pool_only_down_status_with_canonical_proof(self) -> None:
+        decision = pool_start_gate.pool_start_decision(safe_pool_only_down_status())
 
         self.assertTrue(decision.allowed, decision.reason)
 

@@ -185,16 +185,40 @@ def _reason_text(status: dict[str, Any]) -> str:
     degraded_reasons = status.get("degraded_reasons")
     blocking_failures = status.get("blocking_failures")
     failures = status.get("failures")
+    stack_failures = status.get("stack_failures")
     pieces: list[str] = [status_reason]
-    for value in (degraded_reasons, blocking_failures, failures):
+    for value in (degraded_reasons, blocking_failures, failures, stack_failures):
         if isinstance(value, list):
             pieces.extend(str(item) for item in value)
     return " ".join(pieces).lower()
 
 
+def _list_items(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return []
+
+
+def _pool_stopped_failure(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    if any(term in lowered for term in POOL_STOPPED_TERMS):
+        return True
+    match = re.fullmatch(r"(.+?)\s+is\s+not\s+running", lowered)
+    return bool(match and is_pool_target(match.group(1)))
+
+
 def _overall_down_is_pool_only(status: dict[str, Any], reason_text: str) -> bool:
     if any(term in reason_text for term in NODE_STATE_BLOCKER_TERMS):
         return False
+    failures = [
+        *_list_items(status.get("failures")),
+        *_list_items(status.get("stack_failures")),
+        *_list_items(status.get("blocking_failures")),
+    ]
+    if failures:
+        return all(_pool_stopped_failure(item) for item in failures)
     if any(term in reason_text for term in POOL_STOPPED_TERMS):
         return True
 
