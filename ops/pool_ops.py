@@ -5647,6 +5647,9 @@ def collect_miner_health(source_job_health: Mapping[str, Any] | None = None) -> 
             (managed or configured_record or current_pool_activity)
             and (current_pool_activity or pool_active or has_recent_shares or has_recent_blocks)
         )
+        if pool_lane_expected and not pool_lane_authorized:
+            pool_active = False
+            work_pool_active = False
         primary_pool_log = configured_record and is_known_primary_pool_log_miner({**registered, "last_workers": workers})
         relevant = managed or configured_record or work_pool_active or has_recent_shares or has_recent_blocks or primary_pool_log
         if not relevant:
