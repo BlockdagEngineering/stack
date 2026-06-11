@@ -45,6 +45,7 @@ class NoMinerCollectStatusTests(unittest.TestCase):
                 "read_miner_registry",
                 "read_neighbor_macs",
                 "save_miner_registry",
+                "collect_miner_health_from_registry",
             )
         }
         self.old_time = pool_ops.time.time
@@ -154,6 +155,35 @@ class NoMinerCollectStatusTests(unittest.TestCase):
 
         self.assertEqual(registry["miners"], [])
         self.assertEqual(calls, [False])
+
+    def test_registry_only_miner_health_preserves_managed_mac_demand(self) -> None:
+        pool_ops.default_miner_pool_settings = lambda: {
+            "pool_url": "stratum+tcp://192.168.1.120:3334",
+            "worker_user": "0x05518e03e148c56e426ff9e1cbdb962b4fc5250a",
+            "pool_password": "1234",
+        }
+        pool_ops.read_miner_registry = lambda **_kwargs: {
+            "updated_at": "2026-06-11T08:00:00+0200",
+            "miners": [
+                {
+                    "ip": "192.168.1.103",
+                    "mac": "28:e2:97:1e:c0:b5",
+                    "device_type": "asic",
+                    "managed": True,
+                    "last_configured_ok": True,
+                    "last_workers": ["0x05518e03e148c56e426ff9e1cbdb962b4fc5250a"],
+                }
+            ],
+        }
+
+        health = pool_ops.collect_miner_health_from_registry("pool_container_not_running")
+
+        self.assertEqual(health["status_source"], "registry_only")
+        self.assertEqual(health["managed_count"], 1)
+        self.assertEqual(health["tracked_count"], 1)
+        self.assertEqual(health["connected_count"], 0)
+        self.assertEqual(health["miners"][0]["identity_key"], "mac:28:e2:97:1e:c0:b5")
+        self.assertEqual(health["miners"][0]["lane_status"], "paused")
 
     def test_no_miner_status_suppresses_template_and_rpc_noise(self) -> None:
         now = datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc).timestamp()

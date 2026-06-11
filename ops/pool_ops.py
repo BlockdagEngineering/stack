@@ -5115,6 +5115,111 @@ def miner_health_count_summary(health: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
+def collect_miner_health_from_registry(reason: str = "pool_container_not_running") -> dict[str, Any]:
+    """Return bounded MAC-identity miner visibility without reading pool logs.
+
+    The status sampler uses this when the pool is intentionally stopped, for
+    example during catch-up pause. Miner demand remains visible via managed MAC
+    rows, but old pool logs and live ASIC HTTP probes stay off the fast safety
+    path.
+    """
+    registry = read_miner_registry_without_lan_hints()
+    defaults = default_miner_pool_settings()
+    health: list[dict[str, Any]] = []
+    for registered in registry.get("miners", []):
+        if not isinstance(registered, dict):
+            continue
+        ip = str(registered.get("ip") or "")
+        if not is_ipv4(ip) or is_docker_bridge_ipv4(ip):
+            continue
+        mac = normalize_mac(registered.get("mac"))
+        device_type = str(registered.get("device_type") or ("asic" if mac else "stratum"))
+        managed = bool(registered.get("managed"))
+        configured = bool(registered.get("configured") or registered.get("last_configured_ok") or managed)
+        if not (managed or configured or mac):
+            continue
+        health.append(
+            {
+                "ip": ip,
+                "mac": mac,
+                "device_id": f"mac:{mac}" if mac else "",
+                "identity_key": f"mac:{mac}" if mac else "",
+                "identity_unresolved": bool(is_lan_ipv4(ip) and not mac and device_type == "asic"),
+                "identity_issue": "asic_mac_unresolved" if is_lan_ipv4(ip) and not mac and device_type == "asic" else "",
+                "display_name": registered.get("display_name") or "",
+                "display_label": miner_display_label({**registered, "mac": mac}),
+                "managed": managed,
+                "device_type": device_type,
+                "discovered_by": registered.get("discovered_by") or "registry",
+                "auto_discovered": bool(registered.get("auto_discovered")),
+                "status": "paused" if managed or configured else "inactive",
+                "configured": configured,
+                "connected": False,
+                "pool_active": False,
+                "work_pool_active": False,
+                "api_error": "",
+                "debug_error": "",
+                "issue": reason,
+                "model": registered.get("model", ""),
+                "hardware": registered.get("hardware", ""),
+                "firmware": registered.get("firmware", ""),
+                "debug": {"available": False},
+                "expected_pool_url": registered.get("expected_pool_url") or defaults["pool_url"],
+                "expected_worker_user": registered.get("expected_worker_user") or defaults["worker_user"],
+                "workers": merge_unique_strings(registered.get("last_workers")),
+                "ports": merge_unique_strings(registered.get("last_ports")),
+                "jobs": int(registered.get("last_jobs_window", 0) or 0),
+                "submits": int(registered.get("last_submits_window", 0) or 0),
+                "shares": int(registered.get("last_shares_window", 0) or 0),
+                "share_work": int(registered.get("last_share_work_window", 0) or 0),
+                "work_percent": "0.00",
+                "relevant_for_work_share": bool(managed or configured),
+                "low_difficulty_flood": False,
+                "share_difficulty": registered.get("last_share_difficulty_window", 0),
+                "blocks_found": int(registered.get("last_blocks_window", 0) or 0),
+                "last_difficulty": registered.get("last_difficulty"),
+                "last_job_at": registered.get("last_job_at"),
+                "last_submit_at": registered.get("last_submit_at"),
+                "last_submit_epoch": registered.get("last_submit_epoch"),
+                "last_submit_age_seconds": None,
+                "last_share_at": registered.get("last_share_at"),
+                "last_share_epoch": registered.get("last_share_epoch"),
+                "last_share_age_seconds": None,
+                "last_block_at": registered.get("last_block_at"),
+                "last_pool_seen_at": registered.get("last_pool_seen_at"),
+                "last_pool_seen_epoch": registered.get("last_pool_seen_epoch"),
+                "last_pool_seen_age_seconds": None,
+                "expected_work_lane": bool(managed or configured),
+                "expected_work_percent": "0.00",
+                "work_ratio_to_expected": None,
+                "lane_status": "paused" if managed or configured else "not-tracked",
+            }
+        )
+    health.sort(
+        key=lambda item: (
+            0 if normalize_mac(item.get("mac")) else 1,
+            normalize_mac(item.get("mac")) or str(item.get("identity_key") or ""),
+            int(ipaddress.ip_address(item["ip"])),
+        )
+    )
+    counts = miner_health_count_summary(health)
+    return {
+        "generated_at": now_iso(),
+        "registry_updated_at": registry.get("updated_at"),
+        "status_source": "registry_only",
+        "source_reason": reason,
+        **counts,
+        "expected_lane_count": sum(1 for item in health if item.get("expected_work_lane")),
+        "expected_lane_percent": "0.00",
+        "imbalanced_lane_count": 0,
+        "work_total": 0,
+        "total_work_includes_all_rows": False,
+        "failures": [],
+        "warnings": [],
+        "miners": health,
+    }
+
+
 def pool_worker_user_matches(actual: Any, expected: Any) -> bool:
     return str(actual or "").lower() == str(expected or "").lower()
 
@@ -6233,7 +6338,12 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     if pool.get("rpc_refused_recent") and not any("bdag child" in item for item in stack_failures):
         add_sync_warning("pool recently saw RPC connection refused")
 
-    miner_health = collect_miner_health() if include_logs else {"failures": [], "warnings": [], "miners": []}
+    if include_logs and running_pool_containers:
+        miner_health = collect_miner_health()
+    elif include_logs:
+        miner_health = collect_miner_health_from_registry("pool_container_not_running")
+    else:
+        miner_health = collect_miner_health_from_registry("logs_disabled")
     scan_connected_miners = safe_int(miner_health.get("connected_count"), 0)
     connected_miners = effective_connected_miner_count(miner_health, pool_metrics, source_job_health)
     miner_health["connected_count_effective"] = connected_miners
