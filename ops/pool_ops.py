@@ -335,9 +335,15 @@ NODE_IRREPARABLE_SYNC_RE = re.compile(
     re.IGNORECASE,
 )
 NODE_MISSING_TRIE_RE = re.compile(r"missing trie node\s+([0-9a-fA-F]+)", re.IGNORECASE)
+NODE_RAWDB_PEBBLE_NOT_FOUND_RE = re.compile(r"\bpebble:\s+not found\b.*\bmodule=RAWDB\b", re.IGNORECASE)
 CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS = env_int(
     "BDAG_CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS",
     3,
+    minimum=1,
+)
+CHAIN_STATE_RAWDB_NOT_FOUND_RESTORE_WARNINGS = env_int(
+    "BDAG_CHAIN_STATE_RAWDB_NOT_FOUND_RESTORE_WARNINGS",
+    20,
     minimum=1,
 )
 CHAIN_STATE_ORPHAN_STORM_RESTORE_PEER_AHEAD_BLOCKS = env_int(
@@ -3403,6 +3409,11 @@ def parse_node_log(log: str) -> dict[str, Any]:
     not_dag_block_lines = [line for line in recent if NODE_NOT_DAG_BLOCK_RE.search(line)]
     irreparable_sync_lines = [line for line in recent if NODE_IRREPARABLE_SYNC_RE.search(line)]
     missing_trie_lines = [line for line in recent if NODE_MISSING_TRIE_RE.search(line)]
+    rawdb_not_found_lines = [line for line in recent if NODE_RAWDB_PEBBLE_NOT_FOUND_RE.search(line)]
+    rawdb_not_found_storm = bool(
+        len(rawdb_not_found_lines) >= CHAIN_STATE_RAWDB_NOT_FOUND_RESTORE_WARNINGS
+        and len(imported_lines) == 0
+    )
     blocker_hash = ""
     for line in reversed(irreparable_sync_lines + not_dag_block_lines):
         match = NODE_IRREPARABLE_SYNC_RE.search(line) or NODE_NOT_DAG_BLOCK_RE.search(line)
@@ -3435,6 +3446,7 @@ def parse_node_log(log: str) -> dict[str, Any]:
         or "Not DAG block:" in line
         or "The dag data was damaged" in line
         or "Can't find tip:" in line
+        or (rawdb_not_found_storm and NODE_RAWDB_PEBBLE_NOT_FOUND_RE.search(line))
         or "fatal" in line.lower()
     ]
     return {
@@ -3460,6 +3472,10 @@ def parse_node_log(log: str) -> dict[str, Any]:
         "chain_state_blocker_lines": (irreparable_sync_lines + not_dag_block_lines)[-5:],
         "missing_trie_node_warnings": len(missing_trie_lines),
         "missing_trie_node_lines": missing_trie_lines[-5:],
+        "rawdb_pebble_not_found_warnings": len(rawdb_not_found_lines),
+        "rawdb_pebble_not_found_storm": rawdb_not_found_storm,
+        "rawdb_pebble_not_found_threshold": CHAIN_STATE_RAWDB_NOT_FOUND_RESTORE_WARNINGS,
+        "rawdb_pebble_not_found_lines": rawdb_not_found_lines[-5:],
         "p2p_error_lines": (invalid_peer_lines + p2p_stream_lines)[-5:],
         "node_graph_sync_count": len(graph_sync_lines),
         "node_graph_sync_churn": graph_sync_churn,
@@ -3498,6 +3514,12 @@ def chain_data_restore_hard_reasons(node: str, info: Mapping[str, Any]) -> list[
         reasons.append(
             f"{node} EVM trie state is unavailable "
             f"({missing_trie_count} missing-trie warning(s))"
+        )
+    rawdb_not_found_count = safe_int(info.get("rawdb_pebble_not_found_warnings"), 0)
+    if info.get("rawdb_pebble_not_found_storm"):
+        reasons.append(
+            f"{node} raw chain database is repeatedly missing Pebble keys "
+            f"({rawdb_not_found_count} RAWDB not-found warning(s)); restore or resync from a verified source"
         )
     return reasons
 
@@ -6252,6 +6274,10 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "chain_state_blocker_lines": parsed["chain_state_blocker_lines"],
             "missing_trie_node_warnings": parsed["missing_trie_node_warnings"],
             "missing_trie_node_lines": parsed["missing_trie_node_lines"],
+            "rawdb_pebble_not_found_warnings": parsed["rawdb_pebble_not_found_warnings"],
+            "rawdb_pebble_not_found_storm": parsed["rawdb_pebble_not_found_storm"],
+            "rawdb_pebble_not_found_threshold": parsed["rawdb_pebble_not_found_threshold"],
+            "rawdb_pebble_not_found_lines": parsed["rawdb_pebble_not_found_lines"],
             "p2p_error_lines": parsed["p2p_error_lines"],
             "node_graph_sync_count": parsed["node_graph_sync_count"],
             "node_graph_sync_churn": parsed["node_graph_sync_churn"],
@@ -6475,6 +6501,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "dag_tip_damage_lines": info.get("dag_tip_damage_lines") or [],
             "missing_trie_node_warnings": info.get("missing_trie_node_warnings") or 0,
             "missing_trie_node_lines": info.get("missing_trie_node_lines") or [],
+            "rawdb_pebble_not_found_warnings": info.get("rawdb_pebble_not_found_warnings") or 0,
+            "rawdb_pebble_not_found_lines": info.get("rawdb_pebble_not_found_lines") or [],
         }
         for node, info in managed_node_details.items()
         if (reasons := chain_data_restore_hard_reasons(node, info))

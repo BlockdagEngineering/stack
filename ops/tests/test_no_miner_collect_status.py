@@ -76,6 +76,22 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertTrue(parsed["critical"])
         self.assertEqual(parsed["missing_trie_node_warnings"], 1)
 
+    def test_node_log_rawdb_pebble_not_found_storm_requires_restore(self) -> None:
+        log = "\n".join(
+            [
+                f"2026-06-11|07:20:{second:02d}.420 [ERROR] pebble: not found                   module=RAWDB"
+                for second in range(pool_ops.CHAIN_STATE_RAWDB_NOT_FOUND_RESTORE_WARNINGS)
+            ]
+        )
+
+        parsed = pool_ops.parse_node_log(log)
+        reasons = pool_ops.chain_data_restore_hard_reasons("node", parsed)
+
+        self.assertTrue(parsed["rawdb_pebble_not_found_storm"])
+        self.assertTrue(parsed["critical"])
+        self.assertFalse(parsed["importing"])
+        self.assertIn("raw chain database", reasons[0])
+
     def test_node_log_marks_busy_syncing_template_block(self) -> None:
         parsed = pool_ops.parse_node_log(
             "\n".join(
