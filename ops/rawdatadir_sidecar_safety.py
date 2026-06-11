@@ -16,6 +16,7 @@ from typing import Any
 
 ROOT = Path(os.environ.get("BDAG_PROJECT_ROOT", Path(__file__).resolve().parents[1])).resolve()
 ENV_FILE = Path(os.environ.get("BDAG_ENV_FILE", ROOT / ".env"))
+STACK_DEFAULTS_FILE = Path(os.environ.get("BDAG_STACK_DEFAULTS_FILE", ROOT / "ops" / "config" / "stack-defaults.env"))
 STATUS_FILE = Path(
     os.environ.get(
         "BDAG_RAWDATADIR_SIDECAR_SAFETY_STATUS",
@@ -47,16 +48,19 @@ LOW_IO_USB_STORAGE_PROFILES = {
 
 
 def load_env() -> dict[str, str]:
-    env = dict(os.environ)
-    if ENV_FILE.exists():
-        for raw in ENV_FILE.read_text(encoding="utf-8").splitlines():
+    env: dict[str, str] = {}
+    for path in (STACK_DEFAULTS_FILE, ENV_FILE):
+        if not path.exists():
+            continue
+        for raw in path.read_text(encoding="utf-8").splitlines():
             line = raw.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)
             key = key.strip()
             value = value.strip().strip('"').strip("'")
-            env.setdefault(key, value)
+            env[key] = value
+    env.update(os.environ)
     return env
 
 
@@ -394,9 +398,9 @@ def build_payload(full: bool) -> dict[str, Any]:
     data_dir = node_data_dir(env, service)
     source_dir = env_path(env, "BDAG_RAWDATADIR_SIDECAR_SOURCE", data_dir / network)
     sidecar_dir = env_path(
-        env, "BDAG_RAWDATADIR_SIDECAR_DIR", ROOT / "data-restore" / "rawdatadir-sidecar" / network
+        env, "BDAG_RAWDATADIR_SIDECAR_DIR", ROOT / "data-restore" / "btrfs-checkpoints" / "rawdatadir-sidecar" / network
     )
-    artifact_base = env_path(env, "BDAG_RAWDATADIR_ARTIFACT_BASE", ROOT / "data-restore" / "rawdatadir")
+    artifact_base = env_path(env, "BDAG_RAWDATADIR_ARTIFACT_BASE", ROOT / "data-restore" / "btrfs-checkpoints" / "rawdatadir-artifacts")
     tmp_dir = env_path(env, "BDAG_RAWDATADIR_TMPDIR", artifact_base / "tmp")
     mode = (env.get("BDAG_RAWDATADIR_SIDECAR_MODE") or "auto").strip().lower()
     storage_profile = (env.get("BDAG_STORAGE_PROFILE") or "").strip().lower()

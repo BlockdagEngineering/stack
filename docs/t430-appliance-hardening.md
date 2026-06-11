@@ -74,6 +74,9 @@ The preflight checks:
 - project/root filesystem free space.
 - chain data filesystem free space, mount point, filesystem type, and mount
   options.
+- trusted IPFS raw checkpoint storage, including the default loop-backed btrfs
+  checkpoint volume, 128 GiB minimum volume size, and sidecar/artifact/open
+  restore paths resolving to btrfs, ZFS, or LVM-backed storage.
 - whether chain data is separated from the project/root filesystem.
 - whether the selected storage profile keeps USB chain writes separated from
   Postgres, dashboard/runtime state, and Docker churn.

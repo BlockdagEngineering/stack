@@ -25,6 +25,7 @@ from typing import Any
 
 ROOT = Path(os.environ.get("BDAG_PROJECT_ROOT") or Path(__file__).resolve().parents[1]).resolve()
 ENV_FILE = Path(os.environ.get("BDAG_ENV_FILE") or ROOT / ".env")
+STACK_DEFAULTS_FILE = Path(os.environ.get("BDAG_STACK_DEFAULTS_FILE") or ROOT / "ops" / "config" / "stack-defaults.env")
 OPS_DIR = ROOT / "ops"
 RESTORE_MODULE_PATH = OPS_DIR / "restore-rawdatadir-segment-artifact.py"
 
@@ -34,8 +35,10 @@ TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 
 def load_env(path: Path = ENV_FILE) -> dict[str, str]:
     env: dict[str, str] = {}
-    if path.exists():
-        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for env_path in (STACK_DEFAULTS_FILE, path):
+        if not env_path.exists():
+            continue
+        for raw in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
             line = raw.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
@@ -141,7 +144,7 @@ def background_maintenance_allowed(env: dict[str, str]) -> dict[str, Any]:
 def artifact_paths(env: dict[str, str]) -> tuple[Path, Path]:
     sidecar_content_base = resolve_path(
         env.get("BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE") or env.get("BDAG_RAWDATADIR_ARTIFACT_BASE"),
-        ROOT / "data-restore/rawdatadir-sidecar-content",
+        ROOT / "data-restore" / "btrfs-checkpoints" / "rawdatadir-sidecar-content",
     )
     artifact_dir = resolve_path(env.get("BDAG_IPFS_CONTENT_ARTIFACT_DIR"), sidecar_content_base / "current")
     manifest = resolve_path(env.get("BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST"), artifact_dir / "manifest.json")

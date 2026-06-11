@@ -19,13 +19,27 @@ env_file_value() {
   grep -E "^${key}=" "$ROOT/.env" 2>/dev/null | tail -n1 | cut -d= -f2- || true
 }
 
+strip_env_quotes() {
+  local value="$1"
+  if [[ ${#value} -ge 2 ]]; then
+    if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+      value="${value:1:${#value}-2}"
+    elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+  fi
+  printf '%s' "$value"
+}
+
 env_value() {
   local key="$1" fallback="${2:-}" value
   value="$(env_file_value "$key")"
   if [[ -z "$value" ]]; then
     value="${!key:-}"
   fi
-  printf '%s\n' "${value:-$fallback}"
+  value="${value:-$fallback}"
+  strip_env_quotes "$value"
+  printf '\n'
 }
 
 ensure_ipfs_segment_identity() {
@@ -110,9 +124,9 @@ install_rawdatadir_sidecar_timers() {
   network="mainnet"
   active_service="$(env_value BDAG_NODE_SERVICE node)"
   source_dir="$(env_value BDAG_NODE_DATA_DIR ./data/node)/$network"
-  sidecar_dir="$(env_value BDAG_RAWDATADIR_SIDECAR_DIR ./data-restore/rawdatadir-sidecar/$network)"
-  artifact_base="$(env_value BDAG_RAWDATADIR_ARTIFACT_BASE ./data-restore/rawdatadir)"
-  sidecar_content_base="$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE ./data-restore/rawdatadir-sidecar-content)"
+  sidecar_dir="$(env_value BDAG_RAWDATADIR_SIDECAR_DIR ./data-restore/btrfs-checkpoints/rawdatadir-sidecar/$network)"
+  artifact_base="$(env_value BDAG_RAWDATADIR_ARTIFACT_BASE ./data-restore/btrfs-checkpoints/rawdatadir-artifacts)"
+  sidecar_content_base="$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE ./data-restore/btrfs-checkpoints/rawdatadir-sidecar-content)"
   ensure_ipfs_segment_identity || return 1
 
   mkdir -p "$user_systemd_dir" "$user_config_dir"
@@ -185,9 +199,9 @@ install_ipfs_content_sidecar_timer() {
 BDAG_PROJECT_ROOT=$ROOT
 BDAG_ENV_FILE=$ROOT/.env
 BDAG_IPFS_CONTENT_SIDECAR_MODE=$mode
-BDAG_RAWDATADIR_ARTIFACT_BASE=$(env_value BDAG_RAWDATADIR_ARTIFACT_BASE ./data-restore/rawdatadir)
-BDAG_IPFS_CONTENT_ARTIFACT_DIR=$(env_value BDAG_IPFS_CONTENT_ARTIFACT_DIR "$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE ./data-restore/rawdatadir-sidecar-content)/current")
-BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST=$(env_value BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST "$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE ./data-restore/rawdatadir-sidecar-content)/current/manifest.json")
+BDAG_RAWDATADIR_ARTIFACT_BASE=$(env_value BDAG_RAWDATADIR_ARTIFACT_BASE ./data-restore/btrfs-checkpoints/rawdatadir-artifacts)
+BDAG_IPFS_CONTENT_ARTIFACT_DIR=$(env_value BDAG_IPFS_CONTENT_ARTIFACT_DIR "$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE ./data-restore/btrfs-checkpoints/rawdatadir-sidecar-content)/current")
+BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST=$(env_value BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST "$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE ./data-restore/btrfs-checkpoints/rawdatadir-sidecar-content)/current/manifest.json")
 BDAG_IPFS_CONTENT_STATUS_FILE=$ROOT/ops/runtime/ipfs-content-sidecar-status.json
 BDAG_IPFS_CONTENT_LATEST_INDEX_PATH=$ROOT/ops/runtime/ipfs-content/latest-index.json
 BDAG_IPFS_CONTENT_DISCOVERY_FILE=$ROOT/ops/ipfs-content-discovery.json

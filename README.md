@@ -435,6 +435,20 @@ chain evidence.
 The archive seed timer is not part of this stack because IPFS segments and
 finalized raw-datadir sidecars own source publication.
 
+Btrfs checkpoint storage is a production install requirement when
+`BDAG_IPFS_STATE_CHECKPOINT_REQUIRED=1`. On ordinary Ubuntu/Lubuntu installs the
+release installer creates a loop-backed btrfs volume, mounted by default at
+`./data-restore/btrfs-checkpoints`, with a 128 GiB minimum size and a root free
+space reserve. Raw sidecar copies, open restore points, sealed raw artifacts,
+and IPFS raw content publication all live under that mount. This keeps recovery
+state on snapshot-capable storage while allowing the active node database to
+stay on its best available chain-data filesystem. Existing native btrfs, ZFS,
+or LVM checkpoint storage can be used by pointing the checkpoint and sidecar
+paths at that volume, but ext4-only sidecar paths are a deployment blocker for
+trusted raw checkpoint recovery. See
+`docs/btrfs-checkpoint-volume.html` for the install-time contract and trust
+boundary.
+
 Check sidecar safety and status with:
 
 ```bash

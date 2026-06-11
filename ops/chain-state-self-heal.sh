@@ -289,21 +289,6 @@ choose_restore_source() {
     RESTORE_SOURCE_USED="$BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_FILE"
     return 0
   fi
-  if [[ "${BDAG_CHAIN_STATE_SELF_HEAL_ALLOW_LOCAL_CANDIDATES:-0}" == "1" ]]; then
-    local candidates=(
-      "$ROOT/data-restore/rawdatadir/current/mainnet"
-      "$ROOT/data-restore/rawdatadir/current"
-      "$ROOT/data-restore/latest/mainnet"
-      "$ROOT/data-restore/latest"
-    )
-    for candidate in "${candidates[@]}"; do
-      if [[ -d "$candidate" ]]; then
-        RESTORE_MODE_USED="source"
-        RESTORE_SOURCE_USED="$candidate"
-        return 0
-      fi
-    done
-  fi
   return 1
 }
 

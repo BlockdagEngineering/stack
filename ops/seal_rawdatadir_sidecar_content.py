@@ -34,6 +34,7 @@ from typing import Any
 
 ROOT = Path(os.environ.get("BDAG_PROJECT_ROOT") or Path(__file__).resolve().parents[1]).resolve()
 ENV_FILE = Path(os.environ.get("BDAG_ENV_FILE") or ROOT / ".env").resolve()
+STACK_DEFAULTS_FILE = Path(os.environ.get("BDAG_STACK_DEFAULTS_FILE") or ROOT / "ops" / "config" / "stack-defaults.env").resolve()
 FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 DEFAULT_CHUNK_SIZE = 64 * 1024 * 1024
@@ -43,8 +44,10 @@ MAINNET_NETWORK = "mainnet"
 
 def load_env(path: Path = ENV_FILE) -> dict[str, str]:
     env: dict[str, str] = {}
-    if path.exists():
-        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for env_path in (STACK_DEFAULTS_FILE, path):
+        if not env_path.exists():
+            continue
+        for raw in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
             line = raw.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
@@ -523,10 +526,13 @@ def write_status(env: dict[str, str], payload: dict[str, Any]) -> None:
 
 def seal_sidecar(env: dict[str, str]) -> dict[str, Any]:
     network = mainnet_network(env)
-    sidecar = resolve_path(env.get("BDAG_RAWDATADIR_SIDECAR_DIR"), ROOT / "data-restore/rawdatadir-sidecar" / network)
+    sidecar = resolve_path(
+        env.get("BDAG_RAWDATADIR_SIDECAR_DIR"),
+        ROOT / "data-restore" / "btrfs-checkpoints" / "rawdatadir-sidecar" / network,
+    )
     artifact_base = resolve_path(
         env.get("BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE"),
-        ROOT / "data-restore/rawdatadir-sidecar-content",
+        ROOT / "data-restore" / "btrfs-checkpoints" / "rawdatadir-sidecar-content",
     )
     chunk_store = resolve_path(env.get("BDAG_RAWDATADIR_SIDECAR_CHUNK_STORE"), artifact_base / "chunk-store")
     keep = env_int(env, "BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP", 2)

@@ -345,6 +345,12 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             installer,
         )
         for config in (env_example, defaults):
+            self.assertIn("BDAG_BTRFS_CHECKPOINT_VOLUME_MODE=auto", config)
+            self.assertIn("BDAG_BTRFS_CHECKPOINT_VOLUME_SIZE_GIB=128", config)
+            self.assertIn("BDAG_BTRFS_CHECKPOINT_VOLUME_MOUNT=./data-restore/btrfs-checkpoints", config)
+            self.assertIn("BDAG_RAWDATADIR_ARTIFACT_BASE=./data-restore/btrfs-checkpoints/rawdatadir-artifacts", config)
+            self.assertIn("BDAG_RAWDATADIR_SIDECAR_DIR=./data-restore/btrfs-checkpoints/rawdatadir-sidecar/mainnet", config)
+            self.assertIn("BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE=./data-restore/btrfs-checkpoints/rawdatadir-sidecar-content", config)
             self.assertIn(
                 "BDAG_BACKGROUND_MAINTENANCE_LAZY_TASKS=dashboard_global_sampler,global_blockchain_scan,global_scan,"
                 "rawdatadir_sidecar,rawdatadir_content_seal,ipfs_content_sidecar,ipfs_segment_writer,"
@@ -470,6 +476,8 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             installer,
         )
         self.assertIn("BDAG_IPFS_SEGMENT_PUBLISH_IPNS=$(env_value BDAG_IPFS_SEGMENT_PUBLISH_IPNS auto)", installer)
+        self.assertIn("configure_btrfs_checkpoint_volume", (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8"))
+        self.assertIn("--warn-only --enforce-blockers", (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8"))
         for timer in (raw_timer, content_timer, segment_timer):
             self.assertIn("OnActiveSec=5m", timer)
             self.assertIn("OnUnitActiveSec=5m", timer)

@@ -24,7 +24,7 @@ class ChainStateSelfHealMainnetOnlyTest(unittest.TestCase):
         self.assertIn("BDAG_CHAIN_STATE_SELF_HEAL_ENABLED=0", stack_defaults)
         self.assertIn("BDAG_CHAIN_STATE_SELF_HEAL_ENABLED=0", env_example)
         self.assertIn("BDAG_CHAIN_STATE_SELF_HEAL_ENABLED=0", portable_env)
-        self.assertIn("BDAG_CHAIN_STATE_SELF_HEAL_ALLOW_LOCAL_CANDIDATES=0", stack_defaults)
+        self.assertNotIn("BDAG_CHAIN_STATE_SELF_HEAL_ALLOW_LOCAL_CANDIDATES", stack_defaults)
 
     def test_self_heal_rejects_sealed_sidecar_artifacts_as_raw_datadirs(self) -> None:
         script = (ROOT / "ops" / "chain-state-self-heal.sh").read_text(encoding="utf-8")

@@ -46,6 +46,35 @@ stack_default() {
   fi
 }
 
+strip_env_quotes() {
+  local value="$1"
+  if [[ ${#value} -ge 2 ]]; then
+    if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+      value="${value:1:${#value}-2}"
+    elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+  fi
+  printf '%s' "$value"
+}
+
+quote_env_assignment_value() {
+  local value needs_quotes=0
+  value="$(strip_env_quotes "$1")"
+  case "$value" in
+    *[[:space:]#]*|*\"*|*\\*|*\$*|*\`*) needs_quotes=1 ;;
+  esac
+  if [[ "$needs_quotes" == "0" ]]; then
+    printf '%s' "$value"
+    return 0
+  fi
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//\$/\\$}"
+  value="${value//\`/\\\`}"
+  printf '"%s"' "$value"
+}
+
 INSTANCE="bdag"
 BIND="${BDAG_DASHBOARD_BIND:-127.0.0.1}"
 PORT="${BDAG_DASHBOARD_PORT:-8088}"
@@ -129,11 +158,13 @@ fi
 mkdir -p "$RUNTIME_DIR/logs" "$(dirname "$ENV_FILE")" "$HOME/.config/systemd/user" "$HOME/.config/autostart" "$HOME/.local/bin"
 
 set_env_value() {
-  local file="$1" key="$2" value="$3"
+  local file="$1" key="$2" value="$3" rendered escaped
+  rendered="$(quote_env_assignment_value "$value")"
+  escaped="$(printf '%s' "$rendered" | sed -e 's/[&|]/\\&/g')"
   if grep -q "^${key}=" "$file"; then
-    sed -i "s|^${key}=.*|${key}=${value}|" "$file"
+    sed -i "s|^${key}=.*|${key}=${escaped}|" "$file"
   else
-    printf '%s=%s\n' "$key" "$value" >> "$file"
+    printf '%s=%s\n' "$key" "$rendered" >> "$file"
   fi
 }
 
@@ -200,7 +231,6 @@ BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_ENABLED=$(stack_default BDAG_CHAIN_STATE
 BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_SECONDS=$(stack_default BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_SECONDS)
 BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_PEER_AHEAD_BLOCKS=$(stack_default BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_PEER_AHEAD_BLOCKS)
 BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_GAP_GROWTH_BLOCKS=$(stack_default BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_GAP_GROWTH_BLOCKS)
-BDAG_CHAIN_STATE_SELF_HEAL_ALLOW_LOCAL_CANDIDATES=$(stack_default BDAG_CHAIN_STATE_SELF_HEAL_ALLOW_LOCAL_CANDIDATES)
 BDAG_SHARED_STATUS_CACHE_ENABLED=$(stack_default BDAG_SHARED_STATUS_CACHE_ENABLED)
 BDAG_SHARED_STATUS_CACHE_SECONDS=$(stack_default BDAG_SHARED_STATUS_CACHE_SECONDS)
 BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=$(stack_default BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS)
@@ -278,15 +308,17 @@ EOF
 fi
 
 ensure_env_value() {
-  local key="$1" value="$2"
+  local key="$1" value="$2" rendered
+  rendered="$(quote_env_assignment_value "$value")"
   if ! grep -q "^${key}=" "$ENV_FILE"; then
-    printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+    printf '%s=%s\n' "$key" "$rendered" >> "$ENV_FILE"
   fi
 }
 
 ensure_env_value_if_empty() {
   local key="$1" value="$2" current escaped
   [[ -n "$value" ]] || return 0
+  value="$(quote_env_assignment_value "$value")"
   if grep -q "^${key}=" "$ENV_FILE"; then
     current="$(grep "^${key}=" "$ENV_FILE" | tail -n 1 | cut -d= -f2-)"
     if [[ -z "$current" ]]; then
@@ -340,16 +372,25 @@ ensure_stack_default_env_value POOL_ASIC_MAC_OVERRIDES
 ensure_env_value BDAG_NODE_RPC_URL "http://127.0.0.1:38131"
 ensure_env_value BDAG_GLOBAL_CHAIN_RPC_URLS "node=http://127.0.0.1:38131"
 ensure_env_value BDAG_ENABLE_NODE_MINING 0
+ensure_stack_default_env_value BDAG_BTRFS_CHECKPOINT_VOLUME_MODE
+ensure_stack_default_env_value BDAG_BTRFS_CHECKPOINT_VOLUME_SIZE_GIB
+ensure_stack_default_env_value BDAG_BTRFS_CHECKPOINT_VOLUME_MIN_ROOT_FREE_GIB
+ensure_stack_default_env_value BDAG_BTRFS_CHECKPOINT_VOLUME_IMAGE
+ensure_stack_default_env_value BDAG_BTRFS_CHECKPOINT_VOLUME_MOUNT
+ensure_stack_default_env_value BDAG_BTRFS_CHECKPOINT_VOLUME_LABEL
+ensure_stack_default_env_value BDAG_BTRFS_CHECKPOINT_VOLUME_OPTIONS
 ensure_stack_default_env_value BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED
 ensure_stack_default_env_value BDAG_CHAIN_PEERSTORE_LOG_TAIL
 ensure_stack_default_env_value BDAG_NODE_PEER_LIMIT
 ensure_stack_default_env_value BDAG_NODE_PEER_STABLE_PORTS
-ensure_env_value BDAG_RAWDATADIR_ARTIFACT_BASE "$PROJECT_ROOT/data-restore/rawdatadir"
+ensure_stack_default_env_value BDAG_RAWDATADIR_ARTIFACT_BASE
+ensure_stack_default_env_value BDAG_RAWDATADIR_SIDECAR_DIR
 ensure_stack_default_env_value BDAG_RAWDATADIR_SIDECAR_MODE
 ensure_stack_default_env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE
-ensure_env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE "$PROJECT_ROOT/data-restore/rawdatadir-sidecar-content"
+ensure_stack_default_env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE
 ensure_stack_default_env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP
 ensure_stack_default_env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED
+ensure_stack_default_env_value BDAG_RAWDATADIR_OPEN_SIDECAR_BASE
 ensure_stack_default_env_value BDAG_RAWDATADIR_FINALIZE
 ensure_env_value BDAG_RAWDATADIR_PEERS ""
 ensure_env_value BDAG_RAWDATADIR_TRUSTED_SIGNERS ""
@@ -359,8 +400,8 @@ ensure_stack_default_env_value BDAG_RAWDATADIR_CHAIN_ANCHOR_REFERENCE_EVM_URL
 ensure_stack_default_env_value BDAG_RAWDATADIR_CHAIN_ANCHOR_TIMEOUT
 ensure_stack_default_env_value BDAG_RAWDATADIR_CHAIN_ANCHOR_FINALITY_BLOCKS
 ensure_stack_default_env_value BDAG_IPFS_CONTENT_SIDECAR_MODE
-ensure_env_value BDAG_IPFS_CONTENT_ARTIFACT_DIR "$PROJECT_ROOT/data-restore/rawdatadir-sidecar-content/current"
-ensure_env_value BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST "$PROJECT_ROOT/data-restore/rawdatadir-sidecar-content/current/manifest.json"
+ensure_stack_default_env_value BDAG_IPFS_CONTENT_ARTIFACT_DIR
+ensure_stack_default_env_value BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST
 ensure_stack_default_env_value BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT
 ensure_stack_default_env_value BDAG_IPFS_CONTENT_PUBLISH_IPNS
 ensure_env_value BDAG_IPFS_CONTENT_IPNS_KEY ""
@@ -435,7 +476,6 @@ ensure_stack_default_env_value BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_ENABLED
 ensure_stack_default_env_value BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_SECONDS
 ensure_stack_default_env_value BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_PEER_AHEAD_BLOCKS
 ensure_stack_default_env_value BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_GAP_GROWTH_BLOCKS
-ensure_stack_default_env_value BDAG_CHAIN_STATE_SELF_HEAL_ALLOW_LOCAL_CANDIDATES
 ensure_stack_default_env_value BDAG_SHARED_STATUS_CACHE_ENABLED
 ensure_stack_default_env_value BDAG_SHARED_STATUS_CACHE_SECONDS
 ensure_stack_default_env_value BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS
