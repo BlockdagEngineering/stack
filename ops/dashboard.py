@@ -21,6 +21,7 @@ from incident_journal import read_recent_incidents
 from pool_ops import (
     EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS,
     GLOBAL_CACHE_FILE,
+    GLOBAL_CACHE_TTL_SECONDS,
     GLOBAL_HISTORY_LIMIT,
     GLOBAL_STATS_SOURCE_TRUTH,
     PROJECT_ROOT,
@@ -475,13 +476,22 @@ def start_global_sampler() -> None:
 def collect_global_dashboard_payload(reason: str) -> dict[str, object]:
     cached = read_json(GLOBAL_CACHE_FILE, {})
     if isinstance(cached, dict) and cached:
+        updated_epoch = safe_float(cached.get("updated_at_epoch"), None)
+        cache_age = max(0, round(time.time() - updated_epoch, 1)) if updated_epoch is not None else None
+        if cache_age is None or cache_age > GLOBAL_CACHE_TTL_SECONDS:
+            payload = collect_global_blockchain()
+            if "history" not in payload:
+                payload["history"] = read_valid_global_history(limit=GLOBAL_HISTORY_LIMIT)
+            cache_meta = dict(payload.get("cache") or {}) if isinstance(payload.get("cache"), dict) else {}
+            cache_meta["previous_age_seconds"] = cache_age
+            cache_meta["served_by"] = "dashboard-refresh-stale-cache"
+            payload["cache"] = cache_meta
+            return payload
         payload: dict[str, object] = dict(cached)
         payload["history"] = read_valid_global_history(limit=GLOBAL_HISTORY_LIMIT)
         payload = refresh_global_chain_head(payload)
         cache_meta = dict(payload.get("cache") or {}) if isinstance(payload.get("cache"), dict) else {}
-        updated_epoch = safe_float(payload.get("updated_at_epoch"), None)
-        if updated_epoch is not None:
-            cache_meta["age_seconds"] = max(0, round(time.time() - updated_epoch, 1))
+        cache_meta["age_seconds"] = cache_age
         cache_meta["hit"] = True
         cache_meta["served_by"] = "dashboard-cache-live-head"
         payload["cache"] = cache_meta

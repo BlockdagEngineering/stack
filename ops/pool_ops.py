@@ -412,6 +412,9 @@ GLOBAL_CACHE_FILE = RUNTIME_DIR / "global-cache.json"
 GLOBAL_HISTORY_FILE = RUNTIME_DIR / "global-history.jsonl"
 GLOBAL_HISTORY_STATE_FILE = RUNTIME_DIR / "global-history-state.json"
 GLOBAL_POOL_LABEL_FILE = RUNTIME_DIR / "global-pool-labels.json"
+LIVE_PEERS_FILE = RUNTIME_DIR / "live-peers-current.txt"
+CHAIN_PEERSTORE_CANDIDATES_FILE = RUNTIME_DIR / "chain-peerstore-candidates.txt"
+PEER_DISCOVERY_FILE = RUNTIME_DIR / "peer-discovery-current.json"
 SYNC_COORDINATOR_STATE_FILE = RUNTIME_DIR / "sync-coordinator-state.json"
 HOST_PRESSURE_STATE_FILE = RUNTIME_DIR / "host-pressure-state.json"
 PEER_GEO_CACHE_FILE = RUNTIME_DIR / "peer-geo-cache.json"
@@ -445,6 +448,14 @@ GLOBAL_CACHE_SCHEMA_VERSION = 2
 GLOBAL_STATS_SOURCE_TRUTH = "chain-rpc:getBlockCount/getBlockByOrder/getBlockHeader/getCoinbaseAddress"
 GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS = env_int("BDAG_GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS", 30, minimum=0)
 GLOBAL_EVM_FALLBACK_ENABLED = env_bool("BDAG_GLOBAL_EVM_FALLBACK_ENABLED", False)
+GLOBAL_CHAIN_PEER_RPC_ENABLED = env_bool("BDAG_GLOBAL_CHAIN_PEER_RPC_ENABLED", True)
+GLOBAL_CHAIN_PEER_RPC_LIMIT = env_int("BDAG_GLOBAL_CHAIN_PEER_RPC_LIMIT", 4, minimum=0)
+GLOBAL_CHAIN_PEER_RPC_PORT = env_int(
+    "BDAG_GLOBAL_CHAIN_PEER_RPC_PORT",
+    env_int("BDAG_NODE_MINING_RPC_PORT", 38131, minimum=1),
+    minimum=1,
+)
+GLOBAL_CHAIN_PEER_RPC_TIMEOUT = env_float("BDAG_GLOBAL_CHAIN_PEER_RPC_TIMEOUT", 1.0, minimum=0.25)
 NODE_EVM_RPC_PORT = int(os.environ.get("BDAG_NODE_EVM_RPC_PORT", "18545"))
 EVM_SYNC_LAG_THRESHOLD_BLOCKS = env_int("BDAG_EVM_SYNC_LAG_THRESHOLD_BLOCKS", 1000, minimum=0)
 EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS = env_int("BDAG_EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS", 3, minimum=1)
@@ -8256,9 +8267,11 @@ def global_chain_rpc_urls() -> list[tuple[str, str]]:
         normalized = _host_url_for_dashboard(url.strip())
         if valid_url(normalized):
             urls.append((source.strip() or "configured-chain", normalized))
-    if urls:
-        return urls
-    return mining_rpc_urls()
+    if not urls:
+        urls.extend(mining_rpc_urls())
+    if GLOBAL_CHAIN_PEER_RPC_ENABLED:
+        urls.extend(peer_chain_rpc_urls())
+    return _dedupe_rpc_urls(urls)
 
 
 def _dedupe_rpc_urls(sources: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -8271,6 +8284,72 @@ def _dedupe_rpc_urls(sources: list[tuple[str, str]]) -> list[tuple[str, str]]:
         seen.add(normalized)
         deduped.append((source.strip() or f"rpc-{len(deduped) + 1}", normalized))
     return deduped
+
+
+PEER_MULTIADDR_HOST_RE = re.compile(r"/(?:ip4|dns|dns4)/([^/]+)/tcp/[0-9]+")
+
+
+def peer_host_from_multiaddr(value: str) -> str:
+    match = PEER_MULTIADDR_HOST_RE.search(value.strip())
+    return match.group(1).strip() if match else ""
+
+
+def peer_chain_rpc_urls(limit: int | None = None) -> list[tuple[str, str]]:
+    peer_limit = GLOBAL_CHAIN_PEER_RPC_LIMIT if limit is None else max(0, limit)
+    if peer_limit <= 0:
+        return []
+
+    hosts: list[tuple[str, str]] = []
+    seen_hosts: set[str] = set()
+
+    def add_host(host: object, source: str) -> None:
+        text = str(host or "").strip()
+        if not text or text in seen_hosts or any(ch in text for ch in "/?#[]"):
+            return
+        if any(ord(ch) < 32 or ch.isspace() for ch in text):
+            return
+        seen_hosts.add(text)
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", text).strip("-")[:48] or f"peer-{len(hosts) + 1}"
+        hosts.append((f"{source}-{safe}", text))
+
+    discovery = read_json_file(PEER_DISCOVERY_FILE, {})
+    if isinstance(discovery, Mapping):
+        peers = discovery.get("peers")
+        if isinstance(peers, list):
+            for peer in peers:
+                if not isinstance(peer, Mapping):
+                    continue
+                status = str(peer.get("status") or "").strip().lower()
+                if status and status != "tcp-open":
+                    continue
+                add_host(peer.get("host"), "live-peer")
+
+    for path, source in (
+        (LIVE_PEERS_FILE, "live-peer"),
+        (CHAIN_PEERSTORE_CANDIDATES_FILE, "peerstore-peer"),
+    ):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            host = peer_host_from_multiaddr(line)
+            if host:
+                add_host(host, source)
+            if len(hosts) >= peer_limit:
+                break
+        if len(hosts) >= peer_limit:
+            break
+
+    return _dedupe_rpc_urls(
+        [(source, f"http://{host}:{GLOBAL_CHAIN_PEER_RPC_PORT}") for source, host in hosts[:peer_limit]]
+    )
+
+
+def chain_rpc_timeout_for_source(source_name: str, default: float) -> float:
+    if source_name.startswith(("live-peer-", "peerstore-peer-")):
+        return min(default, GLOBAL_CHAIN_PEER_RPC_TIMEOUT)
+    return default
 
 
 def public_evm_rpc_urls() -> list[tuple[str, str]]:
@@ -9380,7 +9459,9 @@ def probe_global_chain_block_count() -> tuple[int | None, str, str, list[str]]:
     candidates: list[tuple[int, str, str]] = []
     for source_name, source_url in global_chain_rpc_urls() or [("local-chain", f"http://127.0.0.1:{NODE_MINING_RPC_PORT}")]:
         try:
-            block_count = parse_rpc_quantity(mining_rpc_call(source_url, "getBlockCount", [], timeout=8.0))
+            block_count = parse_rpc_quantity(
+                mining_rpc_call(source_url, "getBlockCount", [], timeout=chain_rpc_timeout_for_source(source_name, 8.0))
+            )
             if block_count > 0:
                 candidates.append((block_count, source_name, source_url))
         except Exception as exc:  # noqa: BLE001
@@ -9445,11 +9526,15 @@ def probe_global_display_block_height() -> tuple[int | None, str, dict[str, Any]
     rpc_sources = global_chain_rpc_urls() or [("local-chain", f"http://127.0.0.1:{NODE_MINING_RPC_PORT}")]
     for source_name, source_url in rpc_sources:
         try:
+            timeout = chain_rpc_timeout_for_source(
+                source_name,
+                min(5.0, max(1.0, NODE_CHAIN_RPC_TIMEOUT)),
+            )
             template = mining_rpc_call(
                 source_url,
                 "getBlockTemplate",
                 mining_template_params(),
-                timeout=min(5.0, max(1.0, NODE_CHAIN_RPC_TIMEOUT)),
+                timeout=timeout,
             )
             if not isinstance(template, dict):
                 raise RuntimeError(f"getBlockTemplate returned {template!r}")
@@ -9471,7 +9556,9 @@ def probe_global_display_block_height() -> tuple[int | None, str, dict[str, Any]
 
     for source_name, source_url in rpc_sources:
         try:
-            height = parse_rpc_quantity(mining_rpc_call(source_url, "getMainChainHeight", [], timeout=4.0))
+            height = parse_rpc_quantity(
+                mining_rpc_call(source_url, "getMainChainHeight", [], timeout=chain_rpc_timeout_for_source(source_name, 4.0))
+            )
             if height > 0:
                 candidates.append((
                     height,
@@ -11023,6 +11110,8 @@ def global_scan_tip_count(payload: Mapping[str, Any]) -> int | None:
 
 def refresh_global_chain_head(payload: dict[str, Any]) -> dict[str, Any]:
     """Add a live displayed block height without changing scan-window data."""
+    is_evm_fallback = str(payload.get("source_contract") or "") == "evm-rpc-fallback-v1"
+    evm_latest_block = safe_int(payload.get("evm_latest_block"), safe_int(payload.get("scan_end_block"), None))
     try:
         block_count, source_name, _source_url, errors = probe_global_chain_block_count()
     except Exception as exc:  # noqa: BLE001 - live tip freshness is best-effort.
@@ -11038,7 +11127,7 @@ def refresh_global_chain_head(payload: dict[str, Any]) -> dict[str, Any]:
         display_metadata = {}
         errors.append(str(exc))
 
-    if block_count is None and display_height is None:
+    if block_count is None and display_height is None and not (is_evm_fallback and evm_latest_block is not None):
         if errors:
             existing_errors = list(payload.get("head_probe_errors") or [])
             payload["head_probe_errors"] = [*existing_errors, *errors][:20]
@@ -11052,9 +11141,26 @@ def refresh_global_chain_head(payload: dict[str, Any]) -> dict[str, Any]:
             payload["scan_end_block"] = scanned_tip
             scanned_tip_count = max(0, scanned_tip)
     if block_count is not None:
-        payload["chain_block_count"] = block_count
-        payload["chain_block_count_source"] = source_name or "getBlockCount"
-    if display_height is None:
+        if is_evm_fallback:
+            payload["native_chain_block_count"] = block_count
+            payload["native_chain_block_count_source"] = source_name or "getBlockCount"
+        else:
+            payload["chain_block_count"] = block_count
+            payload["chain_block_count_source"] = source_name or "getBlockCount"
+    if is_evm_fallback and evm_latest_block is not None:
+        if display_height is not None:
+            payload["native_display_latest_block"] = display_height
+            payload["native_display_latest_block_source"] = display_source or "live-height"
+            payload["native_display_latest_block_metadata"] = display_metadata
+        display_height = evm_latest_block
+        display_source = str(payload.get("rpc_source") or "evm-rpc-fallback")
+        display_metadata = {
+            "fallback_height_domain": "evm-json-rpc",
+            "native_display_latest_block": payload.get("native_display_latest_block"),
+        }
+        payload["chain_block_count"] = evm_latest_block
+        payload["chain_block_count_source"] = "evm-rpc-fallback"
+    elif display_height is None:
         display_height = block_count
         display_source = source_name or "getBlockCount"
         display_metadata = {"fallback": "getBlockCount"}
@@ -11062,7 +11168,8 @@ def refresh_global_chain_head(payload: dict[str, Any]) -> dict[str, Any]:
     payload["display_latest_block"] = display_height
     payload["chain_latest_block_source"] = display_source or "live-height"
     payload["chain_latest_block_updated_at"] = now_iso()
-    payload["chain_tip_lag_blocks"] = max(0, block_count - (scanned_tip_count or 0)) if block_count is not None else 0
+    lag_tip_count = evm_latest_block if is_evm_fallback else block_count
+    payload["chain_tip_lag_blocks"] = max(0, lag_tip_count - (scanned_tip_count or 0)) if lag_tip_count is not None else 0
     payload["latest_block"] = display_height
     payload["display_latest_block_metadata"] = display_metadata
     return payload
@@ -11473,7 +11580,7 @@ def collect_global_blockchain() -> dict[str, Any]:
             )
         local_pool_clusters = collect_local_pool_global_clusters(window_seconds, total_blocks, scan_window_hours, {})
         display_clusters = merge_global_local_pool_clusters(enriched_clusters, local_pool_clusters)
-        latest_block = chain_block_count if chain_block_count is not None else evm_latest_block
+        latest_block = evm_latest_block
         payload: dict[str, Any] = {
             "status": "degraded",
             "source": "on-chain-evm-fallback",
@@ -11485,9 +11592,10 @@ def collect_global_blockchain() -> dict[str, Any]:
             "updated_at": now_iso(),
             "updated_at_epoch": seconds_since_epoch(),
             "rpc_source": rpc_name,
-            "chain_block_count": chain_block_count,
+            "chain_block_count": evm_latest_block,
+            "native_chain_block_count": chain_block_count,
             "latest_block": latest_block,
-            "latest_order": max(0, latest_block - 1),
+            "latest_order": evm_latest_block,
             "evm_latest_block": evm_latest_block,
             "requested_blocks": requested_count,
             "fetched_blocks": total_blocks,
@@ -11529,6 +11637,10 @@ def collect_global_blockchain() -> dict[str, Any]:
         fetch_errors = list(errors or [])
         if invalid_cache_error:
             fetch_errors.insert(0, invalid_cache_error)
+        if GLOBAL_EVM_FALLBACK_ENABLED and maintenance_decision is None:
+            fallback = evm_fallback_global(error, fetch_errors, history, chain_block_count)
+            if fallback is not None:
+                return refresh_global_chain_head(fallback)
         if cached_valid:
             cache_meta = dict(cached.get("cache") or {}) if isinstance(cached.get("cache"), dict) else {}
             cache_meta.update(
@@ -11555,10 +11667,6 @@ def collect_global_blockchain() -> dict[str, Any]:
             head = lightweight_global_head(error, errors or [], history, maintenance_decision)
             if head is not None:
                 return refresh_global_chain_head(head)
-        if GLOBAL_EVM_FALLBACK_ENABLED:
-            fallback = evm_fallback_global(error, fetch_errors, history, chain_block_count)
-            if fallback is not None:
-                return refresh_global_chain_head(fallback)
         return refresh_global_chain_head(
             {
                 "status": "failed",
@@ -11638,7 +11746,9 @@ def collect_global_blockchain() -> dict[str, Any]:
     candidates: list[tuple[int, str, str]] = []
     for source_name, source_url in rpc_sources:
         try:
-            block_count = parse_rpc_quantity(mining_rpc_call(source_url, "getBlockCount", [], timeout=8.0))
+            block_count = parse_rpc_quantity(
+                mining_rpc_call(source_url, "getBlockCount", [], timeout=chain_rpc_timeout_for_source(source_name, 8.0))
+            )
             if block_count > 0:
                 candidates.append((block_count, source_name, source_url))
         except Exception as exc:  # noqa: BLE001
@@ -11648,50 +11758,102 @@ def collect_global_blockchain() -> dict[str, Any]:
     if latest_block_count is None:
         return stale_or_failed("unable to fetch latest global block height from chain RPC getBlockCount", latest_errors)
 
-    rpc_name = candidates[0][1]
-    rpc_url = candidates[0][2]
-    try:
-        latest_order, latest_order_method = fetch_chain_order_tip(rpc_url, timeout=GLOBAL_CHAIN_ORDER_RPC_TIMEOUT)
-    except Exception as exc:  # noqa: BLE001
+    order_probe_errors: list[str] = []
+    selected_source: tuple[int, str, str, int, str, int, int, int, dict[str, Any]] | None = None
+    for candidate_block_count, candidate_name, candidate_url in candidates:
+        try:
+            candidate_order, candidate_order_method = fetch_chain_order_tip(
+                candidate_url,
+                timeout=chain_rpc_timeout_for_source(candidate_name, GLOBAL_CHAIN_ORDER_RPC_TIMEOUT),
+            )
+        except Exception as exc:  # noqa: BLE001
+            order_probe_errors.append(f"{candidate_name}: {exc}")
+            continue
+        candidate_requested_count = min(max(GLOBAL_BLOCK_WINDOW, 1), candidate_order + 1)
+        candidate_start_order = max(0, candidate_order - candidate_requested_count + 1)
+        candidate_preflight_order = candidate_order
+        try:
+            candidate_preflight_header = fetch_chain_order_header(
+                candidate_url,
+                candidate_name,
+                candidate_preflight_order,
+                timeout=chain_rpc_timeout_for_source(candidate_name, GLOBAL_CHAIN_ORDER_RPC_TIMEOUT),
+            )
+        except Exception as exc:  # noqa: BLE001
+            if candidate_order > 0 and "Order is too big" in str(exc):
+                candidate_order -= 1
+                candidate_requested_count = min(max(GLOBAL_BLOCK_WINDOW, 1), candidate_order + 1)
+                candidate_start_order = max(0, candidate_order - candidate_requested_count + 1)
+                candidate_preflight_order = candidate_order
+                try:
+                    candidate_preflight_header = fetch_chain_order_header(
+                        candidate_url,
+                        candidate_name,
+                        candidate_preflight_order,
+                        timeout=chain_rpc_timeout_for_source(candidate_name, GLOBAL_CHAIN_ORDER_RPC_TIMEOUT),
+                    )
+                except Exception as retry_exc:  # noqa: BLE001
+                    order_probe_errors.append(f"{candidate_name}: {candidate_preflight_order}: {retry_exc}")
+                    continue
+            else:
+                order_probe_errors.append(f"{candidate_name}: {candidate_preflight_order}: {exc}")
+                continue
+        selected_source = (
+            candidate_block_count,
+            candidate_name,
+            candidate_url,
+            candidate_order,
+            candidate_order_method,
+            candidate_requested_count,
+            candidate_start_order,
+            candidate_preflight_order,
+            candidate_preflight_header,
+        )
+        break
+
+    if selected_source is None:
         return stale_or_failed(
             "unable to resolve latest global chain order from chain RPC",
-            latest_errors + [str(exc)],
+            latest_errors + order_probe_errors,
             chain_block_count=latest_block_count,
         )
-    requested_count = min(max(GLOBAL_BLOCK_WINDOW, 1), latest_order + 1)
-    start_order = max(0, latest_order - requested_count + 1)
-    preflight_order = latest_order
-    try:
-        preflight_header = fetch_chain_order_header(rpc_url, rpc_name, preflight_order, timeout=GLOBAL_CHAIN_ORDER_RPC_TIMEOUT)
-    except Exception as exc:  # noqa: BLE001
-        if latest_order > 0 and "Order is too big" in str(exc):
-            latest_order -= 1
-            requested_count = min(max(GLOBAL_BLOCK_WINDOW, 1), latest_order + 1)
-            start_order = max(0, latest_order - requested_count + 1)
-            preflight_order = latest_order
-            try:
-                preflight_header = fetch_chain_order_header(rpc_url, rpc_name, preflight_order, timeout=GLOBAL_CHAIN_ORDER_RPC_TIMEOUT)
-            except Exception as retry_exc:  # noqa: BLE001
-                return stale_or_failed(
-                    "unable to fetch chain block by order",
-                    latest_errors + [f"{preflight_order}: {retry_exc}"],
-                    chain_block_count=latest_block_count,
-                )
-        else:
-            return stale_or_failed(
-                "unable to fetch chain block by order",
-                latest_errors + [f"{preflight_order}: {exc}"],
-                chain_block_count=latest_block_count,
-            )
+    latest_errors.extend(order_probe_errors)
+    (
+        selected_block_count,
+        rpc_name,
+        rpc_url,
+        latest_order,
+        latest_order_method,
+        requested_count,
+        start_order,
+        preflight_order,
+        preflight_header,
+    ) = selected_source
     headers: list[dict[str, Any]] = [preflight_header]
     preflight_orders = {preflight_order}
+    primary_sources = [(rpc_name, rpc_url), *[(name, url) for _, name, url in candidates if url != rpc_url]]
+
+    def fetch_order_from_sources(order: int, timeout: float) -> dict[str, Any]:
+        source_errors: list[str] = []
+        for source_name, source_url in primary_sources:
+            try:
+                return fetch_chain_order_header(
+                    source_url,
+                    source_name,
+                    order,
+                    timeout=chain_rpc_timeout_for_source(source_name, timeout),
+                )
+            except Exception as exc:  # noqa: BLE001
+                source_errors.append(f"{source_name}: {exc}")
+        raise RuntimeError("; ".join(source_errors) or f"failed to fetch chain block order {order}")
+
     if requested_count >= GLOBAL_CHAIN_PREFLIGHT_SAMPLE_MIN_BLOCKS:
         sample_offsets = (1, 2, 4, 8)
         for sample_order in sorted({latest_order - offset for offset in sample_offsets if latest_order - offset >= start_order}, reverse=True):
             if sample_order in preflight_orders:
                 continue
             try:
-                headers.append(fetch_chain_order_header(rpc_url, rpc_name, sample_order, timeout=GLOBAL_CHAIN_ORDER_RPC_TIMEOUT))
+                headers.append(fetch_order_from_sources(sample_order, timeout=GLOBAL_CHAIN_ORDER_RPC_TIMEOUT))
                 preflight_orders.add(sample_order)
             except Exception as exc:  # noqa: BLE001
                 return stale_or_failed(
@@ -11701,16 +11863,9 @@ def collect_global_blockchain() -> dict[str, Any]:
                 )
     requested_orders = list(range(start_order, latest_order + 1))
     requested_orders = [order for order in requested_orders if order not in preflight_orders]
-    primary_sources = [(rpc_name, rpc_url), *[(name, url) for _, name, url in candidates if url != rpc_url]]
 
     def load_block(order: int) -> dict[str, Any]:
-        last_error: Exception | None = None
-        for source_name, source_url in primary_sources:
-            try:
-                return fetch_chain_order_header(source_url, source_name, order, timeout=GLOBAL_CHAIN_BLOCK_RPC_TIMEOUT)
-            except Exception as exc:  # noqa: BLE001
-                last_error = exc
-        raise RuntimeError(str(last_error or f"failed to fetch chain block order {order}"))
+        return fetch_order_from_sources(order, timeout=GLOBAL_CHAIN_BLOCK_RPC_TIMEOUT)
 
     fetch_errors: list[str] = []
     global_pressure = {
@@ -11880,6 +12035,7 @@ def collect_global_blockchain() -> dict[str, Any]:
         "updated_at": now_iso(),
         "updated_at_epoch": seconds_since_epoch(),
         "rpc_source": rpc_name,
+        "selected_chain_block_count": selected_block_count,
         "chain_block_count": latest_block_count,
         "latest_block": latest_block_count,
         "latest_order": latest_order,
@@ -11909,6 +12065,7 @@ def collect_global_blockchain() -> dict[str, Any]:
         "peer_location": peer_location,
         "fetch_errors": fetch_errors[:20],
         "rpc_probe_errors": latest_errors[:20],
+        "rpc_order_probe_errors": order_probe_errors[:20],
         "zero_address_blocks": zero_address_blocks,
         "attributed_blocks": max(0, requested_count - zero_address_blocks - unknown_blocks),
         "unattributed_reward_bdag": decimal_to_str(zero_address_reward_bdag, places=2),

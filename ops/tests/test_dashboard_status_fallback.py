@@ -21,7 +21,13 @@ class DashboardStatusFallbackTests(unittest.TestCase):
             "SAMPLER_CACHE_SECONDS": dashboard.SAMPLER_CACHE_SECONDS,
             "DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS": dashboard.DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS,
             "SYNC_ESTIMATE_STATE_FILE": dashboard.SYNC_ESTIMATE_STATE_FILE,
+            "GLOBAL_CACHE_FILE": dashboard.GLOBAL_CACHE_FILE,
+            "GLOBAL_CACHE_TTL_SECONDS": dashboard.GLOBAL_CACHE_TTL_SECONDS,
             "collect_status_cached": dashboard.collect_status_cached,
+            "collect_global_blockchain": dashboard.collect_global_blockchain,
+            "read_valid_global_history": dashboard.read_valid_global_history,
+            "refresh_global_chain_head": dashboard.refresh_global_chain_head,
+            "trigger_global_refresh": dashboard.trigger_global_refresh,
             "time_time": dashboard.time.time,
         }
         self.addCleanup(self.restore_globals)
@@ -33,7 +39,13 @@ class DashboardStatusFallbackTests(unittest.TestCase):
         dashboard.SAMPLER_CACHE_SECONDS = self.originals["SAMPLER_CACHE_SECONDS"]
         dashboard.DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS = self.originals["DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS"]
         dashboard.SYNC_ESTIMATE_STATE_FILE = self.originals["SYNC_ESTIMATE_STATE_FILE"]
+        dashboard.GLOBAL_CACHE_FILE = self.originals["GLOBAL_CACHE_FILE"]
+        dashboard.GLOBAL_CACHE_TTL_SECONDS = self.originals["GLOBAL_CACHE_TTL_SECONDS"]
         dashboard.collect_status_cached = self.originals["collect_status_cached"]
+        dashboard.collect_global_blockchain = self.originals["collect_global_blockchain"]
+        dashboard.read_valid_global_history = self.originals["read_valid_global_history"]
+        dashboard.refresh_global_chain_head = self.originals["refresh_global_chain_head"]
+        dashboard.trigger_global_refresh = self.originals["trigger_global_refresh"]
         dashboard.time.time = self.originals["time_time"]
         dashboard.clear_api_cache()
 
@@ -378,6 +390,50 @@ class DashboardStatusFallbackTests(unittest.TestCase):
         self.assertFalse(payload["fresh"])
         self.assertTrue(payload["collector_budget_exceeded"])
         self.assertTrue(payload["shared_status_cache"]["stale"])
+
+    def test_global_payload_refreshes_expired_cache_instead_of_serving_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = pathlib.Path(tmp)
+            dashboard.GLOBAL_CACHE_FILE = runtime / "global-cache.json"
+            dashboard.GLOBAL_CACHE_TTL_SECONDS = 60
+            dashboard.time.time = lambda: 1000.0
+            dashboard.read_valid_global_history = lambda limit=None: []
+            dashboard.refresh_global_chain_head = lambda payload: payload
+            dashboard.trigger_global_refresh = lambda reason: (_ for _ in ()).throw(
+                AssertionError("expired global cache should refresh synchronously")
+            )
+            dashboard.GLOBAL_CACHE_FILE.write_text(
+                json.dumps(
+                    {
+                        "status": "ok",
+                        "updated_at_epoch": 100.0,
+                        "latest_block": 123,
+                        "clusters": [{"address": "0xabc", "blocks": 1}],
+                        "cache": {"hit": False},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            calls: list[str] = []
+
+            def fake_collect_global() -> dict[str, object]:
+                calls.append("collect")
+                return {
+                    "status": "stale",
+                    "error": "unable to resolve latest global chain order from chain RPC",
+                    "updated_at_epoch": 900.0,
+                    "clusters": [],
+                    "cache": {"hit": True},
+                }
+
+            dashboard.collect_global_blockchain = fake_collect_global
+
+            payload = dashboard.collect_global_dashboard_payload("test-global")
+
+        self.assertEqual(calls, ["collect"])
+        self.assertEqual(payload["status"], "stale")
+        self.assertEqual(payload["cache"]["served_by"], "dashboard-refresh-stale-cache")
+        self.assertEqual(payload["cache"]["previous_age_seconds"], 900.0)
 
 
 if __name__ == "__main__":
