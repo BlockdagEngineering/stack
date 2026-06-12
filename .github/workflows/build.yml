@@ -56,7 +56,7 @@ jobs:
           repository: BlockdagEngineering/blockdag-corechain
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/blockdag-node
-          ref: c74f88b9c1b4fbf4213e15272d3bf1f63943e839
+          ref: jeremy-dev
 
       - name: Checkout private mining pool repo
         uses: actions/checkout@v4
@@ -64,15 +64,15 @@ jobs:
           repository: BlockdagEngineering/pool
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/pool
-          ref: 61b231c0501b32338f4ad47561a09e03e5933adc
+          ref: jeremy-dev
 
       - name: Checkout dashboard repo
         uses: actions/checkout@v4
         with:
-          repository: BlockdagEngineering/dashboard2
+          repository: BlockdagEngineering/dashboard
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/dashboard
-          ref: main
+          ref: jeremy-dev
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -128,16 +128,8 @@ jobs:
           cp -f ./build/bin/pool ../../bin/mining-pool
           cp -f ./build/bin/dashboard-api ../../bin/dashboard-api
 
-      - name: Build dashboard
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd src/dashboard
-          env GOOS=linux GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 GOFLAGS=-buildvcs=false \
-            go build -trimpath -o ../../bin/dashboard .
-
       - name: Ensure executables
-        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api bin/dashboard
+        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api
 
       - name: Verify release architecture
         shell: bash
@@ -146,13 +138,12 @@ jobs:
             bin/blockdag-node \
             bin/nodeworker \
             bin/mining-pool \
-            bin/dashboard-api \
-            bin/dashboard
+            bin/dashboard-api
 
       - name: Generate checksums
         shell: bash
         run: |
-          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api bin/dashboard > checksums.txt
+          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api > checksums.txt
 
       - name: Validate compose (pool Dockerfile)
         shell: bash
@@ -195,6 +186,7 @@ jobs:
           cp scripts/release/install.sh scripts/release/install.ps1 scripts/release/install.cmd "${ROOT}/"
           cp -a scripts/release/installers "${ROOT}/installers"
           cp -a bin sql docker scripts asic-pool tools "${ROOT}/"
+          rsync -a --delete --exclude='.git/' --exclude='.github/' --exclude='.pytest_cache/' --exclude='__pycache__/' --exclude='*.pyc' src/dashboard/ "${ROOT}/dashboard-source/"
           rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
           chmod +x "${ROOT}/install.sh" "${ROOT}/installers/"*.sh
 

@@ -605,8 +605,51 @@ def select_rpc_source(
     raise RuntimeError(message)
 
 
-def chain_reference_rpc_url(env: Mapping[str, str]) -> str:
+def public_rpc_urls(env: Mapping[str, str]) -> list[tuple[str, str]]:
+    configured = str(env.get("BDAG_PUBLIC_RPC_URLS") or "").strip()
+    result: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for raw in configured.replace("\n", ",").split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        if "=" in item:
+            name, url = item.split("=", 1)
+        else:
+            name, url = item, item
+        name = name.strip() or url.strip()
+        url = url.strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        result.append((name, url))
+    return result
+
+
+def explicit_chain_reference_rpc_url(env: Mapping[str, str]) -> str:
     return str(env.get("BDAG_CHAIN_REFERENCE_RPC_URL") or env.get("BDAG_IPFS_SEGMENT_REFERENCE_RPC_URL") or "").strip()
+
+
+def chain_reference_rpc_candidates(env: Mapping[str, str], source_url: str = "") -> list[str]:
+    explicit = explicit_chain_reference_rpc_url(env)
+    source = source_url.strip().rstrip("/")
+    if explicit:
+        candidate = explicit.strip()
+        return [candidate] if candidate and candidate.rstrip("/") != source else []
+    result: list[str] = []
+    seen: set[str] = set()
+    for _name, url in public_rpc_urls(env):
+        candidate = url.strip()
+        if not candidate or candidate.rstrip("/") == source or candidate in seen:
+            continue
+        seen.add(candidate)
+        result.append(candidate)
+    return result
+
+
+def chain_reference_rpc_url(env: Mapping[str, str], source_url: str = "") -> str:
+    candidates = chain_reference_rpc_candidates(env, source_url)
+    return candidates[0] if candidates else ""
 
 
 def parse_writer_roster(value: str | None) -> list[str]:
@@ -735,9 +778,67 @@ def require_trusted_preflight(
     return preflight
 
 
+def preflight_reasons(preflight: Mapping[str, Any]) -> list[str]:
+    reasons = preflight.get("reasons")
+    if isinstance(reasons, list) and reasons:
+        return [str(item) for item in reasons]
+    state = str(preflight.get("state") or "failed")
+    return [state]
+
+
+def preflight_not_trusted_message(preflight: Mapping[str, Any]) -> str:
+    state = str(preflight.get("state") or "failed")
+    return f"{state}: {'; '.join(preflight_reasons(preflight))}"
+
+
+def reference_unavailable_preflight(preflight: Mapping[str, Any]) -> bool:
+    return str(preflight.get("state") or "").startswith("deferred_reference")
+
+
+def require_trusted_preflight_from_candidates(
+    env: Mapping[str, str],
+    index_path: Path,
+    source_url: str,
+    reference_urls: list[str],
+    start: int,
+    end: int,
+) -> dict[str, Any]:
+    if not normal_publish_requires_preflight(env):
+        return {"state": "skipped", "trusted": True, "reasons": ["preflight_requirement_disabled"]}
+    if not reference_urls:
+        return require_trusted_preflight(env, index_path, source_url, "", start, end)
+
+    attempts: list[dict[str, Any]] = []
+    last_deferred: Mapping[str, Any] | None = None
+    for reference_url in reference_urls:
+        preflight = run_preflight(env, index_path, source_url, reference_url, start, end)
+        attempt = {
+            "reference_url": reference_url,
+            "state": str(preflight.get("state") or "failed"),
+            "reasons": preflight_reasons(preflight),
+        }
+        attempts.append(attempt)
+        if preflight.get("state") == "trusted":
+            result = dict(preflight)
+            result["selected_reference_url"] = reference_url
+            result["reference_attempts"] = attempts
+            return result
+        if reference_unavailable_preflight(preflight):
+            last_deferred = preflight
+            continue
+        raise RetryableDefer("chain integrity preflight not trusted: " + preflight_not_trusted_message(preflight))
+
+    detail = preflight_not_trusted_message(last_deferred or {"state": "deferred_reference_unavailable"})
+    raise RetryableDefer(
+        "chain integrity preflight not trusted after "
+        f"{len(attempts)} reference attempt(s): {detail}"
+    )
+
+
 def bootstrap_local_publish_allowed(env: Mapping[str, str], election: Mapping[str, Any]) -> bool:
     return (
         env_bool(env, "BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH", False)
+        and env_bool(env, "BDAG_IPFS_SEGMENT_BOOTSTRAP_UNTRUSTED_PUBLISH", False)
         and election.get("mode") == "bootstrap_single_writer"
         and int(election.get("roster_size") or 0) == 0
     )
@@ -754,6 +855,9 @@ def publication_integrity_gate(
 ) -> dict[str, Any]:
     if reference_url:
         return require_trusted_preflight(env, index_path, source_url, reference_url, start, end)
+    candidate_urls = chain_reference_rpc_candidates(env, source_url)
+    if candidate_urls:
+        return require_trusted_preflight_from_candidates(env, index_path, source_url, candidate_urls, start, end)
     if bootstrap_local_publish_allowed(env, election):
         return {
             "state": "bootstrap_local_reference_absent",
@@ -1116,7 +1220,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
         if args.preflight:
-            reference_url = str(args.reference_rpc_url or chain_reference_rpc_url(env)).strip()
+            reference_url = str(args.reference_rpc_url or chain_reference_rpc_url(env, source_url)).strip()
             preflight = run_preflight(env, index_path, source_url, reference_url, start, end)
             payload = write_status(
                 env,
@@ -1155,7 +1259,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
 
-        reference_url = chain_reference_rpc_url(env)
+        reference_url = explicit_chain_reference_rpc_url(env)
         publish_preflight: dict[str, Any] = {}
         publish_preflights: list[dict[str, Any]] = []
         max_segments = max(1, env_int(env, "BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN", 1))

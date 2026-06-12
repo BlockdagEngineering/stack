@@ -1,15 +1,15 @@
 # pool-stack-docker-stack
 
-This stack can be run in any environment where docker is installed. It includes an upgradable BDAG node, a mining pool with its database, a read-only status API, and the Go dashboard UI.
+This stack can be run in any environment where docker is installed. It includes an upgradable BDAG node, a mining pool with its database, a read-only status API, and the Python compose dashboard UI.
 
 
 | Service | Image / build | Purpose |
 | --- | --- | --- |
 | `node` | BlockDAG node, supervised by nodeworker | Consensus, P2P, and RPC |
 | `pool` | Mining pool (Stratum :3334) | ASIC Stratum and block submission |
-| `pool-db` | Postgres | Pool persistence, schema auto-loaded |
+| `postgres` | Postgres | Pool persistence, schema auto-loaded |
 | `collector` | Python collector | Read-only status API and normalized logs |
-| `dashboard` | Go dashboard | Browser UI over the status API |
+| `dashboard` | Python compose dashboard | Browser UI and local stack status/actions |
 
 
 ## Release package
@@ -27,7 +27,7 @@ the matching payload zip from that same tag. Linux ARM64, macOS ARM64, and
 Windows ARM64 hosts use the `linux-arm64` runtime payload.
 
 Each payload zip contains `bin/` (pre-built `blockdag-node`, `nodeworker`,
-`mining-pool`, `dashboard-api`, and `dashboard`), `docker-compose.yml`, `dockerfile`,
+`mining-pool` and `dashboard-api`), `dashboard-source/`, `docker-compose.yml`, `dockerfile`,
 `.env.example`,
 `docker/`, and the cross-platform payload installers. **Node and pool release
 images** stage binaries from `./bin`; the `collector` image checks out
@@ -434,6 +434,20 @@ chain evidence.
 
 The archive seed timer is not part of this stack because IPFS segments and
 finalized raw-datadir sidecars own source publication.
+
+Btrfs checkpoint storage is a production install requirement when
+`BDAG_IPFS_STATE_CHECKPOINT_REQUIRED=1`. On ordinary Ubuntu/Lubuntu installs the
+release installer creates a loop-backed btrfs volume, mounted by default at
+`./data-restore/btrfs-checkpoints`, with a 128 GiB minimum size and a root free
+space reserve. Raw sidecar copies, open restore points, sealed raw artifacts,
+and IPFS raw content publication all live under that mount. This keeps recovery
+state on snapshot-capable storage while allowing the active node database to
+stay on its best available chain-data filesystem. Existing native btrfs, ZFS,
+or LVM checkpoint storage can be used by pointing the checkpoint and sidecar
+paths at that volume, but ext4-only sidecar paths are a deployment blocker for
+trusted raw checkpoint recovery. See
+`docs/btrfs-checkpoint-volume.html` for the install-time contract and trust
+boundary.
 
 Check sidecar safety and status with:
 

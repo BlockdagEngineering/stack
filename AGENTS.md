@@ -136,13 +136,14 @@ tracked only by normalized MAC identity (`mac:<mac>`). IP addresses are
 ephemeral observed routes used to reach ASIC HTTP/Stratum endpoints; they must
 not become ASIC registry keys, dashboard identity keys, expected lane IDs,
 watchdog stall/cooldown keys, earnings/history merge keys, or display suffixes.
-The stack miner registry is the common source for ASIC MAC identity. The stack
-projects current route-to-MAC observations into the pool through
-`POOL_ASIC_MAC_OVERRIDES` and passes `BDAG_ASIC_LAN_CIDRS` into the pool, the
-pool resolves active ASIC LAN lanes to MACs, and the dashboard consumes those
-MAC identities. If a LAN ASIC route cannot be resolved to a MAC address, do not
-promote that route into a miner lane; surface it as an unattributed/observed
-route until the MAC is collected. Remote Stratum clients outside the configured
+`BDAG_ASIC_EXPECTED_MACS` is the canonical expected physical ASIC lane list.
+The stack miner registry overlays that MAC-only list onto current observations,
+projects current route-to-MAC observations into the pool through the derived
+`POOL_ASIC_MAC_OVERRIDES` route map, and passes `BDAG_ASIC_LAN_CIDRS` into the
+pool. The pool resolves active ASIC LAN lanes to MACs, and the dashboard
+consumes those MAC identities. If a LAN ASIC route cannot be resolved to a MAC
+address, do not promote that route into a miner lane; surface it as an
+unattributed/observed route until the MAC is collected. Remote Stratum clients outside the configured
 ASIC LAN may use IP-based operational identity; this exception must never be
 used for physical ASIC hardware on the mining LAN.
 
@@ -257,10 +258,10 @@ Python's standard HTTP client for local pool metrics and public
 enrichment calls so Linux AMD64, Linux ARM64/Pi5, macOS Docker Desktop, and
 Windows Docker Desktop behave consistently once Docker and Python are present.
 
-When operating from source, keep surfaces explicit: the Go dashboard is exposed
-on host port `8080`; the status API is bound to localhost on host port
-`9280` and must be configured with the real container names and Docker access
-for the stack being watched.
+When operating from source, keep surfaces explicit: the Python compose dashboard
+is exposed on the configured dashboard host ports; the status API is bound to
+localhost on host port `9280` and must be configured with the real container
+names and Docker access for the stack being watched.
 
 ## P2P Peer Configuration
 

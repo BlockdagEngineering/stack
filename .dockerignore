@@ -25,7 +25,6 @@ System Volume Information/
 .env
 .env.snapshot
 node.conf
-node.snapshot.conf
 
 # Local runtime/build leftovers.
 logs/

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -32,6 +33,14 @@ class AutomationControlTests(unittest.TestCase):
         self.lock_path = self.root / "automation-control.lock"
         self.event_path = self.root / "automation-control-events.jsonl"
         self.now = datetime(2026, 5, 31, 21, 0, tzinfo=timezone.utc)
+        self.old_asic_lan_cidrs = os.environ.get("BDAG_ASIC_LAN_CIDRS")
+        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.1.0/24"
+
+    def tearDown(self) -> None:
+        if self.old_asic_lan_cidrs is None:
+            os.environ.pop("BDAG_ASIC_LAN_CIDRS", None)
+        else:
+            os.environ["BDAG_ASIC_LAN_CIDRS"] = self.old_asic_lan_cidrs
 
     def control_state(
         self,
@@ -64,7 +73,7 @@ class AutomationControlTests(unittest.TestCase):
             now=self.now,
         )
 
-    def check(self, action: str = automation_control.ACTION_ASIC_POOL_START, target: str = "asic-pool"):
+    def check(self, action: str = automation_control.ACTION_ASIC_POOL_START, target: str = "pool"):
         return automation_control.check_mutation_allowed(
             action,
             actor="watchdog",
@@ -139,6 +148,29 @@ class AutomationControlTests(unittest.TestCase):
         self.assertTrue(decision.allowed)
         self.assertEqual([], self.event_lines())
 
+    def test_transition_hold_denies_containment_stop_without_allowlist(self) -> None:
+        self.write_state(self.control_state("transition_hold"))
+
+        decision = self.check(automation_control.ACTION_CONTAINMENT_STOP, target="pool")
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual("transition_hold", decision.control_state)
+        self.assertIn("does not allow", decision.reason)
+        self.assertEqual(1, len(self.event_lines()))
+
+    def test_transition_hold_allows_explicit_containment_stop_allowlist(self) -> None:
+        self.write_state(
+            self.control_state(
+                "transition_hold",
+                allowed_mutations=[f"{automation_control.ACTION_CONTAINMENT_STOP}:pool"],
+            )
+        )
+
+        decision = self.check(automation_control.ACTION_CONTAINMENT_STOP, target="pool")
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual([], self.event_lines())
+
     def test_ensure_normal_control_state_creates_missing_control(self) -> None:
         created, previous_status, path = automation_control.ensure_normal_control_state(
             state_path=self.state_path,
@@ -198,6 +230,118 @@ class AutomationControlTests(unittest.TestCase):
         self.assertEqual("corrupt", previous_status)
         self.assertEqual("{not-json", self.state_path.read_text(encoding="utf-8"))
 
+    def test_begin_and_release_transition_hold(self) -> None:
+        self.write_state(self.control_state("normal"))
+
+        created, previous_status, path = automation_control.begin_transition_hold(
+            state_path=self.state_path,
+            lock_path=self.lock_path,
+            owner="deploy",
+            owner_unit="test-deploy",
+            reason="controlled update",
+            correlation_id="deploy-123",
+            allowed_mutations=[f"{automation_control.ACTION_SYSTEMD_RESTART}:bdag-dashboard.service"],
+            expires_seconds=300,
+            now=self.now,
+        )
+
+        self.assertTrue(created)
+        self.assertEqual("normal", previous_status)
+        self.assertEqual(str(self.state_path), path)
+        control, status, _reason = automation_control.read_control_state(
+            state_path=self.state_path,
+            now=self.now,
+        )
+        self.assertEqual("ok", status)
+        self.assertEqual("transition_hold", control["state"])
+        self.assertEqual("deploy-123", control["correlation_id"])
+
+        denied = self.check(automation_control.ACTION_ASIC_POOL_START, target="pool")
+        allowed = automation_control.check_mutation_allowed(
+            automation_control.ACTION_SYSTEMD_RESTART,
+            actor="operator",
+            target="bdag-dashboard.service",
+            reason="dashboard deploy restart",
+            state_path=self.state_path,
+            event_path=self.event_path,
+            lock_path=self.lock_path,
+            now=self.now,
+        )
+
+        self.assertFalse(denied.allowed)
+        self.assertTrue(allowed.allowed)
+
+        released, previous_status, _path = automation_control.release_transition_hold(
+            state_path=self.state_path,
+            lock_path=self.lock_path,
+            owner="deploy",
+            owner_unit="test-deploy",
+            reason="done",
+            correlation_id="deploy-123",
+            now=self.now,
+        )
+
+        self.assertTrue(released)
+        self.assertEqual("transition_hold", previous_status)
+        control, status, _reason = automation_control.read_control_state(
+            state_path=self.state_path,
+            now=self.now,
+        )
+        self.assertEqual("ok", status)
+        self.assertEqual("normal", control["state"])
+
+    def test_begin_transition_hold_does_not_overwrite_existing_hold(self) -> None:
+        self.write_state(self.control_state("repair_hold"))
+
+        created, previous_status, _path = automation_control.begin_transition_hold(
+            state_path=self.state_path,
+            lock_path=self.lock_path,
+            owner="deploy",
+            owner_unit="test-deploy",
+            reason="controlled update",
+            correlation_id="deploy-123",
+            now=self.now,
+        )
+
+        self.assertFalse(created)
+        self.assertEqual("repair_hold", previous_status)
+        control, status, _reason = automation_control.read_control_state(
+            state_path=self.state_path,
+            now=self.now,
+        )
+        self.assertEqual("ok", status)
+        self.assertEqual("repair_hold", control["state"])
+
+    def test_release_transition_hold_requires_matching_correlation(self) -> None:
+        self.write_state(
+            self.control_state(
+                "transition_hold",
+                allowed_mutations=[f"{automation_control.ACTION_SYSTEMD_RESTART}:bdag-dashboard.service"],
+            )
+        )
+        raw = json.loads(self.state_path.read_text(encoding="utf-8"))
+        raw["correlation_id"] = "deploy-123"
+        self.state_path.write_text(json.dumps(raw), encoding="utf-8")
+
+        released, previous_status, _path = automation_control.release_transition_hold(
+            state_path=self.state_path,
+            lock_path=self.lock_path,
+            owner="deploy",
+            owner_unit="test-deploy",
+            reason="done",
+            correlation_id="different",
+            now=self.now,
+        )
+
+        self.assertFalse(released)
+        self.assertEqual("correlation_mismatch", previous_status)
+        control, status, _reason = automation_control.read_control_state(
+            state_path=self.state_path,
+            now=self.now,
+        )
+        self.assertEqual("ok", status)
+        self.assertEqual("transition_hold", control["state"])
+
     def test_transition_hold_requires_exact_allowlist_match(self) -> None:
         self.write_state(self.control_state("transition_hold"))
 
@@ -222,7 +366,7 @@ class AutomationControlTests(unittest.TestCase):
         self.write_state(
             self.control_state(
                 "transition_hold",
-                allowed_mutations=[f"{automation_control.ACTION_ASIC_POOL_START}:asic-pool"],
+                allowed_mutations=[f"{automation_control.ACTION_ASIC_POOL_START}:pool"],
             )
         )
 
@@ -384,6 +528,45 @@ class AutomationControlTests(unittest.TestCase):
         self.assertEqual("running", writes[0]["status"])
         self.assertEqual("ok", writes[-1]["status"])
 
+    def test_watchdog_api_stall_restart_failure_requests_physical_power_cycle(self) -> None:
+        self.write_state(
+            self.control_state(
+                "transition_hold",
+                allowed_mutations=[f"{automation_control.ACTION_ASIC_MINER_OPEN_RESTART}:*"],
+            )
+        )
+        action_log = self.root / "action-restart-miners.log"
+        lock_handle = unittest.mock.Mock()
+
+        with self.patch_default_control_paths(), unittest.mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), unittest.mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), unittest.mock.patch.object(
+            watchdog, "read_miner_admin_password", return_value="redacted"
+        ), unittest.mock.patch.object(
+            watchdog, "acquire_lock", return_value=lock_handle
+        ), unittest.mock.patch.object(
+            watchdog, "action_log_path", return_value=action_log
+        ), unittest.mock.patch.object(
+            watchdog, "write_action_state", lambda _payload: None
+        ), unittest.mock.patch.object(
+            watchdog, "restart_miner_open", side_effect=RuntimeError("connection reset by peer")
+        ), unittest.mock.patch.object(
+            watchdog, "restart_miner", side_effect=RuntimeError("timed out")
+        ), unittest.mock.patch.object(
+            watchdog, "configure_miner", side_effect=AssertionError("API-stall repair must not rewrite config first")
+        ):
+            result = watchdog.run_miner_restarts(
+                [{"ip": "192.168.1.16", "configured": False, "restart_open_first": True}],
+                "ASIC API-stall watchdog: local API timed out",
+            )
+
+        self.assertEqual("failed", result["status"])
+        self.assertTrue(result["results"][0]["physical_power_cycle_required"])
+        self.assertIn("Power-cycle", result["results"][0]["operator_action"])
+        lock_handle.close.assert_called_once()
+
     def test_sentinel_suppresses_pool_starts_when_control_missing(self) -> None:
         incidents: list[tuple[str, str, str, str]] = []
 
@@ -530,6 +713,45 @@ class AutomationControlTests(unittest.TestCase):
 
         self.assertEqual(1, len(self.event_lines()))
         self.assertEqual("automation_control_suppressed", incidents[0][0])
+
+    def test_sentinel_observe_only_during_transition_hold(self) -> None:
+        self.write_state(
+            self.control_state(
+                "transition_hold",
+                allowed_mutations=[f"{automation_control.ACTION_SYSTEMD_RESTART}:bdag-dashboard.service"],
+            )
+        )
+        lock_handle = unittest.mock.Mock()
+        written: list[dict[str, object]] = []
+        incidents: list[tuple[str, str, str, str]] = []
+
+        def fake_incident(event_type: str, severity: str, component: str, message: str, details=None) -> None:
+            incidents.append((event_type, severity, component, message))
+
+        with self.patch_default_control_paths(), unittest.mock.patch.object(
+            stack_sentinel, "acquire_run_lock", return_value=lock_handle
+        ), unittest.mock.patch.object(
+            stack_sentinel, "read_state", return_value={}
+        ), unittest.mock.patch.object(
+            stack_sentinel, "write_state", side_effect=lambda state: written.append(dict(state))
+        ), unittest.mock.patch.object(
+            stack_sentinel, "status_api", return_value=({"fresh": True, "overall": "syncing"}, "")
+        ), unittest.mock.patch.object(
+            stack_sentinel, "start_unit", side_effect=AssertionError("sentinel must not start units during transition hold")
+        ), unittest.mock.patch.object(
+            stack_sentinel, "inspect_and_repair_containers", side_effect=AssertionError("sentinel must not repair containers during transition hold")
+        ), unittest.mock.patch.object(
+            stack_sentinel, "check_node_log_red_flags", lambda _state, _now: None
+        ), unittest.mock.patch.object(
+            stack_sentinel, "append_incident", fake_incident
+        ), unittest.mock.patch.object(
+            stack_sentinel, "log", lambda _message: None
+        ):
+            self.assertEqual(0, stack_sentinel.main([]))
+
+        self.assertTrue(written[-1]["observe_only"])
+        self.assertTrue(any(item[0] == "sentinel_observe_only" for item in incidents))
+        lock_handle.close.assert_called_once()
 
     def test_sentinel_log_scan_timeout_records_warning_without_crashing(self) -> None:
         incidents: list[tuple[str, str, str, str, dict[str, object] | None]] = []

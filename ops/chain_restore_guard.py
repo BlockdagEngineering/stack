@@ -12,6 +12,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import automation_control
 from incident_journal import append_incident
 from pool_ops import LOG_DIR, PROJECT_ROOT, RUNTIME_DIR, ensure_runtime, now_iso
 
@@ -40,6 +41,14 @@ def configured_status_files() -> dict[str, Path]:
             os.environ.get("BDAG_IPFS_SEGMENT_STATUS_FILE"),
             PROJECT_ROOT / "ops/runtime/ipfs-content/segment-writer-status.json",
         ),
+        "rawdatadir_content_index": resolve_path(
+            os.environ.get("BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH"),
+            PROJECT_ROOT / "ops/runtime/ipfs-content/rawdatadir-content-index.json",
+        ),
+        "rawdatadir_content_seal": resolve_path(
+            os.environ.get("BDAG_RAWDATADIR_SIDECAR_CONTENT_STATUS_FILE"),
+            PROJECT_ROOT / "ops/runtime/rawdatadir-sidecar-content-status.json",
+        ),
         "ipfs_content_sidecar": resolve_path(
             os.environ.get("BDAG_IPFS_CONTENT_STATUS_FILE"),
             PROJECT_ROOT / "ops/runtime/ipfs-content-sidecar-status.json",
@@ -62,7 +71,7 @@ def configured_status_files() -> dict[str, Path]:
 def configured_timers() -> list[str]:
     raw = os.environ.get(
         "BDAG_RESTORE_GUARD_IPFS_TIMERS",
-        "bdag-ipfs-content-sidecar.timer,bdag-ipfs-segment-writer.timer,bdag-rawdatadir-sidecar.timer",
+        "bdag-rawdatadir-sidecar.timer,bdag-rawdatadir-sidecar-verify.timer,bdag-ipfs-content-sidecar.timer",
     )
     return [item.strip() for item in raw.split(",") if item.strip()]
 
@@ -116,6 +125,15 @@ def start_unit(unit: str) -> subprocess.CompletedProcess[str]:
     return systemctl_user("start", unit)
 
 
+def unit_start_allowed(unit: str, reason: str) -> automation_control.ControlDecision:
+    return automation_control.check_mutation_allowed(
+        automation_control.ACTION_SYSTEMD_START,
+        actor="chain-restore-guard",
+        target=unit,
+        reason=reason,
+    )
+
+
 def status_api() -> tuple[dict[str, Any] | None, str]:
     try:
         with urllib.request.urlopen(STATUS_URL, timeout=STATUS_TIMEOUT) as response:
@@ -136,20 +154,89 @@ def status_file_info(name: str, path: Path, now: int) -> dict[str, Any]:
         "state": payload.get("state") or payload.get("status"),
     }
     for key in (
+        "document_type",
         "latest_index_cid",
         "index_cid",
+        "current_rawdatadir_index_cid",
         "artifact_cid",
+        "artifact_type",
+        "network",
+        "chain_id",
         "raw_artifact_cid",
         "accepted_head",
         "last_published_order",
         "last_order",
         "tip_order",
+        "tip_hash",
+        "state_root",
         "reason",
         "reasons",
+        "manifest_verification",
     ):
         if key in payload:
             result[key] = payload[key]
     return result
+
+
+def verification_state(info: dict[str, Any]) -> str:
+    verification = info.get("manifest_verification")
+    if isinstance(verification, dict):
+        return str(verification.get("state") or "").strip().lower()
+    return ""
+
+
+def raw_state_checkpoint_status(files: dict[str, dict[str, Any]], now: int) -> dict[str, Any]:
+    sidecar = files.get("ipfs_content_sidecar") or {}
+    index = files.get("rawdatadir_content_index") or {}
+    reasons: list[str] = []
+    sidecar_age = sidecar.get("age_seconds")
+    index_age = index.get("age_seconds")
+    sidecar_fresh = isinstance(sidecar_age, int) and sidecar_age <= MAX_RESTORE_AGE_SECONDS
+    index_fresh = isinstance(index_age, int) and index_age <= MAX_RESTORE_AGE_SECONDS
+
+    sidecar_state = str(sidecar.get("state") or "").strip().lower()
+    if sidecar_state != "published":
+        reasons.append(f"ipfs_content_sidecar_not_published:{sidecar_state or 'missing'}")
+    if not sidecar_fresh:
+        reasons.append("ipfs_content_sidecar_stale_or_missing")
+    if not index_fresh:
+        reasons.append("rawdatadir_content_index_stale_or_missing")
+
+    artifact_cid = str(sidecar.get("artifact_cid") or index.get("artifact_cid") or "").strip()
+    index_cid = str(sidecar.get("index_cid") or index.get("index_cid") or index.get("current_rawdatadir_index_cid") or "").strip()
+    if not artifact_cid:
+        reasons.append("rawdatadir_artifact_cid_missing")
+    if not index_cid:
+        reasons.append("rawdatadir_index_cid_missing")
+
+    artifact_type = str(index.get("artifact_type") or "").strip()
+    if artifact_type and artifact_type != "raw_datadir_checkpoint":
+        reasons.append(f"rawdatadir_content_index_wrong_artifact_type:{artifact_type}")
+    network = str(index.get("network") or "").strip().lower()
+    if network and network != "mainnet":
+        reasons.append(f"rawdatadir_content_index_non_mainnet:{network}")
+
+    verification = verification_state(sidecar) or verification_state(index)
+    if verification != "verified":
+        reasons.append(f"rawdatadir_manifest_not_verified:{verification or 'missing'}")
+
+    return {
+        "ready": not reasons,
+        "state": "ready" if not reasons else "not_ready",
+        "reasons": sorted(set(reasons)),
+        "artifact_cid": artifact_cid,
+        "index_cid": index_cid,
+        "tip_order": index.get("tip_order") or sidecar.get("tip_order"),
+        "tip_hash": index.get("tip_hash") or sidecar.get("tip_hash"),
+        "state_root": index.get("state_root") or sidecar.get("state_root"),
+        "sidecar_status_age_seconds": sidecar_age,
+        "index_age_seconds": index_age,
+        "max_restore_age_seconds": MAX_RESTORE_AGE_SECONDS,
+        "trust_model": (
+            "raw state checkpoints are trusted recovery candidates only when the content sidecar "
+            "published a fresh raw_datadir_checkpoint index with a verified trusted Ed25519 manifest signature"
+        ),
+    }
 
 
 def restore_status(now: int) -> dict[str, Any]:
@@ -157,20 +244,22 @@ def restore_status(now: int) -> dict[str, Any]:
         name: status_file_info(name, path, now)
         for name, path in configured_status_files().items()
     }
-    fresh = [
-        name
-        for name, info in files.items()
-        if isinstance(info.get("age_seconds"), int) and int(info["age_seconds"]) <= MAX_RESTORE_AGE_SECONDS
-    ]
+    raw_checkpoint = raw_state_checkpoint_status(files, now)
+    fresh = ["rawdatadir_state_checkpoint"] if raw_checkpoint["ready"] else []
+    required_restore_files = {"ipfs_content_sidecar", "rawdatadir_content_index"}
     stale = {
         name: info
         for name, info in files.items()
+        if name in required_restore_files
         if not isinstance(info.get("age_seconds"), int) or int(info["age_seconds"]) > MAX_RESTORE_AGE_SECONDS
     }
+    if not raw_checkpoint["ready"]:
+        stale["rawdatadir_state_checkpoint"] = raw_checkpoint
     return {
         "fresh": bool(fresh),
         "fresh_sources": fresh,
         "stale_or_missing": stale,
+        "raw_state_checkpoint": raw_checkpoint,
         "files": files,
         "max_restore_age_seconds": MAX_RESTORE_AGE_SECONDS,
     }
@@ -181,6 +270,24 @@ def ensure_ipfs_timers(state: dict[str, Any], now: int) -> dict[str, Any]:
     for timer in configured_timers():
         if unit_active(timer):
             results[timer] = {"active": True}
+            continue
+        decision = unit_start_allowed(timer, "ensure IPFS recovery timer is active")
+        if not decision.allowed:
+            results[timer] = {
+                "active": False,
+                "started": False,
+                "returncode": None,
+                "stderr": decision.reason,
+                "control_decision": decision.as_dict(),
+            }
+            if should_emit(state, f"{timer}_automation_blocked", decision.reason, now):
+                append_incident(
+                    "restore_guard_ipfs_timer_start_blocked",
+                    "warning",
+                    "chain-restore-guard",
+                    f"Restore guard start of {timer} was blocked by automation control",
+                    {"timer": timer, "control_decision": decision.as_dict()},
+                )
             continue
         result = start_unit(timer)
         results[timer] = {

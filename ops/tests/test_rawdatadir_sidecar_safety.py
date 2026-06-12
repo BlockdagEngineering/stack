@@ -22,7 +22,7 @@ class RawDatadirSidecarSafetyTest(unittest.TestCase):
         env = {"BDAG_NODE_SERVICE": "node", "BDAG_NODE_DATA_DIR": "./data/node"}
 
         self.assertEqual(safety.active_node_service(env), "node")
-        self.assertTrue(str(safety.node_data_dir(env, "node")).endswith("data/node"))
+        self.assertEqual(safety.node_data_dir(env, "node"), safety.resolve_path("./data/node"))
 
     def test_empty_path_env_values_use_defaults(self) -> None:
         env = {
@@ -38,12 +38,12 @@ class RawDatadirSidecarSafetyTest(unittest.TestCase):
             safety.resolve_path("./data/node/mainnet"),
         )
         self.assertEqual(
-            safety.env_path(env, "BDAG_RAWDATADIR_SIDECAR_DIR", "./data-restore/rawdatadir-sidecar/mainnet"),
-            safety.resolve_path("./data-restore/rawdatadir-sidecar/mainnet"),
+            safety.env_path(env, "BDAG_RAWDATADIR_SIDECAR_DIR", "./data-restore/btrfs-checkpoints/rawdatadir-sidecar/mainnet"),
+            safety.resolve_path("./data-restore/btrfs-checkpoints/rawdatadir-sidecar/mainnet"),
         )
         self.assertEqual(
-            safety.env_path(env, "BDAG_RAWDATADIR_ARTIFACT_BASE", "./data-restore/rawdatadir"),
-            safety.resolve_path("./data-restore/rawdatadir"),
+            safety.env_path(env, "BDAG_RAWDATADIR_ARTIFACT_BASE", "./data-restore/btrfs-checkpoints/rawdatadir-artifacts"),
+            safety.resolve_path("./data-restore/btrfs-checkpoints/rawdatadir-artifacts"),
         )
 
     def test_path_classification_flags_usb_transport(self) -> None:

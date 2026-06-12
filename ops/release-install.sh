@@ -217,12 +217,47 @@ random_secret() {
   fi
 }
 
+strip_env_quotes() {
+  local value="$1"
+  if [[ ${#value} -ge 2 ]]; then
+    if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+      value="${value:1:${#value}-2}"
+    elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+  fi
+  printf '%s' "$value"
+}
+
+quote_env_assignment_value() {
+  local value needs_quotes=0
+  value="$(strip_env_quotes "$1")"
+  case "$value" in
+    *[[:space:]#]*|*\"*|*\\*|*\$*|*\`*) needs_quotes=1 ;;
+  esac
+  if [[ "$needs_quotes" == "0" ]]; then
+    printf '%s' "$value"
+    return 0
+  fi
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//\$/\\$}"
+  value="${value//\`/\\\`}"
+  printf '"%s"' "$value"
+}
+
+sed_replacement_escape() {
+  sed -e 's/[&|]/\\&/g'
+}
+
 set_env_value() {
-  local file="$1" key="$2" value="$3"
+  local file="$1" key="$2" value="$3" rendered escaped
+  rendered="$(quote_env_assignment_value "$value")"
+  escaped="$(printf '%s' "$rendered" | sed_replacement_escape)"
   if grep -q "^${key}=" "$file"; then
-    sed -i "s|^${key}=.*|${key}=${value}|" "$file"
+    sed -i "s|^${key}=.*|${key}=${escaped}|" "$file"
   else
-    printf '%s=%s\n' "$key" "$value" >> "$file"
+    printf '%s=%s\n' "$key" "$rendered" >> "$file"
   fi
 }
 
@@ -266,6 +301,7 @@ configure_active_node_env() {
   set_stack_default_env_value .env BDAG_NODE_SERVICE node
   set_stack_default_env_value .env BDAG_STACK_SERVICES "postgres,node,pool"
   set_stack_default_env_value .env BDAG_START_SERVICES "postgres,node,pool"
+  set_stack_default_env_value .env BDAG_ASIC_EXPECTED_MACS
   set_stack_default_env_value .env POOL_ASIC_MAC_OVERRIDES
   set_env_value .env NODE_RPC_URL "http://node:38131"
   set_env_value .env WALLET_RPC_URL "http://node:18545"
@@ -294,7 +330,9 @@ configure_node_mining_env() {
 env_value() {
   local key="$1" fallback="${2:-}" value
   value="$(grep -E "^${key}=" .env 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
-  printf '%s\n' "${value:-$fallback}"
+  value="${value:-$fallback}"
+  strip_env_quotes "$value"
+  printf '\n'
 }
 
 absolute_path() {
@@ -334,6 +372,21 @@ path_free_gib() {
   path="$1"
   parent="$(existing_parent "$path")"
   df -Pk "$parent" 2>/dev/null | awk 'NR == 2 {printf "%d", $4 / 1048576}'
+}
+
+path_fstype() {
+  local path parent
+  path="$1"
+  parent="$(existing_parent "$path")"
+  findmnt -rn -T "$parent" -o FSTYPE 2>/dev/null | head -n1
+}
+
+fstab_escape() {
+  printf '%s' "$1" | sed -e 's/ /\\040/g' -e 's/\t/\\011/g'
+}
+
+disabled_mode() {
+  [[ "${1,,}" =~ ^(0|false|no|off|disabled)$ ]]
 }
 
 mount_source_for_path() {
@@ -460,8 +513,8 @@ configure_storage_profile() {
   set_env_value .env BDAG_DASHBOARD_CPU_SHARES "$(env_value BDAG_DASHBOARD_CPU_SHARES 128)"
   set_env_value .env BDAG_NODE_MEMORY_LOW "$(env_value BDAG_NODE_MEMORY_LOW 768M)"
   set_env_value .env BDAG_NODE_MEMORY_HIGH "$(env_value BDAG_NODE_MEMORY_HIGH auto)"
-  set_env_value .env BDAG_NODE_MEMORY_HIGH_PERCENT "$(env_value BDAG_NODE_MEMORY_HIGH_PERCENT 82)"
-  set_env_value .env BDAG_NODE_MEMORY_HIGH_MIN "$(env_value BDAG_NODE_MEMORY_HIGH_MIN 4096M)"
+  set_env_value .env BDAG_NODE_MEMORY_HIGH_PERCENT "$(env_value BDAG_NODE_MEMORY_HIGH_PERCENT 60)"
+  set_env_value .env BDAG_NODE_MEMORY_HIGH_MIN "$(env_value BDAG_NODE_MEMORY_HIGH_MIN 3072M)"
   set_env_value .env BDAG_POOL_MEMORY_LOW "$(env_value BDAG_POOL_MEMORY_LOW 256M)"
   set_env_value .env BDAG_POOL_DB_MEMORY_LOW "$(env_value BDAG_POOL_DB_MEMORY_LOW 512M)"
   set_env_value .env BDAG_DASHBOARD_MEMORY_LOW "$(env_value BDAG_DASHBOARD_MEMORY_LOW 64M)"
@@ -472,6 +525,136 @@ configure_storage_profile() {
   echo "Chain data: $chain_base"
   echo "Postgres data: $postgres_dir"
   echo "Runtime/dashboard state: $runtime_dir"
+}
+
+default_btrfs_checkpoint_image() {
+  local size_gib="$1" base
+  base="${BDAG_BTRFS_CHECKPOINT_VOLUME_IMAGE_BASE:-$HOME/blockdag-snapshot-volumes}"
+  printf '%s/rawdatadir-checkpoint-%sg.btrfs\n' "$base" "$size_gib"
+}
+
+ensure_btrfs_subvolume_or_dir() {
+  local path="$1"
+  if [[ -e "$path" ]]; then
+    return 0
+  fi
+  if need_sudo btrfs subvolume create "$path" >/dev/null 2>&1; then
+    return 0
+  fi
+  need_sudo mkdir -p "$path"
+}
+
+ensure_btrfs_checkpoint_owned_dir() {
+  local path="$1"
+  need_sudo mkdir -p "$path"
+  need_sudo chown "$(id -u):$(id -g)" "$path" || true
+}
+
+ensure_btrfs_fstab_entry() {
+  local image="$1" mountpoint="$2" options="$3" image_parent entry escaped_image escaped_mount
+  image_parent="$(dirname "$image")"
+  escaped_image="$(fstab_escape "$image")"
+  escaped_mount="$(fstab_escape "$mountpoint")"
+  entry="$escaped_image $escaped_mount btrfs loop,$options,nofail,x-systemd.requires-mounts-for=$(fstab_escape "$image_parent") 0 0"
+  if grep -qsE "^[^#].*[[:space:]]${escaped_mount}[[:space:]]+btrfs[[:space:]]" /etc/fstab; then
+    return 0
+  fi
+  need_sudo cp /etc/fstab "/etc/fstab.bdag-pre-btrfs-$(date +%Y%m%d-%H%M%S)"
+  printf '%s\n' "$entry" | need_sudo tee -a /etc/fstab >/dev/null
+}
+
+configure_btrfs_checkpoint_volume() {
+  local mode size_gib min_free_gib mount_value mountpoint image_value image image_dir label options free_gib required_gib
+  mode="$(env_value BDAG_BTRFS_CHECKPOINT_VOLUME_MODE "$(stack_default BDAG_BTRFS_CHECKPOINT_VOLUME_MODE auto)")"
+  if disabled_mode "$mode"; then
+    warn "Btrfs checkpoint volume disabled by BDAG_BTRFS_CHECKPOINT_VOLUME_MODE=$mode."
+    return 0
+  fi
+  if [[ "$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')" != "linux" ]]; then
+    echo "Trusted IPFS raw checkpoint storage requires Linux btrfs/ZFS/LVM semantics; this installer only provisions btrfs on Linux." >&2
+    exit 1
+  fi
+  if ! command -v mkfs.btrfs >/dev/null 2>&1 || ! command -v btrfs >/dev/null 2>&1; then
+    echo "btrfs-progs is required for the trusted checkpoint volume. Install btrfs-progs and rerun ./install.sh." >&2
+    exit 1
+  fi
+
+  size_gib="$(env_value BDAG_BTRFS_CHECKPOINT_VOLUME_SIZE_GIB "$(stack_default BDAG_BTRFS_CHECKPOINT_VOLUME_SIZE_GIB 128)")"
+  min_free_gib="$(env_value BDAG_BTRFS_CHECKPOINT_VOLUME_MIN_ROOT_FREE_GIB "$(stack_default BDAG_BTRFS_CHECKPOINT_VOLUME_MIN_ROOT_FREE_GIB 40)")"
+  mount_value="$(env_value BDAG_BTRFS_CHECKPOINT_VOLUME_MOUNT "$(stack_default BDAG_BTRFS_CHECKPOINT_VOLUME_MOUNT ./data-restore/btrfs-checkpoints)")"
+  mountpoint="$(absolute_path "$mount_value")"
+  image_value="$(env_value BDAG_BTRFS_CHECKPOINT_VOLUME_IMAGE "$(stack_default BDAG_BTRFS_CHECKPOINT_VOLUME_IMAGE "")")"
+  if [[ -z "$image_value" || "$image_value" == "auto" ]]; then
+    image="$(default_btrfs_checkpoint_image "$size_gib")"
+  else
+    image="$(absolute_path "$image_value")"
+  fi
+  image_dir="$(dirname "$image")"
+  label="$(env_value BDAG_BTRFS_CHECKPOINT_VOLUME_LABEL "$(stack_default BDAG_BTRFS_CHECKPOINT_VOLUME_LABEL bdag-raw-checkpoints)")"
+  options="$(env_value BDAG_BTRFS_CHECKPOINT_VOLUME_OPTIONS "$(stack_default BDAG_BTRFS_CHECKPOINT_VOLUME_OPTIONS noatime,compress=zstd:1,space_cache=v2)")"
+
+  if [[ ! "$size_gib" =~ ^[0-9]+$ || "$size_gib" -lt 128 ]]; then
+    echo "BDAG_BTRFS_CHECKPOINT_VOLUME_SIZE_GIB must be at least 128GiB for trusted raw checkpoint storage." >&2
+    exit 1
+  fi
+  if [[ ! "$min_free_gib" =~ ^[0-9]+$ ]]; then
+    min_free_gib=40
+  fi
+
+  if [[ ! -f "$image" ]]; then
+    free_gib="$(path_free_gib "$image_dir")"
+    free_gib="${free_gib:-0}"
+    required_gib=$(( size_gib + min_free_gib ))
+    if (( free_gib < required_gib )); then
+      echo "Not enough free space for the btrfs checkpoint image at $image_dir: need ${required_gib}GiB (${size_gib}GiB volume + ${min_free_gib}GiB reserve), found ${free_gib}GiB." >&2
+      exit 1
+    fi
+    say "Creating ${size_gib}GiB btrfs checkpoint image"
+    mkdir -p "$image_dir"
+    fallocate -l "${size_gib}G" "$image"
+    chmod 0600 "$image"
+    mkfs.btrfs -f -L "$label" "$image" >/dev/null
+  fi
+
+  mkdir -p "$mountpoint"
+  ensure_btrfs_fstab_entry "$image" "$mountpoint" "$options"
+  if ! mountpoint -q "$mountpoint"; then
+    say "Mounting btrfs checkpoint volume at $mountpoint"
+    need_sudo mount "$mountpoint" || need_sudo mount -o "loop,$options" "$image" "$mountpoint"
+  fi
+
+  if [[ "$(path_fstype "$mountpoint")" != "btrfs" ]]; then
+    echo "Checkpoint mount $mountpoint is not btrfs; refusing to continue because trusted raw checkpoints require snapshot-capable storage." >&2
+    exit 1
+  fi
+
+  ensure_btrfs_subvolume_or_dir "$mountpoint/rawdatadir-sidecar"
+  ensure_btrfs_subvolume_or_dir "$mountpoint/rawdatadir-sidecar-content"
+  ensure_btrfs_subvolume_or_dir "$mountpoint/rawdatadir-sidecar-open"
+  ensure_btrfs_subvolume_or_dir "$mountpoint/rawdatadir-artifacts"
+  ensure_btrfs_checkpoint_owned_dir "$mountpoint/rawdatadir-sidecar"
+  ensure_btrfs_checkpoint_owned_dir "$mountpoint/rawdatadir-sidecar-content"
+  ensure_btrfs_checkpoint_owned_dir "$mountpoint/rawdatadir-sidecar-content/artifacts"
+  ensure_btrfs_checkpoint_owned_dir "$mountpoint/rawdatadir-sidecar-content/chunk-store"
+  ensure_btrfs_checkpoint_owned_dir "$mountpoint/rawdatadir-sidecar-content/chunk-store/sha256"
+  ensure_btrfs_checkpoint_owned_dir "$mountpoint/rawdatadir-sidecar-open"
+  ensure_btrfs_checkpoint_owned_dir "$mountpoint/rawdatadir-artifacts"
+
+  set_env_value .env BDAG_BTRFS_CHECKPOINT_VOLUME_MODE "$mode"
+  set_env_value .env BDAG_BTRFS_CHECKPOINT_VOLUME_SIZE_GIB "$size_gib"
+  set_env_value .env BDAG_BTRFS_CHECKPOINT_VOLUME_MIN_ROOT_FREE_GIB "$min_free_gib"
+  set_env_value .env BDAG_BTRFS_CHECKPOINT_VOLUME_IMAGE "$image"
+  set_env_value .env BDAG_BTRFS_CHECKPOINT_VOLUME_MOUNT "$mount_value"
+  set_env_value .env BDAG_BTRFS_CHECKPOINT_VOLUME_LABEL "$label"
+  set_env_value .env BDAG_BTRFS_CHECKPOINT_VOLUME_OPTIONS "$options"
+  set_env_value .env BDAG_RAWDATADIR_ARTIFACT_BASE "$mount_value/rawdatadir-artifacts"
+  set_env_value .env BDAG_RAWDATADIR_SIDECAR_DIR "$mount_value/rawdatadir-sidecar/mainnet"
+  set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE "$mount_value/rawdatadir-sidecar-content"
+  set_env_value .env BDAG_RAWDATADIR_OPEN_SIDECAR_BASE "$mount_value/rawdatadir-sidecar-open/mainnet"
+  set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_DIR "$mount_value/rawdatadir-sidecar-content/current"
+  set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST "$mount_value/rawdatadir-sidecar-content/current/manifest.json"
+
+  say "Btrfs checkpoint volume ready: $mountpoint"
 }
 
 configure_ephemeral_storage() {
@@ -525,6 +708,9 @@ install_packages() {
     packages+=(python3)
   elif ! python3 -c 'import cryptography' >/dev/null 2>&1; then
     packages+=(python3-cryptography)
+  fi
+  if ! disabled_mode "$(stack_default BDAG_BTRFS_CHECKPOINT_VOLUME_MODE auto)" && ! command -v mkfs.btrfs >/dev/null 2>&1; then
+    packages+=(btrfs-progs)
   fi
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && (( ${#packages[@]} == 0 )); then
     return 0
@@ -585,8 +771,11 @@ configure_env() {
   set_env_value .env BDAG_ASIC_LAN_CIDRS "$scan_target"
   validate_pool_lan_config
   apply_stack_defaults_env .env
+  configure_btrfs_checkpoint_volume
   set_stack_default_env_value .env BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED
   set_stack_default_env_value .env BDAG_CHAIN_PEERSTORE_LOG_TAIL
+  set_stack_default_env_value .env BDAG_NODE_PEER_LIMIT
+  set_stack_default_env_value .env BDAG_NODE_PEER_STABLE_PORTS
   set_env_value .env BDAG_INSTALL_APPLIANCE_HOST_PROFILE "$(env_value BDAG_INSTALL_APPLIANCE_HOST_PROFILE 1)"
   set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_DISABLE_SERVICES "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_DISABLE_SERVICES 0)"
   set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_RELOAD_DOCKER "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_RELOAD_DOCKER 1)"
@@ -597,21 +786,27 @@ configure_env() {
   set_existing_or_stack_default_env_value .env BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_CID
   set_existing_or_stack_default_env_value .env BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_FILE
   set_env_value .env NODE_ARGS_APPEND ""
-  set_env_value .env BDAG_RAWDATADIR_ARTIFACT_BASE "./data-restore/rawdatadir"
+  set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_ARTIFACT_BASE
+  set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_DIR
   set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_MODE
   set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE
-  set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE "./data-restore/rawdatadir-sidecar-content"
+  set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE
   set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP
   set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED
+  set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_OPEN_SIDECAR_BASE
   set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_SIGNING_KEY_FILE
   set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_TRUSTED_SIGNERS
   set_existing_or_stack_default_env_value .env BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER
+  set_stack_default_env_value .env BDAG_RAWDATADIR_REQUIRE_CHAIN_ANCHOR
+  set_stack_default_env_value .env BDAG_RAWDATADIR_CHAIN_ANCHOR_REFERENCE_EVM_URL
+  set_stack_default_env_value .env BDAG_RAWDATADIR_CHAIN_ANCHOR_TIMEOUT
+  set_stack_default_env_value .env BDAG_RAWDATADIR_CHAIN_ANCHOR_FINALITY_BLOCKS
   set_env_value .env BDAG_RAWDATADIR_ACTIVE_SERVICE "node"
   set_stack_default_env_value .env BDAG_RAWDATADIR_FINALIZE
   set_env_value .env BDAG_RAWDATADIR_PEERS ""
   set_stack_default_env_value .env BDAG_IPFS_CONTENT_SIDECAR_MODE
-  set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_DIR "./data-restore/rawdatadir-sidecar-content/current"
-  set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST "./data-restore/rawdatadir-sidecar-content/current/manifest.json"
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_DIR
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST
   set_stack_default_env_value .env BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT
   set_stack_default_env_value .env BDAG_IPFS_CONTENT_PUBLISH_IPNS
   set_env_value .env BDAG_IPFS_CONTENT_IPNS_KEY ""
@@ -625,6 +820,18 @@ configure_env() {
   set_existing_or_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_CONTENT_DEFAULT_INDEX_CID
   set_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS
   set_existing_or_stack_default_env_value .env BDAG_IPFS_RAWDATADIR_CONTENT_IPNS_KEY
+  set_stack_default_env_value .env BDAG_IPFS_STATE_CHECKPOINT_REQUIRED
+  set_stack_default_env_value .env BDAG_RESTORE_POINT_MAX_AGE_SECONDS
+  set_stack_default_env_value .env BDAG_RESTORE_GUARD_IPFS_TIMERS
+  set_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_ENABLED
+  set_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_INDEX_PATH
+  set_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_STATUS_FILE
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_DEFAULT_CID
+  set_existing_or_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_IPNS
+  set_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_PUBLISH_IPFS
+  set_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_MAX_PEERS
+  set_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_REQUIRE_SIGNATURES
+  set_stack_default_env_value .env BDAG_IPFS_PEER_ROSTER_ADD_ARGS
   set_stack_default_env_value .env BDAG_IPFS_CONTENT_DEFAULT_ROOT_CID
   set_env_value .env BDAG_IPFS_CONTENT_STATUS_FILE "./ops/runtime/ipfs-content-sidecar-status.json"
   set_env_value .env BDAG_IPFS_CONTENT_LATEST_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
@@ -633,6 +840,7 @@ configure_env() {
   set_existing_or_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_ROSTER
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH
+  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_BOOTSTRAP_UNTRUSTED_PUBLISH
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_START_POLICY
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_STALE_HEAD_RESET_ENABLED
   set_stack_default_env_value .env BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS
@@ -704,8 +912,14 @@ configure_env() {
   set_stack_default_env_value .env BDAG_HOST_PRESSURE_SWAP_USED_WARN_PERCENT
   set_stack_default_env_value .env BDAG_ADAPTIVE_MEMORY_AVAILABLE_WARN_PERCENT
   set_stack_default_env_value .env BDAG_ADAPTIVE_SWAP_USED_WARN_PERCENT
+  set_stack_default_env_value .env BDAG_SHARED_STATUS_CACHE_ENABLED
+  set_stack_default_env_value .env BDAG_SHARED_STATUS_CACHE_SECONDS
+  set_stack_default_env_value .env BDAG_STATUS_SAMPLER_ENABLED
+  set_stack_default_env_value .env BDAG_STATUS_SAMPLER_INTERVAL_SECONDS
+  set_stack_default_env_value .env BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS
   set_stack_default_env_value .env BDAG_BACKGROUND_MAINTENANCE_MEMORY_AVAILABLE_WARN_PERCENT
   set_stack_default_env_value .env BDAG_BACKGROUND_MAINTENANCE_SWAP_USED_WARN_PERCENT
+  set_stack_default_env_value .env BDAG_BACKGROUND_MAINTENANCE_POOL_READY_STATUS_MAX_AGE_SECONDS
   set_stack_default_env_value .env BDAG_MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED
   set_stack_default_env_value .env BDAG_CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS
   set_stack_default_env_value .env BDAG_CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS
@@ -793,7 +1007,7 @@ run_appliance_preflight() {
   if [[ "${BDAG_APPLIANCE_PREFLIGHT_STRICT:-0}" == "1" ]]; then
     python3 scripts/mining-appliance-preflight.py --root "$ROOT" --env-file "$ROOT/.env"
   else
-    python3 scripts/mining-appliance-preflight.py --root "$ROOT" --env-file "$ROOT/.env" --warn-only
+    python3 scripts/mining-appliance-preflight.py --root "$ROOT" --env-file "$ROOT/.env" --warn-only --enforce-blockers
   fi
 }
 

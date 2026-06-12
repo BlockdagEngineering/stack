@@ -155,8 +155,6 @@ services:
       target: pool
       additional_contexts:
         <<: *dev-source-contexts
-      args:
-        <<: *build-args
     restart: unless-stopped
     logging: *mining-logging
     tmpfs:
@@ -193,6 +191,7 @@ services:
       POOL_RPC_ROUTER_NODE_HEALTH_UNREADY_THRESHOLD: ${POOL_RPC_ROUTER_NODE_HEALTH_UNREADY_THRESHOLD:-3}
       POOL_RPC_ROUTER_NODE_HEALTH_ERROR_THRESHOLD: ${POOL_RPC_ROUTER_NODE_HEALTH_ERROR_THRESHOLD:-3}
       POOL_RPC_ROUTER_NODE_HEALTH_FRESH_TEMPLATE_GRACE_SECONDS: ${POOL_RPC_ROUTER_NODE_HEALTH_FRESH_TEMPLATE_GRACE_SECONDS:-15}
+      BDAG_ASIC_EXPECTED_MACS: ${BDAG_ASIC_EXPECTED_MACS:-}
       POOL_ASIC_MAC_OVERRIDES: ${POOL_ASIC_MAC_OVERRIDES:-}
       BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-}
       POOL_STALE_RACE_REJECT_WINDOW_SECONDS: ${POOL_STALE_RACE_REJECT_WINDOW_SECONDS:-10}
@@ -252,6 +251,7 @@ services:
       BDAG_POOL_CONTAINER: pool
       BDAG_POOL_CONTAINERS: pool
       BDAG_POOL_DB_CONTAINER: postgres
+      BDAG_ASIC_EXPECTED_MACS: ${BDAG_ASIC_EXPECTED_MACS:-}
       BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-}
       BDAG_DOCKER_BRIDGE_CIDRS: ${BDAG_DOCKER_BRIDGE_CIDRS:-172.16.0.0/12}
       BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS: ${BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS:-0}
@@ -286,7 +286,7 @@ services:
       BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS: ${BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS:-120}
       BDAG_COLLECTOR_GLOBAL_SAMPLER_INTERVAL_SECONDS: ${BDAG_COLLECTOR_GLOBAL_SAMPLER_INTERVAL_SECONDS:-60}
       BDAG_GLOBAL_CACHE_TTL_SECONDS: ${BDAG_GLOBAL_CACHE_TTL_SECONDS:-60}
-      BDAG_GLOBAL_RPC_WORKERS: ${BDAG_GLOBAL_RPC_WORKERS:-24}
+      BDAG_GLOBAL_RPC_WORKERS: ${BDAG_GLOBAL_RPC_WORKERS:-8}
       BDAG_GLOBAL_BLOCK_WINDOW: ${BDAG_GLOBAL_BLOCK_WINDOW:-600}
       BDAG_GLOBAL_DEFERRED_BLOCK_WINDOW: ${BDAG_GLOBAL_DEFERRED_BLOCK_WINDOW:-64}
       MINING_POOL_ADDRESS: ${MINING_POOL_ADDRESS:?set MINING_POOL_ADDRESS to a non-zero payout address}
@@ -314,18 +314,42 @@ services:
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
       - /var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
-    depends_on:
-      collector: { condition: service_started }
     environment:
       TMPDIR: /tmp
       TMP: /tmp
       TEMP: /tmp
-      ADDR: ${DASHBOARD_LISTEN:-0.0.0.0:9290}
+      BDAG_PROJECT_ROOT: /workspace
+      BDAG_RUNTIME_DIR: /workspace/ops/runtime
+      BDAG_POOL_ENV_FILE: /workspace/.env
+      BDAG_DASHBOARD_BIND: 0.0.0.0
+      BDAG_DASHBOARD_PORT: 9290
       BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://collector:9280}
+      BDAG_NODE_SERVICE: node
+      BDAG_NODE_SERVICES: node
+      BDAG_STACK_SERVICES: postgres,node,pool
+      BDAG_START_SERVICES: postgres,node,pool
+      BDAG_POOL_CONTAINER: pool
+      BDAG_POOL_CONTAINERS: pool
+      BDAG_POOL_DB_CONTAINER: postgres
+      BDAG_ASIC_EXPECTED_MACS: ${BDAG_ASIC_EXPECTED_MACS:-}
+      BDAG_POOL_DB_USER: ${POSTGRES_USER:-bdag_pool}
+      BDAG_POOL_DB_NAME: ${POSTGRES_DB:-bdagpool}
+      BDAG_NODE_RPC_URL: http://node:38131
+      BDAG_NODE_RPC_URLS: node=http://node:38131
+      BDAG_GLOBAL_CHAIN_RPC_URLS: node=http://node:38131
+      BDAG_GLOBAL_RPC_URLS: ${BDAG_GLOBAL_RPC_URLS:-}
+      BDAG_PUBLIC_RPC_URLS: ${BDAG_PUBLIC_RPC_URLS:-blockdag-engineering-rpc=https://rpc.blockdag.engineering,bdagscan-rpc=https://rpc.bdagscan.com}
+      BDAG_GLOBAL_BLOCK_WINDOW: ${BDAG_GLOBAL_BLOCK_WINDOW:-600}
+      NODE_RPC_USER: ${NODE_RPC_USER:-test}
+      NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
       DASHBOARD_TIMEZONE: ${DASHBOARD_TIMEZONE:-Africa/Johannesburg}
     ports:
       - "${DASHBOARD_HOST_PORT:-127.0.0.1:80}:9290"
       - "${DASHBOARD_HOST_PORT_8088:-127.0.0.1:8088}:9290"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/workspace:ro
+      - ./ops/runtime:/workspace/ops/runtime
 
   # --------------------------------------------------------------------------
   # Optional CPU miner (dockerfile-dev target only). Enable with:
@@ -340,8 +364,6 @@ services:
       target: miner
       additional_contexts:
         <<: *dev-source-contexts
-      args:
-        <<: *build-args
     restart: unless-stopped
     logging: *mining-logging
     tmpfs:

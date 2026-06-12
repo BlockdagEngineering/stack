@@ -158,6 +158,7 @@ class MinerRegistryIdentityTests(unittest.TestCase):
         self.old_retirements_file = pool_ops.MINER_RETIREMENTS_FILE
         self.old_read_neighbors = pool_ops.read_neighbor_macs
         self.old_discover_miner = pool_ops.discover_miner
+        self.old_expected_macs = os.environ.get("BDAG_ASIC_EXPECTED_MACS")
         pool_ops.MINER_REGISTRY_FILE = self.registry_file
         pool_ops.MINER_RETIREMENTS_FILE = self.retirements_file
         pool_ops.read_neighbor_macs = lambda: {}
@@ -168,6 +169,10 @@ class MinerRegistryIdentityTests(unittest.TestCase):
         pool_ops.MINER_RETIREMENTS_FILE = self.old_retirements_file
         pool_ops.read_neighbor_macs = self.old_read_neighbors
         pool_ops.discover_miner = self.old_discover_miner
+        if self.old_expected_macs is None:
+            os.environ.pop("BDAG_ASIC_EXPECTED_MACS", None)
+        else:
+            os.environ["BDAG_ASIC_EXPECTED_MACS"] = self.old_expected_macs
 
     def test_registry_keeps_distinct_macs_when_ip_is_reused(self) -> None:
         registry = pool_ops.save_miner_registry(
@@ -272,6 +277,124 @@ class MinerRegistryIdentityTests(unittest.TestCase):
         self.assertEqual(miner["mac"], "28:e2:97:1e:c0:b5")
         self.assertEqual(miner["device_type"], "asic")
         self.assertIn("lan-hint", miner["sources"])
+
+    def test_expected_asic_macs_are_managed_lanes_without_ip_identity(self) -> None:
+        os.environ["BDAG_ASIC_EXPECTED_MACS"] = (
+            "28:e2:97:1e:c0:b5,2a:71:c7:f5:1f:1e,28:e2:97:4d:44:3a,28:e2:97:3e:39:63"
+        )
+        self.registry_file.write_text(
+            json.dumps(
+                {
+                    "updated_at": "2026-06-11T08:00:00+0200",
+                    "miners": [
+                        {
+                            "ip": "192.168.1.103",
+                            "mac": "28:e2:97:1e:c0:b5",
+                            "device_type": "asic",
+                            "managed": False,
+                            "last_configured_ok": False,
+                        },
+                        {
+                            "ip": "192.168.1.100",
+                            "mac": "28:e2:97:4d:44:3a",
+                            "device_type": "asic",
+                            "managed": False,
+                            "last_configured_ok": False,
+                        },
+                        {
+                            "ip": "192.168.1.109",
+                            "mac": "c8:d3:ff:a3:f4:e1",
+                            "device_type": "asic",
+                            "managed": False,
+                            "last_configured_ok": False,
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        registry = pool_ops.read_miner_registry(augment_lan_hints=False)
+        by_mac = {item["mac"]: item for item in registry["miners"] if item.get("mac")}
+
+        self.assertTrue(by_mac["28:e2:97:1e:c0:b5"]["managed"])
+        self.assertTrue(by_mac["28:e2:97:4d:44:3a"]["managed"])
+        self.assertTrue(by_mac["2a:71:c7:f5:1f:1e"]["managed"])
+        self.assertEqual(by_mac["2a:71:c7:f5:1f:1e"]["ip"], "")
+        self.assertFalse(by_mac["c8:d3:ff:a3:f4:e1"].get("managed"))
+        override_value = pool_ops.pool_asic_mac_overrides_value(registry)
+        self.assertIn("192.168.1.103=28:e2:97:1e:c0:b5", override_value)
+        self.assertIn("192.168.1.100=28:e2:97:4d:44:3a", override_value)
+
+    def test_project_env_overrides_blank_stack_default_for_expected_macs(self) -> None:
+        keys = (
+            "BDAG_PROJECT_ROOT",
+            "BDAG_RUNTIME_DIR",
+            "BDAG_POOL_ENV_FILE",
+            "BDAG_OPS_ENV_FILE",
+            "BDAG_STACK_DEFAULTS_FILE",
+            "BDAG_ASIC_EXPECTED_MACS",
+        )
+        original = {key: os.environ.get(key) for key in keys}
+        self.addCleanup(
+            lambda: [
+                os.environ.pop(key, None) if value is None else os.environ.__setitem__(key, value)
+                for key, value in original.items()
+            ]
+        )
+        project_root = pathlib.Path(self.tmp.name) / "project"
+        runtime_dir = project_root / "ops" / "runtime"
+        config_dir = project_root / "ops" / "config"
+        config_dir.mkdir(parents=True)
+        runtime_dir.mkdir(parents=True)
+        stack_defaults = config_dir / "stack-defaults.env"
+        pool_env = project_root / ".env"
+        stack_defaults.write_text("BDAG_ASIC_EXPECTED_MACS=\n", encoding="utf-8")
+        pool_env.write_text("BDAG_ASIC_EXPECTED_MACS=28:e2:97:1e:c0:b5\n", encoding="utf-8")
+        for key in keys:
+            os.environ.pop(key, None)
+        os.environ["BDAG_PROJECT_ROOT"] = str(project_root)
+        os.environ["BDAG_RUNTIME_DIR"] = str(runtime_dir)
+        os.environ["BDAG_POOL_ENV_FILE"] = str(pool_env)
+        os.environ["BDAG_STACK_DEFAULTS_FILE"] = str(stack_defaults)
+
+        pool_ops.bootstrap_stack_env()
+
+        self.assertEqual(os.environ["BDAG_ASIC_EXPECTED_MACS"], "28:e2:97:1e:c0:b5")
+
+    def test_lan_hint_updates_same_mac_current_route(self) -> None:
+        old_target = os.environ.get("BDAG_MINER_SCAN_TARGET")
+        os.environ["BDAG_MINER_SCAN_TARGET"] = "192.168.1.0/24"
+        self.addCleanup(
+            lambda: os.environ.pop("BDAG_MINER_SCAN_TARGET", None)
+            if old_target is None
+            else os.environ.__setitem__("BDAG_MINER_SCAN_TARGET", old_target)
+        )
+        mac = "28:e2:97:4d:44:3a"
+        pool_ops.read_neighbor_macs = lambda: {"192.168.1.105": mac}
+        self.registry_file.write_text(
+            json.dumps(
+                {
+                    "miners": [
+                        {
+                            "ip": "192.168.1.100",
+                            "mac": mac,
+                            "device_type": "asic",
+                            "managed": True,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        registry = pool_ops.read_miner_registry()
+
+        self.assertEqual(len(registry["miners"]), 1)
+        miner = registry["miners"][0]
+        self.assertEqual(miner["mac"], mac)
+        self.assertEqual(miner["ip"], "192.168.1.105")
+        self.assertEqual(set(miner["ip_history"]), {"192.168.1.100", "192.168.1.105"})
 
     def test_registry_ignores_docker_bridge_neighbor_hints(self) -> None:
         old_target = os.environ.get("BDAG_MINER_SCAN_TARGET")
@@ -1147,6 +1270,66 @@ class MinerHealthConfiguredScopeTests(unittest.TestCase):
 
         miner = pool_ops.collect_miner_health()["miners"][0]
 
+        self.assertEqual(miner["shares"], 0)
+        self.assertEqual(miner["share_work"], 0)
+        self.assertEqual(miner["blocks_found"], 0)
+        self.assertEqual(miner["submits"], 0)
+        self.assertFalse(miner["work_pool_active"])
+
+    def test_stale_activity_row_does_not_count_as_connected_miner(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        mac = "28:e2:97:3d:95:13"
+        last_seen = "2026/06/11 16:57:07"
+        last_share = "2026/06/11 16:56:45"
+        last_epoch = int(pool_ops._pool_log_epoch(last_seen) or 0)
+        now_epoch = int(pool_ops._pool_log_epoch("2026/06/11 18:07:07") or 0)
+        pool_ops.collect_pool_activity = lambda lines=0: {
+            "miners": [
+                {
+                    "ip": "192.168.100.102",
+                    "mac": mac,
+                    "identity_key": f"mac:{mac}",
+                    "workers": [worker],
+                    "submits": 10,
+                    "shares": 8,
+                    "share_work": 700,
+                    "blocks_found": 1,
+                    "last_seen_at": last_seen,
+                    "last_submit_at": last_share,
+                    "last_share_at": last_share,
+                }
+            ]
+        }
+        pool_ops.upsert_pool_activity_miners = lambda activity: {
+            "updated_at": "2026-06-11T18:07:07+0000",
+            "miners": [
+                {
+                    "ip": "192.168.100.102",
+                    "mac": mac,
+                    "device_id": f"mac:{mac}",
+                    "device_type": "asic",
+                    "expected_pool_url": pool_ops.default_miner_pool_settings()["pool_url"],
+                    "expected_worker_user": worker,
+                    "last_workers": [worker],
+                    "last_pool_seen_epoch": last_epoch,
+                    "last_submit_epoch": last_epoch,
+                    "last_share_epoch": last_epoch,
+                    "last_submits_window": 10,
+                    "last_shares_window": 8,
+                    "last_share_work_window": 700,
+                    "last_blocks_window": 1,
+                    "managed": True,
+                    "last_configured_ok": True,
+                }
+            ],
+        }
+        pool_ops.seconds_since_epoch = lambda: now_epoch
+
+        health = pool_ops.collect_miner_health()
+        miner = health["miners"][0]
+
+        self.assertEqual(health["connected_count"], 0)
+        self.assertFalse(miner["connected"])
         self.assertEqual(miner["shares"], 0)
         self.assertEqual(miner["share_work"], 0)
         self.assertEqual(miner["blocks_found"], 0)

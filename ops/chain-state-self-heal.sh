@@ -54,6 +54,60 @@ log() {
   printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG_FILE" >&2
 }
 
+sudo_available() {
+  command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1
+}
+
+mkdir_p() {
+  if mkdir -p "$@" 2>/dev/null; then
+    return 0
+  fi
+  if sudo_available; then
+    sudo -n mkdir -p "$@"
+    return $?
+  fi
+  mkdir -p "$@"
+}
+
+path_is_dir() {
+  [[ -d "$1" ]] && return 0
+  sudo_available && sudo -n test -d "$1"
+}
+
+mv_path() {
+  if mv "$1" "$2" 2>/dev/null; then
+    return 0
+  fi
+  if sudo_available; then
+    sudo -n mv "$1" "$2"
+    return $?
+  fi
+  mv "$1" "$2"
+}
+
+rsync_path() {
+  if rsync "$@" 2>/dev/null; then
+    return 0
+  fi
+  if sudo_available; then
+    sudo -n rsync "$@"
+    return $?
+  fi
+  rsync "$@"
+}
+
+chown_path_recursive() {
+  local owner="$1" path="$2"
+  if chown -R "$owner" "$path" 2>/dev/null; then
+    return 0
+  fi
+  if sudo_available; then
+    sudo -n chown -R "$owner" "$path"
+    return $?
+  fi
+  chown -R "$owner" "$path"
+}
+
 json_state() {
   local status="$1" reason="$2"
   STATUS_VALUE="$status" \
@@ -83,6 +137,28 @@ payload = {
 tmp = path.with_suffix(path.suffix + ".tmp")
 tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 os.replace(tmp, path)
+PY
+}
+
+automation_allows_self_heal() {
+  local reason="$1"
+  python3 - "$ROOT" "$reason" <<'PY'
+import sys
+
+root, reason = sys.argv[1], sys.argv[2]
+sys.path.insert(0, f"{root}/ops")
+import automation_control  # type: ignore
+
+decision = automation_control.check_mutation_allowed(
+    automation_control.ACTION_STACK_CLEAN_RESTORE,
+    actor="chain-state-self-heal",
+    target="chain-state-self-heal",
+    reason=reason,
+)
+if decision.allowed:
+    raise SystemExit(0)
+print(decision.reason)
+raise SystemExit(1)
 PY
 }
 
@@ -233,11 +309,21 @@ else
   NODE_DATA_DIR="$CHAIN_DATA_DIR/node"
 fi
 NODE_NETWORK_DIR="$NODE_DATA_DIR/$NETWORK"
-QUARANTINE_ROOT="${BDAG_CHAIN_STATE_QUARANTINE_DIR:-$CHAIN_DATA_DIR/chain-quarantine}"
+DEFAULT_QUARANTINE_ROOT="$CHAIN_DATA_DIR/chain-quarantine"
+case "$DEFAULT_QUARANTINE_ROOT/" in
+  "$NODE_DATA_DIR"/*) DEFAULT_QUARANTINE_ROOT="$(dirname "$NODE_DATA_DIR")/chain-quarantine" ;;
+esac
+QUARANTINE_ROOT="${BDAG_CHAIN_STATE_QUARANTINE_DIR:-$DEFAULT_QUARANTINE_ROOT}"
+case "$QUARANTINE_ROOT/" in
+  "$NODE_DATA_DIR"/*)
+    log "chain-state quarantine dir must not be inside node data dir: $QUARANTINE_ROOT"
+    json_state "blocked" "chain-state quarantine dir is inside node data dir"
+    exit 1
+    ;;
+esac
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 QUARANTINE_PATH="$QUARANTINE_ROOT/$(basename "$NODE_DATA_DIR")-damaged-$STAMP"
 TMP_DIR="$RUNTIME_DIR/chain-state-self-heal-$STAMP"
-mkdir -p "$TMP_DIR" "$QUARANTINE_ROOT"
 
 POOL_SERVICE="${BDAG_CHAIN_STATE_POOL_SERVICE:-${BDAG_POOL_CONTAINER:-pool}}"
 NODE_SERVICE="${BDAG_CHAIN_STATE_NODE_SERVICE:-node}"
@@ -288,21 +374,6 @@ choose_restore_source() {
     RESTORE_MODE_USED="ipfs_index_file"
     RESTORE_SOURCE_USED="$BDAG_CHAIN_STATE_RESTORE_IPFS_INDEX_FILE"
     return 0
-  fi
-  if [[ "${BDAG_CHAIN_STATE_SELF_HEAL_ALLOW_LOCAL_CANDIDATES:-0}" == "1" ]]; then
-    local candidates=(
-      "$ROOT/data-restore/rawdatadir/current/mainnet"
-      "$ROOT/data-restore/rawdatadir/current"
-      "$ROOT/data-restore/latest/mainnet"
-      "$ROOT/data-restore/latest"
-    )
-    for candidate in "${candidates[@]}"; do
-      if [[ -d "$candidate" ]]; then
-        RESTORE_MODE_USED="source"
-        RESTORE_SOURCE_USED="$candidate"
-        return 0
-      fi
-    done
   fi
   return 1
 }
@@ -359,6 +430,42 @@ PY
   return 0
 }
 
+reject_live_hot_rsync_source() {
+  local source="$1" manifest
+  for manifest in "$source/manifest.json" "$(dirname "$source")/manifest.json"; do
+    [[ -f "$manifest" ]] || continue
+    if python3 - "$manifest" "$NODE_NETWORK_DIR" <<'PY'
+import json
+import os
+import sys
+
+manifest_path, node_network_dir = sys.argv[1:3]
+try:
+    payload = json.load(open(manifest_path, encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+
+mode = str(payload.get("mode") or "")
+source = str(payload.get("source") or "")
+if mode != "live_hot_rsync" or not source:
+    sys.exit(1)
+
+try:
+    source_real = os.path.realpath(source)
+    node_real = os.path.realpath(node_network_dir)
+except Exception:
+    sys.exit(1)
+
+sys.exit(0 if source_real == node_real else 1)
+PY
+    then
+      log "restore source $source is a live_hot_rsync mirror of this node data according to $manifest"
+      return 1
+    fi
+  done
+  return 0
+}
+
 validate_restore_input() {
   local mode="$1" source="$2"
   case "$mode" in
@@ -373,6 +480,7 @@ validate_restore_input() {
         return 1
       fi
       reject_sealed_artifact_source "$local_source"
+      reject_live_hot_rsync_source "$local_source"
       ;;
     ipfs_artifact|ipfs_index|ipfs_index_file)
       if [[ ! -x "$ROOT/ops/restore-rawdatadir-segment-artifact.py" ]]; then
@@ -397,22 +505,22 @@ validate_restore_input() {
 
 restore_from_source() {
   local source="$1"
-  mkdir -p "$NODE_NETWORK_DIR"
+  mkdir_p "$NODE_NETWORK_DIR"
   if [[ "$source" == *:* && "$source" != /* ]]; then
     local ssh_command="${BDAG_CHAIN_STATE_RESTORE_SSH_COMMAND:-ssh -o BatchMode=yes}"
     log "restoring chain data from remote rsync source $source"
-    rsync -a --delete -e "$ssh_command" "${source%/}/" "$NODE_NETWORK_DIR/"
+    rsync_path -a --delete -e "$ssh_command" "${source%/}/" "$NODE_NETWORK_DIR/"
   else
     local local_source
     local_source="$(resolve_local_restore_source "$source")"
     log "restoring chain data from local source $local_source"
-    rsync -a --delete "$local_source/" "$NODE_NETWORK_DIR/"
+    rsync_path -a --delete "$local_source/" "$NODE_NETWORK_DIR/"
   fi
 }
 
 restore_from_ipfs_artifact() {
   local mode="$1" source="$2" status_file timeout args=()
-  mkdir -p "$NODE_NETWORK_DIR"
+  mkdir_p "$NODE_NETWORK_DIR"
   status_file="${BDAG_CHAIN_STATE_RESTORE_IPFS_STATUS_FILE:-$RUNTIME_DIR/ipfs-rawdatadir-self-heal-restore-status.json}"
   timeout="${BDAG_IPFS_RAWDATADIR_RESTORE_IPFS_TIMEOUT:-600}"
   args=(--target-dir "$NODE_NETWORK_DIR" --status-file "$status_file" --ipfs-timeout "$timeout" --network "$NETWORK")
@@ -438,17 +546,23 @@ if ! validate_restore_input "$RESTORE_MODE_USED" "$RESTORE_SOURCE_USED"; then
   json_state "blocked" "selected restore input is not a restore-safe raw datadir/IPFS artifact"
   exit 1
 fi
+if ! control_reason="$(automation_allows_self_heal "destructive chain-state restore mode=$RESTORE_MODE_USED source=$RESTORE_SOURCE_USED" 2>&1)"; then
+  log "automation control blocked chain-state self-heal: $control_reason"
+  json_state "blocked" "automation control blocked chain-state self-heal: $control_reason"
+  exit 1
+fi
+mkdir_p "$TMP_DIR" "$QUARANTINE_ROOT"
 
 json_state "started" "chain-state restore started"
 stop_service_best_effort "$POOL_SERVICE" || true
 stop_service_best_effort "$NODE_SERVICE" || true
 
-if [[ -d "$NODE_DATA_DIR" ]]; then
-  mkdir -p "$(dirname "$QUARANTINE_PATH")"
-  mv "$NODE_DATA_DIR" "$QUARANTINE_PATH"
+if path_is_dir "$NODE_DATA_DIR"; then
+  mkdir_p "$(dirname "$QUARANTINE_PATH")"
+  mv_path "$NODE_DATA_DIR" "$QUARANTINE_PATH"
   log "quarantined damaged node data at $QUARANTINE_PATH"
 fi
-mkdir -p "$NODE_DATA_DIR"
+mkdir_p "$NODE_DATA_DIR"
 
 case "$RESTORE_MODE_USED" in
   source) restore_from_source "$RESTORE_SOURCE_USED" ;;
@@ -460,12 +574,29 @@ case "$RESTORE_MODE_USED" in
     ;;
 esac
 
-if compose up -d --no-build --pull never "$NODE_SERVICE" "$DASHBOARD_SERVICE" >>"$LOG_FILE" 2>&1; then
-  log "restarted node/dashboard after chain-state restore"
+RESTORE_CHOWN="${BDAG_CHAIN_STATE_RESTORE_CHOWN:-999:999}"
+case "${RESTORE_CHOWN,,}" in
+  ""|0|false|no|none|off) ;;
+  *)
+    chown_path_recursive "$RESTORE_CHOWN" "$NODE_DATA_DIR"
+    log "set restored node data ownership to $RESTORE_CHOWN"
+    ;;
+esac
+
+if compose up -d --no-build --pull never "$NODE_SERVICE" >>"$LOG_FILE" 2>&1; then
+  log "restarted node after chain-state restore"
 else
-  log "failed to restart node/dashboard after chain-state restore"
-  json_state "failed" "node/dashboard restart failed after restore"
+  log "failed to restart node after chain-state restore"
+  json_state "failed" "node restart failed after restore"
   exit 1
+fi
+
+if [[ -n "$DASHBOARD_SERVICE" ]]; then
+  if compose up -d --no-build --pull never "$DASHBOARD_SERVICE" >>"$LOG_FILE" 2>&1; then
+    log "restarted dashboard after chain-state restore"
+  else
+    log "dashboard restart failed after chain-state restore; continuing because node restore completed"
+  fi
 fi
 
 stop_service_best_effort "$POOL_SERVICE" || true

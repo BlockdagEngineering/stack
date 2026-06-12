@@ -91,7 +91,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://collector:9280}", dashboard_block)
         self.assertNotIn("DASHBOARD_EVM_RPC_URL:", compose)
         self.assertNotIn("BDAG_RPC_URL: http://node:38131", compose)
-        self.assertIn("collector: { condition: service_started }", dashboard_block)
+        self.assertNotIn("collector: { condition: service_started }", dashboard_block)
         self.assertNotIn("node: { condition: service_started }", dashboard_block)
         self.assertNotIn("pool: { condition: service_started }", dashboard_block)
 
@@ -127,13 +127,18 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfile = (ROOT_DIR / "dockerfile").read_text(encoding="utf-8")
         dockerfile_dev = (ROOT_DIR / "dockerfile-dev").read_text(encoding="utf-8")
+        release_dashboard_block = dockerfile.split("FROM docker:27-cli AS dashboard", 1)[1]
+        dev_dashboard_block = dockerfile_dev.split("FROM docker:27-cli AS dashboard", 1)[1]
 
         self.assertIn("dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../dashboard}", compose)
         self.assertIn("collector_src: ${COLLECTOR_SRC_CONTEXT:-../collector}", compose)
-        self.assertIn("test -f ./bin/dashboard", dockerfile)
-        self.assertIn("COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard", dockerfile)
+        self.assertIn("COPY dashboard-source /opt/dashboard", dockerfile)
+        self.assertIn("entrypoint-dashboard.sh", dockerfile)
         self.assertIn("COPY --from=collector_src . /opt/collector", dockerfile)
-        self.assertIn("COPY --from=dashboard_src . .", dockerfile_dev)
+        self.assertIn("COPY --from=dashboard_src . /src/dashboard", dockerfile_dev)
+        self.assertIn("COPY --from=dashboard-source /src/dashboard /opt/dashboard", dockerfile_dev)
+        self.assertNotIn("requirements-dev.txt", release_dashboard_block)
+        self.assertNotIn("requirements-dev.txt", dev_dashboard_block)
 
     def test_dashboard_release_build_has_no_dead_git_ref_arg(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
@@ -182,6 +187,13 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             1,
             compose.count("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED: ${POOL_RPC_ROUTER_NODE_HEALTH_ENABLED:-true}"),
         )
+
+    def test_p2p_installer_env_value_prints_resolved_value(self) -> None:
+        installer = (ROOT_DIR / "ops" / "install-p2p-services.sh").read_text(encoding="utf-8")
+
+        self.assertIn('value="$(strip_env_quotes "$value")"', installer)
+        self.assertIn('printf \'%s\\n\' "$value"', installer)
+        self.assertNotIn("strip_env_quotes \"$value\"\n  printf '\\n'", installer)
 
     def test_pool_node_health_gate_is_enabled_by_default(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
@@ -340,6 +352,12 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             installer,
         )
         for config in (env_example, defaults):
+            self.assertIn("BDAG_BTRFS_CHECKPOINT_VOLUME_MODE=auto", config)
+            self.assertIn("BDAG_BTRFS_CHECKPOINT_VOLUME_SIZE_GIB=128", config)
+            self.assertIn("BDAG_BTRFS_CHECKPOINT_VOLUME_MOUNT=./data-restore/btrfs-checkpoints", config)
+            self.assertIn("BDAG_RAWDATADIR_ARTIFACT_BASE=./data-restore/btrfs-checkpoints/rawdatadir-artifacts", config)
+            self.assertIn("BDAG_RAWDATADIR_SIDECAR_DIR=./data-restore/btrfs-checkpoints/rawdatadir-sidecar/mainnet", config)
+            self.assertIn("BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE=./data-restore/btrfs-checkpoints/rawdatadir-sidecar-content", config)
             self.assertIn(
                 "BDAG_BACKGROUND_MAINTENANCE_LAZY_TASKS=dashboard_global_sampler,global_blockchain_scan,global_scan,"
                 "rawdatadir_sidecar,rawdatadir_content_seal,ipfs_content_sidecar,ipfs_segment_writer,"
@@ -347,7 +365,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
                 config,
             )
             self.assertIn("BDAG_BACKGROUND_MAINTENANCE_SYNC_PRIORITY_EXEMPT_TASKS=ipfs_segment_writer", config)
-            self.assertIn("BDAG_BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS=ipfs_segment_writer", config)
+            self.assertIn("BDAG_BACKGROUND_MAINTENANCE_IO_PRESSURE_EXEMPT_TASKS=", config)
             self.assertIn(
                 "BDAG_BACKGROUND_MAINTENANCE_POOL_READY_TASKS=rawdatadir_content_seal,ipfs_content_sidecar",
                 config,
@@ -357,12 +375,24 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             self.assertIn("BDAG_IPFS_SEGMENT_STALE_HEAD_MAX_LAG_ORDERS=3600", config)
             self.assertIn("BDAG_IPFS_SEGMENT_WRITER_ELECTION_RULE=rendezvous_sha256_v1", config)
             self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH=0", config)
+            self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_UNTRUSTED_PUBLISH=0", config)
             self.assertIn("BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE=./ops/runtime/ipfs-content/segment-writer.key", config)
             self.assertIn("BDAG_RAWDATADIR_SIGNING_KEY_FILE=./ops/runtime/ipfs-content/segment-writer.key", config)
             self.assertIn("BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH=./ops/runtime/ipfs-content/rawdatadir-content-index.json", config)
             self.assertIn("BDAG_IPFS_RAWDATADIR_CONTENT_DEFAULT_INDEX_CID=", config)
             self.assertIn("BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS=auto", config)
+            self.assertIn("BDAG_IPFS_STATE_CHECKPOINT_REQUIRED=1", config)
+            self.assertIn("BDAG_RESTORE_POINT_MAX_AGE_SECONDS=600", config)
+            self.assertIn("BDAG_RESTORE_GUARD_IPFS_TIMERS=bdag-rawdatadir-sidecar.timer,bdag-rawdatadir-sidecar-verify.timer,bdag-ipfs-content-sidecar.timer", config)
+            self.assertIn("BDAG_IPFS_PEER_ROSTER_ENABLED=1", config)
+            self.assertIn("BDAG_IPFS_PEER_ROSTER_INDEX_PATH=./ops/runtime/ipfs-content/peer-roster.json", config)
+            self.assertIn("BDAG_IPFS_PEER_ROSTER_STATUS_FILE=./ops/runtime/ipfs-content/peer-roster-status.json", config)
+            self.assertIn("BDAG_IPFS_PEER_ROSTER_PUBLISH_IPFS=1", config)
+            self.assertIn("BDAG_IPFS_PEER_ROSTER_MAX_PEERS=64", config)
+            self.assertIn("BDAG_IPFS_PEER_ROSTER_REQUIRE_SIGNATURES=1", config)
             self.assertIn("BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER=1", config)
+            self.assertIn("BDAG_RAWDATADIR_REQUIRE_CHAIN_ANCHOR=1", config)
+            self.assertIn("BDAG_RAWDATADIR_CHAIN_ANCHOR_REFERENCE_EVM_URL=https://rpc.blockdag.engineering", config)
             self.assertIn("BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES=1", config)
             self.assertIn("BDAG_IPFS_RESTORE_REQUIRE_SIGNATURES=1", config)
             self.assertIn("BDAG_IPFS_RESTORE_VERIFY_INDEX_LINEAGE=1", config)
@@ -384,7 +414,8 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             self.assertIn("BDAG_IPFS_SEGMENT_PUBLISH_IPNS=auto", config)
         self.assertIn("install_mining_host_tuning\ninstall_rawdatadir_sidecar_timers", installer)
         self.assertIn("install_rawdatadir_sidecar_timers\ninstall_ipfs_content_sidecar_timer", installer)
-        self.assertIn("install_ipfs_content_sidecar_timer\ninstall_ipfs_segment_writer_timer", installer)
+        self.assertIn("install_ipfs_content_sidecar_timer\ninstall_native_reference_rpc", installer)
+        self.assertIn("install_native_reference_rpc\ninstall_ipfs_segment_writer_timer", installer)
         self.assertLess(
             installer.index("install_rawdatadir_sidecar_timers()"),
             installer.index("install_ipfs_segment_writer_timer()"),
@@ -400,6 +431,15 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         )
         self.assertIn("ensure_ipfs_segment_identity || return 1", installer)
         self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH=$(env_value BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH 0)", installer)
+        self.assertIn("BDAG_IPFS_SEGMENT_BOOTSTRAP_UNTRUSTED_PUBLISH=$(env_value BDAG_IPFS_SEGMENT_BOOTSTRAP_UNTRUSTED_PUBLISH 0)", installer)
+        self.assertIn("BDAG_IPFS_STATE_CHECKPOINT_REQUIRED=$(env_value BDAG_IPFS_STATE_CHECKPOINT_REQUIRED 1)", installer)
+        self.assertIn("BDAG_RESTORE_POINT_MAX_AGE_SECONDS=$(env_value BDAG_RESTORE_POINT_MAX_AGE_SECONDS 600)", installer)
+        self.assertIn(
+            'BDAG_RESTORE_GUARD_IPFS_TIMERS=$(env_value BDAG_RESTORE_GUARD_IPFS_TIMERS "bdag-rawdatadir-sidecar.timer,bdag-rawdatadir-sidecar-verify.timer,bdag-ipfs-content-sidecar.timer")',
+            installer,
+        )
+        self.assertIn("BDAG_IPFS_PEER_ROSTER_ENABLED=1", defaults)
+        self.assertIn("BDAG_IPFS_PEER_ROSTER_REQUIRE_SIGNATURES=1", defaults)
         self.assertIn(
             'BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE=$(env_value BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE "$ROOT/ops/runtime/ipfs-content/segment-writer.key")',
             installer,
@@ -415,6 +455,11 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH=$(env_value BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH", installer)
         self.assertIn("BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS=$(env_value BDAG_IPFS_RAWDATADIR_CONTENT_PUBLISH_IPNS auto)", installer)
         self.assertIn("BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER=$(env_value BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER 1)", installer)
+        self.assertIn("BDAG_RAWDATADIR_REQUIRE_CHAIN_ANCHOR=$(env_value BDAG_RAWDATADIR_REQUIRE_CHAIN_ANCHOR 1)", installer)
+        self.assertIn(
+            "BDAG_RAWDATADIR_CHAIN_ANCHOR_REFERENCE_EVM_URL=$(env_value BDAG_RAWDATADIR_CHAIN_ANCHOR_REFERENCE_EVM_URL https://rpc.blockdag.engineering)",
+            installer,
+        )
         self.assertIn("BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES=$(env_value BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES 1)", installer)
         self.assertIn("BDAG_IPFS_SEGMENT_UPDATE_DISCOVERY_FOR_CUSTOM_INDEX", (ROOT_DIR / "ops" / "ipfs_segment_writer.py").read_text(encoding="utf-8"))
         self.assertIn(
@@ -439,10 +484,46 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
             installer,
         )
         self.assertIn("BDAG_IPFS_SEGMENT_PUBLISH_IPNS=$(env_value BDAG_IPFS_SEGMENT_PUBLISH_IPNS auto)", installer)
+        self.assertIn("configure_btrfs_checkpoint_volume", (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8"))
+        self.assertIn("--warn-only --enforce-blockers", (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8"))
         for timer in (raw_timer, content_timer, segment_timer):
             self.assertIn("OnActiveSec=5m", timer)
             self.assertIn("OnUnitActiveSec=5m", timer)
-            self.assertIn("RandomizedDelaySec=0", timer)
+            self.assertIn("RandomizedDelaySec=2m", timer)
+
+    def test_p2p_installer_removes_retired_rawdatadir_source_unit(self) -> None:
+        installer = (ROOT_DIR / "ops" / "install-p2p-services.sh").read_text(encoding="utf-8")
+
+        self.assertIn("retire_legacy_rawdatadir_source_timer()", installer)
+        self.assertIn("bdag-rawdatadir-source.service", installer)
+        self.assertIn("bdag-rawdatadir-source.timer", installer)
+        self.assertIn("disable --now bdag-rawdatadir-source.timer bdag-rawdatadir-source.service", installer)
+        self.assertIn("bdag-ipfs-content-sidecar", installer)
+        self.assertNotIn("publish-" "rawdatadir-artifact.sh", installer)
+
+    def test_btrfs_checkpoint_volume_owns_content_chunk_paths(self) -> None:
+        installer = (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8")
+
+        self.assertIn("ensure_btrfs_checkpoint_owned_dir", installer)
+        self.assertIn("$mountpoint/rawdatadir-sidecar-content/artifacts", installer)
+        self.assertIn("$mountpoint/rawdatadir-sidecar-content/chunk-store", installer)
+        self.assertIn("$mountpoint/rawdatadir-sidecar-content/chunk-store/sha256", installer)
+        self.assertNotIn("chown -R", installer)
+
+    def test_live_deploy_enters_transition_hold_before_target_mutations(self) -> None:
+        deploy = (ROOT_DIR / "ops" / "deploy-live-runtime-update.sh").read_text(encoding="utf-8")
+        main = deploy.split('if [[ -n "$ROLLBACK_DIR" ]]; then', 1)[1]
+
+        self.assertLess(main.index("begin_deploy_transition_hold"), main.index("runtime_compose_guard"))
+        self.assertLess(main.index("begin_deploy_transition_hold"), main.index("migrate_runtime_compose"))
+        self.assertIn('--allowed-mutation "deploy-live-runtime-update:systemd_restart:*"', deploy)
+
+    def test_host_node_child_guard_delegates_to_shared_guard(self) -> None:
+        host_guard = (ROOT_DIR / "host" / "mining-appliance" / "bdag-node-child-guard").read_text(encoding="utf-8")
+
+        self.assertIn('script = project_root / "ops" / "node_child_guard.py"', host_guard)
+        self.assertIn("os.execv", host_guard)
+        self.assertNotIn("def repair_node", host_guard)
 
     def test_release_installer_has_prestart_ipfs_rawdatadir_restore_gate(self) -> None:
         installer = (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8")

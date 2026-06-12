@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import automation_control
+
 
 PROJECT_ROOT = Path(os.environ.get("BDAG_PROJECT_ROOT", Path(__file__).resolve().parents[1]))
 RUNTIME_DIR = Path(os.environ.get("BDAG_RUNTIME_DIR", PROJECT_ROOT / "ops" / "runtime"))
@@ -165,10 +167,35 @@ def compose_service_name(name: str) -> str:
     return name
 
 
+def node_mutation_allowed(action: str, node: str, reason: str, state: dict[str, Any], now: int) -> bool:
+    decision = automation_control.check_mutation_allowed(
+        action,
+        actor="node-child-guard",
+        target=node,
+        reason=reason,
+    )
+    if decision.allowed:
+        return True
+    suppressed = dict(state.get("automation_suppressed_by_node") or {})
+    suppressed[node] = {
+        "at": now_iso(),
+        "action": action,
+        "reason": reason,
+        "control_reason": decision.reason,
+        "control_state": decision.control_state,
+        "control_status": decision.control_status,
+    }
+    state["automation_suppressed_by_node"] = suppressed
+    log(f"automation control suppressed {action} node={node}: {decision.reason}; reason={reason}")
+    return False
+
+
 def restart_node(node: str, reason: str, state: dict[str, Any], now: int) -> bool:
     last = int((state.get("last_restart_at_by_node") or {}).get(node) or 0)
     if now - last < COOLDOWN_SECONDS:
         log(f"restart suppressed node={node} cooldown_remaining={COOLDOWN_SECONDS - (now - last)}s reason={reason}")
+        return False
+    if not node_mutation_allowed(automation_control.ACTION_NODE_RESTART, node, reason, state, now):
         return False
     compose_target = compose_service_name(node)
     result = run(compose_command("restart", compose_target), timeout=180)
@@ -188,6 +215,8 @@ def start_node(node: str, reason: str, state: dict[str, Any], now: int) -> bool:
     last = int((state.get("last_restart_at_by_node") or {}).get(node) or 0)
     if now - last < COOLDOWN_SECONDS:
         log(f"start suppressed node={node} cooldown_remaining={COOLDOWN_SECONDS - (now - last)}s reason={reason}")
+        return False
+    if not node_mutation_allowed(automation_control.ACTION_CONTAINER_START, node, reason, state, now):
         return False
     compose_target = compose_service_name(node)
     result = run(compose_command("up", "-d", "--no-deps", compose_target), timeout=180)

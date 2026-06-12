@@ -54,6 +54,19 @@ def safe_canonical_status() -> dict[str, object]:
     }
 
 
+def safe_pool_only_down_status() -> dict[str, object]:
+    status = safe_canonical_status()
+    status.update(
+        {
+            "mode": "mining",
+            "overall": "down",
+            "failures": ["stack-pool-1 is not running"],
+            "stack_failures": ["stack-pool-1 is not running"],
+        }
+    )
+    return status
+
+
 def transient_down_mining_missing_trie_status() -> dict[str, object]:
     return {
         "fresh": True,
@@ -123,11 +136,77 @@ class SingleGateOrchestrationTests(unittest.TestCase):
 
         self.assertTrue(decision.allowed, decision.reason)
 
+    def test_shared_gate_allows_ready_status_with_advisory_missing_trie_signal(self) -> None:
+        status = safe_canonical_status()
+        status["nodes"] = {"node": {"missing_trie_node_warnings": 3}}
+        status["sync_health"] = {
+            "chain_data_restore_candidate": True,
+            "chain_data_restore_candidate_nodes": {
+                "node": {"reasons": ["node reported missing-trie state warning(s)"]}
+            },
+        }
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertTrue(decision.allowed, decision.reason)
+
+    def test_shared_gate_blocks_unknown_sync_with_chain_rpc_error(self) -> None:
+        status = safe_canonical_status()
+        status["sync_progress"] = {
+            "status": "unknown",
+            "error": "getBlockCount failed for node after 2 attempt(s): timed out",
+            "nodes": {
+                "node": {
+                    "chain_rpc_error": "getBlockCount failed for node after 2 attempt(s): timed out",
+                    "canonical_mining_safety": {
+                        "safe": True,
+                        "schema": "stack_evm_public_reference_v1",
+                    },
+                }
+            },
+        }
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertFalse(decision.allowed)
+        self.assertIn("chain sync status is unknown because node chain RPC is unavailable", decision.reason)
+
+    def test_shared_gate_blocks_all_nodes_failing_template_probe(self) -> None:
+        status = safe_canonical_status()
+        status["rpc_template_health"] = {"all_nodes_failing": True, "failing_nodes": ["node"]}
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertFalse(decision.allowed)
+        self.assertIn("node template health is not ready", decision.reason)
+
+    def test_shared_gate_allows_pool_only_down_with_advisory_missing_trie_text(self) -> None:
+        status = safe_pool_only_down_status()
+        status["status_reason"] = (
+            "node EVM trie state is unavailable (4 missing-trie warning(s)); "
+            "restore or resync node data before mining"
+        )
+        status["nodes"] = {"node": {"missing_trie_node_warnings": 4}}
+        status["sync_health"] = {
+            "chain_data_restore_candidate": True,
+            "chain_data_restore_candidate_nodes": {
+                "node": {"reasons": ["node reported missing-trie state warning(s)"]}
+            },
+        }
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertTrue(decision.allowed, decision.reason)
+
+    def test_shared_gate_allows_pool_only_down_status_with_canonical_proof(self) -> None:
+        decision = pool_start_gate.pool_start_decision(safe_pool_only_down_status())
+
+        self.assertTrue(decision.allowed, decision.reason)
+
     def test_shared_gate_blocks_transient_down_mining_with_missing_trie_state(self) -> None:
         decision = pool_start_gate.pool_start_decision(transient_down_mining_missing_trie_status())
 
         self.assertFalse(decision.allowed)
-        self.assertIn("node reports missing trie state", decision.reason)
         self.assertIn("overall stack status is down", decision.reason)
 
     def test_status_sampler_cannot_direct_start_pool_when_gate_blocks(self) -> None:
@@ -147,6 +226,29 @@ class SingleGateOrchestrationTests(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertEqual([("mining_imperative_pool_start_blocked", "warning")], incidents)
+
+    def test_status_sampler_cannot_stop_pool_when_automation_control_blocks(self) -> None:
+        incidents: list[tuple[str, str]] = []
+        decision = SimpleNamespace(
+            allowed=False,
+            reason="transition_hold does not allow this mutation",
+            as_dict=lambda: {"allowed": False, "reason": "transition_hold does not allow this mutation"},
+        )
+        with mock.patch.object(status_sampler, "run", side_effect=AssertionError("docker stop must not run")), mock.patch.object(
+            status_sampler, "log", lambda _message: None
+        ), mock.patch.object(
+            status_sampler.automation_control,
+            "check_mutation_allowed",
+            return_value=decision,
+        ), mock.patch.object(
+            status_sampler,
+            "record_incident",
+            side_effect=lambda event_type, severity, *_args: incidents.append((event_type, severity)),
+        ):
+            ok = status_sampler.stop_pool_container(unsafe_catchup_status(), "unit test", containment="catchup_pause")
+
+        self.assertFalse(ok)
+        self.assertEqual([("catchup_pause_pool_stop_blocked", "warning")], incidents)
 
     def test_stack_sentinel_cannot_start_pool_when_latest_status_blocks(self) -> None:
         incidents: list[tuple[str, str]] = []

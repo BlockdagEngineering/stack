@@ -63,12 +63,11 @@ COPY --from=collector_src . /src/collector
 RUN rm -rf /src/collector/.git
 
 # ----------------------------------------------------------------------------
-# Dashboard Build Stage
+# Dashboard Source Stage
 # ----------------------------------------------------------------------------
-FROM base AS dashboard-build
-WORKDIR /src/dashboard
-COPY --from=dashboard_src . .
-RUN CGO_ENABLED=0 go build -trimpath -o /out/dashboard .
+FROM alpine:3.20 AS dashboard-source
+COPY --from=dashboard_src . /src/dashboard
+RUN rm -rf /src/dashboard/.git
 
 # ----------------------------------------------------------------------------
 # Node Runtime Stage
@@ -194,18 +193,35 @@ EXPOSE 9280
 ENTRYPOINT ["/usr/local/bin/entrypoint-collector.sh"]
 
 # ----------------------------------------------------------------------------
-# Dashboard Runtime Stage (Go UI over status API)
+# Dashboard Runtime Stage (Python UI from BlockdagEngineering/dashboard)
 # ----------------------------------------------------------------------------
-FROM ubuntu:24.04 AS dashboard
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates tzdata \
- && rm -rf /var/lib/apt/lists/*
+FROM docker:27-cli AS dashboard
 
-COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard
-RUN chmod +x /usr/local/bin/dashboard
+RUN apk add --no-cache \
+    bash \
+    ca-certificates \
+    coreutils \
+    curl \
+    findutils \
+    iproute2 \
+    openssl \
+    procps \
+    py3-pip \
+    python3 \
+    shadow \
+    tzdata
 
-ENV ADDR=0.0.0.0:9290 \
-    BDAG_COLLECTOR_API=http://collector:9280
+COPY --from=dashboard-source /src/dashboard /opt/dashboard
+COPY --from=stack_src docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
+RUN chmod +x /usr/local/bin/entrypoint-dashboard.sh \
+ && mkdir -p /workspace /workspace/ops/runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    BDAG_PROJECT_ROOT=/workspace \
+    BDAG_RUNTIME_DIR=/workspace/ops/runtime \
+    BDAG_POOL_ENV_FILE=/workspace/.env \
+    BDAG_DASHBOARD_BIND=0.0.0.0 \
+    BDAG_DASHBOARD_PORT=9290
 
 EXPOSE 9290
-ENTRYPOINT ["/usr/local/bin/dashboard"]
+ENTRYPOINT ["/usr/local/bin/entrypoint-dashboard.sh"]

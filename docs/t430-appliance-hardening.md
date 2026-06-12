@@ -45,9 +45,9 @@ Field report from the `/home/hpool` mining host on 2026-05-26.
    filesystem, then split small frequent writes back to internal storage where
    there was enough free space.
 2. Used the default one-node stack for the appliance.
-3. Downloaded and verified the snapshot artifact before import.
+3. Downloaded and verified the legacy restore bundle before import.
 4. Parked old datadirs with timestamped names instead of deleting them, then
-   imported the verified V2 snapshot into a clean datadir.
+   imported the verified legacy restore bundle into a clean datadir.
 5. Applied `sql/pool-schema.sql` so `block_submissions` and credit idempotency
    indexes existed before relying on dashboard earnings.
 6. Verified health through node RPC, pool accepted-share and accepted-block logs,
@@ -74,6 +74,9 @@ The preflight checks:
 - project/root filesystem free space.
 - chain data filesystem free space, mount point, filesystem type, and mount
   options.
+- trusted IPFS raw checkpoint storage, including the default loop-backed btrfs
+  checkpoint volume, 128 GiB minimum volume size, and sidecar/artifact/open
+  restore paths resolving to btrfs, ZFS, or LVM-backed storage.
 - whether chain data is separated from the project/root filesystem.
 - whether the selected storage profile keeps USB chain writes separated from
   Postgres, dashboard/runtime state, and Docker churn.

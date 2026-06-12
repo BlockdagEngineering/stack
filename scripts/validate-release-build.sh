@@ -56,9 +56,19 @@ need_grep 'pool-stack-docker-\*\.zip' ".github/workflows/build.yml"
 reject_grep 'DASHBOARD_REF=' ".env.example"
 reject_grep 'DASHBOARD_REPO:' "docker-compose.yml"
 reject_grep 'DASHBOARD_REF:' "docker-compose.yml"
-need_grep 'test -f \./bin/dashboard' "dockerfile"
-need_grep 'COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard' "dockerfile"
-need_grep 'COPY --from=dashboard_src \. \.' "dockerfile-dev"
+retired_dashboard_repo='dashboard''2'
+retired_dashboard_binary='bin/''dashboard([^-/_[:alnum:]]|$)'
+reject_grep "$retired_dashboard_repo" ".github/workflows/build.yml"
+reject_grep "$retired_dashboard_binary" ".github/workflows/build.yml"
+need_grep 'repository: BlockdagEngineering/dashboard' ".github/workflows/build.yml"
+need_grep 'dashboard-source' ".github/workflows/build.yml"
+need_grep 'COPY dashboard-source /opt/dashboard' "dockerfile"
+need_grep 'entrypoint-dashboard\.sh' "dockerfile"
+need_grep 'COPY --from=dashboard_src \. /src/dashboard' "dockerfile-dev"
+need_grep 'COPY --from=dashboard-source /src/dashboard /opt/dashboard' "dockerfile-dev"
+need_grep 'entrypoint-dashboard\.sh' "dockerfile-dev"
+reject_grep 'requirements-dev\.txt' "dockerfile"
+reject_grep 'requirements-dev\.txt' "dockerfile-dev"
 reject_grep 'DASHBOARD_REF:-' "docker-compose.yml"
 reject_grep 'DASHBOARD_REF:-' "dockerfile"
 retired_terms=(
@@ -89,6 +99,14 @@ for retired_pattern in "${retired_terms[@]}"; do
     reject_grep "$retired_pattern" "$retired_file"
   done
 done
+retired_runtime_root='/home/jeremy/blockdag-''mining-pool'
+retired_runtime_stack='blockdag-''mining-pool/stack'
+if grep -R -n -E "$retired_runtime_root|$retired_runtime_stack" "$root/ops/systemd" >/tmp/bdag-retired-systemd-paths.$$ 2>/dev/null; then
+  cat /tmp/bdag-retired-systemd-paths.$$ >&2
+  rm -f /tmp/bdag-retired-systemd-paths.$$
+  fail "ops/systemd still references the retired blockdag-mining-pool runtime path"
+fi
+rm -f /tmp/bdag-retired-systemd-paths.$$
 need_grep '^BOOTSTRAP_PEER_ADDRESSES=/ip4/13\.57\.132\.47/tcp/8150/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus$' ".env.example"
 need_grep 'BOOTSTRAP_PEER_ADDRESSES: \$\{BOOTSTRAP_PEER_ADDRESSES:-\}' "docker-compose.yml"
 need_grep '^addpeer=/ip4/13\.57\.132\.47/tcp/8150/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus$' "node.conf.example"
@@ -112,5 +130,11 @@ reject_grep 'build-pi5-arm64-release\.sh' "docs/glossary.md"
 reject_grep 'build-pi5-arm64-release\.sh' "docs/adr/0001-pinned-bootstrap-runtime-payload-zips.md"
 reject_grep 'validate-pi5-restart-hardening\.sh' ".github/workflows/build.yml"
 reject_grep 'validate-pi5-restart-hardening\.sh' ".github/workflows/rc-hardening.yml"
+
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  docker compose --env-file "$root/.env.example" -f "$root/docker-compose.yml" config --services >/dev/null
+else
+  printf 'warning: docker compose unavailable; skipped compose syntax validation\n' >&2
+fi
 
 printf 'release build validation passed for %s\n' "$root"

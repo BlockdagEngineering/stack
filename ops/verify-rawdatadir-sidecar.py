@@ -153,7 +153,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-write", action="store_true")
     args = parser.parse_args(argv)
 
-    sidecar_dir = resolve_path(args.sidecar_dir, ROOT / "data-restore/rawdatadir-sidecar" / NETWORK)
+    sidecar_dir = resolve_path(
+        args.sidecar_dir,
+        ROOT / "data-restore" / "btrfs-checkpoints" / "rawdatadir-sidecar" / NETWORK,
+    )
     source_dir = resolve_path(args.source_dir, ROOT / "data/node" / NETWORK) if args.source_dir else None
     status_file = resolve_path(args.status_file, ROOT / "ops/runtime/rawdatadir-sidecar-safe-status.json")
     payload = verify(sidecar_dir, source_dir, args.max_age_seconds)

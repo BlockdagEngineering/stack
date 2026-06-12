@@ -79,6 +79,27 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         self.assertNotIn("--allowsubmitwhennotsynced", result.stdout)
         self.assertNotIn("--modules=Blockdag,miner", result.stdout)
 
+    def test_bootstrap_peers_are_deduped_by_peer_id_and_limited(self) -> None:
+        result = self.run_entrypoint(
+            {
+                "BDAG_NODE_PEER_LIMIT": "2",
+                "BDAG_NODE_PEER_ADDRESSES": (
+                    "/ip4/16.28.133.168/tcp/8150/p2p/peerA,"
+                    "/ip4/203.0.113.10/tcp/8150/p2p/peerA,"
+                    "/dns4/node.example/tcp/8150/p2p/peerB,"
+                    "/ip4/198.51.100.20/tcp/8150/p2p/peerC"
+                ),
+                "BOOTSTRAP_PEER_ADDRESSES": "/ip4/198.51.100.30/tcp/8150/p2p/peerD",
+            }
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--addpeer=/ip4/198.51.100.30/tcp/8150/p2p/peerD", result.stdout)
+        self.assertIn("--addpeer=/ip4/16.28.133.168/tcp/8150/p2p/peerA", result.stdout)
+        self.assertNotIn("203.0.113.10", result.stdout)
+        self.assertNotIn("peerB", result.stdout)
+        self.assertNotIn("peerC", result.stdout)
+
 
 if __name__ == "__main__":
     raise SystemExit(unittest.main())

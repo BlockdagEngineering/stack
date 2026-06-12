@@ -31,8 +31,14 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
         self._old_env = {key: os.environ.get(key) for key in self.ENV_KEYS}
         for key in self.ENV_KEYS:
             os.environ.pop(key, None)
+        self._old_read_peer_file = update_local_peers.read_peer_file
+        self._old_node_peerstore_log_candidates = update_local_peers.node_peerstore_log_candidates
+        update_local_peers.read_peer_file = lambda _path: []
+        update_local_peers.node_peerstore_log_candidates = lambda *args, **kwargs: []
 
     def tearDown(self) -> None:
+        update_local_peers.read_peer_file = self._old_read_peer_file
+        update_local_peers.node_peerstore_log_candidates = self._old_node_peerstore_log_candidates
         for key, value in self._old_env.items():
             if value is None:
                 os.environ.pop(key, None)

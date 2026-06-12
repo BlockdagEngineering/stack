@@ -19,7 +19,13 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 
-SIGNATURE_FIELDS = {"signature_status", "signatures", "index_signatures", "manifest_signatures"}
+SIGNATURE_FIELDS = {
+    "signature_status",
+    "signatures",
+    "index_signatures",
+    "manifest_signatures",
+    "roster_signatures",
+}
 FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 

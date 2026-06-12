@@ -110,12 +110,12 @@ bash install.sh</code></pre>
           <p>
             Chain restore is no longer baked into the node image. IPFS restore drills and signed rawdatadir restore inputs are verified outside the image before startup, and existing node data is preserved unless an explicit verified restore operation is configured.
           </p>
-          <pre class="overflow-x-auto rounded-lg border border-slate-700/40 bg-black/45 p-4 text-xs text-slate-200"><code># Keep existing local node sync state instead of replacing it with the snapshot
+          <pre class="overflow-x-auto rounded-lg border border-slate-700/40 bg-black/45 p-4 text-xs text-slate-200"><code># Keep existing local node sync state unless a verified IPFS restore is configured
 BDAG_RESET_NODE_DATA=0 bash install.sh
 
 
-# Allow P2P sync if no valid snapshot is available
-BDAG_REQUIRE_SNAPSHOT=0 bash install.sh</code></pre>
+# Allow ordinary P2P catch-up if no verified IPFS restore source is configured
+BDAG_REQUIRE_IPFS_RESTORE=0 bash install.sh</code></pre>
           <p>
             On macOS, if Docker reports an <code class="rounded bg-black/45 px-1 py-0.5 font-mono text-slate-200">xattr</code> error for files such as <code class="rounded bg-black/45 px-1 py-0.5 font-mono text-slate-200">._.env.example</code>, those are AppleDouble metadata files from the extracted folder or external drive. Current release packages ignore and clean those files before building. The same cleanup handles common Windows metadata such as <code class="rounded bg-black/45 px-1 py-0.5 font-mono text-slate-200">Thumbs.db</code>, <code class="rounded bg-black/45 px-1 py-0.5 font-mono text-slate-200">desktop.ini</code>, <code class="rounded bg-black/45 px-1 py-0.5 font-mono text-slate-200">$RECYCLE.BIN</code>, and <code class="rounded bg-black/45 px-1 py-0.5 font-mono text-slate-200">System Volume Information</code>.
           </p>

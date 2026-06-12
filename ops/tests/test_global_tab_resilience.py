@@ -505,6 +505,69 @@ class GlobalChainRpcCollectionTests(unittest.TestCase):
         self.assertEqual(payload["scan_end_order"], 3)
         self.assertEqual(sorted(requested_orders), [2, 3])
 
+    def test_global_cache_validation_uses_scan_tip_not_refreshed_head_count(self) -> None:
+        wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc".lower()
+        cached = trusted_global_cache(
+            100,
+            [{"address": "0xfeed00000000000000000000000000000000feed", "blocks": 2}],
+        )
+        cached["chain_block_count"] = 100
+        cached["latest_order"] = 99
+        cached["scan_end_order"] = 3
+        cached["scan_end_block"] = 3
+        hashes = {
+            4: "0x" + "44" * 32,
+            5: "0x" + "55" * 32,
+        }
+        requested_orders: list[int] = []
+
+        pool_ops.GLOBAL_BLOCK_WINDOW = 2
+        pool_ops.read_json_file = lambda path, fallback: cached if path == pool_ops.GLOBAL_CACHE_FILE else fallback
+        pool_ops.read_global_history = lambda limit=None: []
+        pool_ops.seconds_since_epoch = lambda: 120
+        pool_ops.global_chain_rpc_urls = lambda: [("chain", "http://chain-rpc")]
+        pool_ops.global_evm_rpc_urls = lambda: (_ for _ in ()).throw(AssertionError("fresh chain cache must not use EVM RPC"))
+        pool_ops.json_rpc_call = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Global mining stats must not use eth_* RPC"))
+        pool_ops.background_maintenance_decision = lambda task: {"allowed": True, "task": task, "reasons": []}
+        pool_ops.adaptive_worker_count = lambda *_args, **_kwargs: 1
+        pool_ops.pool_db_json = lambda _sql: []
+        pool_ops.fetch_cmc_price = lambda: {"status": "failed"}
+        pool_ops.collect_peer_location_guess = lambda: {"location": "Unknown", "location_confidence": "n/a", "observations": []}
+        pool_ops.record_global_snapshot = lambda _snapshot: None
+        pool_ops.write_json_file = lambda *_args, **_kwargs: None
+
+        def fake_mining_rpc(_url: str, method: str, params: list[object], timeout: float = 0) -> object:
+            if method == "getBlockCount":
+                return 100
+            if method == "getBlockTotal":
+                return 5
+            if method == "getBlockByOrder":
+                order = int(params[0])
+                if order == -1:
+                    order = 5
+                else:
+                    requested_orders.append(order)
+                return {"order": order, "hash": hashes[order], "timestamp": 1_780_000_000 + order}
+            if method == "getBlockHeader":
+                order = {value: key for key, value in hashes.items()}[str(params[0])]
+                return {"time": 1_780_000_000 + order, "reward": 26_000_000_000}
+            if method == "getCoinbaseAddress":
+                return wallet
+            raise AssertionError(f"unexpected RPC method {method}")
+
+        pool_ops.mining_rpc_call = fake_mining_rpc
+
+        payload = pool_ops.collect_global_blockchain()
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertFalse(payload.get("cache_hit", False))
+        self.assertEqual(payload["chain_block_count"], 100)
+        self.assertEqual(payload["latest_order"], 5)
+        self.assertEqual(payload["scan_start_order"], 4)
+        self.assertEqual(payload["scan_end_order"], 5)
+        self.assertEqual(payload["clusters"][0]["address"], wallet)
+        self.assertEqual(sorted(requested_orders), [4, 5])
+
     def test_global_partial_scan_is_degraded_and_not_cached(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc".lower()
         hashes = {
@@ -622,6 +685,8 @@ class EarningsEvmRpcSourceTests(unittest.TestCase):
         self.old_named_urls_from_env = pool_ops.named_urls_from_env
         self.old_json_rpc_balance = pool_ops.json_rpc_balance
         self.old_adaptive_worker_count = pool_ops.adaptive_worker_count
+        self.old_local_evm_balance_probe_pause = pool_ops.local_evm_balance_probe_pause
+        pool_ops.local_evm_balance_probe_pause = lambda: {"paused": False, "reason": "", "reasons": []}
         self.addCleanup(self.restore_globals)
 
     def restore_globals(self) -> None:
@@ -630,6 +695,7 @@ class EarningsEvmRpcSourceTests(unittest.TestCase):
         pool_ops.named_urls_from_env = self.old_named_urls_from_env
         pool_ops.json_rpc_balance = self.old_json_rpc_balance
         pool_ops.adaptive_worker_count = self.old_adaptive_worker_count
+        pool_ops.local_evm_balance_probe_pause = self.old_local_evm_balance_probe_pause
 
     def test_wallet_balances_use_evm_rpc_not_mining_rpc(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
@@ -650,6 +716,60 @@ class EarningsEvmRpcSourceTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(called_urls, ["http://172.22.0.5:18545"])
         self.assertEqual(payload["addresses"][0]["type"], "evm-rpc")
+
+    def test_wallet_balance_for_addresses_skips_local_evm_rpc_when_paused(self) -> None:
+        wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        called_urls: list[str] = []
+        pool_ops.global_evm_rpc_urls = lambda: [("node-evm", "http://172.22.0.5:18545")]
+        pool_ops.named_urls_from_env = lambda name, _defaults: (
+            [("public-evm", "http://public-evm")] if name == "BDAG_PUBLIC_RPC_URLS" else []
+        )
+        pool_ops.local_evm_balance_probe_pause = lambda: {
+            "paused": True,
+            "reason": "node is syncing",
+            "reasons": ["node is syncing"],
+        }
+        pool_ops.adaptive_worker_count = lambda *_args, **_kwargs: 1
+
+        def fake_balance(url: str, _address: str, timeout: float = 6.0) -> dict[str, str]:
+            called_urls.append(url)
+            return {"wei": "1000000000000000000", "bdag": "1.00"}
+
+        pool_ops.json_rpc_balance = fake_balance
+
+        payload = pool_ops.collect_wallet_balances_for_addresses([wallet])
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(called_urls, ["http://public-evm"])
+        self.assertEqual(payload["addresses"][0]["type"], "public-rpc")
+        self.assertTrue(payload["local_evm_rpc"]["paused"])
+
+    def test_wallet_cross_check_marks_local_evm_rpc_skipped_when_paused(self) -> None:
+        wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        called_urls: list[str] = []
+        pool_ops.global_evm_rpc_urls = lambda: [("node-evm", "http://172.22.0.5:18545")]
+        pool_ops.named_urls_from_env = lambda name, _defaults: (
+            [("public-evm", "http://public-evm")] if name == "BDAG_PUBLIC_RPC_URLS" else []
+        )
+        pool_ops.local_evm_balance_probe_pause = lambda: {
+            "paused": True,
+            "reason": "chain-state restore candidate is under observation",
+            "reasons": ["chain-state restore candidate is under observation"],
+        }
+
+        def fake_balance(url: str, _address: str, timeout: float = 6.0) -> dict[str, str]:
+            called_urls.append(url)
+            return {"wei": "1000000000000000000", "bdag": "1.00"}
+
+        pool_ops.json_rpc_balance = fake_balance
+
+        payload = pool_ops.collect_wallet_balances(wallet)
+
+        self.assertEqual(called_urls, ["http://public-evm"])
+        self.assertTrue(payload["local_evm_rpc"]["paused"])
+        self.assertEqual(payload["sources"][0]["source"], "node-evm")
+        self.assertEqual(payload["sources"][0]["status"], "skipped")
+        self.assertEqual(payload["sources"][1]["type"], "public-rpc")
 
 
 class GlobalLocalPoolOverlayTests(unittest.TestCase):

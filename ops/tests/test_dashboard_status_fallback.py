@@ -82,6 +82,60 @@ class DashboardStatusFallbackTests(unittest.TestCase):
         self.assertTrue(payload["status_sampler"]["hit"])
         self.assertIn("dashboard_url", payload)
 
+    def test_fresh_sampler_payload_is_enriched_with_sync_estimate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = self.configure_fast_path(tmp)
+            (runtime / "status-sampler.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "epoch": 995.0,
+                        "include_logs": True,
+                        "payload": {
+                            "generated_at": "2026-05-31T22:00:00+0000",
+                            "overall": "syncing",
+                            "fresh": True,
+                            "age_seconds": 1.0,
+                            "stale_after_seconds": 120,
+                            "sync_progress": {
+                                "status": "syncing",
+                                "current_block": 1000,
+                                "highest_block": 1120,
+                                "remaining_blocks": 120,
+                                "nodes": {
+                                    "node": {
+                                        "status": "syncing",
+                                        "current_block": 1000,
+                                        "highest_block": 1120,
+                                        "remaining_blocks": 120,
+                                    }
+                                },
+                            },
+                            "sync_health": {
+                                "sync_progress_health": {
+                                    "node_rates_blocks_per_second": {"node": 2.0}
+                                }
+                            },
+                            "sync_coordinator": {},
+                            "catchup_policy": {},
+                            "nodes": {"node": {}},
+                            "managed_node_services": ["node"],
+                            "failures": [],
+                            "warnings": [],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = dashboard.dashboard_status_payload()
+
+        estimate = payload["sync_estimate"]
+        self.assertEqual(estimate["remaining_blocks"], 120)
+        self.assertEqual(estimate["rate_blocks_per_second"], 2.0)
+        self.assertEqual(estimate["rate_source"], "status sampler sync history")
+        self.assertEqual(estimate["eta_seconds"], 60)
+
     def test_payload_past_stale_after_is_not_served_as_ok(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = self.configure_fast_path(tmp)

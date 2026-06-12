@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import shlex
@@ -24,7 +25,9 @@ from typing import Any
 
 ROOT = Path(os.environ.get("BDAG_PROJECT_ROOT") or Path(__file__).resolve().parents[1]).resolve()
 ENV_FILE = Path(os.environ.get("BDAG_ENV_FILE") or ROOT / ".env")
+STACK_DEFAULTS_FILE = Path(os.environ.get("BDAG_STACK_DEFAULTS_FILE") or ROOT / "ops" / "config" / "stack-defaults.env")
 OPS_DIR = ROOT / "ops"
+RESTORE_MODULE_PATH = OPS_DIR / "restore-rawdatadir-segment-artifact.py"
 
 FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
@@ -32,8 +35,10 @@ TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 
 def load_env(path: Path = ENV_FILE) -> dict[str, str]:
     env: dict[str, str] = {}
-    if path.exists():
-        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for env_path in (STACK_DEFAULTS_FILE, path):
+        if not env_path.exists():
+            continue
+        for raw in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
             line = raw.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
@@ -139,7 +144,7 @@ def background_maintenance_allowed(env: dict[str, str]) -> dict[str, Any]:
 def artifact_paths(env: dict[str, str]) -> tuple[Path, Path]:
     sidecar_content_base = resolve_path(
         env.get("BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE") or env.get("BDAG_RAWDATADIR_ARTIFACT_BASE"),
-        ROOT / "data-restore/rawdatadir-sidecar-content",
+        ROOT / "data-restore" / "btrfs-checkpoints" / "rawdatadir-sidecar-content",
     )
     artifact_dir = resolve_path(env.get("BDAG_IPFS_CONTENT_ARTIFACT_DIR"), sidecar_content_base / "current")
     manifest = resolve_path(env.get("BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST"), artifact_dir / "manifest.json")
@@ -160,6 +165,88 @@ def rawdatadir_index_path(env: dict[str, str]) -> Path:
     )
 
 
+def env_int(env: dict[str, str], key: str, default: int) -> int:
+    value = str(env.get(key, "")).strip()
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def rawdatadir_trusted_signers(env: dict[str, str]) -> str:
+    return str(
+        env.get("BDAG_RAWDATADIR_TRUSTED_SIGNERS")
+        or env.get("BDAG_IPFS_RAWDATADIR_TRUSTED_SIGNERS")
+        or env.get("BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS")
+        or env.get("BDAG_IPFS_SEGMENT_WRITER_ROSTER")
+        or ""
+    ).strip()
+
+
+def load_restore_module() -> Any:
+    spec = importlib.util.spec_from_file_location("restore_rawdatadir_segment_artifact", RESTORE_MODULE_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load rawdatadir restore verifier from {RESTORE_MODULE_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def verify_rawdatadir_manifest(
+    artifact_dir: Path,
+    manifest: dict[str, Any],
+    env: dict[str, str],
+) -> dict[str, Any]:
+    verifier = load_restore_module()
+    args = argparse.Namespace(
+        local_artifact_dir=str(artifact_dir),
+        remote_artifact_dir=None,
+        remote=None,
+        ssh_control_socket=None,
+        network="mainnet",
+        min_tip_order=env_int(env, "BDAG_IPFS_RAWDATADIR_CONTENT_MIN_TIP_ORDER", 0),
+        allow_unsigned=env_bool(env, "BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT", False),
+        trusted_signers=rawdatadir_trusted_signers(env),
+        require_trusted_signer=env_bool(env, "BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER", True),
+        reference_evm_rpc_url=str(
+            env.get("BDAG_RAWDATADIR_CHAIN_ANCHOR_REFERENCE_EVM_URL")
+            or env.get("BDAG_IPFS_RAWDATADIR_RESTORE_REFERENCE_EVM_RPC_URL")
+            or env.get("BDAG_PUBLIC_EVM_RPC_URL")
+            or ""
+        ),
+        require_chain_anchor=env_bool(env, "BDAG_RAWDATADIR_REQUIRE_CHAIN_ANCHOR", True),
+        chain_anchor_timeout=env_int(env, "BDAG_RAWDATADIR_CHAIN_ANCHOR_TIMEOUT", 8),
+        chain_anchor_finality_blocks=env_int(env, "BDAG_RAWDATADIR_CHAIN_ANCHOR_FINALITY_BLOCKS", 600),
+        allow_test_unsafe_metadata=env_bool(env, "BDAG_RAWDATADIR_ALLOW_TEST_UNSAFE_METADATA", False),
+    )
+    verification = verifier.validate_manifest(manifest, args)
+    return {
+        "state": "verified",
+        "artifact_root": verification.get("artifact_root"),
+        "verified_signature_key_ids": verification.get("verified_signature_key_ids") or [],
+        "trusted_signers_configured": bool(rawdatadir_trusted_signers(env)),
+        "require_trusted_signer": bool(args.require_trusted_signer),
+        "chain_anchor": verification.get("chain_anchor"),
+    }
+
+
+def verification_blocker(reason: str) -> str:
+    lowered = reason.lower()
+    if "trusted raw-datadir signer roster is empty" in lowered:
+        return "trusted_rawdatadir_signers_missing"
+    if "no valid ed25519 signature from a trusted" in lowered:
+        return "manifest_signature_untrusted"
+    if "no signature material" in lowered or "missing artifact_root" in lowered:
+        return "manifest_unsigned"
+    if "artifact metadata is not publishable" in lowered:
+        return f"manifest_not_publishable:{reason}"
+    if "chain anchor" in lowered or "evm " in lowered:
+        return f"manifest_chain_anchor_untrusted:{reason}"
+    return f"manifest_unverified:{reason}"
+
+
 def artifact_publish_blockers(artifact_dir: Path, manifest_path: Path, manifest: dict[str, Any], env: dict[str, str]) -> list[str]:
     blockers: list[str] = []
     if not artifact_dir.exists():
@@ -174,19 +261,27 @@ def artifact_publish_blockers(artifact_dir: Path, manifest_path: Path, manifest:
         if (marker_dir / "DO_NOT_PUBLISH.txt").exists() or (marker_dir / "DO_NOT_PUBLISH").exists():
             blockers.append(f"do_not_publish_marker:{marker_dir}")
             break
-    signatures = manifest.get("signatures")
-    if not signatures and not env_bool(env, "BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT", False):
-        blockers.append("manifest_unsigned")
     artifact_type = str(manifest.get("artifact_type") or manifest.get("type") or "")
     if artifact_type and artifact_type != "raw_datadir_checkpoint":
         blockers.append(f"unsupported_artifact_type:{artifact_type}")
+    if manifest and not manifest.get("signatures") and not env_bool(env, "BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT", False):
+        blockers.append("manifest_unsigned")
+    if manifest:
+        try:
+            verify_rawdatadir_manifest(artifact_dir, manifest, env)
+        except Exception as exc:  # noqa: BLE001 - reason is surfaced as a publish blocker.
+            blocker = verification_blocker(str(exc))
+            if blocker not in blockers:
+                blockers.append(blocker)
+    elif not env_bool(env, "BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT", False):
+        blockers.append("manifest_unsigned")
     return blockers
 
 
 def waiting_state_for_blockers(blockers: list[str]) -> str:
     if any(item.startswith("do_not_publish_marker:") for item in blockers):
         return "waiting_for_safe_artifact"
-    if "manifest_unsigned" in blockers:
+    if any(item in {"manifest_unsigned", "trusted_rawdatadir_signers_missing", "manifest_signature_untrusted"} for item in blockers):
         return "waiting_for_signed_artifact"
     return "waiting_for_artifact"
 
@@ -431,6 +526,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
 
+    manifest_verification = verify_rawdatadir_manifest(artifact_dir, manifest, env)
     manifest_sha = sha256_file(manifest_path)
     existing_cid = str(existing.get("artifact_cid") or "")
     if existing.get("artifact_manifest_sha256") == manifest_sha and existing_cid and ipfs_pin_present(existing_cid, env):
@@ -443,6 +539,7 @@ def main(argv: list[str] | None = None) -> int:
             index_cid=index_cid,
             ipns=ipns,
             artifact_manifest_sha256=manifest_sha,
+            manifest_verification=manifest_verification,
             artifact_dir=str(artifact_dir),
             artifact_manifest=str(manifest_path),
         )
@@ -456,6 +553,7 @@ def main(argv: list[str] | None = None) -> int:
             "ready",
             action="dry_run",
             artifact_manifest_sha256=manifest_sha,
+            manifest_verification=manifest_verification,
             artifact_dir=str(artifact_dir),
             artifact_manifest=str(manifest_path),
         )
@@ -468,6 +566,7 @@ def main(argv: list[str] | None = None) -> int:
         if not ipfs_pin_present(artifact_cid, env):
             raise RuntimeError(f"artifact CID {artifact_cid} was not present as a recursive pin after add")
         index = build_latest_index(artifact_cid, manifest, manifest_path, manifest_sha)
+        index["manifest_verification"] = manifest_verification
         atomic_write_json(index_path, index)
         index_cid = ipfs_add(index_path, env, "BDAG_IPFS_CONTENT_INDEX_ADD_TIMEOUT")
         index["index_cid"] = index_cid
@@ -480,6 +579,7 @@ def main(argv: list[str] | None = None) -> int:
             "failed",
             reasons=[str(exc)],
             artifact_manifest_sha256=manifest_sha,
+            manifest_verification=manifest_verification,
             artifact_dir=str(artifact_dir),
             artifact_manifest=str(manifest_path),
         )
@@ -495,6 +595,7 @@ def main(argv: list[str] | None = None) -> int:
         index_cid=index_cid,
         ipns=ipns,
         artifact_manifest_sha256=manifest_sha,
+        manifest_verification=manifest_verification,
         artifact_dir=str(artifact_dir),
         artifact_manifest=str(manifest_path),
         latest_index_path=str(index_path),

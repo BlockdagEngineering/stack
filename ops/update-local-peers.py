@@ -12,6 +12,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -70,8 +71,11 @@ GENERIC_PEER_KEYS = (
     "BOOTSTRAP_PEER_ADDRESSES",
     "PEER_ADDRESSES",
     "LOCAL_PEER_ADDRESSES",
-    "BDAG_NODE_PEER_ADDRESSES",
 )
+GENERATED_PEER_KEYS = ("BDAG_NODE_PEER_ADDRESSES",)
+DEFAULT_NODE_PEER_LIMIT = 8
+DEFAULT_STABLE_P2P_PORTS = "8150,8151,8152,8154"
+PEER_ROSTER_FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 
 
 class PeerCandidates:
@@ -96,7 +100,7 @@ def docker_top_has_bdag_child(output: str) -> bool:
         if len(parts) < 2:
             continue
         command = parts[1]
-        if command == "bdag" or command.endswith("/bdag"):
+        if command in {"bdag", "blockdag-node"} or command.endswith(("/bdag", "/blockdag-node")):
             return True
     return False
 
@@ -283,7 +287,18 @@ def write_env(path: Path, lines: list[str], updates: dict[str, str]) -> None:
 
 
 def env_value(values: dict[str, str], key: str, default: str = "") -> str:
-    return os.environ.get(key) or values.get(key) or default
+    return values.get(key) or os.environ.get(key) or default
+
+
+def peer_source_value(values: dict[str, str], key: str) -> str:
+    """Return peer-source config from the explicit stack config only.
+
+    Peer launch inputs must not merge in arbitrary shell/systemd environment
+    leftovers because generated peers can otherwise reseed themselves and grow
+    the node launch list over time.
+    """
+
+    return values.get(key, "")
 
 
 def truthy(value: str | None) -> bool:
@@ -314,6 +329,176 @@ def read_peer_file(path: Path) -> list[str]:
     except OSError:
         return []
     return split_peer_csv(text.replace("\n", ","))
+
+
+def config_path(values: dict[str, str], key: str, default: Path) -> Path:
+    raw = env_value(values, key, "")
+    path = Path(raw).expanduser() if raw else default
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path.resolve()
+
+
+def atomic_write_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+        tmp = Path(handle.name)
+    tmp.replace(path)
+
+
+def ipfs_peer_roster_enabled(values: dict[str, str]) -> bool:
+    raw = env_value(values, "BDAG_IPFS_PEER_ROSTER_ENABLED", "1").strip().lower()
+    return raw not in PEER_ROSTER_FALSE_VALUES
+
+
+def peer_roster_status_file(values: dict[str, str]) -> Path:
+    return config_path(
+        values,
+        "BDAG_IPFS_PEER_ROSTER_STATUS_FILE",
+        RUNTIME_DIR / "ipfs-content" / "peer-roster-status.json",
+    )
+
+
+def peer_roster_index_path(values: dict[str, str]) -> Path:
+    return config_path(
+        values,
+        "BDAG_IPFS_PEER_ROSTER_INDEX_PATH",
+        RUNTIME_DIR / "ipfs-content" / "peer-roster.json",
+    )
+
+
+def discovery_file(values: dict[str, str]) -> Path:
+    return config_path(values, "BDAG_IPFS_CONTENT_DISCOVERY_FILE", PROJECT_ROOT / "ops" / "ipfs-content-discovery.json")
+
+
+def write_peer_roster_status(values: dict[str, str], state: str, **extra: object) -> None:
+    payload: dict[str, object] = {
+        "document_type": "bdag_ipfs_peer_roster_status_v1",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "state": state,
+        "trust_model": "signed peer hints only; chain consensus and template readiness remain authoritative",
+    }
+    payload.update(extra)
+    atomic_write_json(peer_roster_status_file(values), payload)
+
+
+def normalized_ipfs_trust_env(values: dict[str, str]) -> dict[str, str]:
+    env = {key: value for key, value in os.environ.items() if key.startswith("BDAG_") or key == "IPFS_PATH"}
+    env.update(values)
+    require = env_value(values, "BDAG_IPFS_PEER_ROSTER_REQUIRE_SIGNATURES", "1")
+    env["BDAG_IPFS_SEGMENT_REQUIRE_SIGNATURES"] = require
+    env["BDAG_IPFS_RESTORE_REQUIRE_SIGNATURES"] = require
+    for key in ("BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE", "BDAG_RAWDATADIR_SIGNING_KEY_FILE"):
+        raw = env.get(key, "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            if not path.is_absolute():
+                env[key] = str((PROJECT_ROOT / path).resolve())
+    return env
+
+
+def ipfs_command(values: dict[str, str], args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    binary = env_value(values, "BDAG_IPFS_BINARY", "ipfs")
+    child_env = os.environ.copy()
+    child_env.update({key: value for key, value in values.items() if key.startswith("BDAG_") or key == "IPFS_PATH"})
+    return subprocess.run(
+        [binary, *args],
+        cwd=PROJECT_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+        env=child_env,
+    )
+
+
+def parse_ipfs_add_cid(stdout: str) -> str:
+    lines = [line.strip().split()[0] for line in stdout.splitlines() if line.strip()]
+    return lines[-1] if lines else ""
+
+
+def ipfs_cat_json(values: dict[str, str], ref: str) -> dict[str, object]:
+    timeout = safe_int(env_value(values, "BDAG_IPFS_PEER_ROSTER_IPFS_TIMEOUT", "20"), 20)
+    proc = ipfs_command(values, ["cat", ref], timeout=timeout)
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or f"ipfs cat failed for {ref}").strip())
+    payload = json.loads(proc.stdout)
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"IPFS peer roster {ref} is not a JSON object")
+    return payload
+
+
+def verify_peer_roster_payload(values: dict[str, str], payload: dict[str, object], *, context: str) -> None:
+    if payload.get("document_type") != "bdag_ipfs_peer_roster_v1":
+        raise RuntimeError(f"{context} has unsupported document_type {payload.get('document_type')!r}")
+    if str(payload.get("network") or "").strip().lower() != "mainnet":
+        raise RuntimeError(f"{context} is not a mainnet peer roster")
+    sys.path.insert(0, str(PROJECT_ROOT / "ops"))
+    import ipfs_segment_trust  # type: ignore
+
+    ipfs_segment_trust.verify_payload_signature(
+        payload,
+        normalized_ipfs_trust_env(values),
+        signature_field="roster_signatures",
+        context=context,
+    )
+
+
+def peer_roster_refs(values: dict[str, str]) -> list[str]:
+    refs: list[str] = []
+    for key in ("BDAG_IPFS_PEER_ROSTER_CID", "BDAG_IPFS_PEER_ROSTER_DEFAULT_CID", "BDAG_IPFS_PEER_ROSTER_IPNS"):
+        raw = env_value(values, key, "").strip()
+        if raw:
+            refs.append(raw if raw.startswith(("/ipfs/", "/ipns/")) else f"/ipfs/{raw}")
+    path = discovery_file(values)
+    try:
+        discovery = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        discovery = {}
+    if isinstance(discovery, dict):
+        for key in ("current_peer_roster_cid", "peer_roster_latest_cid"):
+            raw = str(discovery.get(key) or "").strip()
+            if raw:
+                refs.append(raw if raw.startswith(("/ipfs/", "/ipns/")) else f"/ipfs/{raw}")
+        raw_ipns = str(discovery.get("current_peer_roster_ipns") or "").strip()
+        if raw_ipns:
+            refs.append(raw_ipns if raw_ipns.startswith("/ipns/") else f"/ipns/{raw_ipns}")
+    seen: set[str] = set()
+    result: list[str] = []
+    for ref in refs:
+        if ref and ref not in seen:
+            result.append(ref)
+            seen.add(ref)
+    return result
+
+
+def ipfs_peer_roster_candidates(values: dict[str, str]) -> list[str]:
+    if not ipfs_peer_roster_enabled(values):
+        return []
+    peers: list[str] = []
+    errors: list[str] = []
+    for ref in peer_roster_refs(values):
+        try:
+            payload = ipfs_cat_json(values, ref)
+            verify_peer_roster_payload(values, payload, context=f"IPFS peer roster {ref}")
+        except Exception as exc:
+            errors.append(f"{ref}: {exc}")
+            continue
+        for item in payload.get("peers") or []:
+            if not isinstance(item, dict):
+                continue
+            multiaddr = str(item.get("multiaddr") or "").strip()
+            if multiaddr and peer_parts(multiaddr):
+                peers.append(multiaddr)
+        if peers:
+            write_peer_roster_status(values, "consumed", source=ref, peer_count=len(peers), errors=errors[:5])
+            return peers
+    if errors:
+        write_peer_roster_status(values, "consume_failed", errors=errors[:5])
+    return []
 
 
 def extract_peerstore_log_peers(logs: str) -> list[str]:
@@ -364,6 +549,75 @@ def peer_parts(peer: str) -> tuple[str, int, str] | None:
     except ValueError:
         return None
     return host, port, peer_id
+
+
+def stable_p2p_ports(values: dict[str, str]) -> set[int]:
+    raw = env_value(values, "BDAG_NODE_PEER_STABLE_PORTS", DEFAULT_STABLE_P2P_PORTS)
+    ports: set[int] = set()
+    for token in re.split(r"[\s,]+", raw):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            port = int(token)
+        except ValueError:
+            continue
+        if 1 <= port <= 65535:
+            ports.add(port)
+    return ports or {8150, 8151, 8152, 8154}
+
+
+def node_peer_limit(values: dict[str, str]) -> int:
+    raw = env_value(values, "BDAG_NODE_PEER_LIMIT", str(DEFAULT_NODE_PEER_LIMIT))
+    try:
+        limit = int(raw)
+    except ValueError:
+        return DEFAULT_NODE_PEER_LIMIT
+    return max(1, min(limit, 128))
+
+
+def public_or_dns_peer_host(host: str) -> bool:
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return ip.version == 4 and ip.is_global
+
+
+def curated_node_launch_peers(
+    peers: list[str],
+    values: dict[str, str],
+    local_peer_ids: set[str] | None = None,
+) -> list[str]:
+    """Return the small stable peer set used to launch the node.
+
+    Raw peer observations can be large and noisy. The node launch list must stay
+    bounded and stable: one public/DNS listener address per peer ID, on known
+    P2P listener ports only.
+    """
+    local_peer_ids = local_peer_ids or set()
+    stable_ports = stable_p2p_ports(values)
+    limit = node_peer_limit(values)
+    selected: list[str] = []
+    seen_peer_ids: set[str] = set()
+    for peer in peers:
+        parts = peer_parts(peer)
+        if not parts:
+            continue
+        host, port, peer_id = parts
+        if peer_id in local_peer_ids or peer_id in seen_peer_ids:
+            continue
+        if port not in stable_ports:
+            continue
+        if not public_or_dns_peer_host(host):
+            continue
+        selected.append(peer)
+        seen_peer_ids.add(peer_id)
+        if len(selected) >= limit:
+            break
+    return selected
 
 
 def parse_networks(raw: str, default: str = "") -> list[ipaddress.IPv4Network]:
@@ -523,12 +777,20 @@ def p2p_peer_candidates(values: dict[str, str]) -> PeerCandidates:
         source_peers.setdefault(source, []).append(peer)
 
     for key in GENERIC_PEER_KEYS:
-        for peer in split_peer_csv(env_value(values, key)):
+        for peer in split_peer_csv(peer_source_value(values, key)):
             add(peer, key)
 
+    for key in GENERATED_PEER_KEYS:
+        for peer in split_peer_csv(peer_source_value(values, key)):
+            if not peer_parts(peer):
+                add(peer, key)
+
     for key in LEGACY_PEER_SOURCE_KEYS:
-        for peer in split_peer_csv(env_value(values, key)):
+        for peer in split_peer_csv(peer_source_value(values, key)):
             add(peer, key)
+
+    for peer in ipfs_peer_roster_candidates(values):
+        add(peer, "ipfs-peer-roster")
 
     for peer in read_peer_file(LIVE_PEERS_FILE):
         add(peer, "runtime-live-peers")
@@ -626,7 +888,7 @@ def peer_reachability_results(peers: list[str]) -> list[dict[str, object]]:
         return list(executor.map(probe, unique))
 
 
-def write_peer_discovery_artifacts(peer_candidates: PeerCandidates, remote_candidate_peers: list[str]) -> None:
+def write_peer_discovery_artifacts(peer_candidates: PeerCandidates, remote_candidate_peers: list[str]) -> dict[str, object]:
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     chain_sources = [
         "chain-peerstore-startup-log",
@@ -657,6 +919,157 @@ def write_peer_discovery_artifacts(peer_candidates: PeerCandidates, remote_candi
         "peers": sorted(reachability, key=lambda item: (item.get("status") != "tcp-open", str(item.get("host", "")), int(item.get("port", 0) or 0), str(item.get("multiaddr", "")))),
     }
     PEER_DISCOVERY_FILE.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return manifest
+
+
+def max_peer_roster_peers(values: dict[str, str]) -> int:
+    return max(1, min(safe_int(env_value(values, "BDAG_IPFS_PEER_ROSTER_MAX_PEERS", "64"), 64), 256))
+
+
+def peer_roster_publish_enabled(values: dict[str, str]) -> bool:
+    raw = env_value(values, "BDAG_IPFS_PEER_ROSTER_PUBLISH_IPFS", "1").strip().lower()
+    return raw not in PEER_ROSTER_FALSE_VALUES
+
+
+def update_peer_roster_discovery(values: dict[str, str], cid: str, roster: dict[str, object]) -> None:
+    path = discovery_file(values)
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        discovery = loaded if isinstance(loaded, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        discovery = {}
+    if not discovery:
+        discovery = {"document_type": "bdag_ipfs_content_discovery_v1", "network": "mainnet"}
+    discovery["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    discovery["current_peer_roster_cid"] = cid
+    discovery["peer_roster_latest_cid"] = cid
+    discovery["current_peer_roster_uri"] = f"ipfs://{cid}"
+    discovery["current_peer_roster"] = {
+        "document_type": roster.get("document_type"),
+        "network": roster.get("network"),
+        "generated_at": roster.get("generated_at"),
+        "peer_count": len(roster.get("peers") or []),
+        "writer": roster.get("writer"),
+        "cid": cid,
+    }
+    discovery["peer_roster_trust_model"] = (
+        "Peer rosters are signed bootstrap hints only. Consumers must verify "
+        "the roster signature before use, TCP-probe candidates, and still rely "
+        "on live chain consensus for block validity."
+    )
+    atomic_write_json(path, discovery)
+
+
+def build_signed_peer_roster(values: dict[str, str], discovery: dict[str, object]) -> dict[str, object]:
+    sys.path.insert(0, str(PROJECT_ROOT / "ops"))
+    import ipfs_segment_trust  # type: ignore
+
+    candidate_multiaddrs: list[str] = []
+    source_by_multiaddr: dict[str, object] = {}
+    for item in discovery.get("peers") or []:
+        if not isinstance(item, dict) or item.get("status") != "tcp-open":
+            continue
+        multiaddr = str(item.get("multiaddr") or "").strip()
+        if not peer_parts(multiaddr):
+            continue
+        candidate_multiaddrs.append(multiaddr)
+        source_by_multiaddr[multiaddr] = item.get("source") or "local-peer-discovery"
+
+    roster_values = dict(values)
+    roster_values["BDAG_NODE_PEER_LIMIT"] = env_value(values, "BDAG_IPFS_PEER_ROSTER_MAX_PEERS", "64")
+    public_multiaddrs = curated_node_launch_peers(candidate_multiaddrs, roster_values)
+    peer_rows: list[dict[str, object]] = []
+    for multiaddr in public_multiaddrs:
+        parts = peer_parts(multiaddr)
+        if not parts:
+            continue
+        host, port, peer_id = parts
+        peer_rows.append(
+            {
+                "multiaddr": multiaddr,
+                "host": host,
+                "port": port,
+                "peer_id": peer_id,
+                "source": source_by_multiaddr.get(multiaddr, "local-peer-discovery"),
+                "publication_filter": "public_or_dns_stable_p2p_port_one_address_per_peer_id",
+                "observed_status": "tcp-open",
+            }
+        )
+    previous = ""
+    try:
+        loaded = json.loads(discovery_file(values).read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            previous = str(loaded.get("current_peer_roster_cid") or loaded.get("peer_roster_latest_cid") or "")
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        previous = ""
+    payload: dict[str, object] = {
+        "document_type": "bdag_ipfs_peer_roster_v1",
+        "schema_version": 1,
+        "network": "mainnet",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "source_discovery_file": str(PEER_DISCOVERY_FILE),
+        "previous_peer_roster_cid": previous,
+        "peer_count": len(peer_rows),
+        "max_peers": max_peer_roster_peers(values),
+        "writer": {
+            "writer_id": env_value(values, "BDAG_IPFS_SEGMENT_WRITER_ID", ""),
+            "local_node_peer_id": env_value(values, "BDAG_LOCAL_NODE_PEER_ID", ""),
+        },
+        "trust_model": (
+            "This signed roster is a bootstrap hint, not chain authority. "
+            "A consumer must verify this signature, probe peers, and validate "
+            "chain data against consensus and chain anchors."
+        ),
+        "peers": peer_rows,
+    }
+    return ipfs_segment_trust.sign_payload(
+        payload,
+        normalized_ipfs_trust_env(values),
+        signature_field="roster_signatures",
+    )
+
+
+def publish_peer_roster(values: dict[str, str], discovery: dict[str, object]) -> None:
+    if not ipfs_peer_roster_enabled(values):
+        write_peer_roster_status(values, "disabled", reasons=["BDAG_IPFS_PEER_ROSTER_ENABLED is disabled"])
+        return
+    try:
+        roster = build_signed_peer_roster(values, discovery)
+    except Exception as exc:
+        write_peer_roster_status(values, "waiting_for_signing_identity", reasons=[str(exc)])
+        return
+
+    index_path = peer_roster_index_path(values)
+    atomic_write_json(index_path, roster)
+    if not peer_roster_publish_enabled(values):
+        write_peer_roster_status(values, "ready", peer_count=len(roster.get("peers") or []), index_path=str(index_path))
+        return
+
+    add_args = split_peer_csv(env_value(values, "BDAG_IPFS_PEER_ROSTER_ADD_ARGS", "--cid-version=1 --pin=true --quieter"))
+    timeout = safe_int(env_value(values, "BDAG_IPFS_PEER_ROSTER_IPFS_TIMEOUT", "20"), 20)
+    proc = ipfs_command(values, ["add", *add_args, str(index_path)], timeout=timeout)
+    if proc.returncode != 0:
+        write_peer_roster_status(
+            values,
+            "publish_failed",
+            peer_count=len(roster.get("peers") or []),
+            index_path=str(index_path),
+            reasons=[(proc.stderr or proc.stdout or "ipfs add failed").strip()[-1000:]],
+        )
+        return
+    cid = parse_ipfs_add_cid(proc.stdout)
+    if not cid:
+        write_peer_roster_status(values, "publish_failed", peer_count=len(roster.get("peers") or []), index_path=str(index_path), reasons=["ipfs add returned no CID"])
+        return
+    update_peer_roster_discovery(values, cid, roster)
+    write_peer_roster_status(
+        values,
+        "published",
+        peer_count=len(roster.get("peers") or []),
+        index_path=str(index_path),
+        peer_roster_cid=cid,
+        peer_roster_uri=f"ipfs://{cid}",
+    )
 
 
 def latest_peer_id(container: str, fallback: str | None = None) -> str:
@@ -872,7 +1285,8 @@ def main() -> int:
         active_nodes,
         host_ip,
     )
-    write_peer_discovery_artifacts(peer_candidates, remote_candidate_peers)
+    peer_discovery = write_peer_discovery_artifacts(peer_candidates, remote_candidate_peers)
+    publish_peer_roster(values, peer_discovery)
 
     p2p_port = configured_p2p_port(values)
     local_addrs = {
@@ -883,13 +1297,18 @@ def main() -> int:
     updates: dict[str, str] = {}
     primary_node = "node" if "node" in active_nodes else ""
     if primary_node:
-        node_peers = without_inactive_local_node_peers(
+        candidate_node_peers = without_inactive_local_node_peers(
             without_peer_ids(
                 list(candidate_peers),
                 inactive_local_peer_ids | {peers.get(primary_node, "")},
             ),
             active_nodes,
             host_ip,
+        )
+        node_peers = curated_node_launch_peers(
+            candidate_node_peers,
+            values,
+            inactive_local_peer_ids | {peers.get(primary_node, "")},
         )
         updates["BDAG_NODE_PEER_ADDRESSES"] = unique_csv(node_peers)
     if local_addrs:

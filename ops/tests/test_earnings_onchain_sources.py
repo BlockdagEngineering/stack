@@ -20,8 +20,10 @@ class EarningsOnchainSourceTests(unittest.TestCase):
                 "ensure_runtime",
                 "first_block_at_or_after",
                 "global_evm_rpc_urls",
+                "evm_reference_rpc_urls",
                 "json_rpc_balance_at",
                 "json_rpc_call",
+                "local_evm_balance_probe_pause",
                 "node_rpc_endpoint",
                 "read_json_file",
                 "rpc_block_timestamp",
@@ -35,6 +37,57 @@ class EarningsOnchainSourceTests(unittest.TestCase):
         for name, value in self.originals.items():
             setattr(pool_ops, name, value)
 
+    def test_wallet_window_pauses_local_evm_rpc_during_sync(self) -> None:
+        calls = []
+        address = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        pool_ops.ensure_runtime = lambda: None
+        pool_ops.seconds_since_epoch = lambda: 1_000_000
+        pool_ops.read_json_file = lambda _path, default: {}
+        pool_ops.write_json_file = lambda _path, _payload, mode=0o600: None
+        pool_ops.global_evm_rpc_urls = lambda: [("local-evm", "http://local-evm")]
+        pool_ops.evm_reference_rpc_urls = lambda: [("reference-evm", "http://reference-evm")]
+        pool_ops.archive_rpc_urls = lambda: [
+            ("public-archive", "http://public-archive"),
+            ("local-evm", "http://local-evm"),
+        ]
+        pool_ops.local_evm_balance_probe_pause = lambda: {
+            "paused": True,
+            "reason": "node is syncing",
+            "reasons": ["node is syncing"],
+        }
+        pool_ops.first_block_at_or_after = lambda url, latest, target: 90
+        pool_ops.rpc_block_timestamp = lambda url, block: 100_000 if block == 100 else 96_400
+        pool_ops.blockscout_v2_address_transactions = lambda _address, _cutoff_at: {
+            "source": "blockscout",
+            "items": [],
+        }
+
+        def fake_json_rpc_call(url, method, params, timeout=6.0):
+            calls.append((url, method))
+            self.assertNotEqual(url, "http://local-evm")
+            self.assertEqual(method, "eth_blockNumber")
+            return "0x64"
+
+        def fake_balance_at(url, _address, block_number, timeout=8.0):
+            calls.append((url, f"balance:{block_number}"))
+            self.assertNotEqual(url, "http://local-evm")
+            if block_number == 100:
+                self.assertEqual(url, "http://reference-evm")
+                return {"wei": str(200 * pool_ops.WEI_PER_BDAG), "bdag": "200.00"}
+            self.assertEqual(url, "http://public-archive")
+            return {"wei": str(150 * pool_ops.WEI_PER_BDAG), "bdag": "150.00"}
+
+        pool_ops.json_rpc_call = fake_json_rpc_call
+        pool_ops.json_rpc_balance_at = fake_balance_at
+
+        result = pool_ops.collect_onchain_wallet_window_earnings(address, hours=1)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["local_evm_rpc"]["paused"])
+        self.assertEqual(result["latest_balance_source"], "reference-evm")
+        self.assertEqual(result["start_balance_source"], "public-archive")
+        self.assertNotIn(("http://local-evm", "eth_blockNumber"), calls)
+
     def test_wallet_window_uses_evm_rpc_not_authenticated_mining_rpc(self) -> None:
         calls = []
         address = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
@@ -43,6 +96,7 @@ class EarningsOnchainSourceTests(unittest.TestCase):
         pool_ops.read_json_file = lambda _path, default: {}
         pool_ops.write_json_file = lambda _path, _payload, mode=0o600: None
         pool_ops.global_evm_rpc_urls = lambda: [("local-evm", "http://evm-rpc")]
+        pool_ops.local_evm_balance_probe_pause = lambda: {"paused": False, "reason": "", "reasons": []}
         pool_ops.node_rpc_endpoint = lambda: ("mining-rpc", "http://mining-rpc")
         pool_ops.archive_rpc_urls = lambda: [("archive-evm", "http://archive-rpc")]
         pool_ops.first_block_at_or_after = lambda url, latest, target: 90

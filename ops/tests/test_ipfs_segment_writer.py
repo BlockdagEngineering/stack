@@ -139,6 +139,34 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "refuses non-mainnet"):
             ipfs_segment_writer.update_index({}, record, {"BDAG_NETWORK": "not-mainnet"})
 
+    def test_chain_reference_rpc_url_falls_back_to_public_rpc_list(self) -> None:
+        env = {
+            "BDAG_PUBLIC_RPC_URLS": "local=http://source:38131,engineering=https://rpc.blockdag.engineering",
+        }
+
+        url = ipfs_segment_writer.chain_reference_rpc_url(env, "http://source:38131")
+
+        self.assertEqual("https://rpc.blockdag.engineering", url)
+
+    def test_chain_reference_rpc_candidates_keep_all_public_fallbacks(self) -> None:
+        env = {
+            "BDAG_PUBLIC_RPC_URLS": "bad=https://bad.example,local=http://source:38131,good=https://good.example",
+        }
+
+        urls = ipfs_segment_writer.chain_reference_rpc_candidates(env, "http://source:38131")
+
+        self.assertEqual(["https://bad.example", "https://good.example"], urls)
+
+    def test_chain_reference_rpc_url_prefers_explicit_value(self) -> None:
+        env = {
+            "BDAG_CHAIN_REFERENCE_RPC_URL": "http://reference:38131",
+            "BDAG_PUBLIC_RPC_URLS": "engineering=https://rpc.blockdag.engineering",
+        }
+
+        url = ipfs_segment_writer.chain_reference_rpc_url(env, "http://source:38131")
+
+        self.assertEqual("http://reference:38131", url)
+
     def test_update_index_rejects_non_contiguous_append(self) -> None:
         index = {
             "segments": [
@@ -406,7 +434,10 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         }
 
         result = ipfs_segment_writer.publication_integrity_gate(
-            {"BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH": "1"},
+            {
+                "BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH": "1",
+                "BDAG_IPFS_SEGMENT_BOOTSTRAP_UNTRUSTED_PUBLISH": "1",
+            },
             Path("/tmp/index.json"),
             "http://source:38131",
             "",
@@ -418,6 +449,55 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         self.assertEqual(result["state"], "bootstrap_local_reference_absent")
         self.assertEqual(result["mutation_policy"], "allowed_for_bootstrap_seed_without_roster_only")
 
+    def test_publication_gate_tries_next_public_reference_when_reference_unavailable(self) -> None:
+        env = {
+            "BDAG_PUBLIC_RPC_URLS": "bad=https://bad.example,good=https://good.example",
+        }
+        deferred = {"state": "deferred_reference_unavailable", "trusted": False, "reasons": ["http_403"]}
+        trusted = {"state": "trusted", "trusted": True, "reasons": []}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            ipfs_segment_writer,
+            "run_preflight",
+            side_effect=[deferred, trusted],
+        ) as run_preflight:
+            result = ipfs_segment_writer.publication_integrity_gate(
+                env,
+                Path(tmp) / "index.json",
+                "http://source:38131",
+                "",
+                1,
+                2,
+                {},
+            )
+
+        self.assertEqual("trusted", result["state"])
+        self.assertEqual("https://good.example", result["selected_reference_url"])
+        self.assertEqual(["https://bad.example", "https://good.example"], [call.args[3] for call in run_preflight.call_args_list])
+        self.assertEqual("deferred_reference_unavailable", result["reference_attempts"][0]["state"])
+
+    def test_publication_gate_does_not_fallback_from_explicit_reference(self) -> None:
+        env = {
+            "BDAG_PUBLIC_RPC_URLS": "good=https://good.example",
+        }
+        deferred = {"state": "deferred_reference_unavailable", "trusted": False, "reasons": ["http_403"]}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            ipfs_segment_writer,
+            "run_preflight",
+            return_value=deferred,
+        ) as run_preflight:
+            with self.assertRaises(ipfs_segment_writer.RetryableDefer):
+                ipfs_segment_writer.publication_integrity_gate(
+                    env,
+                    Path(tmp) / "index.json",
+                    "http://source:38131",
+                    "https://explicit.example",
+                    1,
+                    2,
+                    {},
+                )
+
+        run_preflight.assert_called_once()
+
     def test_bootstrap_local_publish_is_fail_closed_by_default(self) -> None:
         election = {
             "allowed": True,
@@ -426,9 +506,18 @@ class IPFSSegmentWriterTest(unittest.TestCase):
         }
 
         self.assertFalse(ipfs_segment_writer.bootstrap_local_publish_allowed({}, election))
-        self.assertTrue(
+        self.assertFalse(
             ipfs_segment_writer.bootstrap_local_publish_allowed(
                 {"BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH": "1"},
+                election,
+            )
+        )
+        self.assertTrue(
+            ipfs_segment_writer.bootstrap_local_publish_allowed(
+                {
+                    "BDAG_IPFS_SEGMENT_BOOTSTRAP_LOCAL_PUBLISH": "1",
+                    "BDAG_IPFS_SEGMENT_BOOTSTRAP_UNTRUSTED_PUBLISH": "1",
+                },
                 election,
             )
         )

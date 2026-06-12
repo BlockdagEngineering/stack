@@ -20,6 +20,8 @@ GIB = 1024**3
 ZERO_ETH_ADDRESS = "0x0000000000000000000000000000000000000000"
 FLASH_UNFRIENDLY_FS = {"exfat", "vfat", "ntfs", "fuseblk"}
 RAM_BACKED_FS = {"tmpfs", "ramfs"}
+SNAPSHOT_CAPABLE_FS = {"btrfs", "zfs"}
+SNAPSHOT_BACKENDS = {"btrfs", "zfs", "lvm"}
 CHAIN_DB_MARKERS = ("BdagChain", "Blockdag", "chaindata", "mainnet")
 
 
@@ -30,6 +32,7 @@ class Check:
     detail: str
     mitigation: str = ""
     evidence: dict[str, Any] = field(default_factory=dict)
+    blocker: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -38,6 +41,7 @@ class Check:
             "detail": self.detail,
             "mitigation": self.mitigation,
             "evidence": self.evidence,
+            "blocker": self.blocker,
         }
 
 
@@ -350,6 +354,22 @@ def storage_device(path: Path) -> dict[str, Any]:
     }
 
 
+def is_lvm_source(source: str) -> bool:
+    source = clean_mount_source(source)
+    if source.startswith("/dev/mapper/") or source.startswith("/dev/dm-"):
+        return True
+    if source.startswith("/dev/"):
+        proc = run(["lsblk", "-no", "TYPE", source], timeout=3)
+        return any(line.strip().lower() == "lvm" for line in proc.stdout.splitlines())
+    return False
+
+
+def is_snapshot_capable_storage(device: dict[str, Any]) -> bool:
+    fstype = str(device.get("fstype") or "").lower()
+    source = str(device.get("source") or "")
+    return fstype in SNAPSHOT_CAPABLE_FS or is_lvm_source(source)
+
+
 def same_storage_device(left: Path, left_device: dict[str, Any], right: Path, right_device: dict[str, Any]) -> bool:
     left_block = str(left_device.get("block") or "")
     right_block = str(right_device.get("block") or "")
@@ -369,8 +389,9 @@ def add(
     detail: str,
     mitigation: str = "",
     evidence: dict[str, Any] | None = None,
+    blocker: bool = False,
 ) -> None:
-    checks.append(Check(name, status, detail, mitigation, evidence or {}))
+    checks.append(Check(name, status, detail, mitigation, evidence or {}, blocker))
 
 
 def check_host(checks: list[Check], profile: HostProfile) -> None:
@@ -463,6 +484,100 @@ def check_storage(checks: list[Check], root: Path, env: dict[str, str], profile:
     usb_chain_data = is_usb_source(str(data_mount.get("source") or ""))
     if usb_chain_data and data_fstype not in {"f2fs", "ext4"}:
         add(checks, "warn", "usb_chain_filesystem", f"USB chain device uses {data_fstype or 'unknown'} filesystem.", "Use F2FS for USB flash or ext4 for USB SSD.", evidence)
+
+
+def check_trusted_checkpoint_storage(checks: list[Check], root: Path, env: dict[str, str]) -> None:
+    required = bool_enabled(env.get("BDAG_IPFS_STATE_CHECKPOINT_REQUIRED"), True)
+    mode = (env.get("BDAG_BTRFS_CHECKPOINT_VOLUME_MODE") or "auto").strip().lower()
+    size_gib = safe_int(env.get("BDAG_BTRFS_CHECKPOINT_VOLUME_SIZE_GIB"), 128) or 128
+    mount = env_path(root, env, "BDAG_BTRFS_CHECKPOINT_VOLUME_MOUNT", root / "data-restore" / "btrfs-checkpoints")
+    paths = {
+        "checkpoint_mount": mount,
+        "sidecar_dir": env_path(
+            root,
+            env,
+            "BDAG_RAWDATADIR_SIDECAR_DIR",
+            mount / "rawdatadir-sidecar" / "mainnet",
+        ),
+        "content_base": env_path(
+            root,
+            env,
+            "BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE",
+            mount / "rawdatadir-sidecar-content",
+        ),
+        "artifact_base": env_path(
+            root,
+            env,
+            "BDAG_RAWDATADIR_ARTIFACT_BASE",
+            mount / "rawdatadir-artifacts",
+        ),
+        "open_sidecar_base": env_path(
+            root,
+            env,
+            "BDAG_RAWDATADIR_OPEN_SIDECAR_BASE",
+            mount / "rawdatadir-sidecar-open" / "mainnet",
+        ),
+    }
+    devices = {name: storage_device(path) for name, path in paths.items()}
+    capable = {name: is_snapshot_capable_storage(device) for name, device in devices.items()}
+    evidence = {
+        "required": required,
+        "BDAG_BTRFS_CHECKPOINT_VOLUME_MODE": mode,
+        "BDAG_BTRFS_CHECKPOINT_VOLUME_SIZE_GIB": size_gib,
+        "paths": {name: str(path) for name, path in paths.items()},
+        "devices": devices,
+        "snapshot_capable": capable,
+    }
+    if not required:
+        add(
+            checks,
+            "pass",
+            "trusted_checkpoint_storage",
+            "trusted IPFS raw checkpoint enforcement is disabled",
+            "Only disable this for local development; production nodes need a verified recovery source.",
+            evidence,
+        )
+        return
+
+    missing = [name for name, is_capable in capable.items() if not is_capable]
+    if mode in {"0", "false", "no", "off", "disabled"}:
+        add(
+            checks,
+            "fail",
+            "trusted_checkpoint_storage",
+            "trusted IPFS raw checkpoints are required but the btrfs checkpoint volume is disabled.",
+            "Enable BDAG_BTRFS_CHECKPOINT_VOLUME_MODE=auto or provide btrfs/ZFS/LVM-backed checkpoint paths.",
+            evidence,
+            blocker=True,
+        )
+    elif size_gib < 128:
+        add(
+            checks,
+            "fail",
+            "trusted_checkpoint_storage",
+            f"btrfs checkpoint volume size is {size_gib}GiB, below the 128GiB minimum.",
+            "Use at least 128GiB so raw sidecar, open restore points, and signed IPFS artifacts can coexist without crowding chain sync.",
+            evidence,
+            blocker=True,
+        )
+    elif missing:
+        add(
+            checks,
+            "fail",
+            "trusted_checkpoint_storage",
+            "trusted IPFS raw checkpoint paths are not all on snapshot-capable storage: " + ", ".join(missing),
+            "Run the installer on Linux with btrfs-progs so it can create the loop-backed btrfs checkpoint volume, or mount equivalent btrfs/ZFS/LVM storage and point the sidecar paths there.",
+            evidence,
+            blocker=True,
+        )
+    else:
+        add(
+            checks,
+            "pass",
+            "trusted_checkpoint_storage",
+            "trusted raw sidecar and IPFS checkpoint paths resolve to snapshot-capable storage",
+            evidence=evidence,
+        )
 
 
 def check_storage_profile(checks: list[Check], root: Path, env: dict[str, str], profile: HostProfile) -> None:
@@ -1125,6 +1240,7 @@ def run_preflight(root: Path, env_file: Path) -> dict[str, Any]:
     checks: list[Check] = []
     check_host(checks, profile)
     check_storage(checks, root, env, profile)
+    check_trusted_checkpoint_storage(checks, root, env)
     check_storage_profile(checks, root, env, profile)
     check_ephemeral_storage(checks, root, env)
     check_disk_io_noise_guard(checks, root, env, profile)
@@ -1137,6 +1253,7 @@ def run_preflight(root: Path, env_file: Path) -> dict[str, Any]:
     check_schema_file(checks, root)
     check_wallet(checks, env)
     failures = [check for check in checks if check.status == "fail"]
+    blockers = [check for check in checks if check.blocker and check.status in {"fail", "warn"}]
     warnings = [check for check in checks if check.status == "warn"]
     return {
         "ok": not failures,
@@ -1144,6 +1261,7 @@ def run_preflight(root: Path, env_file: Path) -> dict[str, Any]:
         "env_file": str(env_file),
         "host_profile": profile.as_dict(),
         "failure_count": len(failures),
+        "blocker_count": len(blockers),
         "warning_count": len(warnings),
         "checks": [check.as_dict() for check in checks],
     }
@@ -1157,6 +1275,7 @@ def print_human(payload: dict[str, Any]) -> None:
     print(
         "SUMMARY "
         f"ok={payload['ok']} failures={payload['failure_count']} warnings={payload['warning_count']} "
+        f"blockers={payload.get('blocker_count', 0)} "
         f"profile={payload['host_profile'].get('profile')}"
     )
 
@@ -1167,6 +1286,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--warn-only", action="store_true", help="Always exit 0 after reporting failures.")
+    parser.add_argument("--enforce-blockers", action="store_true", help="Exit nonzero for deployment-blocking checks even with --warn-only.")
     return parser
 
 
@@ -1179,6 +1299,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print_human(payload)
+    if args.enforce_blockers and payload.get("blocker_count", 0):
+        return 1
     if args.warn_only:
         return 0
     return 0 if payload["ok"] else 1

@@ -79,6 +79,13 @@ USER_TIMERS = split_csv_env(
     "bdag-local-peers.timer,bdag-mining-30min-guard.timer",
 )
 
+SENTINEL_OBSERVE_ONLY_STATES = {
+    automation_control.STATE_TRANSITION_HOLD,
+    automation_control.STATE_REPAIR_HOLD,
+    automation_control.STATE_CONTROLLED_STOP,
+    automation_control.STATE_CHAIN_INCIDENT,
+}
+
 
 def log(message: str) -> None:
     ensure_runtime()
@@ -130,6 +137,21 @@ def status_api() -> tuple[dict[str, Any] | None, str]:
         return collect_stack_status(include_logs=True, collector_url=STATUS_URL, timeout=STATUS_TIMEOUT), ""
     except (StackStatusUnavailable, OSError, TimeoutError, json.JSONDecodeError) as exc:
         return None, str(exc)
+
+
+def observe_only_control_state() -> tuple[bool, str]:
+    control, status, reason = automation_control.read_control_state()
+    if control is None or status != "ok":
+        return False, reason
+    state = str(control.get("state") or "")
+    if state in SENTINEL_OBSERVE_ONLY_STATES:
+        owner_unit = str(control.get("owner_unit") or control.get("owner") or "unknown")
+        hold_reason = str(control.get("reason") or "")
+        detail = f"automation control {state} owned by {owner_unit}"
+        if hold_reason:
+            detail = f"{detail}: {hold_reason}"
+        return True, detail
+    return False, ""
 
 
 def compose_command(*args: str) -> list[str]:
@@ -498,9 +520,27 @@ def main(argv: list[str] | None = None) -> int:
     state = read_state()
 
     try:
-        if not args.dry_run:
+        observe_only, observe_reason = observe_only_control_state()
+        state["observe_only"] = observe_only
+        if observe_only:
+            state["observe_only_reason"] = observe_reason
+            if should_emit(state, "observe_only", observe_reason, now, INCIDENT_COOLDOWN_SECONDS):
+                append_incident(
+                    "sentinel_observe_only",
+                    "warning",
+                    "stack-sentinel",
+                    f"Stack sentinel is observing only: {observe_reason}",
+                    {"reason": observe_reason},
+                )
+            log(f"observe-only mode: {observe_reason}")
+        else:
+            state.pop("observe_only_reason", None)
+
+        if not args.dry_run and not observe_only:
             for unit in [*USER_SERVICES, *USER_TIMERS]:
                 start_unit(unit, state, now, log=log, incident_source="stack-sentinel", cooldown_seconds=INCIDENT_COOLDOWN_SECONDS)
+        elif observe_only:
+            log("observe-only: skipped user service and timer start checks")
         else:
             log("dry-run: skipped user service and timer start checks")
 
@@ -543,8 +583,10 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     notify_user("BlockDAG mining degradation", signature[:220])
 
-        if not args.dry_run:
+        if not args.dry_run and not observe_only:
             inspect_and_repair_containers(status, state, now)
+        elif observe_only:
+            log("observe-only: skipped container repair actions")
         else:
             log("dry-run: skipped container repair actions")
         check_node_log_red_flags(state, now)

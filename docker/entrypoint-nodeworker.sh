@@ -116,20 +116,53 @@ config_addpeer_values() {
 }
 
 BOOTSTRAP_PEER_SEEN=
+BOOTSTRAP_PEER_KEYS_SEEN=
+
+peer_identity_key() {
+  local peer="$1"
+  local peer_id
+  case "$peer" in
+    */p2p/*)
+      peer_id="${peer#*/p2p/}"
+      peer_id="${peer_id%%/*}"
+      [ -n "$peer_id" ] && printf 'p2p:%s\n' "$peer_id" && return 0
+      ;;
+  esac
+  printf 'addr:%s\n' "$peer"
+}
+
+bootstrap_peer_limit() {
+  local limit="${BDAG_NODE_PEER_LIMIT:-8}"
+  case "$limit" in
+    ''|*[!0-9]*) printf '8\n' ;;
+    *) printf '%s\n' "$limit" ;;
+  esac
+}
+
 append_unique_peer() {
   local bucket_name="$1"
   local peer="$2"
   local -n bucket="$bucket_name"
+  local key limit
 
   [ -n "$peer" ] || return 0
   case "$peer" in
     none|null) return 0 ;;
+  esac
+  limit="$(bootstrap_peer_limit)"
+  if [ "$limit" -gt 0 ] && [ "${#bucket[@]}" -ge "$limit" ]; then
+    return 0
+  fi
+  key="$(peer_identity_key "$peer")"
+  case "$BOOTSTRAP_PEER_KEYS_SEEN" in
+    *"|$key|"*) return 0 ;;
   esac
   case "$BOOTSTRAP_PEER_SEEN" in
     *"|$peer|"*) return 0 ;;
   esac
   bucket+=("$peer")
   BOOTSTRAP_PEER_SEEN="${BOOTSTRAP_PEER_SEEN}|$peer|"
+  BOOTSTRAP_PEER_KEYS_SEEN="${BOOTSTRAP_PEER_KEYS_SEEN}|$key|"
 }
 
 append_peer_list() {
@@ -167,12 +200,13 @@ ordered_bootstrap_peers() {
   local config_file config_peers generic_peers
   bootstrap_peers=()
   BOOTSTRAP_PEER_SEEN=
+  BOOTSTRAP_PEER_KEYS_SEEN=
 
   config_file="$(node_arg_value configfile "$node_args" || true)"
   config_file="${config_file:-/etc/bdagStack/node.conf}"
   config_peers="$(config_addpeer_values "$config_file" | paste -sd, - || true)"
 
-  generic_peers="${BDAG_NODE_PEER_ADDRESSES:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $config_peers $(addpeer_values "$node_args" | paste -sd, - || true)"
+  generic_peers="${BOOTSTRAP_PEER_ADDRESSES:-} $config_peers ${BDAG_NODE_PEER_ADDRESSES:-} $(addpeer_values "$node_args" | paste -sd, - || true)"
   append_peer_list bootstrap_peers "$generic_peers"
 
   join_peer_array

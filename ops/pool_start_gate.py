@@ -30,8 +30,6 @@ REQUIRE_CANONICAL_SAFETY = str(
 UNSAFE_MODES = {"catchup_pause", "syncing", "unknown", "waiting_for_status_sample"}
 READY_DOWN_MODES = {"synced", "mining", "ready_no_miners"}
 NODE_STATE_BLOCKER_TERMS = (
-    "missing trie",
-    "restore or resync",
     "chain state",
     "node is still syncing",
     "pool is waiting for node sync",
@@ -185,16 +183,40 @@ def _reason_text(status: dict[str, Any]) -> str:
     degraded_reasons = status.get("degraded_reasons")
     blocking_failures = status.get("blocking_failures")
     failures = status.get("failures")
+    stack_failures = status.get("stack_failures")
     pieces: list[str] = [status_reason]
-    for value in (degraded_reasons, blocking_failures, failures):
+    for value in (degraded_reasons, blocking_failures, failures, stack_failures):
         if isinstance(value, list):
             pieces.extend(str(item) for item in value)
     return " ".join(pieces).lower()
 
 
+def _list_items(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return []
+
+
+def _pool_stopped_failure(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    if any(term in lowered for term in POOL_STOPPED_TERMS):
+        return True
+    match = re.fullmatch(r"(.+?)\s+is\s+not\s+running", lowered)
+    return bool(match and is_pool_target(match.group(1)))
+
+
 def _overall_down_is_pool_only(status: dict[str, Any], reason_text: str) -> bool:
     if any(term in reason_text for term in NODE_STATE_BLOCKER_TERMS):
         return False
+    failures = [
+        *_list_items(status.get("failures")),
+        *_list_items(status.get("stack_failures")),
+        *_list_items(status.get("blocking_failures")),
+    ]
+    if failures:
+        return all(_pool_stopped_failure(item) for item in failures)
     if any(term in reason_text for term in POOL_STOPPED_TERMS):
         return True
 
@@ -238,20 +260,27 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
         reasons.append("chain catch-up pause is active")
     if sync_health.get("needs_chain_data_restore") or sync_health.get("chain_data_restore_required"):
         reasons.append("chain data restore is required before mining")
-    if sync_health.get("needs_fast_sync_repair"):
+    if sync_health.get("needs_chain_sync_repair"):
         reasons.append("chain sync repair is required before mining")
 
     sync_progress = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
     remaining_blocks = _safe_int(sync_progress.get("remaining_blocks"))
     if remaining_blocks is not None and remaining_blocks > 0:
         reasons.append(f"chain sync still has {remaining_blocks} block(s) remaining")
+    sync_status = str(sync_progress.get("status") or "").strip().lower()
+    sync_error = str(sync_progress.get("error") or sync_progress.get("chain_rpc_error") or "").strip()
+    sync_nodes = sync_progress.get("nodes") if isinstance(sync_progress.get("nodes"), dict) else {}
+    node_rpc_errors = [
+        str(node.get("chain_rpc_error") or node.get("error") or "").strip()
+        for node in sync_nodes.values()
+        if isinstance(node, dict) and str(node.get("chain_rpc_error") or node.get("error") or "").strip()
+    ]
+    if sync_status in {"", "unknown", "waiting_for_status_sample"} and (sync_error or node_rpc_errors):
+        reasons.append("chain sync status is unknown because node chain RPC is unavailable")
 
     for node_name, node in _status_nodes(status):
-        missing_trie_count = _safe_int(node.get("missing_trie_node_warnings")) or 0
         if node.get("chain_state_blocker"):
             reasons.append(f"{node_name} reports a chain-state blocker")
-        if missing_trie_count > 0 or node.get("missing_trie_node_lines"):
-            reasons.append(f"{node_name} reports missing trie state")
 
     mode = str(status.get("mode") or "").strip().lower()
     overall = str(status.get("overall") or "").strip().lower()
@@ -264,7 +293,11 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
         reasons.append(f"overall stack status is down with non-ready mode: {mode or 'unknown'}")
 
     rpc_template = status.get("rpc_template_health")
-    if isinstance(rpc_template, dict) and rpc_template.get("all_nodes_ready") is False:
+    if isinstance(rpc_template, dict) and (
+        rpc_template.get("all_nodes_ready") is False
+        or rpc_template.get("all_nodes_failing") is True
+        or bool(rpc_template.get("failing_nodes"))
+    ):
         reasons.append("node template health is not ready")
 
     if REQUIRE_CANONICAL_SAFETY:

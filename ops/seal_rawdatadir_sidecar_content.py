@@ -34,6 +34,7 @@ from typing import Any
 
 ROOT = Path(os.environ.get("BDAG_PROJECT_ROOT") or Path(__file__).resolve().parents[1]).resolve()
 ENV_FILE = Path(os.environ.get("BDAG_ENV_FILE") or ROOT / ".env").resolve()
+STACK_DEFAULTS_FILE = Path(os.environ.get("BDAG_STACK_DEFAULTS_FILE") or ROOT / "ops" / "config" / "stack-defaults.env").resolve()
 FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 DEFAULT_CHUNK_SIZE = 64 * 1024 * 1024
@@ -43,8 +44,10 @@ MAINNET_NETWORK = "mainnet"
 
 def load_env(path: Path = ENV_FILE) -> dict[str, str]:
     env: dict[str, str] = {}
-    if path.exists():
-        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for env_path in (STACK_DEFAULTS_FILE, path):
+        if not env_path.exists():
+            continue
+        for raw in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
             line = raw.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
@@ -332,6 +335,33 @@ def env_quantity(env: dict[str, str], key: str, default: int = 0) -> int:
         return default
 
 
+def collect_evm_chain_anchor(env: dict[str, str]) -> dict[str, Any]:
+    evm_url = env.get("BDAG_RAWDATADIR_EVM_RPC_URL") or env.get("LOCAL_EVM_RPC_URL") or "http://127.0.0.1:18545"
+    finality_blocks = max(0, env_int(env, "BDAG_RAWDATADIR_CHAIN_ANCHOR_FINALITY_BLOCKS", 600))
+    try:
+        chain_id = quantity(evm_rpc(evm_url, "eth_chainId"))
+        latest = quantity(evm_rpc(evm_url, "eth_blockNumber"))
+        anchor_number = max(0, latest - finality_blocks)
+        block = evm_rpc(evm_url, "eth_getBlockByNumber", [hex(anchor_number), False])
+        genesis = evm_rpc(evm_url, "eth_getBlockByNumber", ["0x0", False])
+        if not isinstance(block, dict):
+            return {"state": "unavailable", "reason": f"missing_evm_block:{anchor_number}"}
+        return {
+            "state": "available",
+            "source_url": evm_url,
+            "chain_id": chain_id,
+            "latest_block_number": latest,
+            "block_number": anchor_number,
+            "block_hash": block.get("hash") or "",
+            "state_root": block.get("stateRoot") or "",
+            "genesis_hash": genesis.get("hash") if isinstance(genesis, dict) else "",
+            "finality_lag_blocks": max(0, latest - anchor_number),
+            "method": "eth_getBlockByNumber",
+        }
+    except Exception as exc:
+        return {"state": "unavailable", "source_url": evm_url, "reason": str(exc)}
+
+
 def zero_hash(value: Any) -> bool:
     text = str(value or "").strip().lower()
     return not text or text in {ZERO_HASH, ZERO_HASH[2:]}
@@ -480,6 +510,30 @@ def prune_generations(artifact_base: Path, keep: int) -> None:
         shutil.rmtree(stale, ignore_errors=True)
 
 
+def publish_current_symlink(artifact_base: Path, stage: Path) -> Path:
+    current = artifact_base / "current"
+    artifact_base.mkdir(parents=True, exist_ok=True)
+    tmp_link = artifact_base / f".current.{os.getpid()}.tmp"
+    if tmp_link.exists() or tmp_link.is_symlink():
+        if tmp_link.is_dir() and not tmp_link.is_symlink():
+            shutil.rmtree(tmp_link)
+        else:
+            tmp_link.unlink()
+    tmp_link.symlink_to(Path("artifacts") / stage.name)
+    if current.exists() and current.is_dir() and not current.is_symlink():
+        old_current = artifact_base / f".current.replaced.{now_stamp()}.{os.getpid()}"
+        current.rename(old_current)
+        try:
+            tmp_link.replace(current)
+        except OSError:
+            old_current.rename(current)
+            raise
+        shutil.rmtree(old_current, ignore_errors=True)
+        return current
+    tmp_link.replace(current)
+    return current
+
+
 def write_status(env: dict[str, str], payload: dict[str, Any]) -> None:
     status = resolve_path(
         env.get("BDAG_RAWDATADIR_SIDECAR_CONTENT_STATUS_FILE"),
@@ -496,10 +550,13 @@ def write_status(env: dict[str, str], payload: dict[str, Any]) -> None:
 
 def seal_sidecar(env: dict[str, str]) -> dict[str, Any]:
     network = mainnet_network(env)
-    sidecar = resolve_path(env.get("BDAG_RAWDATADIR_SIDECAR_DIR"), ROOT / "data-restore/rawdatadir-sidecar" / network)
+    sidecar = resolve_path(
+        env.get("BDAG_RAWDATADIR_SIDECAR_DIR"),
+        ROOT / "data-restore" / "btrfs-checkpoints" / "rawdatadir-sidecar" / network,
+    )
     artifact_base = resolve_path(
         env.get("BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE"),
-        ROOT / "data-restore/rawdatadir-sidecar-content",
+        ROOT / "data-restore" / "btrfs-checkpoints" / "rawdatadir-sidecar-content",
     )
     chunk_store = resolve_path(env.get("BDAG_RAWDATADIR_SIDECAR_CHUNK_STORE"), artifact_base / "chunk-store")
     keep = env_int(env, "BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP", 2)
@@ -595,6 +652,7 @@ def seal_sidecar(env: dict[str, str]) -> dict[str, Any]:
             "finalized_sidecar": "1" if finalized else "0",
             "publishable": "1" if finalized or allow_hot_publish else "0",
             "canonical_json": "json_sort_keys_sha256_v1",
+            "evm_anchor": collect_evm_chain_anchor(env),
         },
         "sources": [
             {
@@ -654,13 +712,7 @@ def seal_sidecar(env: dict[str, str]) -> dict[str, Any]:
         marker.write_text("\n".join(reasons or ["not_publishable"]) + "\n", encoding="utf-8")
         make_public_file(marker, uid, gid)
 
-    current = artifact_base / "current"
-    current.parent.mkdir(parents=True, exist_ok=True)
-    tmp_link = artifact_base / f".current.{os.getpid()}.tmp"
-    if tmp_link.exists() or tmp_link.is_symlink():
-        tmp_link.unlink()
-    tmp_link.symlink_to(Path("artifacts") / stage.name)
-    tmp_link.replace(current)
+    current = publish_current_symlink(artifact_base, stage)
     make_public_dir(artifact_base, uid, gid)
     make_public_dir(artifact_base / "artifacts", uid, gid)
 

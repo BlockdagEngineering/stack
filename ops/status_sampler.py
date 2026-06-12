@@ -9,6 +9,7 @@ import json
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 import automation_control
@@ -21,6 +22,7 @@ from pool_ops import (
     POOL_CONTAINER,
     POOL_ENV_FILE,
     PROJECT_ROOT,
+    RUNTIME_DIR,
     STATUS_SAMPLER_FILE,
     collect_pool_activity,
     collect_status_cached,
@@ -111,6 +113,10 @@ MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED = env_bool(
     "BDAG_MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED",
     True,
 )
+MINING_IMPERATIVE_NODE_COMMAND_LINE_REPAIR_ENABLED = env_bool(
+    "BDAG_MINING_IMPERATIVE_NODE_COMMAND_LINE_REPAIR_ENABLED",
+    False,
+)
 MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED = env_bool(
     "BDAG_MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED",
     True,
@@ -161,9 +167,9 @@ NODE_MINING_CONSTRAINED_ASSIGNMENTS = {
 CATCHUP_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_PAUSE_ENABLED", True)
 CATCHUP_PAUSE_THRESHOLD_BLOCKS = env_int("BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS", 300, minimum=1)
 CATCHUP_NODE_RECREATE_ENABLED = env_bool("BDAG_CATCHUP_NODE_RECREATE_ENABLED", True)
-CATCHUP_NODE_CACHE_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MB", 6144, minimum=0)
-CATCHUP_NODE_CACHE_MIN_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MIN_MB", 1024, minimum=256)
-CATCHUP_NODE_CACHE_MEMORY_PERCENT = env_float("BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT", 40.0, minimum=5.0)
+CATCHUP_NODE_CACHE_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MB", 1024, minimum=0)
+CATCHUP_NODE_CACHE_MIN_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MIN_MB", 512, minimum=256)
+CATCHUP_NODE_CACHE_MEMORY_PERCENT = env_float("BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT", 15.0, minimum=5.0)
 CATCHUP_IO_PRESSURE_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED", True)
 CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS = env_int("BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS", 25, minimum=1)
 CATCHUP_IOWAIT_WARN_PERCENT = env_float("BDAG_CATCHUP_IOWAIT_WARN_PERCENT", 15.0, minimum=0.0)
@@ -264,7 +270,10 @@ def set_env_file_value(path: Any, key: str, value: str) -> bool:
 def set_runtime_env_value(key: str, value: str) -> list[str]:
     changed_paths: list[str] = []
     seen: set[Any] = set()
-    for path in (PROJECT_ROOT / ".env", POOL_ENV_FILE):
+    ops_env_file = Path(os.environ.get("BDAG_OPS_ENV_FILE") or RUNTIME_DIR / "ops.env")
+    if not ops_env_file.is_absolute():
+        ops_env_file = PROJECT_ROOT / ops_env_file
+    for path in (PROJECT_ROOT / ".env", POOL_ENV_FILE, ops_env_file):
         if path in seen:
             continue
         seen.add(path)
@@ -570,6 +579,7 @@ def catchup_io_pressure_reasons(payload: dict[str, Any]) -> list[str]:
 def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     policy = dict_value(payload.get("catchup_policy"))
     sync_health = dict_value(payload.get("sync_health"))
+    sync_progress = dict_value(payload.get("sync_progress"))
     threshold = safe_int(policy.get("threshold_blocks"), CATCHUP_PAUSE_THRESHOLD_BLOCKS)
     lag = catchup_lag_blocks(payload)
     io_pressure_reasons = policy.get("io_pressure_reasons")
@@ -590,6 +600,14 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
         or bool(policy.get("pool_has_recent_paid_work"))
     )
+    sync_error_text = str(sync_progress.get("error") or sync_progress.get("chain_rpc_error") or "").lower()
+    node_readiness_unavailable = bool(
+        sync_health.get("node_readiness_unavailable")
+        or sync_health.get("chain_rpc_unavailable")
+        or sync_health.get("template_probe_unavailable")
+        or str(sync_progress.get("source") or "") == "nodes:readiness-unavailable"
+        or "readiness unavailable" in sync_error_text
+    )
     backend_unready_under_pressure = bool(
         policy.get("backend_unready_under_pressure")
         or (io_pressure_reasons and not mining_ready and payload.get("can_mine") is False)
@@ -605,12 +623,43 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     io_pressure_active = bool(io_pressure_candidate_active and not pool_has_recent_paid_work)
     lag_threshold_active = bool(lag > threshold and (not chain_ready_for_mining(payload) or not mining_ready))
-    pause_candidate_active = bool(io_pressure_candidate_active or lag_threshold_active)
+    node_sync_busy = bool(
+        policy.get("node_sync_busy")
+        or sync_health.get("node_busy_syncing")
+        or sync_health.get("node_importing")
+        or sync_progress.get("status") == "syncing"
+    )
+    node_readiness_candidate_active = bool(
+        sync_progress.get("status") == "syncing"
+        and node_readiness_unavailable
+        and not mining_ready
+    )
+    backend_sync_candidate_active = bool(
+        (policy.get("backend_sync_active") or (sync_progress.get("status") == "syncing" and node_sync_busy))
+        and not node_readiness_candidate_active
+        and not mining_ready
+    )
+    pause_candidate_active = bool(
+        io_pressure_candidate_active
+        or lag_threshold_active
+        or node_readiness_candidate_active
+        or backend_sync_candidate_active
+    )
     recent_paid_work_suppressed = bool(pool_has_recent_paid_work and pause_candidate_active)
     active = bool(CATCHUP_PAUSE_ENABLED and pause_candidate_active and not recent_paid_work_suppressed)
     trigger = str(policy.get("trigger") or "")
-    if not trigger and active:
-        trigger = "io_pressure" if io_pressure_active else "lag_threshold"
+    if active and node_readiness_candidate_active and trigger in {"", "backend_syncing"} and lag <= 0:
+        trigger = "node_readiness_unavailable"
+    elif not trigger and active:
+        trigger = (
+            "io_pressure"
+            if io_pressure_active
+            else (
+                "lag_threshold"
+                if lag_threshold_active
+                else ("node_readiness_unavailable" if node_readiness_candidate_active else "backend_syncing")
+            )
+        )
     if not active:
         trigger = ""
     return {
@@ -625,6 +674,10 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "io_pressure_reasons": io_pressure_reasons,
         "io_pressure_min_lag_blocks": io_min_lag,
         "backend_unready_under_pressure": backend_unready_under_pressure,
+        "backend_sync_active": bool(backend_sync_candidate_active and not pool_has_recent_paid_work),
+        "node_readiness_unavailable": node_readiness_unavailable,
+        "node_readiness_candidate_active": bool(node_readiness_candidate_active and not pool_has_recent_paid_work),
+        "node_sync_busy": node_sync_busy,
         "pool_has_recent_paid_work": pool_has_recent_paid_work,
         "lag_threshold_active": lag_threshold_active,
         "mining_ready": mining_ready,
@@ -636,24 +689,87 @@ def catchup_pause_active(payload: dict[str, Any]) -> bool:
     return bool(catchup_policy_from_payload(payload).get("active"))
 
 
+def catchup_policy_containment(policy: dict[str, Any]) -> str:
+    if policy.get("trigger") == "node_readiness_unavailable":
+        return "node_readiness_unavailable"
+    return "catchup_pause"
+
+
+def catchup_policy_stop_reason(policy: dict[str, Any], payload: dict[str, Any]) -> str:
+    summary = str(policy.get("summary") or "").strip()
+    if summary:
+        return summary
+
+    trigger = str(policy.get("trigger") or "")
+    lag = safe_int(policy.get("lag_blocks"), -1)
+    threshold = safe_int(policy.get("threshold_blocks"), CATCHUP_PAUSE_THRESHOLD_BLOCKS)
+    sync_health = dict_value(payload.get("sync_health"))
+
+    if trigger == "node_readiness_unavailable":
+        unavailable = []
+        if sync_health.get("chain_rpc_unavailable"):
+            unavailable.append("chain RPC")
+        if sync_health.get("template_probe_unavailable"):
+            unavailable.append("template probe")
+        detail = "/".join(unavailable) if unavailable else "chain RPC/template"
+        return f"node {detail} readiness unavailable; mining work is intentionally paused"
+
+    if trigger == "io_pressure":
+        if lag > 0:
+            return f"node is I/O-bound while {lag} blocks behind peers"
+        return "backend is not ready while the host is I/O-bound"
+
+    if trigger == "lag_threshold" and lag > 0:
+        return f"node is {lag} blocks behind peers (pause threshold {threshold})"
+
+    if trigger == "backend_syncing":
+        if lag > 0:
+            return f"node is {lag} blocks behind peers (pause threshold {threshold})"
+        return "node is importing or busy syncing while mining templates are not ready"
+
+    if lag > 0:
+        return f"node is {lag} blocks behind peers (pause threshold {threshold})"
+    return "chain node is not ready for mining templates"
+
+
+def catchup_policy_allows_node_runtime_adjustment(policy: dict[str, Any]) -> bool:
+    if policy.get("trigger") == "node_readiness_unavailable":
+        return safe_int(policy.get("lag_blocks"), 0) > 0 and bool(policy.get("node_sync_busy"))
+    return True
+
+
+def chain_state_reason_is_missing_trie(reason: Any) -> bool:
+    text = str(reason or "").lower()
+    return "missing-trie" in text or "missing trie" in text or "missing_trie" in text
+
+
 def chain_state_restore_reason_details(payload: dict[str, Any]) -> list[dict[str, str]]:
     details: list[dict[str, str]] = []
+    defer_missing_trie = status_payload_has_recent_paid_work(payload, CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS)
     sync_health = dict_value(payload.get("sync_health"))
     if sync_health.get("needs_chain_data_restore") or sync_health.get("chain_data_restore_required"):
         restore_nodes = dict_value(sync_health.get("chain_data_restore_nodes"))
         for node, info in restore_nodes.items():
             node_reasons = info.get("reasons") if isinstance(info, dict) else None
             if isinstance(node_reasons, list) and node_reasons:
-                details.extend({"kind": "chain_data_restore", "reason": str(item)} for item in node_reasons if item)
+                details.extend(
+                    {"kind": "chain_data_restore", "reason": str(item)}
+                    for item in node_reasons
+                    if item and not (defer_missing_trie and chain_state_reason_is_missing_trie(item))
+                )
             else:
-                details.append({"kind": "chain_data_restore", "reason": f"{node} requires chain data restore"})
+                reason = f"{node} requires chain data restore"
+                if not (defer_missing_trie and chain_state_reason_is_missing_trie(reason)):
+                    details.append({"kind": "chain_data_restore", "reason": reason})
         if not restore_nodes:
-            details.append(
-                {
-                    "kind": "chain_data_restore",
-                    "reason": "status reports chain data restore is required",
-                }
-            )
+            reason = "status reports chain data restore is required"
+            if not (defer_missing_trie and chain_state_reason_is_missing_trie(reason)):
+                details.append(
+                    {
+                        "kind": "chain_data_restore",
+                        "reason": reason,
+                    }
+                )
     if sync_health.get("chain_state_blocker"):
         blocker_nodes = dict_value(sync_health.get("chain_state_blocker_nodes"))
         for node, info in blocker_nodes.items():
@@ -678,12 +794,50 @@ def chain_state_restore_reason_details(payload: dict[str, Any]) -> list[dict[str
             )
         if info.get("dag_tip_damage"):
             details.append({"kind": "dag_tip_damage", "reason": f"{node} DAG tip/block data is damaged"})
+    unique: dict[tuple[str, str], dict[str, str]] = {}
+    for item in details:
+        unique[(item["kind"], item["reason"])] = item
+    return [unique[key] for key in sorted(unique)]
+
+
+def chain_state_restore_candidate_details(payload: dict[str, Any]) -> list[dict[str, str]]:
+    details: list[dict[str, str]] = []
+    sync_health = dict_value(payload.get("sync_health"))
+    defer_missing_trie = status_payload_has_recent_paid_work(payload, CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS)
+    restore_nodes = dict_value(sync_health.get("chain_data_restore_nodes"))
+    for node, info in restore_nodes.items():
+        node_reasons = info.get("reasons") if isinstance(info, dict) else None
+        if not isinstance(node_reasons, list):
+            continue
+        for reason in node_reasons:
+            if defer_missing_trie and chain_state_reason_is_missing_trie(reason):
+                details.append(
+                    {
+                        "kind": "missing_trie_candidate",
+                        "reason": f"{reason}; deferring restore because accepted block submission is fresh",
+                    }
+                )
+    candidate_nodes = dict_value(sync_health.get("chain_data_restore_candidate_nodes"))
+    for node, info in candidate_nodes.items():
+        node_reasons = info.get("reasons") if isinstance(info, dict) else None
+        if isinstance(node_reasons, list) and node_reasons:
+            details.extend({"kind": "chain_data_restore_candidate", "reason": str(item)} for item in node_reasons if item)
+        else:
+            details.append({"kind": "chain_data_restore_candidate", "reason": f"{node} has chain-state restore candidate signals"})
+
+    nodes = dict_value(payload.get("nodes"))
+    for node, info in nodes.items():
+        if not isinstance(info, dict):
+            continue
         missing_trie = safe_int(info.get("missing_trie_node_warnings"), 0)
         if missing_trie >= CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS:
             details.append(
                 {
-                    "kind": "missing_trie",
-                    "reason": f"{node} has {missing_trie} missing-trie state warning(s)",
+                    "kind": "missing_trie_candidate",
+                    "reason": (
+                        f"{node} has {missing_trie} missing-trie state warning(s); "
+                        "waiting for import stall or hard chain-state corruption before restore"
+                    ),
                 }
             )
     unique: dict[tuple[str, str], dict[str, str]] = {}
@@ -809,31 +963,16 @@ def chain_state_restore_decision(payload: dict[str, Any]) -> dict[str, Any]:
         return {"should_repair": False, "reasons": [], "stalled_import": {}, "disabled": True}
     details = chain_state_restore_reason_details(payload)
     reasons = [item["reason"] for item in details]
+    candidate_details = chain_state_restore_candidate_details(payload)
+    candidate_reasons = [item["reason"] for item in candidate_details]
     stalled_import = update_stalled_import_watch(payload)
     if reasons:
-        missing_trie_only = all(item.get("kind") == "missing_trie" for item in details)
-        active_paid_mining = bool(
-            missing_trie_only
-            and status_payload_has_miner_demand(payload)
-            and status_payload_has_recent_paid_work(payload, CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS)
-        )
-        if active_paid_mining:
-            return {
-                "should_repair": False,
-                "reasons": reasons,
-                "reason_details": details,
-                "stalled_import": stalled_import,
-                "hard": True,
-                "deferred": True,
-                "defer_reason": (
-                    "missing-trie-only restore signal deferred because active miners have "
-                    "fresh accepted block submissions"
-                ),
-            }
         return {
             "should_repair": True,
             "reasons": reasons,
             "reason_details": details,
+            "candidate_reasons": candidate_reasons,
+            "candidate_details": candidate_details,
             "stalled_import": stalled_import,
             "hard": True,
         }
@@ -841,8 +980,20 @@ def chain_state_restore_decision(payload: dict[str, Any]) -> dict[str, Any]:
         return {
             "should_repair": True,
             "reasons": [str(stalled_import.get("reason") or "sustained stalled import")],
+            "candidate_reasons": candidate_reasons,
+            "candidate_details": candidate_details,
             "stalled_import": stalled_import,
             "hard": False,
+        }
+    if candidate_reasons:
+        return {
+            "should_repair": False,
+            "reasons": candidate_reasons,
+            "reason_details": candidate_details,
+            "stalled_import": stalled_import,
+            "hard": False,
+            "deferred": True,
+            "defer_reason": "chain-state restore candidate requires corroboration before destructive restore",
         }
     return {"should_repair": False, "reasons": [], "stalled_import": stalled_import, "hard": False}
 
@@ -1126,6 +1277,13 @@ def node_mining_template_support_should_repair(payload: dict[str, Any]) -> bool:
     append_args = config_value("NODE_ARGS_APPEND")
     if append_args and not node_mining_args_are_safe_and_complete(append_args, address):
         return True
+    if pool_has_recent_share_evidence(payload) or status_payload_has_recent_paid_work(
+        payload,
+        CHAIN_STATE_ACTIVE_MINING_DEFER_SECONDS,
+    ):
+        return False
+    if not MINING_IMPERATIVE_NODE_COMMAND_LINE_REPAIR_ENABLED:
+        return False
     for service in node_services_for_recreate():
         command_line = node_command_line(service)
         if command_line and not node_mining_args_are_safe_and_complete(command_line, address):
@@ -1429,7 +1587,7 @@ def node_conf_cache_mb() -> int:
     return safe_int(match.group(1), 0) if match else 0
 
 
-def update_node_conf_cache(cache_mb: int) -> list[str]:
+def update_node_conf_cache(cache_mb: int, evm_cache_mb: int | None = None) -> list[str]:
     path = node_conf_path()
     if not path.exists() or cache_mb <= 0:
         return []
@@ -1439,15 +1597,18 @@ def update_node_conf_cache(cache_mb: int) -> list[str]:
         text, count = re.subn(r"(?m)^cache\.database=", f"cache={cache_mb}\ncache.database=", text, count=1)
         if count == 0:
             text = text.rstrip() + f"\ncache={cache_mb}\n"
-    if re.search(r"--cache\s+\d+", text):
-        text = re.sub(r"--cache\s+\d+", f"--cache {cache_mb}", text)
-    elif re.search(r'(?m)^evmenv="', text):
-        text = re.sub(
-            r'(?m)^evmenv="([^"]*)"',
-            lambda match: f'evmenv="{match.group(1).rstrip()} --cache {cache_mb}"',
-            text,
-            count=1,
-        )
+    if evm_cache_mb is None:
+        evm_cache_mb = safe_int(config_value("BDAG_EVM_CACHE_MB"), 0)
+    if evm_cache_mb > 0:
+        if re.search(r"--cache\s+\d+", text):
+            text = re.sub(r"--cache\s+\d+", f"--cache {evm_cache_mb}", text)
+        elif re.search(r'(?m)^evmenv="', text):
+            text = re.sub(
+                r'(?m)^evmenv="([^"]*)"',
+                lambda match: f'evmenv="{match.group(1).rstrip()} --cache {evm_cache_mb}"',
+                text,
+                count=1,
+            )
     return [str(path)] if write_text_if_changed(path, text) else []
 
 
@@ -1705,6 +1866,23 @@ def stop_pool_container(payload: dict[str, Any], reason: str, *, containment: st
     containment_label = containment.replace("_", " ")
     event_prefix = containment if containment else "containment"
     control_payload = control.as_dict() if hasattr(control, "as_dict") else dict(vars(control))
+    if not control.allowed:
+        action = {
+            "reason": reason,
+            "container": POOL_CONTAINER,
+            "containment": containment,
+            "control_decision": control_payload,
+            "method": "automation-control",
+        }
+        log(f"{containment_label} stop suppressed by automation control for {POOL_CONTAINER}: {control.reason}")
+        record_incident(
+            f"{event_prefix}_pool_stop_blocked",
+            "warning",
+            f"{containment_label} stop suppressed by automation control: {control.reason}",
+            action,
+            payload,
+        )
+        return False
     compose = run(docker_compose_command("stop", POOL_CONTAINER), timeout=120)
     action = {
         "reason": reason,
@@ -1863,9 +2041,6 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
     chain_restore_decision = chain_state_restore_decision(payload)
     if chain_restore_decision.get("should_repair"):
         clear_pool_start_stability()
-        reason = "; ".join(chain_restore_decision.get("reasons") or []) or "chain-state restore required"
-        if pool_container_running(payload) and stop_pool_container(payload, reason, containment="chain_state_restore"):
-            actions.append(f"stopped_container:{POOL_CONTAINER}:chain_state_restore")
         if start_chain_state_self_heal(payload, chain_restore_decision):
             actions.append("started_chain_state_self_heal")
         return {"enabled": True, "actions": actions}
@@ -1888,13 +2063,14 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
 
     if catchup_active:
         clear_pool_start_stability()
-        reason = (
-            f"node is {catchup_policy.get('lag_blocks')} blocks behind peers "
-            f"(pause threshold {catchup_policy.get('threshold_blocks')})"
-        )
-        if pool_container_running(payload) and stop_pool_container(payload, reason, containment="catchup_pause"):
-            actions.append(f"stopped_container:{POOL_CONTAINER}:catchup_pause")
-        if apply_catchup_node_runtime(payload, catchup_policy):
+        reason = catchup_policy_stop_reason(catchup_policy, payload)
+        containment = catchup_policy_containment(catchup_policy)
+        if pool_container_running(payload) and stop_pool_container(payload, reason, containment=containment):
+            actions.append(f"stopped_container:{POOL_CONTAINER}:{containment}")
+        if (
+            catchup_policy_allows_node_runtime_adjustment(catchup_policy)
+            and apply_catchup_node_runtime(payload, catchup_policy)
+        ):
             actions.append("applied_catchup_node_runtime")
 
     if not catchup_active and node_mining_template_support_should_repair(payload):
@@ -1920,9 +2096,10 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
             if start_pool_container(payload, "; ".join(reasons) or "mining service is required"):
                 actions.append(f"started_container:{POOL_CONTAINER}")
         elif catchup_active:
+            reason = catchup_policy_stop_reason(catchup_policy, payload)
+            containment = catchup_policy_containment(catchup_policy).replace("_", " ")
             log(
-                f"mining imperative left {POOL_CONTAINER} stopped for catch-up pause: "
-                f"lag={catchup_policy.get('lag_blocks')} threshold={catchup_policy.get('threshold_blocks')}"
+                f"mining imperative left {POOL_CONTAINER} stopped for {containment}: {reason}"
             )
         else:
             clear_pool_start_stability()

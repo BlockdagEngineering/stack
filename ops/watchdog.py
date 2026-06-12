@@ -29,6 +29,7 @@ from pool_ops import (
     PROJECT_ROOT,
     RUNTIME_DIR,
     action_log_path,
+    compose_container_name,
     configure_miner,
     default_miner_pool_settings,
     ensure_runtime,
@@ -59,6 +60,8 @@ EFFICIENCY_EVENTS_FILE = LOG_DIR / "efficiency-events.jsonl"
 LOCK_FILE = RUNTIME_DIR / "repair.lock"
 DIRTY_SHUTDOWN_MARKER = RUNTIME_DIR / "dirty-shutdown.marker"
 AUTONOMOUS_STACK_LAB_LOCK_FILE = RUNTIME_DIR / "autonomous-stack-lab.lock"
+CHAIN_STATE_SELF_HEAL_STATE_FILE = RUNTIME_DIR / "chain-state-self-heal-state.json"
+CHAIN_STATE_SELF_HEAL_LOCK_FILE = RUNTIME_DIR / "chain-state-self-heal.lock"
 
 DEFAULT_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_INTERVAL", "60"))
 DEFAULT_FAILURE_THRESHOLD = int(os.environ.get("BDAG_WATCHDOG_FAILURE_THRESHOLD", "3"))
@@ -329,6 +332,35 @@ def pool_initial_download_effective(status: dict[str, Any]) -> bool:
     return True
 
 
+def pool_backend_ready_for_miner_diagnostics(status: dict[str, Any]) -> bool:
+    """Return true when the selected backend is mineable even with zero active miners."""
+    pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
+    selected = pool_health.get("selected_backend_source_health")
+    if not isinstance(selected, dict):
+        metrics = pool_health.get("metrics") if isinstance(pool_health.get("metrics"), dict) else {}
+        selected = metrics.get("selected_backend_source_health")
+    if not isinstance(selected, dict):
+        selected = (
+            status.get("selected_backend_source_health")
+            if isinstance(status.get("selected_backend_source_health"), dict)
+            else {}
+        )
+    if isinstance(selected, dict) and selected:
+        if (
+            selected.get("healthy") is not False
+            and selected.get("node_mineable") is True
+            and selected.get("node_submit_ready") is True
+            and selected.get("template_delivery_effective") is True
+        ):
+            return True
+
+    return bool(
+        pool_health.get("source_selected_backend_mineable") is True
+        and pool_health.get("source_selected_backend_submit_ready") is True
+        and pool_health.get("source_selected_backend_p2p_fresh") is not False
+    )
+
+
 def pool_has_recent_mining_work(status: dict[str, Any], freshness_seconds: int = 60) -> bool:
     """Return true only for recent accepted block submissions, not accepted shares."""
     sync_health = status.get("sync_health") if isinstance(status.get("sync_health"), dict) else {}
@@ -508,6 +540,21 @@ ASIC_API_STALL_TEXT_FRAGMENTS = (
 )
 
 
+def miner_restart_error_needs_physical_power_cycle(*errors: object) -> bool:
+    text = " ".join(str(error or "") for error in errors).lower()
+    return any(
+        fragment in text
+        for fragment in (
+            "connection reset",
+            "remote end closed",
+            "timed out",
+            "timeout",
+            "connection refused",
+            "server error",
+        )
+    )
+
+
 def asic_api_stall_primary_miners(
     status: dict[str, Any],
     stale_seconds: int = DEFAULT_ASIC_API_STALL_STALE_SECONDS,
@@ -515,7 +562,10 @@ def asic_api_stall_primary_miners(
     pool_health = status.get("pool_health", status.get("pool", {}))
     if not isinstance(pool_health, dict):
         pool_health = {}
-    if pool_initial_download_effective(status) or int(pool_health.get("job_notify_count") or 0) <= 0:
+    backend_ready = pool_backend_ready_for_miner_diagnostics(status)
+    if pool_initial_download_effective(status) and not backend_ready:
+        return []
+    if int(pool_health.get("job_notify_count") or 0) <= 0 and not backend_ready:
         return []
     if any(
         bool(pool_health.get(key))
@@ -529,7 +579,6 @@ def asic_api_stall_primary_miners(
             "accepted_job_expired_storm",
             "expired_job_reconnect_failed_no_share",
             "block_submit_zero_success_storm",
-            "initial_download",
             "rpc_refused",
         )
     ):
@@ -549,7 +598,11 @@ def asic_api_stall_primary_miners(
             continue
         if not is_primary_pool_identity(row, mining_address):
             continue
-        if row.get("connected") or row.get("pool_active") is True or row.get("work_pool_active") is True:
+        pool_authorized_missing = bool(row.get("pool_lane_expected") and not row.get("pool_lane_authorized"))
+        if (
+            (row.get("connected") or row.get("pool_active") is True or row.get("work_pool_active") is True)
+            and not pool_authorized_missing
+        ):
             continue
         if row.get("status") not in {"down", "degraded"}:
             continue
@@ -558,7 +611,7 @@ def asic_api_stall_primary_miners(
             or int_or_none(row.get("last_share_age_seconds"))
             or int_or_none(row.get("last_submit_age_seconds"))
         )
-        if stale_age is not None and stale_age < stale_seconds:
+        if stale_age is not None and stale_age < stale_seconds and not pool_authorized_missing:
             continue
         debug = row.get("debug") if isinstance(row.get("debug"), dict) else {}
         issue_text = " ".join(
@@ -578,6 +631,7 @@ def asic_api_stall_primary_miners(
         item = dict(row)
         item["api_stall_issue"] = issue_text.strip()
         item["api_stall_stale_age_seconds"] = stale_age
+        item["pool_authorized_missing"] = pool_authorized_missing
         item["restart_open_first"] = True
         affected.append(item)
     return affected
@@ -834,6 +888,18 @@ def lock_is_held(path: Path) -> bool:
     return False
 
 
+def read_chain_state_self_heal_state() -> dict[str, Any]:
+    try:
+        payload = json.loads(CHAIN_STATE_SELF_HEAL_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def chain_state_self_heal_active() -> bool:
+    return lock_is_held(CHAIN_STATE_SELF_HEAL_LOCK_FILE)
+
+
 def refresh_maintenance_state(state: dict, autonomous_lab_active: bool) -> None:
     previous = state.get("maintenance") if isinstance(state.get("maintenance"), dict) else {}
     previous_active = bool(previous.get("active"))
@@ -960,9 +1026,12 @@ def run_node_restart(node_service: str, reason: str) -> bool:
     write_action_state(state_payload)
     log(f"starting targeted restart for {node_service}: {reason}; log={log_path}")
 
-    # NODES contains runtime container names. The Compose service may be named
-    # differently after topology migration, so restart the concrete container.
-    command = ["docker", "restart", node_service]
+    container_name = compose_container_name(node_service)
+    if container_name != node_service:
+        state_payload["container"] = container_name
+        write_action_state(state_payload)
+
+    command = ["docker", "restart", container_name]
     result = run_logged(command, log_path, timeout=180)
     ok = result.ok
 
@@ -1020,7 +1089,12 @@ def run_node_dag_tip_cleanup(node_service: str, reason: str) -> bool:
     write_action_state(state_payload)
     log(f"starting node DAG tip cleanup for {node_service}: {reason}; log={log_path}")
 
-    node_arg = shlex.quote(node_service)
+    container_name = compose_container_name(node_service)
+    if container_name != node_service:
+        state_payload["container"] = container_name
+        write_action_state(state_payload)
+
+    node_arg = shlex.quote(container_name)
     script = f"""set -euo pipefail
 node={node_arg}
 image=$(docker inspect "$node" --format '{{{{.Config.Image}}}}')
@@ -1203,6 +1277,7 @@ def run_miner_restarts(targets: list[dict[str, Any]], reason: str) -> dict[str, 
                                         "open_restart_error": str(exc),
                                     }
                                 except Exception as auth_exc:  # noqa: BLE001
+                                    needs_power_cycle = miner_restart_error_needs_physical_power_cycle(exc, auth_exc)
                                     result = {
                                         "ip": ip,
                                         "status": "failed",
@@ -1210,13 +1285,24 @@ def run_miner_restarts(targets: list[dict[str, Any]], reason: str) -> dict[str, 
                                         "error": str(exc),
                                         "auth_restart_error": str(auth_exc),
                                     }
+                                    if needs_power_cycle:
+                                        result["physical_power_cycle_required"] = True
+                                        result["operator_action"] = (
+                                            "Power-cycle the ASIC; its HTTP/cgminer control plane refused software restart."
+                                        )
                             else:
+                                needs_power_cycle = miner_restart_error_needs_physical_power_cycle(exc)
                                 result = {
                                     "ip": ip,
                                     "status": "failed",
                                     "action": "restart-open-api-stall",
                                     "error": str(exc),
                                 }
+                                if needs_power_cycle:
+                                    result["physical_power_cycle_required"] = True
+                                    result["operator_action"] = (
+                                        "Power-cycle the ASIC; its HTTP/cgminer control plane refused software restart."
+                                    )
                     elif target.get("configured") is False and password:
                         result = configure_miner(
                             ip=ip,
@@ -1421,7 +1507,7 @@ def suppress_sync_restart_for_active_import(
     sync_health = status.get("sync_health", {}) if isinstance(status.get("sync_health"), dict) else {}
     expected_sync_wait = bool(
         pool_health.get("initial_download")
-        or sync_health.get("needs_fast_sync_repair")
+        or sync_health.get("needs_chain_sync_repair")
         or "waiting for node sync" in reason.lower()
         or "initial download" in reason.lower()
     )
@@ -1458,6 +1544,19 @@ def dag_tip_damage_nodes(status: dict[str, Any]) -> list[str]:
         if info.get("dag_tip_damage"):
             damaged.append(node)
     return damaged
+
+
+def dag_empty_block_storm_nodes(status: dict[str, Any]) -> list[str]:
+    nodes = status.get("nodes", {}) if isinstance(status.get("nodes"), dict) else {}
+    sync_health = status.get("sync_health", {}) if isinstance(status.get("sync_health"), dict) else {}
+    storm_nodes = sync_health.get("dag_empty_block_storm_nodes")
+    if isinstance(storm_nodes, dict) and storm_nodes:
+        return [node for node in NODES if node in storm_nodes]
+    return [
+        node
+        for node in NODES
+        if isinstance(nodes.get(node), dict) and nodes[node].get("dag_empty_block_storm")
+    ]
 
 
 def should_cleanup_dag_tips(state: dict[str, Any], node: str, cooldown: int | None = None) -> bool:
@@ -1755,6 +1854,7 @@ def check_once(
     template_nodes = template_failing_nodes(status)
     orphan_nodes = orphan_storm_nodes(status)
     dag_tip_nodes = dag_tip_damage_nodes(status)
+    dag_empty_nodes = dag_empty_block_storm_nodes(status)
     pool_start_blocked, pool_start_blocked_reason = pool_start_blocked_by_status(status)
     node_template_restart_by_node = (
         state.get("last_node_template_restart_at_by_node")
@@ -1769,6 +1869,27 @@ def check_once(
     docker_access_error = status.get("docker_access_error")
     autonomous_lab_active = lock_is_held(AUTONOMOUS_STACK_LAB_LOCK_FILE)
     refresh_maintenance_state(state, autonomous_lab_active)
+    if chain_state_self_heal_active():
+        restore_state = read_chain_state_self_heal_state()
+        reason = str(restore_state.get("reason") or "chain-state self-heal is active")
+        state["consecutive_failures"] = 0
+        state["consecutive_syncing"] = 0
+        state["consecutive_share_stalls"] = 0
+        state["consecutive_submit_path_stalls"] = 0
+        state["last_status"] = "chain_state_restore_active"
+        state["last_failures"] = []
+        state["last_sync_warnings"] = [reason]
+        state["chain_state_self_heal"] = restore_state
+        log(f"watchdog standing down while chain-state self-heal is active: {reason}")
+        record_efficiency_event(
+            "chain_state_restore_active",
+            "warning",
+            "Watchdog suppressed stack repairs while chain-state self-heal is active",
+            {"self_heal_state": restore_state},
+        )
+        state["updated_at"] = now_iso()
+        write_state(state)
+        return {"status": status, "watchdog_state": state}
     triage = build_mining_health_triage(
         status=status,
         now=now,
@@ -2058,6 +2179,63 @@ def check_once(
                 if ok:
                     state["consecutive_syncing"] = 0
                     state["consecutive_node_orphan_storm"] = 0
+    elif dag_empty_nodes:
+        nodes = status.get("nodes", {}) if isinstance(status.get("nodes"), dict) else {}
+        target_node = dag_empty_nodes[0]
+        target_info = nodes.get(target_node, {}) if isinstance(nodes.get(target_node), dict) else {}
+        reason = (
+            f"{target_node} is logging repeated DAG empty-block lookups "
+            f"({target_info.get('dag_empty_block_warnings')} recent warnings, no recent imports)"
+        )
+        state["consecutive_failures"] = 0
+        state["consecutive_syncing"] = int(state.get("consecutive_dag_empty_block_storm", 0) or 0) + 1
+        state["consecutive_dag_empty_block_storm"] = state["consecutive_syncing"]
+        state["consecutive_share_stalls"] = 0
+        state["last_status"] = "dag_empty_block_storm"
+        state["last_failures"] = []
+        state["last_sync_warnings"] = [reason]
+        log(
+            "dag_empty_block_storm "
+            f"consecutive={state['consecutive_dag_empty_block_storm']} "
+            f"affected={dag_empty_nodes} target={target_node}"
+        )
+        record_efficiency_event(
+            "dag_empty_block_storm",
+            "warning",
+            reason,
+            {
+                "affected_nodes": dag_empty_nodes,
+                "target_node": target_node,
+                "target_node_status": target_info,
+            },
+        )
+        if repair:
+            if autonomous_lab_active:
+                log(f"DAG empty-block cleanup for {target_node} suppressed during autonomous stack lab")
+                record_efficiency_event(
+                    "repair_suppressed",
+                    "warning",
+                    f"DAG empty-block cleanup for {target_node} suppressed during autonomous stack lab",
+                    {"reason": reason, "target_node": target_node},
+                )
+            elif int(state["consecutive_dag_empty_block_storm"]) < 2:
+                log(f"DAG empty-block cleanup for {target_node} waiting for confirmation")
+            elif should_cleanup_dag_tips(state, target_node):
+                ok = run_node_dag_tip_cleanup(target_node, "DAG empty-block storm: " + reason)
+                state["last_repair_at"] = int(time.time())
+                state["last_sync_repair_at"] = int(time.time())
+                mark_dag_tip_cleanup_attempt(state, target_node)
+                if ok:
+                    state["consecutive_syncing"] = 0
+                    state["consecutive_dag_empty_block_storm"] = 0
+            else:
+                log(f"DAG empty-block cleanup for {target_node} suppressed by cooldown; reason={reason}")
+                record_efficiency_event(
+                    "repair_suppressed",
+                    "warning",
+                    f"DAG empty-block cleanup for {target_node} suppressed by cooldown",
+                    {"reason": reason, "target_node": target_node},
+                )
     elif api_stall_asics:
         affected = [
             {
@@ -2638,7 +2816,7 @@ def check_once(
                 f"(grace {DEFAULT_POOL_RESTART_GRACE_SECONDS}s)"
             )
         sync_repair_needed = bool(
-            (status.get("sync_health") or {}).get("needs_fast_sync_repair")
+            (status.get("sync_health") or {}).get("needs_chain_sync_repair")
             or pool_health.get("initial_download")
         )
         state["consecutive_failures"] = 0
@@ -2807,7 +2985,7 @@ def check_once(
             state["last_share_repair_at"] = int(time.time())
             if ok:
                 state["consecutive_share_stalls"] = 0
-    elif status.get("sync_health", {}).get("needs_fast_sync_repair"):
+    elif status.get("sync_health", {}).get("needs_chain_sync_repair"):
         sync_warnings = status.get("sync_warnings", status.get("warnings", []))
         recent_mining_work = pool_has_recent_mining_work(status)
         state["consecutive_failures"] = 0

@@ -6,6 +6,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "ops" / "ipfs_content_sidecar.py"
@@ -13,9 +16,84 @@ SPEC = importlib.util.spec_from_file_location("ipfs_content_sidecar", MODULE_PAT
 ipfs_content_sidecar = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
 SPEC.loader.exec_module(ipfs_content_sidecar)
+RESTORE_MODULE_PATH = ROOT / "ops" / "restore-rawdatadir-segment-artifact.py"
+RESTORE_SPEC = importlib.util.spec_from_file_location("restore_rawdatadir_segment_artifact", RESTORE_MODULE_PATH)
+restore_rawdatadir_segment_artifact = importlib.util.module_from_spec(RESTORE_SPEC)
+assert RESTORE_SPEC and RESTORE_SPEC.loader
+RESTORE_SPEC.loader.exec_module(restore_rawdatadir_segment_artifact)
 
 
 class IPFSContentSidecarTest(unittest.TestCase):
+    def write_signed_artifact(self, artifact: Path) -> tuple[Path, dict[str, object], str]:
+        artifact.mkdir(parents=True, exist_ok=True)
+        chunks = artifact / "chunks"
+        chunks.mkdir()
+        body = b"trusted checkpoint test\n"
+        chunk = chunks / "0.bin"
+        chunk.write_bytes(body)
+        private_key = Ed25519PrivateKey.generate()
+        public_key = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        manifest: dict[str, object] = {
+            "format_version": 2,
+            "artifact_type": "raw_datadir_checkpoint",
+            "network": "mainnet",
+            "chain_id": 1404,
+            "genesis_hash": "0x" + "a" * 64,
+            "tip_order": 123,
+            "tip_hash": "0x" + "b" * 64,
+            "block_total": 124,
+            "state_root": "0x" + "c" * 64,
+            "chunk_hash_algo": "sha256",
+            "encoding": "content-addressed-raw-chunks",
+            "layout": "directory",
+            "created_at": "2026-06-11T00:00:00Z",
+            "metadata": {
+                "source": "unit-test-sidecar",
+                "finalized_sidecar": "1",
+                "publishable": "1",
+                "canonical_json": "json_sort_keys_sha256_v1",
+            },
+            "sources": [{"name": "rawdatadir-sidecar", "chunk_start": 0, "chunk_count": 1}],
+            "chunks": [
+                {
+                    "id": 0,
+                    "source": "rawdatadir-sidecar",
+                    "class": "raw_datadir_file_chunk",
+                    "path": "chunks/0.bin",
+                    "compressed_size": len(body),
+                    "uncompressed_size": len(body),
+                    "compressed_sha256": restore_rawdatadir_segment_artifact.hashlib.sha256(body).hexdigest(),
+                }
+            ],
+            "files": [
+                {
+                    "path": "BdagChain/unit-test.dat",
+                    "class": "raw_datadir_file",
+                    "size": len(body),
+                    "sha256": restore_rawdatadir_segment_artifact.hashlib.sha256(body).hexdigest(),
+                    "chunk_start": 0,
+                    "chunk_count": 1,
+                    "mode": 0o644,
+                }
+            ],
+        }
+        artifact_root = restore_rawdatadir_segment_artifact.compute_artifact_root(manifest)
+        manifest["artifact_root"] = artifact_root
+        manifest["signatures"] = [
+            {
+                "key_id": "unit-test",
+                "algorithm": "ed25519",
+                "public_key": public_key.hex(),
+                "signature": private_key.sign(bytes.fromhex(artifact_root)).hex(),
+                "signed_at": "2026-06-11T00:00:01Z",
+            }
+        ]
+        (artifact / "manifest.json").write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+        return artifact, manifest, f"unit-test={public_key.hex()}"
+
     def test_parse_cid_uses_final_ipfs_add_line(self) -> None:
         self.assertEqual(
             ipfs_content_sidecar.parse_cid("bafy-child file\nbafy-root dir\n"),
@@ -84,19 +162,8 @@ class IPFSContentSidecarTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             artifact = base / "current"
-            artifact.mkdir()
+            _, _, trusted_signers = self.write_signed_artifact(artifact)
             manifest = artifact / "manifest.json"
-            manifest.write_text(
-                json.dumps(
-                    {
-                        "artifact_type": "raw_datadir_checkpoint",
-                        "network": "mainnet",
-                        "block_total": 123,
-                        "signatures": [{"key_id": "test", "signature": "abcd"}],
-                    }
-                ),
-                encoding="utf-8",
-            )
             status = base / "status.json"
             env = {
                 "BDAG_PROJECT_ROOT": str(ROOT),
@@ -106,6 +173,9 @@ class IPFSContentSidecarTest(unittest.TestCase):
                 "BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST": str(manifest),
                 "BDAG_IPFS_CONTENT_STATUS_FILE": str(status),
                 "BDAG_IPFS_CONTENT_SKIP_MAINTENANCE_DECISION": "1",
+                "BDAG_RAWDATADIR_TRUSTED_SIGNERS": trusted_signers,
+                "BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER": "1",
+                "BDAG_RAWDATADIR_REQUIRE_CHAIN_ANCHOR": "0",
             }
 
             with mock.patch.dict(os.environ, env, clear=False):
@@ -116,6 +186,47 @@ class IPFSContentSidecarTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(payload["state"], "ready")
         self.assertEqual(payload["action"], "dry_run")
+        self.assertEqual(payload["manifest_verification"]["state"], "verified")
+        self.assertEqual(payload["manifest_verification"]["verified_signature_key_ids"], ["unit-test"])
+
+    def test_publish_blocks_signature_not_in_trust_roster(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = Path(tmp) / "artifact"
+            _, _, _trusted_signers = self.write_signed_artifact(artifact)
+            manifest = artifact / "manifest.json"
+
+            blockers = ipfs_content_sidecar.artifact_publish_blockers(
+                artifact,
+                manifest,
+                json.loads(manifest.read_text(encoding="utf-8")),
+                {
+                    "BDAG_RAWDATADIR_TRUSTED_SIGNERS": "other=" + ("00" * 32),
+                    "BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER": "1",
+                    "BDAG_RAWDATADIR_REQUIRE_CHAIN_ANCHOR": "0",
+                },
+            )
+
+        self.assertIn("manifest_signature_untrusted", blockers)
+
+    def test_publish_blocks_missing_required_chain_anchor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = Path(tmp) / "artifact"
+            _, _, trusted_signers = self.write_signed_artifact(artifact)
+            manifest = artifact / "manifest.json"
+
+            blockers = ipfs_content_sidecar.artifact_publish_blockers(
+                artifact,
+                manifest,
+                json.loads(manifest.read_text(encoding="utf-8")),
+                {
+                    "BDAG_RAWDATADIR_TRUSTED_SIGNERS": trusted_signers,
+                    "BDAG_RAWDATADIR_REQUIRE_TRUSTED_SIGNER": "1",
+                    "BDAG_RAWDATADIR_REQUIRE_CHAIN_ANCHOR": "1",
+                    "BDAG_RAWDATADIR_CHAIN_ANCHOR_REFERENCE_EVM_URL": "http://reference-rpc",
+                },
+            )
+
+        self.assertTrue(any(item.startswith("manifest_chain_anchor_untrusted:") for item in blockers))
 
     def test_waiting_state_republishes_current_ipns_pointer_when_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -135,6 +246,8 @@ class IPFSContentSidecarTest(unittest.TestCase):
                 "BDAG_PROJECT_ROOT": str(ROOT),
                 "BDAG_IPFS_CONTENT_SIDECAR_MODE": "auto",
                 "BDAG_RAWDATADIR_ARTIFACT_BASE": str(base),
+                "BDAG_IPFS_CONTENT_ARTIFACT_DIR": str(base / "current"),
+                "BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST": str(base / "current" / "manifest.json"),
                 "BDAG_IPFS_CONTENT_STATUS_FILE": str(status),
                 "BDAG_IPFS_RAWDATADIR_CONTENT_INDEX_PATH": str(index_path),
                 "BDAG_IPFS_CONTENT_DISCOVERY_FILE": str(base / "missing-discovery.json"),

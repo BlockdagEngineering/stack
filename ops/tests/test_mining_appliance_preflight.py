@@ -37,6 +37,64 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         self.assertEqual(env["BDAG_NODE_CACHE_MB"], "1024")
         self.assertEqual(env["EMPTY"], "")
 
+    def test_trusted_checkpoint_storage_requires_snapshot_capable_paths(self) -> None:
+        old_storage_device = preflight.storage_device
+        try:
+            preflight.storage_device = lambda path: {
+                "path": str(path),
+                "mount": {"target": "/", "source": "/dev/nvme0n1p2", "fstype": "ext4", "options": "rw"},
+                "source": "/dev/nvme0n1p2",
+                "block": "nvme0n1",
+                "fstype": "ext4",
+                "is_usb": False,
+            }
+            checks = []
+            preflight.check_trusted_checkpoint_storage(
+                checks,
+                Path("/stack"),
+                {
+                    "BDAG_IPFS_STATE_CHECKPOINT_REQUIRED": "1",
+                    "BDAG_BTRFS_CHECKPOINT_VOLUME_MODE": "auto",
+                    "BDAG_BTRFS_CHECKPOINT_VOLUME_SIZE_GIB": "128",
+                    "BDAG_BTRFS_CHECKPOINT_VOLUME_MOUNT": "./data-restore/btrfs-checkpoints",
+                },
+            )
+        finally:
+            preflight.storage_device = old_storage_device
+
+        found = {check.name: check for check in checks}
+        self.assertEqual(found["trusted_checkpoint_storage"].status, "fail")
+        self.assertTrue(found["trusted_checkpoint_storage"].blocker)
+        self.assertIn("snapshot-capable storage", found["trusted_checkpoint_storage"].detail)
+
+    def test_trusted_checkpoint_storage_accepts_btrfs_paths(self) -> None:
+        old_storage_device = preflight.storage_device
+        try:
+            preflight.storage_device = lambda path: {
+                "path": str(path),
+                "mount": {"target": "/stack/data-restore/btrfs-checkpoints", "source": "/dev/loop19", "fstype": "btrfs", "options": "rw,noatime"},
+                "source": "/dev/loop19",
+                "block": "loop19",
+                "fstype": "btrfs",
+                "is_usb": False,
+            }
+            checks = []
+            preflight.check_trusted_checkpoint_storage(
+                checks,
+                Path("/stack"),
+                {
+                    "BDAG_IPFS_STATE_CHECKPOINT_REQUIRED": "1",
+                    "BDAG_BTRFS_CHECKPOINT_VOLUME_MODE": "auto",
+                    "BDAG_BTRFS_CHECKPOINT_VOLUME_SIZE_GIB": "128",
+                    "BDAG_BTRFS_CHECKPOINT_VOLUME_MOUNT": "./data-restore/btrfs-checkpoints",
+                },
+            )
+        finally:
+            preflight.storage_device = old_storage_device
+
+        found = {check.name: check for check in checks}
+        self.assertEqual(found["trusted_checkpoint_storage"].status, "pass")
+
     def test_network_preflight_reports_wired_route_policy(self) -> None:
         old_run = preflight.run
         old_route_policy_script = preflight.route_policy_script
