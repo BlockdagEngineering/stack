@@ -21,8 +21,10 @@ class DashboardStatusFallbackTests(unittest.TestCase):
             "SAMPLER_CACHE_SECONDS": dashboard.SAMPLER_CACHE_SECONDS,
             "DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS": dashboard.DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS,
             "SYNC_ESTIMATE_STATE_FILE": dashboard.SYNC_ESTIMATE_STATE_FILE,
+            "GLOBAL_BLOCK_WINDOW": dashboard.GLOBAL_BLOCK_WINDOW,
             "GLOBAL_CACHE_FILE": dashboard.GLOBAL_CACHE_FILE,
             "GLOBAL_CACHE_TTL_SECONDS": dashboard.GLOBAL_CACHE_TTL_SECONDS,
+            "GLOBAL_EVM_FALLBACK_BLOCK_WINDOW": dashboard.GLOBAL_EVM_FALLBACK_BLOCK_WINDOW,
             "collect_status_cached": dashboard.collect_status_cached,
             "collect_global_blockchain": dashboard.collect_global_blockchain,
             "read_valid_global_history": dashboard.read_valid_global_history,
@@ -39,8 +41,10 @@ class DashboardStatusFallbackTests(unittest.TestCase):
         dashboard.SAMPLER_CACHE_SECONDS = self.originals["SAMPLER_CACHE_SECONDS"]
         dashboard.DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS = self.originals["DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS"]
         dashboard.SYNC_ESTIMATE_STATE_FILE = self.originals["SYNC_ESTIMATE_STATE_FILE"]
+        dashboard.GLOBAL_BLOCK_WINDOW = self.originals["GLOBAL_BLOCK_WINDOW"]
         dashboard.GLOBAL_CACHE_FILE = self.originals["GLOBAL_CACHE_FILE"]
         dashboard.GLOBAL_CACHE_TTL_SECONDS = self.originals["GLOBAL_CACHE_TTL_SECONDS"]
+        dashboard.GLOBAL_EVM_FALLBACK_BLOCK_WINDOW = self.originals["GLOBAL_EVM_FALLBACK_BLOCK_WINDOW"]
         dashboard.collect_status_cached = self.originals["collect_status_cached"]
         dashboard.collect_global_blockchain = self.originals["collect_global_blockchain"]
         dashboard.read_valid_global_history = self.originals["read_valid_global_history"]
@@ -434,6 +438,54 @@ class DashboardStatusFallbackTests(unittest.TestCase):
         self.assertEqual(payload["status"], "stale")
         self.assertEqual(payload["cache"]["served_by"], "dashboard-refresh-stale-cache")
         self.assertEqual(payload["cache"]["previous_age_seconds"], 900.0)
+
+    def test_global_payload_refreshes_short_window_cache_even_when_fresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = pathlib.Path(tmp)
+            dashboard.GLOBAL_CACHE_FILE = runtime / "global-cache.json"
+            dashboard.GLOBAL_CACHE_TTL_SECONDS = 60
+            dashboard.GLOBAL_EVM_FALLBACK_BLOCK_WINDOW = 600
+            dashboard.time.time = lambda: 1000.0
+            dashboard.read_valid_global_history = lambda limit=None: []
+            dashboard.refresh_global_chain_head = lambda payload: payload
+            dashboard.trigger_global_refresh = lambda reason: (_ for _ in ()).throw(
+                AssertionError("short global cache should refresh synchronously")
+            )
+            dashboard.GLOBAL_CACHE_FILE.write_text(
+                json.dumps(
+                    {
+                        "status": "degraded",
+                        "source_contract": "evm-rpc-fallback-v1",
+                        "updated_at_epoch": 995.0,
+                        "requested_blocks": 64,
+                        "fetched_blocks": 64,
+                        "clusters": [{"address": "0xabc", "blocks": 1}],
+                        "cache": {"hit": False},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            calls: list[str] = []
+
+            def fake_collect_global() -> dict[str, object]:
+                calls.append("collect")
+                return {
+                    "status": "ok",
+                    "requested_blocks": 600,
+                    "fetched_blocks": 600,
+                    "updated_at_epoch": 999.0,
+                    "clusters": [],
+                    "cache": {"hit": False},
+                }
+
+            dashboard.collect_global_blockchain = fake_collect_global
+
+            payload = dashboard.collect_global_dashboard_payload("test-global")
+
+        self.assertEqual(calls, ["collect"])
+        self.assertEqual(payload["requested_blocks"], 600)
+        self.assertEqual(payload["cache"]["previous_requested_blocks"], 64)
+        self.assertEqual(payload["cache"]["target_requested_blocks"], 600)
 
 
 if __name__ == "__main__":

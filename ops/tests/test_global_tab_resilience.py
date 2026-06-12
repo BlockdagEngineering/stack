@@ -134,6 +134,10 @@ class GlobalTabFallbackTests(unittest.TestCase):
         self.old_mining_rpc_call = pool_ops.mining_rpc_call
         self.old_background_maintenance_decision = pool_ops.background_maintenance_decision
         self.old_global_evm_fallback_enabled = pool_ops.GLOBAL_EVM_FALLBACK_ENABLED
+        self.old_global_evm_fallback_block_window = pool_ops.GLOBAL_EVM_FALLBACK_BLOCK_WINDOW
+        self.old_global_evm_fallback_rpc_workers = pool_ops.GLOBAL_EVM_FALLBACK_RPC_WORKERS
+        self.old_collect_local_pool_global_clusters = pool_ops.collect_local_pool_global_clusters
+        self.old_write_global_cache = pool_ops.write_global_cache
         pool_ops.GLOBAL_EVM_FALLBACK_ENABLED = False
         self.addCleanup(self.restore_globals)
 
@@ -147,6 +151,10 @@ class GlobalTabFallbackTests(unittest.TestCase):
         pool_ops.mining_rpc_call = self.old_mining_rpc_call
         pool_ops.background_maintenance_decision = self.old_background_maintenance_decision
         pool_ops.GLOBAL_EVM_FALLBACK_ENABLED = self.old_global_evm_fallback_enabled
+        pool_ops.GLOBAL_EVM_FALLBACK_BLOCK_WINDOW = self.old_global_evm_fallback_block_window
+        pool_ops.GLOBAL_EVM_FALLBACK_RPC_WORKERS = self.old_global_evm_fallback_rpc_workers
+        pool_ops.collect_local_pool_global_clusters = self.old_collect_local_pool_global_clusters
+        pool_ops.write_global_cache = self.old_write_global_cache
 
     def test_global_rejects_old_evm_cache_instead_of_showing_it_stale(self) -> None:
         cached = {
@@ -212,6 +220,53 @@ class GlobalTabFallbackTests(unittest.TestCase):
         self.assertEqual(payload["source_truth"], pool_ops.GLOBAL_STATS_SOURCE_TRUTH)
         self.assertEqual(payload["clusters"], [])
         self.assertIn("getBlockCount", payload["error"])
+
+    def test_evm_fallback_uses_configured_scan_window(self) -> None:
+        wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc".lower()
+        fetched_blocks: list[int] = []
+
+        pool_ops.GLOBAL_EVM_FALLBACK_ENABLED = True
+        pool_ops.GLOBAL_EVM_FALLBACK_BLOCK_WINDOW = 5
+        pool_ops.GLOBAL_EVM_FALLBACK_RPC_WORKERS = 1
+        pool_ops.read_json_file = lambda _path, fallback: fallback
+        pool_ops.read_global_history = lambda limit=None: []
+        pool_ops.seconds_since_epoch = lambda: 120
+        pool_ops.global_chain_rpc_urls = lambda: [("bad-chain", "http://bad-chain")]
+        pool_ops.public_evm_rpc_urls = lambda: [("evm", "http://evm-rpc")]
+        pool_ops.background_maintenance_decision = lambda task: {"allowed": True, "task": task, "reasons": []}
+        pool_ops.collect_local_pool_global_clusters = lambda *_args, **_kwargs: []
+        pool_ops.write_global_cache = lambda _payload: None
+
+        def fake_mining_rpc(_url: str, method: str, _params: list[object], timeout: float = 0) -> object:
+            if method == "getBlockCount":
+                return 10
+            raise RuntimeError("chain order unavailable")
+
+        def fake_json_rpc(_url: str, method: str, params: list[object], timeout: float = 0) -> object:
+            if method == "eth_blockNumber":
+                return hex(20)
+            if method == "eth_getBlockByNumber":
+                block_number = int(str(params[0]), 16)
+                fetched_blocks.append(block_number)
+                return {
+                    "number": hex(block_number),
+                    "timestamp": hex(1_780_000_000 + block_number),
+                    "miner": wallet,
+                }
+            raise AssertionError(f"unexpected JSON-RPC method {method}")
+
+        pool_ops.mining_rpc_call = fake_mining_rpc
+        pool_ops.json_rpc_call = fake_json_rpc
+
+        payload = pool_ops.collect_global_blockchain()
+
+        self.assertEqual(payload["status"], "degraded")
+        self.assertEqual(payload["source_contract"], "evm-rpc-fallback-v1")
+        self.assertEqual(payload["requested_blocks"], 5)
+        self.assertEqual(payload["fetched_blocks"], 5)
+        self.assertEqual(payload["scan_start_block"], 16)
+        self.assertEqual(payload["scan_end_block"], 20)
+        self.assertEqual(fetched_blocks, [16, 17, 18, 19, 20])
 
     def test_global_returns_stale_only_for_trusted_chain_cache_when_rpc_fails(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"

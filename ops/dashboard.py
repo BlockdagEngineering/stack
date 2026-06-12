@@ -20,8 +20,10 @@ from urllib.parse import unquote, urlparse
 from incident_journal import read_recent_incidents
 from pool_ops import (
     EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS,
+    GLOBAL_BLOCK_WINDOW,
     GLOBAL_CACHE_FILE,
     GLOBAL_CACHE_TTL_SECONDS,
+    GLOBAL_EVM_FALLBACK_BLOCK_WINDOW,
     GLOBAL_HISTORY_LIMIT,
     GLOBAL_STATS_SOURCE_TRUTH,
     PROJECT_ROOT,
@@ -478,12 +480,19 @@ def collect_global_dashboard_payload(reason: str) -> dict[str, object]:
     if isinstance(cached, dict) and cached:
         updated_epoch = safe_float(cached.get("updated_at_epoch"), None)
         cache_age = max(0, round(time.time() - updated_epoch, 1)) if updated_epoch is not None else None
-        if cache_age is None or cache_age > GLOBAL_CACHE_TTL_SECONDS:
+        source_contract = str(cached.get("source_contract") or "")
+        target_window = GLOBAL_EVM_FALLBACK_BLOCK_WINDOW if source_contract == "evm-rpc-fallback-v1" else GLOBAL_BLOCK_WINDOW
+        cached_requested = safe_int(cached.get("requested_blocks"), 0) or 0
+        cache_window_short = cached_requested < max(1, target_window)
+        if cache_age is None or cache_age > GLOBAL_CACHE_TTL_SECONDS or cache_window_short:
             payload = collect_global_blockchain()
             if "history" not in payload:
                 payload["history"] = read_valid_global_history(limit=GLOBAL_HISTORY_LIMIT)
             cache_meta = dict(payload.get("cache") or {}) if isinstance(payload.get("cache"), dict) else {}
             cache_meta["previous_age_seconds"] = cache_age
+            if cache_window_short:
+                cache_meta["previous_requested_blocks"] = cached_requested
+                cache_meta["target_requested_blocks"] = target_window
             cache_meta["served_by"] = "dashboard-refresh-stale-cache"
             payload["cache"] = cache_meta
             return payload
