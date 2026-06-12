@@ -209,6 +209,28 @@ validate_pool_lan_config() {
   fi
 }
 
+detect_zerotier_interface() {
+  ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -m1 '^zt' || true
+}
+
+configure_miner_network() {
+  # Miners may live on the host LAN (no extra routing) or on a remote LAN
+  # reached through a routed gateway such as a ZeroTier peer. In the remote
+  # case the miner-route compose service keeps a host route alive so the
+  # watchdog can reach the miner HTTP API for health checks and restarts.
+  miner_route_subnet=""
+  miner_route_gateway=""
+  miner_route_dev=""
+  if yes_no "Are any miners on a remote LAN reached through a routed gateway (e.g. a ZeroTier peer)?" "n"; then
+    miner_route_subnet="$(ask "Remote miner subnet (CIDR)" "$(env_value BDAG_MINER_ROUTE_SUBNET)")"
+    miner_route_gateway="$(ask "Gateway IP that forwards to that subnet (e.g. the ZeroTier peer)" "$(env_value BDAG_MINER_ROUTE_GATEWAY)")"
+    miner_route_dev="$(ask "Host interface for the route (blank lets the kernel pick)" "$(env_value BDAG_MINER_ROUTE_DEV "$(detect_zerotier_interface)")")"
+    if [[ -n "$miner_route_subnet" && ",$scan_target," != *",$miner_route_subnet,"* ]]; then
+      scan_target="$scan_target,$miner_route_subnet"
+    fi
+  fi
+}
+
 random_secret() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex 16
@@ -552,9 +574,11 @@ configure_env() {
   configure_ephemeral_storage
 
   local lan_ip scan_target mining_address node_mining_enabled mem_kb mem_gb
+  local miner_route_subnet miner_route_gateway miner_route_dev
   lan_ip="$(detect_lan_ip)"
   lan_ip="$(ask "Pool LAN IP miners should connect to" "${lan_ip:-192.168.1.10}")"
   scan_target="$(ask "LAN scan range for ASIC discovery" "$(default_cidr "$lan_ip")")"
+  configure_miner_network
   mining_address="$(ask "Reward wallet address for this pool" "$(grep -E '^MINING_ADDRESS=' .env | cut -d= -f2-)")"
   if [[ -z "$mining_address" || "$mining_address" == "0x0000000000000000000000000000000000000000" ]]; then
     echo "A real reward wallet address is required." >&2
@@ -583,6 +607,9 @@ configure_env() {
   set_env_value .env BDAG_POOL_URL "stratum+tcp://$lan_ip:3334"
   set_env_value .env BDAG_MINER_SCAN_TARGET "$scan_target"
   set_env_value .env BDAG_ASIC_LAN_CIDRS "$scan_target"
+  set_env_value .env BDAG_MINER_ROUTE_SUBNET "$miner_route_subnet"
+  set_env_value .env BDAG_MINER_ROUTE_GATEWAY "$miner_route_gateway"
+  set_env_value .env BDAG_MINER_ROUTE_DEV "$miner_route_dev"
   validate_pool_lan_config
   apply_stack_defaults_env .env
   set_stack_default_env_value .env BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED

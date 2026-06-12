@@ -56,7 +56,7 @@ jobs:
           repository: BlockdagEngineering/blockdag-corechain
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/blockdag-node
-          ref: c74f88b9c1b4fbf4213e15272d3bf1f63943e839
+          ref: main
 
       - name: Checkout private mining pool repo
         uses: actions/checkout@v4
@@ -64,7 +64,7 @@ jobs:
           repository: BlockdagEngineering/pool
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/pool
-          ref: 61b231c0501b32338f4ad47561a09e03e5933adc
+          ref: main
 
       - name: Checkout dashboard repo
         uses: actions/checkout@v4
@@ -156,6 +156,10 @@ jobs:
 
       - name: Validate compose (pool Dockerfile)
         shell: bash
+        env:
+          # docker-compose.yml hard-fails (:?) without the absolute checkout path
+          # for the watchdog/sentinel services.
+          BDAG_STACK_HOST_ROOT: ${{ github.workspace }}
         run: |
           set -euo pipefail
           test -f .env.example
@@ -192,13 +196,21 @@ jobs:
           mkdir "${ROOT}"
           cp docker-compose.yml dockerfile .dockerignore .env.example node.conf.example README.md checksums.txt release-payload.env "${ROOT}/"
           echo "${VERSION}" > "${ROOT}/version.txt"
-          cp scripts/release/install.sh scripts/release/install.ps1 scripts/release/install.cmd "${ROOT}/"
+          cp scripts/release/install.sh scripts/release/install-node.sh scripts/release/install.ps1 scripts/release/install.cmd "${ROOT}/"
           cp -a scripts/release/installers "${ROOT}/installers"
-          cp -a bin sql docker scripts asic-pool tools "${ROOT}/"
+          cp -a bin sql docker tools "${ROOT}/"
+          # Earlier test steps generate scripts/__pycache__ in the workspace;
+          # check-release-archive.py rejects cache dirs inside the zip.
+          rsync -a --exclude='__pycache__/' --exclude='*.pyc' scripts "${ROOT}/"
           rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
-          chmod +x "${ROOT}/install.sh" "${ROOT}/installers/"*.sh
+          chmod +x "${ROOT}/install.sh" "${ROOT}/install-node.sh" "${ROOT}/installers/"*.sh
 
-          python3 scripts/release_install_smoke.py --package-root "${ROOT}"
+          # Smoke-test a disposable copy: install.sh writes .env and __pycache__,
+          # which check-release-archive.py rejects if they leak into the zip.
+          rm -rf smoke-root
+          cp -a "${ROOT}" smoke-root
+          python3 scripts/release_install_smoke.py --package-root smoke-root
+          rm -rf smoke-root
 
           zip -qr "${OUT}" "${ROOT}"
           python3 scripts/check-release-archive.py "${OUT}"
@@ -269,7 +281,6 @@ jobs:
             release-assets/pool-stack-docker-*.zip
             release-assets/pool-stack-docker-*.zip.sha256
             release-assets/install.sh
-            release-assets/install.ps1
             release-assets/version.txt
           draft: false
           prerelease: false

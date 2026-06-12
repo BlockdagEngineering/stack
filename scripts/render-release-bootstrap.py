@@ -65,9 +65,13 @@ OS_NAME=$(uname -s 2>/dev/null || echo unknown)
 ARCH_NAME=$(uname -m 2>/dev/null || echo unknown)
 
 case "$OS_NAME" in
-  Linux|Darwin) ;;
+  Linux) ;;
+  Darwin)
+    echo "macOS is not supported in this release yet. Only Linux is currently supported." >&2
+    exit 1
+    ;;
   MINGW*|MSYS*|CYGWIN*)
-    echo "This bootstrap is for Linux/macOS. On Windows, run install.ps1 from the same release." >&2
+    echo "Windows is not supported in this release yet. Only Linux is currently supported." >&2
     exit 1
     ;;
   *)

@@ -31,5 +31,8 @@ node.snapshot.conf
 logs/
 data/
 dashboard/logs/
+*.bdsnap
 latest.bdsnap.part
+latest.bdsnap.part.*
+*.aria2
 *.tmp
