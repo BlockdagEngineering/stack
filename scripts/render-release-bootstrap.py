@@ -112,6 +112,60 @@ require_command() {{
   fi
 }}
 
+print_docker_install_instructions() {{
+  cat >&2 <<'DOCKER_INSTRUCTIONS'
+
+Install Docker Engine first, then re-run this installer.
+
+Quick install (most Linux distros):
+
+  curl -fsSL https://get.docker.com | sh
+
+Then enable the daemon and let your user run docker without sudo:
+
+  sudo systemctl enable --now docker
+  sudo usermod -aG docker "$USER"
+  newgrp docker   # or log out and back in
+
+Verify everything works:
+
+  docker run --rm hello-world
+  docker compose version
+
+Notes:
+  - Avoid your distro's docker.io package; it is often outdated.
+  - Membership in the docker group is root-equivalent on this host. On a
+    multi-admin box, skip the usermod step and run the installer with a
+    user that can sudo docker instead.
+DOCKER_INSTRUCTIONS
+}}
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Error: Docker is not installed." >&2
+  print_docker_install_instructions
+  exit 1
+fi
+
+if ! docker compose version >/dev/null 2>&1; then
+  echo "Error: Docker is installed but the Docker Compose v2 plugin is missing." >&2
+  echo "Install/update Docker Engine (includes docker-compose-plugin):" >&2
+  print_docker_install_instructions
+  exit 1
+fi
+
+if ! docker info >/dev/null 2>&1; then
+  echo "Error: Docker is installed but this user cannot reach the Docker daemon." >&2
+  cat >&2 <<'DOCKER_ACCESS'
+
+Fix daemon access, then re-run this installer:
+
+  sudo systemctl enable --now docker     # make sure the daemon is running
+  sudo usermod -aG docker "$USER"        # allow docker without sudo
+  newgrp docker                          # or log out and back in
+DOCKER_ACCESS
+  exit 1
+fi
+
 require_command curl
 require_command unzip
 
