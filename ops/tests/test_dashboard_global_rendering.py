@@ -96,7 +96,8 @@ class DashboardGlobalRenderingTests(unittest.TestCase):
         self.assertIn("the pool is not mining", html)
         self.assertIn("Stopped: node chain state is stuck on irreparable sync block", html)
         self.assertIn("Restore or resync node data before mining", html)
-        self.assertIn("Synced node, but waiting for backend template checks to become healthy.", html)
+        self.assertIn("Waiting: chain is synced and pool is running, but backend template checks are not healthy.", html)
+        self.assertIn("Starting: pool is accepting ASIC work", html)
         self.assertIn("wait for backend template checks to become healthy before mining jobs are sent", html)
         self.assertLess(
             section.index('id="syncHeight"'),
@@ -122,7 +123,7 @@ class DashboardGlobalRenderingTests(unittest.TestCase):
         self.assertIn('text("syncNextStep", estimate.next_step);', html)
         self.assertLess(
             html.index("if (estimate.next_step) {"),
-            html.index('text("syncNextStep", "pool can mine normally once backend template checks are healthy");'),
+            html.index('text("syncNextStep", "start or repair the pool; chain sync is complete and the ASIC target is configured");'),
         )
 
 

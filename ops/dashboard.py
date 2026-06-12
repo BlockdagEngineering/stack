@@ -601,6 +601,12 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
     leader = choose_sync_leader(payload)
     mode = str(coordinator.get("mode") or "active_node_catchup")
     threshold = safe_int(((coordinator.get("last_decision") or {}).get("thresholds") or {}).get("leader_near_tip_blocks"), 5) or 5
+    progress_health = sync_health.get("sync_progress_health") if isinstance(sync_health.get("sync_progress_health"), dict) else {}
+    history_rates = (
+        progress_health.get("node_rates_blocks_per_second")
+        if isinstance(progress_health.get("node_rates_blocks_per_second"), dict)
+        else {}
+    )
 
     state = read_json(SYNC_ESTIMATE_STATE_FILE, {})
     if not isinstance(state, dict):
@@ -619,6 +625,7 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
         percent = safe_float(progress.get("percent"))
         node_info = nodes.get(name) if isinstance(nodes.get(name), dict) else {}
         log_rate, log_rate_source = node_processed_rate_from_tail(node_info)
+        history_rate = safe_float(history_rates.get(name)) if isinstance(history_rates, dict) else None
 
         previous = previous_nodes.get(name) if isinstance(previous_nodes.get(name), dict) else {}
         previous_current = safe_int(previous.get("current_block"))
@@ -635,17 +642,25 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
             if 5 <= elapsed <= 7200 and previous_remaining > remaining:
                 observed_net_rate = (previous_remaining - remaining) / elapsed
 
-        rate = observed_net_rate or observed_import_rate or log_rate
+        rate = observed_net_rate or observed_import_rate or history_rate or log_rate
         rate_source = (
             "net catch-up across dashboard samples"
             if observed_net_rate
             else "block import across dashboard samples"
             if observed_import_rate
+            else "status sampler sync history"
+            if history_rate
             else log_rate_source
         )
-        eta_seconds = remaining / rate if remaining is not None and rate and rate > 0 else None
+        eta_seconds = 0 if remaining == 0 else remaining / rate if remaining is not None and rate and rate > 0 else None
         seed_remaining = max(0, remaining - threshold) if remaining is not None else None
-        eta_to_seed_seconds = seed_remaining / rate if seed_remaining is not None and rate and rate > 0 else None
+        eta_to_seed_seconds = (
+            0
+            if seed_remaining == 0
+            else seed_remaining / rate
+            if seed_remaining is not None and rate and rate > 0
+            else None
+        )
         estimate_nodes[name] = {
             "current_block": current,
             "highest_block": highest,
@@ -724,7 +739,7 @@ def dashboard_status_payload() -> dict[str, object]:
     if not DASHBOARD_DIRECT_STATUS_FALLBACK:
         cached, diagnostics = cached_status_for_dashboard(include_logs=True)
         if cached is not None:
-            return attach_dashboard_endpoint(cached)
+            return attach_dashboard_endpoint(enrich_status_with_sync_estimate(dict(cached)))
         return dashboard_status_fast_fallback(diagnostics)
 
     payload = enrich_status_with_sync_estimate(collect_status_cached(include_logs=True))
@@ -1992,6 +2007,60 @@ HTML = r"""<!doctype html>
       return parts.join(" ");
     }
     function statusClass(overall) { return overall === "ok" ? "ok" : overall === "syncing" ? "syncing" : "down"; }
+    function poolRunning(data) {
+      const containers = data.containers || {};
+      const names = data.pool_containers || [data.pool_container || "pool"];
+      for (const name of names) {
+        if (containers[name]?.running) return true;
+      }
+      if (hasValue(data.catchup_policy?.pool_running)) return Boolean(data.catchup_policy.pool_running);
+      const metricsStatus = data.pool_health?.metrics?.status || data.pool_metrics?.status;
+      return metricsStatus === "ok";
+    }
+    function connectedMinerCount(data) {
+      const health = data.miner_health || {};
+      const sourceHealth = data.pool_health?.source_job_health || data.pool_metrics?.source_job_health || {};
+      return Number(firstPresent(
+        health.connected_count_effective,
+        health.connected_count,
+        sourceHealth.ready_miners,
+        sourceHealth.authorized_miners,
+        data.pool_health?.connected_miners,
+        0
+      )) || 0;
+    }
+    function miningProgressStatusReason(data) {
+      const catchupPolicy = data.catchup_policy || {};
+      const progress = data.sync_progress || {};
+      const estimate = data.sync_estimate || {};
+      const templateReady = selectedBackendTemplateReady(data);
+      const remaining = firstPresent(estimate.remaining_blocks, progress.remaining_blocks);
+      const gapText = syncGapText(progress);
+      const eta = syncEtaText(estimate, progress);
+      const poolUp = poolRunning(data);
+      const minerCount = connectedMinerCount(data);
+      if (catchupPolicy.active) {
+        const summary = catchupPolicy.summary || catchupPolicy.user_message || "Catch-up pause active.";
+        return `${summary} ${gapText}; ETA ${eta}.`;
+      }
+      if (progress.status && progress.status !== "synced") {
+        const blocks = hasValue(remaining) ? `${fmt(remaining)} block(s)` : "unknown blocks";
+        return `Node is ${progress.status}; ${blocks} remain before full sync. ETA ${eta}. Mining resumes after sync and backend template checks are healthy.`;
+      }
+      if (progress.status === "synced" && !poolUp) {
+        return "Chain is synced with gap 0, but the pool is not running. Next: start or repair the pool so the configured ASIC can reconnect.";
+      }
+      if (progress.status === "synced" && data.can_mine && data.can_submit_blocks) {
+        return `Chain synced, pool running, and mining is active${minerCount ? ` with ${fmt(minerCount)} ASIC lane(s)` : ""}.`;
+      }
+      if (progress.status === "synced" && data.can_accept_shares) {
+        return `Chain synced and pool is accepting ASIC connections${minerCount ? ` from ${fmt(minerCount)} lane(s)` : ""}; waiting for fresh share/block-submit proof.`;
+      }
+      if (progress.status === "synced" && !templateReady) {
+        return "Chain is synced, but backend template checks are not healthy yet. Mining will resume after template readiness is proven.";
+      }
+      return data.status_reason || "Reason unavailable.";
+    }
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
     }
@@ -2090,21 +2159,7 @@ HTML = r"""<!doctype html>
       renderRebuildHoldingScreen(data.dashboard_plot_rebuild || {});
       text("meta", data.generated_at + " | " + data.project_root + " | dashboard " + (data.dashboard_url || "unknown"));
       text("overall", data.overall);
-      const catchupPolicy = data.catchup_policy || {};
-      const syncProgress = data.sync_progress || {};
-      const templateReady = selectedBackendTemplateReady(data);
-      text(
-        "statusReason",
-        catchupPolicy.active
-          ? (catchupPolicy.summary || catchupPolicy.user_message || "Catch-up pause active.")
-          : (data.overall === "ok"
-            ? (syncProgress.status === "synced"
-              ? (templateReady
-                ? ""
-                : "Node sync is complete, but the selected backend's template checks are not yet healthy.")
-              : `Node is ${syncProgress.status || "syncing"}; the pool is not mining until sync completes.`)
-            : (data.status_reason || "Reason unavailable."))
-      );
+      text("statusReason", miningProgressStatusReason(data));
       document.getElementById("overall").className = "kpi-value " + statusClass(data.overall);
       const nodeNames = data.node_services || Object.keys(data.nodes || {});
       renderSyncProgress(data.sync_progress || {}, data);
@@ -2199,7 +2254,13 @@ HTML = r"""<!doctype html>
       if (!Number.isFinite(parsed) || parsed <= 0) return "estimating after the next progress sample";
       return `about ${durationText(parsed)}${at ? `, around ${formatDisplayTime(at)}` : ""}`;
     }
+    function syncEtaText(estimate, progress) {
+      const remaining = firstPresent(estimate?.remaining_blocks, progress?.remaining_blocks);
+      if (Number(remaining) === 0 || progress?.status === "synced") return "synced now";
+      return etaText(estimate?.eta_seconds, estimate?.eta_at);
+    }
     function syncRateText(estimate) {
+      if (Number(estimate?.remaining_blocks) === 0) return "no catch-up remaining";
       const rate = Number(estimate?.rate_blocks_per_second);
       if (!Number.isFinite(rate) || rate <= 0) return "estimating from the next sample";
       const source = estimate.rate_source ? ` (${estimate.rate_source})` : "";
@@ -2268,12 +2329,14 @@ HTML = r"""<!doctype html>
             : `${fmt(current)} / ${fmt(highest)}; ${fmt(remaining)} block(s) remaining`
         );
       }
-      text("syncRate", syncRateText(estimate));
-      text("syncEta", etaText(estimate.eta_seconds, estimate.eta_at));
+      text("syncRate", Number(remaining) === 0 ? "no catch-up remaining" : syncRateText(estimate));
+      text("syncEta", syncEtaText(estimate, progress));
       const miningStateBox = document.getElementById("miningStateBox");
       const chainStateBlocker = data.sync_health?.chain_state_blocker;
       const chainStateBlockerNodes = data.sync_health?.chain_state_blocker_nodes || {};
       const catchupPaused = Boolean(estimate.catchup_pause_active || data.catchup_policy?.active || data.mode === "catchup_pause");
+      const poolUp = poolRunning(data);
+      const minerCount = connectedMinerCount(data);
       if (chainStateBlocker) {
         const firstBlocker = Object.values(chainStateBlockerNodes)[0] || {};
         const blockerHash = firstBlocker.hash || "unknown block";
@@ -2292,30 +2355,60 @@ HTML = r"""<!doctype html>
           miningStateBox.classList.add("paused");
           miningStateBox.classList.remove("ready");
         }
-      } else if (progress.status === "synced" && templateReady) {
-        text("syncMiningState", "Ready: node sync and backend template checks are healthy.");
+      } else if (progress.status !== "synced") {
+        const blocks = hasValue(remaining) ? `${fmt(remaining)} block(s)` : "unknown blocks";
+        text("syncMiningState", `Syncing: ${blocks} remain before full sync; mining stays paused until sync and template checks are healthy.`);
+        if (miningStateBox) {
+          miningStateBox.classList.add("paused");
+          miningStateBox.classList.remove("ready");
+        }
+      } else if (!poolUp) {
+        text("syncMiningState", "Stopped: chain is synced, but the pool is not running.");
+        if (miningStateBox) {
+          miningStateBox.classList.add("paused");
+          miningStateBox.classList.remove("ready");
+        }
+      } else if (!templateReady) {
+        text("syncMiningState", "Waiting: chain is synced and pool is running, but backend template checks are not healthy.");
+        if (miningStateBox) {
+          miningStateBox.classList.add("paused");
+          miningStateBox.classList.remove("ready");
+        }
+      } else if (data.can_mine && data.can_submit_blocks) {
+        text("syncMiningState", `Mining: chain synced, pool running, and ${minerCount ? `${fmt(minerCount)} ASIC lane(s)` : "ASIC lanes"} can submit blocks.`);
         if (miningStateBox) {
           miningStateBox.classList.add("ready");
           miningStateBox.classList.remove("paused");
         }
-      } else if (progress.status === "synced") {
-        text("syncMiningState", "Synced node, but waiting for backend template checks to become healthy.");
+      } else if (data.can_accept_shares) {
+        text("syncMiningState", `Starting: pool is accepting ASIC work${minerCount ? ` from ${fmt(minerCount)} lane(s)` : ""}; waiting for fresh share/block-submit proof.`);
         if (miningStateBox) {
           miningStateBox.classList.add("paused");
           miningStateBox.classList.remove("ready");
         }
       } else {
-        text("syncMiningState", "Waiting for node sync before mining jobs are sent.");
+        text("syncMiningState", "Waiting: chain is synced, but mining readiness has not been proven yet.");
         if (miningStateBox) {
-          miningStateBox.classList.remove("paused", "ready");
+          miningStateBox.classList.add("paused");
+          miningStateBox.classList.remove("ready");
         }
       }
       if (estimate.next_step) {
         text("syncNextStep", estimate.next_step);
-      } else if (progress.status === "synced" && templateReady) {
-        text("syncNextStep", "pool can mine normally once backend template checks are healthy");
-      } else if (progress.status === "synced") {
+      } else if (catchupPaused) {
+        text("syncNextStep", "wait for catch-up pause to clear; mining resumes when lag is below the configured threshold");
+      } else if (progress.status !== "synced") {
+        text("syncNextStep", "wait for full sync; mining resumes after gap reaches 0 and backend template checks are healthy");
+      } else if (!poolUp) {
+        text("syncNextStep", "start or repair the pool; chain sync is complete and the ASIC target is configured");
+      } else if (!templateReady) {
         text("syncNextStep", "wait for backend template checks to become healthy before mining jobs are sent");
+      } else if (data.can_mine && data.can_submit_blocks) {
+        text("syncNextStep", "mining is active; monitor accepted shares and block-submit counters");
+      } else if (data.can_accept_shares && minerCount > 0) {
+        text("syncNextStep", "wait for the next accepted share or block-submit sample; the ASIC lane is connected");
+      } else if (progress.status === "synced") {
+        text("syncNextStep", "wait for the configured ASIC to reconnect and submit current work");
       } else {
         text("syncNextStep", "wait for nodes to finish syncing; the pool is holding mining jobs until backend sync is complete");
       }
