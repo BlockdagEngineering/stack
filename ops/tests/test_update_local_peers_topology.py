@@ -30,12 +30,14 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
         "BDAG_ASIC_LAN_ENABLED",
         "BDAG_ASIC_LAN_INTERFACE",
         "BDAG_ASIC_LAN_CIDRS",
+        "BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED",
     )
 
     def setUp(self) -> None:
         self._old_env = {key: os.environ.get(key) for key in self.ENV_KEYS}
         for key in self.ENV_KEYS:
             os.environ.pop(key, None)
+        os.environ["BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED"] = "0"
 
     def tearDown(self) -> None:
         for key, value in self._old_env.items():

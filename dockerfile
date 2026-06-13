@@ -176,9 +176,6 @@ RUN apk add --no-cache \
     tzdata
 
 COPY --from=collector-source /src/collector /opt/collector
-# Compose supplies collector_src from COLLECTOR_SRC_CONTEXT so CI and local fresh
-# builds run the checked-out collector code instead of silently cloning an older ref.
-COPY --from=collector_src . /opt/collector
 COPY docker/entrypoint-collector.sh /usr/local/bin/entrypoint-collector.sh
 RUN chmod +x /usr/local/bin/entrypoint-collector.sh \
  && mkdir -p /var/lib/bdag-collector/runtime /workspace \
