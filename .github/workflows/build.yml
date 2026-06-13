@@ -101,7 +101,12 @@ jobs:
           verify_repo blockdag-corechain src/blockdag-node/cmd/bdag/bdag.go
           verify_repo pool src/pool/cmd/pool/main.go
           verify_repo dashboard2 src/dashboard/main.go
-          verify_repo collector src/collector/collector.py
+          collector_entry="$(find src/collector -type f -name collector.py -not -path '*/.git/*' -print -quit)"
+          if [[ -z "${collector_entry}" ]]; then
+            echo "::error::Upstream checkout 'collector' missing collector.py"
+            exit 1
+          fi
+          echo "ok: collector (collector.py)"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -239,8 +244,18 @@ jobs:
             --exclude='*.pyc' \
             --exclude='*.pyo' \
             src/collector/ "${ROOT}/collector/"
+          collector_entry="$(find "${ROOT}/collector" -type f -name collector.py -not -path '*/.git/*' -print -quit)"
+          if [[ -z "${collector_entry}" ]]; then
+            echo "::error::Collector checkout is missing collector.py"
+            exit 1
+          fi
+          if [[ "${collector_entry}" != "${ROOT}/collector/collector.py" ]]; then
+            cp "${collector_entry}" "${ROOT}/collector/collector.py"
+          fi
           test -f "${ROOT}/collector/collector.py" || \
             { echo "::error::Collector payload is missing collector.py"; exit 1; }
+
+
           # Earlier test steps generate scripts/__pycache__ in the workspace;
           # check-release-archive.py rejects cache dirs inside the zip.
           rsync -a --exclude='__pycache__/' --exclude='*.pyc' scripts "${ROOT}/"
