@@ -62,7 +62,7 @@ $nodeArchival = '0'
 $snapshotBaseUrl = if ($env:BDAG_SNAPSHOT_BASE_URL) { $env:BDAG_SNAPSHOT_BASE_URL } else { 'https://bdagstack.bdagdev.xyz' }
 $snapshotUrl = $env:BDAG_SNAPSHOT_URL
 $snapshotMinBytes = if ($env:BDAG_SNAPSHOT_MIN_BYTES) { [int64]$env:BDAG_SNAPSHOT_MIN_BYTES } else { [int64]1048576 }
-$requireSnapshot = $env:BDAG_REQUIRE_SNAPSHOT -ne '0'
+$requireSnapshot = $env:BDAG_REQUIRE_SNAPSHOT -eq '1'
 $requestedSnapshotDownloader = if ($env:BDAG_SNAPSHOT_DOWNLOADER) { $env:BDAG_SNAPSHOT_DOWNLOADER.ToLowerInvariant() } else { 'auto' }
 $aria2Connections = if ($env:BDAG_ARIA2_CONNECTIONS) { [int]$env:BDAG_ARIA2_CONNECTIONS } else { 8 }
 $installAria2 = $env:BDAG_INSTALL_ARIA2 -ne '0'
@@ -140,7 +140,7 @@ function Invoke-ReleasePreflight {
     try {
         Invoke-WebRequest -Uri $snapshotUrl -Method Head -UseBasicParsing -TimeoutSec 10 | Out-Null
     } catch {
-        Warn-OrFailPreflight "could not reach snapshot seed URL $snapshotUrl; P2P sync may still work if BDAG_REQUIRE_SNAPSHOT=0."
+        Warn-OrFailPreflight "could not reach snapshot seed URL $snapshotUrl; the installer will fall back to genesis/P2P sync."
     }
     Write-Host ""
 }
@@ -324,10 +324,10 @@ function Download-Snapshot {
 
 function Continue-WithoutSnapshotOrExit {
     if ($requireSnapshot) {
-        throw "Snapshot download/import is required, but no valid snapshot is available. Set BDAG_REQUIRE_SNAPSHOT=0 to continue without a snapshot and sync from P2P."
+        throw "Snapshot download/import is required (BDAG_REQUIRE_SNAPSHOT=1), but no valid snapshot is available."
     }
 
-    Write-Host "Warning: BDAG_REQUIRE_SNAPSHOT=0; continuing without a snapshot. The node will sync from genesis/P2P." -ForegroundColor Yellow
+    Write-Host "No snapshot available; continuing with genesis/P2P sync."
 }
 
 function Get-ComposeProjectName {
@@ -513,14 +513,13 @@ if (Test-ValidSnapshot latest.bdsnap) {
             $snapshotImportEnabled = '1'
         } else {
             Remove-Item -Path 'latest.bdsnap' -ErrorAction SilentlyContinue
-            Write-Host "Warning: snapshot download failed. The node will sync from genesis/P2P." -ForegroundColor Yellow
             Continue-WithoutSnapshotOrExit
         }
     }
 }
 
 if ($snapshotHostPath -ne './latest.bdsnap' -and $requireSnapshot) {
-    throw "Snapshot download/import is required, but no valid snapshot is available."
+    throw "Snapshot download/import is required (BDAG_REQUIRE_SNAPSHOT=1), but no valid snapshot is available."
 }
 
 Write-Host ""

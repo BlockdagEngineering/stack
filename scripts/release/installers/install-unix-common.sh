@@ -18,7 +18,7 @@ BDAG_SNAPSHOT_BASE_URL="${BDAG_SNAPSHOT_BASE_URL:-https://bdagstack.bdagdev.xyz}
 SNAPSHOT_URL="${BDAG_SNAPSHOT_URL:-}"
 BDAG_NODE_ARCHIVAL=0
 SNAPSHOT_MIN_BYTES="${BDAG_SNAPSHOT_MIN_BYTES:-1048576}"
-BDAG_REQUIRE_SNAPSHOT="${BDAG_REQUIRE_SNAPSHOT:-1}"
+BDAG_REQUIRE_SNAPSHOT="${BDAG_REQUIRE_SNAPSHOT:-0}"
 BDAG_SNAPSHOT_DOWNLOADER="${BDAG_SNAPSHOT_DOWNLOADER:-curl}"
 BDAG_ARIA2_CONNECTIONS="${BDAG_ARIA2_CONNECTIONS:-8}"
 BDAG_INSTALL_ARIA2="${BDAG_INSTALL_ARIA2:-0}"
@@ -279,13 +279,12 @@ download_snapshot() {
 }
 
 continue_without_snapshot_or_exit() {
-    if [[ "$BDAG_REQUIRE_SNAPSHOT" != "0" ]]; then
-        echo "Error: snapshot download/import is required, but no valid snapshot is available." >&2
-        echo "Set BDAG_REQUIRE_SNAPSHOT=0 to continue without a snapshot and sync from P2P." >&2
+    if [[ "$BDAG_REQUIRE_SNAPSHOT" == "1" ]]; then
+        echo "Error: snapshot download/import is required (BDAG_REQUIRE_SNAPSHOT=1), but no valid snapshot is available." >&2
         exit 1
     fi
 
-    echo "Warning: BDAG_REQUIRE_SNAPSHOT=0; continuing without a snapshot. The node will sync from genesis/P2P." >&2
+    echo "No snapshot available; continuing with genesis/P2P sync."
 }
 
 compose_project_name() {
@@ -357,7 +356,7 @@ run_release_preflight() {
     fi
 
     curl --fail --location --head --silent --show-error --connect-timeout 10 "$SNAPSHOT_URL" >/dev/null \
-        || warn_or_fail_preflight "could not reach snapshot seed URL ${SNAPSHOT_URL}; P2P sync may still work if BDAG_REQUIRE_SNAPSHOT=0."
+        || warn_or_fail_preflight "could not reach snapshot seed URL ${SNAPSHOT_URL}; the installer will fall back to genesis/P2P sync."
     echo ""
 }
 
@@ -811,7 +810,6 @@ else
         SNAPSHOT_IMPORT_ENABLED="1"
     else
         rm -f latest.bdsnap
-        echo "Warning: snapshot download failed. The node will sync from genesis/P2P."
         continue_without_snapshot_or_exit
     fi
 fi

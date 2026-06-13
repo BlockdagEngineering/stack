@@ -74,6 +74,23 @@ jobs:
           path: src/dashboard
           ref: main
 
+      - name: Checkout collector repo
+        uses: actions/checkout@v4
+        with:
+          repository: BlockdagEngineering/collector
+          token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
+          path: src/collector
+          ref: develop
+
+      - name: Verify upstream checkouts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f src/blockdag-node/cmd/bdag/main.go
+          test -f src/pool/cmd/pool/main.go
+          test -f src/dashboard/main.go || test -f src/dashboard/cmd/dashboard/main.go
+          test -f src/collector/ops/collector.py || test -f src/collector/collector.py
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -160,6 +177,7 @@ jobs:
           # docker-compose.yml hard-fails (:?) without the absolute checkout path
           # for the watchdog/sentinel services.
           BDAG_STACK_HOST_ROOT: ${{ github.workspace }}
+          COLLECTOR_SRC_CONTEXT: ${{ github.workspace }}/src/collector
         run: |
           set -euo pipefail
           test -f .env.example

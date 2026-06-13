@@ -175,15 +175,15 @@ RUN apk add --no-cache \
     shadow \
     tzdata
 
-COPY --from=dashboard-source /src/dashboard /opt/dashboard
-# Compose supplies dashboard_src from DASHBOARD_SRC_CONTEXT so local fresh builds
-# run the checked-out dashboard code instead of silently cloning an older ref.
-COPY --from=dashboard_src . /opt/dashboard
-COPY docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
-RUN chmod +x /usr/local/bin/entrypoint-dashboard.sh \
- && mkdir -p /var/lib/bdag-dashboard/runtime /workspace \
- && if [ -f /opt/dashboard/requirements.txt ]; then \
-      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/dashboard/requirements.txt; \
+COPY --from=collector-source /src/collector /opt/collector
+# Compose supplies collector_src from COLLECTOR_SRC_CONTEXT so CI and local fresh
+# builds run the checked-out collector code instead of silently cloning an older ref.
+COPY --from=collector_src . /opt/collector
+COPY docker/entrypoint-collector.sh /usr/local/bin/entrypoint-collector.sh
+RUN chmod +x /usr/local/bin/entrypoint-collector.sh \
+ && mkdir -p /var/lib/bdag-collector/runtime /workspace \
+ && if [ -f /opt/collector/requirements.txt ]; then \
+      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/collector/requirements.txt; \
     fi
 
 ENV PYTHONUNBUFFERED=1 \
