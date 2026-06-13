@@ -8,17 +8,13 @@ x-mining-logging: &mining-logging
 x-build-args: &build-args
   SNAPSHOT_PATH: ${SNAPSHOT_PATH:-docker/no-snapshot.marker}
 
-x-collector-build-args: &collector-build-args
-  COLLECTOR_REPO: ${COLLECTOR_REPO:-https://github.com/BlockdagEngineering/collector.git}
-  COLLECTOR_REF: develop
-
 x-dev-source-contexts: &dev-source-contexts
   stack_src: ${STACK_SRC_CONTEXT:-.}
   blockdag_corechain: ${BLOCKDAG_CORECHAIN_CONTEXT:-.}
   pool_src: ${POOL_SRC_CONTEXT:-.}
   cpu_miner_src: ${CPU_MINER_SRC_CONTEXT:-.}
-  collector_src: ${COLLECTOR_SRC_CONTEXT:-../collector}
-  dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../dashboard}
+  collector_src: ${COLLECTOR_SRC_CONTEXT:-./collector}
+  dashboard_src: ${DASHBOARD_SRC_CONTEXT:-.}
 
 x-node-critical: &node-critical
   tmpfs:
@@ -213,8 +209,6 @@ services:
       target: collector
       additional_contexts:
         <<: *dev-source-contexts
-      args:
-        <<: *collector-build-args
       secrets:
         - github_token
     restart: unless-stopped
@@ -287,8 +281,6 @@ services:
       target: collector
       additional_contexts:
         <<: *dev-source-contexts
-      args:
-        <<: *collector-build-args
       secrets:
         - github_token
     restart: unless-stopped
@@ -335,8 +327,6 @@ services:
       target: collector
       additional_contexts:
         <<: *dev-source-contexts
-      args:
-        <<: *collector-build-args
       secrets:
         - github_token
     restart: unless-stopped
@@ -432,11 +422,11 @@ services:
       TMPDIR: /tmp
       TMP: /tmp
       TEMP: /tmp
-      ADDR: ${DASHBOARD_LISTEN:-0.0.0.0:9290}
+      ADDR: ${DASHBOARD_LISTEN:-0.0.0.0:8088}
       BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://collector:9280}
       DASHBOARD_TIMEZONE: ${DASHBOARD_TIMEZONE:-Africa/Johannesburg}
     ports:
-      - "${DASHBOARD_BIND:-0.0.0.0}:${DASHBOARD_HOST_PORT:-8088}:9290"
+      - "${DASHBOARD_BIND:-0.0.0.0}:${DASHBOARD_HOST_PORT:-8088}:8088"
 
   # --------------------------------------------------------------------------
   # Optional CPU miner (dockerfile-dev target only). Enable with:

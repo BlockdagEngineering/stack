@@ -18,7 +18,7 @@ BDAG_SNAPSHOT_BASE_URL="${BDAG_SNAPSHOT_BASE_URL:-https://bdagstack.bdagdev.xyz}
 SNAPSHOT_URL="${BDAG_SNAPSHOT_URL:-}"
 BDAG_NODE_ARCHIVAL=0
 SNAPSHOT_MIN_BYTES="${BDAG_SNAPSHOT_MIN_BYTES:-1048576}"
-BDAG_REQUIRE_SNAPSHOT="${BDAG_REQUIRE_SNAPSHOT:-1}"
+BDAG_REQUIRE_SNAPSHOT="${BDAG_REQUIRE_SNAPSHOT:-0}"
 BDAG_SNAPSHOT_DOWNLOADER="${BDAG_SNAPSHOT_DOWNLOADER:-curl}"
 BDAG_ARIA2_CONNECTIONS="${BDAG_ARIA2_CONNECTIONS:-8}"
 BDAG_INSTALL_ARIA2="${BDAG_INSTALL_ARIA2:-0}"
@@ -279,13 +279,12 @@ download_snapshot() {
 }
 
 continue_without_snapshot_or_exit() {
-    if [[ "$BDAG_REQUIRE_SNAPSHOT" != "0" ]]; then
-        echo "Error: snapshot download/import is required, but no valid snapshot is available." >&2
-        echo "Set BDAG_REQUIRE_SNAPSHOT=0 to continue without a snapshot and sync from P2P." >&2
+    if [[ "$BDAG_REQUIRE_SNAPSHOT" == "1" ]]; then
+        echo "Error: snapshot download/import is required (BDAG_REQUIRE_SNAPSHOT=1), but no valid snapshot is available." >&2
         exit 1
     fi
 
-    echo "Warning: BDAG_REQUIRE_SNAPSHOT=0; continuing without a snapshot. The node will sync from genesis/P2P." >&2
+    echo "No snapshot available; continuing with genesis/P2P sync."
 }
 
 compose_project_name() {
@@ -357,7 +356,7 @@ run_release_preflight() {
     fi
 
     curl --fail --location --head --silent --show-error --connect-timeout 10 "$SNAPSHOT_URL" >/dev/null \
-        || warn_or_fail_preflight "could not reach snapshot seed URL ${SNAPSHOT_URL}; P2P sync may still work if BDAG_REQUIRE_SNAPSHOT=0."
+        || warn_or_fail_preflight "could not reach snapshot seed URL ${SNAPSHOT_URL}; the installer will fall back to genesis/P2P sync."
     echo ""
 }
 
@@ -715,11 +714,56 @@ if [[ "${BDAG_INSTALL_TEST_WRITE_ENV_ONLY:-0}" == "1" ]]; then
     exit 0
 fi
 
-require_command docker "Install Docker Desktop or Docker Engine, then re-run this installer."
-docker compose version >/dev/null 2>&1 || {
-    echo "Error: Docker Compose v2 is required. Install/update Docker Desktop or the docker compose plugin." >&2
-    exit 1
+print_docker_install_instructions() {
+    cat >&2 <<'DOCKER_INSTRUCTIONS'
+
+Install Docker Engine first, then re-run this installer.
+
+Quick install (most Linux distros):
+
+  curl -fsSL https://get.docker.com | sh
+
+Then enable the daemon and let your user run docker without sudo:
+
+  sudo systemctl enable --now docker
+  sudo usermod -aG docker "$USER"
+  newgrp docker   # or log out and back in
+
+Verify everything works:
+
+  docker run --rm hello-world
+  docker compose version
+
+Notes:
+  - Avoid your distro's docker.io package; it is often outdated.
+  - Membership in the docker group is root-equivalent on this host. On a
+    multi-admin box, skip the usermod step and run the installer with a
+    user that can sudo docker instead.
+DOCKER_INSTRUCTIONS
 }
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "Error: Docker is not installed." >&2
+    print_docker_install_instructions
+    exit 1
+fi
+if ! docker compose version >/dev/null 2>&1; then
+    echo "Error: Docker is installed but the Docker Compose v2 plugin is missing." >&2
+    print_docker_install_instructions
+    exit 1
+fi
+if ! docker info >/dev/null 2>&1; then
+    echo "Error: Docker is installed but this user cannot reach the Docker daemon." >&2
+    cat >&2 <<'DOCKER_ACCESS'
+
+Fix daemon access, then re-run this installer:
+
+  sudo systemctl enable --now docker     # make sure the daemon is running
+  sudo usermod -aG docker "$USER"        # allow docker without sudo
+  newgrp docker                          # or log out and back in
+DOCKER_ACCESS
+    exit 1
+fi
 require_command curl "Install curl or place latest.bdsnap in this folder before running the installer."
 
 if [[ ! -f .env.example || ! -f node.conf.example || ! -f docker-compose.yml ]]; then
@@ -766,7 +810,6 @@ else
         SNAPSHOT_IMPORT_ENABLED="1"
     else
         rm -f latest.bdsnap
-        echo "Warning: snapshot download failed. The node will sync from genesis/P2P."
         continue_without_snapshot_or_exit
     fi
 fi
