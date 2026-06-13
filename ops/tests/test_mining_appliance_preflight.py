@@ -107,7 +107,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         self.assertIn("adaptive_concurrency", warnings)
         self.assertIn("entrypoint_chown_mode", warnings)
 
-    def test_constrained_mining_profile_accepts_disabled_fastartifact_startup_flag(self) -> None:
+    def test_constrained_mining_profile_accepts_disabled_node_mining(self) -> None:
         profile = preflight.HostProfile(
             os_name="linux",
             arch="aarch64",
@@ -128,10 +128,11 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             profile,
         )
 
-        statuses = {check.name: check.status for check in checks}
-        self.assertEqual(statuses["fastartifactsync"], "pass")
+        found = {check.name: check for check in checks}
+        self.assertEqual(found["node_mining_runtime"].status, "pass")
+        self.assertEqual(found["fastsync_acceleration"].status, "pass")
 
-    def test_constrained_mining_profile_rejects_fastartifact_append_override(self) -> None:
+    def test_constrained_mining_profile_warns_without_maxinbound(self) -> None:
         profile = preflight.HostProfile(
             os_name="linux",
             arch="aarch64",
@@ -144,16 +145,18 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         preflight.check_env_defaults(
             checks,
             {
-                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
+                "BDAG_ENABLE_NODE_MINING": "1",
+                "BDAG_NODE_MODULES": "Blockdag",
+                "BDAG_NODE_MINING_ARGS": "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc",
                 "BDAG_STORAGE_PROFILE": "single-usb-constrained",
                 "BDAG_DETECTED_NETWORK_TOPOLOGY": "asic-router",
-                "NODE_ARGS_APPEND": "--fastartifactsync",
             },
             profile,
         )
 
         found = {check.name: check for check in checks}
-        self.assertEqual(found["fastartifactsync"].status, "fail")
+        self.assertEqual(found["node_mining_runtime"].status, "warn")
+        self.assertIn("--maxinbound=1", found["node_mining_runtime"].detail)
 
     def test_pool_template_rpc_pressure_rejects_unsafe_overrides(self) -> None:
         profile = preflight.HostProfile(
@@ -256,7 +259,8 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         )
 
         found = {check.name: check for check in checks}
-        self.assertEqual(found["fastartifactsync"].status, "pass")
+        self.assertEqual(found["node_mining_runtime"].status, "pass")
+        self.assertEqual(found["fastsync_acceleration"].status, "pass")
 
     def test_sync_source_zero_does_not_make_single_device_receiver_constrained(self) -> None:
         profile = preflight.HostProfile(
@@ -278,8 +282,8 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         )
 
         found = {check.name: check for check in checks}
-        self.assertEqual(found["fastartifactsync"].status, "pass")
-        self.assertEqual(found["fastartifactsync"].detail, "Fast Artifact Sync V2 startup flag is enabled")
+        self.assertEqual(found["node_mining_runtime"].status, "pass")
+        self.assertEqual(found["node_mining_runtime"].detail, "node mining stays disabled until miners are present")
 
     def test_node_mining_runtime_accepts_safe_main_chain_args(self) -> None:
         profile = preflight.HostProfile(
@@ -331,9 +335,10 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         self.assertEqual(found["node_mining_runtime"].status, "fail")
         self.assertIn("unsafe sync bypass args", found["node_mining_runtime"].detail)
 
-    def test_usb_chain_mining_source_rejects_sync_source_node(self) -> None:
+    def test_usb_chain_storage_profile_reports_split_runtime(self) -> None:
         old_mount_info = preflight.mount_info
         old_is_usb_source = preflight.is_usb_source
+        old_docker_root_dir = preflight.docker_root_dir
 
         def fake_mount_info(path: Path) -> dict[str, str]:
             value = str(path)
@@ -344,9 +349,10 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         try:
             preflight.mount_info = fake_mount_info
             preflight.is_usb_source = lambda source: source.startswith("/dev/sda")
+            preflight.docker_root_dir = lambda: ""
             profile = preflight.HostProfile("linux", "aarch64", 4, 8 * preflight.GIB, "constrained", "test")
             checks = []
-            preflight.check_storage(
+            preflight.check_storage_profile(
                 checks,
                 Path("/opt/blockdag-pool"),
                 {
@@ -360,9 +366,11 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         finally:
             preflight.mount_info = old_mount_info
             preflight.is_usb_source = old_is_usb_source
+            preflight.docker_root_dir = old_docker_root_dir
 
         found = {check.name: check for check in checks}
-        self.assertEqual(found["usb_mining_fastsync_serving"].status, "fail")
+        self.assertEqual(found["storage_profile"].status, "pass")
+        self.assertEqual(found["storage_io_split"].status, "pass")
 
     def test_active_node_data_layout_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
