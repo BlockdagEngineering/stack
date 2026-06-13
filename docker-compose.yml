@@ -432,11 +432,11 @@ services:
       TMPDIR: /tmp
       TMP: /tmp
       TEMP: /tmp
-      ADDR: ${DASHBOARD_LISTEN:-0.0.0.0:9290}
+      ADDR: ${DASHBOARD_LISTEN:-0.0.0.0:8088}
       BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://collector:9280}
       DASHBOARD_TIMEZONE: ${DASHBOARD_TIMEZONE:-Africa/Johannesburg}
     ports:
-      - "${DASHBOARD_BIND:-0.0.0.0}:${DASHBOARD_HOST_PORT:-8088}:9290"
+      - "${DASHBOARD_BIND:-0.0.0.0}:${DASHBOARD_HOST_PORT:-8088}:8088"
 
   # --------------------------------------------------------------------------
   # Optional CPU miner (dockerfile-dev target only). Enable with:
