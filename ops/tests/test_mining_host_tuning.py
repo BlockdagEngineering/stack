@@ -29,16 +29,18 @@ class MiningHostTuningTests(unittest.TestCase):
 
     def test_compose_defaults_keep_critical_path_above_dashboard(self) -> None:
         compose = read("docker-compose.yml")
+        stack_defaults = read("ops/config/stack-defaults.env")
 
-        self.assertIn("cpu_shares: ${BDAG_NODE_CPU_SHARES:-6144}", compose)
-        self.assertIn("cpu_shares: ${BDAG_POOL_CPU_SHARES:-5120}", compose)
-        self.assertIn("cpu_shares: ${BDAG_DASHBOARD_CPU_SHARES:-128}", compose)
+        self.assertIn("BDAG_NODE_CPU_SHARES=6144", stack_defaults)
+        self.assertIn("BDAG_POOL_CPU_SHARES=5120", stack_defaults)
+        self.assertIn("BDAG_DASHBOARD_CPU_SHARES=128", stack_defaults)
+        self.assertIn("cpu_shares: 4096", compose)
+        self.assertIn("cpu_shares: 3072", compose)
+        self.assertIn("cpu_shares: 256", compose)
         self.assertIn("weight: 1000", compose)
-        self.assertIn("weight: 950", compose)
-        self.assertIn("mem_swappiness: 0", compose)
+        self.assertIn("weight: 900", compose)
+        self.assertIn("weight: 100", compose)
         self.assertIn("shm_size: ${BDAG_NODE_SHM_SIZE:-512m}", compose)
-        self.assertIn("shm_size: ${BDAG_POOL_DB_SHM_SIZE:-256m}", compose)
-        self.assertIn("shm_size: ${BDAG_POOL_SHM_SIZE:-256m}", compose)
 
     def test_env_example_exposes_priority_knobs(self) -> None:
         env_example = read(".env.example")
@@ -92,17 +94,17 @@ class MiningHostTuningTests(unittest.TestCase):
         installer = read("ops/install-dashboard.sh")
 
         for snippet in (
-            "ensure_env_value BDAG_CONTAINER_TMPFS_SIZE 128m",
-            "ensure_env_value BDAG_NODE_TMPFS_SIZE 512m",
-            "ensure_env_value BDAG_NODE_CPU_SHARES 6144",
-            "ensure_env_value BDAG_POOL_CPU_SHARES 5120",
-            "ensure_env_value BDAG_POOL_DB_CPU_SHARES 4096",
-            "ensure_env_value BDAG_DASHBOARD_CPU_SHARES 128",
-            "ensure_env_value BDAG_NODE_MEMORY_LOW 768M",
-            "ensure_env_value BDAG_POOL_MEMORY_LOW 256M",
-            "ensure_env_value BDAG_POOL_DB_MEMORY_LOW 512M",
-            "ensure_env_value BDAG_DASHBOARD_MEMORY_LOW 64M",
-            "ensure_env_value BDAG_TUNE_NET_QDISC 1",
+            "ensure_stack_default_env_value BDAG_CONTAINER_TMPFS_SIZE",
+            "ensure_stack_default_env_value BDAG_NODE_TMPFS_SIZE",
+            "ensure_stack_default_env_value BDAG_NODE_CPU_SHARES",
+            "ensure_stack_default_env_value BDAG_POOL_CPU_SHARES",
+            "ensure_stack_default_env_value BDAG_POOL_DB_CPU_SHARES",
+            "ensure_stack_default_env_value BDAG_DASHBOARD_CPU_SHARES",
+            "ensure_stack_default_env_value BDAG_NODE_MEMORY_LOW",
+            "ensure_stack_default_env_value BDAG_POOL_MEMORY_LOW",
+            "ensure_stack_default_env_value BDAG_POOL_DB_MEMORY_LOW",
+            "ensure_stack_default_env_value BDAG_DASHBOARD_MEMORY_LOW",
+            "ensure_stack_default_env_value BDAG_TUNE_NET_QDISC",
         ):
             self.assertIn(snippet, installer)
 

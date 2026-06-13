@@ -127,7 +127,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
             watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
         ), mock.patch.object(
-            watchdog, "collect_status_cached", return_value=status
+            watchdog, "collect_stack_status", return_value=status
         ), mock.patch.object(
             watchdog, "lock_is_held", return_value=False
         ), mock.patch.object(
@@ -182,7 +182,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
             watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
         ), mock.patch.object(
-            watchdog, "collect_status_cached", return_value=status
+            watchdog, "collect_stack_status", return_value=status
         ), mock.patch.object(
             watchdog, "lock_is_held", return_value=False
         ), mock.patch.object(
@@ -318,7 +318,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
             watchdog, "NODES", ["node"]
         ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
             watchdog, "write_state", lambda _payload: None
-        ), mock.patch.object(watchdog, "collect_status_cached", return_value=status), mock.patch.object(
+        ), mock.patch.object(watchdog, "collect_stack_status", return_value=status), mock.patch.object(
             watchdog, "lock_is_held", return_value=False
         ), mock.patch.object(watchdog, "record_earnings_snapshot", return_value={}), mock.patch.object(
             watchdog, "status_payload_has_tracking_gap", return_value=False

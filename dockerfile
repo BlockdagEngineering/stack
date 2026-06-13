@@ -44,31 +44,12 @@ RUN set -eu; mkdir -p /out; \
     chmod +x /out/mining-pool 
 
 # ----------------------------------------------------------------------------
-# Collector Source Stage
+# Collector Source Stage (packaged from BlockdagEngineering/collector)
 # ----------------------------------------------------------------------------
 FROM alpine:3.20 AS collector-source
-ARG COLLECTOR_REPO
-ARG COLLECTOR_REF=develop
-RUN apk add --no-cache ca-certificates git
-RUN --mount=type=secret,id=github_token,required=false set -eu; \
-    repo="${COLLECTOR_REPO:-https://github.com/BlockdagEngineering/collector.git}"; \
-    ref="${COLLECTOR_REF:-develop}"; \
-    token="$(cat /run/secrets/github_token 2>/dev/null || true)"; \
-    if [ -n "$token" ]; then \
-      auth="$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"; \
-      export GIT_CONFIG_COUNT=1; \
-      export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader; \
-      export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"; \
-    fi; \
-    git clone --depth 1 "$repo" /src/collector; \
-    cd /src/collector; \
-    if git rev-parse --verify "$ref^{commit}" >/dev/null 2>&1; then \
-      git checkout --detach "$ref"; \
-    else \
-      git fetch --depth 1 origin "$ref"; \
-      git checkout --detach FETCH_HEAD; \
-    fi; \
-    rm -rf .git
+COPY --from=collector_src . /src/collector
+RUN rm -rf /src/collector/.git /src/collector/.github \
+ && find /src/collector -type d -name __pycache__ -prune -exec rm -rf {} +
 
 # ----------------------------------------------------------------------------
 # Dashboard Build Stage
@@ -175,15 +156,12 @@ RUN apk add --no-cache \
     shadow \
     tzdata
 
-COPY --from=dashboard-source /src/dashboard /opt/dashboard
-# Compose supplies dashboard_src from DASHBOARD_SRC_CONTEXT so local fresh builds
-# run the checked-out dashboard code instead of silently cloning an older ref.
-COPY --from=dashboard_src . /opt/dashboard
-COPY docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
-RUN chmod +x /usr/local/bin/entrypoint-dashboard.sh \
- && mkdir -p /var/lib/bdag-dashboard/runtime /workspace \
- && if [ -f /opt/dashboard/requirements.txt ]; then \
-      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/dashboard/requirements.txt; \
+COPY --from=collector-source /src/collector /opt/collector
+COPY docker/entrypoint-collector.sh /usr/local/bin/entrypoint-collector.sh
+RUN chmod +x /usr/local/bin/entrypoint-collector.sh \
+ && mkdir -p /var/lib/bdag-collector/runtime /workspace \
+ && if [ -f /opt/collector/requirements.txt ]; then \
+      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/collector/requirements.txt; \
     fi
 
 ENV PYTHONUNBUFFERED=1 \
@@ -208,8 +186,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard
 RUN chmod +x /usr/local/bin/dashboard
 
-ENV ADDR=0.0.0.0:9290 \
+ENV ADDR=0.0.0.0:8088 \
     BDAG_COLLECTOR_API=http://collector:9280
 
-EXPOSE 9290
+EXPOSE 8088
 ENTRYPOINT ["/usr/local/bin/dashboard"]
