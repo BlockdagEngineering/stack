@@ -10,6 +10,9 @@ export BDAG_RUNTIME_DIR="${BDAG_RUNTIME_DIR:-/var/lib/bdag-collector/runtime}"
 export BDAG_POOL_ENV_FILE="${BDAG_POOL_ENV_FILE:-$BDAG_PROJECT_ROOT/.env}"
 export BDAG_COLLECTOR_BIND="${BDAG_COLLECTOR_BIND:-0.0.0.0}"
 export BDAG_COLLECTOR_PORT="${BDAG_COLLECTOR_PORT:-9280}"
+if [ -d /opt/collector/ops ]; then
+  export PYTHONPATH="/opt/collector/ops${PYTHONPATH:+:$PYTHONPATH}"
+fi
 
 mkdir -p "$BDAG_RUNTIME_DIR"
 

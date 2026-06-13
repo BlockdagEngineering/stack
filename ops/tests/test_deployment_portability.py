@@ -98,8 +98,9 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         workflow = (ROOT_DIR / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8")
 
         self.assertIn("Checkout collector repo", workflow)
-        self.assertIn("verify_repo collector src/collector/collector.py", workflow)
+        self.assertIn("find src/collector -type f -name collector.py", workflow)
         self.assertIn('src/collector/ "${ROOT}/collector/"', workflow)
+        self.assertIn('cp "${collector_entry}" "${ROOT}/collector/collector.py"', workflow)
         self.assertIn("Release zip is missing collector.py", workflow)
         self.assertIn("collector_src: ${COLLECTOR_SRC_CONTEXT:-./collector}", compose)
         self.assertIn("COPY --from=collector_src . /src/collector", dockerfile)
