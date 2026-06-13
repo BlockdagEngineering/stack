@@ -90,14 +90,23 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("DASHBOARD_EVM_RPC_URL: http://node:18545", compose)
         self.assertNotIn("BDAG_RPC_URL: http://node:38131", compose)
 
-    def test_dashboard_image_uses_checked_out_dashboard_context(self) -> None:
+    def test_collector_image_uses_checked_out_collector_context(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfile = (ROOT_DIR / "dockerfile").read_text(encoding="utf-8")
         dockerfile_dev = (ROOT_DIR / "dockerfile-dev").read_text(encoding="utf-8")
 
+        self.assertIn("collector_src: ${COLLECTOR_SRC_CONTEXT:-../collector}", compose)
+        self.assertIn("COPY --from=collector-source /src/collector /opt/collector", dockerfile)
+        self.assertIn("COPY --from=collector_src . /opt/collector", dockerfile)
+        self.assertIn("COPY --from=collector_src . /src/collector", dockerfile_dev)
+
+    def test_dashboard_image_uses_checked_out_dashboard_context(self) -> None:
+        compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+        dockerfile_dev = (ROOT_DIR / "dockerfile-dev").read_text(encoding="utf-8")
+
         self.assertIn("dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../dashboard}", compose)
-        self.assertIn("COPY --from=dashboard_src . /opt/dashboard", dockerfile)
-        self.assertIn("COPY --from=dashboard_src . /src/dashboard", dockerfile_dev)
+        self.assertIn("WORKDIR /src/dashboard", dockerfile_dev)
+        self.assertIn("COPY --from=dashboard_src . .", dockerfile_dev)
 
 
     def test_host_dashboard_env_uses_host_reachable_chain_rpc(self) -> None:
