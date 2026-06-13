@@ -13,13 +13,9 @@ export BDAG_COLLECTOR_PORT="${BDAG_COLLECTOR_PORT:-9280}"
 
 mkdir -p "$BDAG_RUNTIME_DIR"
 
-if [ -f /opt/collector/ops/collector.py ]; then
-  app_dir=/opt/collector/ops
-  app=/opt/collector/ops/collector.py
-elif [ -f /opt/collector/collector.py ]; then
-  app_dir=/opt/collector
-  app=/opt/collector/collector.py
-else
+app_dir=/opt/collector
+app=/opt/collector/collector.py
+if [ ! -f "$app" ]; then
   log "collector.py not found in collector checkout"
   find /opt/collector -maxdepth 2 -type f | sort >&2 || true
   exit 1

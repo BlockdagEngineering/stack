@@ -44,31 +44,12 @@ RUN set -eu; mkdir -p /out; \
     chmod +x /out/mining-pool 
 
 # ----------------------------------------------------------------------------
-# Collector Source Stage
+# Collector Source Stage (packaged from BlockdagEngineering/collector)
 # ----------------------------------------------------------------------------
 FROM alpine:3.20 AS collector-source
-ARG COLLECTOR_REPO
-ARG COLLECTOR_REF=develop
-RUN apk add --no-cache ca-certificates git
-RUN --mount=type=secret,id=github_token,required=false set -eu; \
-    repo="${COLLECTOR_REPO:-https://github.com/BlockdagEngineering/collector.git}"; \
-    ref="${COLLECTOR_REF:-develop}"; \
-    token="$(cat /run/secrets/github_token 2>/dev/null || true)"; \
-    if [ -n "$token" ]; then \
-      auth="$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"; \
-      export GIT_CONFIG_COUNT=1; \
-      export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader; \
-      export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"; \
-    fi; \
-    git clone --depth 1 "$repo" /src/collector; \
-    cd /src/collector; \
-    if git rev-parse --verify "$ref^{commit}" >/dev/null 2>&1; then \
-      git checkout --detach "$ref"; \
-    else \
-      git fetch --depth 1 origin "$ref"; \
-      git checkout --detach FETCH_HEAD; \
-    fi; \
-    rm -rf .git
+COPY --from=collector_src . /src/collector
+RUN rm -rf /src/collector/.git /src/collector/.github \
+ && find /src/collector -type d -name __pycache__ -prune -exec rm -rf {} +
 
 # ----------------------------------------------------------------------------
 # Dashboard Build Stage

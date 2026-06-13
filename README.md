@@ -29,11 +29,10 @@ Windows ARM64 hosts use the `linux-arm64` runtime payload.
 Each payload zip contains `bin/` (pre-built `blockdag-node`, `nodeworker`,
 `mining-pool`, `dashboard-api`, and `dashboard`), `docker-compose.yml`, `dockerfile`,
 `.env.example`,
-`docker/`, and the cross-platform payload installers. **Node and pool release
-images** stage binaries from `./bin`; the `collector` image checks out
-the `develop` branch from `BlockdagEngineering/collector`. Export
-`GITHUB_TOKEN` before `docker compose build` if that repository is private in
-your environment.
+`docker/`, `collector/` from `BlockdagEngineering/collector`, and the
+cross-platform payload installers. **Node and pool release images** stage
+binaries from `./bin`; the `collector` image stages the packaged collector
+source from `./collector`.
 
 Run the bootstrap script from the GitHub release, or manually unpack the
 matching payload zip and run the payload installer from the extracted directory:

@@ -91,19 +91,20 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("ADDR: ${DASHBOARD_LISTEN:-0.0.0.0:8088}", compose)
         self.assertIn('${DASHBOARD_HOST_PORT:-8088}:8088"', compose)
 
-    def test_release_collector_image_clones_collector_repo(self) -> None:
+    def test_release_collector_image_uses_packaged_collector_source(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfile = (ROOT_DIR / "dockerfile").read_text(encoding="utf-8")
         dockerfile_dev = (ROOT_DIR / "dockerfile-dev").read_text(encoding="utf-8")
+        workflow = (ROOT_DIR / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8")
 
-        self.assertIn(
-            "COLLECTOR_REPO: ${COLLECTOR_REPO:-https://github.com/BlockdagEngineering/collector.git}",
-            compose,
-        )
-        self.assertIn("COLLECTOR_REF: develop", compose)
-        self.assertIn("collector_src: ${COLLECTOR_SRC_CONTEXT:-.}", compose)
-        self.assertIn('git clone --depth 1 "$repo" /src/collector', dockerfile)
+        self.assertIn("Checkout collector repo", workflow)
+        self.assertIn("verify_repo collector src/collector/collector.py", workflow)
+        self.assertIn('src/collector/ "${ROOT}/collector/"', workflow)
+        self.assertIn("Release zip is missing collector.py", workflow)
+        self.assertIn("collector_src: ${COLLECTOR_SRC_CONTEXT:-./collector}", compose)
+        self.assertIn("COPY --from=collector_src . /src/collector", dockerfile)
         self.assertIn("COPY --from=collector-source /src/collector /opt/collector", dockerfile)
+        self.assertNotIn("git clone --depth 1", dockerfile)
         self.assertNotIn("COPY --from=collector_src . /opt/collector", dockerfile)
         self.assertIn("COPY --from=collector_src . /src/collector", dockerfile_dev)
 
