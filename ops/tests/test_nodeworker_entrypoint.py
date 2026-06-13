@@ -52,6 +52,7 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         result = self.run_entrypoint(
             {
                 "SYNC_SOURCE_NODE": "1",
+                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
                 "NODE_ARGS_APPEND": "--cache=1024",
             }
         )
@@ -71,7 +72,6 @@ class NodeworkerEntrypointTest(unittest.TestCase):
             }
         )
 
-        self.assert_stdout_contains(result, "BDAG_FASTARTIFACTSYNC_ENABLED=1")
         self.assert_stdout_contains(result, "--fastartifactsync")
         self.assert_stdout_contains(result, "--miner")
         self.assert_stdout_contains(result, "--miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc")

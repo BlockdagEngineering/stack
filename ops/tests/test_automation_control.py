@@ -16,6 +16,7 @@ OPS_DIR = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OPS_DIR))
 
 import automation_control  # noqa: E402
+import guard_core  # noqa: E402
 import pool_ops  # noqa: E402
 import stack_sentinel  # noqa: E402
 import status_sampler  # noqa: E402
@@ -261,7 +262,7 @@ class AutomationControlTests(unittest.TestCase):
         calls: list[str] = []
         events: list[tuple[str, str, str]] = []
 
-        def fake_record(event_type: str, severity: str, message: str, details=None) -> None:
+        def fake_record(event_type: str, severity: str, component: str, message: str, details=None) -> None:
             events.append((event_type, severity, message))
 
         with self.patch_default_control_paths(), unittest.mock.patch.object(
@@ -287,13 +288,13 @@ class AutomationControlTests(unittest.TestCase):
     def test_watchdog_suppresses_asic_miner_restart_when_control_missing(self) -> None:
         events: list[tuple[str, str, str]] = []
 
-        def fake_record(event_type: str, severity: str, message: str, details=None) -> None:
+        def fake_record(event_type: str, severity: str, component: str, message: str, details=None) -> None:
             events.append((event_type, severity, message))
 
         with self.patch_default_control_paths(), unittest.mock.patch.object(
             watchdog, "log", lambda _message: None
         ), unittest.mock.patch.object(
-            watchdog, "record_efficiency_event", fake_record
+            guard_core, "append_incident", fake_record
         ), unittest.mock.patch.object(
             watchdog, "read_miner_admin_password", side_effect=AssertionError("password should not be read")
         ), unittest.mock.patch.object(
@@ -539,13 +540,19 @@ class AutomationControlTests(unittest.TestCase):
         with self.patch_default_control_paths(), unittest.mock.patch.object(
             stack_sentinel, "log", lambda _message: None
         ), unittest.mock.patch.object(
-            stack_sentinel, "append_incident", fake_incident
+            guard_core, "append_incident", fake_incident
         ), unittest.mock.patch.object(
-            stack_sentinel, "unit_active", return_value=False
+            guard_core, "unit_active", return_value=False
         ), unittest.mock.patch.object(
-            stack_sentinel, "systemctl_user", side_effect=AssertionError("systemctl start should not run")
+            guard_core, "systemctl_user", side_effect=AssertionError("systemctl start should not run")
         ):
-            stack_sentinel.start_unit("bdag-watchdog.service", {}, 200)
+            stack_sentinel.start_unit(
+                "bdag-watchdog.service",
+                {},
+                200,
+                log=stack_sentinel.log,
+                incident_source="stack-sentinel",
+            )
 
         self.assertEqual(1, len(self.event_lines()))
         self.assertEqual("automation_control_suppressed", incidents[0][0])
