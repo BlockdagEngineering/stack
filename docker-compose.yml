@@ -18,7 +18,7 @@ x-dev-source-contexts: &dev-source-contexts
   pool_src: ${POOL_SRC_CONTEXT:-.}
   cpu_miner_src: ${CPU_MINER_SRC_CONTEXT:-.}
   collector_src: ${COLLECTOR_SRC_CONTEXT:-../collector}
-  dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../dashboard}
+  dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../dashboard2}
 
 x-node-critical: &node-critical
   tmpfs:
