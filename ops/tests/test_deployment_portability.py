@@ -104,7 +104,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfile_dev = (ROOT_DIR / "dockerfile-dev").read_text(encoding="utf-8")
 
-        self.assertIn("dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../dashboard}", compose)
+        self.assertIn("dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../dashboard2}", compose)
         self.assertIn("WORKDIR /src/dashboard", dockerfile_dev)
         self.assertIn("COPY --from=dashboard_src . .", dockerfile_dev)
 

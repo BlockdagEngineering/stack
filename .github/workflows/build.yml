@@ -86,10 +86,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -f src/blockdag-node/cmd/bdag/main.go
-          test -f src/pool/cmd/pool/main.go
-          test -f src/dashboard/main.go || test -f src/dashboard/cmd/dashboard/main.go
-          test -f src/collector/ops/collector.py || test -f src/collector/collector.py
+          verify_repo() {
+            local name="$1"
+            shift
+            for path in "$@"; do
+              if [[ -f "$path" ]]; then
+                echo "ok: $name ($path)"
+                return 0
+              fi
+            done
+            echo "::error::Upstream checkout '$name' missing expected files: $*"
+            return 1
+          }
+          verify_repo blockdag-corechain src/blockdag-node/cmd/bdag/bdag.go
+          verify_repo pool src/pool/cmd/pool/main.go
+          verify_repo dashboard2 src/dashboard/main.go
+          verify_repo collector src/collector/ops/collector.py src/collector/collector.py
 
       - name: Setup Go
         uses: actions/setup-go@v5
