@@ -208,8 +208,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard
 RUN chmod +x /usr/local/bin/dashboard
 
-ENV ADDR=0.0.0.0:9290 \
+ENV ADDR=0.0.0.0:8088 \
     BDAG_COLLECTOR_API=http://collector:9280
 
-EXPOSE 9290
+EXPOSE 8088
 ENTRYPOINT ["/usr/local/bin/dashboard"]
