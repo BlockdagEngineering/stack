@@ -152,11 +152,22 @@ normalize_arch() {
 }
 
 resolve_docker_platform() {
-    local payload_arch expected_platform
+    local payload_arch host_arch expected_platform
     read_payload_metadata
+    host_arch="$(normalize_arch "$ARCH_NAME")"
     payload_arch="${BDAG_RELEASE_PAYLOAD_ARCH:-$(normalize_arch "$ARCH_NAME")}"
     payload_arch="$(normalize_arch "$payload_arch")"
     expected_platform="linux/${payload_arch}"
+
+    if [[ "$payload_arch" != "$host_arch" && "${BDAG_ALLOW_CROSS_ARCH_PAYLOAD:-0}" != "1" ]]; then
+        cat >&2 <<EOF
+Error: this release payload is linux/${payload_arch}, but this host is linux/${host_arch}.
+Use a linux/${host_arch} payload, move to matching hardware, or set
+BDAG_ALLOW_CROSS_ARCH_PAYLOAD=1 only if you intentionally configured Docker
+binfmt/QEMU emulation for this architecture.
+EOF
+        exit 1
+    fi
 
     if [[ -n "$BDAG_RELEASE_PAYLOAD_DOCKER_PLATFORM" && "$BDAG_RELEASE_PAYLOAD_DOCKER_PLATFORM" != "$expected_platform" ]]; then
         echo "Error: release-payload.env has inconsistent DOCKER_PLATFORM=${BDAG_RELEASE_PAYLOAD_DOCKER_PLATFORM}; expected ${expected_platform}." >&2
