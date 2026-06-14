@@ -869,7 +869,9 @@ class EarningsEvmRpcSourceTests(unittest.TestCase):
         self.old_named_urls_from_env = pool_ops.named_urls_from_env
         self.old_json_rpc_balance = pool_ops.json_rpc_balance
         self.old_adaptive_worker_count = pool_ops.adaptive_worker_count
+        self.old_local_evm_balance_probe_enabled = pool_ops.LOCAL_EVM_BALANCE_PROBE_ENABLED
         self.old_local_evm_balance_probe_pause = pool_ops.local_evm_balance_probe_pause
+        pool_ops.LOCAL_EVM_BALANCE_PROBE_ENABLED = True
         pool_ops.local_evm_balance_probe_pause = lambda: {"paused": False, "reason": "", "reasons": []}
         self.addCleanup(self.restore_globals)
 
@@ -879,6 +881,7 @@ class EarningsEvmRpcSourceTests(unittest.TestCase):
         pool_ops.named_urls_from_env = self.old_named_urls_from_env
         pool_ops.json_rpc_balance = self.old_json_rpc_balance
         pool_ops.adaptive_worker_count = self.old_adaptive_worker_count
+        pool_ops.LOCAL_EVM_BALANCE_PROBE_ENABLED = self.old_local_evm_balance_probe_enabled
         pool_ops.local_evm_balance_probe_pause = self.old_local_evm_balance_probe_pause
 
     def test_wallet_balances_use_evm_rpc_not_mining_rpc(self) -> None:
@@ -927,6 +930,33 @@ class EarningsEvmRpcSourceTests(unittest.TestCase):
         self.assertEqual(called_urls, ["http://public-evm"])
         self.assertEqual(payload["addresses"][0]["type"], "public-rpc")
         self.assertTrue(payload["local_evm_rpc"]["paused"])
+
+    def test_wallet_balance_for_addresses_skips_local_evm_rpc_when_disabled(self) -> None:
+        wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        called_urls: list[str] = []
+        pool_ops.LOCAL_EVM_BALANCE_PROBE_ENABLED = False
+        pool_ops.global_evm_rpc_urls = lambda: (_ for _ in ()).throw(
+            AssertionError("disabled local balance probes must not discover the node EVM RPC")
+        )
+        pool_ops.local_evm_balance_probe_pause = self.old_local_evm_balance_probe_pause
+        pool_ops.named_urls_from_env = lambda name, _defaults: (
+            [("public-evm", "http://public-evm")] if name == "BDAG_PUBLIC_RPC_URLS" else []
+        )
+        pool_ops.adaptive_worker_count = lambda *_args, **_kwargs: 1
+
+        def fake_balance(url: str, _address: str, timeout: float = 6.0) -> dict[str, str]:
+            called_urls.append(url)
+            return {"wei": "1000000000000000000", "bdag": "1.00"}
+
+        pool_ops.json_rpc_balance = fake_balance
+
+        payload = pool_ops.collect_wallet_balances_for_addresses([wallet])
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(called_urls, ["http://public-evm"])
+        self.assertEqual(payload["addresses"][0]["type"], "public-rpc")
+        self.assertTrue(payload["local_evm_rpc"]["paused"])
+        self.assertEqual(payload["local_evm_rpc"]["reason"], "local EVM balance probes are disabled")
 
     def test_wallet_cross_check_marks_local_evm_rpc_skipped_when_paused(self) -> None:
         wallet = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"

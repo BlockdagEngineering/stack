@@ -23,6 +23,7 @@ class EarningsOnchainSourceTests(unittest.TestCase):
                 "evm_reference_rpc_urls",
                 "json_rpc_balance_at",
                 "json_rpc_call",
+                "LOCAL_EVM_BALANCE_PROBE_ENABLED",
                 "local_evm_balance_probe_pause",
                 "node_rpc_endpoint",
                 "read_json_file",
@@ -31,6 +32,7 @@ class EarningsOnchainSourceTests(unittest.TestCase):
                 "write_json_file",
             )
         }
+        pool_ops.LOCAL_EVM_BALANCE_PROBE_ENABLED = True
         self.addCleanup(self.restore)
 
     def restore(self) -> None:

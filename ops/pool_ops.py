@@ -470,6 +470,7 @@ EARNINGS_HISTORY_RETENTION_SECONDS = int(os.environ.get("BDAG_EARNINGS_HISTORY_R
 EARNINGS_DASHBOARD_HISTORY_SECONDS = int(os.environ.get("BDAG_EARNINGS_DASHBOARD_HISTORY_SECONDS", str(31 * 86400)))
 EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_EARNINGS_SNAPSHOT_INTERVAL_SECONDS", "60"))
 EARNINGS_ONCHAIN_CACHE_SECONDS = int(os.environ.get("BDAG_EARNINGS_ONCHAIN_CACHE_SECONDS", "120"))
+LOCAL_EVM_BALANCE_PROBE_ENABLED = env_bool("BDAG_LOCAL_EVM_BALANCE_PROBE_ENABLED", True)
 LOCAL_EVM_BALANCE_PROBE_PAUSE_DURING_SYNC = env_bool("BDAG_LOCAL_EVM_BALANCE_PROBE_PAUSE_DURING_SYNC", True)
 LOCAL_EVM_BALANCE_PROBE_STATUS_MAX_AGE_SECONDS = env_float(
     "BDAG_LOCAL_EVM_BALANCE_PROBE_STATUS_MAX_AGE_SECONDS",
@@ -8364,6 +8365,12 @@ def evm_reference_rpc_urls() -> list[tuple[str, str]]:
     return public_evm_rpc_urls()
 
 
+def local_evm_balance_rpc_urls() -> list[tuple[str, str]]:
+    if not LOCAL_EVM_BALANCE_PROBE_ENABLED:
+        return []
+    return global_evm_rpc_urls()
+
+
 def local_evm_balance_probe_pause_from_status(status: Mapping[str, Any]) -> dict[str, Any]:
     reasons: list[str] = []
     overall = str(status.get("overall") or "").strip().lower()
@@ -8405,6 +8412,9 @@ def local_evm_balance_probe_pause_from_status(status: Mapping[str, Any]) -> dict
 
 
 def local_evm_balance_probe_pause() -> dict[str, Any]:
+    if not LOCAL_EVM_BALANCE_PROBE_ENABLED:
+        reason = "local EVM balance probes are disabled"
+        return {"paused": True, "reason": reason, "reasons": [reason]}
     if not LOCAL_EVM_BALANCE_PROBE_PAUSE_DURING_SYNC:
         return {"paused": False, "reason": "", "reasons": []}
     status = read_status_sampler_payload(
@@ -12157,7 +12167,7 @@ def collect_wallet_balances(address: str | None = None) -> dict[str, Any]:
         return {"address": None, "sources": []}
 
     sources: list[dict[str, Any]] = []
-    local_sources = global_evm_rpc_urls()
+    local_sources = local_evm_balance_rpc_urls()
     local_evm_pause = local_evm_balance_probe_pause()
     if bool(local_evm_pause.get("paused")):
         for name, _url in local_sources:
@@ -12277,7 +12287,7 @@ def collect_wallet_balances_for_addresses(addresses: list[str]) -> dict[str, Any
         }
 
     local_evm_pause = local_evm_balance_probe_pause()
-    local_rpc_sources = [(source, url, "evm-rpc") for source, url in global_evm_rpc_urls()]
+    local_rpc_sources = [(source, url, "evm-rpc") for source, url in local_evm_balance_rpc_urls()]
     rpc_sources = [] if bool(local_evm_pause.get("paused")) else list(local_rpc_sources)
     rpc_sources.extend(
         (source, url, "public-rpc")
@@ -12410,7 +12420,7 @@ def archive_rpc_urls() -> list[tuple[str, str]]:
                 ("bdagscan-rpc", "https://rpc.bdagscan.com"),
             ],
         ),
-        *global_evm_rpc_urls(),
+        *local_evm_balance_rpc_urls(),
     ]
 
 
@@ -12448,7 +12458,7 @@ def collect_onchain_wallet_window_earnings(address: str | None, hours: int = 24)
         return {**cached, "cache_hit": True}
 
     local_evm_pause = local_evm_balance_probe_pause()
-    local_sources = global_evm_rpc_urls()
+    local_sources = local_evm_balance_rpc_urls()
     latest_sources = evm_reference_rpc_urls() if bool(local_evm_pause.get("paused")) else local_sources
     if not latest_sources:
         source_kind = "reference" if bool(local_evm_pause.get("paused")) else "local"
