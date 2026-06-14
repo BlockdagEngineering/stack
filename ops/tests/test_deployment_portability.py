@@ -21,6 +21,15 @@ dnsmasq 64 55 0 07:45 ? 00:00:00 /usr/local/bin/blockdag-node --configfile /etc/
 
         self.assertTrue(pool_ops.bdag_child_running_from_top(top))
 
+    def test_node_child_detection_accepts_rosetta_wrapped_packaged_binary(self) -> None:
+        top = """UID PID PPID C STIME TTY TIME CMD
+root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runuser -u bdagStack -g bdagStack -- /usr/local/bin/nodeworker --node-binary=/usr/local/bin/blockdag-node
+999 41917 41658 0 16:41 ? 00:00:02 /run/rosetta/rosetta /usr/local/bin/nodeworker /usr/local/bin/nodeworker --node-binary=/usr/local/bin/blockdag-node
+999 41954 41917 99 16:41 ? 00:04:52 /run/rosetta/rosetta /usr/local/bin/blockdag-node /usr/local/bin/blockdag-node --configfile /etc/bdagStack/node.conf
+"""
+
+        self.assertTrue(pool_ops.bdag_child_running_from_top(top))
+
     def test_node_child_detection_keeps_legacy_bdag_binary_name(self) -> None:
         top = """UID PID PPID C STIME TTY TIME CMD
 bdag 64 55 0 07:45 ? 00:00:00 /usr/local/bin/bdag --configfile /etc/bdagStack/node.conf
@@ -32,6 +41,14 @@ bdag 64 55 0 07:45 ? 00:00:00 /usr/local/bin/bdag --configfile /etc/bdagStack/no
         top = """UID PID PPID C STIME TTY TIME CMD
 root 1 0 0 07:45 ? 00:00:00 runuser -u bdagStack -g bdagStack -- /usr/local/bin/nodeworker
 dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/local/bin/blockdag-node
+"""
+
+        self.assertFalse(pool_ops.bdag_child_running_from_top(top))
+
+    def test_node_child_detection_does_not_count_rosetta_wrapped_wrapper_only(self) -> None:
+        top = """UID PID PPID C STIME TTY TIME CMD
+root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runuser -u bdagStack -g bdagStack -- /usr/local/bin/nodeworker --node-binary=/usr/local/bin/blockdag-node
+999 41917 41658 0 16:41 ? 00:00:02 /run/rosetta/rosetta /usr/local/bin/nodeworker /usr/local/bin/nodeworker --node-binary=/usr/local/bin/blockdag-node
 """
 
         self.assertFalse(pool_ops.bdag_child_running_from_top(top))

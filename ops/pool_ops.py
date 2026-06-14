@@ -2840,6 +2840,22 @@ def docker_top(name: str) -> str:
     return run(["docker", "top", name], timeout=8).stdout
 
 
+BDAG_CHILD_EXECUTABLES = {"bdag", "blockdag-node"}
+
+
+def command_is_bdag_child(command: str) -> bool:
+    parts = command.split()
+    if not parts:
+        return False
+    executable_name = Path(parts[0]).name
+    if executable_name in BDAG_CHILD_EXECUTABLES:
+        return True
+    if executable_name == "rosetta" or executable_name.startswith("qemu-"):
+        wrapped_executable_name = Path(parts[1]).name if len(parts) > 1 else ""
+        return wrapped_executable_name in BDAG_CHILD_EXECUTABLES
+    return False
+
+
 def bdag_child_running_from_top(top: str) -> bool:
     for line in top.splitlines()[1:]:
         parts = line.split(None, 7)
@@ -2847,9 +2863,7 @@ def bdag_child_running_from_top(top: str) -> bool:
             command = parts[7]
         else:
             command = line
-        executable = command.split(None, 1)[0] if command.split(None, 1) else ""
-        executable_name = Path(executable).name
-        if executable_name in {"bdag", "blockdag-node"}:
+        if command_is_bdag_child(command):
             return True
     return False
 
