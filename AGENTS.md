@@ -52,12 +52,12 @@ chain catch-up over template generation.
 When actual ASIC demand is present, the opposite invariant applies: the selected
 node must be able to build templates and accept block candidates during brief
 false `Client in initial download` windows. Runtime repairs must enable
-`BDAG_ENABLE_NODE_MINING=1`, `BDAG_NODE_MODULES=Blockdag`, and
+`BDAG_ENABLE_NODE_MINING=1`, `BDAG_NODE_MODULES=Blockdag,miner`, and
 `BDAG_NODE_MINING_ARGS` containing `--miner` and a non-zero
 `--miningaddr=<wallet>`.
-Do not add `miner` to `BDAG_NODE_MODULES`; this release image enables mining
-through the `--miner` node argument and exposes templates through the `Blockdag`
-RPC module.
+Keep both `Blockdag` and `miner` RPC modules exposed when miner demand is
+present; this release image still enables mining work through the `--miner`
+node argument.
 Do not add `--allowminingwhennearlysynced` or `--allowsubmitwhennotsynced`.
 Those bypass flags can make template health report ready while the node has
 stale or absent P2P mining freshness; future runtime repair must remove them

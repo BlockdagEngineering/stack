@@ -94,14 +94,12 @@ MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS = env_int(
     180,
     minimum=30,
 )
-MINING_IMPERATIVE_CONSTRAINED_FASTARTIFACT_REPAIR_ENABLED = env_bool(
-    "BDAG_MINING_IMPERATIVE_CONSTRAINED_FASTARTIFACT_REPAIR_ENABLED",
-    True,
-)
 MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED = env_bool(
     "BDAG_MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED",
     True,
 )
+NODE_MINING_MODULES = "Blockdag,miner"
+NODE_MINING_MODULE_SET = {"blockdag", "miner"}
 MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED = env_bool(
     "BDAG_MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED",
     True,
@@ -139,21 +137,7 @@ CHAIN_STATE_STALLED_IMPORT_RESTORE_GAP_GROWTH_BLOCKS = env_int(
     60,
     minimum=0,
 )
-CONSTRAINED_FASTARTIFACT_TOPOLOGIES = {
-    item.lower()
-    for item in split_env_list(
-        "BDAG_CONSTRAINED_FASTARTIFACT_TOPOLOGIES",
-        "asic-router",
-    )
-}
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
-CONSTRAINED_FASTARTIFACT_STORAGE_PROFILES = {
-    item.lower()
-    for item in split_env_list(
-        "BDAG_CONSTRAINED_FASTARTIFACT_STORAGE_PROFILES",
-        "usb-chain-internal-runtime",
-    )
-}
 FASTSYNC_PEER_QUARANTINE_ENV_KEYS = split_env_list(
     "BDAG_MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENV_KEYS",
     "BDAG_NODE_PEER_ADDRESSES,BDAG_FASTSYNC_PEERS,BOOTSTRAP_PEER_ADDRESSES",
@@ -937,16 +921,6 @@ def constrained_storage_profile() -> bool:
     )
 
 
-def constrained_fastartifact_profile() -> bool:
-    topology = (config_value("BDAG_DETECTED_NETWORK_TOPOLOGY") or config_value("BDAG_NETWORK_TOPOLOGY")).strip().lower()
-    storage_profile = config_value("BDAG_STORAGE_PROFILE").strip().lower()
-    return bool(
-        topology in CONSTRAINED_FASTARTIFACT_TOPOLOGIES
-        or storage_profile in CONSTRAINED_FASTARTIFACT_STORAGE_PROFILES
-        or constrained_storage_profile()
-    )
-
-
 def node_services_for_recreate() -> list[str]:
     configured = config_value("BDAG_NODE_SERVICES", "node")
     services = [item for item in configured.replace(" ", ",").split(",") if item]
@@ -971,18 +945,6 @@ def node_command_line(node_service: str) -> str | None:
     return command_line or None
 
 
-def node_command_has_fastartifact(node_service: str) -> bool:
-    command_line = node_command_line(node_service)
-    if not command_line:
-        return False
-    for word in command_line.split():
-        if word == "--fastartifactsync":
-            return True
-        if word.startswith("--fastartifactsync="):
-            return word.split("=", 1)[1].strip().lower() not in {"0", "false", "no", "off"}
-    return False
-
-
 def node_mining_template_support_should_repair(payload: dict[str, Any]) -> bool:
     if not MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED:
         return False
@@ -993,11 +955,15 @@ def node_mining_template_support_should_repair(payload: dict[str, Any]) -> bool:
     address = configured_mining_address()
     if not valid_mining_address(address):
         return False
-    modules = {item.strip().lower() for item in config_value("BDAG_NODE_MODULES", "Blockdag").split(",")}
+    modules = {
+        item.strip().lower()
+        for item in config_value("BDAG_NODE_MODULES", NODE_MINING_MODULES).split(",")
+        if item.strip()
+    }
     args = config_value("BDAG_NODE_MINING_ARGS")
     if not env_enabled_value(config_value("BDAG_ENABLE_NODE_MINING"), False):
         return True
-    if modules and ("blockdag" not in modules or "miner" in modules):
+    if modules != NODE_MINING_MODULE_SET:
         return True
     if not node_mining_args_are_safe_and_complete(args, address):
         return True
@@ -1035,25 +1001,13 @@ def fastsync_orphan_peer_ids(payload: dict[str, Any]) -> list[str]:
 def fastsync_peer_quarantine_should_repair(payload: dict[str, Any]) -> bool:
     if not MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED:
         return False
-    if not constrained_fastartifact_profile():
+    if not constrained_storage_profile():
         return False
     if not chain_ready_for_mining(payload):
         return False
     if not (status_payload_has_miner_demand(payload) or asic_lan_neighbor_present()):
         return False
     return bool(fastsync_orphan_peer_ids(payload))
-
-
-def constrained_fastartifact_should_repair(payload: dict[str, Any]) -> bool:
-    if not MINING_IMPERATIVE_CONSTRAINED_FASTARTIFACT_REPAIR_ENABLED:
-        return False
-    if not constrained_fastartifact_profile():
-        return False
-    if not (status_payload_has_miner_demand(payload) or asic_lan_neighbor_present()):
-        return False
-    if env_enabled_value(config_value("BDAG_FASTARTIFACTSYNC_ENABLED"), True):
-        return True
-    return any(node_command_has_fastartifact(service) for service in node_services_for_recreate())
 
 
 def control_decision_payload(decision: Any) -> dict[str, Any]:
@@ -1279,48 +1233,6 @@ def repair_fastsync_orphan_peers(payload: dict[str, Any]) -> bool:
     return False
 
 
-def repair_constrained_fastartifact(payload: dict[str, Any]) -> bool:
-    if not automation_repair_mutation_allowed(
-        automation_control.ACTION_CONFIG_EDIT,
-        target="constrained-fastartifact-config",
-        reason="disable FastArtifact serving on constrained mining host",
-        payload=payload,
-        event_type="mining_imperative_config_edit_blocked",
-        message="Mining imperative could not disable constrained FastArtifact because automation control blocked config edits",
-    ):
-        return False
-    changed_paths = set_runtime_env_value("BDAG_FASTARTIFACTSYNC_ENABLED", "0")
-    changed_paths.extend(set_runtime_env_value("SYNC_SOURCE_NODE", "0"))
-    changed_paths.extend(set_runtime_env_value("BDAG_NO_FASTSYNC_SERVE", "1"))
-    changed_paths.extend(set_runtime_env_value("NODE_ARGS_APPEND", ""))
-    ok, node_results = recreate_node_services(payload, "recreate node after disabling constrained FastArtifact")
-    action = {
-        "changed_env_paths": changed_paths,
-        "node_recreate_results": node_results,
-        "topology": config_value("BDAG_DETECTED_NETWORK_TOPOLOGY") or config_value("BDAG_NETWORK_TOPOLOGY"),
-        "storage_profile": config_value("BDAG_STORAGE_PROFILE"),
-    }
-    if ok:
-        log("mining imperative disabled FastArtifact during constrained synced mining profile")
-        record_incident(
-            "mining_imperative_constrained_fastartifact_disabled",
-            "critical",
-            "Disabled continuous FastArtifact mode for constrained synced ASIC-router mining",
-            action,
-            payload,
-        )
-        return True
-    log("mining imperative failed to recreate node after disabling constrained FastArtifact mode")
-    record_incident(
-        "mining_imperative_constrained_fastartifact_repair_failed",
-        "critical",
-        "Could not recreate node after disabling constrained FastArtifact mode",
-        action,
-        payload,
-    )
-    return False
-
-
 def write_text_if_changed(path: Any, text: str) -> bool:
     if not path.exists():
         return False
@@ -1380,7 +1292,6 @@ def update_node_conf_mining(enabled: bool, address: str = "") -> list[str]:
                 text = text.rstrip() + f"\nminingaddr={address}\n"
     else:
         text = re.sub(r"(?m)^miningaddr=.*$", "miningaddr=", text)
-        text = re.sub(r"(?m)^modules=miner\s*$", "# modules=miner disabled during catch-up pause", text)
         text = re.sub(r"(?m)^miner=true\s*$", "# miner=true disabled during catch-up pause", text)
     return [str(path)] if write_text_if_changed(path, text) else []
 
@@ -1410,7 +1321,7 @@ def apply_catchup_node_runtime(payload: dict[str, Any], policy: dict[str, Any]) 
     env_updates: dict[str, str] = {}
     disabled_values = {
         "BDAG_ENABLE_NODE_MINING": "0",
-        "BDAG_NODE_MODULES": "Blockdag",
+        "BDAG_NODE_MODULES": NODE_MINING_MODULES,
         "BDAG_NODE_MINING_ARGS": "",
         "NODE_ARGS_APPEND": "",
     }
@@ -1509,7 +1420,7 @@ def repair_node_mining_template_support(payload: dict[str, Any]) -> bool:
         return False
     changed_paths = []
     changed_paths.extend(set_runtime_env_value("BDAG_ENABLE_NODE_MINING", "1"))
-    changed_paths.extend(set_runtime_env_value("BDAG_NODE_MODULES", "Blockdag"))
+    changed_paths.extend(set_runtime_env_value("BDAG_NODE_MODULES", NODE_MINING_MODULES))
     runtime_args = node_mining_runtime_args(address)
     changed_paths.extend(
         set_runtime_env_value(
@@ -1713,10 +1624,6 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
     if status_payload_has_miner_activity_visibility_gap(payload):
         if repair_miner_activity_visibility(payload):
             actions.append("repaired_miner_activity_visibility")
-
-    if constrained_fastartifact_should_repair(payload):
-        if repair_constrained_fastartifact(payload):
-            actions.append("disabled_constrained_fastartifact")
 
     if catchup_active:
         reason = (

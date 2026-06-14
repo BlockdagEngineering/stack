@@ -74,8 +74,8 @@
       </tr>
       <tr>
         <td>Node mining/template repair</td>
-        <td>Status sampler now requires the shared canonical gate before enabling node mining/template env, recreates nodes with <code>--no-build --pull never</code>, and does not enable <code>modules=miner</code> or <code>miner=true</code> in <code>node.conf</code>.</td>
-        <td>Regression tests block missing-canonical config edits and assert <code>node.conf</code> miner/module lines are not enabled.</td>
+        <td>Status sampler now requires the shared canonical gate before enabling node mining/template env, recreates nodes with <code>--no-build --pull never</code>, and exposes both <code>Blockdag</code> and <code>miner</code> RPC modules while keeping <code>miner=true</code> disabled in <code>node.conf</code>.</td>
+        <td>Regression tests block missing-canonical config edits and assert <code>node.conf</code> preserves the miner module without enabling <code>miner=true</code>.</td>
       </tr>
       <tr>
         <td>IPFS content sidecar network guard</td>

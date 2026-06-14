@@ -808,9 +808,7 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
         if flag in node_mining_args
     ]
     if node_mining_enabled and node_modules and "blockdag" not in node_modules:
-        add(checks, "fail", "node_mining_runtime", "node mining is enabled but the Blockdag RPC module is not exposed.", "Set BDAG_NODE_MODULES=Blockdag; miner mode is enabled by --miner in BDAG_NODE_MINING_ARGS.", evidence)
-    elif node_mining_enabled and "miner" in node_modules:
-        add(checks, "fail", "node_mining_runtime", "BDAG_NODE_MODULES includes unsupported miner RPC module for this release image.", "Set BDAG_NODE_MODULES=Blockdag and keep --miner in BDAG_NODE_MINING_ARGS so chain RPC and templates remain available.", evidence)
+        add(checks, "fail", "node_mining_runtime", "node mining is enabled but the Blockdag RPC module is not exposed.", "Set BDAG_NODE_MODULES=Blockdag,miner; miner mode is enabled by --miner in BDAG_NODE_MINING_ARGS.", evidence)
     elif node_mining_enabled and unsafe_mining_bypass_args:
         add(checks, "fail", "node_mining_runtime", "node mining enables unsafe sync bypass args: " + ", ".join(unsafe_mining_bypass_args), "Remove sync bypass args; getTemplateHealth and readiness gates must fail closed until P2P freshness and sync safety are healthy.", evidence)
     elif node_mining_enabled and missing_mining_args:

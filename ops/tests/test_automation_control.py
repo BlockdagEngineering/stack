@@ -306,32 +306,6 @@ class AutomationControlTests(unittest.TestCase):
         self.assertEqual(1, len(self.event_lines()))
         self.assertEqual("automation_control_suppressed", events[0][0])
 
-    def test_status_sampler_suppresses_config_edit_when_control_missing(self) -> None:
-        incidents: list[tuple[str, str, str]] = []
-
-        with self.patch_default_control_paths(), unittest.mock.patch.object(
-            status_sampler, "log", lambda _message: None
-        ), unittest.mock.patch.object(
-            status_sampler,
-            "record_incident",
-            side_effect=lambda event_type, severity, message, *_args, **_kwargs: incidents.append(
-                (event_type, severity, message)
-            ),
-        ), unittest.mock.patch.object(
-            status_sampler,
-            "set_runtime_env_value",
-            side_effect=AssertionError("config edit must not run"),
-        ), unittest.mock.patch.object(
-            status_sampler,
-            "recreate_node_services",
-            side_effect=AssertionError("node recreate must not run"),
-        ):
-            ok = status_sampler.repair_constrained_fastartifact({})
-
-        self.assertFalse(ok)
-        self.assertEqual(1, len(self.event_lines()))
-        self.assertEqual("mining_imperative_config_edit_blocked", incidents[0][0])
-
     def test_status_sampler_suppresses_systemd_start_when_control_missing(self) -> None:
         incidents: list[tuple[str, str, str]] = []
         commands: list[list[str]] = []

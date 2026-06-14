@@ -38,8 +38,10 @@ environment:
     --nofilelogging
 ```
 
-Do not add `--allowminingwhennearlysynced`, `--miner`, `--miningaddr`, or
-`modules=miner` on no-miner hosts. When a node is behind tip, catch-up is the
+Do not add `--allowminingwhennearlysynced`, `--miner`, or `--miningaddr`
+on no-miner hosts. `modules=miner` may remain exposed alongside
+`modules=Blockdag`; actual mining work is controlled by the node mining args.
+When a node is behind tip, catch-up is the
 first priority. The runtime priority service therefore boosts node import above
 all other stack work while the dashboard reports `syncing`; when no miners are
 tracked, it also idles pool, database, and RPC-routing containers so the host is

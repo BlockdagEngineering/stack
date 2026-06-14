@@ -120,7 +120,6 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         preflight.check_env_defaults(
             checks,
             {
-                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
                 "BDAG_STORAGE_PROFILE": "usb-chain-internal-runtime",
                 "BDAG_DETECTED_NETWORK_TOPOLOGY": "asic-router",
                 "BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC": "1",
@@ -224,7 +223,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             checks,
             {
                 "BDAG_ENABLE_NODE_MINING": "1",
-                "BDAG_NODE_MODULES": "Blockdag",
+                "BDAG_NODE_MODULES": "Blockdag,miner",
                 "BDAG_NODE_MINING_ARGS": (
                     "--allowminingwhennearlysynced --allowsubmitwhennotsynced --miner "
                     "--miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
@@ -251,7 +250,6 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             checks,
             {
                 "SYNC_SOURCE_NODE": "0",
-                "BDAG_FASTARTIFACTSYNC_ENABLED": "1",
                 "BDAG_STORAGE_PROFILE": "single-usb-constrained",
                 "BDAG_DETECTED_NETWORK_TOPOLOGY": "asic-router",
             },
@@ -299,7 +297,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             checks,
             {
                 "BDAG_ENABLE_NODE_MINING": "1",
-                "BDAG_NODE_MODULES": "Blockdag",
+                "BDAG_NODE_MODULES": "Blockdag,miner",
                 "BDAG_NODE_MINING_ARGS": "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc",
             },
             profile,
@@ -322,7 +320,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             checks,
             {
                 "BDAG_ENABLE_NODE_MINING": "1",
-                "BDAG_NODE_MODULES": "Blockdag",
+                "BDAG_NODE_MODULES": "Blockdag,miner",
                 "BDAG_NODE_MINING_ARGS": (
                     "--allowminingwhennearlysynced --allowsubmitwhennotsynced "
                     "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"

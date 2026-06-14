@@ -290,11 +290,11 @@ configure_node_mining_env() {
   local enabled="$1" mining_address="$2"
   if [[ "$enabled" == "1" ]]; then
     set_env_value .env BDAG_ENABLE_NODE_MINING 1
-    set_env_value .env BDAG_NODE_MODULES "Blockdag"
+    set_env_value .env BDAG_NODE_MODULES "Blockdag,miner"
     set_env_value .env BDAG_NODE_MINING_ARGS "--miner --miningaddr=${mining_address} --maxinbound=1"
   else
     set_env_value .env BDAG_ENABLE_NODE_MINING 0
-    set_env_value .env BDAG_NODE_MODULES "Blockdag"
+    set_env_value .env BDAG_NODE_MODULES "Blockdag,miner"
     set_env_value .env BDAG_NODE_MINING_ARGS ""
   fi
 }

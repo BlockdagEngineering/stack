@@ -404,7 +404,7 @@ need_grep 'BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS: .*BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IP
 need_grep 'BDAG_FASTSYNC_PEER_ORDERING=p2p-latency' ".env.example"
 need_grep 'P2P latency/usefulness FastSync candidates enabled' "docker/entrypoint-nodeworker.sh"
 need_grep "tr ',' ' '" "docker/entrypoint-nodeworker.sh"
-need_grep 'append_node_arg_prefix_once "--modules=\${word}"' "docker/entrypoint-nodeworker.sh"
+need_grep 'append_node_arg_once "--modules=\${word}"' "docker/entrypoint-nodeworker.sh"
 need_grep 'asic-router' "ops/update-local-peers.py"
 reject_grep 'BDAG_ALLOW_ASIC_LAN_P2P' ".env.example"
 reject_grep 'BDAG_P2P_LAN_PEERS=' ".env.example"

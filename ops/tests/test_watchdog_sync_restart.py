@@ -135,8 +135,6 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         ), mock.patch.object(
             watchdog, "status_payload_has_tracking_gap", return_value=False
         ), mock.patch.object(
-            watchdog, "constrained_fastartifact_should_repair", return_value=False
-        ), mock.patch.object(
             watchdog, "node_mining_template_support_should_repair", return_value=False
         ), mock.patch.object(
             watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
@@ -189,8 +187,6 @@ class WatchdogSyncRestartTests(unittest.TestCase):
             watchdog, "record_earnings_snapshot", return_value={}
         ), mock.patch.object(
             watchdog, "status_payload_has_tracking_gap", return_value=False
-        ), mock.patch.object(
-            watchdog, "constrained_fastartifact_should_repair", return_value=False
         ), mock.patch.object(
             watchdog, "node_mining_template_support_should_repair", return_value=False
         ), mock.patch.object(
@@ -248,8 +244,6 @@ class WatchdogSyncRestartTests(unittest.TestCase):
             watchdog, "run_pool_stop_for_syncing", return_value=True
         ) as stop_pool, mock.patch.object(
             watchdog, "status_payload_has_tracking_gap", return_value=False
-        ), mock.patch.object(
-            watchdog, "constrained_fastartifact_should_repair", return_value=False
         ), mock.patch.object(
             watchdog, "node_mining_template_support_should_repair", return_value=False
         ), mock.patch.object(
@@ -381,8 +375,6 @@ class WatchdogSyncRestartTests(unittest.TestCase):
             watchdog, "lock_is_held", return_value=False
         ), mock.patch.object(watchdog, "record_earnings_snapshot", return_value={}), mock.patch.object(
             watchdog, "status_payload_has_tracking_gap", return_value=False
-        ), mock.patch.object(
-            watchdog, "constrained_fastartifact_should_repair", return_value=False
         ), mock.patch.object(
             watchdog, "node_mining_template_support_should_repair", return_value=False
         ), mock.patch.object(

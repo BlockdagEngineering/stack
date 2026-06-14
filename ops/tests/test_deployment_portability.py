@@ -253,7 +253,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS=0", env_example)
         self.assertIn("BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-}", compose)
         self.assertIn("tr ',' ' '", entrypoint)
-        self.assertIn('append_node_arg_prefix_once "--modules=${word}"', entrypoint)
+        self.assertIn('append_node_arg_once "--modules=${word}"', entrypoint)
         self.assertIn('set_env_value .env BDAG_ASIC_LAN_CIDRS "$scan_target"', local_installer)
         self.assertIn("validate_pool_lan_config", local_installer)
         self.assertIn('set_env_value .env BDAG_ASIC_LAN_CIDRS "$MINER_SCAN_TARGET"', payload_installer)

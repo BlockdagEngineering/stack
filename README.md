@@ -221,7 +221,7 @@ before using the data.
 ## Runtime Stability Defaults
 
 No-miner deployments are sync-only by default: `BDAG_ENABLE_NODE_MINING=0`,
-`BDAG_NODE_MODULES=Blockdag`, and an empty `BDAG_NODE_MINING_ARGS`. Enable node
+`BDAG_NODE_MODULES=Blockdag,miner`, and an empty `BDAG_NODE_MINING_ARGS`. Enable node
 mining/template flags only when real miners are attached. Do not add unsynced
 mining bypass flags; readiness gates must fail closed until node sync and P2P
 freshness are healthy. The dashboard,

@@ -356,13 +356,13 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
         self.assertIn("applied_catchup_node_runtime", repair["actions"])
         self.assertEqual(env_updates["BDAG_ENABLE_NODE_MINING"], "0")
-        self.assertEqual(env_updates["BDAG_NODE_MODULES"], "Blockdag")
+        self.assertEqual(env_updates.get("BDAG_NODE_MODULES", os.environ["BDAG_NODE_MODULES"]), "Blockdag,miner")
         self.assertEqual(env_updates["BDAG_NODE_MINING_ARGS"], "")
         self.assertEqual(env_updates["NODE_ARGS_APPEND"], "")
         self.assertIn("cache=6144", node_conf)
         self.assertIn("--cache 6144", node_conf)
         self.assertIn("miningaddr=", node_conf)
-        self.assertIn("# modules=miner disabled during catch-up pause", node_conf)
+        self.assertIn("modules=miner", node_conf)
         self.assertIn("# miner=true disabled during catch-up pause", node_conf)
         self.assertTrue(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
         self.assertTrue(any("--force-recreate" in command for command in commands))
@@ -528,41 +528,6 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertIn(status_sampler.POOL_ACTIVITY_BOOTSTRAP_LOG_LINES, activity_calls)
         self.assertIn("repaired_miner_activity_visibility", repair["actions"])
 
-    def test_disables_fastartifact_on_constrained_synced_mining_profile(self) -> None:
-        commands = []
-        env_updates = {}
-        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
-        os.environ["BDAG_DETECTED_NETWORK_TOPOLOGY"] = "asic-router"
-        os.environ["BDAG_STORAGE_PROFILE"] = "usb-chain-internal-runtime"
-        os.environ["BDAG_FASTARTIFACTSYNC_ENABLED"] = "1"
-        os.environ["NODE_ARGS_APPEND"] = "--fastartifactsync"
-        os.environ["BDAG_NODE_SERVICES"] = "node"
-        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
-        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
-        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
-
-        def fake_set_runtime_env(key: str, value: str):
-            env_updates[key] = value
-            os.environ[key] = value
-            return [f"/runtime/{key}={value}"]
-
-        status_sampler.set_runtime_env_value = fake_set_runtime_env
-
-        def fake_run(command: list[str], timeout: int = 20):
-            commands.append(command)
-            return self.command_result(command)
-
-        status_sampler.run = fake_run
-
-        repair = status_sampler.mining_imperative_repair(payload)
-
-        self.assertIn("disabled_constrained_fastartifact", repair["actions"])
-        self.assertEqual(env_updates["BDAG_FASTARTIFACTSYNC_ENABLED"], "0")
-        self.assertEqual(env_updates["SYNC_SOURCE_NODE"], "0")
-        self.assertEqual(env_updates["BDAG_NO_FASTSYNC_SERVE"], "1")
-        self.assertEqual(env_updates["NODE_ARGS_APPEND"], "")
-        self.assertTrue(any("--force-recreate" in command for command in commands))
-
     def test_enables_node_mining_template_support_when_miner_is_present(self) -> None:
         commands = []
         env_updates = {}
@@ -592,7 +557,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         self.assertIn("enabled_node_mining_template_support", repair["actions"])
         self.assertEqual(env_updates["BDAG_ENABLE_NODE_MINING"], "1")
-        self.assertEqual(env_updates["BDAG_NODE_MODULES"], "Blockdag")
+        self.assertEqual(env_updates["BDAG_NODE_MODULES"], "Blockdag,miner")
         self.assertIn("--miner", env_updates["NODE_ARGS_APPEND"])
         self.assertIn("--miner", env_updates["BDAG_NODE_MINING_ARGS"])
         self.assertIn("--miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc", env_updates["BDAG_NODE_MINING_ARGS"])
@@ -628,7 +593,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertFalse(any("--force-recreate" in command for command in commands))
         self.assertIn(("mining_imperative_node_mining_gate_blocked", "warning"), incidents)
 
-    def test_node_mining_template_repair_does_not_enable_node_conf_miner_modules(self) -> None:
+    def test_node_mining_template_repair_preserves_node_conf_miner_module(self) -> None:
         commands = []
         env_updates = {}
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
@@ -661,7 +626,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         self.assertIn("enabled_node_mining_template_support", repair["actions"])
         self.assertIn("miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc", node_conf)
-        self.assertNotIn("\nmodules=miner", node_conf)
+        self.assertIn("modules=miner", node_conf)
         self.assertNotIn("\nminer=true", node_conf)
 
     def test_node_args_parser_accepts_nodeworker_embedded_node_args(self) -> None:
@@ -703,7 +668,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertEqual(env_updates["NODE_ARGS_APPEND"], env_updates["BDAG_NODE_MINING_ARGS"])
         self.assertTrue(any("--force-recreate" in command for command in commands))
 
-    def test_repairs_unsupported_miner_rpc_module(self) -> None:
+    def test_keeps_configured_miner_rpc_module(self) -> None:
         commands = []
         env_updates = {}
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
@@ -728,10 +693,9 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         repair = status_sampler.mining_imperative_repair(payload)
 
-        self.assertIn("enabled_node_mining_template_support", repair["actions"])
-        self.assertEqual(env_updates["BDAG_NODE_MODULES"], "Blockdag")
-        self.assertNotIn("--allowsubmitwhennotsynced", env_updates["BDAG_NODE_MINING_ARGS"])
-        self.assertTrue(any("--force-recreate" in command for command in commands))
+        self.assertEqual(repair["actions"], [])
+        self.assertEqual(env_updates, {})
+        self.assertFalse(any("--force-recreate" in command for command in commands))
 
     def test_recreates_node_when_live_process_has_unsafe_sync_bypass(self) -> None:
         commands = []
@@ -797,7 +761,6 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
         os.environ["BDAG_DETECTED_NETWORK_TOPOLOGY"] = "asic-router"
         os.environ["BDAG_STORAGE_PROFILE"] = "usb-chain-internal-runtime"
-        os.environ["BDAG_FASTARTIFACTSYNC_ENABLED"] = "0"
         os.environ["BDAG_ENABLE_NODE_MINING"] = "1"
         os.environ["BDAG_NODE_MODULES"] = "Blockdag"
         os.environ["MINING_ADDRESS"] = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"

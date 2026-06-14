@@ -18,7 +18,7 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         self,
         extra_env: dict[str, str],
         *,
-        supported_node_flags: tuple[str, ...] = ("--fastartifactsync", "--nofastsyncserve"),
+        supported_node_flags: tuple[str, ...] = ("--nofastsyncserve",),
     ) -> subprocess.CompletedProcess[str]:
         env = {
             "PATH": os.environ.get("PATH", ""),
@@ -78,7 +78,6 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         result = self.run_entrypoint(
             {
                 "SYNC_SOURCE_NODE": "1",
-                "BDAG_FASTARTIFACTSYNC_ENABLED": "0",
                 "NODE_ARGS_APPEND": "--cache=1024",
             }
         )
@@ -87,16 +86,6 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         combined = result.stdout + result.stderr
         self.assertNotIn("FAST", combined.upper())
         self.assertEqual("", result.stderr)
-
-    def test_print_mode_skips_fastartifact_flag_when_node_binary_lacks_support(self) -> None:
-        result = self.run_entrypoint(
-            {"NODE_ARGS_APPEND": "--cache=1024 --fastartifactsync"},
-            supported_node_flags=("--nofastsyncserve",),
-        )
-
-        self.assert_stdout_contains(result, "NODE_ARGS_APPEND=--cache=1024")
-        self.assertNotIn("--fastartifactsync", result.stdout)
-        self.assertIn("does not support --fastartifactsync", result.stderr)
 
     def test_node_mining_env_appends_guard_args_without_forcing_rpc_module(self) -> None:
         result = self.run_entrypoint(
@@ -108,12 +97,25 @@ class NodeworkerEntrypointTest(unittest.TestCase):
             }
         )
 
-        self.assert_stdout_contains(result, "--fastartifactsync")
+        self.assertNotIn("--fastartifactsync", result.stdout)
         self.assert_stdout_contains(result, "--miner")
         self.assert_stdout_contains(result, "--miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc")
         self.assertNotIn("--allowminingwhennearlysynced", result.stdout)
         self.assertNotIn("--allowsubmitwhennotsynced", result.stdout)
-        self.assertNotIn("--modules=Blockdag,miner", result.stdout)
+
+    def test_node_mining_env_allows_blockdag_and_miner_rpc_modules(self) -> None:
+        result = self.run_entrypoint(
+            {
+                "BDAG_ENABLE_NODE_MINING": "1",
+                "BDAG_NODE_MODULES": "Blockdag,miner",
+                "BDAG_NODE_MINING_ARGS": (
+                    "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+                ),
+            }
+        )
+
+        self.assert_stdout_contains(result, "--modules=Blockdag")
+        self.assert_stdout_contains(result, "--modules=miner")
 
 
 if __name__ == "__main__":

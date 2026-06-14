@@ -335,7 +335,7 @@ apply_node_mining_runtime_args() {
     modules="$(printf '%s' "$modules" | tr ',' ' ')"
     for word in $modules; do
       [ -n "$word" ] || continue
-      append_node_arg_prefix_once "--modules=${word}" "$node_args ${NODE_ARGS_APPEND:-}"
+      append_node_arg_once "--modules=${word}" "$node_args ${NODE_ARGS_APPEND:-}"
     done
   fi
   for word in ${BDAG_NODE_MINING_ARGS:-}; do
@@ -483,38 +483,20 @@ apply_no_fastsync_serve_guard() {
   disable_reason="$(fastsync_serving_disable_reason "$@" || true)"
   if [ -z "$disable_reason" ]; then
     if env_value_false "${SYNC_SOURCE_NODE:-}"; then
-      log "SYNC_SOURCE_NODE=${SYNC_SOURCE_NODE} disables raw datadir source publishing only; Fast Artifact startup stays enabled unless storage/profile detection requires no-serve."
+      log "SYNC_SOURCE_NODE=${SYNC_SOURCE_NODE} disables raw datadir source publishing only; normal sync startup is unchanged unless storage/profile detection requires no-serve."
     fi
     return 0
   fi
 
   local node_args
   node_args="$(node_args_from_argv "$@" || true)"
-  export BDAG_FASTARTIFACTSYNC_ENABLED=0
   unset BDAG_FASTSYNC_ARTIFACT_DIRECTORY BDAG_FASTSYNC_ARTIFACT_MANIFEST
-  remove_node_arg_prefix "--fastartifactsync"
   if node_binary_supports_arg "--nofastsyncserve" "$@"; then
     append_node_arg_once "--nofastsyncserve" "$node_args ${NODE_ARGS_APPEND:-}"
     log "FastSync serving guard active ($disable_reason); disabling bulk FastSync, snapshot, and artifact serving while keeping normal outbound sync and block relay."
   else
-    log "FastSync serving guard active ($disable_reason); removed --fastartifactsync, but the selected node binary does not support --nofastsyncserve."
+    log "FastSync serving guard active ($disable_reason); selected node binary does not support --nofastsyncserve."
   fi
-}
-
-apply_default_fastsync_flags() {
-  if [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-1}" != "1" ]; then
-    return 0
-  fi
-
-  local node_args
-  node_args="$(node_args_from_argv "$@" || true)"
-  if ! node_binary_supports_arg "--fastartifactsync" "$@"; then
-    export BDAG_FASTARTIFACTSYNC_ENABLED=0
-    remove_node_arg_prefix "--fastartifactsync"
-    log "Fast Artifact Sync startup disabled; selected node binary does not support --fastartifactsync."
-    return 0
-  fi
-  append_node_arg_once "--fastartifactsync" "$node_args ${NODE_ARGS_APPEND:-}"
 }
 
 fastsnap_supports_directory_mode() {
@@ -667,34 +649,6 @@ maybe_fastsnap_bootstrap() {
   log "P2P snapshot bootstrap unavailable; falling back to normal FastSync/legacy sync"
 }
 
-configure_directory_artifact_serving() {
-  if [ "${BDAG_FASTARTIFACTSYNC_ENABLED:-1}" != "1" ]; then
-    log "Fast Artifact Sync V2 serving disabled for this node"
-    return 0
-  fi
-  if [ -n "${BDAG_FASTSYNC_ARTIFACT_DIRECTORY:-}" ] || [ -n "${BDAG_FASTSYNC_ARTIFACT_MANIFEST:-}" ]; then
-    return 0
-  fi
-  local node_args network config_file data_parent data_dir manifest
-  node_args="$(node_args_from_argv "$@" || true)"
-  network="$(mainnet_only_network "${BDAG_FASTSNAP_NETWORK:-mainnet}")"
-  config_file="$(node_arg_value configfile "$node_args" || true)"
-  data_parent="${BDAG_FASTSNAP_DATADIR:-$(node_arg_value datadir "$node_args" || true)}"
-  if [ -z "$data_parent" ] && [ -n "$config_file" ]; then
-    data_parent="$(read_config_value "$config_file" datadir || true)"
-  fi
-  data_parent="${data_parent:-/var/lib/bdagStack/node}"
-  data_dir="$(network_datadir "$data_parent" "$network")"
-  manifest="$data_dir/artifact.manifest.json"
-  if [ -s "$manifest" ] && [ -d "$data_dir/BdagChain" ]; then
-    export BDAG_FASTSYNC_ARTIFACT_DIRECTORY="$data_dir"
-    export BDAG_FASTSYNC_ARTIFACT_MANIFEST="$manifest"
-    log "enabled Fast Artifact Sync V2 directory serving from $data_dir"
-  else
-    log "Fast Artifact Sync V2 directory manifest unavailable at $manifest; using archive/legacy serving fallback"
-  fi
-}
-
 apply_archival_flag() {
   case "${BDAG_NODE_ARCHIVAL:-0}" in
     1|true|True|yes) ;;
@@ -798,7 +752,6 @@ maybe_http_snapshot_bootstrap() {
 
 apply_ordered_fastsync_peers "$@"
 apply_no_fastsync_serve_guard "$@"
-apply_default_fastsync_flags "$@"
 apply_node_mining_runtime_args "$@"
 apply_archival_flag "$@"
 maybe_http_snapshot_bootstrap "$@"

@@ -45,7 +45,6 @@ from pool_ops import (
     write_action_state,
 )
 from status_sampler import (
-    constrained_fastartifact_should_repair,
     fastsync_peer_quarantine_should_repair,
     node_mining_template_support_should_repair,
     repair_missing_tracked_miners,
