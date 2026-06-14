@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
-import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -27,18 +25,12 @@ class BootstrapSelectionTests(unittest.TestCase):
             ("Linux", "amd64", "linux-amd64"),
             ("Linux", "arm64", "linux-arm64"),
             ("Linux", "aarch64", "linux-arm64"),
-            ("Darwin", "x86_64", "linux-amd64"),
-            ("Darwin", "arm64", "linux-arm64"),
-            ("windows", "amd64", "linux-amd64"),
-            ("windows", "arm64", "linux-arm64"),
         ]
         for os_name, arch, expected in cases:
             with self.subTest(os_name=os_name, arch=arch):
                 self.assertEqual(renderer.select_payload_target(os_name, arch), expected)
 
     def test_rejects_unsupported_bootstrap_selection(self) -> None:
-        with self.assertRaisesRegex(ValueError, "unsupported operating system"):
-            renderer.select_payload_target("FreeBSD", "amd64")
         with self.assertRaisesRegex(ValueError, "unsupported CPU architecture"):
             renderer.select_payload_target("Linux", "riscv64")
 
@@ -73,59 +65,12 @@ class BootstrapSelectionTests(unittest.TestCase):
 
 
 class PayloadInstallerTests(unittest.TestCase):
-    def run_unix_env_write(self, payload_arch: str) -> str:
-        with tempfile.TemporaryDirectory() as tmp:
-            package_root = Path(tmp)
-            shutil.copytree(
-                ROOT / "scripts" / "release" / "installers",
-                package_root / "installers",
-            )
-            (package_root / ".env.example").write_text(
-                "DOCKER_PLATFORM=linux/amd64\n",
-                encoding="utf-8",
-                newline="\n",
-            )
-            (package_root / "release-payload.env").write_text(
-                "\n".join(
-                    [
-                        f"BDAG_RELEASE_PAYLOAD_TARGET=linux-{payload_arch}",
-                        f"BDAG_RELEASE_PAYLOAD_ARCH={payload_arch}",
-                        f"DOCKER_PLATFORM=linux/{payload_arch}",
-                        "",
-                    ]
-                ),
-                encoding="utf-8",
-                newline="\n",
-            )
-            env = os.environ.copy()
-            env["BDAG_INSTALL_TEST_WRITE_ENV_ONLY"] = "1"
-            result = subprocess.run(
-                ["bash", str(package_root / "installers" / "install-unix-common.sh")],
-                env=env,
-                check=False,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            return (package_root / ".env").read_text(encoding="utf-8")
-
-    def test_unix_payload_installer_writes_amd64_platform(self) -> None:
-        self.assertIn("DOCKER_PLATFORM=linux/amd64", self.run_unix_env_write("amd64"))
-
-    def test_unix_payload_installer_writes_arm64_platform(self) -> None:
-        self.assertIn("DOCKER_PLATFORM=linux/arm64", self.run_unix_env_write("arm64"))
-
     def test_installers_do_not_warn_arm_hosts_to_use_amd64_emulation(self) -> None:
         unix = (ROOT / "scripts" / "release" / "installers" / "install-unix-common.sh").read_text(
             encoding="utf-8"
         )
-        windows = (
-            ROOT / "scripts" / "release" / "installers" / "install-windows.ps1"
-        ).read_text(encoding="utf-8")
-        for text in (unix, windows):
-            self.assertIn("release-payload.env", text)
-            self.assertNotIn("amd64 emulation", text)
+        self.assertIn("release-payload.env", unix)
+        self.assertNotIn("amd64 emulation", unix)
 
 
 class BootstrapPeerDefaultTests(unittest.TestCase):

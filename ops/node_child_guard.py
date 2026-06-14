@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 import os
 import fcntl
+import base64
+import http.client
 import socket
 import subprocess
 import time
@@ -41,6 +43,8 @@ NODES = [
 ]
 COOLDOWN_SECONDS = int(os.environ.get("BDAG_NODE_CHILD_GUARD_RESTART_COOLDOWN_SECONDS", "180"))
 RPC_REFUSED_SECONDS = int(os.environ.get("BDAG_NODE_CHILD_GUARD_RPC_REFUSED_SECONDS", "300"))
+RPC_WEDGED_SECONDS = int(os.environ.get("BDAG_NODE_CHILD_GUARD_RPC_WEDGED_SECONDS", "180"))
+RPC_PROBE_TIMEOUT_SECONDS = float(os.environ.get("BDAG_NODE_CHILD_GUARD_RPC_PROBE_TIMEOUT_SECONDS", "2.5"))
 
 
 def now_iso() -> str:
@@ -118,6 +122,68 @@ def bdag_child_running_from_top(top: str) -> bool:
         if executable_names & {"bdag", "blockdag-node"}:
             return True
     return False
+
+
+def read_env_values(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return values
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.strip().strip('"').strip("'")
+        values[key.strip()] = value
+    return values
+
+
+def node_rpc_credentials() -> tuple[str, str]:
+    env_values = read_env_values(POOL_ENV_FILE)
+    user = os.environ.get("NODE_RPC_USER") or env_values.get("NODE_RPC_USER") or "test"
+    password = os.environ.get("NODE_RPC_PASS") or env_values.get("NODE_RPC_PASS") or "test"
+    return user, password
+
+
+def json_rpc_probe(host: str, port: int = 38131, timeout: float = RPC_PROBE_TIMEOUT_SECONDS) -> tuple[bool, str]:
+    if not host:
+        return False, "missing_host"
+    user, password = node_rpc_credentials()
+    auth = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
+    body = json.dumps({"jsonrpc": "1.0", "id": "node-child-guard", "method": "getBlockCount", "params": []})
+    conn = http.client.HTTPConnection(host, port, timeout=timeout)
+    try:
+        conn.request(
+            "POST",
+            "/",
+            body=body,
+            headers={
+                "Authorization": f"Basic {auth}",
+                "Connection": "close",
+                "Content-Type": "application/json",
+            },
+        )
+        response = conn.getresponse()
+        payload = response.read(4096)
+    except (OSError, http.client.HTTPException, TimeoutError) as exc:
+        return False, f"transport:{exc}"
+    finally:
+        conn.close()
+    if response.status == http.client.SERVICE_UNAVAILABLE:
+        return False, "too_busy"
+    if response.status >= 400:
+        return False, f"http_{response.status}"
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return False, f"invalid_json:{exc}"
+    if isinstance(decoded, dict) and decoded.get("error"):
+        return False, f"jsonrpc_error:{decoded.get('error')}"
+    if not isinstance(decoded, dict) or "result" not in decoded:
+        return False, "invalid_jsonrpc_response"
+    return True, "ok"
 
 
 def tcp_open(host: str, port: int, timeout: float = 1.5) -> bool:
@@ -218,6 +284,7 @@ def main() -> int:
     now = int(time.time())
     state = read_state()
     rpc_refused_since = dict(state.get("rpc_refused_since_by_node") or {})
+    rpc_wedged_since = dict(state.get("rpc_wedged_since_by_node") or {})
 
     for node in NODES:
         info = inspect_container(node)
@@ -231,21 +298,48 @@ def main() -> int:
         child = bdag_child_running(node)
         rpc_ok = tcp_open(str(info.get("ip") or ""), 38131)
         ws_ok = tcp_open(str(info.get("ip") or ""), 18546)
+        rpc_json_ok = False
+        rpc_json_error = ""
+        if rpc_ok:
+            rpc_json_ok, rpc_json_error = json_rpc_probe(str(info.get("ip") or ""))
         state.setdefault("last_seen_by_node", {})[node] = {
             "at": now_iso(),
             "child_running": child,
             "rpc_open": rpc_ok,
+            "rpc_json_ok": rpc_json_ok,
+            "rpc_json_error": rpc_json_error,
             "ws_open": ws_ok,
             "ip": info.get("ip") or "",
         }
         if not child:
             rpc_refused_since.pop(node, None)
+            rpc_wedged_since.pop(node, None)
             restart_node(node, "bdag child process missing while container is running", state, now)
             continue
-        if rpc_ok or ws_ok:
+        if rpc_json_ok:
             rpc_refused_since.pop(node, None)
-            log(f"ok node={node} child=true rpc_open={rpc_ok} ws_open={ws_ok}")
+            rpc_wedged_since.pop(node, None)
+            log(f"ok node={node} child=true rpc_open={rpc_ok} rpc_json=true ws_open={ws_ok}")
             continue
+        if rpc_ok:
+            rpc_refused_since.pop(node, None)
+            first_wedged = int(rpc_wedged_since.get(node) or now)
+            rpc_wedged_since[node] = first_wedged
+            wedged_for = now - first_wedged
+            log(
+                f"rpc wedged node={node} child=true wedged_for={wedged_for}s "
+                f"ip={info.get('ip') or ''} error={rpc_json_error}"
+            )
+            if wedged_for >= RPC_WEDGED_SECONDS:
+                restart_node(node, f"JSON-RPC unhealthy for {wedged_for}s while bdag child is running: {rpc_json_error}", state, now)
+                rpc_wedged_since.pop(node, None)
+            continue
+        if ws_ok:
+            rpc_refused_since.pop(node, None)
+            rpc_wedged_since.pop(node, None)
+            log(f"ok node={node} child=true rpc_open=false rpc_json=skipped ws_open=true")
+            continue
+        rpc_wedged_since.pop(node, None)
         first_refused = int(rpc_refused_since.get(node) or now)
         rpc_refused_since[node] = first_refused
         refused_for = now - first_refused
@@ -255,6 +349,7 @@ def main() -> int:
             rpc_refused_since.pop(node, None)
 
     state["rpc_refused_since_by_node"] = rpc_refused_since
+    state["rpc_wedged_since_by_node"] = rpc_wedged_since
     state["updated_at"] = now_iso()
     write_state(state)
     fcntl.flock(lock_fd, fcntl.LOCK_UN)
