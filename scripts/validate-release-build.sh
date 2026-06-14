@@ -113,9 +113,10 @@ if grep -R -n -E "$retired_runtime_root|$retired_runtime_stack" "$root/ops/syste
   fail "ops/systemd still references the retired blockdag-mining-pool runtime path"
 fi
 rm -f /tmp/bdag-retired-systemd-paths.$$
-need_grep '^BOOTSTRAP_PEER_ADDRESSES=/ip4/13\.57\.132\.47/tcp/8150/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus$' ".env.example"
+need_grep '^BOOTSTRAP_PEER_ADDRESSES=.*/ip4/18\.142\.70\.83/tcp/8150/p2p/16Uiu2HAmBSdn2taoteYwLZJZkDm2iCwL6eQ4UaXYNBBtAwaBU18X' ".env.example"
 need_grep 'BOOTSTRAP_PEER_ADDRESSES: \$\{BOOTSTRAP_PEER_ADDRESSES:-\}' "docker-compose.yml"
 need_grep '^addpeer=/ip4/13\.57\.132\.47/tcp/8150/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus$' "node.conf.example"
+need_grep '^addpeer=/ip4/18\.142\.70\.83/tcp/8150/p2p/16Uiu2HAmBSdn2taoteYwLZJZkDm2iCwL6eQ4UaXYNBBtAwaBU18X$' "node.conf.example"
 reject_grep '^addpeer=/ip4/52\.8\.80\.249/tcp/8150/p2p/' "node.conf.example"
 reject_grep '^addpeer=/ip4/192\.168\.' "node.conf.example"
 need_grep 'pool-stack-docker-<tag>-linux-amd64\.zip' "README.md"

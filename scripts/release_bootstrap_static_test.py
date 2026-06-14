@@ -133,9 +133,11 @@ class PayloadInstallerTests(unittest.TestCase):
 
 
 class BootstrapPeerDefaultTests(unittest.TestCase):
-    LIVE_PUBLIC_BOOTSTRAP_PEER = (
+    LIVE_PUBLIC_BOOTSTRAP_PEERS = (
         "/ip4/13.57.132.47/tcp/8150/p2p/"
-        "16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus"
+        "16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus",
+        "/ip4/18.142.70.83/tcp/8150/p2p/"
+        "16Uiu2HAmBSdn2taoteYwLZJZkDm2iCwL6eQ4UaXYNBBtAwaBU18X",
     )
 
     def test_release_defaults_pass_bootstrap_peers_to_node(self) -> None:
@@ -143,9 +145,10 @@ class BootstrapPeerDefaultTests(unittest.TestCase):
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         node_conf = (ROOT / "node.conf.example").read_text(encoding="utf-8")
 
-        self.assertIn(f"BOOTSTRAP_PEER_ADDRESSES={self.LIVE_PUBLIC_BOOTSTRAP_PEER}", env_example)
+        for peer in self.LIVE_PUBLIC_BOOTSTRAP_PEERS:
+            self.assertIn(peer, env_example)
+            self.assertIn(f"addpeer={peer}", node_conf)
         self.assertIn("BOOTSTRAP_PEER_ADDRESSES: ${BOOTSTRAP_PEER_ADDRESSES:-}", compose)
-        self.assertIn(f"addpeer={self.LIVE_PUBLIC_BOOTSTRAP_PEER}", node_conf)
 
     def test_release_defaults_do_not_ship_dead_or_site_local_seed_peers(self) -> None:
         node_conf = (ROOT / "node.conf.example").read_text(encoding="utf-8")
