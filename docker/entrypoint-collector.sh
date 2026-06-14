@@ -20,7 +20,10 @@ fi
 mkdir -p "$BDAG_RUNTIME_DIR"
 
 app_dir=/opt/collector
-app=/opt/collector/collector.py
+app=/opt/collector/ops/collector.py
+if [ ! -f "$app" ] && [ -f /opt/collector/collector.py ]; then
+  app=/opt/collector/collector.py
+fi
 if [ ! -f "$app" ]; then
   log "collector.py not found in collector checkout"
   find /opt/collector -maxdepth 2 -type f | sort >&2 || true

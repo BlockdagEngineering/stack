@@ -283,7 +283,7 @@ services:
         <<: *dev-source-contexts
     restart: unless-stopped
     logging: *mining-logging
-    user: "1001:969"
+    user: "0:0"
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     working_dir: ${BDAG_STACK_HOST_ROOT:-${PWD}}
@@ -327,7 +327,7 @@ services:
         <<: *dev-source-contexts
     restart: unless-stopped
     logging: *mining-logging
-    user: "1001:969"
+    user: "0:0"
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
     working_dir: ${BDAG_STACK_HOST_ROOT:-${PWD}}
