@@ -101,6 +101,10 @@ jobs:
 
       - name: Validate compose (CPU Dockerfile + miner profile)
         shell: bash
+        env:
+          # docker-compose.yml hard-fails (:?) without the absolute checkout path
+          # for the watchdog/sentinel services.
+          BDAG_STACK_HOST_ROOT: ${{ github.workspace }}
         run: |
           set -euo pipefail
           test -f .env.cpu.example

@@ -15,8 +15,7 @@ class StackNamingCoherenceTests(unittest.TestCase):
     def test_compose_dashboard_exports_current_container_names(self) -> None:
         compose = read("docker-compose.yml")
 
-        self.assertNotIn("container_name:", compose)
-        self.assertIn("  postgres:", compose)
+        self.assertIn("  pool-db:", compose)
         self.assertIn("  node:", compose)
         self.assertIn("  pool:", compose)
         self.assertIn("BDAG_NODE_SERVICE: node", compose)

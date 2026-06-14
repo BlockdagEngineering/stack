@@ -295,6 +295,23 @@ clean_build_context_metadata() {
     find . -name 'System Volume Information' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 }
 
+ensure_dockerignore_pattern() {
+    local pattern="$1"
+    touch .dockerignore
+    if ! grep -Fxq "$pattern" .dockerignore; then
+        printf '\n%s\n' "$pattern" >> .dockerignore
+    fi
+}
+
+ensure_dockerignore_excludes_snapshots() {
+    # Snapshots are mounted at runtime; sending them to Docker build context can
+    # exhaust Docker Desktop's Linux VM disk and fail with input/output errors.
+    ensure_dockerignore_pattern "*.bdsnap"
+    ensure_dockerignore_pattern "latest.bdsnap.part"
+    ensure_dockerignore_pattern "latest.bdsnap.part.*"
+    ensure_dockerignore_pattern "*.aria2"
+}
+
 set_env_value() {
     local file="$1"
     local key="$2"
@@ -448,6 +465,11 @@ if [[ ! -f .env.example || ! -f node.conf.example || ! -f docker-compose.yml ]];
     exit 1
 fi
 
+seed_dimensions_from_install_mode
+select_deploy_kind
+select_chain_mode
+resolve_mode_settings
+
 run_release_preflight
 enforce_wired_route_policy
 
@@ -458,20 +480,14 @@ echo ""
 if [[ -n "${POSTGRES_PASSWORD:-}" ]]; then
     echo "Using POSTGRES_PASSWORD from environment."
 else
+    # Always set; docker-compose interpolation requires a value even when the
+    # pool database service is not started (node-only installs).
     POSTGRES_PASSWORD="$(generate_postgres_password)"
     echo "Generated Postgres password."
 fi
 
-read -rp "Mining/earnings wallet address (0x...): " MINING_ADDR
-read -rsp "Pool operator private key (optional, hidden; press Enter to skip): " POOL_PRIVATE_KEY
-echo ""
-
 cp .env.example .env
-DETECTED_POOL_LAN_IP="$(detect_lan_ip || true)"
-POOL_LAN_IP="$(prompt_with_default "Pool LAN IP miners should connect to" "${BDAG_POOL_HOST:-${DETECTED_POOL_LAN_IP:-192.168.1.10}}")"
-MINER_SCAN_TARGET="$(prompt_with_default "LAN scan range for ASIC discovery" "${BDAG_MINER_SCAN_TARGET:-${BDAG_ASIC_LAN_CIDRS:-$(default_cidr "$POOL_LAN_IP")}}")"
 set_env_value .env POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
-set_env_value .env MINING_POOL_ADDRESS "$MINING_ADDR"
 set_env_value .env DOCKER_PLATFORM "$DOCKER_PLATFORM"
 set_env_value .env BDAG_POOL_HOST "$POOL_LAN_IP"
 set_env_value .env BDAG_POOL_URL "stratum+tcp://$POOL_LAN_IP:3334"
@@ -483,10 +499,12 @@ if [[ -n "$POOL_PRIVATE_KEY" ]]; then
 fi
 
 cp node.conf.example node.conf
-if grep -q '^miningaddr=' node.conf; then
-    inplace_sed "s|^miningaddr=.*|miningaddr=$(sed_escape "$MINING_ADDR")|" node.conf
-else
-    printf '\nminingaddr=%s\n' "$MINING_ADDR" >> node.conf
+if ! install_mode_is_node_only; then
+    if grep -q '^miningaddr=' node.conf; then
+        inplace_sed "s|^miningaddr=.*|miningaddr=$(sed_escape "$MINING_ADDR")|" node.conf
+    else
+        printf '\nminingaddr=%s\n' "$MINING_ADDR" >> node.conf
+    fi
 fi
 
 echo ""
@@ -508,12 +526,21 @@ else
     echo "  Warning: could not detect external IP. Node will operate outbound-only."
 fi
 
-mkdir -p collector/logs
+if ! install_mode_is_node_only; then
+    mkdir -p collector/logs
+fi
 
 clean_build_context_metadata
 plan_orphan_container_cleanup
 
 export DOCKER_DEFAULT_PLATFORM="$DOCKER_PLATFORM"
+
+# Intentionally unquoted below: empty for full-stack builds, one service name
+# for node-only builds.
+BUILD_SERVICES=""
+if install_mode_is_node_only; then
+    BUILD_SERVICES="node"
+fi
 
 echo ""
 echo "=== Building Docker images (${DOCKER_PLATFORM}) ==="
@@ -534,7 +561,33 @@ python3 ops/automation_control.py ensure-normal \
     --reason "Provision default automation control before sync-only first start" >/dev/null
 docker_cli compose up -d --no-build --pull never --no-deps postgres node dashboard
 
-cat <<'EOF'
+    NODE_KIND="non-archive"
+    if [[ "$BDAG_NODE_ARCHIVAL" == "1" ]]; then
+        NODE_KIND="archive"
+    fi
+    cat <<EOF
+
+=================================================
+  BlockDAG ${NODE_KIND} node is running.
+=================================================
+  P2P:        port 8150
+  Chain RPC:  http://localhost:38131
+  EVM RPC:    http://localhost:18545
+
+  View logs:  docker compose logs -f node
+  Stop:       docker compose down
+=================================================
+EOF
+else
+    echo ""
+    echo "=== Starting sync services ==="
+    python3 ops/automation_control.py ensure-normal \
+        --owner release-installer \
+        --owner-unit install-unix-common \
+        --reason "Provision default automation control before sync-only first start" >/dev/null
+    docker compose up -d --no-build --pull never postgres node dashboard
+
+    cat <<'EOF'
 
 =================================================
   BlockDAG Pool Stack sync services are running.
@@ -547,6 +600,7 @@ cat <<'EOF'
   Stop:       docker compose down
 =================================================
 EOF
+fi
 
 if [[ "$OS_NAME" == "macos" ]]; then
     open -a Terminal "$PACKAGE_ROOT" 2>/dev/null || true

@@ -16,14 +16,12 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+from urllib.request import Request, urlopen
 
 from incident_journal import read_recent_incidents
 from pool_ops import (
     EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS,
-    GLOBAL_BLOCK_WINDOW,
     GLOBAL_CACHE_FILE,
-    GLOBAL_CACHE_TTL_SECONDS,
-    GLOBAL_EVM_FALLBACK_BLOCK_WINDOW,
     GLOBAL_HISTORY_LIMIT,
     GLOBAL_STATS_SOURCE_TRUTH,
     PROJECT_ROOT,
@@ -63,7 +61,7 @@ P2P_GUARD_STATE = RUNTIME_DIR / "p2p-health-state.json"
 REPORTS_DIR = RUNTIME_DIR / "reports"
 DEFAULT_STATUS_CACHE_SECONDS = os.environ.get("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS", "120")
 STATUS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_STATUS_CACHE_SECONDS", DEFAULT_STATUS_CACHE_SECONDS))
-EARNINGS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_EARNINGS_CACHE_SECONDS", "0"))
+EARNINGS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_EARNINGS_CACHE_SECONDS", "30"))
 SAMPLER_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS", DEFAULT_STATUS_CACHE_SECONDS))
 DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS = max(
     5.0,
@@ -82,6 +80,10 @@ EARNINGS_SAMPLER_INTERVAL_SECONDS = max(
     30.0,
     float(os.environ.get("BDAG_DASHBOARD_EARNINGS_SAMPLER_INTERVAL_SECONDS", "60")),
 )
+DASHBOARD_POOL_METRICS_TIMEOUT = float(os.environ.get("BDAG_DASHBOARD_POOL_METRICS_TIMEOUT", "1.5"))
+TEMPLATE_BACKEND_STATE_CACHE_SECONDS = float(
+    os.environ.get("BDAG_DASHBOARD_TEMPLATE_BACKEND_STATE_CACHE_SECONDS", str(STATUS_CACHE_SECONDS))
+)
 SYNC_ESTIMATE_STATE_FILE = RUNTIME_DIR / "dashboard-sync-estimate-state.json"
 EARNINGS_SAMPLER_LOCK_FILE = RUNTIME_DIR / "dashboard-earnings-sampler.lock"
 EARNINGS_SAMPLER_STATE_FILE = RUNTIME_DIR / "dashboard-earnings-sampler-state.json"
@@ -91,6 +93,10 @@ GLOBAL_SAMPLER_INTERVAL_SECONDS = max(
     float(os.environ.get("BDAG_DASHBOARD_GLOBAL_SAMPLER_INTERVAL_SECONDS", "60")),
 )
 GLOBAL_SAMPLER_STATE_FILE = RUNTIME_DIR / "dashboard-global-sampler-state.json"
+PROMETHEUS_SAMPLE_RE = re.compile(
+    r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|[-+]?Inf|NaN)$"
+)
+PROMETHEUS_LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:\\.|[^"\\])*)"')
 PROCESSED_BLOCKS_RE = re.compile(r"Processed\s+([0-9,]+)\s+blocks\s+in\s+the\s+last\s+([0-9.]+)s")
 API_CACHE: dict[str, tuple[float, object]] = {}
 API_CACHE_LOCK = threading.Lock()
@@ -98,8 +104,6 @@ GLOBAL_REFRESH_LOCK = threading.Lock()
 
 
 def cached_payload(key: str, ttl: float, factory):
-    if ttl <= 0:
-        return factory()
     now = time.time()
     with API_CACHE_LOCK:
         cached = API_CACHE.get(key)
@@ -430,23 +434,6 @@ def run_global_refresh(reason: str) -> None:
 
 
 def trigger_global_refresh(reason: str) -> bool:
-    started = time.time()
-    try:
-        maintenance_decision = background_maintenance_decision("dashboard_global_sampler")
-    except Exception:  # noqa: BLE001 - the worker will record the full failure if it cannot run.
-        maintenance_decision = {"allowed": True, "reasons": []}
-    if not maintenance_decision.get("allowed", True):
-        write_global_sampler_state(
-            {
-                "updated_at": now_iso(),
-                "status": "deferred",
-                "reason": reason,
-                "duration_seconds": round(time.time() - started, 3),
-                "maintenance_decision": maintenance_decision,
-                "error": "; ".join(str(item) for item in maintenance_decision.get("reasons", []) if item),
-            }
-        )
-        return False
     if not GLOBAL_REFRESH_LOCK.acquire(blocking=False):
         return False
 
@@ -478,29 +465,13 @@ def start_global_sampler() -> None:
 def collect_global_dashboard_payload(reason: str) -> dict[str, object]:
     cached = read_json(GLOBAL_CACHE_FILE, {})
     if isinstance(cached, dict) and cached:
-        updated_epoch = safe_float(cached.get("updated_at_epoch"), None)
-        cache_age = max(0, round(time.time() - updated_epoch, 1)) if updated_epoch is not None else None
-        source_contract = str(cached.get("source_contract") or "")
-        target_window = GLOBAL_EVM_FALLBACK_BLOCK_WINDOW if source_contract == "evm-rpc-fallback-v1" else GLOBAL_BLOCK_WINDOW
-        cached_requested = safe_int(cached.get("requested_blocks"), 0) or 0
-        cache_window_short = cached_requested < max(1, target_window)
-        if cache_age is None or cache_age > GLOBAL_CACHE_TTL_SECONDS or cache_window_short:
-            payload = collect_global_blockchain()
-            if "history" not in payload:
-                payload["history"] = read_valid_global_history(limit=GLOBAL_HISTORY_LIMIT)
-            cache_meta = dict(payload.get("cache") or {}) if isinstance(payload.get("cache"), dict) else {}
-            cache_meta["previous_age_seconds"] = cache_age
-            if cache_window_short:
-                cache_meta["previous_requested_blocks"] = cached_requested
-                cache_meta["target_requested_blocks"] = target_window
-            cache_meta["served_by"] = "dashboard-refresh-stale-cache"
-            payload["cache"] = cache_meta
-            return payload
         payload: dict[str, object] = dict(cached)
         payload["history"] = read_valid_global_history(limit=GLOBAL_HISTORY_LIMIT)
         payload = refresh_global_chain_head(payload)
         cache_meta = dict(payload.get("cache") or {}) if isinstance(payload.get("cache"), dict) else {}
-        cache_meta["age_seconds"] = cache_age
+        updated_epoch = safe_float(payload.get("updated_at_epoch"), None)
+        if updated_epoch is not None:
+            cache_meta["age_seconds"] = max(0, round(time.time() - updated_epoch, 1))
         cache_meta["hit"] = True
         cache_meta["served_by"] = "dashboard-cache-live-head"
         payload["cache"] = cache_meta
@@ -524,6 +495,13 @@ def collect_global_dashboard_payload(reason: str) -> dict[str, object]:
             "refresh_pending": True,
         }
     )
+
+
+def parse_prometheus_labels(label_text: str) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    for match in PROMETHEUS_LABEL_RE.finditer(label_text or ""):
+        labels[match.group(1)] = match.group(2).replace(r"\"", '"').replace(r"\\", "\\")
+    return labels
 
 
 def safe_int(value: object, default: int | None = None) -> int | None:
@@ -620,12 +598,6 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
     leader = choose_sync_leader(payload)
     mode = str(coordinator.get("mode") or "active_node_catchup")
     threshold = safe_int(((coordinator.get("last_decision") or {}).get("thresholds") or {}).get("leader_near_tip_blocks"), 5) or 5
-    progress_health = sync_health.get("sync_progress_health") if isinstance(sync_health.get("sync_progress_health"), dict) else {}
-    history_rates = (
-        progress_health.get("node_rates_blocks_per_second")
-        if isinstance(progress_health.get("node_rates_blocks_per_second"), dict)
-        else {}
-    )
 
     state = read_json(SYNC_ESTIMATE_STATE_FILE, {})
     if not isinstance(state, dict):
@@ -644,7 +616,6 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
         percent = safe_float(progress.get("percent"))
         node_info = nodes.get(name) if isinstance(nodes.get(name), dict) else {}
         log_rate, log_rate_source = node_processed_rate_from_tail(node_info)
-        history_rate = safe_float(history_rates.get(name)) if isinstance(history_rates, dict) else None
 
         previous = previous_nodes.get(name) if isinstance(previous_nodes.get(name), dict) else {}
         previous_current = safe_int(previous.get("current_block"))
@@ -661,25 +632,17 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
             if 5 <= elapsed <= 7200 and previous_remaining > remaining:
                 observed_net_rate = (previous_remaining - remaining) / elapsed
 
-        rate = observed_net_rate or observed_import_rate or history_rate or log_rate
+        rate = observed_net_rate or observed_import_rate or log_rate
         rate_source = (
             "net catch-up across dashboard samples"
             if observed_net_rate
             else "block import across dashboard samples"
             if observed_import_rate
-            else "status sampler sync history"
-            if history_rate
             else log_rate_source
         )
-        eta_seconds = 0 if remaining == 0 else remaining / rate if remaining is not None and rate and rate > 0 else None
+        eta_seconds = remaining / rate if remaining is not None and rate and rate > 0 else None
         seed_remaining = max(0, remaining - threshold) if remaining is not None else None
-        eta_to_seed_seconds = (
-            0
-            if seed_remaining == 0
-            else seed_remaining / rate
-            if seed_remaining is not None and rate and rate > 0
-            else None
-        )
+        eta_to_seed_seconds = seed_remaining / rate if seed_remaining is not None and rate and rate > 0 else None
         estimate_nodes[name] = {
             "current_block": current,
             "highest_block": highest,
@@ -754,14 +717,117 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
     return payload
 
 
+def template_backend_state_from_metrics(text: str, source: str) -> dict[str, object]:
+    state: dict[str, object] = {"source": source, "backends": {}}
+    backends = state["backends"]
+    assert isinstance(backends, dict)
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = PROMETHEUS_SAMPLE_RE.match(line)
+        if not match:
+            continue
+        metric_name, label_text, raw_value = match.groups()
+        try:
+            value = float(raw_value)
+        except ValueError:
+            continue
+        labels = parse_prometheus_labels(label_text or "")
+        if metric_name in {
+            "pool_rpc_backend_selected",
+            "pool_rpc_backend_healthy",
+            "pool_rpc_backend_score",
+            "pool_rpc_backend_template_age_seconds",
+            "pool_rpc_backend_ws_connected",
+        }:
+            backend = labels.get("backend")
+            if not backend:
+                continue
+            row = backends.setdefault(backend, {})
+            if not isinstance(row, dict):
+                continue
+            if metric_name == "pool_rpc_backend_selected":
+                row["selected"] = value > 0
+                if value > 0:
+                    state["selected_backend"] = backend
+            elif metric_name == "pool_rpc_backend_healthy":
+                row["healthy"] = value > 0
+            elif metric_name == "pool_rpc_backend_score":
+                row["score"] = value
+            elif metric_name == "pool_rpc_backend_template_age_seconds":
+                row["template_age_seconds"] = round(value, 3)
+            elif metric_name == "pool_rpc_backend_ws_connected":
+                row["ws_connected"] = value > 0
+
+    if backends:
+        state["backend_count"] = len(backends)
+        state["healthy_backend_count"] = sum(
+            1 for row in backends.values() if isinstance(row, dict) and row.get("healthy") is True
+        )
+    return state
+
+
+def collect_template_backend_states(endpoints: list[str]) -> tuple[list[dict[str, object]], list[str]]:
+    states: list[dict[str, object]] = []
+    errors: list[str] = []
+    for endpoint in endpoints:
+        url = f"http://{endpoint}/metrics"
+        request = Request(url, headers={"accept": "text/plain", "user-agent": "BDAGDashboard/1.0"})
+        try:
+            with urlopen(request, timeout=DASHBOARD_POOL_METRICS_TIMEOUT) as response:
+                metrics_text = response.read(1024 * 1024).decode("utf-8", errors="replace")
+        except Exception as exc:  # noqa: BLE001 - advisory dashboard enrichment only.
+            errors.append(f"{endpoint}: {exc}")
+            continue
+        state = template_backend_state_from_metrics(metrics_text, endpoint)
+        if state.get("fan_in") or state.get("backends"):
+            states.append(state)
+    return states, errors
+
+
+def enrich_status_with_template_backend_state(payload: dict[str, object]) -> dict[str, object]:
+    pool_metrics = payload.get("pool_metrics")
+    if not isinstance(pool_metrics, dict):
+        return payload
+    containers = pool_metrics.get("containers")
+    if not isinstance(containers, dict):
+        return payload
+
+    endpoints: list[str] = []
+    for info in containers.values():
+        if not isinstance(info, dict):
+            continue
+        endpoint = str(info.get("endpoint") or "").strip()
+        if not endpoint:
+            continue
+        endpoints.append(endpoint)
+    if not endpoints:
+        return payload
+
+    cache_key = "template_backend_state:" + ",".join(sorted(endpoints))
+    states, errors = cached_payload(
+        cache_key,
+        TEMPLATE_BACKEND_STATE_CACHE_SECONDS,
+        lambda: collect_template_backend_states(endpoints),
+    )
+
+    if states:
+        pool_metrics["template_backend_state"] = states[0] if len(states) == 1 else {"pools": states}
+    if errors:
+        pool_metrics["template_backend_state_error"] = "; ".join(errors[:2])
+    return payload
+
+
 def dashboard_status_payload() -> dict[str, object]:
     if not DASHBOARD_DIRECT_STATUS_FALLBACK:
         cached, diagnostics = cached_status_for_dashboard(include_logs=True)
         if cached is not None:
-            return attach_dashboard_endpoint(enrich_status_with_sync_estimate(dict(cached)))
+            return attach_dashboard_endpoint(cached)
         return dashboard_status_fast_fallback(diagnostics)
 
-    payload = enrich_status_with_sync_estimate(collect_status_cached(include_logs=True))
+    payload = enrich_status_with_template_backend_state(enrich_status_with_sync_estimate(collect_status_cached(include_logs=True)))
     return attach_dashboard_endpoint(payload)
 
 
@@ -1919,6 +1985,24 @@ HTML = r"""<!doctype html>
       const textValue = String(value ?? "").toLowerCase();
       return ["true", "yes", "on", "enabled"].includes(textValue);
     }
+    function templateBackendStates(data) {
+      const metrics = data.pool_metrics || {};
+      const rawState = metrics.template_backend_state || {};
+      return Array.isArray(rawState.pools)
+        ? rawState.pools
+        : (rawState.fan_in || rawState.backends ? [rawState] : []);
+    }
+    function firstTemplateBackendState(data) {
+      return templateBackendStates(data)[0] || {};
+    }
+    function backendKeyForNode(name) {
+      const match = String(name || "").match(/(?:^|-)node-(\d+)$/) || String(name || "").match(/^node(\d+)$/);
+      return match ? `node${match[1]}` : String(name || "");
+    }
+    function backendInfoForNode(name, backends) {
+      const key = backendKeyForNode(name);
+      return backends?.[name] || backends?.[key] || null;
+    }
     function nodeRole(name, node, data) {
       if (node?.role) return String(node.role);
       const observers = data?.observer_node_services || [];
@@ -1927,48 +2011,27 @@ HTML = r"""<!doctype html>
     function nodeHealthScope(role) {
       return role === "observer" ? "advisory" : "production";
     }
-    function templateProbeStatusText(data) {
-      const poolHealth = data.pool_health || {};
+    function templateBackendStatusText(data) {
       const metrics = data.pool_metrics || {};
-      const selected = selectedBackendSourceHealth(data);
-      const selectedBackend = selectedBackendName(data);
-      const hasTemplateSignal = ["healthy", "ws_connected", "template_delivery_effective", "template_delivery_mode"].some((key) => hasValue(selected[key]));
-      if (hasTemplateSignal) {
-        const parts = [];
-        if (hasValue(selected.healthy)) {
-          parts.push(`template_backends=${metricEnabled(selected.healthy) ? "1" : "0"}/1`);
+      const state = firstTemplateBackendState(data);
+      const parts = [];
+
+      const backends = state.backends || {};
+      const backendNames = Object.keys(backends).sort();
+      if (backendNames.length) {
+        const healthy = backendNames.filter(name => metricEnabled(backends[name]?.healthy)).length;
+        const wsBackends = backendNames.filter(name => metricEnabled(backends[name]?.ws_connected));
+        parts.push(`template_backends=${healthy}/${backendNames.length}`);
+        if (wsBackends.length) parts.push(`template_ws=${wsBackends.join(",")}`);
+      } else {
+        const probeNodes = data.rpc_template_health?.nodes || {};
+        const probeNames = Object.keys(probeNodes).sort();
+        if (probeNames.length) {
+          const healthy = probeNames.filter(name => !probeNodes[name]?.failing).length;
+          parts.push(`template_probes=${healthy}/${probeNames.length}`);
         }
-        if (hasValue(selected.ws_connected)) {
-          if (metricEnabled(selected.ws_connected)) parts.push(`template_ws=${selectedBackend}`);
-          else if (metricEnabled(selected.template_delivery_effective)) parts.push(`template_fresh=${selectedBackend}`);
-          else parts.push("template_ws=off");
-        } else if (metricEnabled(selected.template_delivery_effective)) {
-          parts.push(`template_fresh=${selectedBackend}`);
-        }
-        if (hasValue(selected.template_delivery_mode)) {
-          parts.push(`template_mode=${selected.template_delivery_mode}`);
-        }
-        return parts.join(" ");
       }
-      const probeNodes = data.rpc_template_health?.nodes || {};
-      const probeNames = Object.keys(probeNodes).sort();
-      if (!probeNames.length) return "";
-      const healthy = probeNames.filter(name => !probeNodes[name]?.failing).length;
-      return `template_probes=${healthy}/${probeNames.length}`;
-    }
-    function selectedBackendName(data) {
-      const poolHealth = data.pool_health || {};
-      const metrics = data.pool_metrics || {};
-      return poolHealth.selected_backend || metrics.selected_backend || "selected";
-    }
-    function backendKeyForNode(name) {
-      const match = String(name || "").match(/node[-_]?(\d+)$/);
-      return match ? `node${match[1]}` : String(name || "");
-    }
-    function selectedBackendMatchesNode(name, backendName) {
-      const nodeName = String(name || "");
-      const backend = String(backendName || "");
-      return backend === nodeName || backend === backendKeyForNode(nodeName) || (backend === "node" && nodeName.includes("node"));
+      return parts.join(" ");
     }
     function selectedBackendSourceHealth(data) {
       const poolHealth = data.pool_health || {};
@@ -1976,12 +2039,8 @@ HTML = r"""<!doctype html>
       return poolHealth.selected_backend_source_health || metrics.selected_backend_source_health || {};
     }
     function selectedBackendTemplateReady(data) {
-      const poolHealth = data.pool_health || {};
-      const contract = poolHealth.selected_backend_readiness_contract || {};
-      if (poolHealth.source_health_advisory_suppressed || (contract.contradiction && !contract.hard_unready)) return true;
-      if (contract.hard_unready) return false;
       const selected = selectedBackendSourceHealth(data);
-      const readinessKeys = ["healthy", "node_mineable", "node_submit_ready", "node_p2p_mining_fresh", "template_delivery_effective"];
+      const readinessKeys = ["healthy", "node_mineable", "node_submit_ready", "node_p2p_mining_fresh"];
       const hasReadinessSignal = readinessKeys.some((key) => hasValue(selected[key]));
       if (!hasReadinessSignal) return true;
       return readinessKeys.every((key) => !hasValue(selected[key]) || metricEnabled(selected[key]));
@@ -1998,12 +2057,10 @@ HTML = r"""<!doctype html>
       if (hasValue(selected.node_mineable)) sourceFlags.push(`mineable=${metricEnabled(selected.node_mineable) ? "yes" : "no"}`);
       if (hasValue(selected.node_submit_ready)) sourceFlags.push(`submit=${metricEnabled(selected.node_submit_ready) ? "ready" : "not-ready"}`);
       if (hasValue(selected.node_p2p_mining_fresh)) sourceFlags.push(`p2p=${metricEnabled(selected.node_p2p_mining_fresh) ? "fresh" : "stale"}`);
-      if (hasValue(selected.template_delivery_mode)) sourceFlags.push(`template=${selected.template_delivery_mode}`);
       if (hasValue(selected.node_template_age_seconds)) sourceFlags.push(`node_template_age=${fmt(selected.node_template_age_seconds)}s`);
       if (sourceFlags.length) parts.push(`source_health=${sourceFlags.join("/")}`);
       if (poolHealth.source_selected_backend_hard_degraded) parts.push("source_fault=hard");
       else if (poolHealth.source_health_transient_degraded) parts.push("source_fault=advisory");
-      if (poolHealth.source_health_advisory_suppressed) parts.push("source_advisory=suppressed");
       if (contract.contradiction) parts.push("readiness=contradiction");
       return parts.join(" ");
     }
@@ -2047,38 +2104,6 @@ HTML = r"""<!doctype html>
         data.pool_health?.connected_miners,
         0
       )) || 0;
-    }
-    function miningProgressStatusReason(data) {
-      const catchupPolicy = data.catchup_policy || {};
-      const progress = data.sync_progress || {};
-      const estimate = data.sync_estimate || {};
-      const templateReady = selectedBackendTemplateReady(data);
-      const remaining = firstPresent(estimate.remaining_blocks, progress.remaining_blocks);
-      const gapText = syncGapText(progress);
-      const eta = syncEtaText(estimate, progress);
-      const poolUp = poolRunning(data);
-      const minerCount = connectedMinerCount(data);
-      if (catchupPolicy.active) {
-        const summary = catchupPolicy.summary || catchupPolicy.user_message || "Catch-up pause active.";
-        return `${summary} ${gapText}; ETA ${eta}.`;
-      }
-      if (progress.status && progress.status !== "synced") {
-        const blocks = hasValue(remaining) ? `${fmt(remaining)} block(s)` : "unknown blocks";
-        return `Node is ${progress.status}; ${blocks} remain before full sync. ETA ${eta}. Mining resumes after sync and backend template checks are healthy.`;
-      }
-      if (progress.status === "synced" && !poolUp) {
-        return "Chain is synced with gap 0, but the pool is not running. Next: start or repair the pool so the configured ASIC can reconnect.";
-      }
-      if (progress.status === "synced" && data.can_mine && data.can_submit_blocks) {
-        return `Chain synced, pool running, and mining is active${minerCount ? ` with ${fmt(minerCount)} ASIC lane(s)` : ""}.`;
-      }
-      if (progress.status === "synced" && data.can_accept_shares) {
-        return `Chain synced and pool is accepting ASIC connections${minerCount ? ` from ${fmt(minerCount)} lane(s)` : ""}; waiting for fresh share/block-submit proof.`;
-      }
-      if (progress.status === "synced" && !templateReady) {
-        return "Chain is synced, but backend template checks are not healthy yet. Mining will resume after template readiness is proven.";
-      }
-      return data.status_reason || "Reason unavailable.";
     }
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
@@ -2178,7 +2203,21 @@ HTML = r"""<!doctype html>
       renderRebuildHoldingScreen(data.dashboard_plot_rebuild || {});
       text("meta", data.generated_at + " | " + data.project_root + " | dashboard " + (data.dashboard_url || "unknown"));
       text("overall", data.overall);
-      text("statusReason", miningProgressStatusReason(data));
+      const catchupPolicy = data.catchup_policy || {};
+      const syncProgress = data.sync_progress || {};
+      const templateReady = selectedBackendTemplateReady(data);
+      text(
+        "statusReason",
+        catchupPolicy.active
+          ? (catchupPolicy.summary || catchupPolicy.user_message || "Catch-up pause active.")
+          : (data.overall === "ok"
+            ? (syncProgress.status === "synced"
+              ? (templateReady
+                ? ""
+                : "Node sync is complete, but the selected backend's template checks are not yet healthy.")
+              : `Node is ${syncProgress.status || "syncing"}; the pool is not mining until sync completes.`)
+            : (data.status_reason || "Reason unavailable."))
+      );
       document.getElementById("overall").className = "kpi-value " + statusClass(data.overall);
       const nodeNames = data.node_services || Object.keys(data.nodes || {});
       renderSyncProgress(data.sync_progress || {}, data);
@@ -2212,7 +2251,8 @@ HTML = r"""<!doctype html>
         : (poolHealth.submit_stall_recovery_recent
           ? `submit_recovery=active recovery_age=${fmt(poolHealth.submit_stall_last_recovery_age_seconds)}s`
           : "submit_recovery=idle");
-      const templateProbeStatus = templateProbeStatusText(data);
+      const selectedBackend = poolHealth.selected_backend || data.pool_metrics?.selected_backend || "unknown";
+      const templateBackendStatus = templateBackendStatusText(data);
       const sourceHealthStatus = sourceHealthStatusText(data);
       const lossLedgerStatus = lossLedgerStatusText(data);
       const hostPressureStatus = hostPressureText(data.host_pressure || {});
@@ -2227,7 +2267,7 @@ HTML = r"""<!doctype html>
         + `stale_jobs=${fmt(poolHealth.stale_job_candidate_count)} submit_errors=${fmt(poolHealth.block_submit_error_count)} `
         + `duplicate_blocks=${fmt(poolHealth.duplicate_block_count)} `
         + `last_valid_share_age=${fmt(poolHealth.last_valid_share_age_seconds)}s share_stall=${poolHealth.share_stall ? "yes" : "no"} `
-        + `${templateProbeStatus ? ` ${templateProbeStatus}` : ""}`
+        + `selected_backend=${selectedBackend}${templateBackendStatus ? ` ${templateBackendStatus}` : ""}`
         + `${sourceHealthStatus ? ` ${sourceHealthStatus}` : ""}`
         + `${lossLedgerStatus ? ` ${lossLedgerStatus}` : ""} ${submitRecovery}`
         + `${hostPressureStatus ? ` ${hostPressureStatus}` : ""}`
@@ -2273,13 +2313,7 @@ HTML = r"""<!doctype html>
       if (!Number.isFinite(parsed) || parsed <= 0) return "estimating after the next progress sample";
       return `about ${durationText(parsed)}${at ? `, around ${formatDisplayTime(at)}` : ""}`;
     }
-    function syncEtaText(estimate, progress) {
-      const remaining = firstPresent(estimate?.remaining_blocks, progress?.remaining_blocks);
-      if (Number(remaining) === 0 || progress?.status === "synced") return "synced now";
-      return etaText(estimate?.eta_seconds, estimate?.eta_at);
-    }
     function syncRateText(estimate) {
-      if (Number(estimate?.remaining_blocks) === 0) return "no catch-up remaining";
       const rate = Number(estimate?.rate_blocks_per_second);
       if (!Number.isFinite(rate) || rate <= 0) return "estimating from the next sample";
       const source = estimate.rate_source ? ` (${estimate.rate_source})` : "";
@@ -2348,8 +2382,8 @@ HTML = r"""<!doctype html>
             : `${fmt(current)} / ${fmt(highest)}; ${fmt(remaining)} block(s) remaining`
         );
       }
-      text("syncRate", Number(remaining) === 0 ? "no catch-up remaining" : syncRateText(estimate));
-      text("syncEta", syncEtaText(estimate, progress));
+      text("syncRate", syncRateText(estimate));
+      text("syncEta", etaText(estimate.eta_seconds, estimate.eta_at));
       const miningStateBox = document.getElementById("miningStateBox");
       const chainStateBlocker = data.sync_health?.chain_state_blocker;
       const chainStateBlockerNodes = data.sync_health?.chain_state_blocker_nodes || {};
@@ -2481,6 +2515,7 @@ HTML = r"""<!doctype html>
       const container = document.getElementById("nodeCards");
       container.innerHTML = "";
       const syncNodes = syncProgress.nodes || {};
+      const backendState = firstTemplateBackendState(data).backends || {};
       const managedNodeNames = data.managed_node_services || [];
       const observerNodeNames = data.observer_node_services || [];
       const singleManagedTopology = managedNodeNames.length === 1 && observerNodeNames.length === 0;
@@ -2511,17 +2546,12 @@ HTML = r"""<!doctype html>
         for (const entry of entries) {
           const {name, node, roleValue, healthScope} = entry;
           const isObserver = roleValue === "observer" || healthScope === "advisory";
-          const selectedBackend = selectedBackendName(data);
-          const selectedHealth = selectedBackendSourceHealth(data);
-          const selectedForNode = selectedBackendMatchesNode(name, selectedBackend);
-          const roleHtml = `<span class="node-role">${escapeHtml(roleValue)}</span>`
-            + (selectedForNode ? `<span class="node-role">selected</span>` : "");
-          const wsText = selectedForNode && hasValue(selectedHealth.ws_connected)
-            ? ` ws=${metricEnabled(selectedHealth.ws_connected) ? "on" : (metricEnabled(selectedHealth.template_delivery_effective) ? "fresh" : "off")}`
-            : "";
-          const templateAge = selectedForNode && hasValue(selectedHealth.template_delivery_fresh_age_seconds)
-            ? ` template_age=${fmt(selectedHealth.template_delivery_fresh_age_seconds)}s`
-            : "";
+        const backend = backendInfoForNode(name, backendState) || {};
+        const fanRole = backend.fan_in_role || (backend.selected ? "selected" : "");
+        const roleHtml = `<span class="node-role">${escapeHtml(roleValue)}</span>`
+          + (fanRole ? `<span class="node-role">${escapeHtml(fanRole)}</span>` : "");
+        const wsText = hasValue(backend.ws_connected) ? ` ws=${metricEnabled(backend.ws_connected) ? "on" : "off"}` : "";
+        const templateAge = hasValue(backend.template_age_seconds) ? ` template_age=${fmt(backend.template_age_seconds)}s` : "";
         const syncNode = syncNodes[name] || {};
         const syncHtml = isObserver && !hasValue(syncNode.status)
           ? `<div class="subtle">Advisory observer; not included in production sync health.</div>`
@@ -2537,12 +2567,12 @@ HTML = r"""<!doctype html>
           </div>
           <div class="kpi-value">${escapeHtml(blockHeightText)}</div>
           <div class="sync-progress sync-progress-node">${syncHtml}</div>
-          <div class="subtle">${escapeHtml(healthScope)} scope | ${escapeHtml(nodeSummaryText(node) + wsText + templateAge)}</div>`;
+          <div class="subtle">${escapeHtml(healthScope)} scope | ${escapeHtml(nodeSummaryText(node))}${escapeHtml(templateAge + wsText)}</div>`;
           group.appendChild(div);
         }
         container.appendChild(group);
       }
-      appendGroup(managed.length === 1 ? "Managed production node" : "Managed production nodes", managed);
+      appendGroup(managed.length === 1 ? "Managed production routing node" : "Managed production routing nodes", managed);
       appendGroup("Observer nodes - advisory only", observers);
     }
     function renderNodeLogs(nodeNames, nodes, data) {
@@ -4051,9 +4081,6 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.send_response(status)
             self.send_header("content-type", content_type)
-            self.send_header("cache-control", "no-store, no-cache, max-age=0, must-revalidate")
-            self.send_header("pragma", "no-cache")
-            self.send_header("expires", "0")
             self.send_header("content-length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

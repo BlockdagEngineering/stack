@@ -12138,6 +12138,19 @@ def collect_global_blockchain() -> dict[str, Any]:
     return payload
 
 
+def collect_global_pool_earnings_window(block_window: int = 600) -> dict[str, Any]:
+    """Compatibility wrapper for collector builds that expose this narrow route.
+
+    The stack global collector already includes local-pool earnings clusters in
+    the normal global payload. Keep the collector API route available without
+    reintroducing a second, older EVM-only implementation.
+    """
+    payload = dict(collect_global_blockchain())
+    payload["requested_window"] = max(1, int(block_window or 600))
+    payload["source_route"] = "collect_global_blockchain"
+    return payload
+
+
 def collect_wallet_balances(address: str | None = None) -> dict[str, Any]:
     wallet = address or read_env_value("MINING_ADDRESS")
     if not wallet:

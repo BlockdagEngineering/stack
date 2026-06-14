@@ -29,11 +29,10 @@ Windows ARM64 hosts use the `linux-arm64` runtime payload.
 Each payload zip contains `bin/` (pre-built `blockdag-node`, `nodeworker`,
 `mining-pool` and `dashboard-api`), `dashboard-source/`, `docker-compose.yml`, `dockerfile`,
 `.env.example`,
-`docker/`, and the cross-platform payload installers. **Node and pool release
-images** stage binaries from `./bin`; the `collector` image checks out
-the `develop` branch from `BlockdagEngineering/collector`. Export
-`GITHUB_TOKEN` before `docker compose build` if that repository is private in
-your environment.
+`docker/`, `collector/` from `BlockdagEngineering/collector`, and the
+cross-platform payload installers. **Node and pool release images** stage
+binaries from `./bin`; the `collector` image stages the packaged collector
+source from `./collector`.
 
 Run the bootstrap script from the GitHub release, or manually unpack the
 matching payload zip and run the payload installer from the extracted directory:
@@ -47,6 +46,43 @@ bash install.sh
 # Windows
 .\install.ps1
 ```
+
+The payload installer makes two independent choices in two steps:
+
+**Step 1 — what to install:**
+
+1. **Mining pool stack with dashboard** (default) — the full stack: node, pool,
+   Postgres, collector, and dashboard.
+2. **Standalone node only** — just the node, no pool/dashboard/ASIC services.
+
+**Step 2 — chain data type (applies to either deployment):**
+
+1. **Non-archive** (default) — pruned chain data, bootstrapped from the standard
+   snapshot.
+2. **Archive** — node started with `--archival` (consensus keeps full block
+   history instead of pruning), bootstrapped from the archive snapshot.
+
+Set `BDAG_DEPLOY_KIND=pool|node` and/or `BDAG_CHAIN_MODE=archive|non-archive` to
+preselect either step for non-interactive installs (the legacy
+`BDAG_INSTALL_MODE=pool|archive-node|node` is still accepted and seeds both).
+Standalone-node installs can also use the dedicated entry script, which fixes
+step 1 to a node and lets the installer ask step 2:
+
+```bash
+# Linux / macOS: install just a node (installer prompts archive vs non-archive)
+bash install-node.sh
+bash install-node.sh --archive      # archive node, no prompt
+bash install-node.sh --no-archive   # pruned node, no prompt
+```
+
+The chain-data choice determines the snapshot link written to `BDAG_SNAPSHOT_URL`
+in `.env`. By convention the snapshot host serves `latest.bdsnap`
+(non-archive/pruned) and `latest-archive.bdsnap` (archive/full history); the
+host can be overridden with `BDAG_SNAPSHOT_BASE_URL` and the full link with
+`BDAG_SNAPSHOT_URL`. The node container also reads `BDAG_SNAPSHOT_URL` at
+first start and downloads/imports the snapshot itself when no local snapshot
+or chain data exists. Choosing archive additionally sets `BDAG_NODE_ARCHIVAL=1`
+in `.env`, which makes the node entrypoint append the `--archival` flag.
 
 The payload installer writes `.env` and `node.conf`, generates a strong Postgres
 password unless `POSTGRES_PASSWORD` is already set, provisions a signed IPFS

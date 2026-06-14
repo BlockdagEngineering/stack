@@ -14,8 +14,8 @@ x-dev-source-contexts: &dev-source-contexts
   blockdag_corechain: ${BLOCKDAG_CORECHAIN_CONTEXT:-.}
   pool_src: ${POOL_SRC_CONTEXT:-.}
   cpu_miner_src: ${CPU_MINER_SRC_CONTEXT:-.}
-  collector_src: ${COLLECTOR_SRC_CONTEXT:-../collector}
-  dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../dashboard}
+  collector_src: ${COLLECTOR_SRC_CONTEXT:-./collector}
+  dashboard_src: ${DASHBOARD_SRC_CONTEXT:-.}
 
 x-node-critical: &node-critical
   tmpfs:
@@ -65,6 +65,9 @@ services:
   # --------------------------------------------------------------------------
   postgres:
     <<: *pool-critical
+    # Guard scripts (watchdog/sentinel) address containers by these runtime
+    # names; keep container_name aligned with BDAG_POOL_DB_CONTAINER.
+    container_name: postgres
     image: postgres:15-bookworm
     restart: unless-stopped
     logging: *mining-logging
@@ -94,6 +97,7 @@ services:
   # --------------------------------------------------------------------------
   node:
     <<: *node-critical
+    container_name: node
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
       context: .
@@ -147,6 +151,7 @@ services:
   # --------------------------------------------------------------------------
   pool:
     <<: *pool-critical
+    container_name: pool
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     shm_size: ${BDAG_POOL_SHM_SIZE:-256m}
     build:
@@ -220,6 +225,7 @@ services:
 
   collector:
     <<: *ops-low
+    container_name: collector
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
       context: .
@@ -227,8 +233,6 @@ services:
       target: collector
       additional_contexts:
         <<: *dev-source-contexts
-      args:
-        <<: *collector-build-args
       secrets:
         - github_token
     restart: unless-stopped
@@ -274,8 +278,8 @@ services:
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
       BDAG_COLLECTOR_BIND: 0.0.0.0
       BDAG_COLLECTOR_PORT: 9280
-      BDAG_COLLECTOR_NODE_LOG_CONTAINER: ${BDAG_COLLECTOR_NODE_LOG_CONTAINER:-stack-node-1}
-      BDAG_COLLECTOR_POOL_LOG_CONTAINER: ${BDAG_COLLECTOR_POOL_LOG_CONTAINER:-stack-pool-1}
+      BDAG_COLLECTOR_NODE_LOG_CONTAINER: ${BDAG_COLLECTOR_NODE_LOG_CONTAINER:-node}
+      BDAG_COLLECTOR_POOL_LOG_CONTAINER: ${BDAG_COLLECTOR_POOL_LOG_CONTAINER:-pool}
       BDAG_COLLECTOR_DIRECT_STATUS_FALLBACK: ${BDAG_COLLECTOR_DIRECT_STATUS_FALLBACK:-0}
       BDAG_COLLECTOR_STATUS_CACHE_SECONDS: ${BDAG_COLLECTOR_STATUS_CACHE_SECONDS:-120}
       BDAG_COLLECTOR_SAMPLER_CACHE_SECONDS: ${BDAG_COLLECTOR_SAMPLER_CACHE_SECONDS:-120}
@@ -302,6 +306,7 @@ services:
   # --------------------------------------------------------------------------
   dashboard:
     <<: *ops-low
+    container_name: dashboard
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
       context: .
