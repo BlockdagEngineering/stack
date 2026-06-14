@@ -113,6 +113,43 @@ class UpdateLocalPeersActiveMiningGuardTest(unittest.TestCase):
         self.assertIn(["docker", "compose", "ps", "-q", "node"], calls)
         self.assertIn(["docker", "logs", "--tail", "5000", "compose-node-id"], calls)
 
+    def test_latest_peer_id_can_be_optional_when_listener_log_is_missing(self) -> None:
+        with mock.patch.object(update_local_peers, "docker_logs", return_value="P2P listener bound on 0.0.0.0:8150\n"):
+            self.assertEqual("", update_local_peers.latest_peer_id("node", required=False))
+
+    def test_latest_peer_id_uses_bounded_larger_tail_when_recent_logs_are_noisy(self) -> None:
+        with mock.patch.object(
+            update_local_peers,
+            "docker_logs",
+            side_effect=[
+                "Imported new chain segment\n" * 5000,
+                "P2P Service Start module=P2P peer_id=localPeer services=Full|CF\n",
+            ],
+        ) as docker_logs:
+            self.assertEqual("localPeer", update_local_peers.latest_peer_id("node", required=False))
+
+        docker_logs.assert_any_call("node", tail="5000", timeout=20)
+        docker_logs.assert_any_call("node", tail="20000", timeout=30)
+
+    def test_latest_peer_id_uses_all_logs_only_after_bounded_tails_miss(self) -> None:
+        with mock.patch.object(
+            update_local_peers,
+            "docker_logs",
+            side_effect=[
+                "Imported new chain segment\n" * 5000,
+                "Imported new chain segment\n" * 20000,
+                "P2P Service Start module=P2P peer_id=localPeer services=Full|CF\n",
+            ],
+        ) as docker_logs:
+            self.assertEqual("localPeer", update_local_peers.latest_peer_id("node", required=False))
+
+        docker_logs.assert_any_call("node", tail="all", timeout=45)
+
+    def test_latest_peer_id_still_fails_when_required(self) -> None:
+        with mock.patch.object(update_local_peers, "docker_logs", return_value="P2P listener bound on 0.0.0.0:8150\n"):
+            with self.assertRaisesRegex(RuntimeError, "could not find local peer ID"):
+                update_local_peers.latest_peer_id("node")
+
     def test_docker_top_detects_blockdag_node_child(self) -> None:
         output = "\n".join(
             [
@@ -130,16 +167,36 @@ class UpdateLocalPeersActiveMiningGuardTest(unittest.TestCase):
 
         with mock.patch.object(update_local_peers, "read_peer_file", return_value=[]):
             with mock.patch.object(update_local_peers, "node_peerstore_log_candidates", return_value=[]):
-                with mock.patch.object(update_local_peers, "peer_tcp_latency", return_value=(True, 1.0)):
-                    candidates = update_local_peers.p2p_peer_candidates(
-                        {
-                            "BDAG_NODE_PEER_ADDRESSES": generated_peer,
-                            "BOOTSTRAP_PEER_ADDRESSES": bootstrap_peer,
-                        }
-                    )
+                with mock.patch.object(update_local_peers, "ipfs_peer_roster_candidates", return_value=[]):
+                    with mock.patch.object(update_local_peers, "peer_tcp_latency", return_value=(True, 1.0)):
+                        candidates = update_local_peers.p2p_peer_candidates(
+                            {
+                                "BDAG_NODE_PEER_ADDRESSES": generated_peer,
+                                "BOOTSTRAP_PEER_ADDRESSES": bootstrap_peer,
+                            }
+                        )
 
         self.assertEqual([bootstrap_peer], candidates.peers)
         self.assertNotIn("BDAG_NODE_PEER_ADDRESSES", candidates.source_counts)
+
+    def test_local_peer_services_load_stack_env_file(self) -> None:
+        installer = (ROOT / "ops" / "install-p2p-services.sh").read_text(encoding="utf-8")
+        service = (ROOT / "ops" / "systemd" / "user-bdag-local-peers.service").read_text(encoding="utf-8")
+
+        self.assertIn("update-local-peers.py --env-file $ROOT/.env --apply", installer)
+        self.assertIn("update-local-peers.py --env-file /home/jeremy/blockdag-asic-pool/.env --apply", service)
+
+    def test_read_env_strips_shell_style_quotes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = pathlib.Path(tmp) / ".env"
+            env_file.write_text(
+                'BDAG_IPFS_PEER_ROSTER_ADD_ARGS="--cid-version=1 --pin=true --quieter"\n',
+                encoding="utf-8",
+            )
+
+            _lines, values = update_local_peers.read_env(env_file)
+
+        self.assertEqual("--cid-version=1 --pin=true --quieter", values["BDAG_IPFS_PEER_ROSTER_ADD_ARGS"])
 
     def test_curated_node_launch_peers_are_bounded_public_and_peer_id_deduped(self) -> None:
         peers = [
@@ -199,6 +256,7 @@ class UpdateLocalPeersActiveMiningGuardTest(unittest.TestCase):
             key_file.write_text(f"BDAG_IPFS_SEGMENT_SIGNING_KEY_HEX={seed}\n", encoding="utf-8")
             values = {
                 "BDAG_IPFS_SEGMENT_WRITER_ID": "writer-a",
+                "BDAG_LOCAL_NODE_PEER_ID": "local-node-peer",
                 "BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE": str(key_file),
                 "BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS": f"writer-a={public_hex}",
                 "BDAG_IPFS_PEER_ROSTER_INDEX_PATH": str(base / "peer-roster.json"),
@@ -227,6 +285,7 @@ class UpdateLocalPeersActiveMiningGuardTest(unittest.TestCase):
         self.assertEqual(roster["document_type"], "bdag_ipfs_peer_roster_v1")
         self.assertEqual(roster["network"], "mainnet")
         self.assertEqual(len(roster["peers"]), 1)
+        self.assertEqual(roster["writer"]["local_node_peer_id"], "local-node-peer")
         self.assertEqual(roster["peers"][0]["peer_id"], "peerOne")
         self.assertEqual(roster["peers"][0]["publication_filter"], "public_or_dns_stable_p2p_port_one_address_per_peer_id")
         verification = ipfs_segment_trust.verify_payload_signature(
@@ -239,6 +298,43 @@ class UpdateLocalPeersActiveMiningGuardTest(unittest.TestCase):
             context="unit-test roster",
         )
         self.assertEqual(verification["state"], "verified")
+
+    def test_publish_peer_roster_splits_quoted_ipfs_add_args(self) -> None:
+        seed = "00" * 32
+        private_key = ipfs_segment_trust.load_private_key(seed)
+        public_hex = ipfs_segment_trust.public_key_hex(private_key)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            key_file = base / "writer.key"
+            key_file.write_text(f"BDAG_IPFS_SEGMENT_SIGNING_KEY_HEX={seed}\n", encoding="utf-8")
+            values = {
+                "BDAG_IPFS_SEGMENT_WRITER_ID": "writer-a",
+                "BDAG_IPFS_SEGMENT_SIGNING_KEY_FILE": str(key_file),
+                "BDAG_IPFS_SEGMENT_TRUSTED_SIGNERS": f"writer-a={public_hex}",
+                "BDAG_IPFS_PEER_ROSTER_INDEX_PATH": str(base / "peer-roster.json"),
+                "BDAG_IPFS_PEER_ROSTER_STATUS_FILE": str(base / "peer-roster-status.json"),
+                "BDAG_IPFS_CONTENT_DISCOVERY_FILE": str(base / "discovery.json"),
+                "BDAG_IPFS_PEER_ROSTER_PUBLISH_IPFS": "1",
+                "BDAG_IPFS_PEER_ROSTER_ADD_ARGS": '"--cid-version=1 --pin=true --quieter"',
+            }
+            discovery = {
+                "peers": [
+                    {"status": "tcp-open", "multiaddr": "/ip4/13.57.132.47/tcp/8150/p2p/peerOne"},
+                ]
+            }
+            captured: dict[str, list[str]] = {}
+
+            def fake_ipfs_command(_values: dict[str, str], args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+                captured["args"] = args
+                return subprocess.CompletedProcess(["ipfs", *args], 0, stdout="bafk-roster\n", stderr="")
+
+            with mock.patch.object(update_local_peers, "ipfs_command", side_effect=fake_ipfs_command):
+                update_local_peers.publish_peer_roster(values, discovery)
+
+            status = json.loads((base / "peer-roster-status.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(["add", "--cid-version=1", "--pin=true", "--quieter", str(base / "peer-roster.json")], captured["args"])
+        self.assertEqual("published", status["state"])
 
 
 if __name__ == "__main__":

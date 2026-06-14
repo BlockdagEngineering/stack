@@ -206,7 +206,9 @@ ordered_bootstrap_peers() {
   config_file="${config_file:-/etc/bdagStack/node.conf}"
   config_peers="$(config_addpeer_values "$config_file" | paste -sd, - || true)"
 
-  generic_peers="${BOOTSTRAP_PEER_ADDRESSES:-} $config_peers ${BDAG_NODE_PEER_ADDRESSES:-} $(addpeer_values "$node_args" | paste -sd, - || true)"
+  # Prefer the current installer/roster-discovered peers. Bundled config and
+  # bootstrap peers are fallbacks and may be stale on a long-lived release.
+  generic_peers="${BDAG_NODE_PEER_ADDRESSES:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $config_peers $(addpeer_values "$node_args" | paste -sd, - || true)"
   append_peer_list bootstrap_peers "$generic_peers"
 
   join_peer_array
