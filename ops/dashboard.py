@@ -75,6 +75,8 @@ DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS = max(
 DASHBOARD_DIRECT_STATUS_FALLBACK = os.environ.get(
     "BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
+DASHBOARD_COLLECTOR_API = os.environ.get("BDAG_COLLECTOR_API", "").strip().rstrip("/")
+DASHBOARD_COLLECTOR_STATUS_TIMEOUT = float(os.environ.get("BDAG_DASHBOARD_COLLECTOR_STATUS_TIMEOUT", "15"))
 EARNINGS_SAMPLER_ENABLED = os.environ.get("BDAG_DASHBOARD_EARNINGS_SAMPLER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 EARNINGS_SAMPLER_INTERVAL_SECONDS = max(
     30.0,
@@ -229,6 +231,27 @@ def cached_status_for_dashboard(include_logs: bool = True) -> tuple[dict[str, ob
             shared_diag["stale"] = payload is not None
 
     return None, diagnostics
+
+
+def collector_status_for_dashboard() -> dict[str, object] | None:
+    if not DASHBOARD_COLLECTOR_API:
+        return None
+    url = f"{DASHBOARD_COLLECTOR_API}/api/status"
+    try:
+        request = Request(url, headers={"accept": "application/json"})
+        with urlopen(request, timeout=DASHBOARD_COLLECTOR_STATUS_TIMEOUT) as response:
+            payload = json.loads(response.read(5_000_000).decode("utf-8", "replace"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    result = dict(payload)
+    result["dashboard_collector_api"] = {
+        "hit": True,
+        "url": url,
+        "timeout_seconds": DASHBOARD_COLLECTOR_STATUS_TIMEOUT,
+    }
+    return result
 
 
 def rounded_wait_seconds(seconds: float) -> int:
@@ -821,10 +844,15 @@ def enrich_status_with_template_backend_state(payload: dict[str, object]) -> dic
 
 
 def dashboard_status_payload() -> dict[str, object]:
+    collector_payload = collector_status_for_dashboard()
+    if collector_payload is not None:
+        return attach_dashboard_endpoint(collector_payload)
+
+    cached, diagnostics = cached_status_for_dashboard(include_logs=True)
+    if cached is not None:
+        return attach_dashboard_endpoint(cached)
+
     if not DASHBOARD_DIRECT_STATUS_FALLBACK:
-        cached, diagnostics = cached_status_for_dashboard(include_logs=True)
-        if cached is not None:
-            return attach_dashboard_endpoint(cached)
         return dashboard_status_fast_fallback(diagnostics)
 
     payload = enrich_status_with_template_backend_state(enrich_status_with_sync_estimate(collect_status_cached(include_logs=True)))
