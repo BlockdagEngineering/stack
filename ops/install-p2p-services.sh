@@ -158,7 +158,7 @@ IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 CPUWeight=25
 IOWeight=25
-ExecStart=$ROOT/ops/update-local-peers.py --apply
+ExecStart=$ROOT/ops/update-local-peers.py --env-file $ROOT/.env --apply
 EOF
   install -m 0644 "$ROOT/ops/systemd/user-bdag-local-peers.timer" "$user_systemd_dir/bdag-local-peers.timer"
   systemctl --user daemon-reload
@@ -340,7 +340,7 @@ BDAG_IPFS_SEGMENT_RPC_TIMEOUT=$(env_value BDAG_IPFS_SEGMENT_RPC_TIMEOUT 8)
 BDAG_IPFS_SEGMENT_BLOCK_RPC_RETRIES=$(env_value BDAG_IPFS_SEGMENT_BLOCK_RPC_RETRIES 2)
 BDAG_CHAIN_REFERENCE_RPC_URL=$(env_value BDAG_CHAIN_REFERENCE_RPC_URL "")
 BDAG_IPFS_SEGMENT_REFERENCE_RPC_URL=$(env_value BDAG_IPFS_SEGMENT_REFERENCE_RPC_URL "")
-BDAG_PUBLIC_RPC_URLS=$(env_value BDAG_PUBLIC_RPC_URLS "$BDAG_PUBLIC_RPC_URLS")
+BDAG_PUBLIC_RPC_URLS=$(env_value BDAG_PUBLIC_RPC_URLS "${BDAG_PUBLIC_RPC_URLS:-blockdag-engineering-rpc=https://rpc.blockdag.engineering,bdagscan-rpc=https://rpc.bdagscan.com}")
 BDAG_IPFS_SEGMENT_PUBLISH_IPNS=$(env_value BDAG_IPFS_SEGMENT_PUBLISH_IPNS auto)
 BDAG_IPFS_SEGMENT_IPNS_KEY=$(env_value BDAG_IPFS_SEGMENT_IPNS_KEY "")
 BDAG_IPFS_SEGMENT_RESTORE_DIR=$(env_value BDAG_IPFS_SEGMENT_RESTORE_DIR "$ROOT/ops/runtime/ipfs-segment-restore-drills")

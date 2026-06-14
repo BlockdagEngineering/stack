@@ -25,6 +25,12 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
         "EXTRA_PEER_ADDRESSES",
         "P2P_PORT",
         "PEER_ADDRESSES",
+        "BDAG_NETWORK_TOPOLOGY",
+        "BDAG_DETECTED_NETWORK_TOPOLOGY",
+        "BDAG_ASIC_LAN_ENABLED",
+        "BDAG_ASIC_LAN_INTERFACE",
+        "BDAG_ASIC_LAN_CIDRS",
+        "BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED",
     )
 
     def setUp(self) -> None:

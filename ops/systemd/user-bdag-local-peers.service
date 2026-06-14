@@ -10,4 +10,4 @@ IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 CPUWeight=25
 IOWeight=25
-ExecStart=/home/jeremy/blockdag-asic-pool/ops/update-local-peers.py --apply
+ExecStart=/home/jeremy/blockdag-asic-pool/ops/update-local-peers.py --env-file /home/jeremy/blockdag-asic-pool/.env --apply

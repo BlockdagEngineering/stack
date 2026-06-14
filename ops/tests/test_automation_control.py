@@ -406,7 +406,7 @@ class AutomationControlTests(unittest.TestCase):
         calls: list[str] = []
         events: list[tuple[str, str, str]] = []
 
-        def fake_record(event_type: str, severity: str, message: str, details=None) -> None:
+        def fake_record(event_type: str, severity: str, component: str, message: str, details=None) -> None:
             events.append((event_type, severity, message))
 
         with self.patch_default_control_paths(), unittest.mock.patch.object(
@@ -432,13 +432,13 @@ class AutomationControlTests(unittest.TestCase):
     def test_watchdog_suppresses_asic_miner_restart_when_control_missing(self) -> None:
         events: list[tuple[str, str, str]] = []
 
-        def fake_record(event_type: str, severity: str, message: str, details=None) -> None:
+        def fake_record(event_type: str, severity: str, component: str, message: str, details=None) -> None:
             events.append((event_type, severity, message))
 
         with self.patch_default_control_paths(), unittest.mock.patch.object(
             watchdog, "log", lambda _message: None
         ), unittest.mock.patch.object(
-            watchdog, "record_efficiency_event", fake_record
+            guard_core, "append_incident", fake_record
         ), unittest.mock.patch.object(
             watchdog, "read_miner_admin_password", side_effect=AssertionError("password should not be read")
         ), unittest.mock.patch.object(

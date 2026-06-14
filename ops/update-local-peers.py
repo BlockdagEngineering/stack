@@ -9,6 +9,7 @@ import ipaddress
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -34,7 +35,7 @@ NODE_SPECS = {
 NODE_PEER_ID_ENV = {
     "node": ("BDAG_LOCAL_NODE_PEER_ID", "BDAG_NODE_PEER_ID"),
 }
-PEER_RE = re.compile(r"Node started p2p server.*?/p2p/([A-Za-z0-9]+)")
+PEER_RE = re.compile(r"(?:Node started p2p server.*?/p2p/|P2P Service Start.*?peer_id=)([A-Za-z0-9]+)")
 ADDR_RE = re.compile(r"/ip4/[^,\s]+/tcp/(\d+)/p2p/([A-Za-z0-9]+)")
 PEER_RE_FULL = re.compile(r"/(?:ip4|ip6|dns|dns4|dns6)/([^/]+)/tcp/(\d+)/p2p/([^,\s]+)")
 PEERSTORE_LOG_RE = re.compile(r"Try to connect from peer store:\{([^:]+): \[([^\]]*)\]}")
@@ -255,7 +256,7 @@ def read_env(path: Path) -> tuple[list[str], dict[str, str]]:
         if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
         key, value = stripped.split("=", 1)
-        values[key.strip()] = value.strip()
+        values[key.strip()] = strip_env_quotes(value.strip())
     return lines, values
 
 
@@ -286,8 +287,14 @@ def write_env(path: Path, lines: list[str], updates: dict[str, str]) -> None:
     path.write_text("\n".join(output) + "\n")
 
 
+def strip_env_quotes(value: str) -> str:
+    if len(value) >= 2 and ((value[0] == value[-1] == '"') or (value[0] == value[-1] == "'")):
+        return value[1:-1]
+    return value
+
+
 def env_value(values: dict[str, str], key: str, default: str = "") -> str:
-    return values.get(key) or os.environ.get(key) or default
+    return strip_env_quotes(values.get(key) or os.environ.get(key) or default)
 
 
 def peer_source_value(values: dict[str, str], key: str) -> str:
@@ -312,6 +319,13 @@ def split_peer_csv(value: str) -> list[str]:
         if peer:
             peers.append(peer)
     return peers
+
+
+def split_shell_words(value: str) -> list[str]:
+    try:
+        return shlex.split(value or "")
+    except ValueError:
+        return split_peer_csv(value)
 
 
 def peer_values(values: dict[str, str], keys: tuple[str, ...]) -> list[str]:
@@ -1045,7 +1059,7 @@ def publish_peer_roster(values: dict[str, str], discovery: dict[str, object]) ->
         write_peer_roster_status(values, "ready", peer_count=len(roster.get("peers") or []), index_path=str(index_path))
         return
 
-    add_args = split_peer_csv(env_value(values, "BDAG_IPFS_PEER_ROSTER_ADD_ARGS", "--cid-version=1 --pin=true --quieter"))
+    add_args = split_shell_words(env_value(values, "BDAG_IPFS_PEER_ROSTER_ADD_ARGS", "--cid-version=1 --pin=true --quieter"))
     timeout = safe_int(env_value(values, "BDAG_IPFS_PEER_ROSTER_IPFS_TIMEOUT", "20"), 20)
     proc = ipfs_command(values, ["add", *add_args, str(index_path)], timeout=timeout)
     if proc.returncode != 0:
@@ -1072,7 +1086,7 @@ def publish_peer_roster(values: dict[str, str], discovery: dict[str, object]) ->
     )
 
 
-def latest_peer_id(container: str, fallback: str | None = None) -> str:
+def latest_peer_id(container: str, fallback: str | None = None, *, required: bool = True) -> str:
     if fallback:
         return fallback
     try:
@@ -1080,11 +1094,27 @@ def latest_peer_id(container: str, fallback: str | None = None) -> str:
     except Exception as exc:
         if fallback:
             return fallback
+        if not required:
+            return ""
         raise RuntimeError(str(exc)) from exc
     matches = PEER_RE.findall(logs)
     if not matches:
+        try:
+            logs = docker_logs(container, tail="20000", timeout=30)
+        except Exception:
+            logs = ""
+        matches = PEER_RE.findall(logs)
+    if not matches:
+        try:
+            logs = docker_logs(container, tail="all", timeout=45)
+        except Exception:
+            logs = ""
+        matches = PEER_RE.findall(logs)
+    if not matches:
         if fallback:
             return fallback
+        if not required:
+            return ""
         raise RuntimeError(f"could not find local peer ID in recent logs for {container}")
     return matches[-1]
 
@@ -1273,7 +1303,9 @@ def main() -> int:
     fallback_peers = fallback_peer_ids(values)
     peers: dict[str, str] = {}
     for node in active_nodes:
-        peers[node] = latest_peer_id(node, fallback=fallback_peers.get(node))
+        peer_id = latest_peer_id(node, fallback=fallback_peers.get(node), required=False)
+        if peer_id:
+            peers[node] = peer_id
     inactive_local_peer_ids = {
         peer_id
         for node, peer_id in fallback_peers.items()
@@ -1286,7 +1318,10 @@ def main() -> int:
         host_ip,
     )
     peer_discovery = write_peer_discovery_artifacts(peer_candidates, remote_candidate_peers)
-    publish_peer_roster(values, peer_discovery)
+    publish_values = dict(values)
+    if peers.get("node"):
+        publish_values["BDAG_LOCAL_NODE_PEER_ID"] = peers["node"]
+    publish_peer_roster(publish_values, peer_discovery)
 
     p2p_port = configured_p2p_port(values)
     local_addrs = {

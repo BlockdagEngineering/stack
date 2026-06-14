@@ -82,6 +82,8 @@ FILES=(
   "ops/tests/test_optimization_measurement.py"
   "ops/tests/test_compose_migrations.py"
   "ops/tests/test_status_sampler_mining_imperative.py"
+  "ops/tests/test_stack_defaults.py"
+  "ops/tests/test_stack_naming_coherence.py"
   "ops/tests/test_node_child_guard.py"
   "ops/tests/test_stack_defaults.py"
   "ops/tests/test_stack_naming_coherence.py"
@@ -371,6 +373,7 @@ migrate_runtime_compose() {
   for key in \
     POOL_SUBMIT_STALE_BLOCK_CANDIDATES \
     POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED \
+    POOL_AUTO_TUNE_BLOCK_CANDIDATE_JOB_AGE \
     POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD
   do
     if ! grep -q "${key}:" "$compose"; then

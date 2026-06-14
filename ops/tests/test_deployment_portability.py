@@ -89,6 +89,10 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("BDAG_POOL_DB_CONTAINER: postgres", compose)
         self.assertIn("BDAG_NODE_RPC_URL: http://node:38131", compose)
         self.assertIn("BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://collector:9280}", dashboard_block)
+        self.assertIn("BDAG_DASHBOARD_PORT: 8088", dashboard_block)
+        self.assertIn("ADDR: ${DASHBOARD_LISTEN:-0.0.0.0:8088}", dashboard_block)
+        self.assertIn('"${DASHBOARD_BIND:-0.0.0.0}:${DASHBOARD_HOST_PORT:-8088}:8088"', dashboard_block)
+        self.assertNotIn(":9290", dashboard_block)
         self.assertNotIn("DASHBOARD_EVM_RPC_URL:", compose)
         self.assertNotIn("BDAG_RPC_URL: http://node:38131", compose)
         self.assertNotIn("collector: { condition: service_started }", dashboard_block)
@@ -123,20 +127,21 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
                 for default in default_re.finditer(line):
                     self.assertEqual(default.group(1), "mainnet", f"{path}:{line_no}: {line}")
 
-    def test_dashboard_image_uses_checked_out_dashboard_context(self) -> None:
+    def test_release_collector_image_uses_packaged_collector_source(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfile = (ROOT_DIR / "dockerfile").read_text(encoding="utf-8")
         dockerfile_dev = (ROOT_DIR / "dockerfile-dev").read_text(encoding="utf-8")
-        release_dashboard_block = dockerfile.split("FROM docker:27-cli AS dashboard", 1)[1]
-        dev_dashboard_block = dockerfile_dev.split("FROM docker:27-cli AS dashboard", 1)[1]
+        release_dashboard_block = dockerfile.split("FROM ubuntu:24.04 AS dashboard", 1)[1]
+        dev_dashboard_block = dockerfile_dev.split("FROM ubuntu:24.04 AS dashboard", 1)[1]
 
-        self.assertIn("dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../dashboard}", compose)
+        self.assertIn("dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../dashboard2}", compose)
         self.assertIn("collector_src: ${COLLECTOR_SRC_CONTEXT:-../collector}", compose)
-        self.assertIn("COPY dashboard-source /opt/dashboard", dockerfile)
-        self.assertIn("entrypoint-dashboard.sh", dockerfile)
+        self.assertIn("COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard", dockerfile)
+        self.assertIn('ENTRYPOINT ["/usr/local/bin/dashboard"]', dockerfile)
         self.assertIn("COPY --from=collector_src . /opt/collector", dockerfile)
-        self.assertIn("COPY --from=dashboard_src . /src/dashboard", dockerfile_dev)
-        self.assertIn("COPY --from=dashboard-source /src/dashboard /opt/dashboard", dockerfile_dev)
+        self.assertIn("COPY --from=dashboard_src . .", dockerfile_dev)
+        self.assertIn("go build -trimpath -o /out/dashboard .", dockerfile_dev)
+        self.assertIn("COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard", dockerfile_dev)
         self.assertNotIn("requirements-dev.txt", release_dashboard_block)
         self.assertNotIn("requirements-dev.txt", dev_dashboard_block)
 
@@ -165,7 +170,9 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
 
         self.assertGreaterEqual(compose.count("/var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777"), 4)
-        self.assertIn("cpu_shares: ${BDAG_POOL_DB_CPU_SHARES:-4096}", compose)
+        self.assertIn("cpu_shares: 4096", compose)
+        self.assertIn("cpu_shares: 3072", compose)
+        self.assertIn("cpu_shares: 256", compose)
         self.assertGreaterEqual(compose.count("TMPDIR: /tmp"), 5)
         self.assertGreaterEqual(compose.count("TMP: /tmp"), 5)
         self.assertGreaterEqual(compose.count("TEMP: /tmp"), 5)
@@ -173,20 +180,17 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
     def test_compose_mounts_configured_persistent_data_paths(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
 
-        self.assertIn("${BDAG_POSTGRES_DATA_DIR:-./data/postgres}:/var/lib/postgresql/data", compose)
-        self.assertIn("${BDAG_NODE_DATA_DIR:-./data/node}:/var/lib/bdagStack/node", compose)
-        self.assertIn("${BDAG_NODEWORKER_DATA_DIR:-./data/nodeworker}:/var/lib/bdagStack/nodeworker", compose)
-        self.assertNotIn("postgres-data:/var/lib/postgresql/data", compose)
-        self.assertNotIn("node-data:/var/lib/bdagStack/node", compose)
-        self.assertNotIn("nodeworker-data:/var/lib/bdagStack/nodeworker", compose)
+        self.assertIn("postgres-data:/var/lib/postgresql/data", compose)
+        self.assertIn("${NODE_DATA_DIR:-node-data}:/var/lib/bdagStack/node", compose)
+        self.assertIn("nodeworker-data:/var/lib/bdagStack/nodeworker", compose)
+        self.assertIn("  postgres-data:", compose)
+        self.assertIn("  node-data:", compose)
+        self.assertIn("  nodeworker-data:", compose)
 
-    def test_compose_has_one_pool_node_health_enabled_key(self) -> None:
-        compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+    def test_pool_node_health_defaults_live_in_stack_defaults(self) -> None:
+        stack_defaults = (ROOT_DIR / "ops" / "config" / "stack-defaults.env").read_text(encoding="utf-8")
 
-        self.assertEqual(
-            1,
-            compose.count("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED: ${POOL_RPC_ROUTER_NODE_HEALTH_ENABLED:-true}"),
-        )
+        self.assertEqual(1, stack_defaults.count("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true"))
 
     def test_p2p_installer_env_value_prints_resolved_value(self) -> None:
         installer = (ROOT_DIR / "ops" / "install-p2p-services.sh").read_text(encoding="utf-8")
@@ -196,15 +200,12 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertNotIn("strip_env_quotes \"$value\"\n  printf '\\n'", installer)
 
     def test_pool_node_health_gate_is_enabled_by_default(self) -> None:
-        compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+        stack_defaults = (ROOT_DIR / "ops" / "config" / "stack-defaults.env").read_text(encoding="utf-8")
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
         stack_defaults = (ROOT_DIR / "ops" / "config" / "stack-defaults.env").read_text(encoding="utf-8")
         validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
 
-        self.assertIn(
-            "POOL_RPC_ROUTER_NODE_HEALTH_ENABLED: ${POOL_RPC_ROUTER_NODE_HEALTH_ENABLED:-true}",
-            compose,
-        )
+        self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true", stack_defaults)
         self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true", env_example)
         self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true", stack_defaults)
         self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=", validator)

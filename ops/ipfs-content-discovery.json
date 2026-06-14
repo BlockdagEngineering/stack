@@ -21,18 +21,18 @@
   "current_latest_index_cid": "bafkreia7jk2ljqi3raiohugp6nw3633njfp7jmnuvqh47po52et4kupu2a",
   "current_latest_index_uri": "ipfs://bafkreia7jk2ljqi3raiohugp6nw3633njfp7jmnuvqh47po52et4kupu2a",
   "current_peer_roster": {
-    "cid": "bafkreig5hkb2msuvajtksjpgarupairtj3xapi2irnpzobrk3hzjdqqikq",
+    "cid": "bafkreicludspkcl6dqhiqialbqr2pfj6p2w6ylxdvxgka2p7wpbx6wzwka",
     "document_type": "bdag_ipfs_peer_roster_v1",
-    "generated_at": "2026-06-11T03:46:40+0200",
+    "generated_at": "2026-06-15T00:56:29+0200",
     "network": "mainnet",
-    "peer_count": 19,
+    "peer_count": 18,
     "writer": {
-      "local_node_peer_id": "16Uiu2HAmVp9qrJtRd1sTZqC75j6mYGkhmvgsAsTiZJLvEaafVeXV",
+      "local_node_peer_id": "16Uiu2HAmT4Mzzae19BqdDGPsjGhP7jUZiQVHsSW4ThxjLMFRAg9G",
       "writer_id": "12D3KooWJtpA8vo7W9eR7A4LVLUTETLtZESx4gT2h1Cx12f7BfCj"
     }
   },
-  "current_peer_roster_cid": "bafkreig5hkb2msuvajtksjpgarupairtj3xapi2irnpzobrk3hzjdqqikq",
-  "current_peer_roster_uri": "ipfs://bafkreig5hkb2msuvajtksjpgarupairtj3xapi2irnpzobrk3hzjdqqikq",
+  "current_peer_roster_cid": "bafkreicludspkcl6dqhiqialbqr2pfj6p2w6ylxdvxgka2p7wpbx6wzwka",
+  "current_peer_roster_uri": "ipfs://bafkreicludspkcl6dqhiqialbqr2pfj6p2w6ylxdvxgka2p7wpbx6wzwka",
   "document_type": "bdag_ipfs_content_discovery_v1",
   "ipns_publish_policy": {
     "dht_persistence_note": "IPNS DHT records must be republished periodically; a long record lifetime is not a substitute for maintenance republish.",
@@ -46,7 +46,7 @@
     "ttl": "1m"
   },
   "network": "mainnet",
-  "peer_roster_latest_cid": "bafkreig5hkb2msuvajtksjpgarupairtj3xapi2irnpzobrk3hzjdqqikq",
+  "peer_roster_latest_cid": "bafkreicludspkcl6dqhiqialbqr2pfj6p2w6ylxdvxgka2p7wpbx6wzwka",
   "peer_roster_trust_model": "Peer rosters are signed bootstrap hints only. Consumers must verify the roster signature before use, TCP-probe candidates, and still rely on live chain consensus for block validity.",
   "provider": {
     "kubo_peer_id": "12D3KooWJtpA8vo7W9eR7A4LVLUTETLtZESx4gT2h1Cx12f7BfCj",
@@ -58,5 +58,5 @@
   "stable_latest_ipns_name": "/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk",
   "stable_latest_ipns_uri": "ipns://k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk",
   "trust_model": "IPFS and IPNS are byte-transport discovery hints only. Receivers must verify signed manifests, network, genesis, tip, state root, and normal consensus before using data.",
-  "updated_at": "2026-06-11T03:46:40+0200"
+  "updated_at": "2026-06-15T00:56:29+0200"
 }

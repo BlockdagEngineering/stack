@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "ops"))
 
-from pool_ops import configure_miners, scan_miners  # noqa: E402
+from pool_ops import configure_miners, save_miner_admin_password, scan_miners  # noqa: E402
 
 
 def yes_no(prompt: str, default: bool = False) -> bool:
@@ -71,6 +71,9 @@ def main() -> int:
     password = args.admin_password
     if not password:
         password = getpass.getpass("ASIC admin password: ")
+    if password and (args.yes or yes_no("Save the admin password so the watchdog can restart miners automatically?", default=True)):
+        saved = save_miner_admin_password(password)
+        print(f"Admin password saved for watchdog repairs: {saved['path']}")
 
     all_results = []
     for miner in miners:

@@ -18,7 +18,7 @@ Multi-context repo with shared context in sibling `../codex-memory`; read that m
 
 
 The only dashboard repository for this release candidate is
-`BlockdagEngineering/dashboard`. Release builds must always use its `develop`
+`BlockdagEngineering/dashboard2`. Release builds must always use its `main`
 branch.
 
 Do not reintroduce the retired standalone read-only dashboard, command-center

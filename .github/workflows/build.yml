@@ -69,10 +69,44 @@ jobs:
       - name: Checkout dashboard repo
         uses: actions/checkout@v4
         with:
-          repository: BlockdagEngineering/dashboard
+          repository: BlockdagEngineering/dashboard2
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/dashboard
           ref: jeremy-dev
+
+      - name: Checkout collector repo
+        uses: actions/checkout@v4
+        with:
+          repository: BlockdagEngineering/collector
+          token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
+          path: src/collector
+          ref: develop
+
+      - name: Verify upstream checkouts
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify_repo() {
+            local name="$1"
+            shift
+            for path in "$@"; do
+              if [[ -f "$path" ]]; then
+                echo "ok: $name ($path)"
+                return 0
+              fi
+            done
+            echo "::error::Upstream checkout '$name' missing expected files: $*"
+            return 1
+          }
+          verify_repo blockdag-corechain src/blockdag-node/cmd/bdag/bdag.go
+          verify_repo pool src/pool/cmd/pool/main.go
+          verify_repo dashboard2 src/dashboard/main.go
+          collector_entry="$(find src/collector -type f -name collector.py -not -path '*/.git/*' -print -quit)"
+          if [[ -z "${collector_entry}" ]]; then
+            echo "::error::Upstream checkout 'collector' missing collector.py"
+            exit 1
+          fi
+          echo "ok: collector (collector.py)"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -128,8 +162,21 @@ jobs:
           cp -f ./build/bin/pool ../../bin/mining-pool
           cp -f ./build/bin/dashboard-api ../../bin/dashboard-api
 
+      - name: Build dashboard
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd src/dashboard
+          common_env=(
+            GOOS=linux
+            GOARCH=${{ matrix.goarch }}
+            CGO_ENABLED=0
+            GOFLAGS=-buildvcs=false
+          )
+          env "${common_env[@]}" go build -buildvcs=false -trimpath -o ../../bin/dashboard .
+
       - name: Ensure executables
-        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api
+        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api bin/dashboard
 
       - name: Verify release architecture
         shell: bash
@@ -138,15 +185,20 @@ jobs:
             bin/blockdag-node \
             bin/nodeworker \
             bin/mining-pool \
-            bin/dashboard-api
+            bin/dashboard-api \
+            bin/dashboard
 
       - name: Generate checksums
         shell: bash
         run: |
-          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api > checksums.txt
+          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api bin/dashboard > checksums.txt
 
       - name: Validate compose (pool Dockerfile)
         shell: bash
+        env:
+          # docker-compose.yml hard-fails (:?) without the absolute checkout path
+          # for the watchdog/sentinel services.
+          BDAG_STACK_HOST_ROOT: ${{ github.workspace }}
         run: |
           set -euo pipefail
           test -f .env.example
@@ -183,16 +235,38 @@ jobs:
           mkdir "${ROOT}"
           cp docker-compose.yml dockerfile .dockerignore .env.example node.conf.example README.md checksums.txt release-payload.env "${ROOT}/"
           echo "${VERSION}" > "${ROOT}/version.txt"
-          cp scripts/release/install.sh scripts/release/install.ps1 scripts/release/install.cmd "${ROOT}/"
+          cp scripts/release/install.sh scripts/release/install-node.sh scripts/release/install.ps1 scripts/release/install.cmd "${ROOT}/"
           cp -a scripts/release/installers "${ROOT}/installers"
           cp -a bin sql docker scripts asic-pool tools "${ROOT}/"
-          rsync -a --delete --exclude='.git/' --exclude='.github/' --exclude='.pytest_cache/' --exclude='__pycache__/' --exclude='*.pyc' src/dashboard/ "${ROOT}/dashboard-source/"
           rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
           chmod +x "${ROOT}/install.sh" "${ROOT}/installers/"*.sh
 
-          python3 scripts/release_install_smoke.py --package-root "${ROOT}"
+
+          # Earlier test steps generate scripts/__pycache__ in the workspace;
+          # check-release-archive.py rejects cache dirs inside the zip.
+          rsync -a --exclude='__pycache__/' --exclude='*.pyc' scripts "${ROOT}/"
+          rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
+          chmod +x "${ROOT}/install.sh" "${ROOT}/install-node.sh" "${ROOT}/installers/"*.sh
+
+          # Smoke-test a disposable copy: install.sh writes .env and __pycache__,
+          # which check-release-archive.py rejects if they leak into the zip.
+          rm -rf smoke-root
+          cp -a "${ROOT}" smoke-root
+          python3 scripts/release_install_smoke.py --package-root smoke-root
+          rm -rf smoke-root
 
           zip -qr "${OUT}" "${ROOT}"
+          python3 - "${OUT}" "${ROOT}" <<'PY'
+          import sys
+          import zipfile
+
+          archive, root = sys.argv[1], sys.argv[2]
+          needle = f"{root}/collector/collector.py"
+          with zipfile.ZipFile(archive) as zf:
+              if needle not in zf.namelist():
+                  print("::error::Release zip is missing collector.py")
+                  raise SystemExit(1)
+          PY
           python3 scripts/check-release-archive.py "${OUT}"
           sha256sum "${OUT}" > "${OUT_SHA256}"
           rm -rf "${ROOT}"
@@ -261,7 +335,6 @@ jobs:
             release-assets/pool-stack-docker-*.zip
             release-assets/pool-stack-docker-*.zip.sha256
             release-assets/install.sh
-            release-assets/install.ps1
             release-assets/version.txt
           draft: false
           prerelease: false

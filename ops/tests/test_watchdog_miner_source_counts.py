@@ -237,6 +237,76 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
 
         self.assertEqual([], watchdog.asic_api_stall_primary_miners(status, stale_seconds=180))
 
+    def test_watchdog_repairs_stale_asic_mac_override_environment(self) -> None:
+        status = {
+            "failures": [],
+            "stack_failures": [],
+            "miner_failures": [],
+            "overall": "ok",
+            "mode": "mining",
+            "warnings": [],
+            "degraded_reasons": [],
+            "mining_address": ADDRESS,
+            "nodes": {},
+            "sync_health": {},
+            "sync_progress": {"status": "synced", "remaining_blocks": 0, "nodes": {}},
+            "pool_health": {"initial_download": False, "job_notify_count": 1, "valid_share_count": 4},
+            "miner_health": {
+                "connected_count": 2,
+                "connected_count_effective": 2,
+                "managed_count": 2,
+                "miners": [
+                    {
+                        "ip": "192.168.1.100",
+                        "mac": "28:e2:97:1e:c0:b5",
+                        "device_type": "asic",
+                        "managed": True,
+                        "connected": True,
+                    },
+                    {
+                        "ip": "192.168.1.105",
+                        "mac": "28:e2:97:4d:44:3a",
+                        "device_type": "asic",
+                        "managed": True,
+                        "connected": True,
+                    },
+                ],
+            },
+        }
+        events: list[tuple[str, str, str, dict[str, object]]] = []
+        written: list[dict[str, object]] = []
+
+        def record(event_type: str, severity: str, message: str, details=None) -> None:
+            events.append((event_type, severity, message, details or {}))
+
+        with mock.patch.object(watchdog, "read_state", return_value={}), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "status_payload_needs_asic_mac_override_repair", return_value=True
+        ), mock.patch.object(
+            watchdog, "repair_pool_asic_mac_overrides", return_value=True
+        ) as repair_mac, mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", side_effect=record
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        repair_mac.assert_called_once_with(status)
+        self.assertIn("last_asic_mac_override_repair_at", result["watchdog_state"])
+        self.assertTrue(any(event[0] == "watchdog_repaired_pool_asic_mac_overrides" for event in events))
+        self.assertTrue(written)
+
     def test_api_stall_watchdog_restarts_one_asic_open_first_after_confirmation(self) -> None:
         row = api_stalled_asic_row()
         status = {
@@ -266,7 +336,7 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         with mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
             watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
         ), mock.patch.object(
-            watchdog, "collect_status_cached", return_value=status
+            watchdog, "collect_stack_status", return_value=status
         ), mock.patch.object(
             watchdog, "lock_is_held", return_value=False
         ), mock.patch.object(
@@ -335,7 +405,7 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         with mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
             watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
         ), mock.patch.object(
-            watchdog, "collect_status_cached", return_value=status
+            watchdog, "collect_stack_status", return_value=status
         ), mock.patch.object(
             watchdog, "lock_is_held", return_value=False
         ), mock.patch.object(

@@ -309,8 +309,8 @@ DATA_DIR = path_from_env("BDAG_DATA_DIR", PROJECT_ROOT / "data", PROJECT_ROOT)
 POOL_CONTAINER = os.environ.get("BDAG_POOL_CONTAINER", "pool")
 POOL_CONTAINERS = unique_names([POOL_CONTAINER, *split_env_list("BDAG_POOL_CONTAINERS", "")])
 POOL_DB_CONTAINER = os.environ.get("BDAG_POOL_DB_CONTAINER", "postgres")
-POOL_DB_USER = os.environ.get("BDAG_POOL_DB_USER", "test")
-POOL_DB_NAME = os.environ.get("BDAG_POOL_DB_NAME", "pool")
+POOL_DB_USER = os.environ.get("BDAG_POOL_DB_USER", os.environ.get("POSTGRES_USER", "bdag_pool"))
+POOL_DB_NAME = os.environ.get("BDAG_POOL_DB_NAME", os.environ.get("POSTGRES_DB", "bdagpool"))
 NODE_SERVICE = single_env_value("BDAG_NODE_SERVICE", "node")
 NODES = [NODE_SERVICE]
 OBSERVER_NODES: list[str] = []
@@ -470,6 +470,8 @@ EARNINGS_HISTORY_RETENTION_SECONDS = int(os.environ.get("BDAG_EARNINGS_HISTORY_R
 EARNINGS_DASHBOARD_HISTORY_SECONDS = int(os.environ.get("BDAG_EARNINGS_DASHBOARD_HISTORY_SECONDS", str(31 * 86400)))
 EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_EARNINGS_SNAPSHOT_INTERVAL_SECONDS", "60"))
 EARNINGS_ONCHAIN_CACHE_SECONDS = int(os.environ.get("BDAG_EARNINGS_ONCHAIN_CACHE_SECONDS", "120"))
+EARNINGS_ONCHAIN_WINDOW_ENABLED = env_bool("BDAG_EARNINGS_ONCHAIN_WINDOW_ENABLED", True)
+LOCAL_EVM_BALANCE_PROBE_ENABLED = env_bool("BDAG_LOCAL_EVM_BALANCE_PROBE_ENABLED", True)
 LOCAL_EVM_BALANCE_PROBE_PAUSE_DURING_SYNC = env_bool("BDAG_LOCAL_EVM_BALANCE_PROBE_PAUSE_DURING_SYNC", True)
 LOCAL_EVM_BALANCE_PROBE_STATUS_MAX_AGE_SECONDS = env_float(
     "BDAG_LOCAL_EVM_BALANCE_PROBE_STATUS_MAX_AGE_SECONDS",
@@ -8364,6 +8366,12 @@ def evm_reference_rpc_urls() -> list[tuple[str, str]]:
     return public_evm_rpc_urls()
 
 
+def local_evm_balance_rpc_urls() -> list[tuple[str, str]]:
+    if not LOCAL_EVM_BALANCE_PROBE_ENABLED:
+        return []
+    return global_evm_rpc_urls()
+
+
 def local_evm_balance_probe_pause_from_status(status: Mapping[str, Any]) -> dict[str, Any]:
     reasons: list[str] = []
     overall = str(status.get("overall") or "").strip().lower()
@@ -8405,6 +8413,9 @@ def local_evm_balance_probe_pause_from_status(status: Mapping[str, Any]) -> dict
 
 
 def local_evm_balance_probe_pause() -> dict[str, Any]:
+    if not LOCAL_EVM_BALANCE_PROBE_ENABLED:
+        reason = "local EVM balance probes are disabled"
+        return {"paused": True, "reason": reason, "reasons": [reason]}
     if not LOCAL_EVM_BALANCE_PROBE_PAUSE_DURING_SYNC:
         return {"paused": False, "reason": "", "reasons": []}
     status = read_status_sampler_payload(
@@ -12138,13 +12149,26 @@ def collect_global_blockchain() -> dict[str, Any]:
     return payload
 
 
+def collect_global_pool_earnings_window(block_window: int = 600) -> dict[str, Any]:
+    """Compatibility wrapper for collector builds that expose this narrow route.
+
+    The stack global collector already includes local-pool earnings clusters in
+    the normal global payload. Keep the collector API route available without
+    reintroducing a second, older EVM-only implementation.
+    """
+    payload = dict(collect_global_blockchain())
+    payload["requested_window"] = max(1, int(block_window or 600))
+    payload["source_route"] = "collect_global_blockchain"
+    return payload
+
+
 def collect_wallet_balances(address: str | None = None) -> dict[str, Any]:
     wallet = address or read_env_value("MINING_ADDRESS")
     if not wallet:
         return {"address": None, "sources": []}
 
     sources: list[dict[str, Any]] = []
-    local_sources = global_evm_rpc_urls()
+    local_sources = local_evm_balance_rpc_urls()
     local_evm_pause = local_evm_balance_probe_pause()
     if bool(local_evm_pause.get("paused")):
         for name, _url in local_sources:
@@ -12264,7 +12288,7 @@ def collect_wallet_balances_for_addresses(addresses: list[str]) -> dict[str, Any
         }
 
     local_evm_pause = local_evm_balance_probe_pause()
-    local_rpc_sources = [(source, url, "evm-rpc") for source, url in global_evm_rpc_urls()]
+    local_rpc_sources = [(source, url, "evm-rpc") for source, url in local_evm_balance_rpc_urls()]
     rpc_sources = [] if bool(local_evm_pause.get("paused")) else list(local_rpc_sources)
     rpc_sources.extend(
         (source, url, "public-rpc")
@@ -12397,7 +12421,7 @@ def archive_rpc_urls() -> list[tuple[str, str]]:
                 ("bdagscan-rpc", "https://rpc.bdagscan.com"),
             ],
         ),
-        *global_evm_rpc_urls(),
+        *local_evm_balance_rpc_urls(),
     ]
 
 
@@ -12425,8 +12449,24 @@ def onchain_cache_key(address: str, hours: int) -> str:
 def collect_onchain_wallet_window_earnings(address: str | None, hours: int = 24) -> dict[str, Any]:
     if not is_spendable_eth_address(address):
         return {"status": "skipped", "error": "no valid mining address", "hours": hours}
-    ensure_runtime()
     address = str(address).strip()
+    if not EARNINGS_ONCHAIN_WINDOW_ENABLED:
+        return {
+            "status": "skipped",
+            "cache_hit": False,
+            "generated_at": now_iso(),
+            "source": "disabled-by-configuration",
+            "source_truth": "on-chain balance window disabled",
+            "hours": hours,
+            "address": address,
+            "earned_bdag": None,
+            "local_evm_rpc": {
+                "paused": not LOCAL_EVM_BALANCE_PROBE_ENABLED,
+                "reason": "local EVM balance probes are disabled" if not LOCAL_EVM_BALANCE_PROBE_ENABLED else None,
+            },
+            "error": "on-chain wallet window probes are disabled by BDAG_EARNINGS_ONCHAIN_WINDOW_ENABLED=0",
+        }
+    ensure_runtime()
     key = onchain_cache_key(address, hours)
     cache = read_json_file(EARNINGS_ONCHAIN_CACHE_FILE, {})
     cached = cache.get(key) if isinstance(cache, dict) else None
@@ -12435,7 +12475,7 @@ def collect_onchain_wallet_window_earnings(address: str | None, hours: int = 24)
         return {**cached, "cache_hit": True}
 
     local_evm_pause = local_evm_balance_probe_pause()
-    local_sources = global_evm_rpc_urls()
+    local_sources = local_evm_balance_rpc_urls()
     latest_sources = evm_reference_rpc_urls() if bool(local_evm_pause.get("paused")) else local_sources
     if not latest_sources:
         source_kind = "reference" if bool(local_evm_pause.get("paused")) else "local"
@@ -13797,16 +13837,25 @@ def record_earnings_snapshot() -> dict[str, Any]:
     # historical earnings plot here adds avoidable memory pressure to a
     # mining-critical process.
     earnings = collect_earnings(include_history=False)
+    credits = earnings.get("credits") if isinstance(earnings.get("credits"), dict) else {}
+    if credits.get("error"):
+        raise RuntimeError(f"credit totals unavailable: {credits.get('error')}")
+    total_bdag = credits.get("totals", {}).get("total_bdag") if isinstance(credits.get("totals"), dict) else None
+    if decimal_value(total_bdag) is None:
+        raise RuntimeError("credit totals did not include a parseable total_bdag")
+    miner_estimates = [
+        compact_miner_estimate_for_history(miner)
+        for miner in earnings.get("miner_estimates", [])
+        if isinstance(miner, dict)
+        and is_earnings_wallet_miner(miner)
+    ]
+    if not miner_estimates:
+        raise RuntimeError("earnings snapshot has no wallet miner rows")
     snapshot = {
         "generated_at": earnings["generated_at"],
-        "total_bdag": earnings.get("credits", {}).get("totals", {}).get("total_bdag"),
+        "total_bdag": total_bdag,
         "credit_balance_check": earnings.get("credit_balance_check"),
-        "miner_estimates": [
-            compact_miner_estimate_for_history(miner)
-            for miner in earnings.get("miner_estimates", [])
-            if isinstance(miner, dict)
-            and is_earnings_wallet_miner(miner)
-        ],
+        "miner_estimates": miner_estimates,
     }
     with EARNINGS_SNAPSHOT_FILE.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(snapshot) + "\n")

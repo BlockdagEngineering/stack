@@ -23,6 +23,8 @@ class EarningsOnchainSourceTests(unittest.TestCase):
                 "evm_reference_rpc_urls",
                 "json_rpc_balance_at",
                 "json_rpc_call",
+                "EARNINGS_ONCHAIN_WINDOW_ENABLED",
+                "LOCAL_EVM_BALANCE_PROBE_ENABLED",
                 "local_evm_balance_probe_pause",
                 "node_rpc_endpoint",
                 "read_json_file",
@@ -31,6 +33,8 @@ class EarningsOnchainSourceTests(unittest.TestCase):
                 "write_json_file",
             )
         }
+        pool_ops.EARNINGS_ONCHAIN_WINDOW_ENABLED = True
+        pool_ops.LOCAL_EVM_BALANCE_PROBE_ENABLED = True
         self.addCleanup(self.restore)
 
     def restore(self) -> None:
@@ -132,6 +136,22 @@ class EarningsOnchainSourceTests(unittest.TestCase):
         self.assertEqual(result["start_balance_source"], "archive-evm")
         self.assertEqual(result["earned_bdag"], "50.00")
         self.assertNotIn(("http://mining-rpc", "eth_blockNumber"), calls)
+
+    def test_wallet_window_can_be_disabled_without_rpc_calls(self) -> None:
+        address = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        calls = []
+        pool_ops.EARNINGS_ONCHAIN_WINDOW_ENABLED = False
+        pool_ops.LOCAL_EVM_BALANCE_PROBE_ENABLED = False
+        pool_ops.json_rpc_call = lambda *args, **kwargs: calls.append(args) or "0x64"
+        pool_ops.json_rpc_balance_at = lambda *args, **kwargs: calls.append(args) or {"wei": "0", "bdag": "0.00"}
+
+        result = pool_ops.collect_onchain_wallet_window_earnings(address, hours=1)
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["source"], "disabled-by-configuration")
+        self.assertEqual(result["earned_bdag"], None)
+        self.assertTrue(result["local_evm_rpc"]["paused"])
+        self.assertEqual(calls, [])
 
     def test_earnings_24h_never_relabels_db_credits_as_source_truth(self) -> None:
         old_collect_onchain = pool_ops.collect_onchain_wallet_window_earnings

@@ -30,6 +30,14 @@ KEEP_PREFIXES = (
     "pool_shares_accepted_total",
     "pool_shares_rejected_total",
 )
+MIN_LIVE_WINDOW_SECONDS = 300.0
+
+
+def live_window_seconds(duration_seconds: float) -> float:
+    requested = max(0.0, float(duration_seconds))
+    if 0.0 < requested < MIN_LIVE_WINDOW_SECONDS:
+        return MIN_LIVE_WINDOW_SECONDS
+    return requested
 
 
 def parse_prometheus(text: str) -> dict[str, float]:
@@ -173,19 +181,23 @@ def render_html(summary: dict[str, Any], metadata: dict[str, Any]) -> str:
 
 def run_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     started = time.monotonic()
+    duration = live_window_seconds(args.duration)
     first = fetch_metrics(args.metrics_url, args.timeout)
-    time.sleep(max(0.0, args.duration))
+    time.sleep(duration)
     last = fetch_metrics(args.metrics_url, args.timeout)
     measured = time.monotonic() - started
     summary = summarize_delta(first, last, measured)
     summary["metrics_url"] = args.metrics_url
+    summary["duration_seconds_requested"] = max(0.0, float(args.duration))
+    summary["duration_seconds_effective"] = duration
+    summary["minimum_live_window_seconds"] = MIN_LIVE_WINDOW_SECONDS
     return summary
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--metrics-url", default=DEFAULT_METRICS_URL)
-    parser.add_argument("--duration", type=float, default=90.0)
+    parser.add_argument("--duration", type=float, default=MIN_LIVE_WINDOW_SECONDS)
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--write-report", action="store_true")
     args = parser.parse_args()
@@ -200,7 +212,9 @@ def main() -> int:
         metadata = {
             "document_type": "bdag_lane_efficiency_snapshot",
             "metrics_url": args.metrics_url,
-            "duration_seconds": args.duration,
+            "duration_seconds_requested": args.duration,
+            "duration_seconds_effective": summary.get("duration_seconds_effective"),
+            "minimum_live_window_seconds": MIN_LIVE_WINDOW_SECONDS,
             "resource_note": "read-only direct Prometheus scrape; no dashboard status scan and no service restart",
         }
         json_path.write_text(json.dumps({"metadata": metadata, "summary": summary}, indent=2, sort_keys=True), encoding="utf-8")
