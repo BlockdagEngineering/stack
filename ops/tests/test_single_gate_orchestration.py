@@ -78,6 +78,19 @@ class SingleGateOrchestrationTests(unittest.TestCase):
         self.assertIn("chain catch-up pause is active", decision.reason)
         self.assertIn("overall stack status is syncing", decision.reason)
 
+    def test_shared_gate_blocks_sync_progress_even_when_top_level_is_mining(self) -> None:
+        status = safe_canonical_status()
+        status["mode"] = "mining"
+        status["overall"] = "ok"
+        sync_progress = status["sync_progress"]
+        sync_progress["status"] = "syncing"
+        sync_progress["remaining_blocks"] = 5
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertFalse(decision.allowed)
+        self.assertIn("sync progress is syncing with 5 block(s) remaining", decision.reason)
+
     def test_shared_gate_blocks_synced_status_without_canonical_proof(self) -> None:
         decision = pool_start_gate.pool_start_decision(
             {"fresh": True, "mode": "synced", "overall": "ok", "rpc_template_health": {"all_nodes_ready": True}}
