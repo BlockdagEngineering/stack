@@ -15,6 +15,10 @@ PAYLOAD_METADATA_FILE="$PACKAGE_ROOT/release-payload.env"
 BDAG_RELEASE_PAYLOAD_TARGET=""
 BDAG_RELEASE_PAYLOAD_ARCH=""
 BDAG_RELEASE_PAYLOAD_DOCKER_PLATFORM=""
+INSTALL_MODE="${BDAG_INSTALL_MODE:-}"
+DEPLOY_KIND="${BDAG_DEPLOY_KIND:-}"
+CHAIN_MODE="${BDAG_CHAIN_MODE:-}"
+BDAG_NODE_ARCHIVAL="${BDAG_NODE_ARCHIVAL:-0}"
 BDAG_ARIA2_CONNECTIONS="${BDAG_ARIA2_CONNECTIONS:-8}"
 BDAG_INSTALL_ARIA2="${BDAG_INSTALL_ARIA2:-0}"
 BDAG_INSTALL_MIN_FREE_KB="${BDAG_INSTALL_MIN_FREE_KB:-10485760}"
@@ -323,6 +327,26 @@ set_env_value() {
     fi
 }
 
+env_file_value() {
+    local file="$1" key="$2" value
+    value="$(grep -E "^${key}=" "$file" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)"
+    value="${value%\"}"
+    value="${value#\"}"
+    value="${value%\'}"
+    value="${value#\'}"
+    printf '%s\n' "$value"
+}
+
+package_path() {
+    local raw="$1"
+    raw="${raw:-./data/node}"
+    case "$raw" in
+        /*) printf '%s\n' "$raw" ;;
+        ./*) printf '%s/%s\n' "$PACKAGE_ROOT" "${raw#./}" ;;
+        *) printf '%s/%s\n' "$PACKAGE_ROOT" "$raw" ;;
+    esac
+}
+
 detect_lan_ip() {
     local detected
     if [[ -n "${BDAG_POOL_HOST:-}" ]]; then
@@ -440,13 +464,143 @@ validate_pool_lan_config() {
 
 prompt_with_default() {
     local prompt="$1" default_value="$2" value
+    if [[ ! -t 0 ]]; then
+        printf '%s\n' "$default_value"
+        return 0
+    fi
     read -rp "$prompt [$default_value]: " value
     printf '%s\n' "${value:-$default_value}"
+}
+
+normalize_deploy_kind() {
+    case "$1" in
+        1|pool|pool-stack) printf 'pool\n' ;;
+        2|node|standalone|standalone-node) printf 'node\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+normalize_chain_mode() {
+    case "$1" in
+        1|non-archive|nonarchive|pruned) printf 'non-archive\n' ;;
+        2|archive|full) printf 'archive\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+seed_dimensions_from_install_mode() {
+    [[ -n "$INSTALL_MODE" ]] || return 0
+    case "$INSTALL_MODE" in
+        pool|pool-stack)
+            DEPLOY_KIND="${DEPLOY_KIND:-pool}"
+            ;;
+        archive-node)
+            DEPLOY_KIND="${DEPLOY_KIND:-node}"
+            CHAIN_MODE="${CHAIN_MODE:-archive}"
+            ;;
+        node|non-archive-node)
+            DEPLOY_KIND="${DEPLOY_KIND:-node}"
+            CHAIN_MODE="${CHAIN_MODE:-non-archive}"
+            ;;
+        *)
+            echo "Error: invalid BDAG_INSTALL_MODE '${INSTALL_MODE}'. Use pool, archive-node, or node." >&2
+            exit 1
+            ;;
+    esac
+}
+
+select_deploy_kind() {
+    if [[ -n "$DEPLOY_KIND" ]]; then
+        if ! DEPLOY_KIND="$(normalize_deploy_kind "$DEPLOY_KIND")"; then
+            echo "Error: invalid deployment '${DEPLOY_KIND}'. Use pool or node." >&2
+            exit 1
+        fi
+        echo "Deployment: ${DEPLOY_KIND} (preselected)"
+        return 0
+    fi
+
+    if [[ ! -t 0 ]]; then
+        DEPLOY_KIND="pool"
+        echo "Deployment: pool (default for non-interactive install)"
+        return 0
+    fi
+
+    echo "Step 1/2 - Select what to install:"
+    echo "  1) Mining pool stack with dashboard (default)"
+    echo "  2) Standalone node with dashboard"
+    local choice
+    while true; do
+        read -rp "Choice [1]: " choice
+        if DEPLOY_KIND="$(normalize_deploy_kind "${choice:-1}")"; then
+            break
+        fi
+        echo "Please enter 1 or 2."
+    done
+    echo ""
+}
+
+select_chain_mode() {
+    if [[ -n "$CHAIN_MODE" ]]; then
+        if ! CHAIN_MODE="$(normalize_chain_mode "$CHAIN_MODE")"; then
+            echo "Error: invalid chain mode '${CHAIN_MODE}'. Use archive or non-archive." >&2
+            exit 1
+        fi
+        echo "Chain data: ${CHAIN_MODE} (preselected)"
+        echo ""
+        return 0
+    fi
+
+    if [[ ! -t 0 ]]; then
+        CHAIN_MODE="non-archive"
+        echo "Chain data: non-archive (default for non-interactive install)"
+        echo ""
+        return 0
+    fi
+
+    echo "Step 2/2 - Select chain data type:"
+    echo "  1) Non-archive (pruned chain data, default)"
+    echo "  2) Archive (keeps full block history, no pruning)"
+    local choice
+    while true; do
+        read -rp "Choice [1]: " choice
+        if CHAIN_MODE="$(normalize_chain_mode "${choice:-1}")"; then
+            break
+        fi
+        echo "Please enter 1 or 2."
+    done
+    echo ""
+}
+
+resolve_mode_settings() {
+    if [[ "$CHAIN_MODE" == "archive" ]]; then
+        BDAG_NODE_ARCHIVAL=1
+    else
+        BDAG_NODE_ARCHIVAL=0
+    fi
+    echo "Node data mode: ${CHAIN_MODE}"
+    echo ""
+}
+
+install_mode_is_node_only() {
+    [[ "$DEPLOY_KIND" == "node" ]]
+}
+
+validate_wallet_address() {
+    local value="$1" label="$2"
+    if [[ ! "$value" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+        echo "Error: ${label} must be a 0x-prefixed 40-hex-character address." >&2
+        exit 1
+    fi
+    if [[ "$value" =~ ^0x0{40}$ ]]; then
+        echo "Error: ${label} must not be the zero address." >&2
+        exit 1
+    fi
 }
 
 if [[ "${BDAG_INSTALL_TEST_WRITE_ENV_ONLY:-0}" == "1" ]]; then
     cp .env.example .env
     set_env_value .env DOCKER_PLATFORM "$DOCKER_PLATFORM"
+    set_env_value .env BDAG_NODE_ARCHIVAL "$BDAG_NODE_ARCHIVAL"
     exit 0
 fi
 
@@ -487,13 +641,42 @@ fi
 cp .env.example .env
 set_env_value .env POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
 set_env_value .env DOCKER_PLATFORM "$DOCKER_PLATFORM"
-set_env_value .env BDAG_POOL_HOST "$POOL_LAN_IP"
-set_env_value .env BDAG_POOL_URL "stratum+tcp://$POOL_LAN_IP:3334"
-set_env_value .env BDAG_MINER_SCAN_TARGET "$MINER_SCAN_TARGET"
-set_env_value .env BDAG_ASIC_LAN_CIDRS "$MINER_SCAN_TARGET"
-validate_pool_lan_config
-if [[ -n "$POOL_PRIVATE_KEY" ]]; then
-    set_env_value .env POOL_PRIVATE_KEY "$POOL_PRIVATE_KEY"
+set_env_value .env BDAG_NODE_ARCHIVAL "$BDAG_NODE_ARCHIVAL"
+
+if install_mode_is_node_only; then
+    echo "Node-only install: pool, collector, and ASIC Stratum services remain stopped."
+else
+    MINING_ADDR="${MINING_POOL_ADDRESS:-}"
+    if [[ -z "$MINING_ADDR" ]]; then
+        if [[ ! -t 0 ]]; then
+            echo "Error: MINING_POOL_ADDRESS is required for non-interactive pool installs." >&2
+            exit 1
+        fi
+        read -rp "Mining/earnings wallet address (0x...): " MINING_ADDR
+    fi
+    validate_wallet_address "$MINING_ADDR" "MINING_POOL_ADDRESS"
+
+    if [[ -n "${POOL_PRIVATE_KEY:-}" ]]; then
+        echo "Using POOL_PRIVATE_KEY from environment."
+    elif [[ -t 0 ]]; then
+        read -rsp "Pool operator private key (optional, hidden; press Enter to skip): " POOL_PRIVATE_KEY
+        echo ""
+    else
+        POOL_PRIVATE_KEY=""
+    fi
+
+    DETECTED_POOL_LAN_IP="$(detect_lan_ip || true)"
+    POOL_LAN_IP="$(prompt_with_default "Pool LAN IP miners should connect to" "${BDAG_POOL_HOST:-${DETECTED_POOL_LAN_IP:-192.168.1.10}}")"
+    MINER_SCAN_TARGET="$(prompt_with_default "LAN scan range for ASIC discovery" "${BDAG_MINER_SCAN_TARGET:-${BDAG_ASIC_LAN_CIDRS:-$(default_cidr "$POOL_LAN_IP")}}")"
+    set_env_value .env MINING_POOL_ADDRESS "$MINING_ADDR"
+    set_env_value .env BDAG_POOL_HOST "$POOL_LAN_IP"
+    set_env_value .env BDAG_POOL_URL "stratum+tcp://$POOL_LAN_IP:3334"
+    set_env_value .env BDAG_MINER_SCAN_TARGET "$MINER_SCAN_TARGET"
+    set_env_value .env BDAG_ASIC_LAN_CIDRS "$MINER_SCAN_TARGET"
+    validate_pool_lan_config
+    if [[ -n "$POOL_PRIVATE_KEY" ]]; then
+        set_env_value .env POOL_PRIVATE_KEY "$POOL_PRIVATE_KEY"
+    fi
 fi
 
 cp node.conf.example node.conf
@@ -533,13 +716,6 @@ plan_orphan_container_cleanup
 
 export DOCKER_DEFAULT_PLATFORM="$DOCKER_PLATFORM"
 
-# Intentionally unquoted below: empty for full-stack builds, one service name
-# for node-only builds.
-BUILD_SERVICES=""
-if install_mode_is_node_only; then
-    BUILD_SERVICES="node"
-fi
-
 echo ""
 echo "=== Building Docker images (${DOCKER_PLATFORM}) ==="
 echo ""
@@ -551,13 +727,14 @@ else
     nice -n 19 "${DOCKER[@]}" compose build
 fi
 
-echo ""
-echo "=== Starting sync services ==="
-python3 ops/automation_control.py ensure-normal \
-    --owner release-installer \
-    --owner-unit install-unix-common \
-    --reason "Provision default automation control before sync-only first start" >/dev/null
-docker_cli compose up -d --no-build --pull never --no-deps postgres node dashboard
+if install_mode_is_node_only; then
+    echo ""
+    echo "=== Starting node sync services ==="
+    python3 ops/automation_control.py ensure-normal \
+        --owner release-installer \
+        --owner-unit install-unix-common \
+        --reason "Provision default automation control before node-only first start" >/dev/null
+    docker_cli compose up -d --no-build --pull never --no-deps postgres node dashboard
 
     NODE_KIND="non-archive"
     if [[ "$BDAG_NODE_ARCHIVAL" == "1" ]]; then
@@ -571,6 +748,7 @@ docker_cli compose up -d --no-build --pull never --no-deps postgres node dashboa
   P2P:        port 8150
   Chain RPC:  http://localhost:38131
   EVM RPC:    http://localhost:18545
+  Dashboard:  http://localhost:${DASHBOARD_HOST_PORT:-8088}
 
   View logs:  docker compose logs -f node
   Stop:       docker compose down
@@ -583,9 +761,9 @@ else
         --owner release-installer \
         --owner-unit install-unix-common \
         --reason "Provision default automation control before sync-only first start" >/dev/null
-    docker compose up -d --no-build --pull never postgres node dashboard
+    docker_cli compose up -d --no-build --pull never postgres node dashboard
 
-    cat <<'EOF'
+    cat <<EOF
 
 =================================================
   BlockDAG Pool Stack sync services are running.
