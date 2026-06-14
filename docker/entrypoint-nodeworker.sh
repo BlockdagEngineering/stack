@@ -3,8 +3,16 @@
 # often populated as root, which prevents bdagStack from opening chain data.
 set -euo pipefail
 
+timestamp_iso() {
+  date -Is 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z'
+}
+
 log() {
-  printf '[%s] node-entrypoint: %s\n' "$(date -Is)" "$*" >&2
+  printf '[%s] node-entrypoint: %s\n' "$(timestamp_iso)" "$*" >&2
+}
+
+lower_ascii() {
+  printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
 }
 
 FASTSNAP_BOOTSTRAP_MUTATED=0
@@ -14,7 +22,7 @@ mainnet_only_network() {
   if [ -z "$requested" ]; then
     requested="mainnet"
   fi
-  case "${requested,,}" in
+  case "$(lower_ascii "$requested")" in
     mainnet)
       printf 'mainnet\n'
       ;;
@@ -341,6 +349,10 @@ apply_node_mining_runtime_args() {
 mount_source_for_path() {
   local path="$1" real best_src="" best_target="" src target fstype rest
   real="$(readlink -m "$path" 2>/dev/null || printf '%s' "$path")"
+  [ -r /proc/mounts ] || {
+    printf '\n'
+    return 0
+  }
   while read -r src target fstype rest; do
     target="${target//\\040/ }"
     if [[ "$real" == "$target" || "$real" == "$target"/* ]]; then
@@ -415,7 +427,7 @@ fastsync_serving_disable_reason() {
   fi
 
   local storage_profile="${BDAG_STORAGE_PROFILE:-}"
-  storage_profile="${storage_profile,,}"
+  storage_profile="$(lower_ascii "$storage_profile")"
   case "$storage_profile" in
     usb-chain-internal-runtime|single-usb-constrained)
       printf 'BDAG_STORAGE_PROFILE=%s\n' "$storage_profile"
@@ -496,6 +508,12 @@ apply_default_fastsync_flags() {
 
   local node_args
   node_args="$(node_args_from_argv "$@" || true)"
+  if ! node_binary_supports_arg "--fastartifactsync" "$@"; then
+    export BDAG_FASTARTIFACTSYNC_ENABLED=0
+    remove_node_arg_prefix "--fastartifactsync"
+    log "Fast Artifact Sync startup disabled; selected node binary does not support --fastartifactsync."
+    return 0
+  fi
   append_node_arg_once "--fastartifactsync" "$node_args ${NODE_ARGS_APPEND:-}"
 }
 
@@ -690,6 +708,10 @@ apply_archival_flag() {
 
 node_binary_from_argv() {
   local arg
+  if [ -n "${BDAG_NODE_BINARY:-}" ]; then
+    printf '%s\n' "$BDAG_NODE_BINARY"
+    return 0
+  fi
   for arg in "$@"; do
     case "$arg" in
       --node-binary=*)
@@ -698,6 +720,10 @@ node_binary_from_argv() {
         ;;
     esac
   done
+  if [ "$#" -gt 0 ]; then
+    printf '%s\n' "$1"
+    return 0
+  fi
   return 1
 }
 

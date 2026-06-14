@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -13,18 +14,43 @@ ENTRYPOINT = ROOT / "docker" / "entrypoint-nodeworker.sh"
 
 
 class NodeworkerEntrypointTest(unittest.TestCase):
-    def run_entrypoint(self, extra_env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    def run_entrypoint(
+        self,
+        extra_env: dict[str, str],
+        *,
+        supported_node_flags: tuple[str, ...] = ("--fastartifactsync", "--nofastsyncserve"),
+    ) -> subprocess.CompletedProcess[str]:
         env = {
             "PATH": os.environ.get("PATH", ""),
             "BDAG_ENTRYPOINT_PRINT_NODE_FLAGS": "1",
         }
         env.update(extra_env)
         with tempfile.TemporaryDirectory() as tmp:
+            fake_node = Path(tmp) / "fake-node"
+            fake_node.write_text(
+                "\n".join(
+                    [
+                        "#!/usr/bin/env bash",
+                        'if [ "${1:-}" = "--help" ]; then',
+                        *[
+                            f"  printf '%s\\n' {shlex.quote(flag)}"
+                            for flag in supported_node_flags
+                        ],
+                        "  exit 0",
+                        "fi",
+                        "exit 0",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            fake_node.chmod(0o755)
             return subprocess.run(
                 [
                     "bash",
                     str(ENTRYPOINT),
                     "/bin/true",
+                    f"--node-binary={fake_node}",
                     f"--node-args=--datadir={tmp}",
                 ],
                 env=env,
@@ -61,6 +87,16 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         combined = result.stdout + result.stderr
         self.assertNotIn("FAST", combined.upper())
         self.assertEqual("", result.stderr)
+
+    def test_print_mode_skips_fastartifact_flag_when_node_binary_lacks_support(self) -> None:
+        result = self.run_entrypoint(
+            {"NODE_ARGS_APPEND": "--cache=1024 --fastartifactsync"},
+            supported_node_flags=("--nofastsyncserve",),
+        )
+
+        self.assert_stdout_contains(result, "NODE_ARGS_APPEND=--cache=1024")
+        self.assertNotIn("--fastartifactsync", result.stdout)
+        self.assertIn("does not support --fastartifactsync", result.stderr)
 
     def test_node_mining_env_appends_guard_args_without_forcing_rpc_module(self) -> None:
         result = self.run_entrypoint(
