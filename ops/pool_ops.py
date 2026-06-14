@@ -309,8 +309,8 @@ DATA_DIR = path_from_env("BDAG_DATA_DIR", PROJECT_ROOT / "data", PROJECT_ROOT)
 POOL_CONTAINER = os.environ.get("BDAG_POOL_CONTAINER", "pool")
 POOL_CONTAINERS = unique_names([POOL_CONTAINER, *split_env_list("BDAG_POOL_CONTAINERS", "")])
 POOL_DB_CONTAINER = os.environ.get("BDAG_POOL_DB_CONTAINER", "postgres")
-POOL_DB_USER = os.environ.get("BDAG_POOL_DB_USER", "test")
-POOL_DB_NAME = os.environ.get("BDAG_POOL_DB_NAME", "pool")
+POOL_DB_USER = os.environ.get("BDAG_POOL_DB_USER", os.environ.get("POSTGRES_USER", "bdag_pool"))
+POOL_DB_NAME = os.environ.get("BDAG_POOL_DB_NAME", os.environ.get("POSTGRES_DB", "bdagpool"))
 NODE_SERVICE = single_env_value("BDAG_NODE_SERVICE", "node")
 NODES = [NODE_SERVICE]
 OBSERVER_NODES: list[str] = []
@@ -13820,16 +13820,25 @@ def record_earnings_snapshot() -> dict[str, Any]:
     # historical earnings plot here adds avoidable memory pressure to a
     # mining-critical process.
     earnings = collect_earnings(include_history=False)
+    credits = earnings.get("credits") if isinstance(earnings.get("credits"), dict) else {}
+    if credits.get("error"):
+        raise RuntimeError(f"credit totals unavailable: {credits.get('error')}")
+    total_bdag = credits.get("totals", {}).get("total_bdag") if isinstance(credits.get("totals"), dict) else None
+    if decimal_value(total_bdag) is None:
+        raise RuntimeError("credit totals did not include a parseable total_bdag")
+    miner_estimates = [
+        compact_miner_estimate_for_history(miner)
+        for miner in earnings.get("miner_estimates", [])
+        if isinstance(miner, dict)
+        and is_earnings_wallet_miner(miner)
+    ]
+    if not miner_estimates:
+        raise RuntimeError("earnings snapshot has no wallet miner rows")
     snapshot = {
         "generated_at": earnings["generated_at"],
-        "total_bdag": earnings.get("credits", {}).get("totals", {}).get("total_bdag"),
+        "total_bdag": total_bdag,
         "credit_balance_check": earnings.get("credit_balance_check"),
-        "miner_estimates": [
-            compact_miner_estimate_for_history(miner)
-            for miner in earnings.get("miner_estimates", [])
-            if isinstance(miner, dict)
-            and is_earnings_wallet_miner(miner)
-        ],
+        "miner_estimates": miner_estimates,
     }
     with EARNINGS_SNAPSHOT_FILE.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(snapshot) + "\n")

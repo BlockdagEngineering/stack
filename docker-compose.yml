@@ -223,6 +223,9 @@ services:
       TMPDIR: /tmp
       TMP: /tmp
       TEMP: /tmp
+      BDAG_PROJECT_ROOT: /workspace
+      BDAG_RUNTIME_DIR: /workspace/ops/runtime
+      BDAG_POOL_ENV_FILE: /workspace/.env
       # The collector observes current container names and exposes read-only JSON.
       BDAG_NODE_SERVICES: node
       BDAG_STACK_SERVICES: postgres,node,pool
