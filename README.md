@@ -27,10 +27,10 @@ the matching payload zip from that same tag. Linux ARM64, macOS ARM64, and
 Windows ARM64 hosts use the `linux-arm64` runtime payload.
 
 Each payload zip contains `bin/` (pre-built `blockdag-node`, `nodeworker`,
-`mining-pool` and `dashboard-api`), `dashboard-source/`, `docker-compose.yml`, `dockerfile`,
+`mining-pool`, `dashboard-api`, and `dashboard`), `docker-compose.yml`, `dockerfile`,
 `.env.example`,
 `docker/`, `collector/` from `BlockdagEngineering/collector`, and the
-cross-platform payload installers. **Node and pool release images** stage
+cross-platform payload installers. **Node, pool, and dashboard release images** stage
 binaries from `./bin`; the `collector` image stages the packaged collector
 source from `./collector`.
 
@@ -337,13 +337,12 @@ image assembly so ARM64 packages cannot silently receive AMD64 binaries; the
 checker reads ELF/Mach-O/PE headers directly so it can be used from Linux,
 macOS, and Windows build hosts.
 
-The dashboard UI is normally exposed on host port `8080`. It talks to the
-status API, which is bound to localhost on host port `9280` by default. Global
+The dashboard UI is normally exposed on host port `8088`. It talks to the
+collector status API, which is bound to localhost on host port `9280` by default. Global
 production data must be sourced from native BlockDAG chain RPC
 `getBlockCount`/ordered block/coinbase calls. EVM RPC belongs to wallet balance
-views only. The packaged web dashboard on `DASHBOARD_HOST_PORT`/`9280` is a
-diagnostic chart view and must not be treated as the authoritative mining
-dashboard.
+views only. The packaged web dashboard on `DASHBOARD_HOST_PORT` is the operator
+UI; the collector on `9280` is the read-only JSON API behind it.
 
 When testing directly from a source checkout, start the status API with
 environment that matches the actual container names for the stack it is
@@ -415,7 +414,7 @@ service; leave `COMPOSE_PROFILES` empty to disable it.
 
 Once everything is running:
 
-- Dashboard: `http://localhost:8080`
+- Dashboard: `http://localhost:8088`
 - Collector API: `http://localhost:9280`
 - Mining pool Stratum endpoint: `stratum+tcp://localhost:3334`
 - RPC endpoint: `http://localhost:38131`

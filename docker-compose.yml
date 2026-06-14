@@ -5,16 +5,13 @@ x-mining-logging: &mining-logging
     max-size: "10m"
     max-file: "2"
 
-x-build-args: &build-args
-  SNAPSHOT_PATH: ${SNAPSHOT_PATH:-docker/no-snapshot.marker}
-
 x-dev-source-contexts: &dev-source-contexts
   stack_src: ${STACK_SRC_CONTEXT:-.}
   blockdag_corechain: ${BLOCKDAG_CORECHAIN_CONTEXT:-.}
   pool_src: ${POOL_SRC_CONTEXT:-.}
   cpu_miner_src: ${CPU_MINER_SRC_CONTEXT:-.}
-  collector_src: ${COLLECTOR_SRC_CONTEXT:-./collector}
-  dashboard_src: ${DASHBOARD_SRC_CONTEXT:-.}
+  collector_src: ${COLLECTOR_SRC_CONTEXT:-../collector}
+  dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../dashboard2}
 
 x-node-critical: &node-critical
   tmpfs:
@@ -75,8 +72,9 @@ services:
       retries: 20
 
   # --------------------------------------------------------------------------
-  # BlockDAG node + nodeworker supervisor. Optional snapshot import happens at
-  # container start from a read-only bind mount, not during image build.
+  # BlockDAG node + nodeworker supervisor. Chain data restore is handled by
+  # explicit IPFS/rawdatadir tooling outside the image; local node data is
+  # preserved by default.
   # --------------------------------------------------------------------------
   node:
     <<: *node-critical
@@ -88,8 +86,6 @@ services:
       target: node
       additional_contexts:
         <<: *dev-source-contexts
-      args:
-        <<: *build-args
     restart: unless-stopped
     logging: *mining-logging
     ports:
@@ -102,9 +98,9 @@ services:
       TMPDIR: /tmp
       TMP: /tmp
       TEMP: /tmp
-      BDAG_NETWORK: ${BDAG_NETWORK:-}
+      BDAG_NETWORK: mainnet
+      BDAG_RAWDATADIR_NETWORK: ${BDAG_RAWDATADIR_NETWORK:-mainnet}
       BDAG_EPHEMERAL_DIR: /run/bdag-ephemeral
-      BDAG_SNAPSHOT_URL: ${BDAG_SNAPSHOT_URL:-}
       BDAG_NODE_ARCHIVAL: ${BDAG_NODE_ARCHIVAL:-0}
       NODE_ARGS_APPEND: ${NODE_ARGS_APPEND:-}
       SYNC_SOURCE_NODE: ${SYNC_SOURCE_NODE:-0}
@@ -126,7 +122,6 @@ services:
 
       - ${NODE_DATA_DIR:-node-data}:/var/lib/bdagStack/node
       - nodeworker-data:/var/lib/bdagStack/nodeworker
-      - ${SNAPSHOT_HOST_PATH:-./docker/no-snapshot.marker}:/snapshot/latest.bdsnap:ro
       # node.conf in project root (copy from node.conf.example). gitignored.
       - ./node.conf:/etc/bdagStack/node.conf:ro
 
@@ -143,8 +138,6 @@ services:
       target: pool
       additional_contexts:
         <<: *dev-source-contexts
-      args:
-        <<: *build-args
     restart: unless-stopped
     logging: *mining-logging
     tmpfs:
@@ -237,7 +230,6 @@ services:
       BDAG_POOL_METRICS_PORT: 9090
       BDAG_NODE_RPC_URLS: node=http://node:38131
       BDAG_GLOBAL_CHAIN_RPC_URLS: node=http://node:38131
-      BDAG_RPC_URL: http://node:38131
       # Must match node.conf rpcuser / rpcpass (same as pool service).
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
@@ -422,8 +414,6 @@ services:
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
       - /var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
-    depends_on:
-      collector: { condition: service_started }
     environment:
       TMPDIR: /tmp
       TMP: /tmp
@@ -432,7 +422,7 @@ services:
       BDAG_RUNTIME_DIR: /workspace/ops/runtime
       BDAG_POOL_ENV_FILE: /workspace/.env
       BDAG_DASHBOARD_BIND: 0.0.0.0
-      BDAG_DASHBOARD_PORT: 9290
+      BDAG_DASHBOARD_PORT: 8088
       BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK: ${BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK:-0}
       ADDR: ${DASHBOARD_LISTEN:-0.0.0.0:8088}
       BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://collector:9280}
@@ -458,7 +448,7 @@ services:
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
       DASHBOARD_TIMEZONE: ${DASHBOARD_TIMEZONE:-Africa/Johannesburg}
     ports:
-      - "${DASHBOARD_BIND:-0.0.0.0}:${DASHBOARD_HOST_PORT:-8088}:9290"
+      - "${DASHBOARD_BIND:-0.0.0.0}:${DASHBOARD_HOST_PORT:-8088}:8088"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./:/workspace:ro
@@ -477,8 +467,6 @@ services:
       target: miner
       additional_contexts:
         <<: *dev-source-contexts
-      args:
-        <<: *build-args
     restart: unless-stopped
     logging: *mining-logging
     tmpfs:

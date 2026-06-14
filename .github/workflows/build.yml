@@ -162,8 +162,21 @@ jobs:
           cp -f ./build/bin/pool ../../bin/mining-pool
           cp -f ./build/bin/dashboard-api ../../bin/dashboard-api
 
+      - name: Build dashboard
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd src/dashboard
+          common_env=(
+            GOOS=linux
+            GOARCH=${{ matrix.goarch }}
+            CGO_ENABLED=0
+            GOFLAGS=-buildvcs=false
+          )
+          env "${common_env[@]}" go build -buildvcs=false -trimpath -o ../../bin/dashboard .
+
       - name: Ensure executables
-        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api
+        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api bin/dashboard
 
       - name: Verify release architecture
         shell: bash
@@ -172,12 +185,13 @@ jobs:
             bin/blockdag-node \
             bin/nodeworker \
             bin/mining-pool \
-            bin/dashboard-api
+            bin/dashboard-api \
+            bin/dashboard
 
       - name: Generate checksums
         shell: bash
         run: |
-          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api > checksums.txt
+          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api bin/dashboard > checksums.txt
 
       - name: Validate compose (pool Dockerfile)
         shell: bash
@@ -224,7 +238,6 @@ jobs:
           cp scripts/release/install.sh scripts/release/install-node.sh scripts/release/install.ps1 scripts/release/install.cmd "${ROOT}/"
           cp -a scripts/release/installers "${ROOT}/installers"
           cp -a bin sql docker scripts asic-pool tools "${ROOT}/"
-          rsync -a --delete --exclude='.git/' --exclude='.github/' --exclude='.pytest_cache/' --exclude='__pycache__/' --exclude='*.pyc' src/dashboard/ "${ROOT}/dashboard-source/"
           rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
           chmod +x "${ROOT}/install.sh" "${ROOT}/installers/"*.sh
 

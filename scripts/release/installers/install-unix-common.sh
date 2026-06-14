@@ -18,7 +18,7 @@ BDAG_RELEASE_PAYLOAD_DOCKER_PLATFORM=""
 BDAG_ARIA2_CONNECTIONS="${BDAG_ARIA2_CONNECTIONS:-8}"
 BDAG_INSTALL_ARIA2="${BDAG_INSTALL_ARIA2:-0}"
 BDAG_INSTALL_MIN_FREE_KB="${BDAG_INSTALL_MIN_FREE_KB:-10485760}"
-BDAG_INSTALL_CHECK_PORTS="${BDAG_INSTALL_CHECK_PORTS:-3334 8080 9280 18545 18546 38131}"
+BDAG_INSTALL_CHECK_PORTS="${BDAG_INSTALL_CHECK_PORTS:-3334 8088 9280 18545 18546 38131}"
 BDAG_INSTALL_STRICT_PORTS="${BDAG_INSTALL_STRICT_PORTS:-0}"
 BDAG_CLEAN_ORPHAN_CONTAINERS="${BDAG_CLEAN_ORPHAN_CONTAINERS:-0}"
 BDAG_LINUX_DOCKER_BOOTSTRAP="${BDAG_LINUX_DOCKER_BOOTSTRAP:-auto}"
@@ -307,8 +307,6 @@ ensure_dockerignore_excludes_snapshots() {
     # Snapshots are mounted at runtime; sending them to Docker build context can
     # exhaust Docker Desktop's Linux VM disk and fail with input/output errors.
     ensure_dockerignore_pattern "*.bdsnap"
-    ensure_dockerignore_pattern "latest.bdsnap.part"
-    ensure_dockerignore_pattern "latest.bdsnap.part.*"
     ensure_dockerignore_pattern "*.aria2"
 }
 
@@ -592,7 +590,7 @@ else
 =================================================
   BlockDAG Pool Stack sync services are running.
 =================================================
-  Dashboard:  http://localhost:9280
+  Dashboard:  http://localhost:${DASHBOARD_HOST_PORT:-8088}
   Stratum:    starts after chain safety gates pass
   EVM RPC:    http://localhost:18545
 

@@ -55,7 +55,7 @@ if ($payloadMetadata['DOCKER_PLATFORM'] -and $payloadMetadata['DOCKER_PLATFORM']
     throw "release-payload.env has inconsistent DOCKER_PLATFORM=$($payloadMetadata['DOCKER_PLATFORM']); expected $dockerPlatform."
 }
 $installMinFreeBytes = if ($env:BDAG_INSTALL_MIN_FREE_BYTES) { [int64]$env:BDAG_INSTALL_MIN_FREE_BYTES } else { [int64]10737418240 }
-$installCheckPorts = if ($env:BDAG_INSTALL_CHECK_PORTS) { $env:BDAG_INSTALL_CHECK_PORTS -split '[, ]+' } else { @('3334', '8080', '9280', '18545', '18546', '38131') }
+$installCheckPorts = if ($env:BDAG_INSTALL_CHECK_PORTS) { $env:BDAG_INSTALL_CHECK_PORTS -split '[, ]+' } else { @('3334', '8088', '9280', '18545', '18546', '38131') }
 $strictPreflight = $env:BDAG_INSTALL_STRICT_PREFLIGHT -eq '1'
 $strictPorts = $env:BDAG_INSTALL_STRICT_PORTS -eq '1'
 $cleanOrphanContainers = $env:BDAG_CLEAN_ORPHAN_CONTAINERS -eq '1'
@@ -218,8 +218,6 @@ function Ensure-DockerignoreExcludesSnapshots {
     # Snapshots are mounted at runtime; sending them to Docker build context can
     # exhaust Docker Desktop's Linux VM disk and fail with input/output errors.
     Ensure-DockerignorePattern '*.bdsnap'
-    Ensure-DockerignorePattern 'latest.bdsnap.part'
-    Ensure-DockerignorePattern 'latest.bdsnap.part.*'
     Ensure-DockerignorePattern '*.aria2'
 }
 
@@ -307,14 +305,6 @@ if ($chainMode) {
 
 $nodeOnlyInstall = $deployKind -eq 'node'
 if ($chainMode -eq 'archive') { $nodeArchival = '1' }
-# Snapshot host convention: latest.bdsnap is the non-archive (pruned) snapshot,
-# latest-archive.bdsnap is the archive (full history) snapshot.
-if (-not $snapshotUrl) {
-    $snapshotFile = if ($chainMode -eq 'archive') { 'latest-archive.bdsnap' } else { 'latest.bdsnap' }
-    $snapshotUrl = "$($snapshotBaseUrl.TrimEnd('/'))/$snapshotFile"
-}
-Write-Host "Snapshot source: $snapshotUrl"
-Write-Host ""
 
 Invoke-ReleasePreflight
 
@@ -467,7 +457,7 @@ if ($nodeOnlyInstall) {
 } else {
     Write-Host "  BlockDAG Pool Stack is running." -ForegroundColor Green
     Write-Host "=================================================" -ForegroundColor Green
-    Write-Host "  Dashboard:  http://localhost:8080"
+    Write-Host "  Dashboard:  http://localhost:8088"
     Write-Host "  Collector:  http://localhost:9280"
     Write-Host "  Stratum:    stratum+tcp://localhost:3334"
     Write-Host "  EVM RPC:    http://localhost:18545"
