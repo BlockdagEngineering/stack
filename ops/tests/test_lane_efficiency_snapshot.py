@@ -11,6 +11,11 @@ import lane_efficiency_snapshot as lane_efficiency  # noqa: E402
 
 
 class LaneEfficiencySnapshotTests(unittest.TestCase):
+    def test_live_window_seconds_enforces_five_minute_positive_floor(self) -> None:
+        self.assertEqual(0.0, lane_efficiency.live_window_seconds(0.0))
+        self.assertEqual(300.0, lane_efficiency.live_window_seconds(120.0))
+        self.assertEqual(1800.0, lane_efficiency.live_window_seconds(1800.0))
+
     def test_parse_prometheus_keeps_pool_counters(self) -> None:
         metrics = lane_efficiency.parse_prometheus(
             """
