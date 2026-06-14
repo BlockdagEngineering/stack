@@ -470,6 +470,7 @@ EARNINGS_HISTORY_RETENTION_SECONDS = int(os.environ.get("BDAG_EARNINGS_HISTORY_R
 EARNINGS_DASHBOARD_HISTORY_SECONDS = int(os.environ.get("BDAG_EARNINGS_DASHBOARD_HISTORY_SECONDS", str(31 * 86400)))
 EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_EARNINGS_SNAPSHOT_INTERVAL_SECONDS", "60"))
 EARNINGS_ONCHAIN_CACHE_SECONDS = int(os.environ.get("BDAG_EARNINGS_ONCHAIN_CACHE_SECONDS", "120"))
+EARNINGS_ONCHAIN_WINDOW_ENABLED = env_bool("BDAG_EARNINGS_ONCHAIN_WINDOW_ENABLED", True)
 LOCAL_EVM_BALANCE_PROBE_ENABLED = env_bool("BDAG_LOCAL_EVM_BALANCE_PROBE_ENABLED", True)
 LOCAL_EVM_BALANCE_PROBE_PAUSE_DURING_SYNC = env_bool("BDAG_LOCAL_EVM_BALANCE_PROBE_PAUSE_DURING_SYNC", True)
 LOCAL_EVM_BALANCE_PROBE_STATUS_MAX_AGE_SECONDS = env_float(
@@ -12448,8 +12449,24 @@ def onchain_cache_key(address: str, hours: int) -> str:
 def collect_onchain_wallet_window_earnings(address: str | None, hours: int = 24) -> dict[str, Any]:
     if not is_spendable_eth_address(address):
         return {"status": "skipped", "error": "no valid mining address", "hours": hours}
-    ensure_runtime()
     address = str(address).strip()
+    if not EARNINGS_ONCHAIN_WINDOW_ENABLED:
+        return {
+            "status": "skipped",
+            "cache_hit": False,
+            "generated_at": now_iso(),
+            "source": "disabled-by-configuration",
+            "source_truth": "on-chain balance window disabled",
+            "hours": hours,
+            "address": address,
+            "earned_bdag": None,
+            "local_evm_rpc": {
+                "paused": not LOCAL_EVM_BALANCE_PROBE_ENABLED,
+                "reason": "local EVM balance probes are disabled" if not LOCAL_EVM_BALANCE_PROBE_ENABLED else None,
+            },
+            "error": "on-chain wallet window probes are disabled by BDAG_EARNINGS_ONCHAIN_WINDOW_ENABLED=0",
+        }
+    ensure_runtime()
     key = onchain_cache_key(address, hours)
     cache = read_json_file(EARNINGS_ONCHAIN_CACHE_FILE, {})
     cached = cache.get(key) if isinstance(cache, dict) else None
