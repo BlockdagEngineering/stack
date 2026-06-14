@@ -268,7 +268,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertEqual(policy["trigger"], "node_syncing")
         self.assertEqual(policy["lag_blocks"], 5)
 
-    def test_syncing_node_stops_running_pool_below_lag_threshold(self) -> None:
+    def test_syncing_node_leaves_running_pool_up_below_lag_threshold(self) -> None:
         commands = []
         env_updates = {}
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
@@ -295,12 +295,13 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
             status_sampler.PROJECT_ROOT = pathlib.Path(tmp)
             repair = status_sampler.mining_imperative_repair(payload)
 
-        self.assertIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
+        self.assertIn(f"template_pause:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
+        self.assertNotIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
         self.assertIn("applied_catchup_node_runtime", repair["actions"])
         self.assertEqual(env_updates["BDAG_ENABLE_NODE_MINING"], "0")
-        self.assertTrue(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
+        self.assertFalse(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
 
-    def test_catchup_pause_stops_pool_and_removes_node_mining_churn(self) -> None:
+    def test_catchup_pause_leaves_pool_running_and_removes_node_mining_churn(self) -> None:
         commands = []
         env_updates = {}
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
@@ -353,7 +354,8 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
             repair = status_sampler.mining_imperative_repair(payload)
             node_conf = (root / "node.conf").read_text(encoding="utf-8")
 
-        self.assertIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
+        self.assertIn(f"template_pause:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
+        self.assertNotIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
         self.assertIn("applied_catchup_node_runtime", repair["actions"])
         self.assertEqual(env_updates["BDAG_ENABLE_NODE_MINING"], "0")
         self.assertEqual(env_updates.get("BDAG_NODE_MODULES", os.environ["BDAG_NODE_MODULES"]), "Blockdag,miner")
@@ -364,7 +366,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertIn("miningaddr=", node_conf)
         self.assertIn("modules=miner", node_conf)
         self.assertIn("# miner=true disabled during catch-up pause", node_conf)
-        self.assertTrue(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
+        self.assertFalse(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
         self.assertTrue(any("--force-recreate" in command for command in commands))
 
     def test_catchup_pause_does_not_restart_stopped_pool_for_visible_miners(self) -> None:

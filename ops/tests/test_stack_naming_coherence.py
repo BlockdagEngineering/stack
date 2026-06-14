@@ -27,7 +27,7 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("BDAG_POOL_DB_CONTAINER: postgres", compose)
         self.assertIn("BDAG_NODE_RPC_URLS: node=http://node:38131", compose)
         self.assertIn("BDAG_COLLECTOR_DIRECT_STATUS_FALLBACK: ${BDAG_COLLECTOR_DIRECT_STATUS_FALLBACK:-0}", compose)
-        self.assertIn("BDAG_COLLECTOR_STATUS_CACHE_SECONDS: ${BDAG_COLLECTOR_STATUS_CACHE_SECONDS:-120}", compose)
+        self.assertIn("BDAG_COLLECTOR_STATUS_CACHE_SECONDS: ${BDAG_COLLECTOR_STATUS_CACHE_SECONDS:-10}", compose)
         self.assertIn("BDAG_COLLECTOR_SAMPLER_CACHE_SECONDS: ${BDAG_COLLECTOR_SAMPLER_CACHE_SECONDS:-120}", compose)
         self.assertIn("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS: ${BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS:-120}", compose)
 
@@ -57,6 +57,7 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("BDAG_NODE_SERVICES=$(stack_default BDAG_NODE_SERVICES)", installer)
         self.assertIn("BDAG_STACK_SERVICES=$(stack_default BDAG_STACK_SERVICES)", installer)
         self.assertIn("BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK=$(stack_default BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK)", installer)
+        self.assertIn("BDAG_COLLECTOR_STATUS_CACHE_SECONDS=$(stack_default BDAG_COLLECTOR_STATUS_CACHE_SECONDS)", installer)
         self.assertIn("BDAG_DASHBOARD_STATUS_CACHE_SECONDS=$(stack_default BDAG_DASHBOARD_STATUS_CACHE_SECONDS)", installer)
         self.assertIn("BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS=$(stack_default BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS)", installer)
         self.assertIn("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=$(stack_default BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS)", installer)
@@ -64,6 +65,7 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("ensure_stack_default_env_value BDAG_STACK_SERVICES", installer)
         self.assertIn("ensure_stack_default_env_value BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED", installer)
         self.assertIn("ensure_stack_default_env_value BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS", installer)
+        self.assertIn("ensure_stack_default_env_value BDAG_COLLECTOR_STATUS_CACHE_SECONDS", installer)
         self.assertIn("ensure_stack_default_env_value BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK", installer)
 
     def test_release_installer_generates_current_runtime_topology(self) -> None:

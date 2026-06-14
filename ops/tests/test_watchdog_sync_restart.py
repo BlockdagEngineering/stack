@@ -206,7 +206,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertTrue(any(item[0] == "pool_start_blocked" for item in events))
         self.assertTrue(written)
 
-    def test_check_once_stops_running_pool_when_sync_progress_is_syncing(self) -> None:
+    def test_check_once_leaves_running_pool_up_when_sync_progress_is_syncing(self) -> None:
         now = 1_779_200_000
         status = {
             **node_status(importing=True, last_import_age_seconds=20),
@@ -241,8 +241,6 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         ), mock.patch.object(
             watchdog, "record_earnings_snapshot", return_value={}
         ), mock.patch.object(
-            watchdog, "run_pool_stop_for_syncing", return_value=True
-        ) as stop_pool, mock.patch.object(
             watchdog, "status_payload_has_tracking_gap", return_value=False
         ), mock.patch.object(
             watchdog, "node_mining_template_support_should_repair", return_value=False
@@ -255,13 +253,12 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         ):
             result = watchdog.check_once(3, 1800, 5, 900, repair=True)
 
-        stop_pool.assert_called_once_with("sync progress is syncing with 90000 block(s) remaining")
-        self.assertEqual("pool_sync_containment", result["watchdog_state"]["last_status"])
+        self.assertEqual("pool_sync_template_pause", result["watchdog_state"]["last_status"])
         self.assertEqual(
             ["sync progress is syncing with 90000 block(s) remaining"],
             result["watchdog_state"]["last_sync_warnings"],
         )
-        self.assertEqual("sync progress is syncing with 90000 block(s) remaining", written[-1]["last_pool_sync_stop_reason"])
+        self.assertEqual("sync progress is syncing with 90000 block(s) remaining", written[-1]["last_pool_sync_pause_reason"])
 
     def test_targeted_node_restart_uses_runtime_container_name(self) -> None:
         commands: list[list[str]] = []

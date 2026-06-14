@@ -1630,8 +1630,9 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
             f"node is {catchup_policy.get('lag_blocks')} blocks behind peers "
             f"(pause threshold {catchup_policy.get('threshold_blocks')})"
         )
-        if pool_container_running(payload) and stop_pool_container(payload, reason, containment="catchup_pause"):
-            actions.append(f"stopped_container:{POOL_CONTAINER}:catchup_pause")
+        if pool_container_running(payload):
+            log(f"catch-up pause active; leaving {POOL_CONTAINER} running for pool-side template pause: {reason}")
+            actions.append(f"template_pause:{POOL_CONTAINER}:catchup_pause")
         if apply_catchup_node_runtime(payload, catchup_policy):
             actions.append("applied_catchup_node_runtime")
 

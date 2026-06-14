@@ -27,6 +27,8 @@ Only real catch-up problems put the dashboard into `syncing`: pool initial downl
 
 The dashboard also watches for pool share stalls. If miners are connected but the pool stops accepting valid shares for several minutes, that is treated as a recovery condition and the watchdog will restart the stack after the configured threshold.
 
+When the node is catching up, automation leaves the pool container running. The pool's node-health gate pauses `getBlockTemplate` refreshes while the node reports template generation is not ready, so miners are not disconnected just to reduce template pressure.
+
 The watchdog also has a fast-sync recovery path. If real syncing warnings persist for `BDAG_WATCHDOG_SYNCING_THRESHOLD` checks, default `5`, it runs a normal stack restart to force fresh peer/RPC connections and apply the current config. This restart is cooldown-limited by `BDAG_SYNCING_RESTART_COOLDOWN`, default `900` seconds, so it cannot loop continuously.
 
 The persisted peer list in `.env` should contain only valid multiaddrs. Removing a bad peer from `.env` takes effect on the next controlled node restart; it does not interrupt currently running miners by itself.
@@ -137,6 +139,8 @@ The sampler is also the backstop for the mining imperative. If the user-systemd
 guard units drift disabled, it re-enables them. If `pool` is stopped while
 miner demand is visible, an ASIC LAN neighbor is present, or the chain is synced
 and ready to mine, it starts the pool container without recreating dependencies.
+During normal catch-up it does not stop an already-running pool; the pool remains
+up and pauses template refreshes from its own node-health signal.
 Set `BDAG_MINING_IMPERATIVE_REPAIR_ENABLED=0` only for an intentional maintenance
 window where mining must remain stopped.
 

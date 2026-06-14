@@ -204,7 +204,7 @@ def container_running(status: dict[str, Any], container_name: str) -> bool:
     return bool(container.get("running")) if isinstance(container, dict) else False
 
 
-def sync_progress_pool_stop_reason(status: dict[str, Any]) -> str:
+def sync_progress_pool_pause_reason(status: dict[str, Any]) -> str:
     sync = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
     sync_status = str(sync.get("status") or "").strip().lower()
     if sync_status not in {"syncing", "catchup_pause"}:
@@ -1157,80 +1157,6 @@ def run_pool_restart(reason: str) -> bool:
     return ok
 
 
-def run_pool_stop_for_syncing(reason: str) -> bool:
-    if not automation_mutation_allowed(
-        actor="watchdog",
-        action=automation_control.ACTION_CONTAINMENT_STOP,
-        target=POOL_CONTAINER,
-        reason=reason,
-        log=log,
-        incident_source="watchdog",
-    ):
-        return False
-
-    lock_handle = acquire_lock(blocking=False)
-    if lock_handle is None:
-        log(f"pool sync containment skipped because another repair is running; reason={reason}")
-        return False
-
-    started = time.time()
-    action_name = f"stop-{POOL_CONTAINER}-syncing"
-    log_path = action_log_path(action_name)
-    state_payload = {
-        "name": action_name,
-        "mode": "stop-pool-syncing",
-        "service": POOL_CONTAINER,
-        "reason": reason,
-        "status": "running",
-        "started_at": now_iso(),
-        "finished_at": None,
-        "log_path": str(log_path),
-    }
-    write_action_state(state_payload)
-    log(f"stopping {POOL_CONTAINER} for sync containment: {reason}; log={log_path}")
-
-    compose_command = [
-        "docker",
-        "compose",
-        "--env-file",
-        str(POOL_ENV_FILE),
-        "-f",
-        str(PROJECT_ROOT / "docker-compose.yml"),
-        "stop",
-        POOL_CONTAINER,
-    ]
-    compose_result = run_logged(compose_command, log_path, timeout=120)
-    result = compose_result
-    if not compose_result.ok:
-        fallback_command = ["docker", "stop", POOL_CONTAINER]
-        result = run_logged(fallback_command, log_path, timeout=60)
-
-    ok = result.ok
-    state_payload.update(
-        {
-            "status": "ok" if ok else "failed",
-            "finished_at": now_iso(),
-            "elapsed": round(time.time() - started, 3),
-            "compose_returncode": compose_result.returncode,
-            "fallback_used": not compose_result.ok,
-            "returncode": result.returncode,
-        }
-    )
-    write_action_state(state_payload)
-    if ok:
-        log(f"stopped {POOL_CONTAINER} for sync containment elapsed={state_payload['elapsed']}s")
-        record_efficiency_event(
-            "watchdog_stopped_pool_for_syncing",
-            "warning",
-            f"Watchdog stopped {POOL_CONTAINER}: {reason}",
-            {"pool_container": POOL_CONTAINER, "reason": reason, "log_path": str(log_path)},
-        )
-    else:
-        record_failed_repair("watchdog_stop_pool_for_syncing", reason, {"log_path": str(log_path)})
-    lock_handle.close()
-    return ok
-
-
 def run_miner_restarts(targets: list[dict[str, Any]], reason: str) -> dict[str, Any]:
     target_label = ",".join(str(item.get("ip") or "") for item in targets) or "asic-miners"
     open_restart_only = bool(targets) and all(
@@ -1976,20 +1902,18 @@ def check_once(
         write_state(state)
         return {"status": status, "watchdog_state": state}
 
-    sync_stop_reason = sync_progress_pool_stop_reason(status)
-    if sync_stop_reason and container_running(status, POOL_CONTAINER):
+    sync_pause_reason = sync_progress_pool_pause_reason(status)
+    if sync_pause_reason and container_running(status, POOL_CONTAINER):
         state["consecutive_failures"] = 0
         state["consecutive_syncing"] = 0
         state["consecutive_share_stalls"] = 0
-        state["last_status"] = "pool_sync_containment"
+        state["last_status"] = "pool_sync_template_pause"
         state["last_failures"] = []
-        state["last_sync_warnings"] = [sync_stop_reason]
+        state["last_sync_warnings"] = [sync_pause_reason]
         state["last_share_warnings"] = []
-        if repair and run_pool_stop_for_syncing(sync_stop_reason):
-            state["last_pool_sync_stop_at"] = now_iso()
-            state["last_pool_sync_stop_reason"] = sync_stop_reason
-        else:
-            log(f"pool sync containment would stop {POOL_CONTAINER}: {sync_stop_reason}")
+        state["last_pool_sync_pause_at"] = now_iso()
+        state["last_pool_sync_pause_reason"] = sync_pause_reason
+        log(f"pool sync template pause active; leaving {POOL_CONTAINER} running: {sync_pause_reason}")
         state["updated_at"] = now_iso()
         write_state(state)
         return {"status": status, "watchdog_state": state}
