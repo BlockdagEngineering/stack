@@ -264,6 +264,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./:/workspace:ro
+      - ./ops/runtime:/workspace/ops/runtime
       - collector-runtime:/var/lib/bdag-collector
 
   # --------------------------------------------------------------------------
