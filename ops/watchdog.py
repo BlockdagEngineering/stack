@@ -50,6 +50,8 @@ from status_sampler import (
     node_mining_template_support_should_repair,
     repair_missing_tracked_miners,
     repair_node_mining_template_support,
+    repair_pool_asic_mac_overrides,
+    status_payload_needs_asic_mac_override_repair,
     status_payload_has_tracking_gap,
 )
 
@@ -2020,6 +2022,24 @@ def check_once(
                 "watchdog_repair_tracked_miners",
                 message,
                 {"tracked_count_before": int(miner_health.get("tracked_count", 0) or 0)},
+            )
+
+    if status_payload_needs_asic_mac_override_repair(status):
+        message = "pool ASIC MAC override environment is stale while managed ASIC lanes are present"
+        log(message)
+        if repair and repair_pool_asic_mac_overrides(status):
+            state["last_asic_mac_override_repair_at"] = now_iso()
+            record_efficiency_event(
+                "watchdog_repaired_pool_asic_mac_overrides",
+                "warning",
+                message,
+                {"managed_count": int(miner_health.get("managed_count", 0) or 0)},
+            )
+        elif repair:
+            record_failed_repair(
+                "watchdog_repair_pool_asic_mac_overrides",
+                message,
+                {"managed_count": int(miner_health.get("managed_count", 0) or 0)},
             )
 
     if node_mining_template_support_should_repair(status):
