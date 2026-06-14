@@ -210,6 +210,65 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertTrue(any(item[0] == "pool_start_blocked" for item in events))
         self.assertTrue(written)
 
+    def test_check_once_stops_running_pool_when_sync_progress_is_syncing(self) -> None:
+        now = 1_779_200_000
+        status = {
+            **node_status(importing=True, last_import_age_seconds=20),
+            "failures": [],
+            "stack_failures": [],
+            "miner_failures": [],
+            "warnings": [],
+            "mode": "mining",
+            "overall": "ok",
+            "containers": {
+                watchdog.POOL_CONTAINER: {
+                    "running": True,
+                    "started_at": "2026-06-14T12:00:00.000000000Z",
+                }
+            },
+            "pool_health": {},
+            "miner_health": {"connected_count": 4, "connected_count_effective": 4, "miners": []},
+        }
+        status["sync_progress"]["status"] = "syncing"
+        status["sync_progress"]["remaining_blocks"] = 90_000
+        state: dict[str, object] = {}
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "run_pool_stop_for_syncing", return_value=True
+        ) as stop_pool, mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "constrained_fastartifact_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_repair", side_effect=AssertionError("sync containment must not restart the stack")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        stop_pool.assert_called_once_with("sync progress is syncing with 90000 block(s) remaining")
+        self.assertEqual("pool_sync_containment", result["watchdog_state"]["last_status"])
+        self.assertEqual(
+            ["sync progress is syncing with 90000 block(s) remaining"],
+            result["watchdog_state"]["last_sync_warnings"],
+        )
+        self.assertEqual("sync progress is syncing with 90000 block(s) remaining", written[-1]["last_pool_sync_stop_reason"])
+
     def test_targeted_node_restart_uses_runtime_container_name(self) -> None:
         commands: list[list[str]] = []
 

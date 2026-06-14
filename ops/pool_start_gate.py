@@ -50,6 +50,34 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sync_progress_lag_blocks(status: dict[str, Any]) -> int:
+    sync_progress = status.get("sync_progress")
+    if not isinstance(sync_progress, dict):
+        return 0
+    values: list[int] = []
+    for key in ("remaining_blocks", "peer_ahead_blocks"):
+        value = _safe_int(sync_progress.get(key))
+        if value is not None and value >= 0:
+            values.append(value)
+    nodes = sync_progress.get("nodes")
+    if isinstance(nodes, dict):
+        for node in nodes.values():
+            if not isinstance(node, dict):
+                continue
+            for key in ("remaining_blocks", "peer_ahead_blocks"):
+                value = _safe_int(node.get(key))
+                if value is not None and value >= 0:
+                    values.append(value)
+    return max(values) if values else 0
+
+
 def _unwrap_status_payload(raw: Any) -> tuple[dict[str, Any] | None, str, float | None]:
     if not isinstance(raw, dict):
         return None, "invalid", None
@@ -160,6 +188,15 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
         reasons.append("public-chain divergence containment is active")
     if catchup_policy.get("active") or sync_health.get("catchup_pause_active"):
         reasons.append("chain catch-up pause is active")
+
+    sync_progress = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
+    sync_status = str(sync_progress.get("status") or "").strip().lower()
+    sync_lag = _sync_progress_lag_blocks(status)
+    if sync_status in {"syncing", "catchup_pause"}:
+        if sync_lag > 0:
+            reasons.append(f"sync progress is {sync_status} with {sync_lag} block(s) remaining")
+        else:
+            reasons.append(f"sync progress is {sync_status}")
 
     mode = str(status.get("mode") or "").strip().lower()
     overall = str(status.get("overall") or "").strip().lower()

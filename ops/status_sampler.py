@@ -167,6 +167,7 @@ NODE_MINING_CONSTRAINED_ASSIGNMENTS = {
     "--maxinbound": "1",
 }
 CATCHUP_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_PAUSE_ENABLED", True)
+CATCHUP_PAUSE_ON_SYNCING = env_bool("BDAG_CATCHUP_PAUSE_ON_SYNCING", True)
 CATCHUP_PAUSE_THRESHOLD_BLOCKS = env_int("BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS", 300, minimum=1)
 CATCHUP_NODE_RECREATE_ENABLED = env_bool("BDAG_CATCHUP_NODE_RECREATE_ENABLED", True)
 CATCHUP_NODE_CACHE_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MB", 6144, minimum=0)
@@ -559,6 +560,16 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     policy = dict_value(payload.get("catchup_policy"))
     threshold = safe_int(policy.get("threshold_blocks"), CATCHUP_PAUSE_THRESHOLD_BLOCKS)
     lag = catchup_lag_blocks(payload)
+    sync = dict_value(payload.get("sync_progress"))
+    sync_status = str(sync.get("status") or "").strip().lower()
+    syncing_active = bool(
+        policy.get("syncing_active")
+        or (
+            CATCHUP_PAUSE_ON_SYNCING
+            and sync_status in {"syncing", "catchup_pause"}
+            and lag > 0
+        )
+    )
     io_pressure_reasons = policy.get("io_pressure_reasons")
     if not isinstance(io_pressure_reasons, list):
         io_pressure_reasons = catchup_io_pressure_reasons(payload)
@@ -578,10 +589,15 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     lag_threshold_active = bool(lag > threshold and (not chain_ready_for_mining(payload) or not mining_ready))
     active = bool(policy.get("active")) if "active" in policy else False
     if not active:
-        active = bool(CATCHUP_PAUSE_ENABLED and (io_pressure_active or lag_threshold_active))
+        active = bool(CATCHUP_PAUSE_ENABLED and (syncing_active or io_pressure_active or lag_threshold_active))
     trigger = str(policy.get("trigger") or "")
     if not trigger and active:
-        trigger = "io_pressure" if io_pressure_active else "lag_threshold"
+        if syncing_active:
+            trigger = "node_syncing"
+        elif io_pressure_active:
+            trigger = "io_pressure"
+        else:
+            trigger = "lag_threshold"
     if not active:
         trigger = ""
     return {
@@ -591,6 +607,9 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "trigger": trigger,
         "lag_blocks": lag,
         "threshold_blocks": threshold,
+        "syncing_pause_enabled": CATCHUP_PAUSE_ON_SYNCING,
+        "syncing_active": syncing_active,
+        "sync_status": sync_status,
         "io_pressure_pause_enabled": io_pressure_enabled,
         "io_pressure_active": io_pressure_active,
         "io_pressure_reasons": io_pressure_reasons,
