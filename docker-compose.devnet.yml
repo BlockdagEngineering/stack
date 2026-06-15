@@ -50,6 +50,7 @@ services:
       BDAG_RPC_URL: http://node:38131
       BDAG_NETWORK_REFERENCE_RPC_URLS: devnet=http://node:18545
       BDAG_PUBLIC_RPC_URLS: ""
+      BDAG_SINGLE_NODE_DEVNET: "1"
       MINING_POOL_ADDRESS: ${MINING_POOL_ADDRESS}
 
   dashboard:
