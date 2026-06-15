@@ -1,5 +1,6 @@
 # Local environment
 .env
+.env.devnet
 .env.snapshot
 github
 release-downloads/*

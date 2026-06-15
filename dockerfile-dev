@@ -195,7 +195,8 @@ RUN apk add --no-cache \
 
 COPY --from=collector-source /src/collector /opt/collector
 COPY --from=stack_src docker/entrypoint-collector.sh /usr/local/bin/entrypoint-collector.sh
-RUN chmod +x /usr/local/bin/entrypoint-collector.sh \
+RUN sed -i "s/\r$//" /usr/local/bin/entrypoint-collector.sh \
+ && chmod +x /usr/local/bin/entrypoint-collector.sh \
  && mkdir -p /var/lib/bdag-collector/runtime /workspace \
  && if [ -f /opt/collector/requirements.txt ]; then \
       python3 -m pip install --break-system-packages --no-cache-dir -r /opt/collector/requirements.txt; \
