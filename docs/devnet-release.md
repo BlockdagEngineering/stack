@@ -22,7 +22,45 @@ Keep release changes reviewable per repository. Do not edit generated runtime
 state, checked-out chain data, or local `.env` files. Put developer defaults in
 tracked examples and keep secrets in untracked env files.
 
-## Start
+## Shareable Release
+
+The `Build devnet release` workflow packages a self-contained devnet runtime
+from the `devnet` branches of:
+
+- `blockdag-corechain`
+- `pool`
+- `stack`
+- `collector`
+- `dashboard2`
+
+Create a release by either pushing a tag like `devnet-v0.1.0` or running the
+workflow manually with that version. The release publishes:
+
+- `blockdag-devnet-<version>-linux-amd64.zip`
+- `blockdag-devnet-<version>-linux-arm64.zip`
+- `install.sh`
+- `install.ps1`
+- `version.txt`
+
+Linux users can run the pinned bootstrap:
+
+```bash
+curl -fsSL https://github.com/BlockdagEngineering/stack/releases/download/devnet-v0.1.0/install.sh | sh
+```
+
+Windows PowerShell users can run:
+
+```powershell
+iwr https://github.com/BlockdagEngineering/stack/releases/download/devnet-v0.1.0/install.ps1 -OutFile install.ps1
+.\install.ps1
+```
+
+If the GitHub repository remains private, the release asset URLs still require
+GitHub authentication. To avoid giving dapp developers repository access,
+publish the generated zip and installer assets through the approved external
+artifact channel, or send them the matching zip directly.
+
+## Start From Source
 
 From the `stack` repository:
 

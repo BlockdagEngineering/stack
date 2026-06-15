@@ -413,8 +413,26 @@ docker compose logs -f pool
 
 ## Local devnet for dapp testing
 
-The `devnet` branch includes a source-built local devnet with a pool and CPU
-miner attached to the pool. From this repository:
+The `devnet` branch includes a local devnet with a pool and CPU miner attached
+to the pool. External dapp developers should use a `devnet-v*` release asset
+from the `Build devnet release` workflow:
+
+```bash
+curl -fsSL https://github.com/BlockdagEngineering/stack/releases/download/devnet-v0.1.0/install.sh | sh
+```
+
+On Windows PowerShell:
+
+```powershell
+iwr https://github.com/BlockdagEngineering/stack/releases/download/devnet-v0.1.0/install.ps1 -OutFile install.ps1
+.\install.ps1
+```
+
+If the GitHub repository is private, publish the generated release zip and
+installer assets through the approved external artifact channel instead of
+giving developers repository access.
+
+Internal maintainers can still run the source-built stack from this repository:
 
 ```bash
 cp .env.devnet.example .env.devnet

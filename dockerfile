@@ -63,6 +63,17 @@ RUN set -eu; mkdir -p /out; \
     chmod +x /out/dashboard
 
 # ----------------------------------------------------------------------------
+# Devnet CPU Miner Stage
+# ----------------------------------------------------------------------------
+FROM base AS miner-build
+WORKDIR /src
+COPY bin ./bin
+RUN set -eu; mkdir -p /out; \
+    test -f ./bin/devnet-cpuminer || { echo 'ERROR: ./bin/devnet-cpuminer missing'; exit 1; }; \
+    cp -f ./bin/devnet-cpuminer /out/devnet-cpuminer && \
+    chmod +x /out/devnet-cpuminer
+
+# ----------------------------------------------------------------------------
 # Node Runtime Stage (with optional snapshot import)
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS node
@@ -80,7 +91,8 @@ COPY --from=node-build /out/nodeworker     /usr/local/bin/nodeworker
 RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker
 
 COPY docker/entrypoint-nodeworker.sh /usr/local/bin/docker-entrypoint-nodeworker.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint-nodeworker.sh \
+ && chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh
 
 # Snapshot path is relative to build context (Compose sets this in .env for dev vs release).
 COPY ${SNAPSHOT_PATH} /tmp/snapshot-candidate.bdsnap
@@ -139,6 +151,25 @@ EXPOSE 3334 8080
 ENTRYPOINT ["/usr/local/bin/mining-pool"]
 
 # ----------------------------------------------------------------------------
+# Devnet CPU Miner Runtime Stage
+# ----------------------------------------------------------------------------
+FROM ubuntu:24.04 AS miner
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates tzdata \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack \
+ && mkdir -p /var/lib/bdagStack/miner \
+ && chown -R bdagStack:bdagStack /var/lib/bdagStack
+
+COPY --from=miner-build /out/devnet-cpuminer /usr/local/bin/cpu-miner
+RUN chmod +x /usr/local/bin/cpu-miner
+
+USER bdagStack
+WORKDIR /var/lib/bdagStack/miner
+ENTRYPOINT ["/usr/local/bin/cpu-miner"]
+
+# ----------------------------------------------------------------------------
 # Collector Runtime Stage (read-only Python API)
 # ----------------------------------------------------------------------------
 FROM docker:27-cli AS collector
@@ -158,7 +189,8 @@ RUN apk add --no-cache \
 
 COPY --from=collector-source /src/collector /opt/collector
 COPY docker/entrypoint-collector.sh /usr/local/bin/entrypoint-collector.sh
-RUN chmod +x /usr/local/bin/entrypoint-collector.sh \
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint-collector.sh \
+ && chmod +x /usr/local/bin/entrypoint-collector.sh \
  && mkdir -p /var/lib/bdag-collector/runtime /workspace \
  && if [ -f /opt/collector/requirements.txt ]; then \
       python3 -m pip install --break-system-packages --no-cache-dir -r /opt/collector/requirements.txt; \

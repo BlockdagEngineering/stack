@@ -432,7 +432,9 @@ services:
       - "${DASHBOARD_BIND:-0.0.0.0}:${DASHBOARD_HOST_PORT:-8088}:8088"
 
   # --------------------------------------------------------------------------
-  # Optional CPU miner (dockerfile-dev target only). Enable with:
+  # Optional CPU miner. Source checkouts use dockerfile-dev by default; release
+  # payloads set DOCKERFILE=dockerfile and use the prebuilt devnet miner.
+  # Enable with:
   #   COMPOSE_PROFILES=miner
   # --------------------------------------------------------------------------
   cpu-miner:
