@@ -1,22 +1,38 @@
-# Local override for macOS Docker Desktop: its Linux VM has no cgroup v2 "io"
-# controller, so blkio_config (io.weight) makes runc fail at container start.
-# This file is auto-loaded by `docker compose` and only neutralizes those knobs.
+# Live Linux host override.
+#
+# Keep temporary filesystem churn in RAM and preserve service-level I/O
+# priorities for the mining stack. Node gets the highest disk I/O weight,
+# pool/Postgres stay high priority, and dashboard/ops services stay low
+# priority so chain sync and Stratum work are not starved by observability.
 services:
   pool-db:
-    blkio_config: !reset null
+    blkio_config:
+      weight: 950
   node:
-    blkio_config: !reset null
+    blkio_config:
+      weight: 1000
     environment:
       BLOCKLIST_GENESIS_BLOCKED: ""
       BLOCKLIST_GENESIS_OWNER: ""
       BLOCKLIST_CONTRACT_CODE: ""
   pool:
-    blkio_config: !reset null
+    blkio_config:
+      weight: 950
   collector:
-    blkio_config: !reset null
+    blkio_config:
+      weight: 100
   watchdog:
-    blkio_config: !reset null
+    blkio_config:
+      weight: 100
+    tmpfs:
+      - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
+      - /var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
   sentinel:
-    blkio_config: !reset null
+    blkio_config:
+      weight: 100
+    tmpfs:
+      - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
+      - /var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
   dashboard:
-    blkio_config: !reset null
+    blkio_config:
+      weight: 100
