@@ -53,6 +53,28 @@ def copy_payload_root(dest: Path) -> None:
     )
 
 
+def payload_metadata(package_root: Path) -> dict[str, str]:
+    metadata_path = package_root / "release-payload.env"
+    metadata: dict[str, str] = {}
+    if not metadata_path.exists():
+        return metadata
+    for line in metadata_path.read_text(encoding="utf-8").splitlines():
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        metadata[key.strip()] = value.strip()
+    return metadata
+
+
+def expected_docker_platform(package_root: Path) -> str:
+    metadata = payload_metadata(package_root)
+    if metadata.get("DOCKER_PLATFORM"):
+        return metadata["DOCKER_PLATFORM"]
+    if metadata.get("BDAG_RELEASE_PAYLOAD_ARCH"):
+        return f"linux/{metadata['BDAG_RELEASE_PAYLOAD_ARCH']}"
+    return f"linux/{host_arch()}"
+
+
 def run_command(args: list[str], cwd: Path, env: dict[str, str]) -> dict[str, Any]:
     result = subprocess.run(
         args,
@@ -107,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
     env_text = env_path.read_text(encoding="utf-8-sig") if env_path.exists() else ""
     expected = {
         "DOCKERFILE=dockerfile",
-        f"DOCKER_PLATFORM=linux/{host_arch()}",
+        f"DOCKER_PLATFORM={expected_docker_platform(package_root)}",
         "BLOCKDAG_CORECHAIN_CONTEXT=.",
         "POOL_SRC_CONTEXT=.",
         "COLLECTOR_SRC_CONTEXT=./collector",
