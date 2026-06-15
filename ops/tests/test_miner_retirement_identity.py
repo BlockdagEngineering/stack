@@ -159,6 +159,13 @@ class MinerRegistryIdentityTests(unittest.TestCase):
         self.old_read_neighbors = pool_ops.read_neighbor_macs
         self.old_discover_miner = pool_ops.discover_miner
         self.old_expected_macs = os.environ.get("BDAG_ASIC_EXPECTED_MACS")
+        self.old_pool_asic_mac_overrides = os.environ.get("POOL_ASIC_MAC_OVERRIDES")
+        self.old_asic_lan_cidrs = os.environ.get("BDAG_ASIC_LAN_CIDRS")
+        self.old_miner_scan_target = os.environ.get("BDAG_MINER_SCAN_TARGET")
+        os.environ.pop("BDAG_ASIC_EXPECTED_MACS", None)
+        os.environ.pop("POOL_ASIC_MAC_OVERRIDES", None)
+        os.environ.pop("BDAG_ASIC_LAN_CIDRS", None)
+        os.environ.pop("BDAG_MINER_SCAN_TARGET", None)
         pool_ops.MINER_REGISTRY_FILE = self.registry_file
         pool_ops.MINER_RETIREMENTS_FILE = self.retirements_file
         pool_ops.read_neighbor_macs = lambda: {}
@@ -173,6 +180,18 @@ class MinerRegistryIdentityTests(unittest.TestCase):
             os.environ.pop("BDAG_ASIC_EXPECTED_MACS", None)
         else:
             os.environ["BDAG_ASIC_EXPECTED_MACS"] = self.old_expected_macs
+        if self.old_pool_asic_mac_overrides is None:
+            os.environ.pop("POOL_ASIC_MAC_OVERRIDES", None)
+        else:
+            os.environ["POOL_ASIC_MAC_OVERRIDES"] = self.old_pool_asic_mac_overrides
+        if self.old_asic_lan_cidrs is None:
+            os.environ.pop("BDAG_ASIC_LAN_CIDRS", None)
+        else:
+            os.environ["BDAG_ASIC_LAN_CIDRS"] = self.old_asic_lan_cidrs
+        if self.old_miner_scan_target is None:
+            os.environ.pop("BDAG_MINER_SCAN_TARGET", None)
+        else:
+            os.environ["BDAG_MINER_SCAN_TARGET"] = self.old_miner_scan_target
 
     def test_registry_keeps_distinct_macs_when_ip_is_reused(self) -> None:
         registry = pool_ops.save_miner_registry(
@@ -208,6 +227,62 @@ class MinerRegistryIdentityTests(unittest.TestCase):
         self.assertEqual(diagnostics["override_count"], 3)
         self.assertEqual(diagnostics["unresolved_count"], 0)
         self.assertEqual(diagnostics["unresolved"], [])
+
+    def test_configured_pool_asic_mac_override_wins_over_stale_route_identity(self) -> None:
+        ip = "192.168.1.102"
+        expected_mac = "28:e2:97:3d:95:13"
+        stale_mac = "32:d0:e8:41:7c:45"
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        os.environ["BDAG_ASIC_EXPECTED_MACS"] = expected_mac
+        os.environ["POOL_ASIC_MAC_OVERRIDES"] = f"{ip}={expected_mac}"
+        pool_ops.read_neighbor_macs = lambda: {ip: stale_mac}
+        self.registry_file.write_text(
+            json.dumps(
+                {
+                    "updated_at": "2026-06-15T09:10:09+0200",
+                    "miners": [
+                        {
+                            "ip": ip,
+                            "mac": stale_mac,
+                            "device_id": f"mac:{stale_mac}",
+                            "identity_key": f"mac:{stale_mac}",
+                            "device_type": "asic",
+                            "discovered_by": "expected-mac",
+                            "sources": ["expected-mac", "pool-log"],
+                            "managed": True,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        registry = pool_ops.read_miner_registry(augment_lan_hints=False)
+        self.assertEqual(len(registry["miners"]), 1)
+        self.assertEqual(registry["miners"][0]["mac"], expected_mac)
+        self.assertEqual(registry["miners"][0]["identity_key"], f"mac:{expected_mac}")
+        self.assertEqual(pool_ops.pool_asic_mac_overrides_value(registry), f"{ip}={expected_mac}")
+
+        updated = pool_ops.upsert_pool_activity_miners(
+            {
+                "miners": [
+                    {
+                        "ip": ip,
+                        "mac": stale_mac,
+                        "workers": [worker],
+                        "ports": ["58514"],
+                        "shares": 1,
+                        "share_work": 100,
+                        "last_seen_at": "2026/06/15 07:09:55",
+                        "last_share_at": "2026/06/15 07:09:55",
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(len(updated["miners"]), 1)
+        self.assertEqual(updated["miners"][0]["mac"], expected_mac)
+        self.assertEqual(updated["miners"][0]["identity_key"], f"mac:{expected_mac}")
 
     def test_managed_asic_without_mac_is_not_promoted_to_ip_identity(self) -> None:
         registry = pool_ops.save_miner_registry(
@@ -572,6 +647,12 @@ class PoolActivityAttributionTests(unittest.TestCase):
         self.old_read_neighbor_macs = pool_ops.read_neighbor_macs
         self.old_asic_lan_cidrs = os.environ.get("BDAG_ASIC_LAN_CIDRS")
         self.old_scan_target = os.environ.get("BDAG_MINER_SCAN_TARGET")
+        self.old_expected_macs = os.environ.get("BDAG_ASIC_EXPECTED_MACS")
+        self.old_pool_asic_mac_overrides = os.environ.get("POOL_ASIC_MAC_OVERRIDES")
+        os.environ.pop("BDAG_ASIC_LAN_CIDRS", None)
+        os.environ.pop("BDAG_MINER_SCAN_TARGET", None)
+        os.environ.pop("BDAG_ASIC_EXPECTED_MACS", None)
+        os.environ.pop("POOL_ASIC_MAC_OVERRIDES", None)
         self.addCleanup(self.restore_registry)
 
     def restore_registry(self) -> None:
@@ -585,6 +666,14 @@ class PoolActivityAttributionTests(unittest.TestCase):
             os.environ.pop("BDAG_MINER_SCAN_TARGET", None)
         else:
             os.environ["BDAG_MINER_SCAN_TARGET"] = self.old_scan_target
+        if self.old_expected_macs is None:
+            os.environ.pop("BDAG_ASIC_EXPECTED_MACS", None)
+        else:
+            os.environ["BDAG_ASIC_EXPECTED_MACS"] = self.old_expected_macs
+        if self.old_pool_asic_mac_overrides is None:
+            os.environ.pop("POOL_ASIC_MAC_OVERRIDES", None)
+        else:
+            os.environ["POOL_ASIC_MAC_OVERRIDES"] = self.old_pool_asic_mac_overrides
 
     def test_shared_worker_without_job_mapping_is_not_assigned_to_one_miner(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"

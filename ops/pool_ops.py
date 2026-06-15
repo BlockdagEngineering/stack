@@ -2284,6 +2284,7 @@ def miner_lan_hint_candidates(registry: dict[str, Any] | None = None) -> list[di
                 "ip": ip,
                 "mac": mac,
                 "device_id": key,
+                "identity_key": key,
                 "device_type": "asic",
                 "discovered_by": merged.get("discovered_by") or source,
                 "sources": merge_unique_strings(merged.get("sources"), source),
@@ -2321,6 +2322,7 @@ def augment_miner_registry_with_lan_hints(registry: dict[str, Any]) -> dict[str,
                 "ip": ip,
                 "mac": mac,
                 "device_id": f"mac:{mac}",
+                "identity_key": f"mac:{mac}",
                 "device_type": "asic",
                 "discovered_by": hint.get("discovered_by") or "lan-hint",
                 "sources": [],
@@ -2336,6 +2338,7 @@ def augment_miner_registry_with_lan_hints(registry: dict[str, Any]) -> dict[str,
         if normalize_mac(item.get("mac")) != mac:
             item["mac"] = mac
             item["device_id"] = f"mac:{mac}"
+            item["identity_key"] = f"mac:{mac}"
             changed = True
         for key in ("hostname", "lease_expires_epoch", "lease_active", "lease_file"):
             if hint.get(key) not in (None, "", []):
@@ -2360,15 +2363,19 @@ def augment_miner_registry_with_expected_macs(registry: dict[str, Any]) -> dict[
         return registry
     miners = [dict(item) for item in registry.get("miners", []) if isinstance(item, dict)]
     by_mac = {normalize_mac(item.get("mac")): item for item in miners if normalize_mac(item.get("mac"))}
+    by_ip = {str(item.get("ip") or ""): item for item in miners if item.get("ip")}
+    configured_ips_by_mac = {mac: ip for ip, mac in configured_asic_mac_overrides().items()}
     defaults = default_miner_pool_settings()
     changed = False
     for mac in expected:
-        item = by_mac.get(mac)
+        configured_ip = configured_ips_by_mac.get(mac, "")
+        item = by_mac.get(mac) or (by_ip.get(configured_ip) if configured_ip else None)
         if item is None:
             item = {
-                "ip": "",
+                "ip": configured_ip,
                 "mac": mac,
                 "device_id": f"mac:{mac}",
+                "identity_key": f"mac:{mac}",
                 "device_type": "asic",
                 "discovered_by": "expected-mac",
                 "sources": ["expected-mac"],
@@ -2381,11 +2388,17 @@ def augment_miner_registry_with_expected_macs(registry: dict[str, Any]) -> dict[
         before = dict(item)
         item["mac"] = mac
         item["device_id"] = f"mac:{mac}"
+        item["identity_key"] = f"mac:{mac}"
         item["device_type"] = "asic"
         item["managed"] = True
+        if configured_ip:
+            item["ip"] = configured_ip
         item["expected_pool_url"] = item.get("expected_pool_url") or defaults["pool_url"]
         item["expected_worker_user"] = item.get("expected_worker_user") or defaults["worker_user"]
         item["sources"] = merge_unique_strings(item.get("sources"), "expected-mac")
+        by_mac[mac] = item
+        if configured_ip:
+            by_ip[configured_ip] = item
         if item != before:
             changed = True
     if changed:
@@ -2402,6 +2415,9 @@ def mac_for_ip(ip: str, neighbors: dict[str, str] | None = None) -> str:
 
 
 def miner_mac_from_payload(miner: dict[str, Any], ip: str, neighbors: dict[str, str] | None = None) -> str:
+    configured_mac = configured_asic_mac_for_ip(ip)
+    if configured_mac:
+        return configured_mac
     for key in ("mac", "mac_address", "macAddress", "ethaddr", "hwaddr", "name"):
         mac = normalize_mac(miner.get(key))
         if mac:
@@ -2501,6 +2517,7 @@ def merge_miner_records(existing: dict[str, Any], incoming: dict[str, Any]) -> d
     if mac:
         result["mac"] = mac
         result["device_id"] = f"mac:{mac}"
+        result["identity_key"] = f"mac:{mac}"
     return result
 
 
@@ -2545,6 +2562,31 @@ def is_expected_asic_mac(value: Any) -> bool:
     return bool(mac and mac in expected_asic_mac_set())
 
 
+def configured_asic_mac_overrides() -> dict[str, str]:
+    """Return the configured pool route-to-MAC map.
+
+    This value is the explicit lane identity handoff to the pool container. When
+    present it is more authoritative than ASIC API payloads, ARP cache rows, or
+    stale registry entries for the same route.
+    """
+    overrides: dict[str, str] = {}
+    for token in split_env_list("POOL_ASIC_MAC_OVERRIDES", ""):
+        if "=" not in token:
+            continue
+        ip, raw_mac = token.split("=", 1)
+        ip = ip.strip()
+        mac = normalize_mac(raw_mac)
+        if is_lan_ipv4(ip) and not is_docker_bridge_ipv4(ip) and mac:
+            overrides[ip] = mac
+    return overrides
+
+
+def configured_asic_mac_for_ip(ip: str) -> str:
+    if not ip:
+        return ""
+    return configured_asic_mac_overrides().get(str(ip).strip(), "")
+
+
 def asic_mac_override_entries(registry: dict[str, Any] | None = None) -> list[tuple[str, str]]:
     """Return verified host-visible ASIC IP to MAC mappings for the pool.
 
@@ -2554,7 +2596,8 @@ def asic_mac_override_entries(registry: dict[str, Any] | None = None) -> list[tu
     """
     if registry is None:
         registry = read_miner_registry()
-    by_ip: dict[str, str] = {}
+    configured_overrides = configured_asic_mac_overrides()
+    by_ip: dict[str, str] = dict(configured_overrides)
     neighbors = read_neighbor_macs()
     now_epoch = seconds_since_epoch()
     expected_macs = expected_asic_mac_set()
@@ -2581,7 +2624,7 @@ def asic_mac_override_entries(registry: dict[str, Any] | None = None) -> list[tu
         )
         if not active_or_configured:
             continue
-        mac = normalize_mac(neighbors.get(ip)) or normalize_mac(row.get("mac"))
+        mac = configured_overrides.get(ip) or normalize_mac(neighbors.get(ip)) or normalize_mac(row.get("mac"))
         if not mac:
             continue
         device_type = str(row.get("device_type") or "").strip().lower()
@@ -2875,6 +2918,7 @@ def save_miner_registry(miners: list[dict[str, Any]]) -> dict[str, Any]:
         if mac:
             item["mac"] = mac
             item["device_id"] = f"mac:{mac}"
+            item["identity_key"] = f"mac:{mac}"
         item["ip_history"] = merge_unique_strings(item.get("ip_history"), ip)
         likely_asic = str(item.get("device_type") or "").lower() == "asic" or bool(
             item.get("managed") or item.get("last_configured_ok")

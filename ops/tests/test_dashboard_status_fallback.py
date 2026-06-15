@@ -329,6 +329,62 @@ class DashboardStatusFallbackTests(unittest.TestCase):
         self.assertEqual(estimate["narrative"], "Mining is intentionally paused while chain catch-up has priority.")
         self.assertEqual(estimate["next_step"], "Mining resumes when lag is at or below 300 blocks.")
 
+    def test_sync_estimate_falls_back_to_import_log_and_cached_global_head(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = pathlib.Path(tmp)
+            dashboard.SYNC_ESTIMATE_STATE_FILE = runtime / "sync-estimate.json"
+            dashboard.GLOBAL_CACHE_FILE = runtime / "global-cache.json"
+            dashboard.time.time = lambda: 2000.0
+            dashboard.GLOBAL_CACHE_FILE.write_text(
+                json.dumps(
+                    {
+                        "status": "degraded",
+                        "updated_at": "2026-06-15T09:00:00+0200",
+                        "updated_at_epoch": 1900,
+                        "rpc_source": "public-rpc",
+                        "chain_block_count": 1200,
+                        "latest_block": 1200,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload = {
+                "sync_progress": {
+                    "status": "syncing",
+                    "nodes": {
+                        "node": {
+                            "status": "syncing",
+                            "current_block": 0,
+                            "highest_block": 0,
+                            "remaining_blocks": 0,
+                        }
+                    },
+                },
+                "sync_health": {},
+                "sync_coordinator": {},
+                "nodes": {
+                    "node": {
+                        "latest_block": 1000,
+                        "tail": [
+                            "2026-06-15|07:00:00.000 [INFO ] Imported new chain segment           number=950 hash=aaa",
+                            "2026-06-15|07:00:05.000 [INFO ] Imported new chain segment           number=1,000 hash=bbb",
+                        ],
+                    }
+                },
+                "managed_node_services": ["node"],
+                "catchup_policy": {"active": True},
+            }
+
+            enriched = dashboard.enrich_status_with_sync_estimate(payload)
+
+        estimate = enriched["sync_estimate"]
+        self.assertEqual(estimate["leader"], "node")
+        self.assertEqual(estimate["remaining_blocks"], 200)
+        self.assertEqual(estimate["rate_blocks_per_second"], 10.0)
+        self.assertEqual(estimate["eta_seconds"], 20)
+        self.assertEqual(estimate["height_source"], "node-import-log")
+        self.assertEqual(estimate["target_height_source"], "cached-global-head")
+
     def test_status_payload_fallback_estimates_wait_from_stale_cache_age(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = self.configure_fast_path(tmp)

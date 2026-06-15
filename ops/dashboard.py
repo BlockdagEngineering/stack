@@ -29,7 +29,6 @@ from pool_ops import (
     PROJECT_ROOT,
     RUNTIME_DIR,
     collect_global_blockchain,
-    collect_earnings,
     collect_status_cached,
     configure_miners,
     default_miner_pool_settings,
@@ -40,6 +39,7 @@ from pool_ops import (
     miner_identity_key,
     normalize_mac,
     now_iso,
+    read_compact_earnings_history_for_dashboard,
     read_latest_earnings_snapshot_info,
     read_dashboard_plot_rebuild_state,
     read_valid_global_history,
@@ -63,7 +63,7 @@ P2P_GUARD_STATE = RUNTIME_DIR / "p2p-health-state.json"
 REPORTS_DIR = RUNTIME_DIR / "reports"
 DEFAULT_STATUS_CACHE_SECONDS = os.environ.get("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS", "120")
 STATUS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_STATUS_CACHE_SECONDS", DEFAULT_STATUS_CACHE_SECONDS))
-EARNINGS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_EARNINGS_CACHE_SECONDS", "0"))
+EARNINGS_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_EARNINGS_CACHE_SECONDS", "60"))
 SAMPLER_CACHE_SECONDS = float(os.environ.get("BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS", DEFAULT_STATUS_CACHE_SECONDS))
 DASHBOARD_STATUS_SAMPLE_WAIT_SECONDS = max(
     5.0,
@@ -92,9 +92,15 @@ GLOBAL_SAMPLER_INTERVAL_SECONDS = max(
 )
 GLOBAL_SAMPLER_STATE_FILE = RUNTIME_DIR / "dashboard-global-sampler-state.json"
 PROCESSED_BLOCKS_RE = re.compile(r"Processed\s+([0-9,]+)\s+blocks\s+in\s+the\s+last\s+([0-9.]+)s")
+IMPORTED_SEGMENT_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})\|(\d{2}:\d{2}:\d{2})(?:\.([0-9]+))?.*?"
+    r"Imported new chain segment\s+number=([0-9,]+)",
+    re.IGNORECASE,
+)
 API_CACHE: dict[str, tuple[float, object]] = {}
 API_CACHE_LOCK = threading.Lock()
 GLOBAL_REFRESH_LOCK = threading.Lock()
+EARNINGS_REFRESH_LOCK = threading.Lock()
 
 
 def cached_payload(key: str, ttl: float, factory):
@@ -109,6 +115,15 @@ def cached_payload(key: str, ttl: float, factory):
     with API_CACHE_LOCK:
         API_CACHE[key] = (now, payload)
     return payload
+
+
+def cached_api_payload_with_age(key: str) -> tuple[object | None, float | None]:
+    now = time.time()
+    with API_CACHE_LOCK:
+        cached = API_CACHE.get(key)
+    if not cached:
+        return None, None
+    return cached[1], max(0.0, now - cached[0])
 
 
 def clear_api_cache(*keys: str) -> None:
@@ -344,6 +359,135 @@ def latest_earnings_snapshot_age() -> float | None:
         return None
 
 
+def live_status_miner_estimates_for_earnings() -> list[dict[str, object]]:
+    try:
+        status = dashboard_status_payload()
+    except Exception:
+        return []
+    health = status.get("miner_health") if isinstance(status, dict) else {}
+    miners = health.get("miners") if isinstance(health, dict) else []
+    rows: list[dict[str, object]] = []
+    for miner in miners if isinstance(miners, list) else []:
+        if not isinstance(miner, dict):
+            continue
+        row = dict(miner)
+        row.setdefault("earnings_scope", "live-status-fallback")
+        row.setdefault("history_source", "live-status")
+        row.setdefault("connected", bool(miner.get("connected")))
+        row.setdefault("configured", bool(miner.get("configured")))
+        row.setdefault("managed", bool(miner.get("managed")))
+        row.setdefault("work_percent", miner.get("work_percent") or "0.00")
+        row.setdefault("shares", miner.get("shares") or 0)
+        row.setdefault("blocks_found", miner.get("blocks_found") or 0)
+        if row.get("mac"):
+            mac = normalize_mac(row.get("mac"))
+            row["mac"] = mac
+            row.setdefault("device_id", f"mac:{mac}")
+            row.setdefault("identity_key", f"mac:{mac}")
+        rows.append(row)
+    return rows
+
+
+def dashboard_earnings_snapshot_payload(
+    snapshot: dict[str, object] | None,
+    *,
+    reason: str,
+    refresh_queued: bool = False,
+) -> dict[str, object]:
+    history, history_sample_count = read_compact_earnings_history_for_dashboard()
+    miner_estimates = []
+    if isinstance(snapshot, dict):
+        miners = snapshot.get("miner_estimates")
+        miner_estimates = [dict(item) for item in miners if isinstance(item, dict)] if isinstance(miners, list) else []
+    if not miner_estimates and history:
+        miners = history[-1].get("miner_estimates")
+        miner_estimates = [dict(item) for item in miners if isinstance(item, dict)] if isinstance(miners, list) else []
+    if not miner_estimates:
+        miner_estimates = live_status_miner_estimates_for_earnings()
+
+    generated_at = now_iso()
+    latest_history_at = history[-1].get("generated_at") if history else None
+    credit_balance_check = {}
+    total_bdag = None
+    if isinstance(snapshot, dict):
+        total_bdag = snapshot.get("total_bdag")
+        if isinstance(snapshot.get("credit_balance_check"), dict):
+            credit_balance_check = snapshot["credit_balance_check"]
+
+    return {
+        "generated_at": generated_at,
+        "status": "refreshing" if refresh_queued else "snapshot",
+        "source": "dashboard-earnings-snapshot-fallback",
+        "source_truth": "cached earnings snapshots plus live status miner health; full chain earnings refresh runs in background",
+        "bounded_fallback": True,
+        "fallback_reason": reason,
+        "refresh_queued": refresh_queued,
+        "credits": {
+            "source_truth": "not checked on synchronous dashboard request",
+            "totals": {"total_bdag": total_bdag, "total_wei": None},
+        },
+        "price": {},
+        "wallet": {},
+        "wallet_balance": {},
+        "payment_wallet_balance": {},
+        "credit_wallet_balance": {},
+        "onchain_earnings": {},
+        "earnings_24h": {
+            "status": "refreshing" if refresh_queued else "snapshot",
+            "source": "background-sampler",
+            "source_truth": "background earnings sampler",
+            "bdag": None,
+            "usd": None,
+            "zar": None,
+        },
+        "credit_balance_check": credit_balance_check,
+        "hourly_averages": {},
+        "asic_allocation_rate_source": "live-status-fallback",
+        "asic_allocation_rate_basis": "live pool share/work status while earnings collection refreshes",
+        "asic_allocation_chain_rate": {"applied": False},
+        "miner_estimates": miner_estimates,
+        "total_usd": None,
+        "total_zar": None,
+        "wallet_24h_usd": None,
+        "wallet_24h_zar": None,
+        "wallet_total_usd": None,
+        "wallet_total_zar": None,
+        "snapshot_log": "",
+        "history": history,
+        "history_sample_count": history_sample_count,
+        "history_derived_sample_count": 0,
+        "history_total_sample_count": len(history),
+        "history_derivation_source": "",
+        "history_expected_interval_seconds": EARNINGS_SNAPSHOT_EXPECTED_INTERVAL_SECONDS,
+        "history_latest_at": latest_history_at,
+        "history_latest_age_seconds": latest_earnings_snapshot_age(),
+        "history_stale": False if latest_history_at else True,
+        "history_sampler_status": "ok" if history else "refreshing",
+        "history_stale_reason": "" if history else "Full earnings history is warming up; live miner status is shown meanwhile.",
+    }
+
+
+def cache_earnings_payload(payload: dict[str, object]) -> None:
+    with API_CACHE_LOCK:
+        API_CACHE["earnings"] = (time.time(), payload)
+
+
+def queue_dashboard_earnings_sample(reason: str) -> bool:
+    if not EARNINGS_SAMPLER_ENABLED:
+        return False
+    if not EARNINGS_REFRESH_LOCK.acquire(blocking=False):
+        return False
+
+    def runner() -> None:
+        try:
+            record_dashboard_earnings_sample(reason)
+        finally:
+            EARNINGS_REFRESH_LOCK.release()
+
+    threading.Thread(target=runner, name=f"earnings-refresh-{reason}", daemon=True).start()
+    return True
+
+
 def record_dashboard_earnings_sample(reason: str) -> bool:
     ensure_runtime()
     age = latest_earnings_snapshot_age()
@@ -356,6 +500,13 @@ def record_dashboard_earnings_sample(reason: str) -> bool:
             except BlockingIOError:
                 return False
             snapshot = record_earnings_snapshot()
+            cache_earnings_payload(
+                dashboard_earnings_snapshot_payload(
+                    snapshot,
+                    reason=reason,
+                    refresh_queued=False,
+                )
+            )
     except Exception as exc:  # noqa: BLE001 - dashboard sampling must never stop serving.
         write_earnings_sampler_state(
             {
@@ -377,6 +528,29 @@ def record_dashboard_earnings_sample(reason: str) -> bool:
         }
     )
     return True
+
+
+def dashboard_earnings_payload() -> dict[str, object]:
+    cached, cache_age = cached_api_payload_with_age("earnings")
+    if isinstance(cached, dict) and cache_age is not None and cache_age < EARNINGS_CACHE_SECONDS:
+        payload = dict(cached)
+        payload["cache_age_seconds"] = round(cache_age, 3)
+        payload["refresh_queued"] = False
+        return payload
+
+    refresh_queued = queue_dashboard_earnings_sample("api-earnings")
+    if isinstance(cached, dict):
+        payload = dict(cached)
+        payload["cache_age_seconds"] = round(cache_age or 0.0, 3)
+        payload["stale_cache_served"] = True
+        payload["refresh_queued"] = refresh_queued
+        return payload
+
+    return dashboard_earnings_snapshot_payload(
+        None,
+        reason="api-earnings",
+        refresh_queued=refresh_queued,
+    )
 
 
 def earnings_sampler_loop() -> None:
@@ -562,7 +736,47 @@ def eta_iso(epoch: float | None) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(epoch))
 
 
+def import_log_epoch(date_text: str, time_text: str, fraction_text: str | None) -> float | None:
+    try:
+        epoch = time.mktime(time.strptime(f"{date_text} {time_text}", "%Y-%m-%d %H:%M:%S"))
+    except ValueError:
+        return None
+    if fraction_text:
+        epoch += float(f"0.{fraction_text[:6]}")
+    return epoch
+
+
+def node_import_tail_samples(node: dict[str, object]) -> list[tuple[float, int]]:
+    tail = node.get("tail")
+    if not isinstance(tail, list):
+        return []
+    samples: list[tuple[float, int]] = []
+    for line in tail:
+        match = IMPORTED_SEGMENT_RE.search(str(line or ""))
+        if not match:
+            continue
+        epoch = import_log_epoch(match.group(1), match.group(2), match.group(3))
+        height = safe_int(match.group(4).replace(",", ""))
+        if epoch is not None and height is not None:
+            samples.append((epoch, height))
+    return samples
+
+
+def latest_import_height_from_tail(node: dict[str, object]) -> int | None:
+    samples = node_import_tail_samples(node)
+    return samples[-1][1] if samples else None
+
+
 def node_processed_rate_from_tail(node: dict[str, object]) -> tuple[float | None, str]:
+    samples = node_import_tail_samples(node)
+    if len(samples) >= 2:
+        first_epoch, first_height = samples[0]
+        last_epoch, last_height = samples[-1]
+        elapsed = last_epoch - first_epoch
+        imported = last_height - first_height
+        if elapsed > 0 and imported > 0:
+            return imported / elapsed, f"recent import log: {imported} blocks/{elapsed:.1f}s"
+
     tail = node.get("tail")
     if not isinstance(tail, list):
         return None, ""
@@ -576,6 +790,27 @@ def node_processed_rate_from_tail(node: dict[str, object]) -> tuple[float | None
             continue
         return blocks / seconds, f"recent node log: {int(blocks)} blocks/{seconds:g}s"
     return None, ""
+
+
+def cached_global_tip_for_sync() -> dict[str, object]:
+    cached = read_json(GLOBAL_CACHE_FILE, {})
+    if not isinstance(cached, dict):
+        return {}
+    heights = [
+        safe_int(cached.get(key))
+        for key in ("chain_block_count", "latest_block", "latest_order", "evm_latest_block")
+    ]
+    tip = max([height for height in heights if height is not None and height > 0] or [0])
+    if tip <= 0:
+        return {}
+    updated_epoch = safe_float(cached.get("updated_at_epoch"))
+    return {
+        "height": tip,
+        "updated_at": cached.get("updated_at") or "",
+        "age_seconds": round(max(0.0, time.time() - updated_epoch), 1) if updated_epoch else None,
+        "source": cached.get("rpc_source") or cached.get("source") or "global-cache",
+        "status": cached.get("status") or "",
+    }
 
 
 def sync_progress_for_node(payload: dict[str, object], node_name: str) -> dict[str, object]:
@@ -605,7 +840,21 @@ def choose_sync_leader(payload: dict[str, object]) -> str:
             if current > 0:
                 candidates.append((current, str(name)))
     candidates.sort(reverse=True)
-    return candidates[0][1] if candidates else ""
+    if candidates:
+        return candidates[0][1]
+    status_nodes = payload.get("nodes") if isinstance(payload.get("nodes"), dict) else {}
+    if isinstance(status_nodes, dict):
+        for name, node in status_nodes.items():
+            if not isinstance(node, dict):
+                continue
+            current = safe_int(node.get("latest_block"), 0) or latest_import_height_from_tail(node) or 0
+            if current > 0:
+                candidates.append((current, str(name)))
+    candidates.sort(reverse=True)
+    if candidates:
+        return candidates[0][1]
+    managed_nodes = payload.get("managed_node_services") if isinstance(payload.get("managed_node_services"), list) else []
+    return str(managed_nodes[0]) if managed_nodes else ""
 
 
 def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, object]:
@@ -633,6 +882,8 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
     previous_nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     new_state = {"updated_at": eta_iso(now), "nodes": {}}
     estimate_nodes: dict[str, object] = {}
+    cached_tip = cached_global_tip_for_sync()
+    cached_tip_height = safe_int(cached_tip.get("height")) if cached_tip else None
 
     progress_nodes = sync_progress.get("nodes") if isinstance(sync_progress.get("nodes"), dict) else {}
     node_names = sorted(set(list(nodes.keys()) + list(progress_nodes.keys() if isinstance(progress_nodes, dict) else [])))
@@ -643,6 +894,20 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
         remaining = safe_int(progress.get("remaining_blocks"))
         percent = safe_float(progress.get("percent"))
         node_info = nodes.get(name) if isinstance(nodes.get(name), dict) else {}
+        height_source = "sync-progress"
+        target_height_source = "sync-progress"
+        if (current is None or current <= 0) and isinstance(node_info, dict):
+            current = safe_int(node_info.get("latest_block")) or latest_import_height_from_tail(node_info)
+            if current:
+                height_source = "node-import-log"
+        if current and cached_tip_height and cached_tip_height >= current and (highest is None or highest <= current):
+            highest = cached_tip_height
+            remaining = max(0, highest - current)
+            target_height_source = "cached-global-head"
+            if highest > 0 and percent is None:
+                percent = round((current / highest) * 100, 4)
+        if current and highest and remaining == 0 and highest > current:
+            remaining = highest - current
         log_rate, log_rate_source = node_processed_rate_from_tail(node_info)
         history_rate = safe_float(history_rates.get(name)) if isinstance(history_rates, dict) else None
 
@@ -691,6 +956,10 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
             "eta_at": eta_iso(now + eta_seconds) if eta_seconds is not None else "",
             "eta_to_seed_seconds": round(eta_to_seed_seconds) if eta_to_seed_seconds is not None else None,
             "eta_to_seed_at": eta_iso(now + eta_to_seed_seconds) if eta_to_seed_seconds is not None else "",
+            "height_source": height_source,
+            "target_height_source": target_height_source,
+            "target_height_status": cached_tip.get("status") if cached_tip and target_height_source == "cached-global-head" else "",
+            "target_height_age_seconds": cached_tip.get("age_seconds") if cached_tip and target_height_source == "cached-global-head" else None,
             "planned_pause": False,
             "leader": bool(name == leader),
         }
@@ -743,6 +1012,9 @@ def enrich_status_with_sync_estimate(payload: dict[str, object]) -> dict[str, ob
         "eta_at": leader_estimate.get("eta_at") if leader_estimate else "",
         "eta_to_seed_seconds": leader_estimate.get("eta_to_seed_seconds") if leader_estimate else None,
         "eta_to_seed_at": leader_estimate.get("eta_to_seed_at") if leader_estimate else "",
+        "height_source": leader_estimate.get("height_source") if leader_estimate else "",
+        "target_height_source": leader_estimate.get("target_height_source") if leader_estimate else "",
+        "target_height_age_seconds": leader_estimate.get("target_height_age_seconds") if leader_estimate else None,
         "narrative": narrative,
         "catchup_pause_active": catchup_active,
         "catchup_pause_lag_blocks": catchup_policy.get("lag_blocks"),
@@ -4114,8 +4386,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
             return
         if path == "/api/earnings":
-            record_dashboard_earnings_sample("api-earnings")
-            self.send_json(cached_payload("earnings", EARNINGS_CACHE_SECONDS, lambda: collect_earnings(include_history=True)))
+            self.send_json(dashboard_earnings_payload())
             return
         if path == "/api/sampler":
             self.send_json(cached_payload("sampler", SAMPLER_CACHE_SECONDS, collect_sampler_status))
