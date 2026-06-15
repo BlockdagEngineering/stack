@@ -6,11 +6,10 @@ services:
     blkio_config: !reset null
   node:
     blkio_config: !reset null
-    # Dev e2e for the WalletBlocklist upgrade: seed a throwaway address into the
-    # genesis blocklist. Changing genesis requires a fresh node-data volume.
     environment:
-      BLOCKLIST_GENESIS_BLOCKED: "0x000000000000000000000000000000000000dEaD"
-      BLOCKLIST_GENESIS_OWNER: "0xEd5e2dD1377aBe28907673cdEa8c2c04Fb715dcd"
+      BLOCKLIST_GENESIS_BLOCKED: ""
+      BLOCKLIST_GENESIS_OWNER: ""
+      BLOCKLIST_CONTRACT_CODE: ""
   pool:
     blkio_config: !reset null
   collector:
