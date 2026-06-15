@@ -95,6 +95,7 @@ RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint-nodeworker.sh \
  && chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh
 
 # Snapshot path is relative to build context (Compose sets this in .env for dev vs release).
+ARG SNAPSHOT_PATH=docker/no-snapshot.marker
 COPY ${SNAPSHOT_PATH} /tmp/snapshot-candidate.bdsnap
 
 RUN set -eu; \
