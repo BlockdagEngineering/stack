@@ -36,4 +36,9 @@ fi
 
 log "starting collector from $app"
 cd "$app_dir"
+if python3 -P -c 'import sys; raise SystemExit(0 if sys.flags.safe_path else 1)' >/dev/null 2>&1; then
+  exec python3 -P "$app"
+fi
+
+log "warning: python3 does not support safe-path mode; collector may import packaged ops before stack ops"
 exec python3 "$app"

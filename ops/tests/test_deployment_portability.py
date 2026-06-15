@@ -131,6 +131,7 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfile = (ROOT_DIR / "dockerfile").read_text(encoding="utf-8")
         dockerfile_dev = (ROOT_DIR / "dockerfile-dev").read_text(encoding="utf-8")
+        collector_entrypoint = (ROOT_DIR / "docker" / "entrypoint-collector.sh").read_text(encoding="utf-8")
         release_dashboard_block = dockerfile.split("FROM ubuntu:24.04 AS dashboard", 1)[1]
         dev_dashboard_block = dockerfile_dev.split("FROM ubuntu:24.04 AS dashboard", 1)[1]
 
@@ -144,6 +145,8 @@ dnsmasq 55 1 0 07:45 ? 00:00:00 /usr/local/bin/nodeworker --node-binary=/usr/loc
         self.assertIn("COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard", dockerfile_dev)
         self.assertNotIn("requirements-dev.txt", release_dashboard_block)
         self.assertNotIn("requirements-dev.txt", dev_dashboard_block)
+        self.assertIn('export PYTHONPATH="$BDAG_PROJECT_ROOT/ops${PYTHONPATH:+:$PYTHONPATH}"', collector_entrypoint)
+        self.assertIn('exec python3 -P "$app"', collector_entrypoint)
 
     def test_dashboard_release_build_has_no_dead_git_ref_arg(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
