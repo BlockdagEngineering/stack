@@ -5064,11 +5064,13 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
                 "ports": [],
                 "first_seen_at": None,
                 "last_seen_at": None,
+                "last_tcp_accept_at": None,
                 "last_job_at": None,
                 "last_submit_at": None,
                 "last_share_at": None,
                 "last_block_at": None,
                 "last_difficulty": None,
+                "tcp_accepts": 0,
                 "workers": [],
                 "job_extranonces": [],
             },
@@ -5092,6 +5094,23 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
                 item["first_seen_at"] = timestamp
             item[field] = timestamp
             item["last_seen_at"] = timestamp
+            epoch = _pool_log_epoch(line)
+            if epoch is not None and epoch > 0:
+                epoch_value = int(epoch)
+                if field.endswith("_at"):
+                    item[f"{field[:-3]}_epoch"] = epoch_value
+                item["last_seen_epoch"] = epoch_value
+
+    def note_tcp_accept(item: dict[str, Any], line: str) -> None:
+        timestamp = _parse_log_timestamp(line)
+        if timestamp:
+            if not item.get("first_seen_at"):
+                item["first_seen_at"] = timestamp
+            item["last_tcp_accept_at"] = timestamp
+            epoch = _pool_log_epoch(line)
+            if epoch is not None and epoch > 0:
+                item["last_tcp_accept_epoch"] = int(epoch)
+        item["tcp_accepts"] = int(item.get("tcp_accepts", 0) or 0) + 1
 
     def note_port(item: dict[str, Any], port: str | None) -> None:
         if not port:
@@ -5121,7 +5140,7 @@ def parse_pool_activity(log: str) -> dict[str, Any]:
             if item is None:
                 continue
             note_port(item, port)
-            note_seen(item, line)
+            note_tcp_accept(item, line)
             continue
 
         pushdif = PUSHDIF_RE.search(line)
@@ -5401,12 +5420,20 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
             )
         )
         last_seen_log_at = str(miner.get("last_seen_at") or "")
+        last_tcp_accept_log_at = str(miner.get("last_tcp_accept_at") or "")
+        previous_tcp_accept_log_at = str(item.get("last_tcp_accept_log_at") or "")
         previous_seen_log_at = str(item.get("last_pool_seen_log_at") or "")
         last_submit_log_at = str(miner.get("last_submit_at") or "")
         previous_submit_log_at = str(item.get("last_submit_log_at") or "")
         last_share_log_at = str(miner.get("last_share_at") or "")
         previous_share_log_at = str(item.get("last_share_log_at") or "")
         now_epoch = seconds_since_epoch()
+        last_seen_epoch = safe_int(miner.get("last_seen_epoch"), 0) or safe_int(_pool_log_epoch(last_seen_log_at), 0)
+        last_tcp_accept_epoch = safe_int(miner.get("last_tcp_accept_epoch"), 0) or safe_int(
+            _pool_log_epoch(last_tcp_accept_log_at), 0
+        )
+        last_submit_epoch = safe_int(miner.get("last_submit_epoch"), 0) or safe_int(_pool_log_epoch(last_submit_log_at), 0)
+        last_share_epoch = safe_int(miner.get("last_share_epoch"), 0) or safe_int(_pool_log_epoch(last_share_log_at), 0)
 
         if not item.get("device_type"):
             has_asic_metadata = bool(item.get("managed") or item.get("model") or item.get("hardware") or item.get("firmware"))
@@ -5440,8 +5467,10 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
                 "auto_discovered": bool(item.get("auto_discovered", item.get("discovered_by") == "pool-log")),
                 "expected_pool_url": item.get("expected_pool_url") or defaults["pool_url"],
                 "expected_worker_user": item.get("expected_worker_user") or (workers[0] if workers else defaults["worker_user"]),
-                "last_pool_seen_at": last_seen_log_at or item.get("last_pool_seen_at") or now_iso(),
+                "last_pool_seen_at": last_seen_log_at or item.get("last_pool_seen_at"),
                 "last_pool_seen_log_at": last_seen_log_at or item.get("last_pool_seen_log_at"),
+                "last_tcp_accept_at": last_tcp_accept_log_at or item.get("last_tcp_accept_at"),
+                "last_tcp_accept_log_at": last_tcp_accept_log_at or item.get("last_tcp_accept_log_at"),
                 "last_job_at": miner.get("last_job_at") or item.get("last_job_at"),
                 "last_submit_at": miner.get("last_submit_at") or item.get("last_submit_at"),
                 "last_share_at": last_share_log_at or item.get("last_share_at"),
@@ -5461,18 +5490,34 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
             }
         )
         if last_seen_log_at and last_seen_log_at != previous_seen_log_at:
-            item["last_pool_seen_epoch"] = now_epoch
-        elif "last_pool_seen_epoch" not in item:
-            item["last_pool_seen_epoch"] = now_epoch
+            item["last_pool_seen_epoch"] = last_seen_epoch or now_epoch
+        elif last_seen_log_at and "last_pool_seen_epoch" not in item:
+            item["last_pool_seen_epoch"] = last_seen_epoch or now_epoch
+        elif last_seen_log_at and last_seen_epoch and safe_int(item.get("last_pool_seen_epoch"), 0) > last_seen_epoch:
+            item["last_pool_seen_epoch"] = last_seen_epoch
+        if last_tcp_accept_log_at and last_tcp_accept_log_at != previous_tcp_accept_log_at:
+            item["last_tcp_accept_epoch"] = last_tcp_accept_epoch or now_epoch
+        elif last_tcp_accept_log_at and "last_tcp_accept_epoch" not in item:
+            item["last_tcp_accept_epoch"] = last_tcp_accept_epoch or now_epoch
+        elif (
+            last_tcp_accept_log_at
+            and last_tcp_accept_epoch
+            and safe_int(item.get("last_tcp_accept_epoch"), 0) > last_tcp_accept_epoch
+        ):
+            item["last_tcp_accept_epoch"] = last_tcp_accept_epoch
         if last_submit_log_at and last_submit_log_at != previous_submit_log_at:
-            item["last_submit_epoch"] = now_epoch
+            item["last_submit_epoch"] = last_submit_epoch or now_epoch
             item["last_submit_log_at"] = last_submit_log_at
         elif last_submit_log_at and "last_submit_epoch" not in item:
-            item["last_submit_epoch"] = now_epoch
+            item["last_submit_epoch"] = last_submit_epoch or now_epoch
+        elif last_submit_log_at and last_submit_epoch and safe_int(item.get("last_submit_epoch"), 0) > last_submit_epoch:
+            item["last_submit_epoch"] = last_submit_epoch
         if last_share_log_at and last_share_log_at != previous_share_log_at:
-            item["last_share_epoch"] = now_epoch
+            item["last_share_epoch"] = last_share_epoch or now_epoch
         elif last_share_log_at and "last_share_epoch" not in item:
-            item["last_share_epoch"] = now_epoch
+            item["last_share_epoch"] = last_share_epoch or now_epoch
+        elif last_share_log_at and last_share_epoch and safe_int(item.get("last_share_epoch"), 0) > last_share_epoch:
+            item["last_share_epoch"] = last_share_epoch
 
         if mac and previous_ip and previous_ip != ip:
             existing.pop(previous_ip, None)

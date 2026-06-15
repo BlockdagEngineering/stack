@@ -181,8 +181,9 @@ services:
       POOL_PAYOUT_MATURITY: ${POOL_PAYOUT_MATURITY:-4096}
       POOL_TEMPLATE_TTL_REFRESH_MS: ${POOL_TEMPLATE_TTL_REFRESH_MS:-500}
       POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}
-      POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS: ${POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS:-2500}
-      POOL_AUTO_TUNE_BLOCK_CANDIDATE_JOB_AGE: ${POOL_AUTO_TUNE_BLOCK_CANDIDATE_JOB_AGE:-false}
+      POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS: ${POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS:-1200}
+      POOL_AUTO_TUNE_BLOCK_CANDIDATE_JOB_AGE: ${POOL_AUTO_TUNE_BLOCK_CANDIDATE_JOB_AGE:-true}
+      POOL_AUTO_TUNE_BLOCK_CANDIDATE_JOB_AGE_MAX_MS: ${POOL_AUTO_TUNE_BLOCK_CANDIDATE_JOB_AGE_MAX_MS:-4000}
       POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}
       BDAG_ASIC_EXPECTED_MACS: ${BDAG_ASIC_EXPECTED_MACS:-}
       POOL_ASIC_MAC_OVERRIDES: ${POOL_ASIC_MAC_OVERRIDES:-}
@@ -391,6 +392,7 @@ services:
     image: alpine:3.20
     container_name: miner-route
     network_mode: host
+    privileged: true
     cap_add:
       - NET_ADMIN
     restart: unless-stopped
@@ -399,17 +401,46 @@ services:
       BDAG_MINER_ROUTE_SUBNET: ${BDAG_MINER_ROUTE_SUBNET:-}
       BDAG_MINER_ROUTE_GATEWAY: ${BDAG_MINER_ROUTE_GATEWAY:-}
       BDAG_MINER_ROUTE_DEV: ${BDAG_MINER_ROUTE_DEV:-}
+      BDAG_MINER_ROUTE_SRC: ${BDAG_MINER_ROUTE_SRC:-}
+      BDAG_MINER_ROUTE_ARP_GUARD: ${BDAG_MINER_ROUTE_ARP_GUARD:-false}
+      BDAG_MINER_ROUTE_INTERVAL_SECONDS: ${BDAG_MINER_ROUTE_INTERVAL_SECONDS:-60}
     entrypoint:
       - /bin/sh
       - -c
-      - >-
+      - |-
         while true; do
-        if [ -n "$$BDAG_MINER_ROUTE_SUBNET" ] && [ -n "$$BDAG_MINER_ROUTE_GATEWAY" ]; then
-        cmd="ip route replace $$BDAG_MINER_ROUTE_SUBNET via $$BDAG_MINER_ROUTE_GATEWAY";
-        [ -n "$$BDAG_MINER_ROUTE_DEV" ] && cmd="$$cmd dev $$BDAG_MINER_ROUTE_DEV";
-        $$cmd || echo "miner-route: failed: $$cmd";
-        fi;
-        sleep 60;
+          if [ "$$BDAG_MINER_ROUTE_ARP_GUARD" = "true" ] || [ "$$BDAG_MINER_ROUTE_ARP_GUARD" = "1" ]; then
+            sysctl -w net.ipv4.conf.all.arp_ignore=1 >/dev/null || true;
+            sysctl -w net.ipv4.conf.default.arp_ignore=1 >/dev/null || true;
+            sysctl -w net.ipv4.conf.all.arp_announce=2 >/dev/null || true;
+            sysctl -w net.ipv4.conf.default.arp_announce=2 >/dev/null || true;
+            sysctl -w net.ipv4.conf.all.arp_filter=1 >/dev/null || true;
+            if [ -n "$$BDAG_MINER_ROUTE_DEV" ]; then
+              sysctl -w "net.ipv4.conf.$$BDAG_MINER_ROUTE_DEV.arp_ignore=1" >/dev/null || true;
+              sysctl -w "net.ipv4.conf.$$BDAG_MINER_ROUTE_DEV.arp_announce=2" >/dev/null || true;
+              sysctl -w "net.ipv4.conf.$$BDAG_MINER_ROUTE_DEV.arp_filter=1" >/dev/null || true;
+            fi;
+          fi;
+          if [ -n "$$BDAG_MINER_ROUTE_SUBNET" ]; then
+            for subnet in $$(echo "$$BDAG_MINER_ROUTE_SUBNET" | tr ',' ' '); do
+              cmd="ip route replace $$subnet";
+              if [ -n "$$BDAG_MINER_ROUTE_GATEWAY" ]; then
+                cmd="$$cmd via $$BDAG_MINER_ROUTE_GATEWAY";
+              fi;
+              if [ -n "$$BDAG_MINER_ROUTE_DEV" ]; then
+                cmd="$$cmd dev $$BDAG_MINER_ROUTE_DEV";
+              fi;
+              if [ -n "$$BDAG_MINER_ROUTE_SRC" ]; then
+                cmd="$$cmd src $$BDAG_MINER_ROUTE_SRC";
+              fi;
+              if [ -z "$$BDAG_MINER_ROUTE_GATEWAY" ] && [ -z "$$BDAG_MINER_ROUTE_DEV" ]; then
+                echo "miner-route: skipped $$subnet: set BDAG_MINER_ROUTE_GATEWAY or BDAG_MINER_ROUTE_DEV";
+              else
+                $$cmd || echo "miner-route: failed: $$cmd";
+              fi;
+            done;
+          fi;
+          sleep "$$BDAG_MINER_ROUTE_INTERVAL_SECONDS";
         done
 
   # --------------------------------------------------------------------------

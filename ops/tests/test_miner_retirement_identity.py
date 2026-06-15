@@ -159,9 +159,14 @@ class MinerRegistryIdentityTests(unittest.TestCase):
         self.old_read_neighbors = pool_ops.read_neighbor_macs
         self.old_discover_miner = pool_ops.discover_miner
         self.old_expected_macs = os.environ.get("BDAG_ASIC_EXPECTED_MACS")
+        self.old_asic_lan_cidrs = os.environ.get("BDAG_ASIC_LAN_CIDRS")
+        self.old_scan_target = os.environ.get("BDAG_MINER_SCAN_TARGET")
         pool_ops.MINER_REGISTRY_FILE = self.registry_file
         pool_ops.MINER_RETIREMENTS_FILE = self.retirements_file
         pool_ops.read_neighbor_macs = lambda: {}
+        os.environ.pop("BDAG_ASIC_EXPECTED_MACS", None)
+        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.1.0/24"
+        os.environ.pop("BDAG_MINER_SCAN_TARGET", None)
         self.addCleanup(self.restore)
 
     def restore(self) -> None:
@@ -173,6 +178,14 @@ class MinerRegistryIdentityTests(unittest.TestCase):
             os.environ.pop("BDAG_ASIC_EXPECTED_MACS", None)
         else:
             os.environ["BDAG_ASIC_EXPECTED_MACS"] = self.old_expected_macs
+        if self.old_asic_lan_cidrs is None:
+            os.environ.pop("BDAG_ASIC_LAN_CIDRS", None)
+        else:
+            os.environ["BDAG_ASIC_LAN_CIDRS"] = self.old_asic_lan_cidrs
+        if self.old_scan_target is None:
+            os.environ.pop("BDAG_MINER_SCAN_TARGET", None)
+        else:
+            os.environ["BDAG_MINER_SCAN_TARGET"] = self.old_scan_target
 
     def test_registry_keeps_distinct_macs_when_ip_is_reused(self) -> None:
         registry = pool_ops.save_miner_registry(
@@ -572,6 +585,8 @@ class PoolActivityAttributionTests(unittest.TestCase):
         self.old_read_neighbor_macs = pool_ops.read_neighbor_macs
         self.old_asic_lan_cidrs = os.environ.get("BDAG_ASIC_LAN_CIDRS")
         self.old_scan_target = os.environ.get("BDAG_MINER_SCAN_TARGET")
+        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.1.0/24"
+        os.environ.pop("BDAG_MINER_SCAN_TARGET", None)
         self.addCleanup(self.restore_registry)
 
     def restore_registry(self) -> None:
@@ -662,6 +677,105 @@ class PoolActivityAttributionTests(unittest.TestCase):
         self.assertEqual(miners[0]["mac"], current_mac)
         self.assertEqual(miners[0]["identity_key"], f"mac:{current_mac}")
         self.assertEqual(miners[0]["device_type"], "asic")
+        self.assertEqual(miners[0]["last_tcp_accept_at"], "2026/06/09 06:27:08")
+        self.assertEqual(miners[0]["tcp_accepts"], 1)
+        self.assertIsNone(miners[0]["last_seen_at"])
+
+    def test_stratum_accept_only_does_not_refresh_pool_seen_window(self) -> None:
+        mac = "28:e2:97:4d:44:3a"
+        old_read_miner_registry = pool_ops.read_miner_registry
+        old_read_neighbor_macs = pool_ops.read_neighbor_macs
+        old_save_miner_registry = pool_ops.save_miner_registry
+        old_default_miner_pool_settings = pool_ops.default_miner_pool_settings
+        self.addCleanup(lambda: setattr(pool_ops, "read_miner_registry", old_read_miner_registry))
+        self.addCleanup(lambda: setattr(pool_ops, "read_neighbor_macs", old_read_neighbor_macs))
+        self.addCleanup(lambda: setattr(pool_ops, "save_miner_registry", old_save_miner_registry))
+        self.addCleanup(lambda: setattr(pool_ops, "default_miner_pool_settings", old_default_miner_pool_settings))
+        pool_ops.read_neighbor_macs = lambda: {}
+        pool_ops.read_miner_registry = lambda **_kwargs: {
+            "miners": [
+                {
+                    "ip": "192.168.1.102",
+                    "mac": mac,
+                    "device_id": f"mac:{mac}",
+                    "device_type": "asic",
+                    "managed": True,
+                }
+            ]
+        }
+        pool_ops.save_miner_registry = lambda miners: {"updated_at": "now", "miners": miners}
+        pool_ops.default_miner_pool_settings = lambda: {
+            "pool_url": "stratum+tcp://192.168.1.120:3334",
+            "worker_user": "0x05518e03e148c56e426ff9e1cbdb962b4fc5250a",
+            "pool_password": "1234",
+        }
+        activity = {
+            "miners": [
+                {
+                    "ip": "192.168.1.102",
+                    "mac": mac,
+                    "device_id": f"mac:{mac}",
+                    "identity_key": f"mac:{mac}",
+                    "device_type": "asic",
+                    "ports": ["53998"],
+                    "last_seen_at": None,
+                    "last_tcp_accept_at": "2026/06/09 06:27:08",
+                    "tcp_accepts": 1,
+                }
+            ]
+        }
+
+        registry = pool_ops.upsert_pool_activity_miners(activity)
+        miner = registry["miners"][0]
+
+        self.assertEqual(miner["last_tcp_accept_at"], "2026/06/09 06:27:08")
+        self.assertNotIn("last_pool_seen_epoch", miner)
+        self.assertIsNone(miner.get("last_pool_seen_at"))
+
+    def test_pool_activity_upsert_uses_log_timestamp_epoch(self) -> None:
+        mac = "28:e2:97:4d:44:3a"
+        worker = "0x05518e03e148c56e426ff9e1cbdb962b4fc5250a"
+        old_read_miner_registry = pool_ops.read_miner_registry
+        old_read_neighbor_macs = pool_ops.read_neighbor_macs
+        old_save_miner_registry = pool_ops.save_miner_registry
+        old_seconds_since_epoch = pool_ops.seconds_since_epoch
+        old_default_miner_pool_settings = pool_ops.default_miner_pool_settings
+        self.addCleanup(lambda: setattr(pool_ops, "read_miner_registry", old_read_miner_registry))
+        self.addCleanup(lambda: setattr(pool_ops, "read_neighbor_macs", old_read_neighbor_macs))
+        self.addCleanup(lambda: setattr(pool_ops, "save_miner_registry", old_save_miner_registry))
+        self.addCleanup(lambda: setattr(pool_ops, "seconds_since_epoch", old_seconds_since_epoch))
+        self.addCleanup(lambda: setattr(pool_ops, "default_miner_pool_settings", old_default_miner_pool_settings))
+        pool_ops.read_neighbor_macs = lambda: {}
+        pool_ops.read_miner_registry = lambda **_kwargs: {
+            "miners": [
+                {
+                    "ip": "192.168.1.102",
+                    "mac": mac,
+                    "device_id": f"mac:{mac}",
+                    "device_type": "asic",
+                    "managed": True,
+                    "expected_worker_user": worker,
+                    "last_pool_seen_log_at": "2026/06/09 06:27:08",
+                    "last_pool_seen_epoch": 9_999_999_999,
+                }
+            ]
+        }
+        pool_ops.save_miner_registry = lambda miners: {"updated_at": "now", "miners": miners}
+        pool_ops.seconds_since_epoch = lambda: 9_999_999_999
+        pool_ops.default_miner_pool_settings = lambda: {
+            "pool_url": "stratum+tcp://192.168.1.120:3334",
+            "worker_user": worker,
+            "pool_password": "1234",
+        }
+        log = f"2026/06/09 06:27:08 [192.168.1.102:53998] authorize accepted user={worker}"
+
+        activity = pool_ops.parse_pool_activity(log)
+        registry = pool_ops.upsert_pool_activity_miners(activity)
+        miner = registry["miners"][0]
+
+        self.assertEqual(activity["miners"][0]["last_seen_epoch"], int(pool_ops._pool_log_epoch(log) or 0))
+        self.assertEqual(miner["last_pool_seen_epoch"], int(pool_ops._pool_log_epoch(log) or 0))
+        self.assertNotEqual(miner["last_pool_seen_epoch"], 9_999_999_999)
 
     def test_same_mac_ip_change_keeps_worker_and_work_on_one_identity(self) -> None:
         worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
