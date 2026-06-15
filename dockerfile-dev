@@ -8,7 +8,7 @@
 #   stack_src          -> pool-stack-docker repo root
 #   blockdag_corechain -> local clone of blockdag node source
 #   pool_src           -> local clone of mining pool source
-#   cpu_miner_src      -> local clone of cpu miner source
+#   blockdag_corechain -> local clone of blockdag node source and devnet CPU miner
 #   collector_src      -> local clone of the status API source
 #   dashboard_src      -> local clone of dashboard source
 #
@@ -46,14 +46,14 @@ RUN make build && \
     cp -f ./bin/dashboard-api  /out/dashboard-api
 
 # ----------------------------------------------------------------------------
-# Miner Build Stage (cpu-miner)
+# Miner Build Stage (devnet CPU miner)
 # ----------------------------------------------------------------------------
 FROM base AS miner-build
-WORKDIR /src/cpu-miner
-COPY --from=cpu_miner_src . .
+WORKDIR /src/blockdag-corechain
+COPY --from=blockdag_corechain . .
 # CGO is required for the C-implemented scrypt inner loop. Use portable -O2
 # instead of -march=native so the resulting binary runs on any x86_64 host.
-RUN CGO_ENABLED=1 CGO_CFLAGS='-O2' go build -o /out/scrypt-miner ./cmd/miner
+RUN CGO_ENABLED=1 CGO_CFLAGS='-O2' go build -o /out/devnet-cpuminer ./cmd/devnet-cpuminer
 
 # ----------------------------------------------------------------------------
 # Collector Source Stage
@@ -89,7 +89,8 @@ COPY --from=node-build /out/nodeworker     /usr/local/bin/nodeworker
 RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker
 
 COPY --from=stack_src docker/entrypoint-nodeworker.sh /usr/local/bin/docker-entrypoint-nodeworker.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh
+RUN sed -i "s/\r$//" /usr/local/bin/docker-entrypoint-nodeworker.sh \
+ && chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh
 
 # Snapshot file must be in the main build context (repo root).
 COPY ${SNAPSHOT_PATH} /tmp/snapshot-candidate.bdsnap
@@ -156,7 +157,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     ca-certificates tzdata \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=miner-build /out/scrypt-miner /usr/local/bin/cpu-miner
+COPY --from=miner-build /out/devnet-cpuminer /usr/local/bin/cpu-miner
 RUN chmod +x /usr/local/bin/cpu-miner
 
 RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack \

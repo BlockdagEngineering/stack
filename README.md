@@ -411,13 +411,26 @@ docker compose logs -f node
 docker compose logs -f pool
 ```
 
-To include optional services controlled by `.env`, set `COMPOSE_PROFILES` before
-`docker compose up`. Example: `COMPOSE_PROFILES=miner` enables the CPU miner
-service; leave `COMPOSE_PROFILES` empty to disable it.
+## Local devnet for dapp testing
+
+The `devnet` branch includes a source-built local devnet with a pool and CPU
+miner attached to the pool. From this repository:
+
+```bash
+cp .env.devnet.example .env.devnet
+docker compose --env-file .env.devnet -f docker-compose.yml -f docker-compose.devnet.yml up -d --build pool-db node pool collector dashboard cpu-miner
+```
+
+Use `http://localhost:18545` for EVM HTTP RPC, `ws://localhost:18546` for EVM
+WebSocket RPC, and `stratum+tcp://localhost:3334` for the pool. See
+`docs/devnet-release.md` for operations and reset commands.
+
+The devnet overlay starts the CPU miner by default so pool mining is exercised
+as soon as the stack is up.
 
 Once everything is running:
 
-- Dashboard: `http://localhost:8080`
+- Dashboard: `http://localhost:8088`
 - Collector API: `http://localhost:9280`
 - Mining pool Stratum endpoint: `stratum+tcp://localhost:3334`
 - RPC endpoint: `http://localhost:38131`

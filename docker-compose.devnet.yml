@@ -1,0 +1,72 @@
+services:
+  pool-db:
+    blkio_config: !reset null
+    volumes: !override
+      - postgres-devnet-data:/var/lib/postgresql/data
+      - ./sql/pool-schema.sql:/docker-entrypoint-initdb.d/01-pool-schema.sql:ro
+
+  node:
+    blkio_config: !reset null
+    volumes: !override
+      - node-devnet-data:/var/lib/bdagStack/node
+      - nodeworker-devnet-data:/var/lib/bdagStack/nodeworker
+      - ./docker/no-snapshot.marker:/snapshot/latest.bdsnap:ro
+      - ./node.devnet.conf:/etc/bdagStack/node.conf:ro
+    environment:
+      BDAG_SNAPSHOT_URL: ""
+      BDAG_FASTSNAP_ENABLED: "0"
+      BDAG_FASTSNAP_REQUIRED: "0"
+      BDAG_FASTSYNC_PEER_ORDERING: "off"
+      BDAG_FASTSYNC_APPEND_ADDPEERS: "0"
+      BDAG_FASTARTIFACTSYNC_ENABLED: "0"
+      BDAG_ENABLE_NODE_MINING: "1"
+      BDAG_NODE_MODULES: "Blockdag,miner"
+      BDAG_NODE_MINING_ARGS: "--miner --miningaddr=${MINING_POOL_ADDRESS}"
+      NODE_ARGS_APPEND: "--devnet --acceptnonstd ${NODE_ARGS_APPEND:-}"
+
+  pool:
+    blkio_config: !reset null
+    environment:
+      NODE_RPC_URL: http://node:38131
+      NODE_RPC_URLS: http://node:38131
+      WALLET_RPC_URL: http://node:18545
+      POOL_RUNTIME_ADMIN_ENABLED: "true"
+      POOL_BLOCK_MATURITY: ${POOL_BLOCK_MATURITY:-2}
+      POOL_PAYOUT_MATURITY: ${POOL_PAYOUT_MATURITY:-10}
+      POOL_FEE_PERCENTAGE: ${POOL_FEE_PERCENTAGE:-0}
+      POOL_MIN_PDIFF: ${POOL_MIN_PDIFF:-0.0001}
+      POOL_STARTING_PDIFF: ${POOL_STARTING_PDIFF:-0.0001}
+      POOL_VARDIFF_TARGET_SHARES_PER_MINUTE: ${POOL_VARDIFF_TARGET_SHARES_PER_MINUTE:-6}
+      POOL_TEMPLATE_TTL_REFRESH_MS: ${POOL_TEMPLATE_TTL_REFRESH_MS:-1000}
+      POOL_RPC_ROUTER_NODE_HEALTH_ENABLED: "false"
+
+  collector:
+    blkio_config: !reset null
+    environment:
+      BDAG_NODE_RPC_URLS: node=http://node:38131
+      BDAG_GLOBAL_CHAIN_RPC_URLS: node=http://node:38131
+      BDAG_RPC_URL: http://node:38131
+      MINING_POOL_ADDRESS: ${MINING_POOL_ADDRESS}
+
+  dashboard:
+    blkio_config: !reset null
+
+  watchdog:
+    blkio_config: !reset null
+
+  sentinel:
+    blkio_config: !reset null
+
+  cpu-miner:
+    profiles: !reset []
+    environment:
+      POOL_URL: stratum+tcp://pool:3334
+      POOL_USER: ${MINING_POOL_ADDRESS}
+      POOL_PASS: ${MINER_POOL_PASS:-x}
+      WORKERS: ${MINER_WORKERS:-1}
+      MINER_NAME: ${MINER_NAME:-devnet-cpu}
+
+volumes:
+  postgres-devnet-data:
+  node-devnet-data:
+  nodeworker-devnet-data:
