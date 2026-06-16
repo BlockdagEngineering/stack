@@ -7007,6 +7007,7 @@ def evm_rpc_lag_snapshot(source: str, node_rpc_url: str, chain_block_count: int,
             "reason": "EVM RPC has not been sampled yet",
         },
     }
+    snapshot.update(eth_syncing_details(evm_url, timeout))
     try:
         evm_block = parse_rpc_quantity(json_rpc_call(evm_url, "eth_blockNumber", [], timeout=timeout))
     except Exception as exc:  # noqa: BLE001 - EVM lag is a readiness diagnostic.
@@ -7295,6 +7296,68 @@ def native_sync_progress(source: str) -> dict[str, Any] | None:
     }
 
 
+def node_template_health_snapshot(source: str, url: str, timeout: float = NODE_TEMPLATE_PROBE_TIMEOUT) -> dict[str, Any]:
+    try:
+        result = mining_rpc_call(url, "getTemplateHealth", [], timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - template health is advisory for sync display.
+        return {
+            "template_health_available": False,
+            "template_health_error": f"getTemplateHealth failed for {source}: {exc}",
+        }
+    if not isinstance(result, dict):
+        return {
+            "template_health_available": False,
+            "template_health_error": f"getTemplateHealth returned non-object result for {source}",
+        }
+    return {
+        "template_health_available": True,
+        "template_health": result,
+        "template_health_reason_code": str(result.get("reason_code") or ""),
+        "template_health_reason": str(result.get("reason") or ""),
+        "template_health_mineable_now": bool(result.get("mineable_now")),
+        "template_health_submit_ready": bool(result.get("submit_ready")),
+        "template_health_template_usable": bool(result.get("template_usable")),
+        "template_health_sync_allowed": result.get("sync_allowed"),
+        "template_health_sync_reason_code": str(result.get("sync_reason_code") or ""),
+        "template_health_sync_reason": str(result.get("sync_reason") or ""),
+        "template_health_chain_current": result.get("chain_current"),
+        "template_health_main_order": result.get("main_order"),
+        "template_health_p2p_best_peer_main_order": result.get("p2p_best_peer_main_order"),
+        "template_health_p2p_best_peer_lead_blocks": result.get("p2p_best_peer_lead_blocks"),
+        "template_health_p2p_mining_fresh": result.get("p2p_mining_fresh"),
+        "template_health_p2p_mining_fresh_reason_code": str(result.get("p2p_mining_fresh_reason_code") or ""),
+    }
+
+
+def template_health_sync_gap(template: dict[str, Any]) -> int:
+    main_order = safe_int(template.get("template_health_main_order"))
+    best_peer = safe_int(template.get("template_health_p2p_best_peer_main_order"))
+    lead = safe_int(template.get("template_health_p2p_best_peer_lead_blocks"), 0)
+    gap = max(0, lead or 0)
+    if main_order is not None and best_peer is not None:
+        gap = max(gap, best_peer - main_order)
+    return max(0, gap)
+
+
+def template_health_reports_syncing(template: dict[str, Any]) -> bool:
+    if not template.get("template_health_available"):
+        return False
+    reason_code = str(template.get("template_health_reason_code") or "").lower()
+    sync_reason_code = str(template.get("template_health_sync_reason_code") or "").lower()
+    p2p_reason_code = str(template.get("template_health_p2p_mining_fresh_reason_code") or "").lower()
+    chain_current = template.get("template_health_chain_current")
+    sync_allowed = template.get("template_health_sync_allowed")
+    gap = template_health_sync_gap(template)
+    return bool(
+        chain_current is False
+        or sync_allowed is False
+        or "sync" in reason_code
+        or ("sync" in sync_reason_code and sync_reason_code != "ok")
+        or ("sync" in p2p_reason_code and p2p_reason_code != "ok")
+        or gap > NATIVE_SYNC_LEAD_THRESHOLD
+    )
+
+
 def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TIMEOUT) -> dict[str, Any]:
     try:
         if not valid_url(url):
@@ -7308,9 +7371,9 @@ def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TI
             }
         evm_lag = evm_rpc_lag_snapshot(source, url, current, timeout)
 
-        sync_current = safe_int(chain.get("sync_current_block"), None)
-        sync_highest = safe_int(chain.get("sync_highest_block"), None)
-        if chain.get("chain_syncing") is True:
+        sync_current = safe_int(evm_lag.get("sync_current_block"), safe_int(chain.get("sync_current_block"), None))
+        sync_highest = safe_int(evm_lag.get("sync_highest_block"), safe_int(chain.get("sync_highest_block"), None))
+        if chain.get("chain_syncing") is True or evm_lag.get("chain_syncing") is True:
             progress_current = sync_current if sync_current is not None else current
             remaining = max(0, sync_highest - progress_current) if sync_highest is not None else None
             percent = (
@@ -7318,6 +7381,7 @@ def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TI
                 if sync_highest is not None
                 else None
             )
+            source_name = f"{source}:eth_syncing" if evm_lag.get("chain_syncing") is True else source
             return {
                 "status": "syncing",
                 "percent": percent,
@@ -7325,11 +7389,37 @@ def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TI
                 "highest_block": sync_highest,
                 "starting_block": None,
                 "remaining_blocks": remaining,
-                "source": source,
-                "error": "",
+                "source": source_name,
+                "error": "eth_syncing active" if evm_lag.get("chain_syncing") is True else "",
+                "current_block_source": "eth_syncing.currentBlock"
+                if evm_lag.get("chain_syncing") is True
+                else chain.get("chain_rpc_source"),
+                **chain,
+                **evm_lag,
+            }
+
+        template = node_template_health_snapshot(source, url)
+        if template_health_reports_syncing(template):
+            remaining = template_health_sync_gap(template)
+            highest = current + remaining if remaining > 0 else None
+            reason = str(
+                template.get("template_health_sync_reason")
+                or template.get("template_health_reason")
+                or "node reports sync is not current"
+            )
+            return {
+                "status": "syncing",
+                "percent": round(max(0.0, min(100.0, (current / max(1, highest)) * 100)), 2) if highest else None,
+                "current_block": current,
+                "highest_block": highest,
+                "starting_block": None,
+                "remaining_blocks": remaining if remaining > 0 else None,
+                "source": f"{source}:getTemplateHealth",
+                "error": reason,
                 "current_block_source": chain.get("chain_rpc_source"),
                 **chain,
                 **evm_lag,
+                **template,
             }
 
         evm_block = safe_int(evm_lag.get("evm_block_count"), None)
@@ -7354,6 +7444,7 @@ def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TI
         if native:
             native.update(chain)
             native.update(evm_lag)
+            native.update(template)
             native["current_block"] = current
             native["highest_block"] = None
             native["current_block_source"] = chain.get("chain_rpc_source")
@@ -7371,6 +7462,7 @@ def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TI
             "current_block_source": chain.get("chain_rpc_source"),
             **chain,
             **evm_lag,
+            **template,
         }
     except Exception as exc:
         return unknown_sync_progress(source, str(exc))

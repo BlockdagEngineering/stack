@@ -131,6 +131,8 @@ class ChainRpcResilienceTests(unittest.TestCase):
             raise AssertionError(method)
 
         def fake_json_rpc(url, method, _params, timeout):
+            if method == "eth_syncing":
+                return False
             if method == "eth_blockNumber":
                 if url == "http://reference:18545":
                     return "0x2710"
@@ -155,6 +157,47 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.assertEqual(progress["evm_gap_to_chain_count"], 2000)
         self.assertEqual(progress["current_block_source"], "eth_blockNumber")
 
+    def test_node_sync_progress_reports_active_eth_syncing_without_reference(self) -> None:
+        pool_ops.NODE_CHAIN_RPC_RETRIES = 1
+
+        def fake_mining_rpc(_url, method, _params, timeout):
+            if method == "getBlockCount":
+                return "12000"
+            if method == "getMainChainHeight":
+                return "11000"
+            if method == "getTemplateHealth":
+                return {
+                    "reason_code": "ok",
+                    "sync_reason_code": "ok",
+                    "chain_current": True,
+                    "sync_allowed": True,
+                    "main_order": 12000,
+                    "p2p_best_peer_main_order": 12000,
+                    "p2p_best_peer_lead_blocks": 0,
+                }
+            raise AssertionError(method)
+
+        def fake_json_rpc(_url, method, _params, timeout):
+            if method == "eth_syncing":
+                return {"currentBlock": "0x2af8", "highestBlock": "0x2ee0", "startingBlock": "0x0"}
+            if method == "eth_blockNumber":
+                return "0x2af8"
+            raise AssertionError(method)
+
+        pool_ops.mining_rpc_call = fake_mining_rpc
+        pool_ops.json_rpc_call = fake_json_rpc
+        pool_ops.evm_reference_rpc_urls = lambda: []
+
+        progress = pool_ops.node_sync_progress("node", "http://127.0.0.1:38131", timeout=8.0)
+
+        self.assertEqual(progress["status"], "syncing")
+        self.assertEqual(progress["source"], "node:eth_syncing")
+        self.assertEqual(progress["current_block"], 11000)
+        self.assertEqual(progress["highest_block"], 12000)
+        self.assertEqual(progress["remaining_blocks"], 1000)
+        self.assertEqual(progress["current_block_source"], "eth_syncing.currentBlock")
+        self.assertTrue(progress["chain_syncing"])
+
     def test_canonical_safety_allows_zero_lag_public_evm_hash_diagnostic(self) -> None:
         pool_ops.EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE = True
         pool_ops.EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS = 3
@@ -162,6 +205,8 @@ class ChainRpcResilienceTests(unittest.TestCase):
         pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_REFERENCE_LAG = 1000
 
         def fake_json_rpc(url, method, params, timeout):
+            if method == "eth_syncing":
+                return False
             if method == "eth_blockNumber":
                 return "0x3e8"
             if method == "eth_getBlockByNumber":
