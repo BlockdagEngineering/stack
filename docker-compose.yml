@@ -428,6 +428,7 @@ services:
       TEMP: /tmp
       ADDR: ${DASHBOARD_LISTEN:-0.0.0.0:8088}
       BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://collector:9280}
+      BDAG_RELEASE_VERSION: ${BDAG_RELEASE_VERSION:-pool-v6.5.3}
       DASHBOARD_TIMEZONE: ${DASHBOARD_TIMEZONE:-Africa/Johannesburg}
     ports:
       - "${DASHBOARD_BIND:-0.0.0.0}:${DASHBOARD_HOST_PORT:-8088}:8088"
