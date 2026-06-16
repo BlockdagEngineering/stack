@@ -139,8 +139,10 @@ The sampler is also the backstop for the mining imperative. If the user-systemd
 guard units drift disabled, it re-enables them. If `pool` is stopped while
 miner demand is visible, an ASIC LAN neighbor is present, or the chain is synced
 and ready to mine, it starts the pool container without recreating dependencies.
-During normal catch-up it does not stop an already-running pool; the pool remains
-up and pauses template refreshes from its own node-health signal.
+During catch-up it stops an already-running pool so ASIC hash is not spent on
+work that cannot become paid on-chain blocks. The pool is restarted only through
+the normal readiness gate after mainnet, sync, P2P freshness, and template/submit
+health are safe.
 Set `BDAG_MINING_IMPERATIVE_REPAIR_ENABLED=0` only for an intentional maintenance
 window where mining must remain stopped.
 

@@ -1462,6 +1462,11 @@ def pool_container_running(payload: dict[str, Any]) -> bool:
     return bool(container.get("running"))
 
 
+def docker_container_running(container_name: str) -> bool:
+    result = run(["docker", "inspect", "-f", "{{.State.Running}}", container_name], timeout=20)
+    return result.ok and result.stdout.strip().lower() == "true"
+
+
 def stop_pool_container(payload: dict[str, Any], reason: str, *, containment: str = "catchup_pause") -> bool:
     control = automation_control.check_mutation_allowed(
         automation_control.ACTION_CONTAINMENT_STOP,
@@ -1482,15 +1487,17 @@ def stop_pool_container(payload: dict[str, Any], reason: str, *, containment: st
         **compose.as_dict(),
     }
     if compose.ok:
-        log(f"{containment_label} stopped {POOL_CONTAINER}: {reason}")
-        record_incident(
-            f"{event_prefix}_stopped_pool",
-            "warning",
-            f"{containment_label} stopped {POOL_CONTAINER}: {reason}",
-            action,
-            payload,
-        )
-        return True
+        if not docker_container_running(POOL_CONTAINER):
+            log(f"{containment_label} stopped {POOL_CONTAINER}: {reason}")
+            record_incident(
+                f"{event_prefix}_stopped_pool",
+                "warning",
+                f"{containment_label} stopped {POOL_CONTAINER}: {reason}",
+                action,
+                payload,
+            )
+            return True
+        log(f"{containment_label} compose stop returned ok but {POOL_CONTAINER} is still running; using docker stop")
 
     stop = run(["docker", "stop", POOL_CONTAINER], timeout=60)
     action = {
@@ -1627,11 +1634,12 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
     if catchup_active:
         reason = (
             f"node is {catchup_policy.get('lag_blocks')} blocks behind peers "
-            f"(pause threshold {catchup_policy.get('threshold_blocks')})"
+            f"(pause threshold {catchup_policy.get('threshold_blocks')}); "
+            "pool is stopped so ASIC hash is not spent on non-payable work"
         )
         if pool_container_running(payload):
-            log(f"catch-up pause active; leaving {POOL_CONTAINER} running for pool-side template pause: {reason}")
-            actions.append(f"template_pause:{POOL_CONTAINER}:catchup_pause")
+            if stop_pool_container(payload, reason, containment="catchup_pause"):
+                actions.append(f"stopped_container:{POOL_CONTAINER}:catchup_pause")
         if apply_catchup_node_runtime(payload, catchup_policy):
             actions.append("applied_catchup_node_runtime")
 

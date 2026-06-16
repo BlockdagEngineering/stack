@@ -102,6 +102,51 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertNotIn("last_sync_repair_at", state)
         self.assertIn("last_sync_repair_suppressed_epoch", state)
 
+    def test_pool_containment_stop_falls_back_when_compose_stop_is_noop(self) -> None:
+        commands: list[list[str]] = []
+        written_states: list[dict[str, object]] = []
+        lock_handle = mock.Mock()
+
+        def fake_run_logged(command, *_args, **_kwargs):
+            commands.append(command)
+            return pool_ops.CommandResult(command, 0, "", "", 0.0)
+
+        inspect_results = iter(["true\n", "false\n"])
+
+        def fake_run_command(command, **_kwargs):
+            commands.append(command)
+            if command[:4] == ["docker", "inspect", "-f", "{{.State.Running}}"]:
+                return pool_ops.CommandResult(command, 0, next(inspect_results), "", 0.0)
+            return pool_ops.CommandResult(command, 0, "", "", 0.0)
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            watchdog, "automation_mutation_allowed", return_value=True
+        ), mock.patch.object(
+            watchdog, "acquire_lock", return_value=lock_handle
+        ), mock.patch.object(
+            watchdog, "action_log_path", return_value=pathlib.Path(tmp) / "containment.log"
+        ), mock.patch.object(
+            watchdog, "run_logged", side_effect=fake_run_logged
+        ), mock.patch.object(
+            watchdog, "run_command", side_effect=fake_run_command
+        ), mock.patch.object(
+            watchdog, "write_action_state", side_effect=lambda payload: written_states.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "record_failed_repair", side_effect=AssertionError("fallback stop should succeed")
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ):
+            ok = watchdog.run_pool_containment_stop("syncing")
+
+        self.assertTrue(ok)
+        self.assertTrue(any(command[:3] == ["docker", "compose", "-p"] for command in commands))
+        self.assertIn(["docker", "stop", watchdog.POOL_CONTAINER], commands)
+        self.assertEqual("true", written_states[-1]["inspect_after_compose_stdout"])
+        self.assertEqual("false", written_states[-1]["inspect_after_docker_stop_stdout"])
+        lock_handle.close.assert_called_once()
+
     def test_check_once_active_import_suppression_does_not_consume_repair_cooldown(self) -> None:
         now = 1_779_200_000
         status = {
@@ -206,7 +251,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertTrue(any(item[0] == "pool_start_blocked" for item in events))
         self.assertTrue(written)
 
-    def test_check_once_leaves_running_pool_up_when_sync_progress_is_syncing(self) -> None:
+    def test_check_once_stops_running_pool_when_sync_progress_is_syncing(self) -> None:
         now = 1_779_200_000
         status = {
             **node_status(importing=True, last_import_age_seconds=20),
@@ -229,6 +274,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         status["sync_progress"]["remaining_blocks"] = 90_000
         state: dict[str, object] = {}
         written: list[dict[str, object]] = []
+        stop_reasons: list[str] = []
 
         with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
             watchdog, "NODES", ["node"]
@@ -249,16 +295,19 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         ), mock.patch.object(
             watchdog, "log", lambda _message: None
         ), mock.patch.object(
+            watchdog, "run_pool_containment_stop", side_effect=lambda reason: stop_reasons.append(reason) or True
+        ), mock.patch.object(
             watchdog, "run_repair", side_effect=AssertionError("sync containment must not restart the stack")
         ):
             result = watchdog.check_once(3, 1800, 5, 900, repair=True)
 
-        self.assertEqual("pool_sync_template_pause", result["watchdog_state"]["last_status"])
+        self.assertEqual("pool_sync_containment_stop", result["watchdog_state"]["last_status"])
         self.assertEqual(
             ["sync progress is syncing with 90000 block(s) remaining"],
             result["watchdog_state"]["last_sync_warnings"],
         )
         self.assertEqual("sync progress is syncing with 90000 block(s) remaining", written[-1]["last_pool_sync_pause_reason"])
+        self.assertEqual(["sync progress is syncing with 90000 block(s) remaining"], stop_reasons)
 
     def test_stuck_sync_nodes_require_flat_height_and_stale_pool_jobs(self) -> None:
         now = 1_779_200_000

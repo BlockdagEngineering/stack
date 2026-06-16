@@ -31,6 +31,7 @@ from pool_ops import (
     action_log_path,
     configure_miner,
     default_miner_pool_settings,
+    docker_compose_command,
     ensure_runtime,
     is_lan_ipv4,
     now_iso,
@@ -39,6 +40,7 @@ from pool_ops import (
     restart_miner,
     restart_miner_open,
     restore_clean,
+    run as run_command,
     restart_stack,
     run_logged,
     start_stack,
@@ -1226,6 +1228,87 @@ def run_pool_restart(reason: str) -> bool:
     return ok
 
 
+def run_pool_containment_stop(reason: str) -> bool:
+    if not automation_mutation_allowed(
+        actor="watchdog",
+        action=automation_control.ACTION_CONTAINMENT_STOP,
+        target=POOL_CONTAINER,
+        reason=reason,
+        log=log,
+        incident_source="watchdog",
+    ):
+        return False
+
+    lock_handle = acquire_lock(blocking=False)
+    if lock_handle is None:
+        log(f"pool containment stop skipped because another repair is running; reason={reason}")
+        return False
+
+    started = time.time()
+    action_name = f"stop-{POOL_CONTAINER}-catchup-containment"
+    log_path = action_log_path(action_name)
+    state_payload = {
+        "name": action_name,
+        "mode": "containment-stop-pool",
+        "service": POOL_CONTAINER,
+        "reason": reason,
+        "status": "running",
+        "started_at": now_iso(),
+        "finished_at": None,
+        "log_path": str(log_path),
+    }
+    write_action_state(state_payload)
+    log(f"starting pool containment stop: {reason}; log={log_path}")
+
+    compose = run_logged(docker_compose_command("stop", POOL_CONTAINER), log_path, timeout=120)
+    inspect_after_compose = run_command(
+        ["docker", "inspect", "-f", "{{.State.Running}}", POOL_CONTAINER],
+        timeout=20,
+    )
+    ok = compose.ok and inspect_after_compose.ok and inspect_after_compose.stdout.strip().lower() == "false"
+    docker_stop = None
+    if not ok:
+        docker_stop = run_logged(["docker", "stop", POOL_CONTAINER], log_path, timeout=60)
+        inspect_after_stop = run_command(
+            ["docker", "inspect", "-f", "{{.State.Running}}", POOL_CONTAINER],
+            timeout=20,
+        )
+        ok = docker_stop.ok and inspect_after_stop.ok and inspect_after_stop.stdout.strip().lower() == "false"
+    else:
+        inspect_after_stop = None
+
+    state_payload.update(
+        {
+            "status": "ok" if ok else "failed",
+            "finished_at": now_iso(),
+            "elapsed": round(time.time() - started, 3),
+            "compose_stop_returncode": compose.returncode,
+            "inspect_after_compose_returncode": inspect_after_compose.returncode,
+            "inspect_after_compose_stdout": inspect_after_compose.stdout.strip(),
+            "docker_stop_returncode": docker_stop.returncode if docker_stop is not None else None,
+            "inspect_after_docker_stop_returncode": (
+                inspect_after_stop.returncode if inspect_after_stop is not None else None
+            ),
+            "inspect_after_docker_stop_stdout": (
+                inspect_after_stop.stdout.strip() if inspect_after_stop is not None else ""
+            ),
+        }
+    )
+    write_action_state(state_payload)
+    log(f"finished pool containment stop status={state_payload['status']} elapsed={state_payload['elapsed']}s")
+    if ok:
+        record_efficiency_event(
+            "pool_sync_containment_stop",
+            "warning",
+            "pool stopped while node is syncing so miners do not spend hash on non-payable work",
+            {"reason": reason, "pool_container": POOL_CONTAINER, "log_path": str(log_path)},
+        )
+    else:
+        record_failed_repair("pool containment stop", reason, {"service": POOL_CONTAINER, "log_path": str(log_path)})
+    lock_handle.close()
+    return ok
+
+
 def run_miner_restarts(targets: list[dict[str, Any]], reason: str) -> dict[str, Any]:
     target_label = ",".join(str(item.get("ip") or "") for item in targets) or "asic-miners"
     open_restart_only = bool(targets) and all(
@@ -1974,16 +2057,24 @@ def check_once(
 
     sync_pause_reason = sync_progress_pool_pause_reason(status)
     if sync_pause_reason and container_running(status, POOL_CONTAINER) and not stuck_nodes:
+        stopped = bool(repair and run_pool_containment_stop(sync_pause_reason))
         state["consecutive_failures"] = 0
         state["consecutive_syncing"] = 0
         state["consecutive_share_stalls"] = 0
-        state["last_status"] = "pool_sync_template_pause"
+        state["last_status"] = (
+            "pool_sync_containment_stop"
+            if stopped
+            else "pool_sync_containment_required"
+        )
         state["last_failures"] = []
         state["last_sync_warnings"] = [sync_pause_reason]
         state["last_share_warnings"] = []
         state["last_pool_sync_pause_at"] = now_iso()
         state["last_pool_sync_pause_reason"] = sync_pause_reason
-        log(f"pool sync template pause active; leaving {POOL_CONTAINER} running: {sync_pause_reason}")
+        if stopped:
+            log(f"pool sync containment stopped {POOL_CONTAINER}: {sync_pause_reason}")
+        else:
+            log(f"pool sync containment required for {POOL_CONTAINER}: {sync_pause_reason}")
         state["updated_at"] = now_iso()
         write_state(state)
         return {"status": status, "watchdog_state": state}
