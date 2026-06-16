@@ -102,7 +102,27 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
         self.assertEqual(policy["threshold_blocks"], 300)
         self.assertIn("mining work is intentionally paused", policy["summary"])
         self.assertIn("Leave miners configured", policy["user_message"])
-        self.assertEqual(policy["trigger"], "lag_threshold")
+        self.assertEqual(policy["trigger"], "node_syncing")
+        self.assertTrue(policy["syncing_active"])
+
+    def test_catchup_policy_pauses_on_syncing_before_lag_threshold(self) -> None:
+        policy = pool_ops.build_catchup_policy(
+            {"status": "syncing", "remaining_blocks": 3},
+            {"node": {"peer_ahead_blocks": 3}},
+            {"pool": {"running": True}},
+            {"node_mineable": True, "node_submit_ready": True, "node_p2p_mining_fresh": True},
+            {},
+            mining_ready=True,
+        )
+
+        self.assertTrue(policy["active"])
+        self.assertTrue(policy["syncing_active"])
+        self.assertEqual(policy["trigger"], "node_syncing")
+        self.assertFalse(policy["lag_threshold_active"])
+        self.assertEqual(policy["lag_blocks"], 3)
+        self.assertIn("blockchain is syncing", policy["summary"])
+        self.assertIn("lower I/O pressure", policy["summary"])
+        self.assertIn("sync reports synced", policy["next_step"])
 
     def test_catchup_policy_uses_io_pressure_as_primary_trigger(self) -> None:
         policy = pool_ops.build_catchup_policy(

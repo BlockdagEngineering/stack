@@ -252,6 +252,7 @@ STATUS_PAYLOAD_STALE_AFTER_SECONDS = env_float(
     minimum=5.0,
 )
 CATCHUP_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_PAUSE_ENABLED", True)
+CATCHUP_PAUSE_ON_SYNCING = env_bool("BDAG_CATCHUP_PAUSE_ON_SYNCING", True)
 CATCHUP_PAUSE_THRESHOLD_BLOCKS = env_int("BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS", 300, minimum=1)
 CATCHUP_NODE_CACHE_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MB", 6144, minimum=0)
 CATCHUP_IO_PRESSURE_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED", True)
@@ -5063,6 +5064,7 @@ def build_catchup_policy(
         and backend_unready_reasons
         and not mining_ready_for_policy
     )
+    syncing_active = bool(CATCHUP_PAUSE_ON_SYNCING and status in {"syncing", "catchup_pause"})
     io_pressure_active = bool(
         CATCHUP_IO_PRESSURE_PAUSE_ENABLED
         and io_pressure_reasons
@@ -5070,9 +5072,13 @@ def build_catchup_policy(
         and ((peer_catchup and lag >= CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS) or backend_unready_under_pressure)
     )
     lag_threshold_active = bool(lag > CATCHUP_PAUSE_THRESHOLD_BLOCKS and (status != "synced" or not mining_ready_for_policy))
-    active = bool(CATCHUP_PAUSE_ENABLED and (io_pressure_active or lag_threshold_active))
+    active = bool(CATCHUP_PAUSE_ENABLED and (syncing_active or io_pressure_active or lag_threshold_active))
     pool_running = bool((containers.get(POOL_CONTAINER) or {}).get("running")) if isinstance(containers, Mapping) else False
-    trigger = ("io_pressure" if io_pressure_active else ("lag_threshold" if lag_threshold_active else "")) if active else ""
+    trigger = (
+        "io_pressure"
+        if io_pressure_active
+        else ("node_syncing" if syncing_active else ("lag_threshold" if lag_threshold_active else ""))
+    ) if active else ""
     summary = (
         (
             f"catch-up pause active: chain node is I/O-bound while {lag} blocks behind peers; "
@@ -5081,6 +5087,12 @@ def build_catchup_policy(
             else "catch-up pause active: backend is not ready while the host is I/O-bound; mining work is intentionally paused"
         )
         if trigger == "io_pressure"
+        else (
+            f"catch-up pause active: blockchain is syncing"
+            + (f" and {lag} blocks behind peers" if lag > 0 else "")
+            + "; mining work is intentionally paused to lower I/O pressure"
+        )
+        if trigger == "node_syncing"
         else (
             f"catch-up pause active: chain node is {lag} blocks behind peers "
             f"(threshold {CATCHUP_PAUSE_THRESHOLD_BLOCKS}); mining work is intentionally paused"
@@ -5099,11 +5111,17 @@ def build_catchup_policy(
             "this pool; they are not the problem while this state is active."
             if trigger == "io_pressure"
             else (
+                "The pool is deliberately pausing mining/template work because the blockchain is syncing. "
+                "This keeps disk, CPU, and network capacity focused on block import instead of stale mining jobs. "
+                "Leave miners configured for this pool; they are not the problem while this state is active."
+                if trigger == "node_syncing"
+                else (
                 "The pool is deliberately prioritizing chain catch-up. Mining/template work is paused so the "
                 "node can spend disk, CPU, and network capacity importing blocks instead of handing stale jobs "
                 "to miners. Leave miners configured for this pool; they are not the problem while this state is active."
                 if active
                 else ""
+                )
             )
         )
     )
@@ -5114,6 +5132,8 @@ def build_catchup_policy(
             "The sampler will allow mining again when I/O pressure drops, peer lag is inside the safe window, "
             "and backend template checks are ready."
         )
+    elif trigger == "node_syncing":
+        next_step = "The sampler will allow mining again when blockchain sync reports synced and backend template checks are ready."
     else:
         next_step = (
             f"The sampler will allow mining again when peer lag is at or below "
@@ -5125,6 +5145,9 @@ def build_catchup_policy(
         "trigger": trigger,
         "lag_blocks": lag,
         "threshold_blocks": CATCHUP_PAUSE_THRESHOLD_BLOCKS,
+        "syncing_pause_enabled": CATCHUP_PAUSE_ON_SYNCING,
+        "syncing_active": syncing_active,
+        "sync_status": status,
         "io_pressure_pause_enabled": CATCHUP_IO_PRESSURE_PAUSE_ENABLED,
         "io_pressure_active": io_pressure_active,
         "io_pressure_reasons": io_pressure_reasons,
@@ -6142,8 +6165,19 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         if connected_miners > 0
         else ("sync_only_no_miners" if no_miner_sync_only else "ready_no_miners")
     )
-    can_accept_shares = bool(connected_miners > 0 and containers.get(POOL_CONTAINER, {}).get("running") and not failures)
-    can_submit_blocks = bool(can_accept_shares and not pool_health.get("needs_fast_repair") and not sync_warnings)
+    mining_paused_for_catchup = bool(catchup_policy.get("active"))
+    can_accept_shares = bool(
+        connected_miners > 0
+        and containers.get(POOL_CONTAINER, {}).get("running")
+        and not failures
+        and not mining_paused_for_catchup
+    )
+    can_submit_blocks = bool(
+        can_accept_shares
+        and not pool_health.get("needs_fast_repair")
+        and not sync_warnings
+        and not mining_paused_for_catchup
+    )
     can_mine = bool(can_accept_shares and can_submit_blocks)
     truth_sources = {
         "chain_block_count": "getBlockCount chain RPC",

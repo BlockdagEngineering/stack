@@ -551,7 +551,6 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         or (
             CATCHUP_PAUSE_ON_SYNCING
             and sync_status in {"syncing", "catchup_pause"}
-            and lag > 0
         )
     )
     io_pressure_reasons = policy.get("io_pressure_reasons")

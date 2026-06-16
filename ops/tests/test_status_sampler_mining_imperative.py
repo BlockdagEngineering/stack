@@ -268,6 +268,21 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertEqual(policy["trigger"], "node_syncing")
         self.assertEqual(policy["lag_blocks"], 5)
 
+    def test_catchup_policy_pauses_on_syncing_even_when_lag_unknown(self) -> None:
+        payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=0)
+        payload["overall"] = "ok"
+        payload["sync_warnings"] = []
+        payload["can_mine"] = True
+        payload["can_submit_blocks"] = True
+        payload["catchup_policy"] = {"mining_ready": True}
+
+        policy = status_sampler.catchup_policy_from_payload(payload)
+
+        self.assertTrue(policy["active"])
+        self.assertTrue(policy["syncing_active"])
+        self.assertEqual(policy["trigger"], "node_syncing")
+        self.assertEqual(policy["lag_blocks"], 0)
+
     def test_syncing_node_leaves_running_pool_up_below_lag_threshold(self) -> None:
         commands = []
         env_updates = {}
