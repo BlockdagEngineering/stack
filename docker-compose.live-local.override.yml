@@ -1,0 +1,7 @@
+services:
+  watchdog:
+    user: "0:0"
+    group_add: !reset []
+  sentinel:
+    user: "0:0"
+    group_add: !reset []
