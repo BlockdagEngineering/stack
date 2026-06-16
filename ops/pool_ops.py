@@ -6145,6 +6145,21 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         if sync_progress.get("status") == "syncing" and not failures and not pool_health["needs_fast_repair"]:
             sync_health["needs_fast_sync_repair"] = False
     sync_health["sync_progress_health"] = sync_progress_health
+    sync_remaining_blocks = safe_int(sync_progress.get("remaining_blocks"), 0)
+    sync_no_recent_progress = bool(
+        connected_miners > 0
+        and str(sync_progress.get("status") or "").lower() == "syncing"
+        and sync_remaining_blocks > 0
+        and int(sync_progress_health.get("active_node_count") or 0) == 0
+        and not pool_has_recent_paid_work
+    )
+    if sync_no_recent_progress:
+        sync_health["sync_progress_no_recent_imports"] = True
+        sync_health["needs_fast_sync_repair"] = True
+        add_sync_warning(
+            "node sync is not making import progress while "
+            f"{sync_remaining_blocks} block(s) behind peers"
+        )
 
     overall = "ok"
     if failures:

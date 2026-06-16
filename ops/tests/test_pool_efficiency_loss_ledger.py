@@ -58,6 +58,8 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
         self.assertFalse(contradiction["hard_unready"])
         self.assertFalse(hard_unready["contradiction"])
         self.assertTrue(hard_unready["hard_unready"])
+        self.assertFalse(hard_unready["pool_has_recent_paid_work"])
+        self.assertIn("accepted shares alone are not paid mining", hard_unready["truth_basis"])
 
     def test_selected_backend_unready_reasons_include_peer_freshness(self) -> None:
         reasons = pool_ops.selected_backend_unready_reasons(

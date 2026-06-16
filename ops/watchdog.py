@@ -713,6 +713,75 @@ def orphan_storm_nodes(status: dict[str, Any]) -> list[str]:
     ]
 
 
+def stuck_sync_nodes(
+    status: dict[str, Any],
+    state: dict[str, Any],
+    now: int | None = None,
+    flat_seconds: int = DEFAULT_ACTIVE_SYNC_IMPORT_GRACE_SECONDS,
+) -> list[str]:
+    sync_progress = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
+    sync_status = str(sync_progress.get("status") or "").lower()
+    if sync_status not in {"syncing", "catchup_pause"}:
+        return []
+
+    sync_health = status.get("sync_health") if isinstance(status.get("sync_health"), dict) else {}
+    progress_health = (
+        sync_health.get("sync_progress_health")
+        if isinstance(sync_health.get("sync_progress_health"), dict)
+        else {}
+    )
+    if int_or_none(progress_health.get("active_node_count")):
+        return []
+
+    pool_health = status.get("pool_health", status.get("pool", {}))
+    source_job_not_ok = pool_health.get("source_job_health_ok") is False
+    ready_miners = int_or_none(pool_health.get("ready_miners"))
+    if ready_miners is None:
+        source_job = pool_health.get("source_job_health") if isinstance(pool_health.get("source_job_health"), dict) else {}
+        ready_miners = int_or_none(source_job.get("ready_miners"))
+        source_job_not_ok = source_job_not_ok or source_job.get("ok") is False
+    job_age = int_or_none(pool_health.get("max_current_job_age_seconds"))
+    if job_age is None:
+        source_job = pool_health.get("source_job_health") if isinstance(pool_health.get("source_job_health"), dict) else {}
+        job_age = int_or_none(source_job.get("max_current_job_age_seconds"))
+    stale_pool_jobs = bool((ready_miners == 0) or (job_age is not None and job_age >= 300))
+    if pool_has_recent_mining_work(status):
+        return []
+
+    current_time = int(time.time()) if now is None else now
+    height_changed_at = (
+        state.get("last_sync_height_changed_at_by_node")
+        if isinstance(state.get("last_sync_height_changed_at_by_node"), dict)
+        else {}
+    )
+    nodes = status.get("nodes", {}) if isinstance(status.get("nodes"), dict) else {}
+    progress_nodes = sync_progress.get("nodes") if isinstance(sync_progress.get("nodes"), dict) else {}
+    stuck: list[str] = []
+    for node in NODES:
+        info = nodes.get(node, {}) if isinstance(nodes.get(node), dict) else {}
+        progress = progress_nodes.get(node, {}) if isinstance(progress_nodes.get(node), dict) else {}
+        remaining = int_or_none(progress.get("remaining_blocks"))
+        if remaining is None:
+            remaining = int_or_none(sync_progress.get("remaining_blocks"))
+        peer_ahead = int_or_none(info.get("peer_ahead_blocks"))
+        lag = max(remaining or 0, peer_ahead or 0)
+        if lag <= 0:
+            continue
+        if info.get("importing"):
+            import_age = int_or_none(info.get("last_import_age_seconds"))
+            if import_age is None or import_age <= flat_seconds:
+                continue
+        changed_at = int_or_none(height_changed_at.get(node))
+        if changed_at is not None and current_time - changed_at < flat_seconds:
+            continue
+        tail = "\n".join(str(item) for item in info.get("tail", []) if item)
+        zero_second_sync_loop = "The sync of graph state has ended" in tail and "spend=0s" in tail
+        orphan_storm = bool(info.get("orphan_block_error_storm"))
+        if source_job_not_ok or stale_pool_jobs or zero_second_sync_loop or orphan_storm:
+            stuck.append(node)
+    return stuck
+
+
 def pool_start_blocked_by_status(status: dict[str, Any]) -> tuple[bool, str]:
     decision = pool_start_gate.pool_start_decision(status)
     return (not decision.allowed), decision.reason
@@ -1856,6 +1925,7 @@ def check_once(
     primary_miner_count = triage["primary_miner_count"]
     template_nodes = triage["template_nodes"]
     orphan_nodes = triage["orphan_nodes"]
+    stuck_nodes = stuck_sync_nodes(status, state, now)
     dag_tip_nodes = triage["dag_tip_nodes"]
     docker_access_error = triage["docker_access_error"]
     useful_work_stall_since = update_useful_work_stall_since(
@@ -1903,7 +1973,7 @@ def check_once(
         return {"status": status, "watchdog_state": state}
 
     sync_pause_reason = sync_progress_pool_pause_reason(status)
-    if sync_pause_reason and container_running(status, POOL_CONTAINER):
+    if sync_pause_reason and container_running(status, POOL_CONTAINER) and not stuck_nodes:
         state["consecutive_failures"] = 0
         state["consecutive_syncing"] = 0
         state["consecutive_share_stalls"] = 0
@@ -2839,8 +2909,18 @@ def check_once(
             state["last_share_repair_at"] = int(time.time())
             if ok:
                 state["consecutive_share_stalls"] = 0
-    elif status.get("sync_health", {}).get("needs_fast_sync_repair"):
-        sync_warnings = status.get("sync_warnings", status.get("warnings", []))
+    elif status.get("sync_health", {}).get("needs_fast_sync_repair") or stuck_nodes:
+        sync_warnings = list(status.get("sync_warnings", status.get("warnings", [])) or [])
+        if stuck_nodes:
+            sync = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
+            remaining = int_or_none(sync.get("remaining_blocks")) or 0
+            stuck_reason = (
+                "node sync cursor is stuck with no recent imports"
+                + (f" while {remaining} block(s) behind peers" if remaining > 0 else "")
+                + f" (affected: {', '.join(stuck_nodes)})"
+            )
+            if stuck_reason not in sync_warnings:
+                sync_warnings.insert(0, stuck_reason)
         recent_mining_work = pool_has_recent_mining_work(status)
         state["consecutive_failures"] = 0
         if recent_mining_work:
