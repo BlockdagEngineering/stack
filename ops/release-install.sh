@@ -650,7 +650,6 @@ configure_env() {
   set_env_value .env BDAG_IPFS_SEGMENT_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOTS
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_HOURS
-  set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WORKERS
   set_stack_default_env_value .env BDAG_DASHBOARD_HISTORY_REBUILD_PRESERVE_ASIC_HISTORY
   set_stack_default_env_value .env BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC
@@ -972,7 +971,7 @@ rebuild_dashboard_plot_data() {
   mkdir -p "$runtime_dir/logs"
   log_file="$runtime_dir/logs/dashboard-rpc-history-rebuild-install.log"
   hours="${BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_HOURS:-720}"
-  window_blocks="${BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS:-64}"
+  window_blocks="${BDAG_GLOBAL_BLOCK_WINDOW:-600}"
   workers="${BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WORKERS:-12}"
 
   say "Rebuilding dashboard Global and Wallet plot data from local chain RPC"

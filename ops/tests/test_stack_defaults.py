@@ -23,10 +23,23 @@ class StackDefaultsTests(unittest.TestCase):
     def test_global_scan_window_is_stack_owned(self) -> None:
         defaults = parse_env(ROOT_DIR / "ops/config/stack-defaults.env")
         self.assertEqual(defaults["BDAG_GLOBAL_BLOCK_WINDOW"], "600")
+        self.assertNotIn("BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS", defaults)
 
         installer = (ROOT_DIR / "ops/install-dashboard.sh").read_text(encoding="utf-8")
         self.assertIn("BDAG_GLOBAL_BLOCK_WINDOW=$(stack_default BDAG_GLOBAL_BLOCK_WINDOW)", installer)
         self.assertIn("ensure_stack_default_env_value BDAG_GLOBAL_BLOCK_WINDOW", installer)
+        self.assertNotIn("BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS", installer)
+
+        release_installer = (ROOT_DIR / "ops/release-install.sh").read_text(encoding="utf-8")
+        self.assertIn('window_blocks="${BDAG_GLOBAL_BLOCK_WINDOW:-600}"', release_installer)
+        self.assertNotIn("BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS", release_installer)
+
+    def test_global_scan_window_has_no_secondary_runtime_knobs(self) -> None:
+        pool_ops = (ROOT_DIR / "ops/pool_ops.py").read_text(encoding="utf-8")
+        self.assertIn("GLOBAL_EVM_FALLBACK_BLOCK_WINDOW = GLOBAL_BLOCK_WINDOW", pool_ops)
+        self.assertIn("DASHBOARD_HISTORY_REBUILD_BLOCK_WINDOW = GLOBAL_BLOCK_WINDOW", pool_ops)
+        self.assertNotIn("BDAG_GLOBAL_EVM_FALLBACK_BLOCK_WINDOW", pool_ops)
+        self.assertNotIn("BDAG_DASHBOARD_HISTORY_REBUILD_BLOCK_WINDOW", pool_ops)
 
     def test_compose_tip_lag_fallback_matches_stack_default(self) -> None:
         defaults = parse_env(ROOT_DIR / "ops/config/stack-defaults.env")

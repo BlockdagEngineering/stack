@@ -95,6 +95,8 @@ class GlobalTabFallbackTests(unittest.TestCase):
         self.old_json_rpc_call = pool_ops.json_rpc_call
         self.old_mining_rpc_call = pool_ops.mining_rpc_call
         self.old_background_maintenance_decision = pool_ops.background_maintenance_decision
+        self.old_probe_global_display_block_height = pool_ops.probe_global_display_block_height
+        pool_ops.probe_global_display_block_height = lambda: (None, "", {}, [])
         self.old_global_evm_fallback_enabled = pool_ops.GLOBAL_EVM_FALLBACK_ENABLED
         self.addCleanup(self.restore_globals)
 
@@ -107,6 +109,7 @@ class GlobalTabFallbackTests(unittest.TestCase):
         pool_ops.json_rpc_call = self.old_json_rpc_call
         pool_ops.mining_rpc_call = self.old_mining_rpc_call
         pool_ops.background_maintenance_decision = self.old_background_maintenance_decision
+        pool_ops.probe_global_display_block_height = self.old_probe_global_display_block_height
         pool_ops.GLOBAL_EVM_FALLBACK_ENABLED = self.old_global_evm_fallback_enabled
 
     def test_global_rejects_old_evm_cache_instead_of_showing_it_stale(self) -> None:
@@ -148,9 +151,9 @@ class GlobalTabFallbackTests(unittest.TestCase):
             "status": "degraded",
             "source_contract": "evm-rpc-fallback-v1",
             "updated_at_epoch": 100,
-            "requested_blocks": 64,
-            "fetched_blocks": 64,
-            "clusters": [{"address": "0xabc", "blocks": 64}],
+            "requested_blocks": 600,
+            "fetched_blocks": 600,
+            "clusters": [{"address": "0xabc", "blocks": 600}],
         }
 
         def fake_read_json_file(path: pathlib.Path, fallback: object) -> object:
@@ -440,9 +443,9 @@ class GlobalChainRpcCollectionTests(unittest.TestCase):
             "source_contract": "evm-rpc-fallback-v1",
             "updated_at_epoch": 100,
             "latest_block": 999,
-            "requested_blocks": 64,
-            "fetched_blocks": 64,
-            "clusters": [{"address": wallet, "blocks": 64}],
+            "requested_blocks": 600,
+            "fetched_blocks": 600,
+            "clusters": [{"address": wallet, "blocks": 600}],
         }
         hashes = {
             2: "0x" + "32" * 32,
@@ -827,6 +830,8 @@ class GlobalMaintenanceBackoffTests(unittest.TestCase):
         self.old_background_maintenance_decision = pool_ops.background_maintenance_decision
         self.old_global_chain_rpc_urls = pool_ops.global_chain_rpc_urls
         self.old_mining_rpc_call = pool_ops.mining_rpc_call
+        self.old_probe_global_display_block_height = pool_ops.probe_global_display_block_height
+        pool_ops.probe_global_display_block_height = lambda: (None, "", {}, [])
         self.addCleanup(self.restore_globals)
 
     def restore_globals(self) -> None:
@@ -835,6 +840,7 @@ class GlobalMaintenanceBackoffTests(unittest.TestCase):
         pool_ops.background_maintenance_decision = self.old_background_maintenance_decision
         pool_ops.global_chain_rpc_urls = self.old_global_chain_rpc_urls
         pool_ops.mining_rpc_call = self.old_mining_rpc_call
+        pool_ops.probe_global_display_block_height = self.old_probe_global_display_block_height
 
     def test_global_scan_defers_to_stale_cache_when_maintenance_backoff_blocks_work(self) -> None:
         cached = trusted_global_cache(
