@@ -28,6 +28,21 @@ reject_grep() {
   fi
 }
 
+reject_service_block_grep() {
+  local service="$1"
+  local pattern="$2"
+  local file="$3"
+  [[ -f "$root/$file" ]] || return 0
+  if awk -v service="  ${service}:" -v pattern="$pattern" '
+    $0 == service { in_block = 1; next }
+    in_block && $0 ~ /^  [A-Za-z0-9_-]+:/ { in_block = 0 }
+    in_block && $0 ~ pattern { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' "$root/$file"; then
+    fail "$file service $service still matches rejected pattern: $pattern"
+  fi
+}
+
 need_file ".github/workflows/build.yml"
 need_file "scripts/render-release-bootstrap.py"
 need_file "scripts/release_bootstrap_static_test.py"
@@ -73,9 +88,22 @@ need_grep 'dashboard_src: \$\{DASHBOARD_SRC_CONTEXT:-\.\}' "docker-compose.yml"
 need_grep 'src/collector/ "\$\{ROOT\}/collector/"' ".github/workflows/build.yml"
 need_grep 'cp "\$\{collector_entry\}" "\$\{ROOT\}/collector/collector[.]py"' ".github/workflows/build.yml"
 need_grep 'Release zip is missing collector[.]py' ".github/workflows/build.yml"
+need_grep 'FROM docker:27-cli AS ops-runtime' "dockerfile"
+need_grep 'FROM ops-runtime AS collector' "dockerfile"
+need_grep 'FROM ops-runtime AS watchdog' "dockerfile"
+need_grep 'FROM ops-runtime AS sentinel' "dockerfile"
 need_grep 'COPY --from=collector_src \. /src/collector' "dockerfile"
 need_grep 'COPY --from=collector-source /src/collector /opt/collector' "dockerfile"
-need_grep 'PYTHONPATH="/opt/collector/ops' "docker/entrypoint-collector.sh"
+need_grep 'target: watchdog' "docker-compose.yml"
+need_grep 'target: sentinel' "docker-compose.yml"
+reject_service_block_grep 'watchdog' 'collector_src' "docker-compose.yml"
+reject_service_block_grep 'sentinel' 'collector_src' "docker-compose.yml"
+need_grep 'add_pythonpath_dir /opt/collector/ops' "docker/entrypoint-collector.sh"
+need_grep 'add_pythonpath_dir "\$BDAG_PROJECT_ROOT/ops"' "docker/entrypoint-collector.sh"
+need_grep 'PYTHONPATH="\$collector_pythonpath' "docker/entrypoint-collector.sh"
+need_grep 'pool_ops[.]bdag_child_running_from_top = bdag_child_running_from_top' "docker/entrypoint-collector.sh"
+need_grep 'executable_name == "rosetta" or executable_name[.]startswith\("qemu-"\)' "docker/entrypoint-collector.sh"
+need_grep 'runpy[.]run_path\(sys[.]argv\[1\], run_name="__main__"\)' "docker/entrypoint-collector.sh"
 need_grep '^app=/opt/collector/collector[.]py$' "docker/entrypoint-collector.sh"
 reject_grep 'git clone --depth 1' "dockerfile"
 reject_grep 'ARG COLLECTOR_REF' "dockerfile"

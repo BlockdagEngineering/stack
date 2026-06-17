@@ -263,9 +263,10 @@ services:
       - collector-runtime:/var/lib/bdag-collector
 
   # --------------------------------------------------------------------------
-  # Host-side auto-repair layer, containerised. Both services reuse the
-  # collector image (python3 + docker CLI + compose plugin) and run the stack
-  # repo's ops scripts against the host Docker socket. The repo is mounted at
+  # Host-side auto-repair layer, containerised. Watchdog and sentinel use
+  # dedicated repair targets that inherit the shared ops runtime (python3 +
+  # Docker CLI + Compose plugin) without bundling collector source. They run the
+  # stack repo's ops scripts against the host Docker socket. The repo is mounted at
   # its host-identical absolute path so sentinel compose recreates resolve
   # bind mounts correctly. BDAG_STACK_HOST_ROOT defaults to the directory
   # compose is invoked from ($PWD); override it when running compose from
@@ -278,11 +279,7 @@ services:
     build:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
-      target: collector
-      additional_contexts:
-        <<: *dev-source-contexts
-      secrets:
-        - github_token
+      target: watchdog
     restart: unless-stopped
     logging: *mining-logging
     user: "1001:969"
@@ -326,11 +323,7 @@ services:
     build:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
-      target: collector
-      additional_contexts:
-        <<: *dev-source-contexts
-      secrets:
-        - github_token
+      target: sentinel
     restart: unless-stopped
     logging: *mining-logging
     user: "1001:969"
@@ -429,6 +422,7 @@ services:
       ADDR: ${DASHBOARD_LISTEN:-0.0.0.0:8088}
       BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://collector:9280}
       DASHBOARD_TIMEZONE: ${DASHBOARD_TIMEZONE:-Africa/Johannesburg}
+      BDAG_MINER_CONTROL_ENABLED: ${BDAG_MINER_CONTROL_ENABLED:-1}
     ports:
       - "${DASHBOARD_BIND:-0.0.0.0}:${DASHBOARD_HOST_PORT:-8088}:8088"
 

@@ -6,6 +6,7 @@ release-downloads/*
 !release-downloads/
 !release-downloads/index.html
 /latest.bdsnap
+snap.tar.gz
 # Local node config (copy from node.conf.example)
 node.conf
 node.snapshot.conf

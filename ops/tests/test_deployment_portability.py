@@ -112,6 +112,7 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfile = (ROOT_DIR / "dockerfile").read_text(encoding="utf-8")
         dockerfile_dev = (ROOT_DIR / "dockerfile-dev").read_text(encoding="utf-8")
+        entrypoint = (ROOT_DIR / "docker" / "entrypoint-collector.sh").read_text(encoding="utf-8")
         workflow = (ROOT_DIR / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8")
 
         self.assertIn("Checkout collector repo", workflow)
@@ -120,11 +121,42 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn('cp "${collector_entry}" "${ROOT}/collector/collector.py"', workflow)
         self.assertIn("Release zip is missing collector.py", workflow)
         self.assertIn("collector_src: ${COLLECTOR_SRC_CONTEXT:-./collector}", compose)
+        self.assertRegex(compose, r"watchdog:\n(?:.*\n){0,12}\s+target: watchdog")
+        self.assertRegex(compose, r"sentinel:\n(?:.*\n){0,12}\s+target: sentinel")
+
+        def service_block(name: str) -> str:
+            tail = compose.split(f"  {name}:", 1)[1]
+            block_lines = []
+            for line in tail.splitlines()[1:]:
+                if line.startswith("  ") and not line.startswith("    ") and line.rstrip().endswith(":"):
+                    break
+                block_lines.append(line)
+            return "\n".join(block_lines)
+
+        watchdog_block = service_block("watchdog")
+        sentinel_block = service_block("sentinel")
+        self.assertNotIn("collector_src", watchdog_block)
+        self.assertNotIn("collector_src", sentinel_block)
+        self.assertIn("FROM docker:27-cli AS ops-runtime", dockerfile)
+        self.assertIn("FROM ops-runtime AS collector", dockerfile)
+        self.assertIn("FROM ops-runtime AS watchdog", dockerfile)
+        self.assertIn("FROM ops-runtime AS sentinel", dockerfile)
         self.assertIn("COPY --from=collector_src . /src/collector", dockerfile)
         self.assertIn("COPY --from=collector-source /src/collector /opt/collector", dockerfile)
         self.assertNotIn("git clone --depth 1", dockerfile)
         self.assertNotIn("COPY --from=collector_src . /opt/collector", dockerfile)
+        self.assertIn("FROM docker:27-cli AS ops-runtime", dockerfile_dev)
+        self.assertIn("FROM ops-runtime AS collector", dockerfile_dev)
+        self.assertIn("FROM ops-runtime AS watchdog", dockerfile_dev)
+        self.assertIn("FROM ops-runtime AS sentinel", dockerfile_dev)
         self.assertIn("COPY --from=collector_src . /src/collector", dockerfile_dev)
+        self.assertLess(
+            entrypoint.index("add_pythonpath_dir /opt/collector/ops"),
+            entrypoint.index('add_pythonpath_dir "$BDAG_PROJECT_ROOT/ops"'),
+        )
+        self.assertIn("pool_ops.bdag_child_running_from_top = bdag_child_running_from_top", entrypoint)
+        self.assertIn('executable_name == "rosetta"', entrypoint)
+        self.assertIn('runpy.run_path(sys.argv[1], run_name="__main__")', entrypoint)
 
     def test_dashboard_image_uses_checked_out_dashboard_context(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")

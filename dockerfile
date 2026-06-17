@@ -139,9 +139,9 @@ EXPOSE 3334 8080
 ENTRYPOINT ["/usr/local/bin/mining-pool"]
 
 # ----------------------------------------------------------------------------
-# Collector Runtime Stage (read-only Python API)
+# Shared Ops Runtime Stage (Docker repair helpers)
 # ----------------------------------------------------------------------------
-FROM docker:27-cli AS collector
+FROM docker:27-cli AS ops-runtime
 
 RUN apk add --no-cache \
     bash \
@@ -155,6 +155,18 @@ RUN apk add --no-cache \
     python3 \
     shadow \
     tzdata
+
+ENV PYTHONUNBUFFERED=1 \
+    BDAG_PROJECT_ROOT=/workspace \
+    BDAG_RUNTIME_DIR=/workspace/ops/runtime \
+    BDAG_POOL_ENV_FILE=/workspace/.env
+
+WORKDIR /workspace
+
+# ----------------------------------------------------------------------------
+# Collector Runtime Stage (read-only Python API)
+# ----------------------------------------------------------------------------
+FROM ops-runtime AS collector
 
 COPY --from=collector-source /src/collector /opt/collector
 COPY docker/entrypoint-collector.sh /usr/local/bin/entrypoint-collector.sh
@@ -174,6 +186,18 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /opt/collector
 EXPOSE 9280
 ENTRYPOINT ["/usr/local/bin/entrypoint-collector.sh"]
+
+# ----------------------------------------------------------------------------
+# Watchdog Runtime Stage (containerized repair loop)
+# ----------------------------------------------------------------------------
+FROM ops-runtime AS watchdog
+LABEL org.opencontainers.image.title="BlockDAG Stack Watchdog"
+
+# ----------------------------------------------------------------------------
+# Sentinel Runtime Stage (last-resort liveness repair loop)
+# ----------------------------------------------------------------------------
+FROM ops-runtime AS sentinel
+LABEL org.opencontainers.image.title="BlockDAG Stack Sentinel"
 
 # ----------------------------------------------------------------------------
 # Dashboard Runtime Stage (Go UI over status API)
