@@ -1,26 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="/opt/miner/pool-stack-docker"
-PROJECT="bdagminer"
-COMPOSE_FILE="docker-compose-miner.yml"
-ENV_FILE=".env"
+ROOT="${BDAG_SINGLE_NODE_WATCHDOG_ROOT:-/opt/miner/pool-stack-docker}"
+PROJECT="${BDAG_SINGLE_NODE_WATCHDOG_PROJECT:-bdagminer}"
+COMPOSE_FILE="${BDAG_SINGLE_NODE_WATCHDOG_COMPOSE_FILE:-docker-compose-miner.yml}"
+ENV_FILE="${BDAG_SINGLE_NODE_WATCHDOG_ENV_FILE:-.env}"
 
-LOG_DIR="$ROOT/logs"
-LOG_FILE="$LOG_DIR/single-node-watchdog.log"
+LOG_DIR="${BDAG_SINGLE_NODE_WATCHDOG_LOG_DIR:-$ROOT/logs}"
+LOG_FILE="${BDAG_SINGLE_NODE_WATCHDOG_LOG_FILE:-$LOG_DIR/single-node-watchdog.log}"
 
-STATE_DIR="/opt/miner/backup-state/watchdog"
-LOCK_FILE="/tmp/bdag-single-node-watchdog.lock"
-LAST_RESTART_FILE="$STATE_DIR/last-pool-restart.epoch"
+STATE_DIR="${BDAG_SINGLE_NODE_WATCHDOG_STATE_DIR:-/opt/miner/backup-state/watchdog}"
+LOCK_FILE="${BDAG_SINGLE_NODE_WATCHDOG_LOCK_FILE:-/tmp/bdag-single-node-watchdog.lock}"
+LAST_RESTART_FILE="${BDAG_SINGLE_NODE_WATCHDOG_LAST_RESTART_FILE:-$STATE_DIR/last-pool-restart.epoch}"
 
-POOL_CONTAINER="bdagminer-pool-1"
-POOL_SERVICE="pool"
+POOL_CONTAINER="${BDAG_SINGLE_NODE_WATCHDOG_POOL_CONTAINER:-bdagminer-pool-1}"
+POOL_SERVICE="${BDAG_SINGLE_NODE_WATCHDOG_POOL_SERVICE:-pool}"
+NODE_CONTAINER="${BDAG_SINGLE_NODE_WATCHDOG_NODE_CONTAINER:-bdagminer-node-1}"
+POSTGRES_CONTAINER="${BDAG_SINGLE_NODE_WATCHDOG_POSTGRES_CONTAINER:-bdagminer-postgres-1}"
+DASHBOARD_CONTAINER="${BDAG_SINGLE_NODE_WATCHDOG_DASHBOARD_CONTAINER:-bdagminer-dashboard-1}"
 
 EXPECTED=(
-  bdagminer-postgres-1
-  bdagminer-node-1
-  bdagminer-pool-1
-  bdagminer-dashboard-1
+  "$POSTGRES_CONTAINER"
+  "$NODE_CONTAINER"
+  "$POOL_CONTAINER"
+  "$DASHBOARD_CONTAINER"
 )
 
 SERVICES=(
@@ -62,6 +65,30 @@ count_pool_logs() {
       printf "expired=%d accepted=%d revenue=%d blocks=%d\n", expired+0, accepted+0, revenue+0, blocks+0
     }
   '
+}
+
+sync_log_has_sync_mode() {
+  awk '
+    {
+      line = tolower($0)
+      if (line ~ /client in initial download/) { found = 1 }
+      if (line ~ /node busy syncing/) { found = 1 }
+      if (line ~ /bdag pool syncing/) { found = 1 }
+      if (line ~ /waiting for node sync/) { found = 1 }
+      if (line ~ /pool is waiting for node sync/) { found = 1 }
+    }
+    END { exit(found ? 0 : 1) }
+  '
+}
+
+node_sync_mode_active() {
+  if docker logs --since "$WINDOW" "$POOL_CONTAINER" 2>&1 | sync_log_has_sync_mode; then
+    return 0
+  fi
+  if docker logs --since "$WINDOW" "$NODE_CONTAINER" 2>&1 | sync_log_has_sync_mode; then
+    return 0
+  fi
+  return 1
 }
 
 get_count() {
@@ -136,6 +163,11 @@ restart_pool_only() {
   log "sample window=$WINDOW $counts"
 
   if (( expired >= MIN_EXPIRED_ERRORS && accepted == 0 && revenue == 0 )); then
+    if node_sync_mode_active; then
+      log "trigger detected but node sync mode active; leaving pool running: $counts"
+      exit 0
+    fi
+
     now="$(date +%s)"
     last_restart=0
 

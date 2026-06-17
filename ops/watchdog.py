@@ -209,25 +209,38 @@ def container_running(status: dict[str, Any], container_name: str) -> bool:
 def sync_progress_pool_pause_reason(status: dict[str, Any]) -> str:
     sync = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
     sync_status = str(sync.get("status") or "").strip().lower()
-    if sync_status not in {"syncing", "catchup_pause"}:
-        return ""
     lag = 0
     for key in ("remaining_blocks", "peer_ahead_blocks"):
         value = int_or_none(sync.get(key))
         if value is not None and value >= 0:
             lag = max(lag, value)
+    node_sync_statuses: set[str] = set()
     nodes = sync.get("nodes")
     if isinstance(nodes, dict):
         for node in nodes.values():
             if not isinstance(node, dict):
                 continue
+            node_status = str(node.get("status") or "").strip().lower()
+            if node_status in {"syncing", "catchup_pause"}:
+                node_sync_statuses.add(node_status)
             for key in ("remaining_blocks", "peer_ahead_blocks"):
                 value = int_or_none(node.get(key))
                 if value is not None and value >= 0:
                     lag = max(lag, value)
-    if lag > 0:
-        return f"sync progress is {sync_status} with {lag} block(s) remaining"
-    return f"sync progress is {sync_status}"
+    if sync_status in {"syncing", "catchup_pause"}:
+        if lag > 0:
+            return f"sync progress is {sync_status} with {lag} block(s) remaining"
+        return f"sync progress is {sync_status}"
+    if node_sync_statuses:
+        node_status = "catchup_pause" if "catchup_pause" in node_sync_statuses else "syncing"
+        if lag > 0:
+            return f"node sync progress is {node_status} with {lag} block(s) remaining"
+        return f"node sync progress is {node_status}"
+
+    pool_health = status.get("pool_health", status.get("pool", {}))
+    if isinstance(pool_health, dict) and pool_health.get("initial_download"):
+        return "pool is waiting for node sync; initial download is active"
+    return ""
 
 
 def is_primary_pool_identity(row: dict[str, Any], mining_address: str) -> bool:
@@ -2057,24 +2070,16 @@ def check_once(
 
     sync_pause_reason = sync_progress_pool_pause_reason(status)
     if sync_pause_reason and container_running(status, POOL_CONTAINER) and not stuck_nodes:
-        stopped = bool(repair and run_pool_containment_stop(sync_pause_reason))
         state["consecutive_failures"] = 0
         state["consecutive_syncing"] = 0
         state["consecutive_share_stalls"] = 0
-        state["last_status"] = (
-            "pool_sync_containment_stop"
-            if stopped
-            else "pool_sync_containment_required"
-        )
+        state["last_status"] = "pool_sync_template_pause"
         state["last_failures"] = []
         state["last_sync_warnings"] = [sync_pause_reason]
         state["last_share_warnings"] = []
         state["last_pool_sync_pause_at"] = now_iso()
         state["last_pool_sync_pause_reason"] = sync_pause_reason
-        if stopped:
-            log(f"pool sync containment stopped {POOL_CONTAINER}: {sync_pause_reason}")
-        else:
-            log(f"pool sync containment required for {POOL_CONTAINER}: {sync_pause_reason}")
+        log(f"pool sync template pause active; leaving {POOL_CONTAINER} running: {sync_pause_reason}")
         state["updated_at"] = now_iso()
         write_state(state)
         return {"status": status, "watchdog_state": state}

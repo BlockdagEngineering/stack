@@ -28,6 +28,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS",
                 "MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED",
                 "MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED",
+                "MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED",
                 "CATCHUP_PAUSE_ENABLED",
                 "CATCHUP_PAUSE_ON_SYNCING",
                 "CATCHUP_PAUSE_THRESHOLD_BLOCKS",
@@ -51,6 +52,8 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "run",
                 "save_miner_registry",
                 "set_runtime_env_value",
+                "start_chain_state_self_heal",
+                "update_stalled_import_watch",
                 "upsert_pool_activity_miners",
             )
         }
@@ -71,6 +74,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         status_sampler.MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS = 180
         status_sampler.MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED = True
         status_sampler.MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED = True
+        status_sampler.MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED = True
         status_sampler.POOL_ENV_FILE = pathlib.Path("/nonexistent/status-sampler-test.env")
         status_sampler.PROJECT_ROOT = pathlib.Path("/nonexistent/status-sampler-test-root")
         status_sampler.CATCHUP_PAUSE_ENABLED = True
@@ -200,7 +204,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertNotIn(f"started_container:{status_sampler.POOL_CONTAINER}", repair["actions"])
         self.assertIn(("mining_imperative_pool_start_blocked", "warning"), incidents)
 
-    def test_public_chain_divergence_stops_running_pool(self) -> None:
+    def test_public_chain_divergence_leaves_running_pool_up(self) -> None:
         commands = []
         incidents = []
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
@@ -214,10 +218,34 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         repair = status_sampler.mining_imperative_repair(payload)
 
-        self.assertTrue(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
-        self.assertIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:public_chain_divergence", repair["actions"])
-        self.assertIn(("public_chain_divergence_stopped_pool", "warning"), incidents)
+        self.assertFalse(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
+        self.assertIn(f"left_container_running:{status_sampler.POOL_CONTAINER}:public_chain_divergence", repair["actions"])
+        self.assertIn(("public_chain_divergence_left_pool_running", "warning"), incidents)
         self.assertFalse(any(command[:2] == ["docker", "start"] for command in commands))
+
+    def test_chain_state_restore_leaves_running_pool_up_before_self_heal(self) -> None:
+        commands = []
+        incidents = []
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=500)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["sync_health"] = {
+            "needs_chain_data_restore": True,
+            "chain_data_restore_nodes": {"node": {"reasons": ["node DAG tip/block data is damaged"]}},
+        }
+        status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
+        status_sampler.append_incident = (
+            lambda event_type, severity, *_args, **_kwargs: incidents.append((event_type, severity))
+        )
+        status_sampler.update_stalled_import_watch = lambda _payload: {}
+        status_sampler.start_chain_state_self_heal = lambda _payload, _decision: True
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertFalse(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
+        self.assertIn(f"left_container_running:{status_sampler.POOL_CONTAINER}:chain_state_restore", repair["actions"])
+        self.assertIn("started_chain_state_self_heal", repair["actions"])
+        self.assertIn(("chain_state_restore_left_pool_running", "warning"), incidents)
 
     def test_compose_command_uses_stable_project_name_for_symlinked_runtime(self) -> None:
         os.environ.pop("BDAG_COMPOSE_PROJECT_NAME", None)
@@ -283,7 +311,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertEqual(policy["trigger"], "node_syncing")
         self.assertEqual(policy["lag_blocks"], 0)
 
-    def test_syncing_node_stops_running_pool_below_lag_threshold(self) -> None:
+    def test_syncing_node_leaves_running_pool_below_lag_threshold(self) -> None:
         commands = []
         env_updates = {}
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
@@ -310,13 +338,13 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
             status_sampler.PROJECT_ROOT = pathlib.Path(tmp)
             repair = status_sampler.mining_imperative_repair(payload)
 
-        self.assertIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
-        self.assertNotIn(f"template_pause:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
+        self.assertIn(f"template_pause:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
+        self.assertNotIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
         self.assertIn("applied_catchup_node_runtime", repair["actions"])
         self.assertEqual(env_updates["BDAG_ENABLE_NODE_MINING"], "0")
-        self.assertTrue(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
+        self.assertFalse(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
 
-    def test_catchup_pause_stops_pool_and_removes_node_mining_churn(self) -> None:
+    def test_catchup_pause_leaves_pool_running_and_removes_node_mining_churn(self) -> None:
         commands = []
         env_updates = {}
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
@@ -369,8 +397,8 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
             repair = status_sampler.mining_imperative_repair(payload)
             node_conf = (root / "node.conf").read_text(encoding="utf-8")
 
-        self.assertIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
-        self.assertNotIn(f"template_pause:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
+        self.assertIn(f"template_pause:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
+        self.assertNotIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
         self.assertIn("applied_catchup_node_runtime", repair["actions"])
         self.assertEqual(env_updates["BDAG_ENABLE_NODE_MINING"], "0")
         self.assertEqual(env_updates.get("BDAG_NODE_MODULES", os.environ["BDAG_NODE_MODULES"]), "Blockdag,miner")
@@ -381,33 +409,8 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertIn("miningaddr=", node_conf)
         self.assertIn("modules=miner", node_conf)
         self.assertIn("# miner=true disabled during catch-up pause", node_conf)
-        self.assertTrue(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
+        self.assertFalse(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
         self.assertTrue(any("--force-recreate" in command for command in commands))
-
-    def test_catchup_stop_falls_back_when_compose_stop_is_noop(self) -> None:
-        commands = []
-        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
-        payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=450)
-        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
-        payload["catchup_policy"] = {
-            "active": True,
-            "lag_blocks": 450,
-            "threshold_blocks": 300,
-        }
-
-        def fake_run(command: list[str], timeout: int = 20):
-            commands.append(command)
-            if command[:4] == ["docker", "inspect", "-f", "{{.State.Running}}"]:
-                return self.command_result(command, stdout="true\n")
-            return self.command_result(command)
-
-        status_sampler.run = fake_run
-
-        repair = status_sampler.mining_imperative_repair(payload)
-
-        self.assertIn(f"stopped_container:{status_sampler.POOL_CONTAINER}:catchup_pause", repair["actions"])
-        self.assertTrue(any(command[:3] == ["docker", "compose", "-p"] for command in commands))
-        self.assertIn(["docker", "stop", status_sampler.POOL_CONTAINER], commands)
 
     def test_catchup_pause_does_not_restart_stopped_pool_for_visible_miners(self) -> None:
         commands = []
