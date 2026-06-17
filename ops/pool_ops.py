@@ -8,6 +8,7 @@ import bisect
 from collections import Counter, deque
 import glob
 import json
+import http.client
 import os
 import ipaddress
 import platform
@@ -7652,13 +7653,39 @@ def blockscout_v2_balance(base_url: str, address: str, timeout: float = 6.0) -> 
 
 def json_rpc_call(url: str, method: str, params: list[Any], timeout: float = 6.0) -> Any:
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers={"content-type": "application/json", "accept": "application/json", "user-agent": HTTP_USER_AGENT},
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        payload = json.loads(response.read(1_000_000).decode("utf-8", "replace"))
+    headers = {
+        "content-type": "application/json",
+        "accept": "application/json",
+        "user-agent": HTTP_USER_AGENT,
+        "connection": "close",
+    }
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        request = urllib.request.Request(url, data=body, headers=headers)
+        response = None
+        try:
+            response = urllib.request.urlopen(request, timeout=timeout)
+            raw_payload = response.read(1_000_000)
+        finally:
+            if response is not None:
+                response.close()
+    else:
+        connection_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        path = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+        connection = connection_cls(parsed.hostname, port=port, timeout=timeout)
+        response = None
+        try:
+            connection.request("POST", path, body=body, headers=headers)
+            response = connection.getresponse()
+            raw_payload = response.read(1_000_000)
+            if response.status >= 400:
+                raise RuntimeError(f"JSON-RPC HTTP {response.status} {response.reason}: {raw_payload[:500].decode('utf-8', 'replace')}")
+        finally:
+            if response is not None:
+                response.close()
+            connection.close()
+    payload = json.loads(raw_payload.decode("utf-8", "replace"))
     if payload.get("error") is not None and "result" not in payload:
         raise RuntimeError(str(payload.get("error") or payload))
     return payload.get("result")
