@@ -56,7 +56,7 @@ jobs:
           repository: BlockdagEngineering/blockdag-corechain
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/blockdag-node
-          ref: main
+          ref: jeremy-dev-release-6-5-41
 
       - name: Checkout private mining pool repo
         uses: actions/checkout@v4
@@ -64,7 +64,7 @@ jobs:
           repository: BlockdagEngineering/pool
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/pool
-          ref: main
+          ref: jeremy-dev-release-6-5-41
 
       - name: Checkout dashboard repo
         uses: actions/checkout@v4
@@ -72,7 +72,7 @@ jobs:
           repository: BlockdagEngineering/dashboard2
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/dashboard
-          ref: main
+          ref: jeremy-dev-release-6-5-41
 
       - name: Checkout collector repo
         uses: actions/checkout@v4
@@ -80,7 +80,7 @@ jobs:
           repository: BlockdagEngineering/collector
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/collector
-          ref: develop
+          ref: jeremy-dev-release-6-5-41
 
       - name: Verify upstream checkouts
         shell: bash

@@ -95,9 +95,20 @@ I/O on mining-template readiness work.
 
 When dashboard status or `sync_progress.status` is `syncing`, chain import is
 the priority. Nodes should receive the strongest CPU and IO priority until they
-are caught up. Hosts with active miners may keep the pool path alive, but
-node catch-up still wins scheduling priority. Hosts with no miners must idle or
-stop pool/database work and stay in sync-only mode.
+are caught up. Hosts with active miners must stop `pool` while the node is in
+catch-up, because accepting shares or submitting block candidates against an
+unsafe or non-submit-ready backend spends ASIC hash on work that cannot become
+paid on-chain blocks. Restart `pool` only through `ops/pool_start_gate.py` after
+mainnet, sync, P2P freshness, canonical safety, template health, and submit
+readiness all pass. Hosts with no miners must idle or stop pool/database work
+and stay in sync-only mode.
+
+The release metric is paid accepted blocks per unit of hash power, not raw
+shares, raw submissions, or keeping the Stratum port open. Do not reintroduce a
+pool-side-only template pause for catch-up. If `sync_progress.status` is
+`syncing` or `catchup_pause`, or status reports `can_submit_blocks=false`, a
+running `pool` container is a containment condition to repair, not a healthy
+steady state.
 
 When any managed node is more than 1000 blocks behind the observed network tip,
 do not let multiple nodes compete for catch-up IO. The sync coordinator must
@@ -111,6 +122,19 @@ Startup seed freshness must have operational slack. If a remote seed is within
 `BDAG_SYNC_ACCEPTABLE_STARTUP_LAG_BLOCKS` (default 4000 blocks), start the node
 and let P2P catch the tail. Use the recorded copy duration allowance to avoid
 repeated full copies; do not recopy just to close an already-acceptable lag.
+
+## Multi-Agent Regression Guard
+
+Before editing this stack, read available Codex memory and current repo docs,
+then pull the target branch with `git pull --ff-only`. If the branch cannot
+fast-forward cleanly, inspect and resolve deliberately; do not overwrite another
+agent's work. Keep successful, validated changes committed and pushed so other
+agents do not rediscover or regress the same fix.
+
+When changing mining readiness, catch-up, watchdog, sentinel, or dashboard
+status logic, add or update tests that would fail if a future agent leaves
+`pool` running while the backend cannot submit paid work. Treat contradictory
+comments or docs as bugs and update them in the same change.
 
 ## Five ASIC Template Conversion Invariant
 

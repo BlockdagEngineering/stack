@@ -301,7 +301,8 @@ services:
         && exec python3 ops/watchdog.py --loop
     environment:
       TMPDIR: /tmp
-      COMPOSE_PROJECT_NAME: stack
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}
+      BDAG_COMPOSE_PROJECT_NAME: ${BDAG_COMPOSE_PROJECT_NAME:-${COMPOSE_PROJECT_NAME:-}}
       BDAG_PROJECT_ROOT: ${BDAG_STACK_HOST_ROOT:-${PWD}}
       BDAG_RUNTIME_DIR: ${BDAG_STACK_HOST_ROOT:-${PWD}}/ops/runtime
       BDAG_POOL_ENV_FILE: ${BDAG_STACK_HOST_ROOT:-${PWD}}/.env
@@ -352,7 +353,8 @@ services:
         done
     environment:
       TMPDIR: /tmp
-      COMPOSE_PROJECT_NAME: stack
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}
+      BDAG_COMPOSE_PROJECT_NAME: ${BDAG_COMPOSE_PROJECT_NAME:-${COMPOSE_PROJECT_NAME:-}}
       BDAG_PROJECT_ROOT: ${BDAG_STACK_HOST_ROOT:-${PWD}}
       BDAG_RUNTIME_DIR: ${BDAG_STACK_HOST_ROOT:-${PWD}}/ops/runtime
       BDAG_POOL_ENV_FILE: ${BDAG_STACK_HOST_ROOT:-${PWD}}/.env
