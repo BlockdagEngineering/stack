@@ -227,7 +227,7 @@ ordered_fastsync_peers() {
     p2p-latency|p2p|latency|flat-latency|flat|tiered-latency|legacy-buckets|buckets) ;;
     *) log "unknown BDAG_FASTSYNC_PEER_ORDERING=$ordering; using p2p-latency" ;;
   esac
-  generic_peers="${BDAG_FASTSYNC_PEERS:-} ${BDAG_FASTSNAP_PEERS:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $config_peers $(addpeer_values "$node_args" | paste -sd, - || true)"
+  generic_peers="${BDAG_FASTSYNC_PEERS:-} ${BDAG_FASTSNAP_PEERS:-} ${BOOTSTRAP_PEER_ADDRESSES:-} ${BDAG_NODE_PEER_ADDRESSES:-} $config_peers $(addpeer_values "$node_args" | paste -sd, - || true)"
   append_peer_list fastsync_peers "$generic_peers"
 
   join_peer_array
@@ -549,7 +549,7 @@ maybe_fastsnap_bootstrap() {
     return 0
   fi
 
-  peers="${BDAG_FASTSNAP_PEERS:-${BOOTSTRAP_PEER_ADDRESSES:-}}"
+  peers="${BDAG_FASTSNAP_PEERS:-${BOOTSTRAP_PEER_ADDRESSES:-${BDAG_NODE_PEER_ADDRESSES:-}}}"
   if [ -z "$peers" ]; then
     peers="$(addpeer_values "$node_args" | paste -sd, -)"
   fi

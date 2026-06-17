@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -22,7 +23,9 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
         "BDAG_P2P_VPN_PEERS",
         "BDAG_P2P_PUBLIC_PEERS",
         "BOOTSTRAP_PEER_ADDRESSES",
+        "BDAG_NODE_PEER_ADDRESSES",
         "EXTRA_PEER_ADDRESSES",
+        "LOCAL_PEER_ADDRESSES",
         "P2P_PORT",
         "PEER_ADDRESSES",
         "BDAG_NETWORK_TOPOLOGY",
@@ -38,8 +41,23 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
         for key in self.ENV_KEYS:
             os.environ.pop(key, None)
         os.environ["BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED"] = "0"
+        self._runtime_tmp = tempfile.TemporaryDirectory()
+        self._old_runtime_paths = {
+            "RUNTIME_DIR": update_local_peers.RUNTIME_DIR,
+            "CHAIN_PEERSTORE_CANDIDATES_FILE": update_local_peers.CHAIN_PEERSTORE_CANDIDATES_FILE,
+            "LIVE_PEERS_FILE": update_local_peers.LIVE_PEERS_FILE,
+            "PEER_DISCOVERY_FILE": update_local_peers.PEER_DISCOVERY_FILE,
+        }
+        runtime_dir = Path(self._runtime_tmp.name)
+        update_local_peers.RUNTIME_DIR = runtime_dir
+        update_local_peers.CHAIN_PEERSTORE_CANDIDATES_FILE = runtime_dir / "chain-peerstore-candidates.txt"
+        update_local_peers.LIVE_PEERS_FILE = runtime_dir / "live-peers-current.txt"
+        update_local_peers.PEER_DISCOVERY_FILE = runtime_dir / "peer-discovery-current.json"
 
     def tearDown(self) -> None:
+        for name, value in self._old_runtime_paths.items():
+            setattr(update_local_peers, name, value)
+        self._runtime_tmp.cleanup()
         for key, value in self._old_env.items():
             if value is None:
                 os.environ.pop(key, None)
