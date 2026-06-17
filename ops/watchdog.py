@@ -207,25 +207,38 @@ def container_running(status: dict[str, Any], container_name: str) -> bool:
 def sync_progress_pool_pause_reason(status: dict[str, Any]) -> str:
     sync = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
     sync_status = str(sync.get("status") or "").strip().lower()
-    if sync_status not in {"syncing", "catchup_pause"}:
-        return ""
     lag = 0
     for key in ("remaining_blocks", "peer_ahead_blocks"):
         value = int_or_none(sync.get(key))
         if value is not None and value >= 0:
             lag = max(lag, value)
+    node_sync_statuses: set[str] = set()
     nodes = sync.get("nodes")
     if isinstance(nodes, dict):
         for node in nodes.values():
             if not isinstance(node, dict):
                 continue
+            node_status = str(node.get("status") or "").strip().lower()
+            if node_status in {"syncing", "catchup_pause"}:
+                node_sync_statuses.add(node_status)
             for key in ("remaining_blocks", "peer_ahead_blocks"):
                 value = int_or_none(node.get(key))
                 if value is not None and value >= 0:
                     lag = max(lag, value)
-    if lag > 0:
-        return f"sync progress is {sync_status} with {lag} block(s) remaining"
-    return f"sync progress is {sync_status}"
+    if sync_status in {"syncing", "catchup_pause"}:
+        if lag > 0:
+            return f"sync progress is {sync_status} with {lag} block(s) remaining"
+        return f"sync progress is {sync_status}"
+    if node_sync_statuses:
+        node_status = "catchup_pause" if "catchup_pause" in node_sync_statuses else "syncing"
+        if lag > 0:
+            return f"node sync progress is {node_status} with {lag} block(s) remaining"
+        return f"node sync progress is {node_status}"
+
+    pool_health = status.get("pool_health", status.get("pool", {}))
+    if isinstance(pool_health, dict) and pool_health.get("initial_download"):
+        return "pool is waiting for node sync; initial download is active"
+    return ""
 
 
 def is_primary_pool_identity(row: dict[str, Any], mining_address: str) -> bool:

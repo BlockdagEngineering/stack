@@ -1463,69 +1463,28 @@ def pool_container_running(payload: dict[str, Any]) -> bool:
     return bool(container.get("running"))
 
 
-def stop_pool_container(payload: dict[str, Any], reason: str, *, containment: str = "catchup_pause") -> bool:
-    control = automation_control.check_mutation_allowed(
-        automation_control.ACTION_CONTAINMENT_STOP,
-        actor="status-sampler",
-        target=POOL_CONTAINER,
-        reason=reason,
-    )
+def leave_pool_running_for_containment(
+    payload: dict[str, Any],
+    reason: str,
+    *,
+    containment: str = "catchup_pause",
+) -> None:
     containment_label = containment.replace("_", " ")
     event_prefix = containment if containment else "containment"
-    control_payload = control.as_dict() if hasattr(control, "as_dict") else dict(vars(control))
-    compose = run(docker_compose_command("stop", POOL_CONTAINER), timeout=120)
     action = {
         "reason": reason,
         "container": POOL_CONTAINER,
         "containment": containment,
-        "control_decision": control_payload,
-        "method": "docker compose stop",
-        **compose.as_dict(),
+        "method": "leave_running",
     }
-    if compose.ok:
-        log(f"{containment_label} stopped {POOL_CONTAINER}: {reason}")
-        record_incident(
-            f"{event_prefix}_stopped_pool",
-            "warning",
-            f"{containment_label} stopped {POOL_CONTAINER}: {reason}",
-            action,
-            payload,
-        )
-        return True
-
-    stop = run(["docker", "stop", POOL_CONTAINER], timeout=60)
-    action = {
-        "reason": reason,
-        "container": POOL_CONTAINER,
-        "containment": containment,
-        "control_decision": control_payload,
-        "method": "docker stop",
-        "compose_stop": compose.as_dict(),
-        "docker_stop": stop.as_dict(),
-    }
-    if stop.ok:
-        log(f"{containment_label} stopped {POOL_CONTAINER} with docker stop: {reason}")
-        record_incident(
-            f"{event_prefix}_stopped_pool",
-            "warning",
-            f"{containment_label} stopped {POOL_CONTAINER}: {reason}",
-            action,
-            payload,
-        )
-        return True
-
-    log(
-        f"{containment_label} could not stop {POOL_CONTAINER}: {reason}; "
-        f"compose_rc={compose.returncode} docker_stop_rc={stop.returncode}"
-    )
+    log(f"{containment_label} containment left {POOL_CONTAINER} running: {reason}")
     record_incident(
-        f"{event_prefix}_pool_stop_failed",
-        "critical",
-        f"{containment_label} could not stop {POOL_CONTAINER}: {reason}",
+        f"{event_prefix}_left_pool_running",
+        "warning",
+        f"{containment_label} containment left {POOL_CONTAINER} running: {reason}",
         action,
         payload,
     )
-    return False
 
 
 def start_pool_container(payload: dict[str, Any], reason: str) -> bool:
@@ -1602,17 +1561,19 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
     divergence_reasons = public_chain_divergence_reasons(payload)
     if divergence_reasons:
         reason = "; ".join(divergence_reasons)
-        if pool_container_running(payload) and stop_pool_container(payload, reason, containment="public_chain_divergence"):
-            actions.append(f"stopped_container:{POOL_CONTAINER}:public_chain_divergence")
+        if pool_container_running(payload):
+            leave_pool_running_for_containment(payload, reason, containment="public_chain_divergence")
+            actions.append(f"left_container_running:{POOL_CONTAINER}:public_chain_divergence")
         else:
-            log(f"mining imperative held {POOL_CONTAINER} for public-chain divergence: {reason}")
+            log(f"mining imperative found {POOL_CONTAINER} already stopped for public-chain divergence: {reason}")
         return {"enabled": True, "actions": actions}
 
     chain_restore_decision = chain_state_restore_decision(payload)
     if chain_restore_decision.get("should_repair"):
         reason = "; ".join(chain_restore_decision.get("reasons") or []) or "chain-state restore required"
-        if pool_container_running(payload) and stop_pool_container(payload, reason, containment="chain_state_restore"):
-            actions.append(f"stopped_container:{POOL_CONTAINER}:chain_state_restore")
+        if pool_container_running(payload):
+            leave_pool_running_for_containment(payload, reason, containment="chain_state_restore")
+            actions.append(f"left_container_running:{POOL_CONTAINER}:chain_state_restore")
         if start_chain_state_self_heal(payload, chain_restore_decision):
             actions.append("started_chain_state_self_heal")
         return {"enabled": True, "actions": actions}
