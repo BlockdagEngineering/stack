@@ -192,11 +192,18 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
     sync_progress = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
     sync_status = str(sync_progress.get("status") or "").strip().lower()
     sync_lag = _sync_progress_lag_blocks(status)
+    explicit_mining_ready = status.get("can_mine") is True and status.get("can_submit_blocks") is True
+    synced_with_no_lag = sync_status == "synced" and sync_lag == 0
     if sync_status in {"syncing", "catchup_pause"}:
         if sync_lag > 0:
             reasons.append(f"sync progress is {sync_status} with {sync_lag} block(s) remaining")
         else:
             reasons.append(f"sync progress is {sync_status}")
+
+    if status.get("can_mine") is False:
+        reasons.append("pool can_mine=false")
+    if status.get("can_submit_blocks") is False:
+        reasons.append("pool can_submit_blocks=false")
 
     mode = str(status.get("mode") or "").strip().lower()
     overall = str(status.get("overall") or "").strip().lower()
@@ -227,9 +234,10 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
         ("bdag pool syncing", "node log reports bdag pool syncing"),
         ("client in initial download", "node reports initial download"),
     )
-    for needle, message in text_blockers:
-        if needle in reason_text and message not in reasons:
-            reasons.append(message)
+    if not (explicit_mining_ready and synced_with_no_lag):
+        for needle, message in text_blockers:
+            if needle in reason_text and message not in reasons:
+                reasons.append(message)
 
     if reasons:
         return PoolStartGateDecision(False, tuple(reasons), source, age_seconds)

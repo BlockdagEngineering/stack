@@ -94,10 +94,11 @@ def docker_top_has_bdag_child(output: str) -> bool:
     return False
 
 
-def run(command: list[str], timeout: int = 20) -> str:
+def run(command: list[str], timeout: int = 20, env: dict[str, str] | None = None) -> str:
     proc = subprocess.run(
         command,
         cwd=PROJECT_ROOT,
+        env=env,
         text=True,
         capture_output=True,
         timeout=timeout,
@@ -215,6 +216,12 @@ def read_env(path: Path) -> tuple[list[str], dict[str, str]]:
 def read_env_values(path: Path) -> dict[str, str]:
     _, values = read_env(path)
     return values
+
+
+def compose_subprocess_env(env_file: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env.update(read_env_values(env_file))
+    return env
 
 
 def write_env(path: Path, lines: list[str], updates: dict[str, str]) -> None:
@@ -920,7 +927,7 @@ def main() -> int:
                 "--force-recreate",
                 "--no-deps",
                 node,
-            ], timeout=120)
+            ], timeout=120, env=compose_subprocess_env(env_file))
             wait_for_node(node)
         clear_deferred_apply()
     return 0

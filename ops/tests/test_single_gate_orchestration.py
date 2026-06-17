@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 import sys
 import tempfile
@@ -56,10 +57,14 @@ def safe_canonical_status() -> dict[str, object]:
 class SingleGateOrchestrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.original_stack_services = list(pool_ops.STACK_SERVICES)
+        self.original_env = dict(os.environ)
+        os.environ.pop("BDAG_START_SERVICES", None)
         self.addCleanup(self.restore)
 
     def restore(self) -> None:
         pool_ops.STACK_SERVICES = self.original_stack_services
+        os.environ.clear()
+        os.environ.update(self.original_env)
 
     def fake_inspect(self, labels: dict[str, str]):
         def run(command, **_kwargs):
@@ -103,6 +108,27 @@ class SingleGateOrchestrationTests(unittest.TestCase):
         decision = pool_start_gate.pool_start_decision(safe_canonical_status())
 
         self.assertTrue(decision.allowed, decision.reason)
+
+    def test_shared_gate_allows_synced_ready_status_despite_stale_textual_sync_noise(self) -> None:
+        status = safe_canonical_status()
+        status["can_mine"] = True
+        status["can_submit_blocks"] = True
+        status["status_reason"] = "previous node busy syncing warning retained in status text"
+        status["degraded_reasons"] = ["previous client in initial download log noise"]
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertTrue(decision.allowed, decision.reason)
+
+    def test_shared_gate_blocks_explicit_can_mine_false(self) -> None:
+        status = safe_canonical_status()
+        status["can_mine"] = False
+        status["can_submit_blocks"] = True
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertFalse(decision.allowed)
+        self.assertIn("pool can_mine=false", decision.reason)
 
     def test_status_sampler_cannot_direct_start_pool_when_gate_blocks(self) -> None:
         incidents: list[tuple[str, str]] = []

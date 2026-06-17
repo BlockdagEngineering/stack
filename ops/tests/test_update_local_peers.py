@@ -106,6 +106,34 @@ class UpdateLocalPeersActiveMiningGuardTest(unittest.TestCase):
         self.assertIn(["docker", "compose", "ps", "-q", "node"], calls)
         self.assertIn(["docker", "logs", "--tail", "5000", "compose-node-id"], calls)
 
+    def test_compose_apply_env_file_overrides_stale_parent_peer_env(self) -> None:
+        env_file = ROOT / "ops" / "runtime" / "unit-test-peer-env"
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        env_file.write_text(
+            "\n".join(
+                [
+                    "BOOTSTRAP_PEER_ADDRESSES=/ip4/203.0.113.20/tcp/8150/p2p/newSeed",
+                    "BDAG_NODE_PEER_ADDRESSES=/ip4/203.0.113.21/tcp/8150/p2p/newDirect",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: env_file.unlink(missing_ok=True))
+
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "BOOTSTRAP_PEER_ADDRESSES": "/ip4/192.0.2.20/tcp/8150/p2p/staleSeed",
+                "BDAG_NODE_PEER_ADDRESSES": "",
+            },
+            clear=True,
+        ):
+            env = update_local_peers.compose_subprocess_env(env_file)
+
+        self.assertEqual(env["BOOTSTRAP_PEER_ADDRESSES"], "/ip4/203.0.113.20/tcp/8150/p2p/newSeed")
+        self.assertEqual(env["BDAG_NODE_PEER_ADDRESSES"], "/ip4/203.0.113.21/tcp/8150/p2p/newDirect")
+
 
 if __name__ == "__main__":
     unittest.main()

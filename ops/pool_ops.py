@@ -623,12 +623,53 @@ def redact_sensitive_text(value: str) -> str:
     return text
 
 
+def read_env_file_values(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def docker_compose_subprocess_env() -> dict[str, str]:
+    """Return a Compose env where the current stack .env wins over stale parent env."""
+    env = os.environ.copy()
+    env.update(read_env_file_values(POOL_ENV_FILE))
+    return env
+
+
+def is_docker_compose_command(command: list[str]) -> bool:
+    return len(command) >= 2 and command[0] == "docker" and command[1] == "compose"
+
+
+def subprocess_env_for_command(command: list[str]) -> dict[str, str] | None:
+    if is_docker_compose_command(command):
+        return docker_compose_subprocess_env()
+    return None
+
+
 def run(command: list[str], timeout: int = 20) -> CommandResult:
     start = time.time()
     try:
         proc = subprocess.run(
             command,
             cwd=PROJECT_ROOT,
+            env=subprocess_env_for_command(command),
             text=False,
             capture_output=True,
             timeout=timeout,
@@ -665,24 +706,7 @@ def run(command: list[str], timeout: int = 20) -> CommandResult:
 
 
 def read_env_file_value(path: Path, name: str) -> str | None:
-    if not path.exists():
-        return None
-    for line in path.read_text(errors="replace").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[7:].strip()
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        if key.strip() != name:
-            continue
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1]
-        return value
-    return None
+    return read_env_file_values(path).get(name)
 
 
 def read_env_value(name: str) -> str | None:
@@ -12046,6 +12070,7 @@ def run_logged(command: list[str], log_path: Path, timeout: int | None = None) -
             proc = subprocess.run(
                 command,
                 cwd=PROJECT_ROOT,
+                env=subprocess_env_for_command(command),
                 text=True,
                 stdout=log,
                 stderr=subprocess.STDOUT,

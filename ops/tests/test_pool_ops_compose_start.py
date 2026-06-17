@@ -3,6 +3,7 @@
 import os
 import pathlib
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -20,6 +21,7 @@ class ComposeStartCommandTests(unittest.TestCase):
         self.original_project_root = pool_ops.PROJECT_ROOT
         self.original_pool_env = pool_ops.POOL_ENV_FILE
         self.original_env = dict(os.environ)
+        os.environ.pop("BDAG_START_SERVICES", None)
         self.addCleanup(self.restore)
 
     def restore(self) -> None:
@@ -76,6 +78,46 @@ class ComposeStartCommandTests(unittest.TestCase):
             command = pool_ops.docker_compose_start_command()
 
         self.assertEqual(command[-3:], ["up", "-d", "node"])
+
+    def test_compose_run_refreshes_env_file_values_over_stale_parent_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            env_file = root / ".env"
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "BOOTSTRAP_PEER_ADDRESSES=/ip4/203.0.113.10/tcp/8150/p2p/newPeer",
+                        "BDAG_NODE_PEER_ADDRESSES=/ip4/203.0.113.11/tcp/8150/p2p/directPeer",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            pool_ops.PROJECT_ROOT = root
+            pool_ops.POOL_ENV_FILE = env_file
+            os.environ["BOOTSTRAP_PEER_ADDRESSES"] = "/ip4/192.0.2.10/tcp/8150/p2p/stalePeer"
+            os.environ["BDAG_NODE_PEER_ADDRESSES"] = ""
+            captured: dict[str, object] = {}
+
+            def fake_run(command, **kwargs):
+                captured["command"] = command
+                captured["env"] = kwargs.get("env")
+                return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+            with mock.patch.object(pool_ops.subprocess, "run", side_effect=fake_run):
+                result = pool_ops.run(pool_ops.docker_compose_command("up", "-d", "--no-build", "node"))
+
+            self.assertEqual(result.returncode, 0)
+            env = captured["env"]
+            self.assertIsInstance(env, dict)
+            self.assertEqual(
+                env["BOOTSTRAP_PEER_ADDRESSES"],
+                "/ip4/203.0.113.10/tcp/8150/p2p/newPeer",
+            )
+            self.assertEqual(
+                env["BDAG_NODE_PEER_ADDRESSES"],
+                "/ip4/203.0.113.11/tcp/8150/p2p/directPeer",
+            )
 
 
 if __name__ == "__main__":

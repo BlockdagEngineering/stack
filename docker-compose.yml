@@ -190,6 +190,9 @@ services:
       MINING_POOL_ADDRESS: ${MINING_POOL_ADDRESS:?set MINING_POOL_ADDRESS to a non-zero payout address}
       METRICS_ADDR:       ${METRICS_ADDR:-0.0.0.0:9090}
       POOL_INSTANCE_ID:   ${POOL_INSTANCE_ID:-}
+      BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-}
+      POOL_ASIC_MAC_OVERRIDES: ${POOL_ASIC_MAC_OVERRIDES:-}
+      POOL_ASIC_ARP_TABLE_PATH: ${POOL_ASIC_ARP_TABLE_PATH:-/proc/net/arp}
     ports:
       - "0.0.0.0:${POOL_BIND_PORT:-3334}:3334"
       - "0.0.0.0:${POOL_API_PORT:-9090}:9090"
@@ -289,7 +292,7 @@ services:
         - github_token
     restart: unless-stopped
     logging: *mining-logging
-    user: "1001:969"
+    user: "${BDAG_STACK_AUTOMATION_UID:-1000}:${BDAG_STACK_AUTOMATION_GID:-1000}"
     group_add:
       - "${BDAG_DOCKER_SOCKET_GID:-0}"
     tmpfs:
@@ -338,7 +341,7 @@ services:
         - github_token
     restart: unless-stopped
     logging: *mining-logging
-    user: "1001:969"
+    user: "${BDAG_STACK_AUTOMATION_UID:-1000}:${BDAG_STACK_AUTOMATION_GID:-1000}"
     group_add:
       - "${BDAG_DOCKER_SOCKET_GID:-0}"
     tmpfs:

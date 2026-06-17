@@ -92,6 +92,10 @@ class BootstrapPeerDefaultTests(unittest.TestCase):
         node_conf = (ROOT / "node.conf.example").read_text(encoding="utf-8")
 
         self.assertNotIn("/ip4/52.8.80.249/tcp/8150/p2p/", node_conf)
+        self.assertNotIn("/ip4/102.182.77.21/tcp/8151/p2p/", node_conf)
+        self.assertNotIn("/ip4/102.182.77.16/tcp/8152/p2p/", node_conf)
+        self.assertNotIn("/ip4/3.218.54.171/tcp/8150/p2p/", node_conf)
+        self.assertNotIn("/ip4/54.214.229.250/tcp/8154/p2p/", node_conf)
         self.assertNotIn("/ip4/192.168.", node_conf)
 
 
