@@ -15,6 +15,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -79,7 +80,12 @@ def bootstrap_stack_env() -> None:
     for path in (stack_defaults, ops_env, pool_env, project_root / ".env"):
         if path is None or not path.exists():
             continue
-        for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            raw_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            print(f"warning: skipping unreadable env file {path}: {exc}", file=sys.stderr)
+            continue
+        for raw_line in raw_lines:
             line = raw_line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
