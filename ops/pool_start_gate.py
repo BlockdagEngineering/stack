@@ -24,6 +24,7 @@ RUNTIME_DIR = RUNTIME_DIR.resolve()
 
 STATUS_SAMPLER_FILE = RUNTIME_DIR / "status-sampler.json"
 DEFAULT_STATUS_MAX_AGE_SECONDS = float(os.environ.get("BDAG_POOL_START_GATE_STATUS_MAX_AGE_SECONDS", "180"))
+MIN_POOL_START_PEERS = int(os.environ.get("BDAG_POOL_START_GATE_MIN_PEERS", "2"))
 REQUIRE_CANONICAL_SAFETY = str(
     os.environ.get("BDAG_POOL_START_GATE_REQUIRE_CANONICAL_SAFETY", "1")
 ).strip().lower() not in {"0", "false", "no", "off"}
@@ -76,6 +77,33 @@ def _sync_progress_lag_blocks(status: dict[str, Any]) -> int:
                 if value is not None and value >= 0:
                     values.append(value)
     return max(values) if values else 0
+
+
+def _status_peer_count(status: dict[str, Any]) -> int | None:
+    values: list[int] = []
+
+    def collect(source: dict[str, Any]) -> None:
+        for key in ("peer_count", "p2p_connections", "p2p_peer_count"):
+            value = _safe_int(source.get(key))
+            if value is not None and value >= 0:
+                values.append(value)
+
+    collect(status)
+    sync_progress = status.get("sync_progress")
+    if isinstance(sync_progress, dict):
+        collect(sync_progress)
+        nodes = sync_progress.get("nodes")
+        if isinstance(nodes, dict):
+            for node in nodes.values():
+                if isinstance(node, dict):
+                    collect(node)
+    nodes = status.get("nodes")
+    if isinstance(nodes, dict):
+        for node in nodes.values():
+            if isinstance(node, dict):
+                collect(node)
+
+    return max(values) if values else None
 
 
 def _unwrap_status_payload(raw: Any) -> tuple[dict[str, Any] | None, str, float | None]:
@@ -197,6 +225,13 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
             reasons.append(f"sync progress is {sync_status} with {sync_lag} block(s) remaining")
         else:
             reasons.append(f"sync progress is {sync_status}")
+
+    if MIN_POOL_START_PEERS > 0:
+        peer_count = _status_peer_count(status)
+        if peer_count is None:
+            reasons.append(f"peer count is unknown; need at least {MIN_POOL_START_PEERS} peers")
+        elif peer_count < MIN_POOL_START_PEERS:
+            reasons.append(f"only {peer_count} peer(s) reported; need at least {MIN_POOL_START_PEERS} peers")
 
     mode = str(status.get("mode") or "").strip().lower()
     overall = str(status.get("overall") or "").strip().lower()

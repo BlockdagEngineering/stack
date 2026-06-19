@@ -2,6 +2,18 @@
 
 This stack can be run in any environment where docker is installed. It includes an upgradable BDAG node, a mining pool with its database, a read-only status API, and the Go dashboard UI.
 
+On Ubuntu/Debian hosts, install the required Docker packages before running the
+payload installer:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y docker.io docker-compose-v2 docker-buildx
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"
+```
+
+Open a new shell, then verify `docker compose version` works without sudo.
+
 
 | Service | Image / build | Purpose |
 | --- | --- | --- |
@@ -88,7 +100,7 @@ The payload installer writes `.env` and `node.conf`, generates a strong Postgres
 password unless `POSTGRES_PASSWORD` is already set, downloads the snapshot
 when needed, sets `DOCKER_PLATFORM` from the downloaded payload's
 `release-payload.env`, and runs
-`docker compose build && docker compose up -d --no-build --pull never postgres node dashboard`
+`docker compose build && docker compose up -d --no-build --pull never pool-db node dashboard`
 (pool stack) or `docker compose build node && docker compose up -d --no-build --pull never node`
 (node-only).
 
@@ -105,6 +117,12 @@ node datadir has no chain markers, the installer stages that snapshot into the
 host datadir so the container can import it on first start. To replace existing
 chain data, stop the stack and move the configured datadir aside deliberately
 before running the installer.
+
+If you already have a raw node datadir archive rather than a `.bdsnap`, set
+`BDAG_CHAIN_DATA_ARCHIVE=/path/to/archive.tar.zst` before running the installer.
+The installer sniffs compression, so a Zstandard archive with a misleading
+`.tar.gz` suffix is accepted when the archive contains `BdagChain/`,
+`bdageth/chaindata/`, or `chaindata/`.
 
 If the default snapshot host is unavailable, point the installer at the snapshot URL you want to use:
 
@@ -180,7 +198,8 @@ startup logs, probes candidate multiaddrs for TCP reachability, writes
 `ops/runtime/peer-discovery-current.json`, and applies the resulting
 `BDAG_FASTSYNC_PEERS` to the active single node. TCP-open status is only a
 bootstrap hint; install completion and mining readiness still require normal
-peer handshakes, sync freshness, RPC health, and template checks.
+peer handshakes, at least two fresh consensus peers, sync freshness, RPC
+health, and template checks.
 
 ## Fast Artifact Sync V2 Directory Mode
 

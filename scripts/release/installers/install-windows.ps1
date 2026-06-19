@@ -710,7 +710,9 @@ if ($nodeOnlyInstall) {
     & docker compose up -d --no-build --pull never node
 } else {
     Write-Host "=== Starting services ===" -ForegroundColor Cyan
-    & docker compose up -d --no-build --pull never
+    & docker compose pull pool-db
+    if ($LASTEXITCODE -ne 0) { throw "docker compose pull pool-db failed." }
+    & docker compose up -d --no-build --pull never pool-db node dashboard
 }
 if ($LASTEXITCODE -ne 0) { throw "docker compose up failed." }
 
