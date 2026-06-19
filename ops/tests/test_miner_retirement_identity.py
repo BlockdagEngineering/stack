@@ -408,6 +408,60 @@ class MinerRegistryIdentityTests(unittest.TestCase):
         self.assertIn("pool-log", miner["sources"])
         self.assertIn("asic-api", miner["sources"])
 
+    def test_pool_job_state_mac_update_replaces_stale_ip_record(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        mac = "28:e2:97:1e:c0:b5"
+        self.registry_file.write_text(
+            json.dumps(
+                {
+                    "updated_at": "2026-06-19T13:41:00+0000",
+                    "miners": [
+                        {
+                            "ip": "192.168.1.100",
+                            "mac": mac,
+                            "device_id": f"mac:{mac}",
+                            "device_type": "asic",
+                            "managed": True,
+                            "expected_pool_url": pool_ops.default_miner_pool_settings()["pool_url"],
+                            "expected_worker_user": worker,
+                        },
+                        {
+                            "ip": "192.168.1.102",
+                            "device_type": "stratum",
+                            "discovered_by": "pool-log",
+                            "managed": False,
+                            "expected_pool_url": pool_ops.default_miner_pool_settings()["pool_url"],
+                            "expected_worker_user": worker,
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        registry = pool_ops.upsert_pool_activity_miners(
+            {
+                "miners": [
+                    {
+                        "ip": "192.168.1.102",
+                        "mac": mac,
+                        "device_id": f"mac:{mac}",
+                        "identity_key": f"mac:{mac}",
+                        "device_type": "asic",
+                        "workers": [worker],
+                        "last_seen_at": "2026-06-19T15:57:25+0000",
+                        "pool_job_state_authorized": True,
+                    }
+                ]
+            }
+        )
+
+        miners = [item for item in registry["miners"] if item.get("mac") == mac]
+        self.assertEqual(len(miners), 1)
+        self.assertEqual(miners[0]["ip"], "192.168.1.102")
+        self.assertTrue(miners[0]["managed"])
+        self.assertFalse(any(item.get("ip") == "192.168.1.100" for item in registry["miners"]))
+
 
 class PoolActivityAttributionTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -890,11 +944,13 @@ class PoolActivityAttributionTests(unittest.TestCase):
 class MinerHealthConfiguredScopeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.old_collect_pool_activity = pool_ops.collect_pool_activity
+        self.old_collect_pool_job_state_activity = pool_ops.collect_pool_job_state_activity
         self.old_upsert_pool_activity_miners = pool_ops.upsert_pool_activity_miners
         self.old_seconds_since_epoch = pool_ops.seconds_since_epoch
         self.old_discover_miner = pool_ops.discover_miner
         self.old_get_miner_cgminer_devs = pool_ops.get_miner_cgminer_devs
         self.old_mac_for_ip = pool_ops.mac_for_ip
+        pool_ops.collect_pool_job_state_activity = lambda: []
         pool_ops.discover_miner = lambda ip, timeout=0: None
         pool_ops.get_miner_cgminer_devs = lambda ip, timeout=0: {}
         pool_ops.mac_for_ip = lambda ip: ""
@@ -902,6 +958,7 @@ class MinerHealthConfiguredScopeTests(unittest.TestCase):
 
     def restore(self) -> None:
         pool_ops.collect_pool_activity = self.old_collect_pool_activity
+        pool_ops.collect_pool_job_state_activity = self.old_collect_pool_job_state_activity
         pool_ops.upsert_pool_activity_miners = self.old_upsert_pool_activity_miners
         pool_ops.seconds_since_epoch = self.old_seconds_since_epoch
         pool_ops.discover_miner = self.old_discover_miner
@@ -1074,6 +1131,62 @@ class MinerHealthConfiguredScopeTests(unittest.TestCase):
         self.assertEqual(health["failures"], [])
         self.assertEqual(health["miners"][0]["configured"], True)
         self.assertEqual(health["miners"][0]["status"], "ok")
+
+    def test_job_state_mac_moves_managed_lane_to_current_client_ip(self) -> None:
+        worker = "0x05518E03e148C56e426ff9e1CBdB962B4FC5250A"
+        mac = "28:e2:97:1e:c0:b5"
+        pool_ops.collect_pool_activity = lambda lines=0: {"miners": []}
+        pool_ops.collect_pool_job_state_activity = lambda: [
+            {
+                "ip": "192.168.1.102",
+                "mac": mac,
+                "device_id": f"mac:{mac}",
+                "identity_key": f"mac:{mac}",
+                "device_type": "asic",
+                "workers": [worker],
+                "ports": ["59215"],
+                "last_seen_at": "2026-06-19T15:57:25+0000",
+                "pool_job_state_authorized": True,
+                "pool_job_state_ready": False,
+            }
+        ]
+        pool_ops.upsert_pool_activity_miners = lambda activity: {
+            "updated_at": "2026-06-19T15:57:25+0000",
+            "miners": [
+                {
+                    "ip": "192.168.1.100",
+                    "mac": mac,
+                    "device_id": f"mac:{mac}",
+                    "device_type": "asic",
+                    "expected_pool_url": pool_ops.default_miner_pool_settings()["pool_url"],
+                    "expected_worker_user": worker,
+                    "last_workers": [worker],
+                    "last_pool_seen_epoch": 100,
+                    "managed": True,
+                },
+                {
+                    "ip": "192.168.1.102",
+                    "device_type": "stratum",
+                    "discovered_by": "pool-log",
+                    "expected_pool_url": pool_ops.default_miner_pool_settings()["pool_url"],
+                    "expected_worker_user": worker,
+                    "last_workers": [worker],
+                    "managed": False,
+                },
+            ],
+        }
+        pool_ops.seconds_since_epoch = lambda: 110
+
+        health = pool_ops.collect_miner_health()
+        miners = {item["mac"]: item for item in health["miners"] if item.get("mac")}
+
+        self.assertEqual(len([item for item in health["miners"] if item["ip"] == "192.168.1.102"]), 1)
+        self.assertNotIn("192.168.1.100", {item["ip"] for item in health["miners"]})
+        self.assertEqual(miners[mac]["ip"], "192.168.1.102")
+        self.assertTrue(miners[mac]["managed"])
+        self.assertTrue(miners[mac]["connected"])
+        self.assertTrue(miners[mac]["work_pool_active"])
+        self.assertTrue(miners[mac]["expected_work_lane"])
 
     def test_pool_worker_user_matches_hex_address_case_insensitively(self) -> None:
         self.assertTrue(

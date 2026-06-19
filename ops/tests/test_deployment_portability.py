@@ -101,9 +101,9 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool", compose)
         self.assertIn("BDAG_POOL_CONTAINER: pool", compose)
         self.assertIn("BDAG_POOL_DB_CONTAINER: postgres", compose)
-        self.assertIn("BDAG_NODE_RPC_URLS: node=http://node:38131", compose)
-        self.assertIn("BDAG_GLOBAL_CHAIN_RPC_URLS: node=http://node:38131", compose)
-        self.assertIn("BDAG_RPC_URL: http://node:38131", compose)
+        self.assertIn("BDAG_NODE_RPC_URLS: node=http://host.docker.internal:38131", compose)
+        self.assertIn("BDAG_GLOBAL_CHAIN_RPC_URLS: node=http://host.docker.internal:38131", compose)
+        self.assertIn("BDAG_RPC_URL: http://host.docker.internal:38131", compose)
         self.assertIn("BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://collector:9280}", compose)
         self.assertIn("ADDR: ${DASHBOARD_LISTEN:-0.0.0.0:8088}", compose)
         self.assertIn('${DASHBOARD_HOST_PORT:-8088}:8088"', compose)
@@ -163,8 +163,11 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         dockerfile_dev = (ROOT_DIR / "dockerfile-dev").read_text(encoding="utf-8")
 
         self.assertIn("dashboard_src: ${DASHBOARD_SRC_CONTEXT:-.}", compose)
+        self.assertIn('curl -fsS http://127.0.0.1:8088/ >/dev/null', compose)
         self.assertIn("WORKDIR /src/dashboard", dockerfile_dev)
         self.assertIn("COPY --from=dashboard_src . .", dockerfile_dev)
+        self.assertIn("curl redis-server redis-tools", dockerfile_dev)
+        self.assertIn("COPY docker/dashboard-redis.conf /etc/redis/redis.conf", dockerfile_dev)
 
 
     def test_host_dashboard_env_uses_host_reachable_chain_rpc(self) -> None:
@@ -202,6 +205,7 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         stack_defaults = (ROOT_DIR / "ops" / "config" / "stack-defaults.env").read_text(encoding="utf-8")
 
         self.assertEqual(1, stack_defaults.count("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true"))
+        self.assertEqual(1, stack_defaults.count("POOL_RPC_ROUTER_NODE_HEALTH_READY_THRESHOLD=2"))
 
     def test_pool_node_health_gate_is_enabled_by_default(self) -> None:
         stack_defaults = (ROOT_DIR / "ops" / "config" / "stack-defaults.env").read_text(encoding="utf-8")
@@ -209,8 +213,33 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         installer = (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8")
 
         self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true", stack_defaults)
+        self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_READY_THRESHOLD=2", stack_defaults)
         self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true", env_example)
+        self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_READY_THRESHOLD=2", env_example)
         self.assertIn("set_stack_default_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_ENABLED", installer)
+        self.assertIn("set_stack_default_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_READY_THRESHOLD", installer)
+
+    def test_calibration_tools_are_not_startup_services(self) -> None:
+        forbidden = (
+            "pool_timing_calibrator.py",
+            "live_efficiency_monitor.py",
+            "pool-timing-calibrator",
+            "pool-live-efficiency-monitor",
+        )
+        startup_surfaces = [
+            ROOT_DIR / "docker-compose.yml",
+            ROOT_DIR / "ops" / "install-dashboard.sh",
+            ROOT_DIR / "ops" / "release-install.sh",
+            ROOT_DIR / "scripts" / "release" / "installers" / "install-unix-common.sh",
+            ROOT_DIR / "scripts" / "release" / "installers" / "install-windows.ps1",
+        ]
+        startup_surfaces.extend((ROOT_DIR / "ops" / "systemd").glob("*.service"))
+        startup_surfaces.extend((ROOT_DIR / "ops" / "systemd").glob("*.timer"))
+
+        for path in startup_surfaces:
+            text = path.read_text(encoding="utf-8")
+            for needle in forbidden:
+                self.assertNotIn(needle, text, f"{path.relative_to(ROOT_DIR)} must not auto-start calibration tooling")
 
     def test_live_deploy_copy_contract_covers_live_validator_files(self) -> None:
         deploy = (ROOT_DIR / "ops" / "deploy-live-runtime-update.sh").read_text(encoding="utf-8")

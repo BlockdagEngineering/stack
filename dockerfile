@@ -183,18 +183,29 @@ FROM ops-runtime AS sentinel
 LABEL org.opencontainers.image.title="BlockDAG Stack Sentinel"
 
 # ----------------------------------------------------------------------------
-# Dashboard Runtime Stage (Go UI over status API)
+# Dashboard Runtime Stage (Go UI with private Redis live state)
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS dashboard
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates tzdata \
+    ca-certificates tzdata curl redis-server redis-tools \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard
-RUN chmod +x /usr/local/bin/dashboard
+COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard2
+COPY docker/dashboard-redis.conf /etc/redis/redis.conf
+RUN chmod +x /usr/local/bin/dashboard2 \
+ && ln -sf /usr/local/bin/dashboard2 /usr/local/bin/dashboard \
+ && mkdir -p /run/dashboard-redis /var/lib/dashboard-redis /app/redis/functions \
+ && chmod 700 /run/dashboard-redis /var/lib/dashboard-redis
 
 ENV ADDR=0.0.0.0:8088 \
+    BDAG_DASHBOARD_REDIS_ENABLED=1 \
+    BDAG_DASHBOARD_REDIS_MANAGED=1 \
+    BDAG_REDIS_SOCKET=/run/dashboard-redis/redis.sock \
+    BDAG_REDIS_CONFIG=/etc/redis/redis.conf \
+    BDAG_EVM_HTTP_URL=http://node:18545 \
+    BDAG_EVM_WS_URL=ws://node:18546 \
+    BDAG_POOL_METRICS_URL=http://pool:9090/metrics \
     BDAG_COLLECTOR_API=http://collector:9280
 
 EXPOSE 8088
-ENTRYPOINT ["/usr/local/bin/dashboard"]
+ENTRYPOINT ["/usr/local/bin/dashboard2"]

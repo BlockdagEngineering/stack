@@ -244,6 +244,16 @@ The dashboard reports this as a deliberate catch-up pause, not a pool failure,
 and tells operators to leave miners configured until I/O pressure drops, peer lag
 is back inside the safe window, and template health is ready.
 
+Pool mining starts fail-closed when node-health gating is enabled. The pool waits
+for measured template health before it feeds ASIC work, and
+`POOL_RPC_ROUTER_NODE_HEALTH_READY_THRESHOLD=2` requires two consecutive ready
+samples before a recovered backend can become eligible again. Stale block
+candidate submission stays disabled with
+`POOL_SUBMIT_STALE_BLOCK_CANDIDATES=false`; cached-template advisory paths are
+reserved for fresh P2P/template evidence, not for sync bypasses. The calibration
+and live-efficiency tools under `ops/` are manual diagnostics only and must not
+be installed as compose services, timers, or watchdog-managed startup units.
+
 Collector block height is sourced from chain RPC `getBlockCount`; template
 height, logs, and main-order values are shown only as
 diagnostics. Build and release flows should run through

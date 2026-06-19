@@ -170,6 +170,44 @@ function Get-EnvFileValue([string]$Path, [string]$Key) {
     return $value
 }
 
+function Get-EnvFileInt([string]$Path, [string]$Key, [int]$Default) {
+    $value = Get-EnvFileValue $Path $Key
+    $parsed = 0
+    if ([int]::TryParse($value, [ref]$parsed) -and $parsed -gt 0) {
+        return $parsed
+    }
+    return $Default
+}
+
+function Set-NodeConfCacheText([string]$Text) {
+    $nodeCache = Get-EnvFileInt '.env' 'BDAG_NODE_CACHE_MB' 2048
+    $evmCache = Get-EnvFileInt '.env' 'BDAG_EVM_CACHE_MB' $nodeCache
+    $databasePercent = Get-EnvFileInt '.env' 'BDAG_NODE_CACHE_DATABASE_PERCENT' 70
+
+    if ($Text -match '(?m)^cache=') {
+        $Text = [regex]::Replace($Text, '(?m)^cache=.*', "cache=$nodeCache")
+    } else {
+        $Text = $Text.TrimEnd() + "`ncache=$nodeCache`n"
+    }
+    if ($Text -match '(?m)^cache\.database=') {
+        $Text = [regex]::Replace($Text, '(?m)^cache\.database=.*', "cache.database=$databasePercent")
+    } else {
+        $Text = $Text.TrimEnd() + "`ncache.database=$databasePercent`n"
+    }
+
+    if ($Text -match '--cache[ =]\d+') {
+        $Text = [regex]::Replace($Text, '--cache[ =]\d+', "--cache $evmCache")
+    } elseif ($Text -match '(?m)^evmenv="') {
+        $Text = [regex]::Replace($Text, '(?m)^evmenv="([^"]*)"', {
+            param($match)
+            "evmenv=`"$($match.Groups[1].Value.TrimEnd()) --cache $evmCache`""
+        })
+    } else {
+        $Text = $Text.TrimEnd() + "`nevmenv=`"--cache $evmCache`"`n"
+    }
+    return $Text
+}
+
 function Resolve-PackagePath([string]$Value) {
     if (-not $Value) { $Value = './data/node' }
     if ([System.IO.Path]::IsPathRooted($Value)) { return $Value }
@@ -619,6 +657,7 @@ if (-not $nodeOnlyInstall) {
         $nodeText = $nodeText.TrimEnd() + "`nminingaddr=$miningAddr`n"
     }
 }
+$nodeText = Set-NodeConfCacheText $nodeText
 
 Write-Host ""
 Write-Host "Detecting external IP address..."

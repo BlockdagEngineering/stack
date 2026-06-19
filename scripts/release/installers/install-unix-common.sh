@@ -432,6 +432,44 @@ env_file_value() {
     printf '%s\n' "$value"
 }
 
+env_file_uint_value() {
+    local file="$1" key="$2" fallback="$3" value
+    value="$(env_file_value "$file" "$key")"
+    value="${value:-$fallback}"
+    case "$value" in
+        ''|*[!0-9]*) value="$fallback" ;;
+    esac
+    printf '%s\n' "$value"
+}
+
+apply_node_conf_cache_settings() {
+    local node_cache evm_cache database_percent
+    node_cache="$(env_file_uint_value .env BDAG_NODE_CACHE_MB 2048)"
+    evm_cache="$(env_file_uint_value .env BDAG_EVM_CACHE_MB "$node_cache")"
+    database_percent="$(env_file_uint_value .env BDAG_NODE_CACHE_DATABASE_PERCENT 70)"
+
+    if grep -q '^cache=' node.conf; then
+        inplace_sed "s|^cache=.*|cache=${node_cache}|" node.conf
+    else
+        printf '\ncache=%s\n' "$node_cache" >> node.conf
+    fi
+    if grep -q '^cache\.database=' node.conf; then
+        inplace_sed "s|^cache\\.database=.*|cache.database=${database_percent}|" node.conf
+    else
+        printf 'cache.database=%s\n' "$database_percent" >> node.conf
+    fi
+
+    if grep -q '^evmenv="' node.conf; then
+        if grep -Eq -- '--cache[ =][0-9]+' node.conf; then
+            inplace_sed "s|--cache[ =][0-9][0-9]*|--cache ${evm_cache}|g" node.conf
+        else
+            inplace_sed "s|^evmenv=\"\\(.*\\)\"|evmenv=\"\\1 --cache ${evm_cache}\"|" node.conf
+        fi
+    else
+        printf 'evmenv="--cache %s"\n' "$evm_cache" >> node.conf
+    fi
+}
+
 package_path() {
     local raw="$1"
     raw="${raw:-./data/node}"
@@ -863,6 +901,7 @@ if ! install_mode_is_node_only; then
         printf '\nminingaddr=%s\n' "$MINING_ADDR" >> node.conf
     fi
 fi
+apply_node_conf_cache_settings
 
 if [[ -n "${BDAG_P2P_ADVERTISE_IP:-}" ]]; then
     echo ""

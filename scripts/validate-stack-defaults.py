@@ -169,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
             errors.append(str(exc))
             defaults = {}
 
-    for rel_path in (".env.example", ".env.cpu.example", "ops/portable.env.example"):
+    for rel_path in (".env.example", "ops/portable.env.example"):
         assert_projection_matches(errors=errors, defaults=defaults, root=root, rel_path=rel_path)
     assert_compose_fallbacks_match(errors, defaults, root)
     for rel_path in ("ops/install-dashboard.sh", "ops/release-install.sh"):

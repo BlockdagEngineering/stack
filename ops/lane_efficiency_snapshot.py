@@ -81,6 +81,8 @@ def summarize_delta(first: dict[str, float], last: dict[str, float], measured_se
         last,
         'pool_block_submit_outcomes_total{outcome="rejected-local"',
     )
+    block_lost = rejected + rejected_local
+    block_total = accepted + block_lost
     shares_accepted, shares_accepted_rows = positive_delta(first, last, "pool_shares_accepted_total")
     shares_rejected, shares_rejected_rows = positive_delta(first, last, "pool_shares_rejected_total")
     active = active_miners(last)
@@ -91,6 +93,9 @@ def summarize_delta(first: dict[str, float], last: dict[str, float], measured_se
         "active_miners_end": active,
         "miner_hours": round(miner_hours, 6),
         "accepted_blocks": accepted,
+        "block_lost": round(block_lost, 6),
+        "block_total": round(block_total, 6),
+        "block_waste_ratio": round(block_lost / block_total, 6) if block_total > 0 else 0.0,
         "accepted_blocks_per_hour": round(accepted * 3600.0 / measured_seconds, 3) if measured_seconds > 0 else 0.0,
         "accepted_blocks_per_miner_hour": round(accepted / miner_hours, 3) if miner_hours > 0 else 0.0,
         "rejected_per_accepted": round(rejected / accepted, 6) if accepted > 0 else 0.0,

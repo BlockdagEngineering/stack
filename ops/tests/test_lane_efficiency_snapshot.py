@@ -49,6 +49,9 @@ pool_template_conversion_stall_failure_ratio{pool_id="0"} 4.5
         summary = lane_efficiency.summarize_delta(first, last, 120.0)
 
         self.assertEqual(30.0, summary["accepted_blocks"])
+        self.assertEqual(33.0, summary["block_total"])
+        self.assertEqual(3.0, summary["block_lost"])
+        self.assertEqual(0.090909, summary["block_waste_ratio"])
         self.assertEqual(300.0, summary["accepted_blocks_per_miner_hour"])
         self.assertEqual(0.1, summary["rejected_local_per_accepted"])
         self.assertEqual(0.090909, summary["share_reject_ratio"])

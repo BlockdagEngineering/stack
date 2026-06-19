@@ -25,7 +25,7 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool", compose)
         self.assertIn("BDAG_POOL_CONTAINER: pool", compose)
         self.assertIn("BDAG_POOL_DB_CONTAINER: postgres", compose)
-        self.assertIn("BDAG_NODE_RPC_URLS: node=http://node:38131", compose)
+        self.assertIn("BDAG_NODE_RPC_URLS: node=http://host.docker.internal:38131", compose)
         self.assertIn("BDAG_COLLECTOR_DIRECT_STATUS_FALLBACK: ${BDAG_COLLECTOR_DIRECT_STATUS_FALLBACK:-0}", compose)
         self.assertIn("BDAG_COLLECTOR_STATUS_CACHE_SECONDS: ${BDAG_COLLECTOR_STATUS_CACHE_SECONDS:-10}", compose)
         self.assertIn("BDAG_COLLECTOR_SAMPLER_CACHE_SECONDS: ${BDAG_COLLECTOR_SAMPLER_CACHE_SECONDS:-120}", compose)
@@ -48,6 +48,7 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("POOL_GBT_PRESSURE_WINDOW_SECONDS=10", env_example)
         self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS=15", env_example)
         self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS=30", env_example)
+        self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_READY_THRESHOLD=2", env_example)
         self.assertIn("BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED=1", env_example)
         self.assertIn("NODE_RPC_URLS=http://node:38131", env_example)
         self.assertIn("NODE_RPC_URLS=http://127.0.0.1:38131", portable)
@@ -86,6 +87,7 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("set_stack_default_env_value .env POOL_GBT_MIN_INTERVAL_MS", installer)
         self.assertIn("set_stack_default_env_value .env POOL_GBT_PRESSURE_INTERVAL_MS", installer)
         self.assertIn("set_stack_default_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS", installer)
+        self.assertIn("set_stack_default_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_READY_THRESHOLD", installer)
 
     def test_watchdogs_default_to_current_names(self) -> None:
         pool_ops = read("ops/pool_ops.py")

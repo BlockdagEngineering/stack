@@ -240,11 +240,14 @@ LABEL org.opencontainers.image.title="BlockDAG Stack Sentinel"
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS dashboard
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates tzdata \
+    ca-certificates tzdata curl redis-server redis-tools \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard
-RUN chmod +x /usr/local/bin/dashboard
+COPY docker/dashboard-redis.conf /etc/redis/redis.conf
+RUN chmod +x /usr/local/bin/dashboard \
+ && mkdir -p /run/dashboard-redis /var/lib/dashboard-redis /app/redis/functions \
+ && chmod 700 /run/dashboard-redis /var/lib/dashboard-redis
 
 ENV ADDR=0.0.0.0:8088 \
     BDAG_COLLECTOR_API=http://collector:9280
