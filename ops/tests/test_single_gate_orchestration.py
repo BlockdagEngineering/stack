@@ -39,6 +39,7 @@ def safe_canonical_status() -> dict[str, object]:
         "sync_progress": {
             "status": "synced",
             "remaining_blocks": 0,
+            "peer_count": 2,
             "nodes": {
                 "blockdag-node-1": {
                     "canonical_mining_safety": {
@@ -93,7 +94,13 @@ class SingleGateOrchestrationTests(unittest.TestCase):
 
     def test_shared_gate_blocks_synced_status_without_canonical_proof(self) -> None:
         decision = pool_start_gate.pool_start_decision(
-            {"fresh": True, "mode": "synced", "overall": "ok", "rpc_template_health": {"all_nodes_ready": True}}
+            {
+                "fresh": True,
+                "mode": "synced",
+                "overall": "ok",
+                "sync_progress": {"peer_count": 2},
+                "rpc_template_health": {"all_nodes_ready": True},
+            }
         )
 
         self.assertFalse(decision.allowed)
@@ -103,6 +110,15 @@ class SingleGateOrchestrationTests(unittest.TestCase):
         decision = pool_start_gate.pool_start_decision(safe_canonical_status())
 
         self.assertTrue(decision.allowed, decision.reason)
+
+    def test_shared_gate_blocks_single_peer_even_when_synced(self) -> None:
+        status = safe_canonical_status()
+        status["sync_progress"]["peer_count"] = 1
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertFalse(decision.allowed)
+        self.assertIn("only 1 peer(s) reported; need at least 2 peers", decision.reason)
 
     def test_status_sampler_cannot_direct_start_pool_when_gate_blocks(self) -> None:
         incidents: list[tuple[str, str]] = []
