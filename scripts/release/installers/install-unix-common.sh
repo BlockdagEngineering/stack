@@ -746,6 +746,97 @@ stage_snapshot_for_node_datadir() {
     fi
 }
 
+chain_data_archive_kind() {
+    local archive="$1" desc
+    if command -v file >/dev/null 2>&1; then
+        desc="$(file -b "$archive" 2>/dev/null || true)"
+        case "$desc" in
+            *Zstandard*) printf '%s\n' zstd; return 0 ;;
+            *gzip*) printf '%s\n' gzip; return 0 ;;
+            *tar\ archive*) printf '%s\n' tar; return 0 ;;
+        esac
+    fi
+    case "$archive" in
+        *.tar.zst|*.tzst|*.tar.zstd) printf '%s\n' zstd ;;
+        *.tar.gz|*.tgz) printf '%s\n' gzip ;;
+        *.tar) printf '%s\n' tar ;;
+        *) printf '%s\n' unknown ;;
+    esac
+}
+
+chain_data_archive_list() {
+    local archive="$1" kind
+    kind="$(chain_data_archive_kind "$archive")"
+    case "$kind" in
+        zstd)
+            require_command zstd "Install zstd or provide a gzip/plain tar chain-data archive."
+            tar --zstd -tf "$archive"
+            ;;
+        gzip)
+            tar -tzf "$archive"
+            ;;
+        tar)
+            tar -tf "$archive"
+            ;;
+        *)
+            echo "Error: unsupported chain data archive compression for $archive." >&2
+            echo "Use .tar.zst/.tar.zstd/.tzst, .tar.gz/.tgz, or .tar." >&2
+            return 1
+            ;;
+    esac
+}
+
+chain_data_archive_extract() {
+    local archive="$1" dest="$2" kind
+    kind="$(chain_data_archive_kind "$archive")"
+    case "$kind" in
+        zstd) tar --zstd -xf "$archive" -C "$dest" ;;
+        gzip) tar -xzf "$archive" -C "$dest" ;;
+        tar) tar -xf "$archive" -C "$dest" ;;
+        *) return 1 ;;
+    esac
+}
+
+validate_chain_data_archive() {
+    local archive="$1"
+    [[ -f "$archive" ]] || {
+        echo "Error: BDAG_CHAIN_DATA_ARCHIVE does not exist: $archive" >&2
+        exit 1
+    }
+    if ! chain_data_archive_list "$archive" | awk '
+        {
+            path = $0
+            sub(/^\.\//, "", path)
+            if (path ~ /(^|\/)(BdagChain|bdageth\/chaindata|chaindata)(\/|$)/) {
+                found = 1
+            }
+        }
+        END { exit found ? 0 : 1 }
+    '; then
+        echo "Error: chain data archive does not contain recognizable BlockDAG chain markers." >&2
+        echo "Expected BdagChain/, bdageth/chaindata/, or chaindata/ inside the archive." >&2
+        exit 1
+    fi
+}
+
+stage_chain_data_archive_for_node_datadir() {
+    [[ -n "${CHAIN_DATA_ARCHIVE_PATH:-}" ]] || return 0
+
+    local node_dir network_dir
+    node_dir="$(package_path "$(env_file_value .env BDAG_NODE_DATA_DIR)")"
+    network_dir="$node_dir/mainnet"
+
+    if chain_marker_exists "$network_dir"; then
+        echo "Existing chain markers found in $network_dir; preserving node data and skipping chain archive extraction."
+        return 0
+    fi
+
+    mkdir -p "$network_dir"
+    echo "Extracting local chain data archive into $network_dir"
+    chain_data_archive_extract "$CHAIN_DATA_ARCHIVE_PATH" "$network_dir"
+    echo "Local chain data archive extracted."
+}
+
 if [[ "${BDAG_INSTALL_TEST_WRITE_ENV_ONLY:-0}" == "1" ]]; then
     cp .env.example .env
     set_env_value .env DOCKER_PLATFORM "$DOCKER_PLATFORM"
@@ -761,6 +852,11 @@ Quick install (most Linux distros):
 
   curl -fsSL https://get.docker.com | sh
 
+Ubuntu/Debian package install:
+
+  sudo apt-get update
+  sudo apt-get install -y docker.io docker-compose-v2 docker-buildx
+
 Then enable the daemon and let your user run docker without sudo:
 
   sudo systemctl enable --now docker
@@ -773,7 +869,8 @@ Verify everything works:
   docker compose version
 
 Notes:
-  - Avoid your distro's docker.io package; it is often outdated.
+  - On current Ubuntu/Debian releases, the packaged docker.io plus
+    docker-compose-v2 is sufficient when `docker compose version` works.
   - Membership in the docker group is root-equivalent on this host. On a
     multi-admin box, skip the usermod step and run the installer with a
     user that can sudo docker instead.
@@ -819,7 +916,14 @@ enforce_wired_route_policy
 
 SNAPSHOT_PATH="docker/no-snapshot.marker"
 SNAPSHOT_FILE=""
-if [[ -f latest.bdsnap ]] && is_valid_snapshot latest.bdsnap; then
+CHAIN_DATA_ARCHIVE_PATH=""
+if [[ -n "${BDAG_CHAIN_DATA_ARCHIVE:-}" ]]; then
+    CHAIN_DATA_ARCHIVE_PATH="$(package_path "$BDAG_CHAIN_DATA_ARCHIVE")"
+    validate_chain_data_archive "$CHAIN_DATA_ARCHIVE_PATH"
+    echo "Using local chain data archive: $CHAIN_DATA_ARCHIVE_PATH"
+    SNAPSHOT_HOST_PATH="./docker/no-snapshot.marker"
+    SNAPSHOT_IMPORT_ENABLED="0"
+elif [[ -f latest.bdsnap ]] && is_valid_snapshot latest.bdsnap; then
     SNAPSHOT_FILE="latest.bdsnap"
 else
     SNAPSHOT_FILE="$(find . -maxdepth 1 -type f -name '*.bdsnap' -print | head -n 1 || true)"
@@ -835,7 +939,9 @@ else
     fi
 fi
 
-if [[ -n "$SNAPSHOT_FILE" ]]; then
+if [[ -n "$CHAIN_DATA_ARCHIVE_PATH" ]]; then
+    echo "Local chain data archive will be staged into the node datadir."
+elif [[ -n "$SNAPSHOT_FILE" ]]; then
     echo "Found snapshot: $SNAPSHOT_FILE ($(file_size_bytes "$SNAPSHOT_FILE") bytes)"
     SNAPSHOT_HOST_PATH="./latest.bdsnap"
     SNAPSHOT_IMPORT_ENABLED="1"
@@ -871,6 +977,9 @@ set_env_value .env DOCKER_PLATFORM "$DOCKER_PLATFORM"
 set_env_value .env SNAPSHOT_PATH "$SNAPSHOT_PATH"
 set_env_value .env BDAG_SNAPSHOT_URL "$SNAPSHOT_URL"
 set_env_value .env BDAG_NODE_ARCHIVAL "$BDAG_NODE_ARCHIVAL"
+if [[ -n "$CHAIN_DATA_ARCHIVE_PATH" ]]; then
+    set_env_value .env BDAG_CHAIN_DATA_ARCHIVE "$CHAIN_DATA_ARCHIVE_PATH"
+fi
 
 if install_mode_is_node_only; then
     echo "Node-only install: skipping pool, dashboard, and ASIC configuration."
@@ -926,6 +1035,7 @@ fi
 
 clean_build_context_metadata
 stage_snapshot_for_node_datadir
+stage_chain_data_archive_for_node_datadir
 plan_orphan_container_cleanup
 
 export DOCKER_DEFAULT_PLATFORM="$DOCKER_PLATFORM"
@@ -977,7 +1087,8 @@ else
         --owner release-installer \
         --owner-unit install-unix-common \
         --reason "Provision default automation control before sync-only first start" >/dev/null
-    docker compose up -d --no-build --pull never postgres node dashboard
+    docker compose pull pool-db
+    docker compose up -d --no-build --pull never pool-db node dashboard
 
     cat <<'EOF'
 

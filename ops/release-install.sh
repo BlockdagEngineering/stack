@@ -282,10 +282,10 @@ configure_active_node_env() {
   set_stack_default_env_value .env BDAG_POOL_DB_CONTAINER postgres
   set_stack_default_env_value .env BDAG_NODE_SERVICES node
   set_stack_default_env_value .env BDAG_STACK_SERVICES "postgres,node,pool"
-  set_env_value .env POOL_RPC_BACKENDS "node=http://node:38131"
+  set_env_value .env POOL_RPC_BACKENDS "node=http://127.0.0.1:38131"
   set_env_value .env POOL_SUBMIT_RPC_URLS ""
-  set_env_value .env WALLET_RPC_URL "http://node:18545"
-  set_env_value .env WALLET_RPC_URLS "http://node:18545"
+  set_env_value .env WALLET_RPC_URL "http://127.0.0.1:18545"
+  set_env_value .env WALLET_RPC_URLS "http://127.0.0.1:18545"
   set_stack_default_env_value .env POOL_GBT_MIN_INTERVAL_MS
   set_stack_default_env_value .env POOL_GBT_PRESSURE_INTERVAL_MS
   set_stack_default_env_value .env POOL_GBT_PRESSURE_WINDOW_SECONDS
@@ -915,11 +915,11 @@ start_stack() {
     --owner-unit release-install \
     --reason "Provision default automation control before sync-only first start" >/dev/null
   if [[ "${BDAG_RELEASE_PULL_BASE_IMAGES:-0}" == "1" ]]; then
-    compose_cmd pull postgres || true
+    compose_cmd pull pool-db || true
   else
     warn "Skipping implicit image pulls. Set BDAG_RELEASE_PULL_BASE_IMAGES=1 for an explicit base-image refresh."
   fi
-  compose_cmd up -d --no-build --pull never postgres node dashboard
+  compose_cmd up -d --no-build --pull never pool-db node dashboard
   compose_cmd ps
 }
 

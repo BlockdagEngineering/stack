@@ -104,7 +104,7 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn("BDAG_NODE_RPC_URLS: node=http://host.docker.internal:38131", compose)
         self.assertIn("BDAG_GLOBAL_CHAIN_RPC_URLS: node=http://host.docker.internal:38131", compose)
         self.assertIn("BDAG_RPC_URL: http://host.docker.internal:38131", compose)
-        self.assertIn("BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://collector:9280}", compose)
+        self.assertIn("BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://host.docker.internal:9280}", compose)
         self.assertIn("ADDR: ${DASHBOARD_LISTEN:-0.0.0.0:8088}", compose)
         self.assertIn('${DASHBOARD_HOST_PORT:-8088}:8088"', compose)
 
@@ -270,7 +270,7 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
 
         self.assertIn('if [[ "$mode" == "source" && -e "$root/ops/observability" ]]; then', validator)
         self.assertIn('need_grep \'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS\' "docker-compose.yml"', validator)
-        self.assertIn('need_grep \'NODE_RPC_URLS: .*http://node:38131\' "docker-compose.yml"', validator)
+        self.assertIn('need_grep \'NODE_RPC_URLS: .*http://127.0.0.1:38131\' "docker-compose.yml"', validator)
         self.assertIn('need_grep \'BDAG_STACK_SERVICES=postgres,node,pool\' ".env.example"', validator)
         self.assertIn('reject_grep \'container_name:\' "docker-compose.yml"', validator)
 
@@ -301,10 +301,10 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         ).read_text(encoding="utf-8")
 
         self.assertIn("automation_control.py ensure-normal", local_installer)
-        self.assertIn("compose_cmd up -d --no-build --pull never postgres node dashboard", local_installer)
+        self.assertIn("compose_cmd up -d --no-build --pull never pool-db node dashboard", local_installer)
         self.assertNotIn("compose_cmd up -d --no-build --pull never\n", local_installer)
         self.assertIn("automation_control.py ensure-normal", payload_installer)
-        self.assertIn("docker compose up -d --no-build --pull never postgres node dashboard", payload_installer)
+        self.assertIn("docker compose up -d --no-build --pull never pool-db node dashboard", payload_installer)
         self.assertNotIn("docker compose up -d --no-build --pull never\n", payload_installer)
 
     def test_release_installer_extracts_preserved_chain_peer_evidence(self) -> None:
