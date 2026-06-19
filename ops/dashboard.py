@@ -2597,7 +2597,10 @@ HTML = r"""<!doctype html>
     }
     function localAsicMinerLaneRow(miner) {
       if (!activeMinerLaneRow(miner)) return false;
-      return String(miner.device_type || "").toLowerCase() === "asic";
+      if (String(miner.device_type || "").toLowerCase() !== "asic") return false;
+      const model = String(miner.model || miner.hardware || "").toLowerCase();
+      const managed = Boolean(miner.managed || miner.configured || miner.expected_work_lane);
+      return managed || model.includes("x100");
     }
     function renderManagedMiners(health) {
       const tbody = document.getElementById("managedMinersTable");
