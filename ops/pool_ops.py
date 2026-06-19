@@ -460,6 +460,7 @@ POOL_ACCEPTED_JOB_EXPIRED_STORM_RATIO = int(
 )
 POOL_METRICS_PORT = int(os.environ.get("BDAG_POOL_METRICS_PORT", "9090"))
 POOL_METRICS_TIMEOUT = float(os.environ.get("BDAG_POOL_METRICS_TIMEOUT", "2.0"))
+POOL_HOST_NETWORK_METRICS_HOST = os.environ.get("BDAG_POOL_HOST_NETWORK_METRICS_HOST", "127.0.0.1").strip() or "127.0.0.1"
 POOL_SUBMIT_RECOVERY_RECENT_SECONDS = int(os.environ.get("BDAG_POOL_SUBMIT_RECOVERY_RECENT_SECONDS", "180"))
 POOL_SUBMIT_RECOVERY_ACCEPTED_RESUME_SECONDS = int(
     os.environ.get("BDAG_POOL_SUBMIT_RECOVERY_ACCEPTED_RESUME_SECONDS", "90")
@@ -2809,6 +2810,7 @@ def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
         name = str(item.get("Name", "")).lstrip("/")
         state = item.get("State") or {}
         config = item.get("Config") or {}
+        host_config = item.get("HostConfig") or {}
         network_settings = item.get("NetworkSettings") or {}
         networks = network_settings.get("Networks") or {}
         network_rows = {
@@ -2830,10 +2832,20 @@ def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
             "exit_code": state.get("ExitCode", 0),
             "error": state.get("Error", ""),
             "ports": network_settings.get("Ports") or {},
+            "network_mode": host_config.get("NetworkMode", ""),
             "networks": network_rows,
             "network_ips": [row["ip_address"] for row in network_rows.values() if row.get("ip_address")],
         }
     return inspected
+
+
+def pool_metrics_endpoint_for_container(name: str, info: dict[str, Any]) -> tuple[str, str]:
+    ips = [str(ip) for ip in info.get("network_ips") or [] if ip]
+    if ips:
+        return f"{ips[0]}:{POOL_METRICS_PORT}", ""
+    if str(info.get("network_mode") or "").lower() == "host":
+        return f"{POOL_HOST_NETWORK_METRICS_HOST}:{POOL_METRICS_PORT}", ""
+    return "", f"{name}: no container network IP"
 
 
 def docker_top(name: str) -> str:
@@ -3809,11 +3821,10 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
         info = containers.get(name) if isinstance(containers, dict) else None
         if not isinstance(info, dict) or not info.get("running"):
             continue
-        ips = [str(ip) for ip in info.get("network_ips") or [] if ip]
-        if not ips:
-            errors.append(f"{name}: no container network IP")
+        endpoint, endpoint_error = pool_metrics_endpoint_for_container(name, info)
+        if not endpoint:
+            errors.append(endpoint_error)
             continue
-        endpoint = f"{ips[0]}:{POOL_METRICS_PORT}"
         row: dict[str, Any] = {"endpoint": endpoint, "status": "unavailable", "error": ""}
         try:
             text = fetch_text_url(
