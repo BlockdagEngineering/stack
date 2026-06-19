@@ -117,6 +117,17 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         self.assert_stdout_contains(result, "--modules=Blockdag")
         self.assert_stdout_contains(result, "--modules=miner")
 
+    def test_entrypoint_prepares_runtime_config_before_privilege_drop(self) -> None:
+        entrypoint = ENTRYPOINT.read_text(encoding="utf-8")
+        prepare_index = entrypoint.index("prepare_runtime_configfile \"$@\"")
+        runuser_index = entrypoint.index("exec runuser -u bdagStack -g bdagStack -- \"$@\"")
+
+        self.assertIn("rewrite_node_args_configfile", entrypoint)
+        self.assertIn("runuser -u bdagStack -g bdagStack -- test -r \"$config_file\"", entrypoint)
+        self.assertIn("chown bdagStack:bdagStack \"$runtime_config\"", entrypoint)
+        self.assertIn("chmod 0600 \"$runtime_config\"", entrypoint)
+        self.assertLess(prepare_index, runuser_index)
+
 
 if __name__ == "__main__":
     raise SystemExit(unittest.main())

@@ -322,6 +322,64 @@ append_node_arg_prefix_once() {
   export NODE_ARGS_APPEND
 }
 
+rewrite_node_args_configfile() {
+  local node_args="$1"
+  local config_file="$2"
+  local rewritten="" word skip_next=0 saw_configfile=0
+  for word in $node_args; do
+    if [ "$skip_next" = "1" ]; then
+      skip_next=0
+      continue
+    fi
+    case "$word" in
+      --configfile=*)
+        rewritten="${rewritten:+$rewritten }--configfile=$config_file"
+        saw_configfile=1
+        ;;
+      --configfile)
+        rewritten="${rewritten:+$rewritten }--configfile=$config_file"
+        skip_next=1
+        saw_configfile=1
+        ;;
+      *)
+        rewritten="${rewritten:+$rewritten }$word"
+        ;;
+    esac
+  done
+  if [ "$saw_configfile" != "1" ]; then
+    rewritten="${rewritten:+$rewritten }--configfile=$config_file"
+  fi
+  printf '%s\n' "$rewritten"
+}
+
+prepare_runtime_configfile() {
+  RUNTIME_CONFIGFILE_NODE_ARGS=
+  [ "$(id -u)" = 0 ] || return 0
+
+  local node_args config_file runtime_config runtime_dir
+  node_args="$(node_args_from_argv "$@" || true)"
+  config_file="$(node_arg_value configfile "$node_args" || true)"
+  [ -n "$config_file" ] || return 0
+
+  if runuser -u bdagStack -g bdagStack -- test -r "$config_file" 2>/dev/null; then
+    return 0
+  fi
+
+  if [ ! -r "$config_file" ]; then
+    log "node config file is not readable: $config_file"
+    exit 1
+  fi
+
+  runtime_config="${BDAG_RUNTIME_CONFIGFILE:-${BDAG_EPHEMERAL_DIR:-/run/bdag-ephemeral}/node.conf}"
+  runtime_dir="$(dirname "$runtime_config")"
+  mkdir -p "$runtime_dir"
+  cp "$config_file" "$runtime_config"
+  chown bdagStack:bdagStack "$runtime_config"
+  chmod 0600 "$runtime_config"
+  RUNTIME_CONFIGFILE_NODE_ARGS="$(rewrite_node_args_configfile "$node_args" "$runtime_config")"
+  log "prepared bdagStack-readable node config copy: $runtime_config"
+}
+
 apply_node_mining_runtime_args() {
   case "${BDAG_ENABLE_NODE_MINING:-0}" in
     1|true|TRUE|yes|YES|on|ON) ;;
@@ -786,6 +844,17 @@ fi
 if [ "$(id -u)" = 0 ]; then
   ensure_owned_runtime_dirs
   fix_ownership_if_needed
+  prepare_runtime_configfile "$@"
+  if [ -n "${RUNTIME_CONFIGFILE_NODE_ARGS:-}" ]; then
+    args=("$@")
+    for i in "${!args[@]}"; do
+      if [[ "${args[$i]}" == --node-args=* ]]; then
+        args[$i]="--node-args=${RUNTIME_CONFIGFILE_NODE_ARGS}"
+        set -- "${args[@]}"
+        break
+      fi
+    done
+  fi
   exec runuser -u bdagStack -g bdagStack -- "$@"
 fi
 exec "$@"
