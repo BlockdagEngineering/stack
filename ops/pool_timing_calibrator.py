@@ -66,6 +66,13 @@ def fetch_text(url: str, timeout: float = 8.0) -> str:
         return response.read().decode("utf-8", "replace")
 
 
+def fetch_metrics() -> tuple[dict[tuple[str, tuple[tuple[str, str], ...]], float], str | None]:
+    try:
+        return parse_metrics(fetch_text(METRICS_URL)), None
+    except Exception as exc:  # noqa: BLE001
+        return {}, str(exc)
+
+
 def post_admin(path: str, timeout: float = 5.0) -> dict[str, Any]:
     req = urllib.request.Request(ADMIN_BASE + path, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as response:
@@ -265,6 +272,13 @@ def apply_knobs(knobs: Knobs) -> dict[str, Any]:
     return results
 
 
+def try_apply_knobs(knobs: Knobs) -> tuple[dict[str, Any], str | None]:
+    try:
+        return apply_knobs(knobs), None
+    except Exception as exc:  # noqa: BLE001
+        return {}, str(exc)
+
+
 def choose_next(knobs: Knobs, delta: dict[str, Any], job_state: dict[str, Any]) -> tuple[Knobs, str]:
     if not delta.get("ready"):
         return knobs, str(delta.get("reason", "baseline"))
@@ -348,22 +362,30 @@ def main() -> int:
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
-    initial_metrics = parse_metrics(fetch_text(METRICS_URL))
+    initial_metrics, initial_metrics_error = fetch_metrics()
     knobs = discover_current_knobs(initial_metrics)
     initial_job_state = fetch_job_state()
-    initial_ready, initial_gate = calibration_gate(initial_metrics, initial_job_state)
+    if initial_metrics_error:
+        initial_ready, initial_gate = False, "metrics-unavailable"
+    else:
+        initial_ready, initial_gate = calibration_gate(initial_metrics, initial_job_state)
     started = time.time()
     previous_summary: dict[str, Any] | None = None
     history: deque[dict[str, Any]] = deque(maxlen=DECISION_WINDOWS)
     cooldown_windows = 0
-    apply_result = apply_knobs(knobs) if APPLY_INITIAL and initial_ready else {}
+    apply_result: dict[str, Any] = {}
+    apply_error: str | None = None
+    if APPLY_INITIAL and initial_ready:
+        apply_result, apply_error = try_apply_knobs(knobs)
     append_state({
         "ts": time.time(),
         "event": "start",
         "knobs": knobs.__dict__,
         "gate": initial_gate,
         "apply_initial": APPLY_INITIAL,
+        "metrics_error": initial_metrics_error,
         "apply": apply_result,
+        "apply_error": apply_error,
     })
     print(
         json.dumps({
@@ -371,48 +393,69 @@ def main() -> int:
             "knobs": knobs.__dict__,
             "gate": initial_gate,
             "apply_initial": APPLY_INITIAL,
+            "metrics_error": initial_metrics_error,
             "state_path": str(STATE_PATH),
         }),
         flush=True,
     )
 
     while running and time.time() - started < DURATION_SECONDS:
-        metrics = parse_metrics(fetch_text(METRICS_URL))
-        summary = summarize(metrics)
-        delta = summarize_delta(summary, previous_summary)
+        metrics, metrics_error = fetch_metrics()
         job_state = fetch_job_state()
-        gate_ready, gate_reason = calibration_gate(metrics, job_state)
+        apply_error = None
 
-        decision_delta = delta
-        if gate_ready and delta.get("ready") and delta.get("block_total", 0.0) > 0:
-            history.append(delta)
-
-        if not gate_ready:
+        if metrics_error:
+            delta = {"ready": False, "reason": "metrics-unavailable", "error": metrics_error}
+            decision_delta = delta
+            gate_ready = False
+            gate_reason = "metrics-unavailable"
             history.clear()
             next_knobs, reason = knobs, gate_reason
-        elif not delta.get("ready"):
-            next_knobs, reason = knobs, str(delta.get("reason", "baseline"))
-        elif len(history) < DECISION_WINDOWS:
-            next_knobs, reason = knobs, f"warming-history-{len(history)}/{DECISION_WINDOWS}"
+            changed = False
+            apply_result = {}
         else:
-            decision_delta = combine_deltas(list(history))
-            waste = float(decision_delta.get("block_waste_ratio", 0.0))
-            invalidated = float(decision_delta.get("invalidated_share_ratio", 0.0))
-            if cooldown_windows > 0:
-                next_knobs, reason = knobs, f"cooldown-{cooldown_windows}"
-                cooldown_windows -= 1
-            elif waste <= TARGET_WASTE_RATIO and invalidated <= TARGET_WASTE_RATIO:
-                next_knobs, reason = knobs, "rolling-target-met"
-            elif waste <= TARGET_WASTE_RATIO + TARGET_MARGIN_RATIO and invalidated <= TARGET_WASTE_RATIO + TARGET_MARGIN_RATIO:
-                next_knobs, reason = knobs, "rolling-target-band"
-            else:
-                next_knobs, reason = choose_next(knobs, decision_delta, job_state)
+            summary = summarize(metrics)
+            delta = summarize_delta(summary, previous_summary)
+            gate_ready, gate_reason = calibration_gate(metrics, job_state)
 
-        changed = next_knobs != knobs
-        apply_result = apply_knobs(next_knobs) if changed and gate_ready else {}
-        if changed:
-            cooldown_windows = CHANGE_COOLDOWN_WINDOWS
-            history.clear()
+            decision_delta = delta
+            if gate_ready and delta.get("ready") and delta.get("block_total", 0.0) > 0:
+                history.append(delta)
+
+            if not gate_ready:
+                history.clear()
+                next_knobs, reason = knobs, gate_reason
+            elif not delta.get("ready"):
+                next_knobs, reason = knobs, str(delta.get("reason", "baseline"))
+            elif len(history) < DECISION_WINDOWS:
+                next_knobs, reason = knobs, f"warming-history-{len(history)}/{DECISION_WINDOWS}"
+            else:
+                decision_delta = combine_deltas(list(history))
+                waste = float(decision_delta.get("block_waste_ratio", 0.0))
+                invalidated = float(decision_delta.get("invalidated_share_ratio", 0.0))
+                if cooldown_windows > 0:
+                    next_knobs, reason = knobs, f"cooldown-{cooldown_windows}"
+                    cooldown_windows -= 1
+                elif waste <= TARGET_WASTE_RATIO and invalidated <= TARGET_WASTE_RATIO:
+                    next_knobs, reason = knobs, "rolling-target-met"
+                elif waste <= TARGET_WASTE_RATIO + TARGET_MARGIN_RATIO and invalidated <= TARGET_WASTE_RATIO + TARGET_MARGIN_RATIO:
+                    next_knobs, reason = knobs, "rolling-target-band"
+                else:
+                    next_knobs, reason = choose_next(knobs, decision_delta, job_state)
+
+            changed = next_knobs != knobs
+            apply_result = {}
+            if changed and gate_ready:
+                apply_result, apply_error = try_apply_knobs(next_knobs)
+                if apply_error:
+                    next_knobs = knobs
+                    changed = False
+                    reason = f"{reason}-apply-failed"
+            if changed:
+                cooldown_windows = CHANGE_COOLDOWN_WINDOWS
+                history.clear()
+            previous_summary = summary
+
         entry = {
             "ts": time.time(),
             "event": "window",
@@ -431,12 +474,13 @@ def main() -> int:
                 "ready_connections": job_state.get("ready_connections"),
                 "reason_code": job_state.get("reason_code"),
             },
+            "metrics_error": metrics_error,
             "apply": apply_result,
+            "apply_error": apply_error,
         }
         append_state(entry)
         print(json.dumps(entry, sort_keys=True), flush=True)
         knobs = next_knobs
-        previous_summary = summary
         sleep_until = time.time() + INTERVAL_SECONDS
         while running and time.time() < sleep_until and time.time() - started < DURATION_SECONDS:
             time.sleep(min(5, sleep_until - time.time()))
