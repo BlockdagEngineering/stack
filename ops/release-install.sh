@@ -291,7 +291,11 @@ configure_active_node_env() {
   set_stack_default_env_value .env POOL_GBT_PRESSURE_WINDOW_SECONDS
   set_stack_default_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_ENABLED
   set_stack_default_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS
+  set_stack_default_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_CATCHUP_PROBE_SECONDS
+  set_stack_default_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_CATCHUP_PEER_LEAD_BLOCKS
+  set_stack_default_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_ERROR_PROBE_SECONDS
   set_stack_default_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS
+  set_stack_default_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_READY_THRESHOLD
 }
 
 configure_node_mining_env() {
