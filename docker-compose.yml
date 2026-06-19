@@ -159,8 +159,10 @@ services:
       NODE_RPC_URLS: ${NODE_RPC_URLS:-http://node:38131}
       POOL_SUBMIT_RPC_URLS: ${POOL_SUBMIT_RPC_URLS:-}
       POOL_RPC_BACKENDS: ${POOL_RPC_BACKENDS:-}
-      POOL_RUNTIME_ADMIN_ENABLED: ${POOL_RUNTIME_ADMIN_ENABLED:-true}
-      PG_URL:       postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@${POOL_DB_HOST:-pool-db}:${POOL_DB_PORT:-5432}/${POSTGRES_DB:-bdagpool}?sslmode=disable
+	      POOL_RUNTIME_ADMIN_ENABLED: ${POOL_RUNTIME_ADMIN_ENABLED:-true}
+	      BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-}
+	      POOL_ASIC_MAC_OVERRIDES: ${POOL_ASIC_MAC_OVERRIDES:-}
+	      PG_URL:       postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@${POOL_DB_HOST:-pool-db}:${POOL_DB_PORT:-5432}/${POSTGRES_DB:-bdagpool}?sslmode=disable
       # Stratum listen (inside container) — from root .env
       POOL_BIND_ADDR:     ${POOL_BIND_ADDR:-0.0.0.0:3334}
       NODE_RPC_USER:      ${NODE_RPC_USER:-test}
@@ -218,10 +220,13 @@ services:
 
 
   # --------------------------------------------------------------------------
-  # Read-only collector API from BlockdagEngineering/collector.
+  # Legacy read-only collector API from BlockdagEngineering/collector.
+  # The Redis-backed dashboard runtime owns live dashboard state by default.
+  # Start this only for legacy cutover/debug with COMPOSE_PROFILES=legacy-collector.
   # --------------------------------------------------------------------------
 
   collector:
+    profiles: [legacy-collector]
     <<: *ops-low
     container_name: collector
     platform: ${DOCKER_PLATFORM:-linux/amd64}
@@ -430,7 +435,7 @@ services:
         done
 
   # --------------------------------------------------------------------------
-  # Dashboard UI over the collector API.
+  # Dashboard runtime: Go UI + private Redis + live ingest workers.
   # --------------------------------------------------------------------------
   dashboard:
     <<: *ops-low
@@ -447,16 +452,47 @@ services:
     tmpfs:
       - /tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
       - /var/tmp:size=${BDAG_CONTAINER_TMPFS_SIZE:-128m},mode=1777
+      - /run/dashboard-redis:size=16m,mode=0700
+      - /var/lib/dashboard-redis:size=${BDAG_DASHBOARD_REDIS_TMPFS_SIZE:-128m},mode=0700
     depends_on:
-      collector: { condition: service_started }
+      node: { condition: service_started }
+      pool: { condition: service_started }
     environment:
       TMPDIR: /tmp
       TMP: /tmp
       TEMP: /tmp
       ADDR: ${DASHBOARD_LISTEN:-0.0.0.0:8088}
+      BDAG_DASHBOARD_REDIS_ENABLED: ${BDAG_DASHBOARD_REDIS_ENABLED:-1}
+      BDAG_DASHBOARD_REDIS_MANAGED: ${BDAG_DASHBOARD_REDIS_MANAGED:-1}
+      BDAG_REDIS_SOCKET: /run/dashboard-redis/redis.sock
+      BDAG_REDIS_CONFIG: /etc/redis/redis.conf
+      BDAG_REDIS_MAXMEMORY: ${BDAG_REDIS_MAXMEMORY:-128mb}
+      BDAG_REDIS_MAXMEMORY_POLICY: ${BDAG_REDIS_MAXMEMORY_POLICY:-allkeys-lru}
+      BDAG_EVM_HTTP_URL: ${BDAG_EVM_HTTP_URL:-http://node:18545}
+      BDAG_EVM_WS_URL: ${BDAG_EVM_WS_URL:-ws://node:18546}
+      BDAG_POOL_METRICS_URL: ${BDAG_POOL_METRICS_URL:-http://pool:9090/metrics}
+      BDAG_GLOBAL_BLOCK_WINDOW: ${BDAG_GLOBAL_BLOCK_WINDOW:-600}
+      BDAG_GLOBAL_RPC_WORKERS: ${BDAG_GLOBAL_RPC_WORKERS:-16}
+      BDAG_GLOBAL_SETTLE_DELAY_SECONDS: ${BDAG_GLOBAL_SETTLE_DELAY_SECONDS:-5}
+      BDAG_GLOBAL_MAX_INCREMENTAL_GAP: ${BDAG_GLOBAL_MAX_INCREMENTAL_GAP:-120}
+      BDAG_GLOBAL_RPC_CHUNK_SIZE: ${BDAG_GLOBAL_RPC_CHUNK_SIZE:-64}
+      BDAG_CHAIN_POLL_FALLBACK_AFTER_SECONDS: ${BDAG_CHAIN_POLL_FALLBACK_AFTER_SECONDS:-15}
+      BDAG_CHAIN_WS_READ_LIMIT_BYTES: ${BDAG_CHAIN_WS_READ_LIMIT_BYTES:-1048576}
+      BDAG_CHAIN_WS_READ_TIMEOUT_SECONDS: ${BDAG_CHAIN_WS_READ_TIMEOUT_SECONDS:-30}
       BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://collector:9280}
       DASHBOARD_TIMEZONE: ${DASHBOARD_TIMEZONE:-Africa/Johannesburg}
       BDAG_MINER_CONTROL_ENABLED: ${BDAG_MINER_CONTROL_ENABLED:-1}
+      BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-}
+      POOL_ASIC_MAC_OVERRIDES: ${POOL_ASIC_MAC_OVERRIDES:-}
+      MINING_POOL_ADDRESS: ${MINING_POOL_ADDRESS:?set MINING_POOL_ADDRESS to a non-zero payout address}
+      POOL_COINBASE_ADDRESS: ${POOL_COINBASE_ADDRESS:-}
+      NODE_RPC_USER: ${NODE_RPC_USER:-test}
+      NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -s /run/dashboard-redis/redis.sock PING >/dev/null && curl -fsS http://127.0.0.1:8088/healthz >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     ports:
       - "${DASHBOARD_BIND:-0.0.0.0}:${DASHBOARD_HOST_PORT:-8088}:8088"
 

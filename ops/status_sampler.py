@@ -1336,6 +1336,9 @@ def apply_catchup_node_runtime(payload: dict[str, Any], policy: dict[str, Any]) 
         if safe_int(config_value("BDAG_NODE_CACHE_MB"), 0) < target_cache:
             changed_paths.extend(set_runtime_env_value("BDAG_NODE_CACHE_MB", str(target_cache)))
             env_updates["BDAG_NODE_CACHE_MB"] = str(target_cache)
+        if safe_int(config_value("BDAG_EVM_CACHE_MB"), 0) < target_cache:
+            changed_paths.extend(set_runtime_env_value("BDAG_EVM_CACHE_MB", str(target_cache)))
+            env_updates["BDAG_EVM_CACHE_MB"] = str(target_cache)
         current_conf_cache = node_conf_cache_mb()
         if current_conf_cache and current_conf_cache < target_cache:
             changed_paths.extend(update_node_conf_cache(target_cache))
