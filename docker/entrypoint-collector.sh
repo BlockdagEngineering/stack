@@ -18,8 +18,8 @@ add_pythonpath_dir() {
   fi
 }
 
-add_pythonpath_dir "$BDAG_PROJECT_ROOT/ops"
 add_pythonpath_dir /opt/collector/ops
+add_pythonpath_dir "$BDAG_PROJECT_ROOT/ops"
 if [ -n "$collector_pythonpath" ]; then
   export PYTHONPATH="$collector_pythonpath${PYTHONPATH:+:$PYTHONPATH}"
 fi
@@ -46,13 +46,8 @@ log "starting collector from $app"
 cd "$app_dir"
 exec python3 - "$app" <<'PY'
 from pathlib import Path
-import os
 import runpy
 import sys
-
-stack_ops = Path(os.environ.get("BDAG_PROJECT_ROOT", "/workspace")) / "ops"
-if stack_ops.is_dir():
-    sys.path.insert(0, str(stack_ops))
 
 BDAG_CHILD_EXECUTABLES = {"bdag", "blockdag-node"}
 
