@@ -72,7 +72,7 @@
     <thead><tr><th>Option</th><th>Use</th></tr></thead>
     <tbody>
       <tr><td><code>--rpc-url http://host:38131</code></td><td>Check a node endpoint outside the local Compose default.</td></tr>
-      <tr><td><code>--min-peers 3</code></td><td>Require more healthy external peers for production acceptance.</td></tr>
+      <tr><td><code>--min-peers 3</code></td><td>Raise the default two-peer minimum when production acceptance needs more independent external peers.</td></tr>
       <tr><td><code>--stability-samples 5</code></td><td>Require more consecutive mining RPC samples before readiness passes. The default is <code>3</code>.</td></tr>
       <tr><td><code>--stability-interval 2</code></td><td>Set seconds between stability samples. The default is <code>1</code>.</td></tr>
       <tr><td><code>--mining-address 0x...</code></td><td>Pass the intended payout/mining address to <code>getBlockTemplate</code>.</td></tr>
@@ -85,7 +85,7 @@
   <h2>Release Use</h2>
   <pre><code># After docker compose up -d and after the node has had time to sync:
 ./scripts/init-pool-postgres.sh
-./scripts/release-readiness-check.py --min-peers 1
+./scripts/release-readiness-check.py
 
 # For CI or an installer:
 ./scripts/release-readiness-check.py --json</code></pre>

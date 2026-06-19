@@ -198,7 +198,8 @@ startup logs, probes candidate multiaddrs for TCP reachability, writes
 `ops/runtime/peer-discovery-current.json`, and applies the resulting
 `BDAG_FASTSYNC_PEERS` to the active single node. TCP-open status is only a
 bootstrap hint; install completion and mining readiness still require normal
-peer handshakes, sync freshness, RPC health, and template checks.
+peer handshakes, at least two fresh consensus peers, sync freshness, RPC
+health, and template checks.
 
 ## Fast Artifact Sync V2 Directory Mode
 

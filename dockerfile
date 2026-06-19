@@ -93,7 +93,7 @@ ENTRYPOINT ["/usr/local/bin/docker-entrypoint-nodeworker.sh", \
     "--rpc-url=ws://127.0.0.1:18546", \
     "--dag-rpc-url=http://127.0.0.1:38131", \
     "--persist-root=/var/lib/bdagStack/nodeworker", \
-    "--health-min-peers=1", \
+    "--health-min-peers=2", \
     "--rollout-window=30m"]
 
 # ----------------------------------------------------------------------------

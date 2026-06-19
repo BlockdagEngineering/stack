@@ -546,7 +546,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rpc-user", default=None)
     parser.add_argument("--rpc-pass", default=None)
     parser.add_argument("--timeout", type=float, default=5.0)
-    parser.add_argument("--min-peers", type=int, default=1)
+    parser.add_argument("--min-peers", type=int, default=2)
     parser.add_argument("--stability-samples", type=int, default=3)
     parser.add_argument("--stability-interval", type=float, default=1.0)
     parser.add_argument("--pow-type", type=int, default=10)
