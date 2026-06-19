@@ -94,12 +94,7 @@ services:
         <<: *build-args
     restart: unless-stopped
     logging: *mining-logging
-    ports:
-      - "${P2P_PORT:-8150}:8150"
-      - "${BDAG_RPC_PORT:-38131}:38131"
-      - "${EVM_HTTP_PORT:-18545}:18545"
-      - "${EVM_WS_PORT:-18546}:18546"
-      - "${NODE_METRICS_PORT:-6060}:6060"
+    network_mode: host
     environment:
       TMPDIR: /tmp
       TMP: /tmp
@@ -262,10 +257,10 @@ services:
       BDAG_POOL_METRICS_PORT: 9090
       BDAG_POOL_HOST_NETWORK_METRICS_HOST: ${BDAG_POOL_HOST_NETWORK_METRICS_HOST:-host.docker.internal}
       BDAG_PRESERVE_COMPOSE_SERVICE_HOSTNAMES: ${BDAG_PRESERVE_COMPOSE_SERVICE_HOSTNAMES:-1}
-      BDAG_GLOBAL_RPC_URLS: ${BDAG_GLOBAL_RPC_URLS:-node=http://node:18545}
-      BDAG_NODE_RPC_URLS: node=http://node:38131
-      BDAG_GLOBAL_CHAIN_RPC_URLS: node=http://node:38131
-      BDAG_RPC_URL: http://node:38131
+      BDAG_GLOBAL_RPC_URLS: ${BDAG_GLOBAL_RPC_URLS:-node=http://host.docker.internal:18545}
+      BDAG_NODE_RPC_URLS: node=http://host.docker.internal:38131
+      BDAG_GLOBAL_CHAIN_RPC_URLS: node=http://host.docker.internal:38131
+      BDAG_RPC_URL: http://host.docker.internal:38131
       # Must match node.conf rpcuser / rpcpass (same as pool service).
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
