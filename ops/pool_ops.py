@@ -4567,12 +4567,88 @@ def upsert_pool_activity_miners(activity: dict[str, Any]) -> dict[str, Any]:
         elif last_share_log_at and "last_share_epoch" not in item:
             item["last_share_epoch"] = now_epoch
 
+        if previous_ip and previous_ip != ip:
+            existing.pop(previous_ip, None)
         existing[ip] = item
         if mac:
             existing_by_mac[mac] = item
         changed = True
 
     return save_miner_registry(list(existing.values())) if changed or registry_had_bridge_pseudo_miners else registry
+
+
+def collect_pool_job_state_activity(containers: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    if POOL_METRICS_PORT <= 0:
+        return []
+    if containers is None:
+        containers = docker_inspect(POOL_CONTAINERS)
+
+    defaults = default_miner_pool_settings()
+    rows: list[dict[str, Any]] = []
+    for name in POOL_CONTAINERS:
+        info = containers.get(name) if isinstance(containers, dict) else None
+        if not isinstance(info, dict) or not info.get("running"):
+            continue
+        endpoint, _endpoint_error = pool_metrics_endpoint_for_container(name, info)
+        if not endpoint:
+            continue
+        try:
+            payload = fetch_json_url(
+                f"http://{endpoint}/health/job-state",
+                {"accept": "application/json", "user-agent": HTTP_USER_AGENT},
+                timeout=POOL_METRICS_TIMEOUT,
+            )
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        generated_at = now_iso()
+        for client in payload.get("clients") or []:
+            if not isinstance(client, dict):
+                continue
+            ip = str(client.get("remote_host") or "").strip()
+            if not is_lan_ipv4(ip):
+                continue
+            mac = normalize_mac(client.get("asic_mac"))
+            lane_id = str(client.get("lane_id") or "")
+            if not mac and lane_id.lower().startswith("mac:"):
+                mac = normalize_mac(lane_id[4:])
+            if not mac:
+                continue
+            address = str(client.get("address") or "")
+            port = ""
+            host, sep, raw_port = address.rpartition(":")
+            if sep and host == ip:
+                port = raw_port
+            authorized = bool(client.get("authorized"))
+            subscribed = bool(client.get("subscribed"))
+            if not authorized and not subscribed:
+                continue
+            rows.append(
+                {
+                    "ip": ip,
+                    "mac": mac,
+                    "device_id": f"mac:{mac}",
+                    "identity_key": f"mac:{mac}",
+                    "device_type": "asic",
+                    "source": "pool-job-state",
+                    "workers": [defaults["worker_user"]] if authorized and defaults["worker_user"] else [],
+                    "ports": [port] if port else [],
+                    "jobs": 0,
+                    "submits": 0,
+                    "shares": 0,
+                    "share_work": 0,
+                    "share_difficulty": 0.0,
+                    "blocks_found": 0,
+                    "last_seen_at": generated_at,
+                    "pool_job_state_active": True,
+                    "pool_job_state_authorized": authorized,
+                    "pool_job_state_subscribed": subscribed,
+                    "pool_job_state_ready": bool(client.get("ready")),
+                    "pool_job_state_reason_code": str(client.get("reason_code") or ""),
+                }
+            )
+    return rows
 
 
 def miner_health_count_summary(health: list[dict[str, Any]]) -> dict[str, int]:
@@ -4587,6 +4663,64 @@ def miner_health_count_summary(health: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
+def miner_health_row_score(item: dict[str, Any]) -> tuple[int, int, int, int, int, int, int, int]:
+    status_score = {
+        "ok": 5,
+        "connected": 4,
+        "degraded": 3,
+        "down": 2,
+        "inactive": 1,
+    }.get(str(item.get("status") or ""), 0)
+    model = str(item.get("model") or "").strip().lower()
+    return (
+        1 if item.get("work_pool_active") else 0,
+        1 if item.get("connected") else 0,
+        1 if item.get("managed") else 0,
+        1 if item.get("configured") else 0,
+        1 if item.get("device_type") == "asic" else 0,
+        1 if model and model != "stratum client" else 0,
+        status_score,
+        safe_int(item.get("shares"), 0),
+    )
+
+
+def dedupe_miner_health_rows(health: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    index_by_key: dict[str, int] = {}
+
+    def row_keys(item: dict[str, Any]) -> list[str]:
+        keys: list[str] = []
+        mac = normalize_mac(item.get("mac"))
+        if mac:
+            keys.append(f"mac:{mac}")
+        identity_key = str(item.get("identity_key") or "").strip().lower()
+        if identity_key and identity_key not in keys:
+            keys.append(identity_key)
+        ip = str(item.get("ip") or "")
+        if is_ipv4(ip):
+            keys.append(f"ip:{ip}")
+        return keys
+
+    for item in health:
+        keys = row_keys(item)
+        existing_indexes = [index_by_key[key] for key in keys if key in index_by_key]
+        if not existing_indexes:
+            index = len(rows)
+            rows.append(item)
+            for key in keys:
+                index_by_key[key] = index
+            continue
+
+        index = existing_indexes[0]
+        current = rows[index]
+        if miner_health_row_score(item) > miner_health_row_score(current):
+            rows[index] = item
+            current = item
+        for key in row_keys(current):
+            index_by_key[key] = index
+    return rows
+
+
 def pool_worker_user_matches(actual: Any, expected: Any) -> bool:
     return str(actual or "").lower() == str(expected or "").lower()
 
@@ -4594,6 +4728,15 @@ def pool_worker_user_matches(actual: Any, expected: Any) -> bool:
 def collect_miner_health() -> dict[str, Any]:
     defaults = default_miner_pool_settings()
     activity = collect_pool_activity(lines=POOL_ACTIVITY_LOG_LINES)
+    job_state_activity = collect_pool_job_state_activity()
+    if job_state_activity:
+        activity = {
+            **activity,
+            "miners": [
+                *[item for item in activity.get("miners", []) if isinstance(item, dict)],
+                *job_state_activity,
+            ],
+        }
     registry = upsert_pool_activity_miners(activity)
     miners = registry.get("miners", [])
     activity_by_ip = {item["ip"]: item for item in activity["miners"]}
@@ -4619,6 +4762,9 @@ def collect_miner_health() -> dict[str, Any]:
         activity_item = activity_by_identity.get(registered_identity, {}) if registered_identity else {}
         if not activity_item:
             activity_item = activity_by_ip.get(ip, {})
+        activity_ip = str(activity_item.get("ip") or "")
+        if registered_identity and is_lan_ipv4(activity_ip):
+            ip = activity_ip
         device_type = str(registered.get("device_type") or ("asic" if registered.get("model") else "stratum"))
         discovered_by = str(registered.get("discovered_by") or "")
         pool_log_lan_candidate = bool(activity_item or registered.get("auto_discovered") or discovered_by == "pool-log")
@@ -4669,8 +4815,9 @@ def collect_miner_health() -> dict[str, Any]:
         has_recent_shares = current_shares > 0
         has_recent_blocks = current_blocks_found > 0
         expected_worker_seen = str(expected_user).lower() in {str(worker).lower() for worker in workers}
+        pool_job_state_authorized = bool(activity_item.get("pool_job_state_authorized"))
         current_pool_activity = (bool(activity_item) or submit_window_fresh or share_window_fresh) and expected_url == defaults["pool_url"] and (
-            expected_worker_seen or current_submits > 0 or has_recent_shares or has_recent_blocks
+            expected_worker_seen or pool_job_state_authorized or current_submits > 0 or has_recent_shares or has_recent_blocks
         )
         primary_pool_log = configured_record and is_known_primary_pool_log_miner({**registered, "last_workers": workers})
         pre_api_relevant = (
@@ -4705,7 +4852,12 @@ def collect_miner_health() -> dict[str, Any]:
             except Exception as exc:  # noqa: BLE001 - debug API is useful but should not hide pool-side health.
                 debug_error = str(exc)
 
-        mac = normalize_mac((discovered or {}).get("mac")) or normalize_mac(registered.get("mac")) or mac_for_ip(ip)
+        mac = (
+            normalize_mac((discovered or {}).get("mac"))
+            or normalize_mac(activity_item.get("mac"))
+            or normalize_mac(registered.get("mac"))
+            or mac_for_ip(ip)
+        )
         if is_docker_bridge_pool_log_client(ip, mac):
             # Docker bridge clients can appear in pool logs during local health/API calls.
             # They are not physical ASICs and should not affect miner counts or repairs.
@@ -4724,15 +4876,17 @@ def collect_miner_health() -> dict[str, Any]:
             )
         if is_pool_log_only_miner(registered) or device_type == "stratum" or discovered_by == "pool-log":
             expected_worker_seen = str(expected_user).lower() in {str(worker).lower() for worker in workers}
-            if connected and expected_url == defaults["pool_url"] and expected_worker_seen:
+            pool_job_state_authorized = bool(activity_item.get("pool_job_state_authorized"))
+            if connected and expected_url == defaults["pool_url"] and (expected_worker_seen or pool_job_state_authorized):
                 configured = bool(configured or configured_record)
                 pool_active = True
         pool_seen_age = now_epoch - last_pool_seen_epoch if last_pool_seen_epoch else None
         submit_age = now_epoch - last_submit_epoch if last_submit_epoch else None
         share_age = now_epoch - last_share_epoch if last_share_epoch else None
         expected_worker_seen = str(expected_user).lower() in {str(worker).lower() for worker in workers}
+        pool_job_state_authorized = bool(activity_item.get("pool_job_state_authorized"))
         current_pool_activity = bool(activity_item) and expected_url == defaults["pool_url"] and (
-            expected_worker_seen or current_submits > 0 or has_recent_shares or has_recent_blocks
+            expected_worker_seen or pool_job_state_authorized or current_submits > 0 or has_recent_shares or has_recent_blocks
         )
         work_pool_active = bool(
             (managed or configured_record or current_pool_activity)
@@ -4886,9 +5040,13 @@ def collect_miner_health() -> dict[str, Any]:
                 "last_pool_seen_at": activity_item.get("last_seen_at") or registered.get("last_pool_seen_at"),
                 "last_pool_seen_epoch": last_pool_seen_epoch,
                 "last_pool_seen_age_seconds": pool_seen_age,
+                "pool_job_state_authorized": pool_job_state_authorized,
+                "pool_job_state_ready": bool(activity_item.get("pool_job_state_ready")),
+                "pool_job_state_reason_code": str(activity_item.get("pool_job_state_reason_code") or ""),
             }
         )
 
+    health = dedupe_miner_health_rows(health)
     total_work = sum(item["share_work"] for item in health if item.get("relevant_for_work_share") and item.get("share_work", 0) > 0)
     total_work_includes_all_rows = False
     if not total_work:
