@@ -57,6 +57,14 @@ need_sudo() {
   fi
 }
 
+docker_socket_gid() {
+  if [[ -S /var/run/docker.sock ]]; then
+    stat -c '%g' /var/run/docker.sock 2>/dev/null || printf '0\n'
+  else
+    printf '0\n'
+  fi
+}
+
 compose_cmd() {
   if "${DOCKER[@]}" compose version >/dev/null 2>&1; then
     "${DOCKER[@]}" compose "$@"
@@ -460,6 +468,9 @@ configure_storage_profile() {
   set_env_value .env BDAG_NODE_DATA_DIR "$node_dir"
   set_env_value .env BDAG_POSTGRES_DATA_DIR "$postgres_dir"
   set_env_value .env BDAG_RUNTIME_DIR "$runtime_dir"
+  set_env_value .env BDAG_OPS_UID "$(id -u)"
+  set_env_value .env BDAG_OPS_GID "$(id -g)"
+  set_env_value .env BDAG_DOCKER_SOCKET_GID "$(docker_socket_gid)"
   set_env_value .env BDAG_STORAGE_MIN_CHAIN_FREE_GIB "$(env_value BDAG_STORAGE_MIN_CHAIN_FREE_GIB "${BDAG_STORAGE_MIN_CHAIN_FREE_GIB:-50}")"
   set_env_value .env BDAG_STORAGE_MIN_RUNTIME_FREE_GIB "$(env_value BDAG_STORAGE_MIN_RUNTIME_FREE_GIB "${BDAG_STORAGE_MIN_RUNTIME_FREE_GIB:-4}")"
   set_env_value .env BDAG_NODE_CPU_SHARES "$(env_value BDAG_NODE_CPU_SHARES 6144)"
@@ -550,6 +561,7 @@ configure_env() {
 
   local lan_ip scan_target mining_address node_mining_enabled mem_kb mem_gb
   local miner_route_subnet miner_route_gateway miner_route_dev
+  local p2p_advertise_ip
   lan_ip="$(detect_lan_ip)"
   lan_ip="$(ask "Pool LAN IP miners should connect to" "${lan_ip:-192.168.1.10}")"
   scan_target="$(ask "LAN scan range for ASIC discovery" "$(default_cidr "$lan_ip")")"
@@ -586,6 +598,18 @@ configure_env() {
   set_env_value .env BDAG_MINER_ROUTE_GATEWAY "$miner_route_gateway"
   set_env_value .env BDAG_MINER_ROUTE_DEV "$miner_route_dev"
   validate_pool_lan_config
+  p2p_advertise_ip="$(env_value BDAG_P2P_ADVERTISE_IP "")"
+  if [[ -n "$p2p_advertise_ip" ]]; then
+    set_env_value .env BDAG_P2P_ADVERTISE_IP "$p2p_advertise_ip"
+    if grep -q '^externalip=' node.conf 2>/dev/null; then
+      sed -i "s|^externalip=.*|externalip=${p2p_advertise_ip}|" node.conf
+    else
+      printf '\nexternalip=%s\n' "$p2p_advertise_ip" >> node.conf
+    fi
+  else
+    set_env_value .env BDAG_P2P_ADVERTISE_IP ""
+    sed -i '/^externalip=/d' node.conf 2>/dev/null || true
+  fi
   apply_stack_defaults_env .env
   set_stack_default_env_value .env BDAG_FASTSYNC_RANGE_BLOCKS
   set_stack_default_env_value .env BDAG_FASTSYNC_PREPROCESS_WORKERS

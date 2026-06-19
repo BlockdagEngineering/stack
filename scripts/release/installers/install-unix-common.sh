@@ -903,23 +903,21 @@ if ! install_mode_is_node_only; then
 fi
 apply_node_conf_cache_settings
 
-echo ""
-echo "Detecting external IP address..."
-EXTERNAL_IP="$(curl -sf --max-time 5 https://api.ipify.org \
-    || curl -sf --max-time 5 https://ifconfig.me \
-    || curl -sf --max-time 5 https://icanhazip.com \
-    || true)"
-if [[ -n "$EXTERNAL_IP" ]]; then
-    echo "  Detected: $EXTERNAL_IP"
+if [[ -n "${BDAG_P2P_ADVERTISE_IP:-}" ]]; then
+    echo ""
+    echo "Using explicit P2P advertised IP: ${BDAG_P2P_ADVERTISE_IP}"
     if grep -q '^# externalip=' node.conf; then
-        inplace_sed "s|^# externalip=.*|externalip=$(sed_escape "$EXTERNAL_IP")|" node.conf
+        inplace_sed "s|^# externalip=.*|externalip=$(sed_escape "$BDAG_P2P_ADVERTISE_IP")|" node.conf
     elif grep -q '^externalip=' node.conf; then
-        inplace_sed "s|^externalip=.*|externalip=$(sed_escape "$EXTERNAL_IP")|" node.conf
+        inplace_sed "s|^externalip=.*|externalip=$(sed_escape "$BDAG_P2P_ADVERTISE_IP")|" node.conf
     else
-        printf '\nexternalip=%s\n' "$EXTERNAL_IP" >> node.conf
+        printf '\nexternalip=%s\n' "$BDAG_P2P_ADVERTISE_IP" >> node.conf
     fi
+    set_env_value .env BDAG_P2P_ADVERTISE_IP "$BDAG_P2P_ADVERTISE_IP"
 else
-    echo "  Warning: could not detect external IP. Node will operate outbound-only."
+    echo ""
+    echo "No BDAG_P2P_ADVERTISE_IP set; leaving node externalip unset for outbound P2P sync."
+    sed -i '/^externalip=/d' node.conf
 fi
 
 if ! install_mode_is_node_only; then

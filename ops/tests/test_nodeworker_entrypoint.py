@@ -87,6 +87,29 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         self.assertNotIn("FAST", combined.upper())
         self.assertEqual("", result.stderr)
 
+    def test_bootstrap_peers_seed_addpeer_and_native_bootstrapnode(self) -> None:
+        peer_a = "/ip4/10.0.0.2/tcp/8150/p2p/16Uiu2HAm11111111111111111111111111111111111111111"
+        peer_b = "/ip4/10.0.0.3/tcp/8150/p2p/16Uiu2HAm22222222222222222222222222222222222222222"
+        result = self.run_entrypoint({"BOOTSTRAP_PEER_ADDRESSES": f"{peer_a},{peer_b}"})
+
+        self.assert_stdout_contains(result, f"--addpeer={peer_a}")
+        self.assert_stdout_contains(result, f"--addpeer={peer_b}")
+        self.assert_stdout_contains(result, f"--bootstrapnode={peer_a}")
+
+    def test_existing_bootstrapnode_policy_is_preserved(self) -> None:
+        peer = "/ip4/10.0.0.2/tcp/8150/p2p/16Uiu2HAm11111111111111111111111111111111111111111"
+        explicit = "/ip4/10.0.0.9/tcp/8150/p2p/16Uiu2HAm99999999999999999999999999999999999999999"
+        result = self.run_entrypoint(
+            {
+                "BOOTSTRAP_PEER_ADDRESSES": peer,
+                "NODE_ARGS_APPEND": f"--bootstrapnode={explicit}",
+            }
+        )
+
+        self.assert_stdout_contains(result, f"--addpeer={peer}")
+        self.assert_stdout_contains(result, f"--bootstrapnode={explicit}")
+        self.assertNotIn(f"--bootstrapnode={peer}", result.stdout)
+
     def test_node_mining_env_appends_guard_args_without_forcing_rpc_module(self) -> None:
         result = self.run_entrypoint(
             {

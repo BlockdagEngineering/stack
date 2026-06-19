@@ -244,12 +244,27 @@ addpeer_args_from_csv() {
   IFS="$old_ifs"
 }
 
+bootstrapnode_arg_from_csv() {
+  local csv="$1"
+  local old_ifs="$IFS"
+  local peer
+  IFS=,
+  for peer in $csv; do
+    if [ -n "$peer" ]; then
+      printf '%s' "--bootstrapnode=$peer"
+      IFS="$old_ifs"
+      return 0
+    fi
+  done
+  IFS="$old_ifs"
+}
+
 apply_ordered_fastsync_peers() {
   case "${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}" in
     0|off|false|none) return 0 ;;
   esac
 
-  local node_args ordered addpeer_args total_count ordering
+  local node_args ordered addpeer_args bootstrapnode_arg total_count ordering
   ordering="${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}"
   node_args="$(node_args_from_argv "$@" || true)"
   ordered="$(ordered_fastsync_peers "$node_args")"
@@ -263,6 +278,14 @@ apply_ordered_fastsync_peers() {
     addpeer_args="$(addpeer_args_from_csv "$ordered")"
     NODE_ARGS_APPEND="${addpeer_args}${NODE_ARGS_APPEND:+ $NODE_ARGS_APPEND}"
     export NODE_ARGS_APPEND
+  fi
+
+  if [ "${BDAG_FASTSYNC_APPEND_BOOTSTRAPNODE:-1}" = "1" ]; then
+    bootstrapnode_arg="$(bootstrapnode_arg_from_csv "$ordered")"
+    if [ -n "$bootstrapnode_arg" ] && ! node_args_contains_prefix "$node_args ${NODE_ARGS_APPEND:-}" "--bootstrapnode"; then
+      NODE_ARGS_APPEND="${NODE_ARGS_APPEND:+$NODE_ARGS_APPEND }$bootstrapnode_arg"
+      export NODE_ARGS_APPEND
+    fi
   fi
 }
 

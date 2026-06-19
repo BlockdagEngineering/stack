@@ -80,6 +80,73 @@ try:
     pool_ops.BDAG_CHILD_EXECUTABLES = BDAG_CHILD_EXECUTABLES
     pool_ops.command_is_bdag_child = command_is_bdag_child
     pool_ops.bdag_child_running_from_top = bdag_child_running_from_top
+
+    def enrich_status_peer_counts(payload):
+        if not isinstance(payload, dict) or not hasattr(pool_ops, "container_peer_ips"):
+            return payload
+        node_names = payload.get("node_services") or payload.get("managed_node_services") or list((payload.get("nodes") or {}).keys())
+        peer_sources = {}
+        peer_errors = {}
+        for node in node_names:
+            node_name = str(node or "").strip()
+            if not node_name:
+                continue
+            try:
+                ips = list(pool_ops.container_peer_ips(node_name))
+                error = ""
+            except Exception as exc:  # noqa: BLE001 - collector status should degrade, not fail.
+                ips = []
+                error = str(exc)
+            peer_sources[node_name] = ips
+            if error:
+                peer_errors[node_name] = error
+            nodes = payload.setdefault("nodes", {})
+            if isinstance(nodes, dict):
+                info = nodes.setdefault(node_name, {})
+                if isinstance(info, dict):
+                    info["peer_count"] = len(ips)
+                    info["p2p_connections"] = len(ips)
+                    info["peer_ips_sample"] = ips[:12]
+                    info["p2p_connections_error"] = error
+
+        peer_ips = []
+        for ips in peer_sources.values():
+            for ip in ips:
+                if ip not in peer_ips:
+                    peer_ips.append(ip)
+        peer_count = len(peer_ips)
+        error_text = "; ".join(f"{node}: {error}" for node, error in peer_errors.items())
+        payload["peer_count"] = peer_count
+        payload["p2p_connections"] = peer_count
+        payload["peer_sources"] = peer_sources
+        payload["peer_ips_sample"] = peer_ips[:12]
+        payload["p2p_connections_error"] = error_text
+        sync_progress = payload.get("sync_progress")
+        if isinstance(sync_progress, dict):
+            sync_progress["peer_count"] = peer_count
+            sync_progress["p2p_connections"] = peer_count
+            sync_progress["p2p_connections_error"] = error_text
+            progress_nodes = sync_progress.get("nodes")
+            if isinstance(progress_nodes, dict):
+                for node, ips in peer_sources.items():
+                    progress = progress_nodes.get(node)
+                    if isinstance(progress, dict):
+                        progress["peer_count"] = len(ips)
+                        progress["p2p_connections"] = len(ips)
+                        progress["p2p_connections_error"] = peer_errors.get(node, "")
+        return payload
+
+    original_collect_status = pool_ops.collect_status
+    original_collect_status_cached = pool_ops.collect_status_cached
+
+    def collect_status_with_peer_counts(*args, **kwargs):
+        return enrich_status_peer_counts(original_collect_status(*args, **kwargs))
+
+    def collect_status_cached_with_peer_counts(*args, **kwargs):
+        return enrich_status_peer_counts(original_collect_status_cached(*args, **kwargs))
+
+    pool_ops.collect_status = collect_status_with_peer_counts
+    pool_ops.collect_status_cached = collect_status_cached_with_peer_counts
 except Exception as exc:
     print(f"collector-entrypoint: warning: could not patch node child detector: {exc}", file=sys.stderr)
 

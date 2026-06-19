@@ -103,6 +103,9 @@ services:
       BDAG_EPHEMERAL_DIR: /run/bdag-ephemeral
       BDAG_SNAPSHOT_URL: ${BDAG_SNAPSHOT_URL:-}
       BDAG_NODE_ARCHIVAL: ${BDAG_NODE_ARCHIVAL:-0}
+      BDAG_ENABLE_NODE_MINING: ${BDAG_ENABLE_NODE_MINING:-0}
+      BDAG_NODE_MODULES: ${BDAG_NODE_MODULES:-}
+      BDAG_NODE_MINING_ARGS: ${BDAG_NODE_MINING_ARGS:-}
       NODE_ARGS_APPEND: ${NODE_ARGS_APPEND:-}
       SYNC_SOURCE_NODE: ${SYNC_SOURCE_NODE:-0}
       BDAG_STORAGE_PROFILE: ${BDAG_STORAGE_PROFILE:-auto}
@@ -316,7 +319,7 @@ services:
       target: watchdog
     restart: unless-stopped
     logging: *mining-logging
-    user: "1001:969"
+    user: "${BDAG_OPS_UID:-1001}:${BDAG_OPS_GID:-969}"
     group_add:
       - "${BDAG_DOCKER_SOCKET_GID:-0}"
     tmpfs:
@@ -363,7 +366,7 @@ services:
       target: sentinel
     restart: unless-stopped
     logging: *mining-logging
-    user: "1001:969"
+    user: "${BDAG_OPS_UID:-1001}:${BDAG_OPS_GID:-969}"
     group_add:
       - "${BDAG_DOCKER_SOCKET_GID:-0}"
     tmpfs:
