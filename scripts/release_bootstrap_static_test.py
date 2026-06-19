@@ -72,6 +72,28 @@ class PayloadInstallerTests(unittest.TestCase):
         self.assertIn("release-payload.env", unix)
         self.assertNotIn("amd64 emulation", unix)
 
+    def test_unix_installer_supports_local_raw_chain_data_archive(self) -> None:
+        unix = (ROOT / "scripts" / "release" / "installers" / "install-unix-common.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("BDAG_CHAIN_DATA_ARCHIVE", unix)
+        self.assertIn("tar --zstd -tf", unix)
+        self.assertIn("chain data archive does not contain recognizable BlockDAG chain markers", unix)
+
+    def test_unix_installer_pulls_external_pool_db_image_before_pull_never_start(self) -> None:
+        unix = (ROOT / "scripts" / "release" / "installers" / "install-unix-common.sh").read_text(
+            encoding="utf-8"
+        )
+        windows = (ROOT / "scripts" / "release" / "installers" / "install-windows.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("docker compose pull pool-db", unix)
+        self.assertIn("docker compose up -d --no-build --pull never pool-db node dashboard", unix)
+        self.assertIn("docker compose pull pool-db", windows)
+        self.assertIn("docker compose up -d --no-build --pull never pool-db node dashboard", windows)
+
 
 class BootstrapPeerDefaultTests(unittest.TestCase):
     LIVE_PUBLIC_BOOTSTRAP_PEER = (
