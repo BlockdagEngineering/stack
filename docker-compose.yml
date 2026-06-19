@@ -481,6 +481,7 @@ services:
       BDAG_EVM_HTTP_URL: ${BDAG_EVM_HTTP_URL:-http://host.docker.internal:18545}
       BDAG_EVM_WS_URL: ${BDAG_EVM_WS_URL:-ws://host.docker.internal:18546}
       BDAG_POOL_METRICS_URL: ${BDAG_POOL_METRICS_URL:-http://host.docker.internal:9090/metrics}
+      BDAG_NODE_RPC_URL: ${BDAG_NODE_RPC_URL:-http://host.docker.internal:38131}
       BDAG_GLOBAL_BLOCK_WINDOW: ${BDAG_GLOBAL_BLOCK_WINDOW:-600}
       BDAG_GLOBAL_FAST_WARMUP_BLOCKS: ${BDAG_GLOBAL_FAST_WARMUP_BLOCKS:-120}
       BDAG_GLOBAL_RPC_WORKERS: ${BDAG_GLOBAL_RPC_WORKERS:-24}
