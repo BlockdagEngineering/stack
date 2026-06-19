@@ -31,12 +31,37 @@ chain data from `/home/jeremy/Downloads/bdag-latest-snapshot.tar.gz`.
   `/ip4/16.28.133.168/tcp/8151/p2p/16Uiu2HAkx4trymxQDexfzCNrtWokprH49vNg8shhEhtPMYdq2CtY`
   handshook, but it was far behind the local chain tip, so it is not a
   mining-safe sync reference.
+- Enabling node mining exposed a config-file permission trap. Local `.env` and
+  `node.conf` were mode `0600` owned by the host user; after the entrypoint
+  dropped privileges to `bdagStack`, `blockdag-node` could not read
+  `/etc/bdagStack/node.conf`, logged `permission denied`, and silently fell back
+  to the default `data/mainnet` datadir. That created
+  `data/node/data/mainnet` and replayed from genesis instead of using the synced
+  `data/node/mainnet` snapshot.
+- A release fix now prepares a `bdagStack`-owned runtime copy of `node.conf`
+  before dropping privileges and rewrites `--configfile` to that copy. The
+  wrong fresh replay tree was parked locally as
+  `data/node/data.wrong-fresh-20260620-001923`.
+- With the config readable, direct RPC returned `isCurrent=true`,
+  `getBlockCount=11964435`, and pool-style `getBlockTemplate` returned a
+  usable mining template. The pool then subscribed to the node
+  `blockTemplate` stream and reported a healthy backend.
+- The ASIC inventory rows are not proof that hardware firmware has accepted the
+  Stratum config. On this host the pool showed `pool_active_connections=0` and
+  `pool_connections_total=0` after restart, while all four ASIC HTTP endpoints
+  were reachable. Miner-control writes remain disabled locally with
+  `BDAG_MINER_CONTROL_ENABLED=0`; previous unauthenticated ASIC config writes
+  returned HTTP 401, so applying/restarting ASIC firmware still requires valid
+  ASIC admin credentials or an enabled authenticated control path.
 
 ## Safety Outcome
 
-- `node`, `postgres`, and `dashboard` were left running.
-- `pool` was stopped after the active ahead peer dropped. Do not expose Stratum
-  or attach miners until `getPeerInfo` shows a useful current/ahead peer and
-  `isCurrent` is true.
-- Node mining remained disabled: no `--miner`, no CPU miner profile, and no
-  unsynced mining bypass flags were used.
+- `node`, `postgres`, `dashboard`, and `pool` were left running after direct
+  native RPC reported `isCurrent=true`, at least one active mainnet peer was
+  present, and `getBlockTemplate` returned a usable result.
+- `pool` was listening on `192.168.1.100:3334` with fresh node work, but no
+  ASICs were connected. The status page state was therefore
+  `Waiting for a Miner`, not `Mining`.
+- Do not interpret dashboard inventory rows with `status=configured` as active
+  miner connections. Require Stratum connection/share evidence before calling
+  the pool mining.
