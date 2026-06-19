@@ -141,6 +141,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "status": sync_status,
                 "remaining_blocks": remaining_blocks,
                 "chain_block_count": 1000,
+                "peer_count": 2,
             },
             "miner_health": {"connected_count": 0, "managed_count": 0},
             "pool": {"metrics": {"active_connections": 0}, "source_job_health": {}},
