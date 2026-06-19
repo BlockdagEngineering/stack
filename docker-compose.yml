@@ -159,10 +159,8 @@ services:
       NODE_RPC_URLS: ${NODE_RPC_URLS:-http://node:38131}
       POOL_SUBMIT_RPC_URLS: ${POOL_SUBMIT_RPC_URLS:-}
       POOL_RPC_BACKENDS: ${POOL_RPC_BACKENDS:-}
-	      POOL_RUNTIME_ADMIN_ENABLED: ${POOL_RUNTIME_ADMIN_ENABLED:-true}
-	      BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-}
-	      POOL_ASIC_MAC_OVERRIDES: ${POOL_ASIC_MAC_OVERRIDES:-}
-	      PG_URL:       postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@${POOL_DB_HOST:-pool-db}:${POOL_DB_PORT:-5432}/${POSTGRES_DB:-bdagpool}?sslmode=disable
+      POOL_RUNTIME_ADMIN_ENABLED: ${POOL_RUNTIME_ADMIN_ENABLED:-true}
+      PG_URL:       postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@${POOL_DB_HOST:-pool-db}:${POOL_DB_PORT:-5432}/${POSTGRES_DB:-bdagpool}?sslmode=disable
       # Stratum listen (inside container) — from root .env
       POOL_BIND_ADDR:     ${POOL_BIND_ADDR:-0.0.0.0:3334}
       NODE_RPC_USER:      ${NODE_RPC_USER:-test}
