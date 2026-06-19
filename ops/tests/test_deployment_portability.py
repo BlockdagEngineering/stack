@@ -165,6 +165,8 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn("dashboard_src: ${DASHBOARD_SRC_CONTEXT:-.}", compose)
         self.assertIn("WORKDIR /src/dashboard", dockerfile_dev)
         self.assertIn("COPY --from=dashboard_src . .", dockerfile_dev)
+        self.assertIn("curl redis-server redis-tools", dockerfile_dev)
+        self.assertIn("COPY docker/dashboard-redis.conf /etc/redis/redis.conf", dockerfile_dev)
 
 
     def test_host_dashboard_env_uses_host_reachable_chain_rpc(self) -> None:
