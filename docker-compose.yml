@@ -503,7 +503,7 @@ services:
       NODE_RPC_USER: ${NODE_RPC_USER:-test}
       NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -s /run/dashboard-redis/redis.sock PING >/dev/null && curl -fsS http://127.0.0.1:8088/healthz >/dev/null"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8088/ >/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 12

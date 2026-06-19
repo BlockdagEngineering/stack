@@ -163,6 +163,7 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         dockerfile_dev = (ROOT_DIR / "dockerfile-dev").read_text(encoding="utf-8")
 
         self.assertIn("dashboard_src: ${DASHBOARD_SRC_CONTEXT:-.}", compose)
+        self.assertIn('curl -fsS http://127.0.0.1:8088/ >/dev/null', compose)
         self.assertIn("WORKDIR /src/dashboard", dockerfile_dev)
         self.assertIn("COPY --from=dashboard_src . .", dockerfile_dev)
         self.assertIn("curl redis-server redis-tools", dockerfile_dev)
