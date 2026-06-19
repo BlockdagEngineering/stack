@@ -35,13 +35,14 @@ CHANGE_COOLDOWN_WINDOWS = max(0, int(os.environ.get("POOL_TIMING_CHANGE_COOLDOWN
 TARGET_MARGIN_RATIO = max(0.0, float(os.environ.get("POOL_TIMING_TARGET_MARGIN_RATIO", "0.02")))
 
 MIN_BLOCK_CANDIDATES = int(os.environ.get("POOL_TIMING_MIN_BLOCK_CANDIDATES", "12"))
-MIN_AGE_MS = int(os.environ.get("POOL_TIMING_MIN_JOB_AGE_MS", "750"))
+MIN_AGE_MS = int(os.environ.get("POOL_TIMING_MIN_JOB_AGE_MS", "250"))
 MAX_AGE_MS = int(os.environ.get("POOL_TIMING_MAX_JOB_AGE_MS", "8000"))
-DEFAULT_AGE_MS = int(os.environ.get("POOL_TIMING_START_JOB_AGE_MS", "2500"))
+DEFAULT_AGE_MS = int(os.environ.get("POOL_TIMING_START_JOB_AGE_MS", "250"))
 MIN_TTL_MS = int(os.environ.get("POOL_TIMING_MIN_TEMPLATE_TTL_MS", "100"))
 MAX_TTL_MS = int(os.environ.get("POOL_TIMING_MAX_TEMPLATE_TTL_MS", "1000"))
-DEFAULT_TTL_MS = int(os.environ.get("POOL_TIMING_START_TEMPLATE_TTL_MS", "500"))
+DEFAULT_TTL_MS = int(os.environ.get("POOL_TIMING_START_TEMPLATE_TTL_MS", "100"))
 DEFAULT_ALLOW_MULTIPLE = os.environ.get("POOL_TIMING_START_ALLOW_MULTIPLE", "true").lower() not in {"0", "false", "no", "off"}
+APPLY_INITIAL = os.environ.get("POOL_TIMING_APPLY_INITIAL", "").lower() in {"1", "true", "yes", "on"}
 
 METRIC_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)$")
 LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"')
@@ -98,6 +99,58 @@ def parse_metrics(text: str) -> dict[tuple[str, tuple[tuple[str, str], ...]], fl
 
 def labels_dict(labels: tuple[tuple[str, str], ...]) -> dict[str, str]:
     return dict(labels)
+
+
+def metric_value(
+    metrics: dict[tuple[str, tuple[tuple[str, str], ...]], float],
+    name: str,
+    required_labels: dict[str, str] | None = None,
+) -> float | None:
+    required_labels = required_labels or {}
+    for (metric_name, labels), value in metrics.items():
+        if metric_name != name:
+            continue
+        data = labels_dict(labels)
+        if all(data.get(key) == expected for key, expected in required_labels.items()):
+            return value
+    return None
+
+
+def discover_current_knobs(metrics: dict[tuple[str, tuple[tuple[str, str], ...]], float]) -> Knobs:
+    age = metric_value(metrics, "pool_block_timing_controller_job_age_ms")
+    ttl = metric_value(metrics, "pool_block_timing_controller_template_ttl_ms")
+    return Knobs(
+        age_ms=clamp(int(age) if age and age > 0 else DEFAULT_AGE_MS, MIN_AGE_MS, MAX_AGE_MS),
+        ttl_ms=clamp(int(ttl) if ttl and ttl > 0 else DEFAULT_TTL_MS, MIN_TTL_MS, MAX_TTL_MS),
+        allow_multiple=DEFAULT_ALLOW_MULTIPLE,
+    )
+
+
+def calibration_gate(
+    metrics: dict[tuple[str, tuple[tuple[str, str], ...]], float],
+    job_state: dict[str, Any],
+) -> tuple[bool, str]:
+    mineable = metric_value(metrics, "pool_rpc_backend_node_health_mineable")
+    submit_ready = metric_value(metrics, "pool_rpc_backend_node_health_submit_ready")
+    p2p_fresh = metric_value(metrics, "pool_rpc_backend_node_health_p2p_mining_fresh")
+    if mineable is not None and mineable < 1:
+        return False, "backend-not-mineable"
+    if submit_ready is not None and submit_ready < 1:
+        return False, "backend-submit-not-ready"
+    if p2p_fresh is not None and p2p_fresh < 1:
+        return False, "backend-p2p-not-fresh"
+
+    try:
+        active = int(job_state.get("active_connections") or 0)
+        ready = int(job_state.get("ready_connections") or 0)
+    except (TypeError, ValueError):
+        active = 0
+        ready = 0
+    if active <= 0:
+        return False, "no-active-miners"
+    if ready <= 0:
+        return False, "no-ready-miners"
+    return True, "ready"
 
 
 def summarize(metrics: dict[tuple[str, tuple[tuple[str, str], ...]], float]) -> dict[str, Any]:
@@ -295,26 +348,49 @@ def main() -> int:
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
-    knobs = Knobs()
+    initial_metrics = parse_metrics(fetch_text(METRICS_URL))
+    knobs = discover_current_knobs(initial_metrics)
+    initial_job_state = fetch_job_state()
+    initial_ready, initial_gate = calibration_gate(initial_metrics, initial_job_state)
     started = time.time()
     previous_summary: dict[str, Any] | None = None
     history: deque[dict[str, Any]] = deque(maxlen=DECISION_WINDOWS)
     cooldown_windows = 0
-    apply_result = apply_knobs(knobs)
-    append_state({"ts": time.time(), "event": "start", "knobs": knobs.__dict__, "apply": apply_result})
-    print(json.dumps({"event": "start", "knobs": knobs.__dict__, "state_path": str(STATE_PATH)}), flush=True)
+    apply_result = apply_knobs(knobs) if APPLY_INITIAL and initial_ready else {}
+    append_state({
+        "ts": time.time(),
+        "event": "start",
+        "knobs": knobs.__dict__,
+        "gate": initial_gate,
+        "apply_initial": APPLY_INITIAL,
+        "apply": apply_result,
+    })
+    print(
+        json.dumps({
+            "event": "start",
+            "knobs": knobs.__dict__,
+            "gate": initial_gate,
+            "apply_initial": APPLY_INITIAL,
+            "state_path": str(STATE_PATH),
+        }),
+        flush=True,
+    )
 
     while running and time.time() - started < DURATION_SECONDS:
         metrics = parse_metrics(fetch_text(METRICS_URL))
         summary = summarize(metrics)
         delta = summarize_delta(summary, previous_summary)
         job_state = fetch_job_state()
+        gate_ready, gate_reason = calibration_gate(metrics, job_state)
 
         decision_delta = delta
-        if delta.get("ready") and delta.get("block_total", 0.0) > 0:
+        if gate_ready and delta.get("ready") and delta.get("block_total", 0.0) > 0:
             history.append(delta)
 
-        if not delta.get("ready"):
+        if not gate_ready:
+            history.clear()
+            next_knobs, reason = knobs, gate_reason
+        elif not delta.get("ready"):
             next_knobs, reason = knobs, str(delta.get("reason", "baseline"))
         elif len(history) < DECISION_WINDOWS:
             next_knobs, reason = knobs, f"warming-history-{len(history)}/{DECISION_WINDOWS}"
@@ -333,7 +409,7 @@ def main() -> int:
                 next_knobs, reason = choose_next(knobs, decision_delta, job_state)
 
         changed = next_knobs != knobs
-        apply_result = apply_knobs(next_knobs) if changed else {}
+        apply_result = apply_knobs(next_knobs) if changed and gate_ready else {}
         if changed:
             cooldown_windows = CHANGE_COOLDOWN_WINDOWS
             history.clear()
@@ -347,6 +423,7 @@ def main() -> int:
             "decision_delta": decision_delta,
             "decision_windows": len(history),
             "cooldown_windows": cooldown_windows,
+            "gate": gate_reason,
             "job_state": {
                 "status": job_state.get("status"),
                 "active_connections": job_state.get("active_connections"),
