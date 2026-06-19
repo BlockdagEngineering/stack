@@ -79,6 +79,7 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("container_name: node", compose)
         self.assertIn("container_name: pool", compose)
         self.assertIn("NODE_RPC_URLS: ${NODE_RPC_URLS:-http://127.0.0.1:38131}", compose)
+        self.assertIn("BDAG_NODE_RPC_URL: ${BDAG_NODE_RPC_URL:-http://host.docker.internal:38131}", compose)
         self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool", compose)
         self.assertIn("set_stack_default_env_value .env BDAG_NODE_SERVICES", installer)
         self.assertIn("set_stack_default_env_value .env BDAG_STACK_SERVICES", installer)

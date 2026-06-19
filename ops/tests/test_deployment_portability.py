@@ -104,6 +104,7 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn("BDAG_NODE_RPC_URLS: node=http://host.docker.internal:38131", compose)
         self.assertIn("BDAG_GLOBAL_CHAIN_RPC_URLS: node=http://host.docker.internal:38131", compose)
         self.assertIn("BDAG_RPC_URL: http://host.docker.internal:38131", compose)
+        self.assertIn("BDAG_NODE_RPC_URL: ${BDAG_NODE_RPC_URL:-http://host.docker.internal:38131}", compose)
         self.assertIn("BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://host.docker.internal:9280}", compose)
         self.assertIn("ADDR: ${DASHBOARD_LISTEN:-0.0.0.0:8088}", compose)
         self.assertIn('${DASHBOARD_HOST_PORT:-8088}:8088"', compose)
