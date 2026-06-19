@@ -18,8 +18,8 @@ add_pythonpath_dir() {
   fi
 }
 
-add_pythonpath_dir /opt/collector/ops
 add_pythonpath_dir "$BDAG_PROJECT_ROOT/ops"
+add_pythonpath_dir /opt/collector/ops
 if [ -n "$collector_pythonpath" ]; then
   export PYTHONPATH="$collector_pythonpath${PYTHONPATH:+:$PYTHONPATH}"
 fi

@@ -151,8 +151,8 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn("FROM ops-runtime AS sentinel", dockerfile_dev)
         self.assertIn("COPY --from=collector_src . /src/collector", dockerfile_dev)
         self.assertLess(
-            entrypoint.index("add_pythonpath_dir /opt/collector/ops"),
             entrypoint.index('add_pythonpath_dir "$BDAG_PROJECT_ROOT/ops"'),
+            entrypoint.index("add_pythonpath_dir /opt/collector/ops"),
         )
         self.assertIn("pool_ops.bdag_child_running_from_top = bdag_child_running_from_top", entrypoint)
         self.assertIn('executable_name == "rosetta"', entrypoint)
