@@ -1,0 +1,12 @@
+[Unit]
+Description=Run BlockDAG node child liveness guard
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60s
+AccuracySec=10s
+Persistent=true
+RandomizedDelaySec=10s
+
+[Install]
+WantedBy=timers.target

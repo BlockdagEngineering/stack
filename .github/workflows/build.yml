@@ -1,0 +1,354 @@
+name: Build binaries for blockdag-pool-stack
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. v1.2.3"
+        required: true
+  push:
+    tags:
+      - "pool-v*"
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.26.x"
+  GOFLAGS: "-buildvcs=false"
+  PACKAGE_NAME: "pool-stack-docker"
+
+jobs:
+  build-and-package:
+    # ubuntu-latest (~24.04) matches dockerfile-* ubuntu:24.04 runtime glibc.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            goarch: amd64
+            cc: gcc
+            docker_platform: linux/amd64
+          - target: linux-arm64
+            goarch: arm64
+            cc: aarch64-linux-gnu-gcc
+            docker_platform: linux/arm64
+    steps:
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout packaging repo
+        uses: actions/checkout@v4
+      # Use PRIVATE_REPO_TOKEN when set (PAT with Contents: Read on both repos).
+      # If unset, falls back to github.token (works only if org allows this workflow to read those private repos).
+      - name: Checkout private blockdag repo
+        uses: actions/checkout@v4
+        with:
+          repository: BlockdagEngineering/blockdag-corechain
+          token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
+          path: src/blockdag-node
+          ref: main
+
+      - name: Checkout private mining pool repo
+        uses: actions/checkout@v4
+        with:
+          repository: BlockdagEngineering/pool
+          token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
+          path: src/pool
+          ref: main
+
+      - name: Checkout dashboard repo
+        uses: actions/checkout@v4
+        with:
+          repository: BlockdagEngineering/dashboard2
+          token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
+          path: src/dashboard
+          ref: main
+
+      - name: Checkout collector repo
+        uses: actions/checkout@v4
+        with:
+          repository: BlockdagEngineering/collector
+          token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
+          path: src/collector
+          ref: develop
+
+      - name: Verify upstream checkouts
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify_repo() {
+            local name="$1"
+            shift
+            for path in "$@"; do
+              if [[ -f "$path" ]]; then
+                echo "ok: $name ($path)"
+                return 0
+              fi
+            done
+            echo "::error::Upstream checkout '$name' missing expected files: $*"
+            return 1
+          }
+          verify_repo blockdag-corechain src/blockdag-node/cmd/bdag/bdag.go
+          verify_repo pool src/pool/cmd/pool/main.go
+          verify_repo dashboard2 src/dashboard/main.go
+          collector_entry="$(find src/collector -type f -name collector.py -not -path '*/.git/*' -print -quit)"
+          if [[ -z "${collector_entry}" ]]; then
+            echo "::error::Upstream checkout 'collector' missing collector.py"
+            exit 1
+          fi
+          echo "ok: collector (collector.py)"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install packaging and cross-build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=(zip rsync)
+          if [[ "${{ matrix.target }}" == "linux-arm64" ]]; then
+            packages+=(gcc-aarch64-linux-gnu libc6-dev-arm64-cross)
+          fi
+          sudo apt-get update
+          sudo apt-get install -y "${packages[@]}"
+
+      - name: Build blockdag-node
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ./bin
+          cd src/blockdag-node
+          BUILD_REF="$(git rev-parse --short=7 HEAD)"
+          common_env=(
+            GOOS=linux
+            GOARCH=${{ matrix.goarch }}
+            CGO_ENABLED=1
+            CC=${{ matrix.cc }}
+            GOFLAGS=-buildvcs=false
+          )
+          env "${common_env[@]}" go build -trimpath \
+            -ldflags="-X github.com/BlockdagNetworkLabs/bdag/version.Build=release-${BUILD_REF}" \
+            -o ../../bin/blockdag-node ./cmd/bdag
+          env "${common_env[@]}" go build -trimpath \
+            -ldflags="-X github.com/BlockdagNetworkLabs/bdag/version.Build=release-${BUILD_REF}" \
+            -o ../../bin/nodeworker ./cmd/nodeworker
+
+      - name: Build mining-pool
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd src/pool
+          common_env=(
+            GOOS=linux
+            GOARCH=${{ matrix.goarch }}
+            CGO_ENABLED=1
+            CC=${{ matrix.cc }}
+            GOFLAGS=-buildvcs=false
+          )
+          env "${common_env[@]}" go build -buildvcs=false -trimpath -o build/bin/pool ./cmd/pool
+          env "${common_env[@]}" go build -buildvcs=false -trimpath -o build/bin/dashboard-api ./cmd/dashboard-api
+          cp -f ./build/bin/pool ../../bin/mining-pool
+          cp -f ./build/bin/dashboard-api ../../bin/dashboard-api
+
+      - name: Build dashboard
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd src/dashboard
+          env GOOS=linux GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 GOFLAGS=-buildvcs=false \
+            go build -trimpath -o ../../bin/dashboard .
+
+      - name: Ensure executables
+        run: chmod +x bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api bin/dashboard
+
+      - name: Verify release architecture
+        shell: bash
+        run: |
+          scripts/verify-release-architecture.py --target "${{ matrix.target }}" \
+            bin/blockdag-node \
+            bin/nodeworker \
+            bin/mining-pool \
+            bin/dashboard-api \
+            bin/dashboard
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api bin/dashboard > checksums.txt
+
+      - name: Validate compose (pool Dockerfile)
+        shell: bash
+        env:
+          # docker-compose.yml hard-fails (:?) without the absolute checkout path
+          # for the watchdog/sentinel services.
+          BDAG_STACK_HOST_ROOT: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          test -f .env.example
+          docker compose --env-file .env.example config | grep -q 'dockerfile: dockerfile' || \
+            { echo "::error::Compose must resolve dockerfile for pool tarball env"; exit 1; }
+          scripts/validate-release-build.sh .
+
+      - name: Bootstrap renderer tests
+        shell: bash
+        run: python3 scripts/release_bootstrap_static_test.py
+
+      - name: Create runtime payload zip
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.value }}"
+          TARGET="${{ matrix.target }}"
+          ROOT="${PACKAGE_NAME}-${VERSION}-${TARGET}"
+          OUT="${ROOT}.zip"
+          OUT_SHA256="${OUT}.sha256"
+
+          test -f .env.example || { echo "::error::Missing .env.example"; exit 1; }
+          test -f scripts/release/install.sh || { echo "::error::Missing release installer scripts"; exit 1; }
+
+          cat > release-payload.env <<EOF
+          BDAG_RELEASE_VERSION=${VERSION}
+          BDAG_RELEASE_PAYLOAD_TARGET=${TARGET}
+          BDAG_RELEASE_PAYLOAD_ARCH=${{ matrix.goarch }}
+          DOCKER_PLATFORM=${{ matrix.docker_platform }}
+          EOF
+
+          rm -rf "${ROOT}" "${OUT}" "${OUT_SHA256}"
+          mkdir "${ROOT}"
+          cp docker-compose.yml dockerfile .dockerignore .env.example node.conf.example README.md checksums.txt release-payload.env "${ROOT}/"
+          echo "${VERSION}" > "${ROOT}/version.txt"
+          cp scripts/release/install.sh scripts/release/install-node.sh scripts/release/install.ps1 scripts/release/install.cmd "${ROOT}/"
+          cp -a scripts/release/installers "${ROOT}/installers"
+          cp -a bin sql docker tools "${ROOT}/"
+          rsync -a \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='.pytest_cache/' \
+            --exclude='__pycache__/' \
+            --exclude='runtime/' \
+            --exclude='runtime-*/' \
+            --exclude='data/' \
+            --exclude='*.pyc' \
+            --exclude='*.pyo' \
+            src/collector/ "${ROOT}/collector/"
+          collector_entry="$(find "${ROOT}/collector" -type f -name collector.py -not -path '*/.git/*' -print -quit)"
+          if [[ -z "${collector_entry}" ]]; then
+            echo "::error::Collector checkout is missing collector.py"
+            exit 1
+          fi
+          if [[ "${collector_entry}" != "${ROOT}/collector/collector.py" ]]; then
+            cp "${collector_entry}" "${ROOT}/collector/collector.py"
+          fi
+          test -f "${ROOT}/collector/collector.py" || \
+            { echo "::error::Collector payload is missing collector.py"; exit 1; }
+
+
+          # Earlier test steps generate scripts/__pycache__ in the workspace;
+          # check-release-archive.py rejects cache dirs inside the zip.
+          rsync -a --exclude='__pycache__/' --exclude='*.pyc' scripts "${ROOT}/"
+          rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
+          chmod +x "${ROOT}/install.sh" "${ROOT}/install-node.sh" "${ROOT}/installers/"*.sh
+
+          # Smoke-test a disposable copy: install.sh writes .env and __pycache__,
+          # which check-release-archive.py rejects if they leak into the zip.
+          rm -rf smoke-root
+          cp -a "${ROOT}" smoke-root
+          python3 scripts/release_install_smoke.py --package-root smoke-root
+          rm -rf smoke-root
+
+          zip -qr "${OUT}" "${ROOT}"
+          python3 - "${OUT}" "${ROOT}" <<'PY'
+          import sys
+          import zipfile
+
+          archive, root = sys.argv[1], sys.argv[2]
+          needle = f"{root}/collector/collector.py"
+          with zipfile.ZipFile(archive) as zf:
+              if needle not in zf.namelist():
+                  print("::error::Release zip is missing collector.py")
+                  raise SystemExit(1)
+          PY
+          python3 scripts/check-release-archive.py "${OUT}"
+          sha256sum "${OUT}" > "${OUT_SHA256}"
+          rm -rf "${ROOT}"
+
+          ls -lh "${OUT}"
+          SZ="$(stat -c%s "${OUT}")"
+          MAX=$((2 * 1024 * 1024 * 1024 - 256 * 1024 * 1024))
+          if [ "${SZ}" -gt "${MAX}" ]; then
+            echo "::error::Zip ${SZ} bytes exceeds safe GitHub limit (~2GiB cap minus headroom)"
+            exit 1
+          fi
+          echo "artifact=${OUT}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${OUT_SHA256}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload payload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            ${{ steps.package.outputs.artifact }}
+            ${{ steps.package.outputs.sha256 }}
+          if-no-files-found: error
+
+  publish-release:
+    runs-on: ubuntu-latest
+    needs: build-and-package
+    steps:
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout packaging repo
+        uses: actions/checkout@v4
+
+      - name: Download payload artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate pinned bootstrap assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/render-release-bootstrap.py \
+            --version "${{ steps.version.outputs.value }}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --package-name "${PACKAGE_NAME}" \
+            --out-dir release-assets
+          echo "${{ steps.version.outputs.value }}" > release-assets/version.txt
+          ls -lh release-assets
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.value }}
+          files: |
+            release-assets/pool-stack-docker-*.zip
+            release-assets/pool-stack-docker-*.zip.sha256
+            release-assets/install.sh
+            release-assets/version.txt
+          draft: false
+          prerelease: false
