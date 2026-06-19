@@ -154,6 +154,7 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
             entrypoint.index('add_pythonpath_dir "$BDAG_PROJECT_ROOT/ops"'),
             entrypoint.index("add_pythonpath_dir /opt/collector/ops"),
         )
+        self.assertIn('sys.path.insert(0, str(stack_ops))', entrypoint)
         self.assertIn("pool_ops.bdag_child_running_from_top = bdag_child_running_from_top", entrypoint)
         self.assertIn('executable_name == "rosetta"', entrypoint)
         self.assertIn('runpy.run_path(sys.argv[1], run_name="__main__")', entrypoint)

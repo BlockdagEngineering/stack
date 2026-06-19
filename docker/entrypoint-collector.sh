@@ -46,8 +46,13 @@ log "starting collector from $app"
 cd "$app_dir"
 exec python3 - "$app" <<'PY'
 from pathlib import Path
+import os
 import runpy
 import sys
+
+stack_ops = Path(os.environ.get("BDAG_PROJECT_ROOT", "/workspace")) / "ops"
+if stack_ops.is_dir():
+    sys.path.insert(0, str(stack_ops))
 
 BDAG_CHILD_EXECUTABLES = {"bdag", "blockdag-node"}
 
