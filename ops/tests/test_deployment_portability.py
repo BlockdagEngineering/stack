@@ -293,6 +293,7 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         payload_installer = (
             ROOT_DIR / "scripts" / "release" / "installers" / "install-unix-common.sh"
         ).read_text(encoding="utf-8")
+        local_deploy = (ROOT_DIR / "scripts" / "local-deploy-test-release.sh").read_text(encoding="utf-8")
         windows_installer = (
             ROOT_DIR / "scripts" / "release" / "installers" / "install-windows.ps1"
         ).read_text(encoding="utf-8")
@@ -300,14 +301,24 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
 
         self.assertIn("BDAG_DOCKER_BRIDGE_CIDRS=172.16.0.0/12", env_example)
         self.assertIn("BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS=0", env_example)
+        self.assertIn("BDAG_ASIC_LAN_INTERFACE=", env_example)
+        self.assertIn("BDAG_ASIC_LAN_INTERFACE: ${BDAG_ASIC_LAN_INTERFACE:-}", compose)
         self.assertIn("BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-}", compose)
         self.assertIn("tr ',' ' '", entrypoint)
         self.assertIn('append_node_arg_once "--modules=${word}"', entrypoint)
+        self.assertIn('set_env_value .env BDAG_ASIC_LAN_INTERFACE "$asic_lan_interface"', local_installer)
         self.assertIn('set_env_value .env BDAG_ASIC_LAN_CIDRS "$scan_target"', local_installer)
         self.assertIn("validate_pool_lan_config", local_installer)
+        self.assertIn('ensure_asic_lan_address "$lan_ip" "$asic_lan_interface"', local_installer)
+        self.assertIn("BDAG_ASIC_LAN_INTERFACE so the host can own", local_installer)
+        self.assertIn('set_env_value .env BDAG_ASIC_LAN_INTERFACE "$ASIC_LAN_INTERFACE"', payload_installer)
         self.assertIn('set_env_value .env BDAG_ASIC_LAN_CIDRS "$MINER_SCAN_TARGET"', payload_installer)
         self.assertIn("validate_pool_lan_config", payload_installer)
+        self.assertIn('ensure_asic_lan_address "$POOL_LAN_IP" "$ASIC_LAN_INTERFACE"', payload_installer)
         self.assertIn("refusing Docker bridge pool endpoint", payload_installer)
+        self.assertIn("configured_env_value BDAG_ASIC_LAN_INTERFACE", local_deploy)
+        self.assertIn("configured_env_value BDAG_MINER_SCAN_TARGET", local_deploy)
+        self.assertIn("BDAG_POOL_HOST=$current_pool_host is link-local", local_deploy)
         self.assertIn("Set-EnvValue .env BDAG_ASIC_LAN_CIDRS $minerScanTarget", windows_installer)
         self.assertIn("Assert-PoolLanConfig", windows_installer)
         self.assertIn("Refusing Docker bridge pool endpoint", windows_installer)

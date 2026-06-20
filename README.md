@@ -424,11 +424,14 @@ Once everything is running:
 
 For ASIC deployments, the installer records the host-facing pool address and
 ASIC LAN scope in `.env` as `BDAG_POOL_HOST`, `BDAG_POOL_URL`,
-`BDAG_MINER_SCAN_TARGET`, and `BDAG_ASIC_LAN_CIDRS`. The dashboard and repair
-tools use those values instead of guessing from inside Docker. Docker bridge
-networks default to `172.16.0.0/12` and are filtered from ASIC discovery and
-displayed Stratum endpoints; seeing `172.*` as a miner IP or pool endpoint is a
-configuration failure, not a valid physical miner.
+`BDAG_ASIC_LAN_INTERFACE`, `BDAG_MINER_SCAN_TARGET`, and
+`BDAG_ASIC_LAN_CIDRS`. The dashboard and repair tools use those values instead
+of guessing from inside Docker. If miners are on a link-local cable network
+(`169.254.*`), keep `BDAG_ASIC_LAN_INTERFACE` set to the cabled host interface
+so the installer/support service can bind the configured pool address after
+restarts. Docker bridge networks default to `172.16.0.0/12` and are filtered
+from ASIC discovery and displayed Stratum endpoints; seeing `172.*` as a miner
+IP or pool endpoint is a configuration failure, not a valid physical miner.
 
 ## Default V2 Sync Source
 

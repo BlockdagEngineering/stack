@@ -19,24 +19,35 @@ evm.ws.port=18546
 
 # Bootstrap peers (mainnet seed nodes). Add one addpeer=... line per complete
 # BDAG P2P multiaddr. Keep only public peers that are currently reachable.
+addpeer=/ip4/2.24.193.218/tcp/8151/p2p/16Uiu2HAmKynN6Wv8metpFErcXiPXEaHE67LwUrEy8RBnucwb91Y6
+addpeer=/ip4/3.6.3.109/tcp/8150/p2p/16Uiu2HAm233S37d2Jtw5PPYe6dpwqUwNKpgvbiuNuV6DJ1QtbrSW
+addpeer=/ip4/3.77.181.33/tcp/8150/p2p/16Uiu2HAmRW22ByMzBHKx86W7G6Gjt2XJ4EForKBGdxqS8K9GbCfS
 addpeer=/ip4/3.126.64.13/tcp/8152/p2p/16Uiu2HAmEFxRaBbbf3sRi43CCvMk5Y6zPkuGY9s4uRK2FKJVJkqo
+addpeer=/ip4/3.214.202.100/tcp/8150/p2p/16Uiu2HAmGVzwYkqmGjnpniD9PZx7GPoDcMudxjNSzbFzBgFviRac
+addpeer=/ip4/3.218.54.171/tcp/8150/p2p/16Uiu2HAmUZBdpuutiLPuru1UQnX8hf6GyvG7yU2B832sYjvNhmQG
+addpeer=/ip4/5.78.193.245/tcp/8150/p2p/16Uiu2HAkwosZsQdtgAQHoJ57MFKpWnyfGJtSpt2R2aJMgR6ywGME
+addpeer=/ip4/13.57.132.47/tcp/8150/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus
+addpeer=/ip4/13.57.132.47/tcp/52604/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus
+addpeer=/ip4/13.140.165.186/tcp/8150/p2p/16Uiu2HAm4hHD7Ht5LJrLgaKXr7YP2RzHHjrrCLNt8zv8FQ9s3gBU
+addpeer=/ip4/16.28.133.168/tcp/8150/p2p/16Uiu2HAkvnS42JoJSUNawLmbsHio2ikQWNWXqSMsTf6UXLRcmsXS
+addpeer=/ip4/18.142.70.83/tcp/8150/p2p/16Uiu2HAmBSdn2taoteYwLZJZkDm2iCwL6eQ4UaXYNBBtAwaBU18X
+addpeer=/ip4/47.156.6.142/tcp/8151/p2p/16Uiu2HAmJz7PTCxSWTnuJhvbf4oXEffFZ1KAE3yNBX9SY72jS1ta
+addpeer=/ip4/52.8.54.60/tcp/8150/p2p/16Uiu2HAkzUWr4YUM7mAhLdCVZgFoV9He6aQzKTyWWrJ7SWQKRTN7
+addpeer=/ip4/52.8.80.249/tcp/8150/p2p/16Uiu2HAkxWjKnodZCv7RAJv4XPEFgVZQokoqiFeo7N2nswXHcRMv
+addpeer=/ip4/52.76.239.180/tcp/8150/p2p/16Uiu2HAmMq9zCdQzbUiqzg4dN49cvFck6c8HhjmbBpSChT4ND4Sq
+addpeer=/ip4/54.151.18.92/tcp/8150/p2p/16Uiu2HAmVm91o1JXS2C7P6uTVuVX5empgnRtzuK4UaC8fHmePbKP
+addpeer=/ip4/60.244.89.49/tcp/34040/p2p/16Uiu2HAm24L6Bi9MyAWiJJSazvyuFjy4nCFHzas9NWVCsZa17xDk
+addpeer=/ip4/63.34.228.240/tcp/8150/p2p/16Uiu2HAkzD1v3x29W6qCNS6JbbtAoSNNjG8kD1Xzrxyi1tWoSasq
+addpeer=/ip4/63.182.36.180/tcp/8150/p2p/16Uiu2HAmP8HsTF9ks8JjFamzT9JBZb3ymSiCJ8rkzXBZqYj4yKtP
+addpeer=/ip4/74.113.180.212/tcp/29694/p2p/16Uiu2HAm8D27uGY6c4EdWvwpFRtffrrAb27chHER17rP1akh1nD9
 addpeer=/ip4/102.182.77.16/tcp/8150/p2p/16Uiu2HAm99a8KYuUkL5LGEQbpRNhz5nzScrwYpEh47BfSaVMCg5G
+addpeer=/ip4/121.91.173.235/tcp/8150/p2p/16Uiu2HAkvH1U2kQqQFh6fSVQPGgABaKNHRMT7DceGe6kRtYr6ndY
 addpeer=/ip4/129.121.92.232/tcp/8151/p2p/16Uiu2HAky3sW22sa9VTPab5BG9g7hEoTw4dsnCfNaPZW9yH3L6Cq
 addpeer=/ip4/129.121.92.232/tcp/8152/p2p/16Uiu2HAmQSJzJjXUxtyX5rc2bQBAsTvhcjp4GQBPmwqEYu9D8zA5
-addpeer=/ip4/13.140.165.186/tcp/8150/p2p/16Uiu2HAm4hHD7Ht5LJrLgaKXr7YP2RzHHjrrCLNt8zv8FQ9s3gBU
-addpeer=/ip4/13.57.132.47/tcp/8150/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus
-addpeer=/ip4/16.28.133.168/tcp/8150/p2p/16Uiu2HAkvnS42JoJSUNawLmbsHio2ikQWNWXqSMsTf6UXLRcmsXS
 addpeer=/ip4/169.0.254.182/tcp/8150/p2p/16Uiu2HAmGsEDGnDGhvziZR1UQSELTDihXRKYMB6SrbEQ6NsWBVqD
-addpeer=/ip4/18.142.70.83/tcp/8150/p2p/16Uiu2HAmBSdn2taoteYwLZJZkDm2iCwL6eQ4UaXYNBBtAwaBU18X
 addpeer=/ip4/199.229.220.118/tcp/8151/p2p/16Uiu2HAmUtspBkyUNBG8pQLgj9DrKVgL6SKQzGBhVT9ZShNM1ops
-addpeer=/ip4/2.24.193.218/tcp/8151/p2p/16Uiu2HAmKynN6Wv8metpFErcXiPXEaHE67LwUrEy8RBnucwb91Y6
 addpeer=/ip4/204.236.141.121/tcp/8150/p2p/16Uiu2HAm5qppgbBCjVpTN5nKtjEU5KsSbs2gz4S9uPiSWVSGfNh1
-addpeer=/ip4/47.156.6.142/tcp/8151/p2p/16Uiu2HAmJz7PTCxSWTnuJhvbf4oXEffFZ1KAE3yNBX9SY72jS1ta
-addpeer=/ip4/5.78.193.245/tcp/8150/p2p/16Uiu2HAkwosZsQdtgAQHoJ57MFKpWnyfGJtSpt2R2aJMgR6ywGME
-addpeer=/ip4/52.76.239.180/tcp/8150/p2p/16Uiu2HAmMq9zCdQzbUiqzg4dN49cvFck6c8HhjmbBpSChT4ND4Sq
-addpeer=/ip4/52.8.54.60/tcp/8150/p2p/16Uiu2HAkzUWr4YUM7mAhLdCVZgFoV9He6aQzKTyWWrJ7SWQKRTN7
-addpeer=/ip4/54.151.18.92/tcp/8150/p2p/16Uiu2HAmVm91o1JXS2C7P6uTVuVX5empgnRtzuK4UaC8fHmePbKP
-addpeer=/ip4/63.182.36.180/tcp/8150/p2p/16Uiu2HAmP8HsTF9ks8JjFamzT9JBZb3ymSiCJ8rkzXBZqYj4yKtP
+addpeer=/ip4/204.236.183.207/tcp/8150/p2p/16Uiu2HAmMYqRrQio1mzbyjyV6FEgBcgzvFK5AvuhLquTuPqT8XKB
 
 # Peer limit
 maxpeers=350

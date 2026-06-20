@@ -106,7 +106,7 @@ detect_lan_ip() {
     return 0
   fi
   if command -v ip >/dev/null 2>&1 && [[ -n "${BDAG_ASIC_LAN_INTERFACE:-}" ]]; then
-    detected="$(ip -o -4 addr show dev "$BDAG_ASIC_LAN_INTERFACE" scope global 2>/dev/null \
+    detected="$(ip -o -4 addr show dev "$BDAG_ASIC_LAN_INTERFACE" 2>/dev/null \
       | awk '{split($4,a,"/"); if (a[1] != "") {print a[1]; exit}}' || true)"
     if [[ -n "$detected" ]]; then
       printf '%s\n' "$detected"
@@ -187,17 +187,23 @@ is_default_docker_bridge_address() {
   [[ "$1" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]]
 }
 
+is_link_local_ipv4() {
+  [[ "$1" =~ ^169\.254\. ]]
+}
+
 validate_pool_lan_config() {
-  local pool_host pool_url pool_url_host scan_target asic_cidrs allow_bridge
+  local pool_host pool_url pool_url_host scan_target asic_cidrs asic_iface allow_bridge
   pool_host="$(grep -E '^BDAG_POOL_HOST=' .env | tail -n 1 | cut -d= -f2- || true)"
   pool_url="$(grep -E '^BDAG_POOL_URL=' .env | tail -n 1 | cut -d= -f2- || true)"
   scan_target="$(grep -E '^BDAG_MINER_SCAN_TARGET=' .env | tail -n 1 | cut -d= -f2- || true)"
   asic_cidrs="$(grep -E '^BDAG_ASIC_LAN_CIDRS=' .env | tail -n 1 | cut -d= -f2- || true)"
+  asic_iface="$(grep -E '^BDAG_ASIC_LAN_INTERFACE=' .env | tail -n 1 | cut -d= -f2- || true)"
   allow_bridge="$(grep -E '^BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS=' .env | tail -n 1 | cut -d= -f2- || true)"
   pool_host="${pool_host%\"}"; pool_host="${pool_host#\"}"
   pool_url="${pool_url%\"}"; pool_url="${pool_url#\"}"
   scan_target="${scan_target%\"}"; scan_target="${scan_target#\"}"
   asic_cidrs="${asic_cidrs%\"}"; asic_cidrs="${asic_cidrs#\"}"
+  asic_iface="${asic_iface%\"}"; asic_iface="${asic_iface#\"}"
   allow_bridge="${allow_bridge:-0}"
   pool_url_host="${pool_url#*://}"
   pool_url_host="${pool_url_host%%:*}"
@@ -215,6 +221,36 @@ validate_pool_lan_config() {
       exit 1
     fi
   fi
+  if is_link_local_ipv4 "$pool_host" || is_link_local_ipv4 "$pool_url_host"; then
+    if [[ -z "$asic_iface" ]]; then
+      echo "Link-local ASIC pool endpoint '$pool_url' requires BDAG_ASIC_LAN_INTERFACE so the host can own $pool_host on the miner cable." >&2
+      exit 1
+    fi
+  fi
+}
+
+ensure_asic_lan_address() {
+  local pool_host="$1" asic_iface="$2"
+  if ! is_link_local_ipv4 "$pool_host"; then
+    return 0
+  fi
+  if [[ -z "$asic_iface" ]]; then
+    return 0
+  fi
+  if ! command -v ip >/dev/null 2>&1; then
+    echo "The ip command is required to bind link-local ASIC pool address $pool_host on $asic_iface." >&2
+    exit 1
+  fi
+  if ! ip link show "$asic_iface" >/dev/null 2>&1; then
+    echo "ASIC LAN interface '$asic_iface' was not found; set BDAG_ASIC_LAN_INTERFACE to the cabled miner interface." >&2
+    exit 1
+  fi
+  if ip -o -4 addr show dev "$asic_iface" 2>/dev/null \
+    | awk -v want="$pool_host" '{split($4,a,"/"); if (a[1] == want) found=1} END {exit found ? 0 : 1}'; then
+    return 0
+  fi
+  say "Adding link-local ASIC pool address $pool_host/16 to $asic_iface"
+  need_sudo ip addr replace "$pool_host/16" dev "$asic_iface" scope link
 }
 
 detect_zerotier_interface() {
@@ -559,11 +595,15 @@ configure_env() {
   configure_storage_profile
   configure_ephemeral_storage
 
-  local lan_ip scan_target mining_address node_mining_enabled mem_kb mem_gb
+  local lan_ip scan_target asic_lan_interface mining_address node_mining_enabled mem_kb mem_gb
   local miner_route_subnet miner_route_gateway miner_route_dev
   local p2p_advertise_ip
   lan_ip="$(detect_lan_ip)"
   lan_ip="$(ask "Pool LAN IP miners should connect to" "${lan_ip:-192.168.1.10}")"
+  asic_lan_interface="$(env_value BDAG_ASIC_LAN_INTERFACE "${BDAG_ASIC_LAN_INTERFACE:-}")"
+  if is_link_local_ipv4 "$lan_ip"; then
+    asic_lan_interface="$(ask "Host interface for link-local ASIC LAN" "$asic_lan_interface")"
+  fi
   scan_target="$(ask "LAN scan range for ASIC discovery" "$(default_cidr "$lan_ip")")"
   configure_miner_network
   mining_address="$(ask "Reward wallet address for this pool" "$(grep -E '^MINING_ADDRESS=' .env | cut -d= -f2-)")"
@@ -592,12 +632,14 @@ configure_env() {
   set_env_value .env PG_URL "postgres://${postgres_user}:${postgres_password}@postgres:5432/${postgres_db}"
   set_env_value .env BDAG_POOL_HOST "$lan_ip"
   set_env_value .env BDAG_POOL_URL "stratum+tcp://$lan_ip:3334"
+  set_env_value .env BDAG_ASIC_LAN_INTERFACE "$asic_lan_interface"
   set_env_value .env BDAG_MINER_SCAN_TARGET "$scan_target"
   set_env_value .env BDAG_ASIC_LAN_CIDRS "$scan_target"
   set_env_value .env BDAG_MINER_ROUTE_SUBNET "$miner_route_subnet"
   set_env_value .env BDAG_MINER_ROUTE_GATEWAY "$miner_route_gateway"
   set_env_value .env BDAG_MINER_ROUTE_DEV "$miner_route_dev"
   validate_pool_lan_config
+  ensure_asic_lan_address "$lan_ip" "$asic_lan_interface"
   p2p_advertise_ip="$(env_value BDAG_P2P_ADVERTISE_IP "")"
   if [[ -n "$p2p_advertise_ip" ]]; then
     set_env_value .env BDAG_P2P_ADVERTISE_IP "$p2p_advertise_ip"

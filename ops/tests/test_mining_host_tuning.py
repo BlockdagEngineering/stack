@@ -26,6 +26,10 @@ class MiningHostTuningTests(unittest.TestCase):
         self.assertIn("active_lan_ifaces()", script)
         self.assertIn("network_ifaces()", script)
         self.assertIn("fq_codel target 5ms interval 100ms ecn", script)
+        self.assertIn("ensure_link_local_asic_pool_address()", script)
+        self.assertIn("env_value BDAG_POOL_HOST", script)
+        self.assertIn("env_value BDAG_ASIC_LAN_INTERFACE", script)
+        self.assertIn('ip addr replace "$pool_host/16" dev "$asic_iface" scope link', script)
 
     def test_compose_defaults_keep_critical_path_above_dashboard(self) -> None:
         compose = read("docker-compose.yml")

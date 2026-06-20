@@ -154,10 +154,13 @@ to one endpoint.
 
 Installers and dashboards must publish the host-facing ASIC LAN endpoint, not a
 Docker bridge address. `BDAG_POOL_HOST`, `BDAG_POOL_URL`,
-`BDAG_MINER_SCAN_TARGET`, and `BDAG_ASIC_LAN_CIDRS` must be written during
-install/upgrade and passed into the dashboard container. Docker bridge CIDRs
-default to `172.16.0.0/12`; those addresses are infrastructure and must not be
-used as ASIC identities, miner scan targets, unmanaged miner rows, or the
+`BDAG_ASIC_LAN_INTERFACE`, `BDAG_MINER_SCAN_TARGET`, and
+`BDAG_ASIC_LAN_CIDRS` must be written during install/upgrade and passed into
+the dashboard container. If the pool endpoint is link-local (`169.254.*`), the
+installer must require the ASIC LAN interface and bind that host address on the
+cabled miner interface so ASICs can reconnect after restarts. Docker bridge
+CIDRs default to `172.16.0.0/12`; those addresses are infrastructure and must
+not be used as ASIC identities, miner scan targets, unmanaged miner rows, or the
 displayed Stratum endpoint unless an operator explicitly overrides the bridge
 filter for a nonstandard real ASIC LAN.
 

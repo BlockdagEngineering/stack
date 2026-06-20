@@ -449,7 +449,7 @@ detect_lan_ip() {
         return 0
     fi
     if command -v ip >/dev/null 2>&1 && [[ -n "${BDAG_ASIC_LAN_INTERFACE:-}" ]]; then
-        detected="$(ip -o -4 addr show dev "$BDAG_ASIC_LAN_INTERFACE" scope global 2>/dev/null \
+        detected="$(ip -o -4 addr show dev "$BDAG_ASIC_LAN_INTERFACE" 2>/dev/null \
             | awk '{split($4,a,"/"); if (a[1] != "") {print a[1]; exit}}' || true)"
         if [[ -n "$detected" ]]; then
             printf '%s\n' "$detected"
@@ -531,12 +531,28 @@ is_default_docker_bridge_address() {
     [[ "$1" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]]
 }
 
+is_link_local_ipv4() {
+    [[ "$1" =~ ^169\.254\. ]]
+}
+
+run_privileged() {
+    if [[ "$(id -u)" == "0" ]]; then
+        "$@"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo "$@"
+    else
+        echo "Error: $* requires root privileges. Re-run this installer with sudo or install sudo." >&2
+        return 1
+    fi
+}
+
 validate_pool_lan_config() {
-    local pool_host pool_url pool_url_host scan_target asic_cidrs allow_bridge
+    local pool_host pool_url pool_url_host scan_target asic_cidrs asic_iface allow_bridge
     pool_host="$(env_file_value .env BDAG_POOL_HOST)"
     pool_url="$(env_file_value .env BDAG_POOL_URL)"
     scan_target="$(env_file_value .env BDAG_MINER_SCAN_TARGET)"
     asic_cidrs="$(env_file_value .env BDAG_ASIC_LAN_CIDRS)"
+    asic_iface="$(env_file_value .env BDAG_ASIC_LAN_INTERFACE)"
     allow_bridge="$(env_file_value .env BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS)"
     allow_bridge="${allow_bridge:-0}"
     pool_url_host="${pool_url#*://}"
@@ -555,6 +571,36 @@ validate_pool_lan_config() {
             exit 1
         fi
     fi
+    if is_link_local_ipv4 "$pool_host" || is_link_local_ipv4 "$pool_url_host"; then
+        if [[ -z "$asic_iface" ]]; then
+            echo "Error: link-local ASIC pool endpoint '$pool_url' requires BDAG_ASIC_LAN_INTERFACE so the host can own $pool_host on the miner cable." >&2
+            exit 1
+        fi
+    fi
+}
+
+ensure_asic_lan_address() {
+    local pool_host="$1" asic_iface="$2"
+    if ! is_link_local_ipv4 "$pool_host"; then
+        return 0
+    fi
+    if [[ -z "$asic_iface" ]]; then
+        return 0
+    fi
+    if ! command -v ip >/dev/null 2>&1; then
+        echo "Error: the ip command is required to bind link-local ASIC pool address $pool_host on $asic_iface." >&2
+        exit 1
+    fi
+    if ! ip link show "$asic_iface" >/dev/null 2>&1; then
+        echo "Error: ASIC LAN interface '$asic_iface' was not found; set BDAG_ASIC_LAN_INTERFACE to the cabled miner interface." >&2
+        exit 1
+    fi
+    if ip -o -4 addr show dev "$asic_iface" 2>/dev/null \
+        | awk -v want="$pool_host" '{split($4,a,"/"); if (a[1] == want) found=1} END {exit found ? 0 : 1}'; then
+        return 0
+    fi
+    echo "Adding link-local ASIC pool address $pool_host/16 to $asic_iface."
+    run_privileged ip addr replace "$pool_host/16" dev "$asic_iface" scope link
 }
 
 prompt_with_default() {
@@ -843,13 +889,19 @@ else
 
     DETECTED_POOL_LAN_IP="$(detect_lan_ip || true)"
     POOL_LAN_IP="$(prompt_with_default "Pool LAN IP miners should connect to" "${BDAG_POOL_HOST:-${DETECTED_POOL_LAN_IP:-192.168.1.10}}")"
+    ASIC_LAN_INTERFACE="${BDAG_ASIC_LAN_INTERFACE:-}"
+    if is_link_local_ipv4 "$POOL_LAN_IP"; then
+        ASIC_LAN_INTERFACE="$(prompt_with_default "Host interface for link-local ASIC LAN" "$ASIC_LAN_INTERFACE")"
+    fi
     MINER_SCAN_TARGET="$(prompt_with_default "LAN scan range for ASIC discovery" "${BDAG_MINER_SCAN_TARGET:-${BDAG_ASIC_LAN_CIDRS:-$(default_cidr "$POOL_LAN_IP")}}")"
     set_env_value .env MINING_POOL_ADDRESS "$MINING_ADDR"
     set_env_value .env BDAG_POOL_HOST "$POOL_LAN_IP"
     set_env_value .env BDAG_POOL_URL "stratum+tcp://$POOL_LAN_IP:3334"
+    set_env_value .env BDAG_ASIC_LAN_INTERFACE "$ASIC_LAN_INTERFACE"
     set_env_value .env BDAG_MINER_SCAN_TARGET "$MINER_SCAN_TARGET"
     set_env_value .env BDAG_ASIC_LAN_CIDRS "$MINER_SCAN_TARGET"
     validate_pool_lan_config
+    ensure_asic_lan_address "$POOL_LAN_IP" "$ASIC_LAN_INTERFACE"
     if [[ -n "$POOL_PRIVATE_KEY" ]]; then
         set_env_value .env POOL_PRIVATE_KEY "$POOL_PRIVATE_KEY"
     fi

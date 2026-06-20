@@ -9,7 +9,7 @@ TARGET="${TARGET:-linux-amd64}"
 GOARCH="${GOARCH:-amd64}"
 DOCKER_PLATFORM="${DOCKER_PLATFORM:-linux/amd64}"
 PACKAGE_NAME="${PACKAGE_NAME:-pool-stack-docker}"
-PAYLOAD_SOURCE="${PAYLOAD_SOURCE:-/home/ben/pool-stack-docker-pool-v6.5.7-linux-amd64}"
+PAYLOAD_SOURCE="${PAYLOAD_SOURCE:-/home/ben/repos/test-stack}"
 OUT_DIR="${OUT_DIR:-$ROOT/release-downloads}"
 
 case "$TARGET" in
