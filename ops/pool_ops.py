@@ -703,6 +703,45 @@ def read_env_value(name: str) -> str | None:
     return read_env_file_value(POOL_ENV_FILE, name)
 
 
+def truthy_env_value(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def docker_env_value(env_rows: Any, name: str) -> str | None:
+    if not isinstance(env_rows, list):
+        return None
+    prefix = f"{name}="
+    for item in env_rows:
+        row = str(item)
+        if row.startswith(prefix):
+            return row[len(prefix):]
+    return None
+
+
+def goldshell_server_first_probe_drift_warning(containers: dict[str, dict[str, Any]] | None = None) -> str:
+    env_value = read_env_value("POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE")
+    env_enabled = truthy_env_value(env_value)
+
+    pool_container = (containers or {}).get(POOL_CONTAINER) or {}
+    container_value = pool_container.get("pool_stratum_server_first_difficulty_probe")
+    container_enabled = bool(pool_container.get("pool_stratum_server_first_difficulty_probe_enabled"))
+
+    if not env_enabled and not container_enabled:
+        return ""
+
+    sources: list[str] = []
+    if env_enabled:
+        sources.append(f".env={env_value}")
+    if container_enabled:
+        sources.append(f"running container={container_value}")
+    source_text = ", ".join(sources) if sources else "unknown source"
+    return (
+        "POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE is enabled "
+        f"({source_text}); Goldshell cloud-box/MCB production must keep it false because "
+        "server-first difficulty can make miners subscribe and disconnect before authorize"
+    )
+
+
 def valid_eth_address(value: Any) -> bool:
     return bool(ETH_ADDRESS_RE.fullmatch(str(value or "")))
 
@@ -2819,6 +2858,10 @@ def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
         host_config = item.get("HostConfig") or {}
         network_settings = item.get("NetworkSettings") or {}
         networks = network_settings.get("Networks") or {}
+        stratum_probe_value = docker_env_value(
+            config.get("Env"),
+            "POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE",
+        )
         network_rows = {
             network_name: {
                 "ip_address": network_info.get("IPAddress", ""),
@@ -2841,6 +2884,8 @@ def docker_inspect(names: list[str]) -> dict[str, dict[str, Any]]:
             "network_mode": host_config.get("NetworkMode", ""),
             "networks": network_rows,
             "network_ips": [row["ip_address"] for row in network_rows.values() if row.get("ip_address")],
+            "pool_stratum_server_first_difficulty_probe": stratum_probe_value,
+            "pool_stratum_server_first_difficulty_probe_enabled": truthy_env_value(stratum_probe_value),
         }
     return inspected
 
@@ -3795,6 +3840,10 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
         "loss_ledger": {},
         "submit_stall_recoveries": {},
         "submit_stall_recoveries_total": 0.0,
+        "stratum_no_request_disconnects": {},
+        "stratum_no_request_disconnects_total": 0.0,
+        "stratum_server_first_difficulty_probes": {},
+        "stratum_server_first_difficulty_probes_total": 0.0,
         "template_backend_state": {},
         "source_job_health": {},
         "source_backend_health": {},
@@ -3816,6 +3865,8 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
     share_processing_count = 0.0
     share_processing_sum = 0.0
     submit_recoveries: Counter[str] = Counter()
+    no_request_disconnects: Counter[str] = Counter()
+    server_first_probes: Counter[str] = Counter()
     selected_backend = ""
     active_connections: float | None = None
     source_job_health: dict[str, Any] = {}
@@ -3943,6 +3994,10 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
                 share_processing_sum += value
             elif metric_name == "pool_submit_stall_recoveries_total":
                 submit_recoveries[_metric_counter_key(labels, "action", "reason")] += value
+            elif metric_name == "pool_stratum_no_request_disconnects_total":
+                no_request_disconnects[_metric_counter_key(labels, "lane_source", "reason")] += value
+            elif metric_name == "pool_stratum_server_first_difficulty_probes_total":
+                server_first_probes[_metric_counter_key(labels, "result")] += value
         payload["containers"][name] = row
         if source_backend_health and not template_backend_source:
             template_backend_source = endpoint
@@ -3964,6 +4019,10 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
     }
     payload["submit_stall_recoveries"] = dict(submit_recoveries)
     payload["submit_stall_recoveries_total"] = float(sum(submit_recoveries.values()))
+    payload["stratum_no_request_disconnects"] = dict(no_request_disconnects)
+    payload["stratum_no_request_disconnects_total"] = float(sum(no_request_disconnects.values()))
+    payload["stratum_server_first_difficulty_probes"] = dict(server_first_probes)
+    payload["stratum_server_first_difficulty_probes_total"] = float(sum(server_first_probes.values()))
     payload["source_job_health"] = source_job_health
     payload["source_backend_health"] = source_backend_health
     payload["template_conversion_stall"] = template_conversion_stall
@@ -5585,6 +5644,10 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         containers[service] = info
         if service in SERVICES and not info.get("running"):
             stack_failures.append(f"{service} is not running")
+
+    probe_warning = goldshell_server_first_probe_drift_warning(containers)
+    if probe_warning:
+        add_maintenance_warning(probe_warning)
 
     for node in display_nodes:
         top = docker_top(node) if containers[node].get("running") else ""

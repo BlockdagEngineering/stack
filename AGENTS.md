@@ -142,6 +142,32 @@ render it with the last three hex characters of the MAC as the suffix
 site-specific miner names; fresh installs start with no custom miner names and
 only display configured names after an operator explicitly adds them.
 
+Goldshell miners using the `cloud-box` web UI and `/mcb/*` controller API can
+fail by repeatedly opening TCP to Stratum and closing before any
+`mining.subscribe` or `mining.authorize` payload. The observed local hardware
+reports `/mcb/status` as `hardware=20.10.SA`, `mcbversion=MCB_V6_3_5`, and
+`firmware=2.2.2`; treat this as a Goldshell controller/API-family protocol mode,
+not an X100-only label, wallet, payout, or pool accounting issue. Future installs
+must preserve the pool telemetry `pool_stratum_no_request_disconnects_total`,
+keep MAC overrides/allowlists in sync with the miner registry, and keep
+`POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE=false` for Goldshell cloud-box/MCB
+miners. On 2026-06-22 this probe made both local miners send
+`mining.subscribe` and then disconnect before `mining.authorize`; disabling it
+restored active, authorized, ready miners. A packet capture with zero payload
+bytes means the pool cannot infer a submitted worker and watchdog repair should
+focus on miner configuration, firmware/API health, and physical power-cycle
+state. `/mcb/status` may remain healthy while `/mcb/pools` or
+`/mcb/cgminer?cgminercmd=devs` time out or return HTTP 500; dashboard telemetry
+must be normalized into watchdog `asic_api_stall` evidence so the existing
+soft-restart repair path can act after confirmation/cooldown. If all managed
+Goldshell cloud-box/MCB miners are down, the pool has no active/authorized/ready
+miners, and Stratum is seeing no-request EOF churn, watchdog must still act even
+though there are no current job notifications; this all-down case uses the
+known-good open `/mcb/restart` path for all affected ASIC controllers after the
+shorter `BDAG_WATCHDOG_ASIC_API_STALL_NO_ACTIVE_CONFIRM_SECONDS` window. Do not
+enable server-first difficulty as a production default; use it only as an
+explicit lab diagnostic with a soak test.
+
 ## Self-Healing Release Invariants
 
 The Pi5 release candidate must install `bdag-stack-sentinel.timer` and the

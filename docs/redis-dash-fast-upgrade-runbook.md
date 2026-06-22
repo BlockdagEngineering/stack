@@ -33,6 +33,20 @@ Legacy `collector` and old `dashboard2` images are not part of this target.
 - Set `POOL_RPC_ROUTER_EVM_HEAD_GUARD_ENABLED=false` for mining releases so
   local EVM indexing lag cannot override native-safe template health.
 - ASIC identity is MAC-only. IP addresses are observations.
+- Goldshell cloud-box/MCB-compatible installs must keep
+  `POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE=false`. This firmware family
+  expects client-first Stratum; on 2026-06-22 the server-first difficulty probe
+  made both managed miners send `mining.subscribe`, then disconnect before
+  `mining.authorize`. Repeated pool logs with `reason=no-request-eof` or metric
+  `pool_stratum_no_request_disconnects_total` mean the ASIC is opening TCP and
+  closing before any Stratum request; repair miner firmware/API/configuration
+  and do not diagnose it as a wallet or payout issue. Enable the probe only as a
+  lab diagnostic with an explicit soak test.
+- The release watchdog must carry Goldshell cloud-box/MCB API-stall recovery.
+  If managed ASICs answer `/mcb/status` while `/mcb/pools` or
+  `/mcb/cgminer?cgminercmd=devs` stalls, and the pool has no active miners with
+  no-request EOF churn, watchdog should use open `/mcb/restart` after the
+  shorter no-active confirmation window rather than waiting for manual recovery.
 - Build from current source before the mining freeze whenever possible.
 - Preserve data volumes. Destructive reinstall means remove old code/images
   after verification, not deleting chain, peers, accounting, or dashboard Redis

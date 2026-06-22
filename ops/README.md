@@ -72,6 +72,25 @@ Two checks are used for miner health:
 - the ASIC web API still reports the expected pool configuration
 - the pool log shows recent accepted shares or active jobs for that miner IP
 
+Goldshell miners using the `cloud-box` web UI and `/mcb/*` controller API may
+also fail by connecting to Stratum and closing before they send any request
+line. The pool exposes this as `pool_stratum_no_request_disconnects_total` and
+logs `reason=no-request-eof`. That symptom means the miner control path,
+firmware state, or pool URL format is the repair target; accepted shares and
+payouts cannot exist until the ASIC sends `mining.subscribe` and
+`mining.authorize`.
+
+Keep `POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE=false` for Goldshell
+cloud-box/MCB deployments. The probe is a lab-only diagnostic; in production it
+can cause this firmware family to subscribe and then disconnect before
+authorize. `/mcb/status` can still answer while `/mcb/pools` or
+`/mcb/cgminer?cgminercmd=devs` time out; the shared status source normalizes
+that dashboard telemetry into watchdog `asic_api_stall` evidence. When all
+managed Goldshell cloud-box/MCB miners are in this stalled state and the pool has
+no active/authorized/ready miners, the watchdog treats the no-request EOF storm
+as ASIC-controller failure evidence and uses open `/mcb/restart` for all
+affected ASICs after `BDAG_WATCHDOG_ASIC_API_STALL_NO_ACTIVE_CONFIRM_SECONDS`.
+
 ## Earnings
 
 The Earnings tab reads the postgres database for authoritative address credits, parses recent pool logs to estimate per-ASIC contribution, and records snapshots to:

@@ -93,6 +93,9 @@ DEFAULT_ASIC_HASHRATE_STARTUP_GRACE_SECONDS = int(
 )
 DEFAULT_ASIC_API_STALL_STALE_SECONDS = int(os.environ.get("BDAG_WATCHDOG_ASIC_API_STALL_STALE_SECONDS", "180"))
 DEFAULT_ASIC_API_STALL_CONFIRM_SECONDS = int(os.environ.get("BDAG_WATCHDOG_ASIC_API_STALL_CONFIRM_SECONDS", "120"))
+DEFAULT_ASIC_API_STALL_NO_ACTIVE_CONFIRM_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_ASIC_API_STALL_NO_ACTIVE_CONFIRM_SECONDS", "60")
+)
 DEFAULT_ASIC_API_STALL_REPAIR_COOLDOWN = int(
     os.environ.get("BDAG_WATCHDOG_ASIC_API_STALL_REPAIR_COOLDOWN", str(DEFAULT_MINER_RESTART_COOLDOWN))
 )
@@ -110,6 +113,9 @@ DEFAULT_MINER_USEFUL_WORK_MIN_HEALTHY_PEERS = int(
 )
 DEFAULT_MINER_USEFUL_WORK_MIN_POOL_VALID_SHARES = int(
     os.environ.get("BDAG_WATCHDOG_MINER_USEFUL_WORK_MIN_POOL_VALID_SHARES", "5")
+)
+DEFAULT_STRATUM_NO_REQUEST_EVENT_THRESHOLD = int(
+    os.environ.get("BDAG_WATCHDOG_STRATUM_NO_REQUEST_EVENT_THRESHOLD", "5")
 )
 DEFAULT_POOL_RESTART_GRACE_SECONDS = int(os.environ.get("BDAG_WATCHDOG_POOL_RESTART_GRACE_SECONDS", "90"))
 DEFAULT_EARNINGS_SNAPSHOT_INTERVAL_SECONDS = int(
@@ -552,6 +558,41 @@ ASIC_API_STALL_TEXT_FRAGMENTS = (
 )
 
 
+def asic_api_stall_no_active_pool_evidence(status: dict[str, Any]) -> bool:
+    pool_health = status.get("pool_health", status.get("pool", {}))
+    if not isinstance(pool_health, dict):
+        pool_health = {}
+    pool_job_state = status.get("pool_job_state") if isinstance(status.get("pool_job_state"), dict) else {}
+    pool_metrics = status.get("pool_metrics") if isinstance(status.get("pool_metrics"), dict) else {}
+    miner_health = status.get("miner_health") if isinstance(status.get("miner_health"), dict) else {}
+
+    managed_count = int_or_none(miner_health.get("managed_count")) or 0
+    active_connections = (
+        int_or_none(pool_job_state.get("active_connections"))
+        or int_or_none(pool_metrics.get("active_connections"))
+        or 0
+    )
+    authorized_connections = (
+        int_or_none(pool_job_state.get("authorized_connections"))
+        or int_or_none(pool_metrics.get("authorized_connections"))
+        or 0
+    )
+    ready_connections = (
+        int_or_none(pool_job_state.get("ready_connections"))
+        or int_or_none(pool_metrics.get("ready_connections"))
+        or 0
+    )
+    reason = str(pool_job_state.get("reason_code") or pool_health.get("job_state_reason") or "").strip().lower()
+    no_request_total = int_or_none(pool_metrics.get("stratum_no_request_disconnects_total")) or 0
+    return (
+        managed_count > 0
+        and active_connections <= 0
+        and authorized_connections <= 0
+        and ready_connections <= 0
+        and (reason in {"no_active_miners", "no-active-miners", "no_clients", "no-clients"} or no_request_total > 0)
+    )
+
+
 def asic_api_stall_primary_miners(
     status: dict[str, Any],
     stale_seconds: int = DEFAULT_ASIC_API_STALL_STALE_SECONDS,
@@ -559,7 +600,10 @@ def asic_api_stall_primary_miners(
     pool_health = status.get("pool_health", status.get("pool", {}))
     if not isinstance(pool_health, dict):
         pool_health = {}
-    if pool_initial_download_effective(status) or int(pool_health.get("job_notify_count") or 0) <= 0:
+    no_active_pool_evidence = asic_api_stall_no_active_pool_evidence(status)
+    if pool_initial_download_effective(status):
+        return []
+    if (int_or_none(pool_health.get("job_notify_count")) or 0) <= 0 and not no_active_pool_evidence:
         return []
     if any(
         bool(pool_health.get(key))
@@ -620,6 +664,7 @@ def asic_api_stall_primary_miners(
         item = dict(row)
         item["api_stall_issue"] = issue_text.strip()
         item["api_stall_stale_age_seconds"] = stale_age
+        item["api_stall_no_active_pool"] = no_active_pool_evidence
         item["restart_open_first"] = True
         affected.append(item)
     return affected
@@ -1537,7 +1582,8 @@ def should_clean_restore(state: dict[str, Any], status: dict[str, Any], threshol
     if now - int(state.get("last_clean_restore_at", 0) or 0) < cooldown:
         return False
 
-    hard_failure = any("critical log entries" in item or "bdag child is not running" in item for item in status["failures"])
+    failures = status.get("failures") if isinstance(status.get("failures"), list) else []
+    hard_failure = any("critical log entries" in str(item) or "bdag child is not running" in str(item) for item in failures)
     return hard_failure
 
 
@@ -1718,10 +1764,22 @@ def check_once(
 ) -> dict[str, Any]:
     state = read_state()
     status = collect_stack_status(include_logs=True)
-    stack_failures = status.get("stack_failures", status["failures"])
-    miner_failures = status.get("miner_failures", [])
+    status_failures = status.get("failures") if isinstance(status.get("failures"), list) else []
+    stack_failures = status.get("stack_failures") if isinstance(status.get("stack_failures"), list) else status_failures
+    miner_failures = status.get("miner_failures") if isinstance(status.get("miner_failures"), list) else []
     failures = stack_failures + miner_failures
+    status_overall = str(status.get("overall") or status.get("status") or "unknown")
+    status_warnings = (
+        status.get("warnings")
+        if isinstance(status.get("warnings"), list)
+        else status.get("degraded_reasons")
+        if isinstance(status.get("degraded_reasons"), list)
+        else []
+    )
     pool_health = status.get("pool_health", status.get("pool", {}))
+    pool_metrics = status.get("pool_metrics") if isinstance(status.get("pool_metrics"), dict) else {}
+    if not pool_metrics and isinstance(pool_health, dict) and isinstance(pool_health.get("metrics"), dict):
+        pool_metrics = pool_health.get("metrics")
     miner_health = status.get("miner_health", {})
     miner_rows = miner_health.get("miners", []) if isinstance(miner_health.get("miners"), list) else []
     mining_address = str(status.get("mining_address") or "")
@@ -1739,6 +1797,14 @@ def check_once(
         state.get("last_miner_restart_at_by_ip") if isinstance(state.get("last_miner_restart_at_by_ip"), dict) else {}
     )
     now = int(time.time())
+    stratum_no_request_total = int_or_none(pool_metrics.get("stratum_no_request_disconnects_total")) or 0
+    previous_no_request_total = int_or_none(state.get("last_stratum_no_request_disconnects_total"))
+    if previous_no_request_total is None or previous_no_request_total > stratum_no_request_total:
+        stratum_no_request_delta = 0
+    else:
+        stratum_no_request_delta = stratum_no_request_total - previous_no_request_total
+    state["last_stratum_no_request_disconnects_total"] = stratum_no_request_total
+    state["last_stratum_no_request_disconnects_delta"] = stratum_no_request_delta
     observe_sync_progress(status, state, now)
     pool_started_age_seconds = container_started_age_seconds(status, POOL_CONTAINER, now)
     pool_in_startup_grace = bool(
@@ -1787,6 +1853,42 @@ def check_once(
         for item in miner_rows
         if isinstance(item, dict) and is_primary_pool_miner(item, mining_address)
     )
+    stratum_no_request_by_reason = (
+        pool_metrics.get("stratum_no_request_disconnects")
+        if isinstance(pool_metrics.get("stratum_no_request_disconnects"), dict)
+        else {}
+    )
+    stratum_no_request_has_mac_source = any(
+        str(key).split(":", 1)[0] == "mac" and (int_or_none(value) or 0) > 0
+        for key, value in stratum_no_request_by_reason.items()
+    )
+    if (
+        stratum_no_request_delta >= DEFAULT_STRATUM_NO_REQUEST_EVENT_THRESHOLD
+        and (primary_miner_count > 0 or stratum_no_request_has_mac_source)
+    ):
+        message = (
+            f"Stratum accepted {stratum_no_request_delta} connection(s) since the last watchdog sample "
+            "that closed before any mining.subscribe or mining.authorize request"
+        )
+        state["last_stratum_no_request_warning"] = {
+            "at": now_iso(),
+            "delta": stratum_no_request_delta,
+            "total": stratum_no_request_total,
+            "by_reason": stratum_no_request_by_reason,
+        }
+        log(f"stratum_no_request_disconnects delta={stratum_no_request_delta} total={stratum_no_request_total}")
+        record_efficiency_event(
+            "stratum_no_request_disconnects",
+            "warning",
+            message,
+            {
+                "delta": stratum_no_request_delta,
+                "total": stratum_no_request_total,
+                "by_reason": stratum_no_request_by_reason,
+                "mac_source": stratum_no_request_has_mac_source,
+                "primary_miner_count": primary_miner_count,
+            },
+        )
     template_nodes = template_failing_nodes(status)
     orphan_nodes = orphan_storm_nodes(status)
     dag_tip_nodes = dag_tip_damage_nodes(status)
@@ -2145,6 +2247,7 @@ def check_once(
                 "last_share_age_seconds": item.get("last_share_age_seconds"),
                 "last_submit_age_seconds": item.get("last_submit_age_seconds"),
                 "api_stall_stale_age_seconds": item.get("api_stall_stale_age_seconds"),
+                "api_stall_no_active_pool": item.get("api_stall_no_active_pool"),
                 "issue": item.get("issue"),
                 "debug_error": item.get("debug_error"),
             }
@@ -2156,21 +2259,31 @@ def check_once(
             ip = str(item.get("ip"))
             identity_key = miner_stall_identity_key(item)
             stalled_for = now - int(asic_api_stall_since.get(identity_key, now) or now)
+            confirm_seconds = (
+                DEFAULT_ASIC_API_STALL_NO_ACTIVE_CONFIRM_SECONDS
+                if item.get("api_stall_no_active_pool")
+                else DEFAULT_ASIC_API_STALL_CONFIRM_SECONDS
+            )
             cooldown_remaining = DEFAULT_ASIC_API_STALL_REPAIR_COOLDOWN - (
                 now - int(miner_restart_by_ip.get(ip, 0) or 0)
             )
-            if stalled_for >= DEFAULT_ASIC_API_STALL_CONFIRM_SECONDS and cooldown_remaining <= 0:
+            if stalled_for >= confirm_seconds and cooldown_remaining <= 0:
                 eligible_miners.append(item)
             else:
                 waiting.append(
                     f"{identity_key or ip} ip={ip} stalled_for={stalled_for}s "
-                    f"confirm={DEFAULT_ASIC_API_STALL_CONFIRM_SECONDS}s "
+                    f"confirm={confirm_seconds}s "
                     f"cooldown_remaining={max(cooldown_remaining, 0)}s"
                 )
         reason = (
             f"{len(api_stall_asics)} managed ASIC miner(s) have a sustained local API/cgminer stall "
             "while pool-wide backend/template failure checks are clear"
         )
+        if stratum_no_request_delta > 0:
+            reason += (
+                f"; Stratum also saw {stratum_no_request_delta} no-request disconnect(s) "
+                "since the last watchdog sample"
+            )
         state["consecutive_failures"] = 0
         state["consecutive_syncing"] = 0
         state["consecutive_node_orphan_storm"] = 0
@@ -2194,11 +2307,18 @@ def check_once(
                 "eligible": [item.get("ip") for item in eligible_miners],
                 "waiting": waiting,
                 "primary_miner_count": primary_miner_count,
+                "stratum_no_request_delta": stratum_no_request_delta,
+                "stratum_no_request_total": stratum_no_request_total,
             },
         )
         if repair and eligible_miners:
+            repair_limit = (
+                len(eligible_miners)
+                if all(item.get("api_stall_no_active_pool") for item in eligible_miners)
+                else 1
+            )
             repair_targets = []
-            for item in eligible_miners[:1]:
+            for item in eligible_miners[:repair_limit]:
                 target = dict(item)
                 target["restart_open_first"] = True
                 repair_targets.append(target)
@@ -2906,13 +3026,13 @@ def check_once(
                 if ok:
                     state["consecutive_syncing"] = 0
     else:
-        if state.get("last_status") != status["overall"]:
-            log(f"status={status['overall']} warnings={'; '.join(status['warnings']) or 'none'}")
+        if state.get("last_status") != status_overall:
+            log(f"status={status_overall} warnings={'; '.join(str(item) for item in status_warnings) or 'none'}")
         state["consecutive_failures"] = 0
         state["consecutive_syncing"] = 0
         state["consecutive_share_stalls"] = 0
         state["consecutive_submit_path_stalls"] = 0
-        state["last_status"] = status["overall"]
+        state["last_status"] = status_overall
         state["last_failures"] = []
         state["last_sync_warnings"] = []
         state["last_share_warnings"] = []

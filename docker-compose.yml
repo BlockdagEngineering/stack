@@ -210,6 +210,9 @@ services:
       BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-}
       POOL_ASIC_MAC_OVERRIDES: ${POOL_ASIC_MAC_OVERRIDES:-}
       POOL_ASIC_MAC_ALLOWLIST: ${POOL_ASIC_MAC_ALLOWLIST:-}
+      # Goldshell cloud-box/MCB firmware expects client-first Stratum. Enabling
+      # this probe can make miners subscribe, then disconnect before authorize.
+      POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE: ${POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE:-false}
       WALLET_RPC_URL:     ${WALLET_RPC_URL:-}
       POOL_PRIVATE_KEY:   ${POOL_PRIVATE_KEY:-}
       POOL_COINBASE_ADDRESS: ${POOL_COINBASE_ADDRESS:-}
@@ -315,7 +318,7 @@ services:
       target: watchdog
     restart: unless-stopped
     logging: *mining-logging
-    user: "1001:969"
+    user: "${BDAG_OPS_UID:-1000}:${BDAG_OPS_GID:-1000}"
     group_add:
       - "${BDAG_DOCKER_SOCKET_GID:-0}"
     tmpfs:
@@ -337,7 +340,7 @@ services:
       BDAG_PROJECT_ROOT: ${BDAG_STACK_HOST_ROOT:-${PWD}}
       BDAG_RUNTIME_DIR: ${BDAG_STACK_HOST_ROOT:-${PWD}}/ops/runtime
       BDAG_POOL_ENV_FILE: ${BDAG_STACK_HOST_ROOT:-${PWD}}/.env
-      BDAG_STATUS_SOURCE_URL: http://collector:9280/api/status
+      BDAG_STATUS_SOURCE_URL: http://dashboard:8088/api/status
       BDAG_NODE_SERVICES: node
       BDAG_STACK_SERVICES: postgres,node,pool
       BDAG_POOL_CONTAINER: pool
@@ -348,6 +351,9 @@ services:
       NODE_RPC_USER: ${NODE_RPC_USER:?set NODE_RPC_USER in .env}
       NODE_RPC_PASS: ${NODE_RPC_PASS:?set NODE_RPC_PASS in .env}
       BDAG_WATCHDOG_INTERVAL: ${BDAG_WATCHDOG_INTERVAL:-60}
+      BDAG_WATCHDOG_ASIC_API_STALL_CONFIRM_SECONDS: ${BDAG_WATCHDOG_ASIC_API_STALL_CONFIRM_SECONDS:-120}
+      BDAG_WATCHDOG_ASIC_API_STALL_NO_ACTIVE_CONFIRM_SECONDS: ${BDAG_WATCHDOG_ASIC_API_STALL_NO_ACTIVE_CONFIRM_SECONDS:-60}
+      BDAG_WATCHDOG_ASIC_API_STALL_REPAIR_COOLDOWN: ${BDAG_WATCHDOG_ASIC_API_STALL_REPAIR_COOLDOWN:-300}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${BDAG_STACK_HOST_ROOT:-${PWD}}:${BDAG_STACK_HOST_ROOT:-${PWD}}
@@ -362,7 +368,7 @@ services:
       target: sentinel
     restart: unless-stopped
     logging: *mining-logging
-    user: "1001:969"
+    user: "${BDAG_OPS_UID:-1000}:${BDAG_OPS_GID:-1000}"
     group_add:
       - "${BDAG_DOCKER_SOCKET_GID:-0}"
     tmpfs:
@@ -387,7 +393,7 @@ services:
       BDAG_PROJECT_ROOT: ${BDAG_STACK_HOST_ROOT:-${PWD}}
       BDAG_RUNTIME_DIR: ${BDAG_STACK_HOST_ROOT:-${PWD}}/ops/runtime
       BDAG_POOL_ENV_FILE: ${BDAG_STACK_HOST_ROOT:-${PWD}}/.env
-      BDAG_SENTINEL_STATUS_URL: http://collector:9280/api/status
+      BDAG_SENTINEL_STATUS_URL: http://dashboard:8088/api/status
       BDAG_SENTINEL_INTERVAL_SECONDS: ${BDAG_SENTINEL_INTERVAL_SECONDS:-60}
       # systemd unit checks do not apply inside a container; empty lists skip them.
       BDAG_SENTINEL_USER_SERVICES: ""
@@ -501,8 +507,11 @@ services:
       BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://host.docker.internal:9280}
       DASHBOARD_TIMEZONE: ${DASHBOARD_TIMEZONE:-Africa/Johannesburg}
       BDAG_MINER_CONTROL_ENABLED: ${BDAG_MINER_CONTROL_ENABLED:-1}
+      BDAG_MINER_CONTROL_TOKEN: ${BDAG_MINER_CONTROL_TOKEN:-}
+      BDAG_MINER_POOL_PASSWORD: ${BDAG_MINER_POOL_PASSWORD:-x}
       BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-}
       POOL_ASIC_MAC_OVERRIDES: ${POOL_ASIC_MAC_OVERRIDES:-}
+      POOL_ASIC_MAC_ALLOWLIST: ${POOL_ASIC_MAC_ALLOWLIST:-}
       BDAG_POOL_URL: ${BDAG_POOL_URL:-}
       MINING_POOL_ADDRESS: ${MINING_POOL_ADDRESS:?set MINING_POOL_ADDRESS to a non-zero payout address}
       POOL_COINBASE_ADDRESS: ${POOL_COINBASE_ADDRESS:-}

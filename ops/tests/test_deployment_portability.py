@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import pathlib
-import re
 import sys
 import unittest
 
@@ -313,45 +312,28 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true", env_example)
         self.assertIn("set_stack_default_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_ENABLED", installer)
 
-    def test_live_deploy_copy_contract_covers_live_validator_files(self) -> None:
-        deploy = (ROOT_DIR / "ops" / "deploy-live-runtime-update.sh").read_text(encoding="utf-8")
-        validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
-        files_match = re.search(r"FILES=\((.*?)\n\)", deploy, re.DOTALL)
-        self.assertIsNotNone(files_match)
-        deploy_files = set(re.findall(r'"([^"]+)"', files_match.group(1)))
-        ignored = {
-            ".env.cpu.example",
-            ".github/workflows/build-cpu.yml",
-            ".github/workflows/build.yml",
-            ".github/workflows/rc-hardening.yml",
-            "docker-compose.yml",
-            "scripts/check-doc-consistency.py",
-            "scripts/release/installers/install-unix-common.sh",
-            "scripts/release/installers/install-windows.ps1",
-        }
-        required = {
-            rel
-            for rel in re.findall(r'need_file "([^"]+)"', validator)
-            if rel not in ignored and not rel.startswith(".github/")
-        }
+    def test_goldshell_server_first_probe_stays_disabled_by_default(self) -> None:
+        compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+        env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
+        installer = (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8")
+        release_validator = (ROOT_DIR / "scripts" / "validate-release-build.sh").read_text(encoding="utf-8")
+        runbook = (ROOT_DIR / "docs" / "redis-dash-fast-upgrade-runbook.md").read_text(encoding="utf-8")
+        agents = (ROOT_DIR / "AGENTS.md").read_text(encoding="utf-8")
+        ops_readme = (ROOT_DIR / "ops" / "README.md").read_text(encoding="utf-8")
 
-        self.assertEqual([], sorted(required - deploy_files))
-
-    def test_live_runtime_validator_requires_current_runtime_surfaces(self) -> None:
-        validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
-
-        self.assertIn('if [[ "$mode" == "source" && -e "$root/ops/observability" ]]; then', validator)
-        self.assertIn('need_grep \'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS\' "docker-compose.yml"', validator)
-        self.assertIn('need_grep \'NODE_RPC_URLS: .*http://127.0.0.1:38131\' "docker-compose.yml"', validator)
-        self.assertIn('need_grep \'BDAG_STACK_SERVICES=postgres,node,pool\' ".env.example"', validator)
-        self.assertIn('reject_grep \'container_name:\' "docker-compose.yml"', validator)
-
-    def test_live_runtime_validator_keeps_release_packaging_source_only(self) -> None:
-        validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
-
-        self.assertIn('need_grep \'check-release-archive.py\' ".github/workflows/build.yml"', validator)
-        self.assertIn('need_grep \'check-release-archive.py\' ".github/workflows/build-cpu.yml"', validator)
-        self.assertIn('reject_grep \'BDAG_P2P_LAN_PEERS=\' ".env.cpu.example"', validator)
+        self.assertIn("POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE=false", env_example)
+        self.assertIn(
+            "POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE: ${POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE:-false}",
+            compose,
+        )
+        self.assertIn(
+            'set_env_value .env POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE "$(env_value POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE false)"',
+            installer,
+        )
+        self.assertIn("POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE=false", runbook)
+        self.assertIn("POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE=false", agents)
+        self.assertIn("POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE=false", ops_readme)
+        self.assertIn("POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE:-false", release_validator)
 
     def test_live_deploy_rollback_validates_manifest_not_new_rc_contract(self) -> None:
         deploy = (ROOT_DIR / "ops" / "deploy-live-runtime-update.sh").read_text(encoding="utf-8")
@@ -397,7 +379,6 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         windows_installer = (
             ROOT_DIR / "scripts" / "release" / "installers" / "install-windows.ps1"
         ).read_text(encoding="utf-8")
-        validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
 
         self.assertIn("BDAG_DOCKER_BRIDGE_CIDRS=172.16.0.0/12", env_example)
         self.assertIn("BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS=0", env_example)
@@ -412,8 +393,6 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn("Set-EnvValue .env BDAG_ASIC_LAN_CIDRS $minerScanTarget", windows_installer)
         self.assertIn("Assert-PoolLanConfig", windows_installer)
         self.assertIn("Refusing Docker bridge pool endpoint", windows_installer)
-        self.assertIn("BDAG_DOCKER_BRIDGE_CIDRS=172.16.0.0/12", validator)
-        self.assertIn("BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS=0", validator)
 
     def test_release_docs_keep_zero_miner_default_invariant(self) -> None:
         agents = (ROOT_DIR / "AGENTS.md").read_text(encoding="utf-8")

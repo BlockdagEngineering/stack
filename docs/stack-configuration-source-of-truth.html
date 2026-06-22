@@ -70,8 +70,8 @@
     <section>
       <h2>Validation</h2>
       <pre><code>PYTHONDONTWRITEBYTECODE=1 python3 scripts/validate-stack-defaults.py
-BDAG_RUNTIME_DIR=/tmp/bdag-stack-validate-runtime PYTHONDONTWRITEBYTECODE=1 scripts/validate-pi5-restart-hardening.sh</code></pre>
-      <p>The first check validates source-of-truth projection. The second includes it in the broader release hardening gate.</p>
+PYTHONDONTWRITEBYTECODE=1 scripts/validate-release-build.sh</code></pre>
+      <p>The first check validates source-of-truth projection. The second covers the active release build gate.</p>
     </section>
   </main>
 </body>

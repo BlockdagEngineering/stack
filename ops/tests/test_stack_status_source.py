@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+
+import os
+import pathlib
+import sys
+import unittest
+from unittest import mock
+
+OPS_DIR = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(OPS_DIR))
+
+import stack_status_source  # noqa: E402
+
+
+class StackStatusSourceTests(unittest.TestCase):
+    def test_dashboard_asic_telemetry_enrichment_marks_mcb_api_stall(self) -> None:
+        mining_address = "0xD5F8DF0A60bC1Ff4636250b2a2dff319Bf79B1f5"
+        payload = {
+            "mining_address": mining_address,
+            "pool_health": {"initial_download": False},
+            "pool_job_state": {
+                "active_connections": "1",
+                "authorized_connections": "1",
+                "ready_connections": "1",
+                "clients": [
+                    {
+                        "asic_mac": "28:e2:97:3d:95:13",
+                        "authorized": True,
+                        "current_job_id": "job-1",
+                    }
+                ],
+            },
+            "asic_telemetry": {
+                "devices": [
+                    {
+                        "mac": "28:E2:97:2E:00:1B",
+                        "status": "degraded",
+                        "errors": {
+                            "pools": 'Get "http://192.168.100.80/mcb/pools": context deadline exceeded',
+                            "cgminer_devs": (
+                                'Get "http://192.168.100.80/mcb/cgminer?cgminercmd=devs": '
+                                "context deadline exceeded"
+                            ),
+                        },
+                    },
+                    {
+                        "mac": "28:e2:97:3d:95:13",
+                        "status": "ok",
+                        "errors": {},
+                    },
+                ],
+            },
+            "miner_health": {
+                "connected_count": 0,
+                "miners": [
+                    {
+                        "mac": "28:e2:97:2e:00:1b",
+                        "ip": "192.168.100.80",
+                        "managed": True,
+                        "device_type": "asic",
+                        "status": "configured",
+                        "health": "configured",
+                        "configured_pool_url": "stratum+tcp://192.168.100.114:3334",
+                        "intended_wallet": mining_address,
+                    },
+                    {
+                        "mac": "28:e2:97:3d:95:13",
+                        "ip": "192.168.100.83",
+                        "managed": True,
+                        "device_type": "asic",
+                        "status": "configured",
+                        "health": "configured",
+                        "configured_pool_url": "stratum+tcp://192.168.100.114:3334",
+                        "intended_wallet": mining_address,
+                    },
+                ],
+            },
+        }
+
+        enriched = stack_status_source._with_dashboard_asic_telemetry_enrichment(payload)
+
+        miners = {row["mac"]: row for row in enriched["miner_health"]["miners"]}
+        stalled = miners["28:e2:97:2e:00:1b"]
+        active = miners["28:e2:97:3d:95:13"]
+
+        self.assertTrue(enriched["asic_telemetry_enriched"])
+        self.assertEqual("down", stalled["status"])
+        self.assertEqual("down", stalled["health"])
+        self.assertFalse(stalled["connected"])
+        self.assertIn("/mcb/pools", stalled["api_error"])
+        self.assertIn("cgminercmd=devs", stalled["debug_error"])
+        self.assertFalse(stalled["debug"]["available"])
+        self.assertEqual("stratum+tcp://192.168.100.114:3334", stalled["expected_pool_url"])
+        self.assertEqual(mining_address, stalled["expected_worker_user"])
+
+        self.assertTrue(active["connected"])
+        self.assertTrue(active["pool_active"])
+        self.assertTrue(active["work_pool_active"])
+        self.assertEqual(1, enriched["pool_health"]["job_notify_count"])
+        self.assertEqual(1, enriched["miner_health"]["connected_count"])
+
+    def test_dashboard_asic_telemetry_all_down_overrides_stale_connected_rows(self) -> None:
+        mining_address = "0xD5F8DF0A60bC1Ff4636250b2a2dff319Bf79B1f5"
+        timeout_error = 'Get "http://192.168.100.80/mcb/pools": context deadline exceeded'
+        payload = {
+            "mining_address": mining_address,
+            "pool_health": {
+                "initial_download": False,
+                "job_state_reason": "no_active_miners",
+            },
+            "pool_job_state": {
+                "active_connections": 0,
+                "authorized_connections": 0,
+                "ready_connections": 0,
+                "reason_code": "no_active_miners",
+                "clients": [],
+            },
+            "pool_metrics": {
+                "active_connections": 0,
+                "authorized_miners": 0,
+                "ready_miners": 0,
+            },
+            "asic_telemetry": {
+                "devices": [
+                    {
+                        "mac": "28:e2:97:2e:00:1b",
+                        "status": "degraded",
+                        "errors": {"pools": timeout_error},
+                    },
+                    {
+                        "mac": "28:e2:97:3d:95:13",
+                        "status": "degraded",
+                        "errors": {"cgminer_devs": "HTTP 500 Server Error"},
+                    },
+                ],
+            },
+            "miner_health": {
+                "connected_count": 2,
+                "connected_count_effective": 2,
+                "managed_count": 2,
+                "miners": [
+                    {
+                        "mac": "28:e2:97:2e:00:1b",
+                        "ip": "192.168.100.80",
+                        "managed": True,
+                        "device_type": "asic",
+                        "status": "connected",
+                        "health": "connected",
+                        "connected": True,
+                        "configured_pool_url": "stratum+tcp://192.168.100.114:3334",
+                        "intended_wallet": mining_address,
+                    },
+                    {
+                        "mac": "28:e2:97:3d:95:13",
+                        "ip": "192.168.100.83",
+                        "managed": True,
+                        "device_type": "asic",
+                        "status": "connected",
+                        "health": "connected",
+                        "connected": True,
+                        "configured_pool_url": "stratum+tcp://192.168.100.114:3334",
+                        "intended_wallet": mining_address,
+                    },
+                ],
+            },
+        }
+
+        enriched = stack_status_source._with_dashboard_asic_telemetry_enrichment(payload)
+
+        self.assertEqual(0, enriched["miner_health"]["connected_count"])
+        self.assertEqual(0, enriched["miner_health"]["connected_count_effective"])
+        for row in enriched["miner_health"]["miners"]:
+            self.assertEqual("down", row["status"])
+            self.assertEqual("down", row["health"])
+            self.assertFalse(row["connected"])
+            self.assertFalse(row["pool_active"])
+            self.assertFalse(row["work_pool_active"])
+            self.assertFalse(row["debug"]["available"])
+
+    def test_collector_payload_is_enriched_with_new_pool_metrics(self) -> None:
+        captured: list[dict[str, object]] = []
+
+        def collect_pool_metrics(containers: dict[str, object]) -> dict[str, object]:
+            captured.append(containers)
+            return {
+                "status": "ok",
+                "active_connections": 0,
+                "stratum_no_request_disconnects": {"mac:no-request-eof": 12},
+                "stratum_no_request_disconnects_total": 12.0,
+                "stratum_server_first_difficulty_probes": {"sent": 12},
+                "stratum_server_first_difficulty_probes_total": 12.0,
+            }
+
+        with mock.patch.dict(
+            os.environ,
+            {"BDAG_STATUS_SOURCE_URL": "http://dashboard:8088/api/status"},
+            clear=False,
+        ), mock.patch.object(
+            stack_status_source,
+            "fetch_collector_status",
+            return_value={
+                "status": "ok",
+                "containers": {"pool": {"running": True}},
+                "pool_metrics": {"active_connections": 0},
+            },
+        ), mock.patch.object(
+            stack_status_source,
+            "collect_pool_prometheus_metrics",
+            side_effect=collect_pool_metrics,
+        ), mock.patch.object(
+            stack_status_source,
+            "POOL_CONTAINERS",
+            ["pool"],
+        ):
+            payload = stack_status_source.collect_stack_status()
+
+        self.assertTrue(payload["pool_metrics_enriched"])
+        self.assertEqual(12.0, payload["pool_metrics"]["stratum_no_request_disconnects_total"])
+        self.assertEqual("host", captured[0]["pool"]["network_mode"])
+
+    def test_metric_enrichment_failure_keeps_original_payload(self) -> None:
+        with mock.patch.object(
+            stack_status_source,
+            "collect_pool_prometheus_metrics",
+            side_effect=RuntimeError("metrics down"),
+        ):
+            payload = stack_status_source._with_direct_pool_metric_enrichment(
+                {"pool_metrics": {"active_connections": 0}}
+            )
+
+        self.assertEqual({"active_connections": 0}, payload["pool_metrics"])
+        self.assertNotIn("pool_metrics_enriched", payload)
+
+
+if __name__ == "__main__":
+    unittest.main()

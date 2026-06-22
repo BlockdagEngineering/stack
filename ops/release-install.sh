@@ -599,6 +599,11 @@ configure_env() {
   set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_STRICT "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_STRICT 0)"
   set_env_value .env BDAG_INSTALL_STACK_SUPPORT_SERVICES "$(env_value BDAG_INSTALL_STACK_SUPPORT_SERVICES 1)"
   set_env_value .env BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT "$(env_value BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT 0)"
+  set_env_value .env BDAG_OPS_UID "$(id -u)"
+  set_env_value .env BDAG_OPS_GID "$(id -g)"
+  set_env_value .env BDAG_STATUS_SOURCE_URL "http://dashboard:8088/api/status"
+  set_env_value .env BDAG_SENTINEL_STATUS_URL "http://dashboard:8088/api/status"
+  set_env_value .env POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE "$(env_value POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE false)"
   fastartifact_enabled=1
   if [[ "$node_mining_enabled" == "1" ]]; then
     case "$(env_value BDAG_STORAGE_PROFILE auto)" in
@@ -897,6 +902,24 @@ start_stack() {
   compose_cmd ps
 }
 
+start_repair_services() {
+  say "Starting BlockDAG repair services"
+  guard_runtime_compose
+  local available service services=()
+  available="$(compose_cmd config --services 2>/dev/null || true)"
+  for service in miner-route watchdog sentinel; do
+    if grep -qx "$service" <<<"$available"; then
+      services+=("$service")
+    fi
+  done
+  if (( ${#services[@]} == 0 )); then
+    warn "No repair services are present in this compose file."
+    return 0
+  fi
+  compose_cmd up -d --no-build --pull never "${services[@]}"
+  compose_cmd ps "${services[@]}"
+}
+
 install_stack_support_services() {
   set -a
   # shellcheck disable=SC1091
@@ -1037,6 +1060,7 @@ main() {
   seed_chain_data
   publish_p2p_snapshot_archive "$arch"
   start_stack
+  start_repair_services
   install_stack_support_services
   discover_preserved_chain_peers
   rebuild_dashboard_plot_data

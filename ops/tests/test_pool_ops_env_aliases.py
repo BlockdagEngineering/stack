@@ -33,6 +33,43 @@ class PoolOpsEnvAliasTests(unittest.TestCase):
         with mock.patch.dict(pool_ops.os.environ, {"MINING_POOL_ADDRESS": ADDRESS}, clear=True):
             self.assertEqual(ADDRESS, pool_ops.read_env_value("MINING_ADDRESS"))
 
+    def test_goldshell_probe_drift_warning_is_empty_when_disabled(self) -> None:
+        with mock.patch.object(pool_ops, "POOL_ENV_FILE", pathlib.Path("/nonexistent/pool-ops-test.env")), mock.patch.dict(
+            pool_ops.os.environ,
+            {"POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE": "false"},
+            clear=True,
+        ):
+            self.assertEqual("", pool_ops.goldshell_server_first_probe_drift_warning({}))
+
+    def test_goldshell_probe_drift_warning_detects_env_true(self) -> None:
+        with mock.patch.object(pool_ops, "POOL_ENV_FILE", pathlib.Path("/nonexistent/pool-ops-test.env")), mock.patch.dict(
+            pool_ops.os.environ,
+            {"POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE": "true"},
+            clear=True,
+        ):
+            warning = pool_ops.goldshell_server_first_probe_drift_warning({})
+
+        self.assertIn("POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE is enabled", warning)
+        self.assertIn(".env=true", warning)
+        self.assertIn("disconnect before authorize", warning)
+
+    def test_goldshell_probe_drift_warning_detects_running_container_true(self) -> None:
+        containers = {
+            pool_ops.POOL_CONTAINER: {
+                "pool_stratum_server_first_difficulty_probe": "true",
+                "pool_stratum_server_first_difficulty_probe_enabled": True,
+            }
+        }
+        with mock.patch.object(pool_ops, "POOL_ENV_FILE", pathlib.Path("/nonexistent/pool-ops-test.env")), mock.patch.dict(
+            pool_ops.os.environ,
+            {"POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE": "false"},
+            clear=True,
+        ):
+            warning = pool_ops.goldshell_server_first_probe_drift_warning(containers)
+
+        self.assertIn("running container=true", warning)
+        self.assertIn("Goldshell cloud-box/MCB production must keep it false", warning)
+
 
 if __name__ == "__main__":
     unittest.main()

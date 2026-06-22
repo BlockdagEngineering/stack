@@ -316,9 +316,8 @@ The Pi5 release builder marks generated runtime compose files with
 `BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1` and rejects `build:`/`dockerfile:`
 entries in runtime packages. Runtime starts use `--no-build --pull never` by
 default; set an explicit pull/build flag only when intentionally refreshing
-images. Keep `scripts/validate-pi5-restart-hardening.sh` in the release gate
-before cutting an RC, and use `--mode live-runtime` for an installed stack where
-`ops/runtime` and Python bytecode are expected service artifacts.
+images. Runtime package validation should be performed through the active
+release build checks before cutting an RC.
 
 Constrained mining appliances also run a read-only install preflight before
 chain seeding or stack start. `scripts/mining-appliance-preflight.py` checks the

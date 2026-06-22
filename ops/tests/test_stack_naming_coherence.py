@@ -132,21 +132,5 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS=120", user_sampler)
         self.assertIn("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=120", user_sampler)
 
-    def test_validator_locks_current_topology_into_build_checks(self) -> None:
-        validator = read("scripts/validate-pi5-restart-hardening.sh")
-
-        self.assertIn('need_grep \'BDAG_STACK_SERVICES=postgres,node,pool\' ".env.example"', validator)
-        self.assertIn('need_grep \'BDAG_NODE_SERVICES: node\' "docker-compose.yml"', validator)
-        self.assertIn('reject_grep \'container_name:\' "docker-compose.yml"', validator)
-        self.assertIn('need_file "ops/tests/test_stack_naming_coherence.py"', validator)
-        self.assertIn('need_file "ops/systemd/bdag-status-sampler.service"', validator)
-        self.assertIn('python3 "$root/scripts/validate-stack-defaults.py" "$root"', validator)
-        self.assertIn('need_grep \'BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS=\' ".env.example"', validator)
-        self.assertIn('need_grep \'BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=\' ".env.example"', validator)
-        self.assertIn('need_grep \'POOL_GBT_MIN_INTERVAL_MS=\' ".env.example"', validator)
-        self.assertIn('need_grep \'pool_template_rpc_pressure\' "scripts/mining-appliance-preflight.py"', validator)
-        self.assertIn('need_grep \'ensure_stack_default_env_value BDAG_POOL_CONTAINER\' "ops/install-dashboard.sh"', validator)
-
-
 if __name__ == "__main__":
     unittest.main()
