@@ -69,7 +69,7 @@ jobs:
       - name: Checkout dashboard repo
         uses: actions/checkout@v4
         with:
-          repository: BlockdagEngineering/dashboard2
+          repository: BlockdagEngineering/redis-dash
           token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
           path: src/dashboard
           ref: main
@@ -100,7 +100,7 @@ jobs:
           }
           verify_repo blockdag-corechain src/blockdag-node/cmd/bdag/bdag.go
           verify_repo pool src/pool/cmd/pool/main.go
-          verify_repo dashboard2 src/dashboard/main.go
+          verify_repo redis-dash src/dashboard/main.go
           collector_entry="$(find src/collector -type f -name collector.py -not -path '*/.git/*' -print -quit)"
           if [[ -z "${collector_entry}" ]]; then
             echo "::error::Upstream checkout 'collector' missing collector.py"

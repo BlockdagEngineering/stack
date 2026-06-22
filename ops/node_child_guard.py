@@ -142,8 +142,8 @@ def read_env_values(path: Path) -> dict[str, str]:
 
 def node_rpc_credentials() -> tuple[str, str]:
     env_values = read_env_values(POOL_ENV_FILE)
-    user = os.environ.get("NODE_RPC_USER") or env_values.get("NODE_RPC_USER") or "test"
-    password = os.environ.get("NODE_RPC_PASS") or env_values.get("NODE_RPC_PASS") or "test"
+    user = os.environ.get("NODE_RPC_USER") or env_values.get("NODE_RPC_USER") or ""
+    password = os.environ.get("NODE_RPC_PASS") or env_values.get("NODE_RPC_PASS") or ""
     return user, password
 
 

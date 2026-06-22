@@ -21,10 +21,10 @@
     "document_type": "release_candidate_dashboard_source",
     "created_at": "2026-05-24T22:50:22+02:00",
     "stack_repo": "BlockdagEngineering/pool-stack-docker",
-    "dashboard_repo": "BlockdagEngineering/dashboard2",
+    "dashboard_repo": "BlockdagEngineering/redis-dash",
     "dashboard_ref": "main",
     "captured_from": "/home/jeremy/blockdag-asic-pool/ops",
-    "dashboard_source_policy": "Use only BlockdagEngineering/dashboard2 main for release-candidate dashboard builds.",
+    "dashboard_source_policy": "Use only BlockdagEngineering/redis-dash main for redis dashboard release builds.",
     "safety_note": "Exact live dashboard source was published to the dashboard repo. The stack RC must not import a dashboard/support bundle in a way that weakens restart hardening, status contract, chain-RPC height source, MAC-only ASIC identity, or one-node catch-up gates."
   }
   </script>
@@ -35,7 +35,7 @@
     <p class="lede">The release candidate uses one dashboard repository: the live Python operations dashboard captured from the mining host.</p>
     <section class="card">
       <h2>Canonical Repository</h2>
-      <p><a href="https://github.com/BlockdagEngineering/dashboard2">BlockdagEngineering/dashboard2</a> branch <code>main</code> is the dashboard source for stack release builds.</p>
+      <p><a href="https://github.com/BlockdagEngineering/redis-dash">BlockdagEngineering/redis-dash</a> branch <code>main</code> is the dashboard source for redis dashboard stack release builds.</p>
     </section>
     <section class="card">
       <h2>Stack Packaging Rule</h2>

@@ -499,8 +499,10 @@ def run_checks(args: argparse.Namespace) -> list[CheckResult]:
     env = os.environ.copy()
     env.update(load_env_file(Path(args.env_file)))
     args.rpc_url = args.rpc_url or env.get("BDAG_RPC_URL") or DEFAULT_RPC_URL
-    args.rpc_user = args.rpc_user if args.rpc_user is not None else env.get("NODE_RPC_USER", "test")
-    args.rpc_pass = args.rpc_pass if args.rpc_pass is not None else env.get("NODE_RPC_PASS", "test")
+    args.rpc_user = args.rpc_user if args.rpc_user is not None else env.get("NODE_RPC_USER", "")
+    args.rpc_pass = args.rpc_pass if args.rpc_pass is not None else env.get("NODE_RPC_PASS", "")
+    if not args.rpc_user or not args.rpc_pass:
+        raise CheckError("NODE_RPC_USER and NODE_RPC_PASS must be set for mainnet RPC auth")
     args.mining_address = args.mining_address or env.get("MINING_POOL_ADDRESS", "")
     args.schema_file = args.schema_file or str(DEFAULT_SCHEMA_FILE)
 

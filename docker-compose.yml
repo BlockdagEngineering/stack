@@ -99,7 +99,7 @@ services:
       TMPDIR: /tmp
       TMP: /tmp
       TEMP: /tmp
-      BDAG_NETWORK: ${BDAG_NETWORK:-}
+      BDAG_NETWORK: ${BDAG_NETWORK:-mainnet}
       BDAG_EPHEMERAL_DIR: /run/bdag-ephemeral
       BDAG_SNAPSHOT_URL: ${BDAG_SNAPSHOT_URL:-}
       BDAG_NODE_ARCHIVAL: ${BDAG_NODE_ARCHIVAL:-0}
@@ -163,13 +163,14 @@ services:
       PG_URL:       postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@${POOL_DB_HOST:-127.0.0.1}:${POOL_DB_PORT:-55432}/${POSTGRES_DB:-bdagpool}?sslmode=disable
       # Stratum listen (inside container) — from root .env
       POOL_BIND_ADDR:     ${POOL_BIND_ADDR:-0.0.0.0:3334}
-      NODE_RPC_USER:      ${NODE_RPC_USER:-test}
-      NODE_RPC_PASS:      ${NODE_RPC_PASS:-test}
+      NODE_RPC_USER:      ${NODE_RPC_USER:?set NODE_RPC_USER in .env}
+      NODE_RPC_PASS:      ${NODE_RPC_PASS:?set NODE_RPC_PASS in .env}
       PPLNS_N_WORK:       ${PPLNS_N_WORK:-1000}
       POOL_FEE_PERCENTAGE: ${POOL_FEE_PERCENTAGE:-1.0}
       POOL_BLOCK_MATURITY: ${POOL_BLOCK_MATURITY:-10}
       POOL_PAYOUT_MATURITY: ${POOL_PAYOUT_MATURITY:-4096}
       POOL_RPC_ROUTER_NODE_HEALTH_ENABLED: ${POOL_RPC_ROUTER_NODE_HEALTH_ENABLED:-true}
+      POOL_RPC_ROUTER_EVM_HEAD_GUARD_ENABLED: ${POOL_RPC_ROUTER_EVM_HEAD_GUARD_ENABLED:-false}
       POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS: ${POOL_RPC_ROUTER_NODE_HEALTH_PROBE_SECONDS:-15}
       POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS: ${POOL_RPC_ROUTER_NODE_HEALTH_MAX_AGE_SECONDS:-30}
       POOL_RPC_ROUTER_NODE_HEALTH_FRESH_TEMPLATE_GRACE_SECONDS: ${POOL_RPC_ROUTER_NODE_HEALTH_FRESH_TEMPLATE_GRACE_SECONDS:-15}
@@ -267,8 +268,8 @@ services:
       BDAG_GLOBAL_CHAIN_RPC_URLS: node=http://host.docker.internal:38131
       BDAG_RPC_URL: http://host.docker.internal:38131
       # Must match node.conf rpcuser / rpcpass (same as pool service).
-      NODE_RPC_USER: ${NODE_RPC_USER:-test}
-      NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
+      NODE_RPC_USER: ${NODE_RPC_USER:?set NODE_RPC_USER in .env}
+      NODE_RPC_PASS: ${NODE_RPC_PASS:?set NODE_RPC_PASS in .env}
       BDAG_COLLECTOR_BIND: 0.0.0.0
       BDAG_COLLECTOR_PORT: 9280
       BDAG_COLLECTOR_NODE_LOG_CONTAINER: ${BDAG_COLLECTOR_NODE_LOG_CONTAINER:-node}
@@ -344,8 +345,8 @@ services:
       BDAG_POOL_DB_CONTAINER: postgres
       BDAG_POOL_HOST: ${BDAG_POOL_HOST:-}
       BDAG_POOL_HOST_NETWORK_METRICS_HOST: ${BDAG_POOL_HOST_NETWORK_METRICS_HOST:-host.docker.internal}
-      NODE_RPC_USER: ${NODE_RPC_USER:-test}
-      NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
+      NODE_RPC_USER: ${NODE_RPC_USER:?set NODE_RPC_USER in .env}
+      NODE_RPC_PASS: ${NODE_RPC_PASS:?set NODE_RPC_PASS in .env}
       BDAG_WATCHDOG_INTERVAL: ${BDAG_WATCHDOG_INTERVAL:-60}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -397,8 +398,8 @@ services:
       BDAG_POOL_CONTAINERS: pool
       BDAG_POOL_DB_CONTAINER: postgres
       BDAG_POOL_HOST_NETWORK_METRICS_HOST: ${BDAG_POOL_HOST_NETWORK_METRICS_HOST:-host.docker.internal}
-      NODE_RPC_USER: ${NODE_RPC_USER:-test}
-      NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
+      NODE_RPC_USER: ${NODE_RPC_USER:?set NODE_RPC_USER in .env}
+      NODE_RPC_PASS: ${NODE_RPC_PASS:?set NODE_RPC_PASS in .env}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${BDAG_STACK_HOST_ROOT:-${PWD}}:${BDAG_STACK_HOST_ROOT:-${PWD}}
@@ -505,8 +506,8 @@ services:
       BDAG_POOL_URL: ${BDAG_POOL_URL:-}
       MINING_POOL_ADDRESS: ${MINING_POOL_ADDRESS:?set MINING_POOL_ADDRESS to a non-zero payout address}
       POOL_COINBASE_ADDRESS: ${POOL_COINBASE_ADDRESS:-}
-      NODE_RPC_USER: ${NODE_RPC_USER:-test}
-      NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
+      NODE_RPC_USER: ${NODE_RPC_USER:?set NODE_RPC_USER in .env}
+      NODE_RPC_PASS: ${NODE_RPC_PASS:?set NODE_RPC_PASS in .env}
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8088/ >/dev/null"]
       interval: 10s

@@ -358,8 +358,8 @@ def evm_rpc(url: str, method: str, params: list[Any] | None = None) -> Any:
 def collect_anchor(env: dict[str, str], require_state_root: bool = True) -> dict[str, Any]:
     url = env.get("BDAG_RAWDATADIR_ANCHOR_RPC_URL") or env.get("NODE_RPC_URL") or "http://127.0.0.1:38131"
     evm_url = env.get("BDAG_RAWDATADIR_EVM_RPC_URL") or env.get("LOCAL_EVM_RPC_URL") or "http://127.0.0.1:18545"
-    user = env.get("NODE_RPC_USER", "test")
-    password = env.get("NODE_RPC_PASS", "test")
+    user = env.get("NODE_RPC_USER", "")
+    password = env.get("NODE_RPC_PASS", "")
     anchor: dict[str, Any] = {
         "chain_id": quantity(env.get("BDAG_RAWDATADIR_CHAIN_ID") or 1404),
         "network": mainnet_network(env),

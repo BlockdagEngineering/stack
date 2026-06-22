@@ -16,10 +16,11 @@ Multi-context repo with shared context in sibling `../codex-memory`; read that m
 
 ## Release Candidate Dashboard Source
 
-
-The only dashboard repository for this release candidate is
-`BlockdagEngineering/dashboard2`. Release builds must always use its `main`
-branch.
+The dashboard repository for the redis dashboard release line is
+`BlockdagEngineering/redis-dash`. Release builds for this line must build from
+the checked-out `redis-dash` source context, not an older `dashboard2` checkout
+or a cached Docker image. During upgrades, verify the image provenance and the
+running dashboard layout before reporting the dashboard redeployed.
 
 Do not reintroduce the retired standalone read-only dashboard, command-center
 prototype, or Grafana/Prometheus/Loki observability dashboard as RC dashboard
@@ -62,10 +63,18 @@ Do not add `--allowminingwhennearlysynced` or `--allowsubmitwhennotsynced`.
 Those bypass flags can make template health report ready while the node has
 stale or absent P2P mining freshness; future runtime repair must remove them
 and keep the pool stopped until direct readiness passes.
-For constrained USB/router appliances also keep `--maxinbound=1`, because
-inbound catch-up peers and artifact requests have caused rewind/sync churn that
-converted valid ASIC work into `node-syncing`, `tip-overdue`, and
-`invalidated_job` losses.
+For constrained USB/router appliances, inbound peer limits are a tuning knob,
+not a safety proof. Do not force `--maxinbound=1` on a live mining pool if it
+prevents the node from maintaining at least the required fresh consensus peer
+floor. Prefer enough inbound capacity to hold stable fresh peers, then bound IO
+and background work separately.
+
+Redis dashboard upgrades must follow `docs/redis-dash-fast-upgrade-runbook.md`.
+That runbook is the current fast path for destructive rebuild/redeploy work:
+build from source before freezing mining, preserve chain/Postgres/dashboard
+Redis data, never fall back to `test:test` RPC auth, validate native
+`getTemplateHealth` and dashboard live data before exposing the pool, and prune
+old images only after explicit human verification.
 
 Keep pool `getBlockTemplate` pressure below the node RPC client ceiling. Do not
 override `POOL_GBT_MIN_INTERVAL_MS` below `1000`, do not override

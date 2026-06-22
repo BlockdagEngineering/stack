@@ -569,7 +569,9 @@ configure_env() {
   postgres_password="$(random_secret)"
   postgres_user="$(grep -E '^POSTGRES_USER=' .env | cut -d= -f2-)"
   postgres_db="$(grep -E '^POSTGRES_DB=' .env | cut -d= -f2-)"
-  postgres_user="${postgres_user:-test}"
+  set_env_value .env BDAG_NETWORK "mainnet"
+  set_env_value .env NODE_RPC_USER "bdag_mainnet_rpc"
+  postgres_user="${postgres_user:-bdag_pool}"
   postgres_db="${postgres_db:-pool}"
 
   set_env_value .env MINING_ADDRESS "$mining_address"

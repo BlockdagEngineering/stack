@@ -171,6 +171,102 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn("curl redis-server redis-tools", dockerfile_dev)
         self.assertIn("COPY docker/dashboard-redis.conf /etc/redis/redis.conf", dockerfile_dev)
 
+    def test_redis_dash_release_source_is_not_dashboard2(self) -> None:
+        workflow = (ROOT_DIR / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8")
+        validator = (ROOT_DIR / "scripts" / "validate-release-build.sh").read_text(encoding="utf-8")
+        receiver = (ROOT_DIR / "scripts" / "fastartifact-local-receiver.sh").read_text(encoding="utf-8")
+        agents = (ROOT_DIR / "AGENTS.md").read_text(encoding="utf-8")
+
+        self.assertIn("BlockdagEngineering/redis-dash", workflow)
+        self.assertIn("verify_repo redis-dash src/dashboard/main.go", workflow)
+        self.assertIn("BlockdagEngineering/redis-dash", validator)
+        self.assertIn('DASHBOARD_SRC_CONTEXT="${BDAG_FASTARTIFACT_DASHBOARD_CONTEXT:-$ROOT/../redis-dash}"', receiver)
+        self.assertIn("BlockdagEngineering/redis-dash", agents)
+        self.assertNotIn("BlockdagEngineering/dashboard2", workflow)
+        self.assertNotIn("../dashboard2", receiver)
+
+    def test_mainnet_defaults_do_not_fallback_to_test_rpc_auth(self) -> None:
+        compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+        env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
+        stack_defaults = (ROOT_DIR / "ops" / "config" / "stack-defaults.env").read_text(encoding="utf-8")
+        portable_env = (ROOT_DIR / "ops" / "portable.env.example").read_text(encoding="utf-8")
+
+        source_files = [
+            ".env.example",
+            "docker-compose.yml",
+            "ops/config/stack-defaults.env",
+            "ops/portable.env.example",
+            "ops/pool_ops.py",
+            "ops/node_child_guard.py",
+            "ops/build-rawdatadir-artifact.sh",
+            "ops/publish-rawdatadir-artifact.sh",
+            "ops/seal_rawdatadir_sidecar_content.py",
+            "scripts/fastartifact-local-receiver.sh",
+            "scripts/release-readiness-check.py",
+        ]
+        forbidden = [
+            "${NODE_RPC_USER:-test}",
+            "${NODE_RPC_PASS:-test}",
+            'env.get("NODE_RPC_USER", "test")',
+            'env.get("NODE_RPC_PASS", "test")',
+            'os.environ.get("NODE_RPC_USER", "test")',
+            'os.environ.get("NODE_RPC_PASS", "test")',
+            "NODE_RPC_USER=test",
+            "NODE_RPC_PASS=test",
+            "BDAG_POOL_DB_USER=test",
+            "BDAG_POOL_DB_NAME=pool",
+            "POSTGRES_USER=test",
+        ]
+        for relative in source_files:
+            text = (ROOT_DIR / relative).read_text(encoding="utf-8")
+            for snippet in forbidden:
+                self.assertNotIn(snippet, text, f"{relative} must not contain {snippet}")
+
+        self.assertIn("BDAG_NETWORK=mainnet", env_example)
+        self.assertIn("NODE_RPC_USER=bdag_mainnet_rpc", env_example)
+        self.assertIn("NODE_RPC_PASS=change-me-mainnet-rpc-password", env_example)
+        self.assertIn("BDAG_NETWORK: ${BDAG_NETWORK:-mainnet}", compose)
+        self.assertIn("NODE_RPC_USER:      ${NODE_RPC_USER:?set NODE_RPC_USER in .env}", compose)
+        self.assertIn("NODE_RPC_PASS:      ${NODE_RPC_PASS:?set NODE_RPC_PASS in .env}", compose)
+        self.assertIn("BDAG_POOL_DB_USER=bdag_pool", stack_defaults)
+        self.assertIn("BDAG_POOL_DB_NAME=bdagpool", stack_defaults)
+        self.assertIn("BDAG_POOL_DB_USER=bdag_pool", portable_env)
+        self.assertIn("BDAG_POOL_DB_NAME=bdagpool", portable_env)
+        self.assertIn("POOL_RPC_ROUTER_EVM_HEAD_GUARD_ENABLED=false", env_example)
+        self.assertIn("POOL_RPC_ROUTER_EVM_HEAD_GUARD_ENABLED=false", stack_defaults)
+        self.assertIn("POOL_RPC_ROUTER_EVM_HEAD_GUARD_ENABLED=false", portable_env)
+        self.assertIn(
+            "POOL_RPC_ROUTER_EVM_HEAD_GUARD_ENABLED: ${POOL_RPC_ROUTER_EVM_HEAD_GUARD_ENABLED:-false}",
+            compose,
+        )
+
+    def test_redis_dash_fast_upgrade_runbook_captures_release_gates(self) -> None:
+        runbook = (ROOT_DIR / "docs" / "redis-dash-fast-upgrade-runbook.md").read_text(encoding="utf-8")
+        checkpoint = (
+            ROOT_DIR
+            / "docs"
+            / "upgrade-checkpoints"
+            / "redis-dash-0-0-1-2026-06-22.md"
+        ).read_text(encoding="utf-8")
+        agent_notes = (ROOT_DIR / "docs" / "agents" / "redis-dash-upgrade.md").read_text(encoding="utf-8")
+
+        combined = "\n".join([runbook, checkpoint, agent_notes])
+        for required in [
+            "getTemplateHealth",
+            "submit_ready=true",
+            "mineable_now=true",
+            "p2p_fresh_consensus_peer_count",
+            "accepted block submissions",
+            "/api/live/global",
+            "stale peer",
+            "stack_node-data",
+            "stack_postgres-data",
+            "stack_dashboard-redis",
+            "test:test",
+            "POOL_RPC_ROUTER_EVM_HEAD_GUARD_ENABLED=false",
+            "redis-dash",
+        ]:
+            self.assertIn(required, combined)
 
     def test_host_dashboard_env_uses_host_reachable_chain_rpc(self) -> None:
         installer = (ROOT_DIR / "ops" / "install-dashboard.sh").read_text(encoding="utf-8")
