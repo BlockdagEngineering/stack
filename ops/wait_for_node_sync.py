@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Wait for the primary node to finish syncing and print ETA updates."""
+"""Wait for the primary node to finish syncing and print gap updates."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
+import select
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -13,7 +16,6 @@ from typing import Any
 
 
 OPS_DIR = Path(__file__).resolve().parent
-ROOT_DIR = OPS_DIR.parent
 if str(OPS_DIR) not in sys.path:
     sys.path.insert(0, str(OPS_DIR))
 
@@ -22,6 +24,18 @@ import pool_ops  # noqa: E402
 
 STATE_FILE = Path(os.environ.get("BDAG_SYNC_WAIT_STATE_FILE") or (OPS_DIR / "runtime" / "release-sync-wait-state.json"))
 DEFAULT_INTERVAL_SECONDS = float(os.environ.get("BDAG_SYNC_WAIT_INTERVAL_SECONDS", "10"))
+LOG_CONTAINER = os.environ.get("BDAG_SYNC_WAIT_LOG_CONTAINER", "node")
+LOG_LINES = int(os.environ.get("BDAG_SYNC_WAIT_LOG_LINES", "2000"))
+SYNC_GRAPH_RE = re.compile(r"Syncing graph state.*?cur=\(([^)]*)\).*?target=\(([^)]*)\)")
+STARTUP_STATE_RE = re.compile(
+    r"Start to find cur block state.*?state\.order=(\d+).*?evm\.Number=(\d+).*?cur\.number=(\d+)"
+)
+PROCESSED_BLOCKS_RE = re.compile(r"Processed\s+([0-9,]+)\s+blocks\s+in\s+the\s+last\s+([0-9.]+)s")
+SYNC_ENDED_RE = re.compile(r"The sync of graph state has ended")
+NODE_LOG_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\|(\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?")
+SYNC_HINT_RE = re.compile(
+    r"(Syncing graph state ETA|Syncing graph state|Start to find cur block state|Imported new chain segment|The sync of graph state has ended)"
+)
 
 
 def safe_int(value: object) -> int | None:
@@ -48,17 +62,15 @@ def fmt_duration(seconds: float | int | None) -> str:
     total = max(0, int(round(float(seconds))))
     hours, remainder = divmod(total, 3600)
     minutes, secs = divmod(remainder, 60)
-    parts: list[str] = []
     if hours:
-        parts.append(f"{hours}h")
-    if minutes or hours:
-        parts.append(f"{minutes}m")
-    else:
-        parts.append(f"{secs}s")
-        return "".join(parts)
-    if secs and not hours:
-        parts.append(f"{secs}s")
-    return "".join(parts)
+        if secs:
+            return f"{hours}h{minutes}m{secs}s"
+        return f"{hours}h{minutes}m"
+    if minutes:
+        if secs:
+            return f"{minutes}m{secs}s"
+        return f"{minutes}m"
+    return f"{secs}s"
 
 
 def load_state() -> dict[str, Any]:
@@ -76,16 +88,121 @@ def save_state(payload: dict[str, Any]) -> None:
     os.replace(tmp, STATE_FILE)
 
 
-def choose_progress(payload: dict[str, Any]) -> dict[str, Any]:
-    sync = payload.get("sync_progress")
-    if not isinstance(sync, dict):
-        return {}
-    nodes = sync.get("nodes")
-    if isinstance(nodes, dict) and nodes:
-        for progress in nodes.values():
-            if isinstance(progress, dict):
-                return progress
-    return sync
+def parse_tuple(raw: str) -> tuple[int, ...]:
+    values: list[int] = []
+    for item in raw.split(","):
+        value = safe_int(item.strip())
+        if value is None:
+            return ()
+        values.append(value)
+    return tuple(values)
+
+
+def node_log_epoch(line: str | None) -> float | None:
+    if not line:
+        return None
+    match = NODE_LOG_TS_RE.match(line)
+    if not match:
+        return None
+    date_part, time_part, micros_part = match.groups()
+    try:
+        tm = time.strptime(f"{date_part} {time_part}", "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    seconds = time.mktime(tm)
+    micros = int((micros_part or "0").ljust(6, "0")[:6])
+    return seconds + micros / 1_000_000
+
+
+def log_rate_from_text(text: str) -> float | None:
+    matches = list(PROCESSED_BLOCKS_RE.finditer(text))
+    if not matches:
+        return None
+    blocks = safe_float(matches[-1].group(1).replace(",", ""))
+    seconds = safe_float(matches[-1].group(2))
+    if blocks is None or seconds is None or seconds <= 0:
+        return None
+    return blocks / seconds
+
+
+def log_snapshot() -> dict[str, Any]:
+    try:
+        text = pool_ops.docker_logs(LOG_CONTAINER, lines=LOG_LINES)
+    except Exception as exc:  # noqa: BLE001 - installers need a single status line, not a traceback.
+        return {
+            "source": "logs",
+            "status": "unknown",
+            "error": str(exc),
+            "current_block": None,
+            "highest_block": None,
+            "remaining_blocks": None,
+            "processed_rate_blocks_per_second": None,
+            "sync_ended": False,
+        }
+
+    lines = [line for line in text.splitlines() if line.strip()]
+    parsed = pool_ops.parse_node_log(text)
+    sync_line = ""
+    for line in reversed(lines):
+        if SYNC_GRAPH_RE.search(line) or STARTUP_STATE_RE.search(line):
+            sync_line = line
+            break
+
+    snapshot: dict[str, Any] = {
+        "source": "logs",
+        "status": "unknown",
+        "current_block": None,
+        "highest_block": None,
+        "remaining_blocks": None,
+        "processed_rate_blocks_per_second": log_rate_from_text(text),
+        "sync_ended": bool(SYNC_ENDED_RE.search(text)),
+        "last_log_update_seconds": None,
+    }
+    if sync_line:
+        match = SYNC_GRAPH_RE.search(sync_line)
+        if match:
+            current_tuple = parse_tuple(match.group(1))
+            target_tuple = parse_tuple(match.group(2))
+            current = current_tuple[0] if current_tuple else None
+            highest = target_tuple[0] if target_tuple else None
+            remaining = None
+            if current is not None and highest is not None:
+                remaining = max(0, highest - current)
+            snapshot.update(
+                {
+                    "status": "synced" if remaining == 0 else "syncing",
+                    "current_block": current,
+                    "highest_block": highest,
+                    "remaining_blocks": remaining,
+                    "sync_line": sync_line,
+                }
+            )
+        else:
+            match = STARTUP_STATE_RE.search(sync_line)
+            if match:
+                highest = safe_int(match.group(1))
+                evm_number = safe_int(match.group(2))
+                current = safe_int(match.group(3))
+                remaining = None
+                if current is not None and highest is not None:
+                    remaining = max(0, highest - current)
+                snapshot.update(
+                    {
+                        "status": "synced" if remaining == 0 else "syncing",
+                        "current_block": current,
+                        "highest_block": highest,
+                        "remaining_blocks": remaining,
+                        "sync_line": sync_line,
+                        "evm_number": evm_number,
+                    }
+                )
+        snapshot["last_log_update_seconds"] = max(
+            0,
+            int(round(time.time() - node_log_epoch(sync_line)))
+        ) if node_log_epoch(sync_line) is not None else None
+    elif safe_int(parsed.get("last_import_age_seconds")) is not None:
+        snapshot["last_log_update_seconds"] = safe_int(parsed.get("last_import_age_seconds"))
+    return snapshot
 
 
 def describe_progress(progress: dict[str, Any], previous: dict[str, Any], now: float) -> tuple[str, dict[str, Any]]:
@@ -95,32 +212,106 @@ def describe_progress(progress: dict[str, Any], previous: dict[str, Any], now: f
     remaining = safe_int(progress.get("remaining_blocks"))
     if remaining is None and current is not None and highest is not None and highest >= current:
         remaining = highest - current
-    percent = safe_float(progress.get("percent"))
-    if remaining is None:
-        return f"waiting for sync status ({status})", {"status": status}
-    if status == "synced" or remaining <= 0:
-        return "sync complete", {"status": "synced", "remaining_blocks": 0, "percent": 100.0}
+    rate = safe_float(progress.get("processed_rate_blocks_per_second"))
+    log_age = safe_int(progress.get("last_log_update_seconds"))
+    if rate is None:
+        prev_remaining = safe_int(previous.get("remaining_blocks"))
+        prev_epoch = safe_float(previous.get("epoch"))
+        if prev_remaining is not None and prev_epoch is not None and remaining is not None:
+            elapsed = now - prev_epoch
+            if elapsed >= 5 and prev_remaining > remaining:
+                rate = (prev_remaining - remaining) / elapsed
 
-    prev_remaining = safe_int(previous.get("remaining_blocks"))
-    prev_epoch = safe_float(previous.get("epoch"))
-    rate = None
-    if prev_remaining is not None and prev_epoch is not None:
-        elapsed = now - prev_epoch
-        if elapsed >= 5 and prev_remaining > remaining:
-            rate = (prev_remaining - remaining) / elapsed
+    if remaining is None:
+        if status == "unknown":
+            return "waiting for node logs", {"status": status, "epoch": now}
+        return f"waiting for sync status ({status})", {"status": status, "epoch": now}
+    if status == "synced" or remaining <= 0:
+        return "sync complete", {"status": "synced", "remaining_blocks": 0, "epoch": now}
+
     eta_seconds = remaining / rate if rate and rate > 0 else None
     eta_text = fmt_duration(eta_seconds)
-    percent_text = f"{percent:.2f}%" if percent is not None else "unknown%"
-    message = f"syncing: {remaining:,} blocks remaining, ETA {eta_text}, {percent_text} complete"
+    stale_text = ""
+    prev_remaining = safe_int(previous.get("remaining_blocks"))
+    prev_current = safe_int(previous.get("current_block"))
+    prev_highest = safe_int(previous.get("highest_block"))
+    if (
+        log_age is not None
+        and log_age >= max(1.0, float(previous.get("poll_interval") or DEFAULT_INTERVAL_SECONDS))
+        and prev_remaining == remaining
+        and prev_current == current
+        and prev_highest == highest
+    ):
+        stale_text = f", unchanged for {fmt_duration(log_age)}"
+    if current is not None and highest is not None:
+        message = f"syncing: gap {remaining:,} blocks ({current:,} -> {highest:,}), ETA {eta_text}{stale_text}"
+    else:
+        message = f"syncing: gap {remaining:,} blocks, ETA {eta_text}{stale_text}"
     state = {
         "status": status,
         "remaining_blocks": remaining,
         "current_block": current,
         "highest_block": highest,
-        "percent": percent,
         "epoch": now,
+        "poll_interval": previous.get("poll_interval") or DEFAULT_INTERVAL_SECONDS,
     }
     return message, state
+
+
+def stream_node_logs(timeout: float = 0.0) -> int:
+    cmd = ["docker", "logs", "-f", "--tail", str(LOG_LINES), LOG_CONTAINER]
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except OSError as exc:
+        print(f"waiting for node logs failed: {exc}", flush=True)
+        return 1
+
+    assert proc.stdout is not None
+    start = time.time()
+    seen_hint = False
+    try:
+        while True:
+            if timeout and time.time() - start >= timeout:
+                print("node sync wait timed out before completion", flush=True)
+                return 1
+            ready, _, _ = select.select([proc.stdout], [], [], 1.0)
+            if not ready:
+                if proc.poll() is not None:
+                    break
+                continue
+            line = proc.stdout.readline()
+            if not line:
+                if proc.poll() is not None:
+                    break
+                continue
+            line = line.rstrip("\n")
+            if SYNC_HINT_RE.search(line):
+                seen_hint = True
+                print(line, flush=True)
+                if SYNC_ENDED_RE.search(line):
+                    return 0
+                continue
+            if not seen_hint:
+                print("waiting for node logs", flush=True)
+                seen_hint = True
+        if proc.returncode not in (0, None):
+            print("waiting for node logs ended unexpectedly", flush=True)
+            return 1
+        return 0
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -129,39 +320,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=0.0, help="maximum wait time in seconds; 0 waits forever")
     args = parser.parse_args(argv)
 
-    start = time.time()
-    previous: dict[str, Any] = {}
     try:
         STATE_FILE.unlink()
     except OSError:
         pass
-    last_status = ""
-    while True:
-        try:
-            status = pool_ops.collect_sync_progress()
-        except Exception as exc:  # noqa: BLE001 - installers need a single status line, not a traceback.
-            message = f"waiting for node RPC: {exc}"
-            if message != last_status:
-                print(message, flush=True)
-                last_status = message
-            if args.timeout and time.time() - start >= args.timeout:
-                print("node sync wait timed out before RPC became available", flush=True)
-                return 1
-            time.sleep(max(1.0, args.interval))
-            continue
-
-        progress = choose_progress(status)
-        message, state = describe_progress(progress, previous, time.time())
-        if message != last_status:
-            print(message, flush=True)
-            last_status = message
-        previous = state
-        if state.get("status") == "synced":
-            return 0
-        if args.timeout and time.time() - start >= args.timeout:
-            print("node sync wait timed out before completion", flush=True)
-            return 1
-        time.sleep(max(1.0, args.interval))
+    return stream_node_logs(timeout=args.timeout)
 
 
 if __name__ == "__main__":

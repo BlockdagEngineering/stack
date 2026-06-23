@@ -193,6 +193,10 @@ need_grep 'Set-EnvValue .env DOCKER_PLATFORM \$dockerPlatform' "scripts/release/
 need_grep 'python3 ops/wait_for_node_sync.py' "ops/release-install.sh"
 need_grep 'Wait-ForNodeSync' "scripts/release/installers/install-windows.ps1"
 need_grep 'ops\\wait_for_node_sync[.]py' "scripts/release/installers/install-windows.ps1"
+need_grep 'Syncing graph state' "ops/wait_for_node_sync.py"
+need_grep 'docker logs -f --tail' "ops/wait_for_node_sync.py"
+need_grep 'docker_logs\(LOG_CONTAINER, lines=LOG_LINES\)' "ops/wait_for_node_sync.py"
+need_grep 'Syncing graph state ETA' "p2p/synch/peersync.go"
 
 reject_grep 'amd64 emulation' "scripts/release/installers/install-unix-common.sh"
 reject_grep 'amd64 emulation' "scripts/release/installers/install-windows.ps1"
