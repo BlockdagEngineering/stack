@@ -122,22 +122,11 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn('cp "${collector_entry}" "${ROOT}/collector/collector.py"', workflow)
         self.assertIn("Release zip is missing collector.py", workflow)
         self.assertIn("collector_src: ${COLLECTOR_SRC_CONTEXT:-./collector}", compose)
-        self.assertRegex(compose, r"watchdog:\n(?:.*\n){0,12}\s+target: watchdog")
-        self.assertRegex(compose, r"sentinel:\n(?:.*\n){0,12}\s+target: sentinel")
-
-        def service_block(name: str) -> str:
-            tail = compose.split(f"  {name}:", 1)[1]
-            block_lines = []
-            for line in tail.splitlines()[1:]:
-                if line.startswith("  ") and not line.startswith("    ") and line.rstrip().endswith(":"):
-                    break
-                block_lines.append(line)
-            return "\n".join(block_lines)
-
-        watchdog_block = service_block("watchdog")
-        sentinel_block = service_block("sentinel")
-        self.assertNotIn("collector_src", watchdog_block)
-        self.assertNotIn("collector_src", sentinel_block)
+        self.assertNotIn("  watchdog:", compose)
+        self.assertNotIn("  sentinel:", compose)
+        self.assertNotIn("  miner-route:", compose)
+        self.assertNotIn("BDAG_MINER_CONTROL_ENABLED", compose)
+        self.assertNotIn("BDAG_MINER_ROUTE_", compose)
         self.assertIn("FROM docker:27-cli AS ops-runtime", dockerfile)
         self.assertIn("FROM ops-runtime AS collector", dockerfile)
         self.assertIn("FROM ops-runtime AS watchdog", dockerfile)
@@ -245,6 +234,9 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn('need_grep \'Syncing graph state\' "ops/wait_for_node_sync.py"', validator)
         self.assertIn('need_grep \'"docker", "logs", "-f", "--tail"\' "ops/wait_for_node_sync.py"', validator)
         self.assertIn('need_grep \'docker_logs\\(LOG_CONTAINER, lines=LOG_LINES\\)\' "ops/wait_for_node_sync.py"', validator)
+        self.assertIn('need_grep \'eth_syncing_details\' "ops/wait_for_node_sync.py"', validator)
+        self.assertIn('need_grep \'BDAG_SYNC_WAIT_REQUIRE_ETH_SYNC\' "ops/wait_for_node_sync.py"', validator)
+        self.assertIn('need_grep \'wait_for_eth_sync\' "ops/wait_for_node_sync.py"', validator)
         self.assertIn('need_grep \'Reusing POSTGRES_PASSWORD from existing [.][e]nv\' "ops/release-install.sh"', validator)
         self.assertIn('need_grep \'Reusing POSTGRES_PASSWORD from existing [.][e]nv\' "scripts/release/installers/install-unix-common.sh"', validator)
         self.assertIn('need_grep \'Reusing POSTGRES_PASSWORD from existing [.][e]nv\' "scripts/release/installers/install-windows.ps1"', validator)
@@ -255,6 +247,12 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn('reject_grep \'BDAG_CHAIN_DB_ARCHIVE_SHA256\' "ops/release-install.sh"', validator)
         self.assertIn('need_grep \'NODE_RPC_URLS: .*http://node:38131\' "docker-compose.yml"', validator)
         self.assertIn('need_grep \'^BDAG_STACK_SERVICES=postgres,node,pool$\' ".env.example"', validator)
+        self.assertIn('reject_grep \'^  watchdog:\' "docker-compose.yml"', validator)
+        self.assertIn('reject_grep \'^  sentinel:\' "docker-compose.yml"', validator)
+        self.assertIn('reject_grep \'^  miner-route:\' "docker-compose.yml"', validator)
+        self.assertIn('reject_grep \'BDAG_MINER_CONTROL_ENABLED\' "docker-compose.yml"', validator)
+        self.assertIn('reject_grep \'BDAG_MINER_ROUTE_\' ".env.example"', validator)
+        self.assertIn('reject_grep \'BDAG_MINER_ROUTE_\' "docker-compose.yml"', validator)
 
     def test_release_validator_keeps_release_packaging_source_only(self) -> None:
         validator = (ROOT_DIR / "scripts" / "validate-release-build.sh").read_text(encoding="utf-8")

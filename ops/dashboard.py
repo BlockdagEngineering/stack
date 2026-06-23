@@ -1863,8 +1863,6 @@ HTML = r"""<!doctype html>
   </main>
   <script>
     let busy = false;
-    let miners = [];
-    let minerResults = {};
     let minerDefaultsLoaded = false;
     let earningsLoaded = false;
     let lastEarningsData = null;
@@ -2124,7 +2122,6 @@ HTML = r"""<!doctype html>
       renderSyncProgress(data.sync_progress || {}, data);
       renderNodeCards(nodeNames, data.nodes || {}, data.sync_progress || {}, data);
       text("poolEndpoint", data.pool_endpoint || `127.0.0.1:${data.pool_port || "3334"}`);
-      hydrateMinerDefaults(data);
       const tbody = document.getElementById("containers");
       tbody.innerHTML = "";
       const serviceOrder = data.stack_services || defaultServiceOrder;
@@ -2175,7 +2172,6 @@ HTML = r"""<!doctype html>
       );
       text("poolLog", (data.pool.tail || []).join("\n"));
       text("actionLog", data.latest_action ? JSON.stringify(data.latest_action, null, 2) : "No action has run yet.");
-      renderManagedMiners(data.miner_health || {});
     }
     function syncProgressText(progress) {
       const percentValue = Number(progress.percent);
@@ -2461,200 +2457,6 @@ HTML = r"""<!doctype html>
           <div class="subtle">${escapeHtml(nodeSummaryText(node))}</div>
           <pre>${escapeHtml((node.tail || []).join("\\n"))}</pre>`;
         container.appendChild(div);
-      }
-    }
-    function hydrateMinerDefaults(data) {
-      if (minerDefaultsLoaded) return;
-      const scanTarget = document.getElementById("minerScanTarget");
-      const poolUrlInput = document.getElementById("minerPoolUrl");
-      const workerInput = document.getElementById("minerWorkerUser");
-      if (!scanTarget || !poolUrlInput || !workerInput) {
-        minerDefaultsLoaded = true;
-        return;
-      }
-      const endpoint = data.pool_endpoint || `127.0.0.1:${data.pool_port || "3334"}`;
-      const firstIp = (data.local_ips || [])[0] || "192.168.1.1";
-      const parts = firstIp.split(".");
-      if (!scanTarget.value && parts.length === 4) {
-        scanTarget.value = `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
-      }
-      if (!poolUrlInput.value) poolUrlInput.value = `stratum+tcp://${endpoint}`;
-      if (!workerInput.value && data.mining_address) workerInput.value = data.mining_address;
-      minerDefaultsLoaded = true;
-    }
-    function renderMiners() {
-      const tbody = document.getElementById("minersTable");
-      tbody.innerHTML = "";
-      if (!miners.length) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `<td colspan="7" class="subtle">No miners discovered yet.</td>`;
-        tbody.appendChild(tr);
-        return;
-      }
-      for (const miner of miners) {
-        const result = minerResults[miner.ip];
-        const pool = miner.current_pool || {};
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td class="checkbox-cell"><input type="checkbox" class="miner-select" value="${escapeHtml(miner.ip)}" checked></td>
-          <td class="nowrap miner-name"><span class="miner-dot"></span>${escapeHtml(minerDisplayLabel(miner))}<br><span class="subtle">${escapeHtml(miner.ip ? `observed ${miner.ip}` : "")}</span></td>
-          <td>${escapeHtml(miner.model || miner.hardware || "unknown")}</td>
-          <td>${escapeHtml(miner.firmware || miner.mcbversion || "")}</td>
-          <td>${escapeHtml(pool.url || "")}<br><span class="subtle">${escapeShortEth(pool.user || "")}</span></td>
-          <td>${miner.active ? "yes" : "no"}</td>
-          <td>${result ? escapeHtml(result.status + (result.error ? ": " + result.error : "")) : ""}</td>
-        `;
-        tbody.appendChild(tr);
-      }
-    }
-    function selectedMinerIps() {
-      return Array.from(document.querySelectorAll(".miner-select:checked")).map(input => input.value);
-    }
-    function selectAllMiners(checked) {
-      for (const input of document.querySelectorAll(".miner-select")) input.checked = checked;
-    }
-    function activeMinerLaneRow(miner) {
-      if (!miner) return false;
-      return Boolean(
-        miner.connected
-        || miner.pool_active
-        || miner.configured
-        || miner.managed
-        || miner.expected_work_lane
-        || miner.work_pool_active
-        || (miner.lane_status && miner.lane_status !== "not-tracked")
-      );
-    }
-    function localAsicMinerLaneRow(miner) {
-      if (!activeMinerLaneRow(miner)) return false;
-      return String(miner.device_type || "").toLowerCase() === "asic";
-    }
-    function renderManagedMiners(health) {
-      const tbody = document.getElementById("managedMinersTable");
-      if (!tbody) return;
-      tbody.innerHTML = "";
-      const lane = health.lane_balance || {};
-      const allRows = health.miners || [];
-      const rows = allRows.filter(localAsicMinerLaneRow);
-      const hiddenRows = Math.max(0, allRows.length - rows.length);
-      text("minerHealthSummary", `active-asics=${fmt(rows.length)} hidden-non-asic-or-inactive=${fmt(hiddenRows)} tracked=${fmt(health.tracked_count || 0)} connected=${fmt(health.connected_count || 0)} managed=${fmt(health.managed_count || 0)} ok=${fmt(health.ok_count || 0)} stratum-hidden=${fmt(health.stratum_count || 0)} lanes=${fmt(lane.expected_lane_count || 0)} expected=${escapeHtml(lane.expected_work_percent || "0.00")}% imbalanced=${fmt(lane.imbalanced_count || 0)}`);
-      if (!rows.length) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `<td colspan="14" class="subtle">No active local ASIC lanes are currently present.</td>`;
-        tbody.appendChild(tr);
-        return;
-      }
-      for (const miner of rows) {
-        const cls = miner.status === "ok" || miner.status === "connected" ? "ok" : miner.status === "degraded" ? "warn" : miner.status === "inactive" ? "syncing" : "down";
-        const workers = (miner.workers || []).join(", ") || miner.expected_worker_user || "";
-        const issue = miner.issue || miner.api_error || "";
-        const identity = minerIdentity(miner);
-        const color = minerColor(identity);
-        const name = minerDisplayLabel(miner);
-        const tr = document.createElement("tr");
-        tr.className = "miner-row";
-        tr.style.setProperty("--miner-row-color", transparentColor(color, 0.08));
-        tr.style.setProperty("--miner-color", color);
-        tr.innerHTML = `
-          <td class="nowrap miner-name"><span class="miner-dot"></span>${escapeHtml(name)}</td>
-          <td class="nowrap">${escapeHtml(miner.device_type || "unknown")}</td>
-          <td class="${cls}">${escapeHtml(miner.status)}</td>
-          <td>${miner.configured ? "yes" : "no"}</td>
-          <td>${miner.connected || miner.pool_active ? "yes" : "no"}</td>
-          <td class="nowrap">${escapeShortEth(workers)}</td>
-          <td class="right">${fmt(miner.shares || 0)}</td>
-          <td class="right">${escapeHtml(miner.work_percent || "0.00")}</td>
-          <td class="right">${escapeHtml(miner.expected_work_percent || "0.00")}</td>
-          <td class="nowrap">${escapeHtml(miner.lane_status || "")}</td>
-          <td class="right">${fmt(miner.share_work || 0)}</td>
-          <td class="right">${fmt(miner.blocks_found || 0)}</td>
-          <td>${escapeHtml(miner.last_share_at || "")}</td>
-          <td>${escapeHtml(issue)}</td>
-        `;
-        tbody.appendChild(tr);
-      }
-    }
-    async function scanMinerLan() {
-      if (busy) return;
-      busy = true;
-      for (const btn of document.querySelectorAll("button")) btn.disabled = true;
-      text("minersOutput", "Scanning LAN...");
-      try {
-        const response = await fetch("/api/miners/scan", {
-          method: "POST",
-          headers: {"content-type": "application/json"},
-          body: JSON.stringify({target: document.getElementById("minerScanTarget").value, token: document.getElementById("token").value})
-        });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "scan failed");
-        miners = payload.miners || [];
-        minerResults = {};
-        renderMiners();
-        text("minersOutput", JSON.stringify(payload, null, 2));
-      } catch (error) {
-        text("minersOutput", String(error));
-        alert(String(error));
-      } finally {
-        busy = false;
-        for (const btn of document.querySelectorAll("button")) btn.disabled = false;
-      }
-    }
-    async function configureSelectedMiners() {
-      const ips = selectedMinerIps();
-      if (!ips.length) return alert("Select at least one miner.");
-      const adminPassword = document.getElementById("minerAdminPassword").value;
-      if (!adminPassword) return alert("Enter the miner admin password.");
-      const poolUrl = document.getElementById("minerPoolUrl").value.trim();
-      const workerUser = document.getElementById("minerWorkerUser").value.trim();
-      const poolPassword = document.getElementById("minerPoolPassword").value;
-      if (!poolUrl || !workerUser) return alert("Pool URL and worker/wallet are required.");
-      if (!confirm(`Configure ${ips.length} miner(s) to ${poolUrl}?`)) return;
-
-      busy = true;
-      for (const btn of document.querySelectorAll("button")) btn.disabled = true;
-      text("minersOutput", "Configuring selected miners...");
-      try {
-        const response = await fetch("/api/miners/configure", {
-          method: "POST",
-          headers: {"content-type": "application/json"},
-          body: JSON.stringify({
-            ips,
-            admin_password: adminPassword,
-            pool_url: poolUrl,
-            worker_user: workerUser,
-            pool_password: poolPassword,
-            token: document.getElementById("token").value
-          })
-        });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "configuration failed");
-        minerResults = {};
-        for (const item of payload.results || []) minerResults[item.ip] = item;
-        renderMiners();
-        text("minersOutput", JSON.stringify(payload, null, 2));
-      } catch (error) {
-        text("minersOutput", String(error));
-        alert(String(error));
-      } finally {
-        busy = false;
-        for (const btn of document.querySelectorAll("button")) btn.disabled = false;
-      }
-    }
-    async function saveMinerAuth() {
-      const adminPassword = document.getElementById("minerAdminPassword").value;
-      if (!adminPassword) return alert("Enter the miner admin password first.");
-      if (!confirm("Save this password locally so the watchdog can repair miners without asking again?")) return;
-      try {
-        const response = await fetch("/api/miners/save-auth", {
-          method: "POST",
-          headers: {"content-type": "application/json"},
-          body: JSON.stringify({admin_password: adminPassword, token: document.getElementById("token").value})
-        });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "save failed");
-        alert("Saved for watchdog repairs.");
-      } catch (error) {
-        alert(String(error));
       }
     }
     function currency(value, prefix, places = 2) {

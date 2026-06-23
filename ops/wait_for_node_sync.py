@@ -26,6 +26,11 @@ STATE_FILE = Path(os.environ.get("BDAG_SYNC_WAIT_STATE_FILE") or (OPS_DIR / "run
 DEFAULT_INTERVAL_SECONDS = float(os.environ.get("BDAG_SYNC_WAIT_INTERVAL_SECONDS", "10"))
 LOG_CONTAINER = os.environ.get("BDAG_SYNC_WAIT_LOG_CONTAINER", "node")
 LOG_LINES = int(os.environ.get("BDAG_SYNC_WAIT_LOG_LINES", "2000"))
+EVM_RPC_URL = os.environ.get("BDAG_SYNC_WAIT_EVM_RPC_URL") or (
+    f"http://127.0.0.1:{os.environ.get('EVM_HTTP_PORT') or os.environ.get('BDAG_NODE_EVM_RPC_PORT') or '18545'}"
+)
+EVM_RPC_TIMEOUT_SECONDS = float(os.environ.get("BDAG_SYNC_WAIT_EVM_RPC_TIMEOUT_SECONDS", "4"))
+REQUIRE_ETH_SYNC = pool_ops.env_bool("BDAG_SYNC_WAIT_REQUIRE_ETH_SYNC", True)
 SYNC_GRAPH_RE = re.compile(r"Syncing graph state.*?cur=\(([^)]*)\).*?target=\(([^)]*)\)")
 STARTUP_STATE_RE = re.compile(
     r"Start to find cur block state.*?state\.order=(\d+).*?evm\.Number=(\d+).*?cur\.number=(\d+)"
@@ -258,6 +263,107 @@ def describe_progress(progress: dict[str, Any], previous: dict[str, Any], now: f
     return message, state
 
 
+def eth_sync_progress(url: str, timeout: float) -> dict[str, Any]:
+    details = pool_ops.eth_syncing_details(url, timeout=timeout)
+    progress: dict[str, Any] = {
+        "source": "eth_syncing",
+        "status": "unknown",
+        "current_block": None,
+        "highest_block": None,
+        "remaining_blocks": None,
+        "rpc_url": url,
+    }
+    error = str(details.get("eth_syncing_error") or "")
+    if error:
+        progress["error"] = error
+        return progress
+    if details.get("eth_syncing") is False and details.get("chain_syncing") is False:
+        progress.update({"status": "synced", "remaining_blocks": 0})
+        return progress
+
+    current = safe_int(details.get("sync_current_block"))
+    highest = safe_int(details.get("sync_highest_block"))
+    remaining = None
+    if current is not None and highest is not None:
+        remaining = max(0, highest - current)
+    progress.update(
+        {
+            "status": "syncing" if details.get("chain_syncing") else "unknown",
+            "current_block": current,
+            "highest_block": highest,
+            "remaining_blocks": remaining,
+        }
+    )
+    return progress
+
+
+def describe_eth_sync_progress(
+    progress: dict[str, Any],
+    previous: dict[str, Any],
+    now: float,
+) -> tuple[str, dict[str, Any]]:
+    status = str(progress.get("status") or "unknown").lower()
+    current = safe_int(progress.get("current_block"))
+    highest = safe_int(progress.get("highest_block"))
+    remaining = safe_int(progress.get("remaining_blocks"))
+    if remaining is None and current is not None and highest is not None and highest >= current:
+        remaining = highest - current
+    error = str(progress.get("error") or "")
+    state = {
+        "status": status,
+        "remaining_blocks": remaining,
+        "current_block": current,
+        "highest_block": highest,
+        "epoch": now,
+        "poll_interval": previous.get("poll_interval") or DEFAULT_INTERVAL_SECONDS,
+    }
+
+    if status == "synced":
+        state["status"] = "synced"
+        state["remaining_blocks"] = 0
+        return "EVM import sync complete", state
+    if error:
+        return f"waiting for EVM RPC eth_syncing ({error})", state
+    if remaining is None:
+        return f"waiting for EVM import sync status ({status})", state
+    if remaining <= 0:
+        return "waiting for EVM import to finish reporting eth_syncing", state
+    if current is not None and highest is not None:
+        return f"EVM import syncing: gap {remaining:,} blocks ({current:,} -> {highest:,})", state
+    return f"EVM import syncing: gap {remaining:,} blocks", state
+
+
+def seconds_until_deadline(deadline: float | None) -> float:
+    if deadline is None:
+        return 0.0
+    return max(0.001, deadline - time.time())
+
+
+def wait_for_eth_sync(
+    url: str,
+    interval: float,
+    rpc_timeout: float,
+    deadline: float | None = None,
+) -> int:
+    previous: dict[str, Any] = {}
+    while True:
+        if deadline is not None and time.time() >= deadline:
+            print("node sync wait timed out before EVM import completed", flush=True)
+            return 1
+        now = time.time()
+        progress = eth_sync_progress(url, timeout=rpc_timeout)
+        message, previous = describe_eth_sync_progress(progress, previous, now)
+        print(message, flush=True)
+        if previous.get("status") == "synced":
+            return 0
+        sleep_seconds = max(0.1, interval)
+        if deadline is not None:
+            sleep_seconds = min(sleep_seconds, max(0.0, deadline - time.time()))
+            if sleep_seconds <= 0:
+                continue
+        time.sleep(sleep_seconds)
+
+
 def stream_node_logs(timeout: float = 0.0) -> int:
     cmd = ["docker", "logs", "-f", "--tail", str(LOG_LINES), LOG_CONTAINER]
     try:
@@ -318,13 +424,33 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL_SECONDS, help="poll interval in seconds")
     parser.add_argument("--timeout", type=float, default=0.0, help="maximum wait time in seconds; 0 waits forever")
+    parser.add_argument("--evm-rpc-url", default=EVM_RPC_URL, help="EVM JSON-RPC URL used for eth_syncing")
+    parser.add_argument(
+        "--evm-rpc-timeout",
+        type=float,
+        default=EVM_RPC_TIMEOUT_SECONDS,
+        help="EVM JSON-RPC timeout in seconds",
+    )
+    parser.add_argument("--skip-eth-sync", action="store_true", help="do not wait for eth_syncing to return false")
     args = parser.parse_args(argv)
 
     try:
         STATE_FILE.unlink()
     except OSError:
         pass
-    return stream_node_logs(timeout=args.timeout)
+
+    deadline = time.time() + args.timeout if args.timeout and args.timeout > 0 else None
+    result = stream_node_logs(timeout=seconds_until_deadline(deadline))
+    if result != 0:
+        return result
+    if args.skip_eth_sync or not REQUIRE_ETH_SYNC:
+        return 0
+    return wait_for_eth_sync(
+        args.evm_rpc_url,
+        interval=args.interval,
+        rpc_timeout=args.evm_rpc_timeout,
+        deadline=deadline,
+    )
 
 
 if __name__ == "__main__":
