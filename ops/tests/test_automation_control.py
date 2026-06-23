@@ -384,6 +384,59 @@ class AutomationControlTests(unittest.TestCase):
         self.assertEqual("running", writes[0]["status"])
         self.assertEqual("ok", writes[-1]["status"])
 
+    def test_watchdog_api_stall_auth_stage_rewrites_config_then_restarts(self) -> None:
+        self.write_state(
+            self.control_state(
+                "transition_hold",
+                allowed_mutations=[f"{automation_control.ACTION_ASIC_MINER_RESTART}:*"],
+            )
+        )
+        action_log = self.root / "action-restart-miners.log"
+        lock_handle = unittest.mock.Mock()
+        writes: list[dict[str, object]] = []
+
+        with self.patch_default_control_paths(), unittest.mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), unittest.mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), unittest.mock.patch.object(
+            watchdog, "read_miner_admin_password", return_value="redacted"
+        ), unittest.mock.patch.object(
+            watchdog, "acquire_lock", return_value=lock_handle
+        ), unittest.mock.patch.object(
+            watchdog, "action_log_path", return_value=action_log
+        ), unittest.mock.patch.object(
+            watchdog, "write_action_state", side_effect=lambda payload: writes.append(dict(payload))
+        ), unittest.mock.patch.object(
+            watchdog, "configure_miner", return_value={"ip": "192.168.1.16", "status": "ok"}
+        ) as configure, unittest.mock.patch.object(
+            watchdog, "restart_miner", return_value={"ip": "192.168.1.16", "status": "ok", "response": ""}
+        ) as auth_restart, unittest.mock.patch.object(
+            watchdog, "restart_miner_open", side_effect=AssertionError("open restart should not be used")
+        ):
+            result = watchdog.run_miner_restarts(
+                [
+                    {
+                        "ip": "192.168.1.16",
+                        "configured": False,
+                        "expected_pool_url": "stratum+tcp://192.168.1.114:3334",
+                        "expected_worker_user": "0x1111111111111111111111111111111111111111",
+                        "staged_recovery_stage": "auth-restart-configure",
+                    }
+                ],
+                "ASIC API-stall watchdog: authenticated staged recovery",
+            )
+
+        self.assertEqual("ok", result["status"])
+        self.assertEqual("auth-configure-restart", result["results"][0]["action"])
+        configure.assert_called_once()
+        self.assertEqual("192.168.1.16", configure.call_args.kwargs["ip"])
+        self.assertTrue(configure.call_args.kwargs["replace_existing"])
+        auth_restart.assert_called_once_with("192.168.1.16", "redacted")
+        lock_handle.close.assert_called_once()
+        self.assertEqual("running", writes[0]["status"])
+        self.assertEqual("ok", writes[-1]["status"])
+
     def test_sentinel_suppresses_pool_starts_when_control_missing(self) -> None:
         incidents: list[tuple[str, str, str, str]] = []
 

@@ -64,24 +64,30 @@ def api_stalled_asic_row(
     managed: bool = True,
     mac: str = "28:e2:97:4d:44:3a",
     stale_age: int = 600,
+    status: str = "down",
+    device_telemetry_errors: str | None = None,
 ) -> dict[str, object]:
     return {
         "configured": False,
         "connected": False,
         "debug": {"available": False},
         "debug_error": "HTTP 500 Server Error",
+        "device_accepted": "0",
         "device_id": f"mac:{mac}",
+        "device_telemetry_errors": device_telemetry_errors,
+        "device_telemetry_status": "degraded" if device_telemetry_errors else None,
         "device_type": "asic",
         "display_name": ip,
         "expected_pool_url": DEFAULT_POOL_URL,
         "expected_worker_user": ADDRESS,
+        "hashrate": "unknown",
         "ip": ip,
         "issue": f"miner request failed for {ip}/mcb/cgminer?cgminercmd=devs: timed out",
         "last_pool_seen_age_seconds": stale_age,
         "mac": mac,
         "managed": managed,
         "pool_active": False,
-        "status": "down",
+        "status": status,
         "work_pool_active": False,
         "workers": [ADDRESS],
     }
@@ -217,6 +223,57 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         self.assertTrue(all(item["api_stall_no_active_pool"] for item in affected))
         self.assertTrue(all(item["restart_open_first"] for item in affected))
 
+    def test_api_stall_detector_handles_no_stratum_api_dead_signature(self) -> None:
+        telemetry_errors = (
+            'cgminer_devs: Get "http://192.168.1.16/mcb/cgminer?cgminercmd=devs": '
+            "context deadline exceeded | "
+            'pools: Get "http://192.168.1.16/mcb/pools": context deadline exceeded'
+        )
+        row = api_stalled_asic_row(
+            ip="192.168.1.16",
+            mac="28:e2:97:4d:44:3a",
+            status="no-stratum",
+            stale_age=0,
+            device_telemetry_errors=telemetry_errors,
+        )
+        row["debug"] = {}
+        row["debug_error"] = None
+        row["issue"] = "no active stratum connection from managed ASIC"
+        status = {
+            "mining_address": ADDRESS,
+            "pool_health": {
+                "initial_download": False,
+                "job_state_reason": "no_active_miners",
+            },
+            "pool_job_state": {
+                "active_connections": 0,
+                "authorized_connections": 0,
+                "ready_connections": 0,
+                "reason_code": "no_active_miners",
+            },
+            "pool_metrics": {
+                "active_connections": 0,
+                "stratum_no_request_disconnects_total": 50,
+            },
+            "sync_health": {},
+            "sync_progress": {"remaining_blocks": 0, "status": "synced"},
+            "miner_health": {
+                "connected_count": 0,
+                "connected_count_effective": 0,
+                "managed_count": 1,
+                "miners": [row],
+            },
+        }
+
+        affected = watchdog.asic_api_stall_primary_miners(status, stale_seconds=180)
+
+        self.assertEqual(1, len(affected))
+        self.assertEqual("192.168.1.16", affected[0]["ip"])
+        self.assertEqual("no-stratum", affected[0]["status"])
+        self.assertTrue(affected[0]["api_stall_no_active_pool"])
+        self.assertIn("/mcb/pools", affected[0]["api_stall_issue"])
+        self.assertTrue(affected[0]["restart_open_first"])
+
     def test_api_stall_watchdog_restarts_one_asic_open_first_after_confirmation(self) -> None:
         row = api_stalled_asic_row()
         status = {
@@ -273,7 +330,16 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         self.assertEqual("192.168.1.16", restarts[0][0][0]["ip"])
         self.assertTrue(restarts[0][0][0]["restart_open_first"])
         self.assertEqual({"192.168.1.16": self.now}, result["watchdog_state"]["last_miner_restart_at_by_ip"])
-        self.assertEqual({}, result["watchdog_state"]["asic_api_stall_since"])
+        self.assertEqual(
+            {"mac:28:e2:97:4d:44:3a": self.now - 180},
+            result["watchdog_state"]["asic_api_stall_since"],
+        )
+        self.assertEqual(
+            self.now,
+            result["watchdog_state"]["asic_staged_recovery_by_identity"]["mac:28:e2:97:4d:44:3a"][
+                "open_restart_at"
+            ],
+        )
         self.assertTrue(written)
 
     def test_api_stall_watchdog_restarts_all_mcb_miners_when_pool_has_no_active_miners(self) -> None:
@@ -353,8 +419,151 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
             {"192.168.1.16": self.now, "192.168.1.17": self.now},
             result["watchdog_state"]["last_miner_restart_at_by_ip"],
         )
-        self.assertEqual({}, result["watchdog_state"]["asic_api_stall_since"])
+        self.assertEqual(
+            {
+                "mac:28:e2:97:4d:44:3a": self.now - watchdog.DEFAULT_ASIC_API_STALL_NO_ACTIVE_CONFIRM_SECONDS,
+                "mac:28:e2:97:4d:44:3b": self.now - watchdog.DEFAULT_ASIC_API_STALL_NO_ACTIVE_CONFIRM_SECONDS,
+            },
+            result["watchdog_state"]["asic_api_stall_since"],
+        )
+        staged = result["watchdog_state"]["asic_staged_recovery_by_identity"]
+        self.assertEqual(self.now, staged["mac:28:e2:97:4d:44:3a"]["open_restart_at"])
+        self.assertEqual(self.now, staged["mac:28:e2:97:4d:44:3b"]["open_restart_at"])
         self.assertTrue(written)
+
+    def test_api_stall_watchdog_escalates_to_authenticated_config_rewrite(self) -> None:
+        row = api_stalled_asic_row()
+        status = {
+            "failures": [],
+            "stack_failures": [],
+            "miner_failures": ["miner request failed for 192.168.1.16/mcb/cgminer?cgminercmd=devs: timed out"],
+            "mining_address": ADDRESS,
+            "nodes": {},
+            "sync_health": {},
+            "sync_progress": {"status": "synced", "remaining_blocks": 0, "nodes": {}},
+            "pool_health": {
+                "initial_download": False,
+                "job_notify_count": 1,
+                "valid_share_count": 20,
+            },
+            "miner_health": {
+                "connected_count": 1,
+                "connected_count_effective": 1,
+                "managed_count": 1,
+                "miners": [row],
+            },
+        }
+        identity = "mac:28:e2:97:4d:44:3a"
+        state = {
+            "asic_api_stall_since": {identity: self.now - 900},
+            "asic_staged_recovery_by_identity": {
+                identity: {
+                    "first_seen_at": self.now - 900,
+                    "open_restart_at": self.now - watchdog.DEFAULT_ASIC_STAGED_AUTH_RETRY_SECONDS,
+                    "last_stage": "open-restart",
+                }
+            },
+        }
+        restarts: list[tuple[list[dict[str, object]], str]] = []
+
+        with mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", lambda _payload: None
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog,
+            "run_miner_restarts",
+            side_effect=lambda targets, reason: restarts.append((targets, reason))
+            or {"status": "ok", "target_count": len(targets), "results": []},
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("asic_api_stall", result["watchdog_state"]["last_status"])
+        self.assertEqual(1, len(restarts))
+        self.assertEqual("auth-restart-configure", restarts[0][0][0]["staged_recovery_stage"])
+        self.assertFalse(restarts[0][0][0]["restart_open_first"])
+        staged = result["watchdog_state"]["asic_staged_recovery_by_identity"][identity]
+        self.assertEqual(self.now, staged["auth_retry_at"])
+        self.assertEqual("auth-restart-configure", staged["last_stage"])
+
+    def test_api_stall_watchdog_marks_hardware_power_cycle_required_after_retry_window(self) -> None:
+        row = api_stalled_asic_row()
+        status = {
+            "failures": [],
+            "stack_failures": [],
+            "miner_failures": ["miner request failed for 192.168.1.16/mcb/cgminer?cgminercmd=devs: timed out"],
+            "mining_address": ADDRESS,
+            "nodes": {},
+            "sync_health": {},
+            "sync_progress": {"status": "synced", "remaining_blocks": 0, "nodes": {}},
+            "pool_health": {
+                "initial_download": False,
+                "job_notify_count": 1,
+                "valid_share_count": 20,
+            },
+            "miner_health": {
+                "connected_count": 1,
+                "connected_count_effective": 1,
+                "managed_count": 1,
+                "miners": [row],
+            },
+        }
+        identity = "mac:28:e2:97:4d:44:3a"
+        state = {
+            "asic_api_stall_since": {identity: self.now - 1200},
+            "asic_staged_recovery_by_identity": {
+                identity: {
+                    "first_seen_at": self.now - 1200,
+                    "open_restart_at": self.now - 900,
+                    "auth_retry_at": self.now - watchdog.DEFAULT_ASIC_STAGED_POWER_CYCLE_SECONDS,
+                    "last_stage": "auth-restart-configure",
+                }
+            },
+        }
+        events: list[tuple[str, str, str, dict[str, object]]] = []
+
+        def record(event_type: str, severity: str, message: str, details=None) -> None:
+            events.append((event_type, severity, message, details or {}))
+
+        with mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", lambda _payload: None
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", side_effect=record
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_miner_restarts", side_effect=AssertionError("hardware stage must not restart again")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("asic_hardware_power_cycle_required", result["watchdog_state"]["last_status"])
+        staged = result["watchdog_state"]["asic_staged_recovery_by_identity"][identity]
+        self.assertEqual(self.now, staged["power_cycle_required_at"])
+        self.assertEqual("hardware-power-cycle-required", staged["last_stage"])
+        self.assertTrue(any(event[0] == "asic_hardware_power_cycle_required" for event in events))
+        self.assertTrue(any("power-cycle required" in event[2] for event in events))
 
     def test_failed_expired_job_reconnect_without_clients_restarts_pool(self) -> None:
         state: dict[str, object] = {}
