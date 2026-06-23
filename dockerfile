@@ -5,11 +5,11 @@
 #
 #   ./
 #   ├── bin/blockdag-node, bin/nodeworker, bin/mining-pool, bin/dashboard-api, bin/dashboard
-#   ├── docker/             (e.g. no-snapshot.marker; see SNAPSHOT_PATH)
+#   ├── docker/
 #   ├── .env.example, docker-compose.yml, …
 #
-# Snapshot import is runtime-only via a read-only bind mount handled by
-# docker/entrypoint-nodeworker.sh. Do not copy .bdsnap files into the image.
+# Chain DB snapshot installation is host-side in ops/release-install.sh. Do not
+# copy downloaded .bdsnap archives into the image.
 
 # ----------------------------------------------------------------------------
 # Common base
@@ -63,12 +63,12 @@ RUN set -eu; mkdir -p /out; \
     chmod +x /out/dashboard
 
 # ----------------------------------------------------------------------------
-# Node Runtime Stage (with optional snapshot import)
+# Node Runtime Stage
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS node
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates tzdata curl \
+    ca-certificates tzdata curl python3-minimal \
  && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack
@@ -80,7 +80,8 @@ COPY --from=node-build /out/nodeworker     /usr/local/bin/nodeworker
 RUN chmod +x /usr/local/bin/blockdag-node /usr/local/bin/nodeworker
 
 COPY docker/entrypoint-nodeworker.sh /usr/local/bin/docker-entrypoint-nodeworker.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh
+COPY docker/node_metrics_exporter.py /usr/local/bin/node-metrics-exporter.py
+RUN chmod +x /usr/local/bin/docker-entrypoint-nodeworker.sh /usr/local/bin/node-metrics-exporter.py
 
 WORKDIR /var/lib/bdagStack/node
 EXPOSE 8150 38131 38132 18545 18546 6060
@@ -93,6 +94,7 @@ ENTRYPOINT ["/usr/local/bin/docker-entrypoint-nodeworker.sh", \
     "--rpc-url=ws://127.0.0.1:18546", \
     "--dag-rpc-url=http://127.0.0.1:38131", \
     "--persist-root=/var/lib/bdagStack/nodeworker", \
+    "--diagnostics.pprof-base=http://127.0.0.1:1234", \
     "--health-min-peers=1", \
     "--rollout-window=30m"]
 

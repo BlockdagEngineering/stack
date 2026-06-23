@@ -74,8 +74,7 @@ USER_SERVICES = split_csv_env(
 )
 USER_TIMERS = split_csv_env(
     "BDAG_SENTINEL_USER_TIMERS",
-    "bdag-stack-sentinel.timer,bdag-sync-coordinator.timer,bdag-chain-restore-guard.timer,"
-    "bdag-chain-presync.timer,bdag-hourly-snapshot.timer,bdag-local-peers.timer",
+    "bdag-stack-sentinel.timer,bdag-sync-coordinator.timer,bdag-local-peers.timer",
 )
 
 

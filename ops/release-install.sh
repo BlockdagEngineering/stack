@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/docker-compose.yml" && -f "$SCRIPT_DIR/.env.example" ]]; then
+  ROOT="$SCRIPT_DIR"
+elif [[ -f "$SCRIPT_DIR/../docker-compose.yml" && -f "$SCRIPT_DIR/../.env.example" ]]; then
+  ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+else
+  ROOT="$SCRIPT_DIR"
+fi
 cd "$ROOT"
 if [[ -z "${BDAG_STACK_DEFAULTS_FILE:-}" ]]; then
   if [[ -f "$ROOT/ops/config/stack-defaults.env" ]]; then
@@ -292,6 +299,30 @@ set_env_value() {
   fi
 }
 
+set_env_value_literal() {
+  local file="$1" key="$2" value="$3" tmp replaced=0 line
+  tmp="$(mktemp)"
+  if [[ -f "$file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" == "$key="* ]]; then
+        printf '%s=%s\n' "$key" "$value" >> "$tmp"
+        replaced=1
+      else
+        printf '%s\n' "$line" >> "$tmp"
+      fi
+    done < "$file"
+  fi
+  if (( replaced == 0 )); then
+    printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  fi
+  mv "$tmp" "$file"
+}
+
+single_quote_env_value() {
+  local value="$1"
+  printf "'%s'" "$(printf '%s' "$value" | sed "s/'/'\\\\''/g")"
+}
+
 set_stack_default_env_value() {
   local file="$1" key="$2" fallback="${3:-}"
   set_env_value "$file" "$key" "$(stack_default "$key" "$fallback")"
@@ -347,6 +378,27 @@ env_value() {
   local key="$1" fallback="${2:-}" value
   value="$(grep -E "^${key}=" .env 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
   printf '%s\n' "${value:-$fallback}"
+}
+
+env_value_unquoted() {
+  local value
+  value="$(env_value "$@")"
+  case "$value" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+  esac
+  printf '%s\n' "$value"
+}
+
+env_file_value_unquoted() {
+  local file="$1" key="$2" fallback="${3:-}" value
+  value="$(grep -E "^${key}=" "$file" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
+  value="${value:-$fallback}"
+  case "$value" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+  esac
+  printf '%s\n' "$value"
 }
 
 absolute_path() {
@@ -502,6 +554,7 @@ configure_storage_profile() {
   set_env_value .env BDAG_CHAIN_DATA_DIR "$chain_base"
   set_env_value .env BDAG_DATA_DIR "$chain_base"
   set_env_value .env BDAG_NODE_DATA_DIR "$node_dir"
+  set_env_value .env NODE_DATA_DIR "$node_dir"
   set_env_value .env BDAG_POSTGRES_DATA_DIR "$postgres_dir"
   set_env_value .env BDAG_RUNTIME_DIR "$runtime_dir"
   set_env_value .env BDAG_OPS_UID "$(id -u)"
@@ -657,63 +710,26 @@ configure_env() {
   set_stack_default_env_value .env BDAG_FASTSYNC_PREPROCESS_WORKERS
   set_stack_default_env_value .env BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED
   set_stack_default_env_value .env BDAG_CHAIN_PEERSTORE_LOG_TAIL
+  if ! grep -q '^BDAG_CHAIN_DB_ARCHIVE_URL=' .env; then
+    local default_chain_archive_url
+    default_chain_archive_url="${BDAG_CHAIN_DB_ARCHIVE_URL:-$(env_file_value_unquoted .env.example BDAG_CHAIN_DB_ARCHIVE_URL "")}"
+    if [[ -n "$default_chain_archive_url" ]]; then
+      set_env_value_literal .env BDAG_CHAIN_DB_ARCHIVE_URL "$(single_quote_env_value "$default_chain_archive_url")"
+    fi
+  fi
+  set_env_value .env BDAG_CHAIN_DB_ARCHIVE_MIN_BYTES "$(env_value_unquoted BDAG_CHAIN_DB_ARCHIVE_MIN_BYTES 1048576)"
+  set_env_value .env BDAG_CHAIN_DB_ARCHIVE_KEEP "$(env_value_unquoted BDAG_CHAIN_DB_ARCHIVE_KEEP 1)"
+  set_env_value .env BDAG_CHAIN_DB_ARCHIVE_FORCE "$(env_value_unquoted BDAG_CHAIN_DB_ARCHIVE_FORCE 0)"
+  set_env_value .env BDAG_CHAIN_DB_IMPORT_BINARY "$(env_value_unquoted BDAG_CHAIN_DB_IMPORT_BINARY "")"
+  set_env_value .env BDAG_CHAIN_DB_IMPORT_BATCH_BYTES "$(env_value_unquoted BDAG_CHAIN_DB_IMPORT_BATCH_BYTES 16777216)"
+  set_env_value .env BDAG_CHAIN_DB_IMPORT_NO_NETWORK_CHECK "$(env_value_unquoted BDAG_CHAIN_DB_IMPORT_NO_NETWORK_CHECK 0)"
   set_env_value .env BDAG_INSTALL_APPLIANCE_HOST_PROFILE "$(env_value BDAG_INSTALL_APPLIANCE_HOST_PROFILE 1)"
   set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_DISABLE_SERVICES "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_DISABLE_SERVICES 0)"
   set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_RELOAD_DOCKER "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_RELOAD_DOCKER 1)"
   set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_STRICT "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_STRICT 0)"
   set_env_value .env BDAG_INSTALL_STACK_SUPPORT_SERVICES "$(env_value BDAG_INSTALL_STACK_SUPPORT_SERVICES 1)"
   set_env_value .env BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT "$(env_value BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT 0)"
-  fastartifact_enabled=1
-  if [[ "$node_mining_enabled" == "1" ]]; then
-    case "$(env_value BDAG_STORAGE_PROFILE auto)" in
-      usb-chain-internal-runtime|single-usb-constrained)
-        fastartifact_enabled=0
-        ;;
-    esac
-  fi
-  set_env_value .env BDAG_FASTARTIFACTSYNC_ENABLED "$fastartifact_enabled"
-  set_stack_default_env_value .env SYNC_SOURCE_NODE
   set_env_value .env NODE_ARGS_APPEND ""
-  set_stack_default_env_value .env BDAG_FASTSNAP_SEED_TIMER_ENABLED
-  set_stack_default_env_value .env BDAG_RAWDATADIR_SOURCE_MODE
-  set_env_value .env BDAG_RAWDATADIR_ARTIFACT_BASE "./data-restore/rawdatadir"
-  set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE
-  set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE "./data-restore/rawdatadir-sidecar-content"
-  set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP
-  set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED
-  set_env_value .env BDAG_RAWDATADIR_ACTIVE_SERVICE "node"
-  set_stack_default_env_value .env BDAG_RAWDATADIR_FINALIZE
-  set_env_value .env BDAG_RAWDATADIR_PEERS ""
-  set_env_value .env BDAG_RAWDATADIR_TRUSTED_SIGNERS ""
-  set_stack_default_env_value .env BDAG_IPFS_CONTENT_SIDECAR_MODE
-  set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_DIR "./data-restore/rawdatadir-sidecar-content/current"
-  set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST "./data-restore/rawdatadir-sidecar-content/current/manifest.json"
-  set_stack_default_env_value .env BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT
-  set_stack_default_env_value .env BDAG_IPFS_CONTENT_PUBLISH_IPNS
-  set_env_value .env BDAG_IPFS_CONTENT_IPNS_KEY ""
-  set_stack_default_env_value .env BDAG_IPFS_CONTENT_REPUBLISH_IPNS_WHILE_WAITING
-  set_stack_default_env_value .env BDAG_IPFS_CONTENT_IPNS_TTL
-  set_stack_default_env_value .env BDAG_IPFS_CONTENT_IPNS_LIFETIME
-  set_env_value .env BDAG_IPFS_CONTENT_DISCOVERY_FILE "./ops/ipfs-content-discovery.json"
-  set_env_value .env BDAG_IPFS_CONTENT_LATEST_IPNS "/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk"
-  set_env_value .env BDAG_IPFS_CONTENT_DEFAULT_INDEX_CID "bafkreia7jk2ljqi3raiohugp6nw3633njfp7jmnuvqh47po52et4kupu2a"
-  set_stack_default_env_value .env BDAG_IPFS_CONTENT_DEFAULT_ROOT_CID
-  set_env_value .env BDAG_IPFS_CONTENT_STATUS_FILE "./ops/runtime/ipfs-content-sidecar-status.json"
-  set_env_value .env BDAG_IPFS_CONTENT_LATEST_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_MODE
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_START_POLICY
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_MAX_RPC_PER_SECOND
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_RPC_TIMEOUT
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_BLOCK_RPC_RETRIES
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_PUBLISH_IPNS
-  set_env_value .env BDAG_IPFS_SEGMENT_IPNS_KEY ""
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_IPNS_TTL
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_IPNS_LIFETIME
-  set_env_value .env BDAG_IPFS_SEGMENT_STATUS_FILE "./ops/runtime/ipfs-content/segment-writer-status.json"
-  set_env_value .env BDAG_IPFS_SEGMENT_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOTS
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_HOURS
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS
@@ -733,13 +749,6 @@ configure_env() {
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MB
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MIN_MB
   set_stack_default_env_value .env BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MODE
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_RETRY_SECONDS
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MIN_BEHIND_BLOCKS
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_MIN_GAIN_BLOCKS
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TRUST_ON_FIRST_SIGNED
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ALLOW_UNSIGNED_ARTIFACTS
-  set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT
   configure_active_node_env
   configure_node_mining_env "$node_mining_enabled" "$mining_address"
 
@@ -847,106 +856,359 @@ load_or_build_images() {
   fi
 }
 
-find_or_extract_chain_seed() {
-  if [[ -f chain-data/chain-data-seed.zip ]]; then
-    printf '%s\n' "chain-data/chain-data-seed.zip"
-    return 0
+chain_db_archive_basename() {
+  local url="$1" clean
+  clean="${url%%\?*}"
+  clean="${clean##*/}"
+  if [[ -z "$clean" || "$clean" == */* ]]; then
+    clean="chain-db-archive.bdsnap"
+  fi
+  printf '%s\n' "$clean"
+}
+
+chain_db_archive_url_is_local() {
+  case "$1" in
+    file://*|/*|./*|../*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+chain_db_archive_local_path() {
+  local url="$1" path
+  case "$url" in
+    file://localhost/*) path="/${url#file://localhost/}" ;;
+    file://*) path="${url#file://}" ;;
+    /*) path="$url" ;;
+    ./*|../*) path="$(absolute_path "$url")" ;;
+    *) return 1 ;;
+  esac
+  [[ -f "$path" ]] || return 1
+  printf '%s\n' "$path"
+}
+
+file_size_bytes() {
+  if stat -c%s "$1" >/dev/null 2>&1; then
+    stat -c%s "$1"
+  elif stat -f%z "$1" >/dev/null 2>&1; then
+    stat -f%z "$1"
+  else
+    wc -c < "$1" | tr -d '[:space:]'
+  fi
+}
+
+download_chain_db_archive() {
+  local url="$1" cache_dir="$2" min_bytes="$3"
+  local archive part size local_archive
+  archive="$cache_dir/$(chain_db_archive_basename "$url")"
+  part="${archive}.part"
+  mkdir -p "$cache_dir"
+
+  if [[ -s "$archive" ]]; then
+    size="$(file_size_bytes "$archive" 2>/dev/null || echo 0)"
+    if (( size >= min_bytes )); then
+      say "Using cached chain DB snapshot archive: $archive" >&2
+    else
+      warn "Cached chain DB snapshot archive is too small ($size bytes < $min_bytes); redownloading."
+      rm -f "$archive"
+    fi
   fi
 
-  local candidate
-  for candidate in "$ROOT"/*chain-data*.zip "$ROOT"/../*chain-data*.zip; do
-    [[ -f "$candidate" ]] || continue
-    if unzip -l "$candidate" 'chain-data/chain-data-seed.zip' >/dev/null 2>&1; then
-      say "Extracting chain seed from separate data package: $candidate"
-      unzip -qo "$candidate" 'chain-data/chain-data-seed.zip' -d "$ROOT"
-      printf '%s\n' "chain-data/chain-data-seed.zip"
+  if [[ ! -s "$archive" ]]; then
+    if chain_db_archive_url_is_local "$url"; then
+      if ! local_archive="$(chain_db_archive_local_path "$url")"; then
+        echo "Configured BDAG_CHAIN_DB_ARCHIVE_URL local archive was not found: $url" >&2
+        exit 1
+      fi
+      say "Copying local chain DB snapshot archive" >&2
+      echo "Snapshot source: $local_archive" >&2
+      echo "Snapshot cache: $archive" >&2
+      cp "$local_archive" "$part"
+    else
+      command -v curl >/dev/null 2>&1 || { echo "curl is required to download BDAG_CHAIN_DB_ARCHIVE_URL." >&2; exit 1; }
+      say "Downloading chain DB snapshot archive" >&2
+      echo "Snapshot cache: $archive" >&2
+      if ! curl --fail --location --show-error \
+        --connect-timeout 30 \
+        --retry 8 \
+        --retry-all-errors \
+        --retry-delay 5 \
+        --continue-at - \
+        --output "$part" \
+        "$url"; then
+        echo "Chain DB snapshot archive download failed." >&2
+        exit 1
+      fi
+    fi
+    size="$(file_size_bytes "$part" 2>/dev/null || echo 0)"
+    if (( size < min_bytes )); then
+      echo "Downloaded chain DB snapshot archive is too small ($size bytes < $min_bytes)." >&2
+      exit 1
+    fi
+    mv "$part" "$archive"
+  fi
+
+  printf '%s\n' "$archive"
+}
+
+extract_chain_db_datadir_archive() {
+  local archive="$1" staging="$2"
+  local archive_base extract_dir bdag_chain_dir source_root
+  archive_base="$(basename "$archive")"
+  extract_dir="${staging}.extract"
+  rm -rf "$extract_dir"
+  mkdir -p "$extract_dir"
+
+  case "$archive_base" in
+    *.tar.zst|*.tzst)
+      if tar --help 2>/dev/null | grep -q -- '--zstd'; then
+        tar --zstd -xf "$archive" -C "$extract_dir"
+      elif command -v zstd >/dev/null 2>&1; then
+        zstd -dc "$archive" | tar -xf - -C "$extract_dir"
+      else
+        echo "Extracting $archive_base requires tar with --zstd support or the zstd command." >&2
+        return 1
+      fi
+      ;;
+    *.tar.gz|*.tgz)
+      tar -xzf "$archive" -C "$extract_dir"
+      ;;
+    *.tar)
+      tar -xf "$archive" -C "$extract_dir"
+      ;;
+    *)
+      echo "Unsupported chain DB datadir archive type: $archive_base" >&2
+      return 1
+      ;;
+  esac
+
+  bdag_chain_dir="$(find "$extract_dir" -type d -path '*/mainnet/BdagChain' -print -quit)"
+  if [[ -n "$bdag_chain_dir" ]]; then
+    source_root="$(dirname "$(dirname "$bdag_chain_dir")")"
+    cp -a "$source_root/." "$staging/"
+  elif [[ -d "$extract_dir/BdagChain" ]]; then
+    mkdir -p "$staging/mainnet"
+    cp -a "$extract_dir/." "$staging/mainnet/"
+  else
+    echo "Chain DB datadir archive did not contain mainnet/BdagChain." >&2
+    return 1
+  fi
+
+  rm -rf "$extract_dir"
+}
+
+chain_db_import_binary() {
+  local configured arch candidate
+  configured="$(env_value_unquoted BDAG_CHAIN_DB_IMPORT_BINARY "")"
+  if [[ -n "$configured" ]]; then
+    if [[ "$configured" == */* ]]; then
+      candidate="$(absolute_path "$configured")"
+      if [[ -x "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+    elif command -v "$configured" >/dev/null 2>&1; then
+      command -v "$configured"
       return 0
     fi
-    if unzip -l "$candidate" 'mainnet/*' >/dev/null 2>&1; then
+    echo "Configured BDAG_CHAIN_DB_IMPORT_BINARY is not executable: $configured" >&2
+    return 2
+  fi
+
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    return 1
+  fi
+
+  for candidate in "$ROOT/bin/blockdag-node" "$ROOT/bin/bdag"; do
+    if [[ -x "$candidate" ]]; then
       printf '%s\n' "$candidate"
       return 0
     fi
   done
 
+  if arch="$(detect_arch 2>/dev/null)"; then
+    for candidate in \
+      "$ROOT/artifacts/binaries/linux-$arch/blockdag-node" \
+      "$ROOT/artifacts/binaries/linux-$arch/bdag"; do
+      if [[ -x "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+    done
+  fi
+
+  if command -v blockdag-node >/dev/null 2>&1; then
+    command -v blockdag-node
+    return 0
+  fi
+  if command -v bdag >/dev/null 2>&1; then
+    command -v bdag
+    return 0
+  fi
   return 1
 }
 
-seed_chain_data() {
-  local seed chain_base node_dir template_dir
-  if ! seed="$(find_or_extract_chain_seed)"; then
-    warn "No separate chain-data seed found. The node will sync from configured P2P peers."
-    warn "If you received chain-data parts, reassemble them first, then rerun ./install.sh."
+chain_db_import_args() {
+  local batch no_network_check
+  batch="$(env_value_unquoted BDAG_CHAIN_DB_IMPORT_BATCH_BYTES 16777216)"
+  no_network_check="$(env_value_unquoted BDAG_CHAIN_DB_IMPORT_NO_NETWORK_CHECK 0)"
+  if [[ -n "$batch" ]]; then
+    printf '%s\0%s\0' "--batch-size" "$batch"
+  fi
+  case "$no_network_check" in
+    1|true|True|TRUE|yes|Yes|YES|on|On|ON)
+      printf '%s\0' "--no-network-check"
+      ;;
+  esac
+}
+
+import_chain_db_archive() {
+  local archive="$1" network_dir="$2"
+  local binary archive_dir archive_base staging_root
+  local binary_status
+  local import_args=()
+
+  mkdir -p "$network_dir"
+  while IFS= read -r -d '' arg; do
+    import_args+=("$arg")
+  done < <(chain_db_import_args)
+
+  if binary="$(chain_db_import_binary)"; then
+    say "Importing chain DB .bdsnap with $binary"
+    "$binary" snap import --datadir "$network_dir" --path "$archive" "${import_args[@]}"
+    return 0
+  else
+    binary_status=$?
+    if (( binary_status == 2 )); then
+      return 1
+    fi
+  fi
+
+  if "${DOCKER[@]}" image inspect bdag-release/node:local >/dev/null 2>&1; then
+    say "Importing chain DB .bdsnap with bdag-release/node:local"
+    staging_root="$(dirname "$network_dir")"
+    archive_dir="$(dirname "$archive")"
+    archive_base="$(basename "$archive")"
+    "${DOCKER[@]}" run --rm \
+      --entrypoint /usr/local/bin/blockdag-node \
+      -v "$staging_root:/import-node" \
+      -v "$archive_dir:/snapshots:ro" \
+      bdag-release/node:local \
+      snap import --datadir /import-node/mainnet --path "/snapshots/$archive_base" "${import_args[@]}"
+    return 0
+  fi
+
+  echo "Cannot import chain DB snapshot: no usable blockdag-node/bdag binary or bdag-release/node:local image was found." >&2
+  return 1
+}
+
+stop_node_for_chain_db_replace() {
+  local container
+  container="$(compose_cmd ps -q node 2>/dev/null || true)"
+  if [[ -n "$container" ]]; then
+    say "Stopping node before replacing chain DB"
+    compose_cmd stop node
+    return 0
+  fi
+  if "${DOCKER[@]}" ps --format '{{.Names}}' 2>/dev/null | grep -qx 'node'; then
+    say "Stopping node container before replacing chain DB"
+    "${DOCKER[@]}" stop node >/dev/null
+  fi
+}
+
+install_chain_db_archive() {
+  local url chain_base node_dir cache_dir min_bytes keep force archive
+  local parent stamp staging backup has_chain has_anything network_dir
+  url="$(env_value_unquoted BDAG_CHAIN_DB_ARCHIVE_URL "")"
+  if [[ -z "$url" ]]; then
+    warn "BDAG_CHAIN_DB_ARCHIVE_URL is not set. The node will sync from configured peers."
     return 0
   fi
 
   chain_base="$(env_path_value BDAG_CHAIN_DATA_DIR data)"
   node_dir="$(env_path_value BDAG_NODE_DATA_DIR "$chain_base/node")"
-  template_dir="$chain_base/chain-template"
-  if [[ -z "$template_dir" || "$template_dir" == "/" ]]; then
-    echo "Refusing unsafe chain template directory: $template_dir" >&2
+  parent="$(dirname "$node_dir")"
+  cache_dir="$(absolute_path "$(env_value_unquoted BDAG_CHAIN_DB_ARCHIVE_CACHE_DIR "$parent/chain-db-archives")")"
+  min_bytes="$(env_value_unquoted BDAG_CHAIN_DB_ARCHIVE_MIN_BYTES 1048576)"
+  keep="$(env_value_unquoted BDAG_CHAIN_DB_ARCHIVE_KEEP 1)"
+  force="$(env_value_unquoted BDAG_CHAIN_DB_ARCHIVE_FORCE 0)"
+
+  has_chain=0
+  [[ -d "$node_dir/mainnet/BdagChain" ]] && has_chain=1
+  has_anything=0
+  if [[ -d "$node_dir" ]] && find "$node_dir" -mindepth 1 -print -quit 2>/dev/null | grep -q .; then
+    has_anything=1
+  fi
+
+  if (( has_chain == 1 )) && [[ "$force" != "1" ]]; then
+    say "Existing node chain data was found in $node_dir/mainnet/BdagChain; skipping chain DB download."
+    return 0
+  elif (( has_anything == 1 && has_chain == 0 )); then
+    warn "Node data directory exists but does not contain mainnet/BdagChain; it will be parked before snapshot import."
+  fi
+
+  archive="$(download_chain_db_archive "$url" "$cache_dir" "$min_bytes")"
+
+  if (( has_anything == 1 )); then
+    stop_node_for_chain_db_replace
+  fi
+
+  mkdir -p "$parent"
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  staging="$parent/.node-chain-db-install-$stamp"
+  backup="$node_dir.backup.$stamp"
+  rm -rf "$staging"
+  mkdir -p "$staging"
+  network_dir="$staging/mainnet"
+
+  case "$(basename "$archive")" in
+    *.tar.zst|*.tzst|*.tar.gz|*.tgz|*.tar)
+      say "Extracting chain DB datadir archive into staged node data"
+      if ! extract_chain_db_datadir_archive "$archive" "$staging"; then
+        rm -rf "$staging" "${staging}.extract"
+        echo "Chain DB datadir archive extraction failed." >&2
+        exit 1
+      fi
+      ;;
+    *.bdsnap)
+      say "Importing chain DB snapshot archive into staged node data"
+      if ! import_chain_db_archive "$archive" "$network_dir"; then
+        rm -rf "$staging"
+        echo "Chain DB snapshot import failed." >&2
+        exit 1
+      fi
+      ;;
+    *)
+      warn "Downloaded chain DB snapshot archive does not use a .tar or .bdsnap filename; trying .bdsnap import validation."
+      if ! import_chain_db_archive "$archive" "$network_dir"; then
+        rm -rf "$staging"
+        echo "Chain DB snapshot import failed." >&2
+        exit 1
+      fi
+      ;;
+  esac
+
+  if [[ ! -d "$network_dir/BdagChain" ]]; then
+    rm -rf "$staging"
+    echo "Chain DB snapshot import did not create expected layout: mainnet/BdagChain" >&2
     exit 1
   fi
 
-  if [[ -d "$node_dir/mainnet/BdagChain" ]]; then
-    if ! yes_no "Existing node chain data was found. Replace it from the chain seed?" "n"; then
-      return 0
-    fi
-    mv "$node_dir" "$node_dir.backup.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
-    mkdir -p "$node_dir"
+  if [[ -e "$node_dir" && "$has_anything" == "1" ]]; then
+    mv "$node_dir" "$backup"
+    echo "Previous node data parked at: $backup"
+  elif [[ -d "$node_dir" ]]; then
+    rmdir "$node_dir" 2>/dev/null || true
   fi
+  mv "$staging" "$node_dir"
+  echo "Imported chain DB snapshot into: $node_dir"
 
-  say "Unpacking one chain seed for the configured node datadir"
-  rm -rf "$template_dir"
-  mkdir -p "$template_dir" "$node_dir"
-  unzip -q "$seed" -d "$template_dir"
-  if [[ -d "$template_dir/chain-data" ]]; then
-    rsync -a "$template_dir/chain-data/" "$node_dir/"
-  else
-    rsync -a "$template_dir/" "$node_dir/"
+  if [[ "$keep" == "0" ]]; then
+    rm -f "$archive"
   fi
-}
-
-publish_p2p_snapshot_archive() {
-  local arch="$1"
-  local bdag_bin="artifacts/binaries/linux-$arch/bdag"
-  local node_dir source_datadir target_datadir
-  node_dir="$(env_path_value BDAG_NODE_DATA_DIR data/node)"
-  source_datadir="$node_dir/mainnet"
-  target_datadir="$node_dir/mainnet"
-  local source_archive="$source_datadir/snapshot.bdsnap"
-  local target_archive="$target_datadir/snapshot.bdsnap"
-  local force="${BDAG_P2P_SNAPSHOT_FORCE:-0}"
-
-  if [[ "${BDAG_P2P_SNAPSHOT_PUBLISH:-1}" != "1" ]]; then
-    warn "P2P snapshot archive publication disabled by BDAG_P2P_SNAPSHOT_PUBLISH=0."
-    return 0
-  fi
-  if [[ ! -x "$bdag_bin" ]]; then
-    warn "Cannot publish P2P snapshot archive: missing executable $bdag_bin."
-    return 0
-  fi
-  if [[ ! -d "$source_datadir/BdagChain" ]]; then
-    warn "No seeded node chain DB found; the node will sync first, then use raw-datadir FastArtifact source serving after a finalized sidecar publish."
-    return 0
-  fi
-
-  if [[ ! -s "$source_archive" || "$force" == "1" ]]; then
-    say "Publishing P2P snapshot archive for node datadirs"
-    rm -f "$source_archive.tmp" "$source_archive.tmp.manifest.json"
-    "$bdag_bin" snap export --datadir "$source_datadir" --path "$source_archive.tmp"
-    mv "$source_archive.tmp" "$source_archive"
-    if [[ -f "$source_archive.tmp.manifest.json" ]]; then
-      mv "$source_archive.tmp.manifest.json" "$source_archive.manifest.json"
-    fi
-  else
-    say "Existing node P2P snapshot archive found: $source_archive"
-  fi
-
-  say "P2P snapshot archive available to node"
 }
 
 start_stack() {
-  say "Starting BlockDAG sync services"
+  say "Starting BlockDAG node for initial sync"
   guard_runtime_compose
   python3 ops/automation_control.py ensure-normal \
     --owner release-installer \
@@ -957,8 +1219,13 @@ start_stack() {
   else
     warn "Skipping implicit image pulls. Set BDAG_RELEASE_PULL_BASE_IMAGES=1 for an explicit base-image refresh."
   fi
-  compose_cmd up -d --no-build --pull never postgres node dashboard
+  compose_cmd up -d --no-build --pull never node
   compose_cmd ps
+}
+
+wait_for_node_sync() {
+  say "Waiting for node sync to complete"
+  python3 ops/wait_for_node_sync.py
 }
 
 install_stack_support_services() {
@@ -968,16 +1235,16 @@ install_stack_support_services() {
   set +a
   case "${BDAG_INSTALL_STACK_SUPPORT_SERVICES:-1}" in
     0|false|False|no|No|off|Off)
-      warn "Skipping P2P/IPFS/mining-host support services because BDAG_INSTALL_STACK_SUPPORT_SERVICES=${BDAG_INSTALL_STACK_SUPPORT_SERVICES:-0}."
+      warn "Skipping P2P/mining-host support services because BDAG_INSTALL_STACK_SUPPORT_SERVICES=${BDAG_INSTALL_STACK_SUPPORT_SERVICES:-0}."
       return 0
       ;;
   esac
   if [[ ! -f ops/install-p2p-services.sh ]]; then
-    warn "Cannot install P2P/IPFS/mining-host support services: ops/install-p2p-services.sh is missing."
+    warn "Cannot install P2P/mining-host support services: ops/install-p2p-services.sh is missing."
     return 0
   fi
 
-  say "Installing P2P, IPFS, and mining-host tuning services"
+  say "Installing P2P and mining-host tuning services"
   if bash ops/install-p2p-services.sh; then
     return 0
   fi
@@ -1098,9 +1365,9 @@ main() {
   install_appliance_host_profile
   run_appliance_preflight
   load_or_build_images "$arch"
-  seed_chain_data
-  publish_p2p_snapshot_archive "$arch"
+  install_chain_db_archive
   start_stack
+  wait_for_node_sync
   install_stack_support_services
   discover_preserved_chain_peers
   rebuild_dashboard_plot_data
@@ -1111,5 +1378,11 @@ main() {
   echo "Dashboard: http://${BDAG_DASHBOARD_BIND:-127.0.0.1}:${BDAG_DASHBOARD_PORT:-8088}"
   echo "Run ./tools/status.sh for a status check."
 }
+
+if [[ "${BDAG_RELEASE_INSTALL_CHAIN_DB_ONLY:-0}" == "1" || "${1:-}" == "--chain-db-only" ]]; then
+  init_docker_access
+  install_chain_db_archive
+  exit 0
+fi
 
 main "$@"

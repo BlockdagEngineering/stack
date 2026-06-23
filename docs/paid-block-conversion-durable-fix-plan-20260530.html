@@ -197,13 +197,13 @@
     <ol>
       <li>Add explicit capability profiles, including <code>pi5-asic-router-usb</code>, Pi5 non-router, AMD64 SSD/NVMe, ARM64 SSD/NVMe, no-miner sync node, multi-ASIC pool, and source-serving eligibility.</li>
       <li>Expose profile facts in <code>/api/status</code>: one production node, DHCP/NAT gateway, USB chain data, template backend count, miner identity mode, IO budget, source-serving eligibility.</li>
-      <li>On USB/router profiles, do not enable source-serving timers that stage, publish, rsync, tar, scan, or serve chain artifacts.</li>
+      <li>On USB/router profiles, do not enable source-serving timers that stage, publish, rsync, tar, scan, or serve bulk chain data.</li>
       <li>Preserve no-miner sync-only behavior in installer and repair paths: no mining flags, no template probes, no mining work generation until actual miner demand and a non-zero payment address exist.</li>
       <li>Release manifest pins exact SHAs and image digests for <code>pool</code>, <code>blockdag-corechain</code>, <code>dashboard</code>, and <code>pool-stack-docker</code>.</li>
       <li>Runtime status exposes packaged repo SHAs/image digests and validates they match the release manifest. Mining start refuses on mismatch unless a logged emergency override is set.</li>
       <li>Keep repo boundaries clean: dashboard source in <code>dashboard</code>; stack packages/pins it and validates packaged copy.</li>
     </ol>
-    <p><strong>Exit criteria:</strong> USB/router hosts cannot accidentally become artifact sources; fresh installs remain sync-only without miners; releases are provenance-pinned and drift-detecting.</p>
+    <p><strong>Exit criteria:</strong> USB/router hosts cannot accidentally become bulk chain data sources; fresh installs remain sync-only without miners; releases are provenance-pinned and drift-detecting.</p>
 
     <h3>Phase 7: Verification And Canary Gates</h3>
     <ol>

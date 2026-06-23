@@ -105,7 +105,7 @@ BDAG_POSTGRES_DATA_DIR=/opt/blockdag-pool/runtime-data/postgres
 BDAG_RUNTIME_DIR=/opt/blockdag-pool/runtime-data/ops-runtime
 ```
 
-Leave old parked chain snapshots on the SD card unless the USB has enough spare
+Leave parked node-data backups on the SD card unless the USB has enough spare
 space. This keeps the USB focused on the hot node chain
 while the OS disk absorbs Postgres WAL, dashboard history, guard state, and
 small log churn. If the internal disk is too small, the installer falls back to
@@ -113,9 +113,9 @@ a single-device USB profile and the preflight reports that all hot writes share
 one device.
 
 USB-backed chain hosts must not act as default bulk chain sources. The release
-default is `SYNC_SOURCE_NODE=0`. The node still syncs and relays found blocks;
-it just does not make the active chain path a bulk download source for other
-clients.
+default does not enable bulk range serving from the active chain path.
+The node still syncs and relays found blocks; it just does not make the USB
+chain path a bulk download source for other clients.
 
 Small scratch files that are safe to lose should not use the chain disk either.
 The release defaults create `/run/bdag-pool` through tmpfiles and set:
@@ -128,8 +128,8 @@ BDAG_CONTAINER_TMPFS_SIZE=128m
 ```
 
 Compose services that generate small temporary files get a bounded `/tmp`
-tmpfs. Do not put large chain snapshots or import artifacts on this RAM-backed
-path unless the host has been sized for it.
+tmpfs. Do not put large chain snapshot archives or import staging on this
+RAM-backed path unless the host has been sized for it.
 
 The installer disables common non-mining timers and services such as apt daily
 jobs, cron, Avahi, CUPS, NFS/rpcbind, and desktop disk/power helpers. It leaves

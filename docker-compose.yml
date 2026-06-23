@@ -5,9 +5,6 @@ x-mining-logging: &mining-logging
     max-size: "10m"
     max-file: "2"
 
-x-build-args: &build-args
-  SNAPSHOT_PATH: ${SNAPSHOT_PATH:-docker/no-snapshot.marker}
-
 x-dev-source-contexts: &dev-source-contexts
   stack_src: ${STACK_SRC_CONTEXT:-.}
   blockdag_corechain: ${BLOCKDAG_CORECHAIN_CONTEXT:-.}
@@ -75,8 +72,8 @@ services:
       retries: 20
 
   # --------------------------------------------------------------------------
-  # BlockDAG node + nodeworker supervisor. Optional snapshot import happens at
-  # container start from a read-only bind mount, not during image build.
+  # BlockDAG node + nodeworker supervisor. Chain DB archive installation is a
+  # host-side installer step; container startup only repairs ownership and runs.
   # --------------------------------------------------------------------------
   node:
     <<: *node-critical
@@ -88,8 +85,6 @@ services:
       target: node
       additional_contexts:
         <<: *dev-source-contexts
-      args:
-        <<: *build-args
     restart: unless-stopped
     logging: *mining-logging
     ports:
@@ -104,13 +99,17 @@ services:
       TEMP: /tmp
       BDAG_NETWORK: ${BDAG_NETWORK:-}
       BDAG_EPHEMERAL_DIR: /run/bdag-ephemeral
-      BDAG_SNAPSHOT_URL: ${BDAG_SNAPSHOT_URL:-}
       BDAG_NODE_ARCHIVAL: ${BDAG_NODE_ARCHIVAL:-0}
       BDAG_ENABLE_NODE_MINING: ${BDAG_ENABLE_NODE_MINING:-0}
       BDAG_NODE_MODULES: ${BDAG_NODE_MODULES:-}
       BDAG_NODE_MINING_ARGS: ${BDAG_NODE_MINING_ARGS:-}
+      BDAG_NODE_METRICS_EXPORTER_ENABLED: ${BDAG_NODE_METRICS_EXPORTER_ENABLED:-1}
+      BDAG_NODE_METRICS_EXPORTER_ADDR: ${BDAG_NODE_METRICS_EXPORTER_ADDR:-0.0.0.0}
+      BDAG_NODE_METRICS_EXPORTER_PORT: ${BDAG_NODE_METRICS_EXPORTER_PORT:-6060}
+      BDAG_NODE_METRICS_EXPORTER_RPC_URL: ${BDAG_NODE_METRICS_EXPORTER_RPC_URL:-http://127.0.0.1:38131}
+      NODE_RPC_USER: ${NODE_RPC_USER:-test}
+      NODE_RPC_PASS: ${NODE_RPC_PASS:-test}
       NODE_ARGS_APPEND: ${NODE_ARGS_APPEND:-}
-      SYNC_SOURCE_NODE: ${SYNC_SOURCE_NODE:-0}
       BDAG_STORAGE_PROFILE: ${BDAG_STORAGE_PROFILE:-auto}
       BDAG_NETWORK_TOPOLOGY: ${BDAG_NETWORK_TOPOLOGY:-auto}
       BDAG_DETECTED_NETWORK_TOPOLOGY: ${BDAG_DETECTED_NETWORK_TOPOLOGY:-}
@@ -129,7 +128,6 @@ services:
 
       - ${NODE_DATA_DIR:-node-data}:/var/lib/bdagStack/node
       - nodeworker-data:/var/lib/bdagStack/nodeworker
-      - ${SNAPSHOT_HOST_PATH:-./docker/no-snapshot.marker}:/snapshot/latest.bdsnap:ro
       # node.conf in project root (copy from node.conf.example). gitignored.
       - ./node.conf:/etc/bdagStack/node.conf:ro
 
@@ -146,8 +144,6 @@ services:
       target: pool
       additional_contexts:
         <<: *dev-source-contexts
-      args:
-        <<: *build-args
     restart: unless-stopped
     logging: *mining-logging
     tmpfs:
@@ -442,8 +438,6 @@ services:
       target: miner
       additional_contexts:
         <<: *dev-source-contexts
-      args:
-        <<: *build-args
     restart: unless-stopped
     logging: *mining-logging
     tmpfs:

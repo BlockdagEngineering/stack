@@ -28,7 +28,6 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS",
                 "MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED",
                 "MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED",
-                "MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED",
                 "CATCHUP_PAUSE_ENABLED",
                 "CATCHUP_PAUSE_ON_SYNCING",
                 "CATCHUP_PAUSE_THRESHOLD_BLOCKS",
@@ -52,8 +51,6 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "run",
                 "save_miner_registry",
                 "set_runtime_env_value",
-                "start_chain_state_self_heal",
-                "update_stalled_import_watch",
                 "upsert_pool_activity_miners",
             )
         }
@@ -74,7 +71,6 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         status_sampler.MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS = 180
         status_sampler.MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED = True
         status_sampler.MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED = True
-        status_sampler.MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED = True
         status_sampler.POOL_ENV_FILE = pathlib.Path("/nonexistent/status-sampler-test.env")
         status_sampler.PROJECT_ROOT = pathlib.Path("/nonexistent/status-sampler-test-root")
         status_sampler.CATCHUP_PAUSE_ENABLED = True
@@ -222,30 +218,6 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertIn(f"left_container_running:{status_sampler.POOL_CONTAINER}:public_chain_divergence", repair["actions"])
         self.assertIn(("public_chain_divergence_left_pool_running", "warning"), incidents)
         self.assertFalse(any(command[:2] == ["docker", "start"] for command in commands))
-
-    def test_chain_state_restore_leaves_running_pool_up_before_self_heal(self) -> None:
-        commands = []
-        incidents = []
-        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
-        payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=500)
-        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
-        payload["sync_health"] = {
-            "needs_chain_data_restore": True,
-            "chain_data_restore_nodes": {"node": {"reasons": ["node DAG tip/block data is damaged"]}},
-        }
-        status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
-        status_sampler.append_incident = (
-            lambda event_type, severity, *_args, **_kwargs: incidents.append((event_type, severity))
-        )
-        status_sampler.update_stalled_import_watch = lambda _payload: {}
-        status_sampler.start_chain_state_self_heal = lambda _payload, _decision: True
-
-        repair = status_sampler.mining_imperative_repair(payload)
-
-        self.assertFalse(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
-        self.assertIn(f"left_container_running:{status_sampler.POOL_CONTAINER}:chain_state_restore", repair["actions"])
-        self.assertIn("started_chain_state_self_heal", repair["actions"])
-        self.assertIn(("chain_state_restore_left_pool_running", "warning"), incidents)
 
     def test_compose_command_uses_stable_project_name_for_symlinked_runtime(self) -> None:
         os.environ.pop("BDAG_COMPOSE_PROJECT_NAME", None)

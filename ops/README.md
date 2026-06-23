@@ -98,7 +98,7 @@ Action buttons are intentionally limited to known maintenance tasks:
 
 - Start stack
 - Restart stack
-- Clean restore from latest snapshot
+- Start stack after operator-managed node data repair
 - Write a Codex handoff file
 - Scan/configure LAN miners from the Miners tab
 
@@ -144,27 +144,10 @@ up and pauses template refreshes from its own node-health signal.
 Set `BDAG_MINING_IMPERATIVE_REPAIR_ENABLED=0` only for an intentional maintenance
 window where mining must remain stopped.
 
-It also owns automatic chain-state self-heal. When status reports
-`needs_chain_data_restore`, `chain_data_restore_required`, an irreparable sync
-block, DAG tip/block damage, or repeated missing-trie state warnings, the sampler
-stops `pool` and starts `bdag-chain-state-self-heal.service`. The repair script
-quarantines damaged chain data, restores from a configured trusted source or
-snapshot, restarts `node` and `dashboard`, and leaves `pool` stopped until normal
-readiness gates make mining safe again. A stateful adjacent detector watches for
-height staying frozen while peer lag grows; after the configured sustained
-threshold it follows the same flow instead of leaving the dashboard stuck in a
-misleading syncing state.
-
-Run the chain-state self-heal manually only for an approved data repair:
-
-```bash
-BDAG_CHAIN_STATE_RESTORE_SOURCE=/path/to/known-good/mainnet \
-  ops/chain-state-self-heal.sh --force
-```
-
-For remote restores, use key-based SSH through
-`BDAG_CHAIN_STATE_RESTORE_SSH_COMMAND`; do not save passwords in `.env`,
-documentation, memory, or source.
+When status reports an irreparable sync block, DAG tip/block damage, or repeated
+missing-trie state warnings, mining stays fail-closed until an operator repairs
+or replaces the node data. Release installs use the host-side chain DB snapshot
+importer for deliberate node data replacement.
 
 ## Thirty-Minute Mining Guard
 
@@ -252,7 +235,7 @@ The watchdog performs a staged repair:
 2. Restart if the node wrapper is up but the `bdag` child process is gone.
 3. Clean restore only after repeated hard failures, such as critical database startup errors.
 
-Clean restore stops the stack, moves existing active chain data to a timestamped backup, restores the newest snapshot from `data-restore/`, and starts the stack.
+Clean restore stops the stack, moves existing active chain data to a timestamped backup, runs `BDAG_RESTORE_NODE_COMMAND` only when explicitly configured, and starts the stack.
 
 Boot-time recovery is handled by `bdag-boot-repair.service`, which waits for Docker, checks the dirty-shutdown marker, and preserves existing chain data by default. A dirty marker now triggers a conservative start/restart path; automatic clean restore is disabled unless `BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE=1` is set explicitly.
 
@@ -311,9 +294,6 @@ Installed unit files:
 ~/.config/systemd/user/bdag-p2p-guard.service
 ~/.config/systemd/user/bdag-watchdog.service
 ~/.config/systemd/user/bdag-sync-coordinator.timer
-~/.config/systemd/user/bdag-chain-restore-guard.timer
-~/.config/systemd/user/bdag-chain-presync.timer
-~/.config/systemd/user/bdag-hourly-snapshot.timer
 ~/.config/systemd/user/bdag-local-peers.timer
 ```
 
@@ -349,7 +329,7 @@ View logs:
 journalctl --user -u bdag-boot-repair.service -u bdag-dashboard.service -u bdag-watchdog.service -u bdag-stack-sentinel.service -f
 ```
 
-The watchdog writes `ops/runtime/dirty-shutdown.marker` while it is running and clears it on a clean stop. If the host loses power, the marker remains; the boot-repair unit preserves current node data and starts the stack. Do not enable automatic clean restore unless the current snapshots are known safe and replacing live chain data is explicitly intended.
+The watchdog writes `ops/runtime/dirty-shutdown.marker` while it is running and clears it on a clean stop. If the host loses power, the marker remains; the boot-repair unit preserves current node data and starts the stack. Replace live chain data only through an explicit operator-managed archive install or repair.
 
 ## Remote Access
 
@@ -367,7 +347,7 @@ Avoid exposing the dashboard directly to the public internet.
 
 The dashboard is now configurable through `ops/runtime/ops.env`, so it can be copied to another pool host or run as multiple named instances on one management machine.
 
-Create a clean bundle that excludes runtime logs, passwords, chain data, database data, snapshots, and `.env`:
+Create a clean bundle that excludes runtime logs, passwords, chain data, database data, archive caches, and `.env`:
 
 ```bash
 ./ops/package-dashboard.sh

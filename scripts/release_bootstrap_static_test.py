@@ -72,6 +72,28 @@ class PayloadInstallerTests(unittest.TestCase):
         self.assertIn("release-payload.env", unix)
         self.assertNotIn("amd64 emulation", unix)
 
+    def test_payload_installer_bootstraps_node_data_before_start(self) -> None:
+        unix = (ROOT / "scripts" / "release" / "installers" / "install-unix-common.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("ensure_node_datadir_bind_mount", unix)
+        self.assertIn("apply_chain_db_archive_env_overrides", unix)
+        self.assertIn("BDAG_RELEASE_INSTALL_CHAIN_DB_ONLY=1 bash ops/release-install.sh --chain-db-only", unix)
+        self.assertLess(
+            unix.index("BDAG_RELEASE_INSTALL_CHAIN_DB_ONLY=1 bash ops/release-install.sh --chain-db-only"),
+            unix.index("docker compose up -d --no-build --pull never node"),
+        )
+        self.assertNotIn("docker compose up -d --no-build --pull never postgres node dashboard", unix)
+
+    def test_release_installer_accepts_datadir_tar_archives(self) -> None:
+        installer = (ROOT / "ops" / "release-install.sh").read_text(encoding="utf-8")
+        self.assertIn('SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"', installer)
+        self.assertIn('SCRIPT_DIR/../docker-compose.yml', installer)
+        self.assertIn("chain_db_archive_local_path", installer)
+        self.assertIn("tar --zstd -xf", installer)
+        self.assertIn("extract_chain_db_datadir_archive", installer)
+        self.assertIn("BDAG_RELEASE_INSTALL_CHAIN_DB_ONLY", installer)
+
 
 class BootstrapPeerDefaultTests(unittest.TestCase):
     LIVE_PUBLIC_BOOTSTRAP_PEER = (

@@ -535,7 +535,7 @@ BACKGROUND_MAINTENANCE_LAZY_TASKS = set(
 BACKGROUND_MAINTENANCE_POOL_READY_TASKS = set(
     split_env_list(
         "BDAG_BACKGROUND_MAINTENANCE_POOL_READY_TASKS",
-        "rawdatadir_publish,rawdatadir_content_seal,ipfs_content_sidecar,ipfs_segment_writer",
+        "",
     )
 )
 BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN = env_float(
@@ -11968,7 +11968,7 @@ def restore_clean(log_path: Path) -> bool:
         backup_node_dir(node_dir, log_path)
 
     for step in (
-        configured_command("BDAG_RESTORE_NODE_COMMAND", ["make", "restore-node-snapshot"]),
+        configured_command("BDAG_RESTORE_NODE_COMMAND", []),
         gated_stack_start_command(log_path),
     ):
         if not step:

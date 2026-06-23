@@ -110,7 +110,7 @@ build_dashboard() {
 
 sync_collector() {
   local src="$REPOS_DIR/collector"
-  need_file "$src/collector.py"
+  local collector_entry
   mkdir -p "$TEST_STACK/collector"
   rsync -a --delete \
     --exclude='.git/' \
@@ -123,6 +123,11 @@ sync_collector() {
     --exclude='*.pyc' \
     --exclude='*.pyo' \
     "$src/" "$TEST_STACK/collector/"
+  collector_entry="$(find "$TEST_STACK/collector" -type f -name collector.py -not -path '*/.git/*' -print -quit)"
+  [[ -n "$collector_entry" ]] || { echo "missing file: $src/**/collector.py" >&2; exit 1; }
+  if [[ "$collector_entry" != "$TEST_STACK/collector/collector.py" ]]; then
+    cp "$collector_entry" "$TEST_STACK/collector/collector.py"
+  fi
 }
 
 verify_outputs() {

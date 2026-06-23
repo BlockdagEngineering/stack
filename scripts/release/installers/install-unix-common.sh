@@ -14,15 +14,7 @@ BDAG_RELEASE_PAYLOAD_DOCKER_PLATFORM=""
 INSTALL_MODE="${BDAG_INSTALL_MODE:-}"
 DEPLOY_KIND="${BDAG_DEPLOY_KIND:-}"
 CHAIN_MODE="${BDAG_CHAIN_MODE:-}"
-BDAG_SNAPSHOT_BASE_URL="${BDAG_SNAPSHOT_BASE_URL:-https://bdagstack.bdagdev.xyz}"
-SNAPSHOT_URL="${BDAG_SNAPSHOT_URL:-}"
 BDAG_NODE_ARCHIVAL=0
-SNAPSHOT_MIN_BYTES="${BDAG_SNAPSHOT_MIN_BYTES:-1048576}"
-BDAG_REQUIRE_SNAPSHOT="${BDAG_REQUIRE_SNAPSHOT:-0}"
-BDAG_SNAPSHOT_DOWNLOADER="${BDAG_SNAPSHOT_DOWNLOADER:-curl}"
-BDAG_ARIA2_CONNECTIONS="${BDAG_ARIA2_CONNECTIONS:-8}"
-BDAG_INSTALL_ARIA2="${BDAG_INSTALL_ARIA2:-0}"
-BDAG_BROWSER_SNAPSHOT_FALLBACK="${BDAG_BROWSER_SNAPSHOT_FALLBACK:-0}"
 BDAG_INSTALL_MIN_FREE_KB="${BDAG_INSTALL_MIN_FREE_KB:-10485760}"
 BDAG_INSTALL_CHECK_PORTS="${BDAG_INSTALL_CHECK_PORTS:-3334 8080 9280 18545 18546 38131}"
 BDAG_INSTALL_STRICT_PORTS="${BDAG_INSTALL_STRICT_PORTS:-0}"
@@ -108,26 +100,6 @@ inplace_sed() {
     fi
 }
 
-file_size_bytes() {
-    if [[ "$OS_NAME" == "macos" ]]; then
-        stat -f%z "$1"
-    else
-        stat -c%s "$1"
-    fi
-}
-
-is_valid_snapshot() {
-    local file="$1"
-    local size
-    [[ -f "$file" ]] || return 1
-    size="$(file_size_bytes "$file" 2>/dev/null || echo 0)"
-    [[ "$size" -ge "$SNAPSHOT_MIN_BYTES" ]]
-}
-
-html_escape() {
-    printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g'
-}
-
 generate_postgres_password() {
     if command -v openssl >/dev/null 2>&1; then
         openssl rand -base64 32 | tr -d '\n'
@@ -135,156 +107,6 @@ generate_postgres_password() {
     fi
 
     od -An -N32 -tx1 /dev/urandom | tr -d ' \n'
-}
-
-ensure_aria2c() {
-    if command -v aria2c >/dev/null 2>&1; then
-        return 0
-    fi
-
-    if [[ "$BDAG_INSTALL_ARIA2" != "1" ]]; then
-        echo "Error: aria2c is required for snapshot downloads when BDAG_SNAPSHOT_DOWNLOADER=aria2c." >&2
-        echo "Install it with: brew install aria2" >&2
-        echo "Or use curl instead: BDAG_SNAPSHOT_DOWNLOADER=curl ./install.sh" >&2
-        return 1
-    fi
-
-    if [[ "$OS_NAME" != "macos" ]]; then
-        echo "Error: aria2c is required, and automatic aria2 installation is only enabled for macOS." >&2
-        return 1
-    fi
-
-    if ! command -v brew >/dev/null 2>&1; then
-        echo "Error: aria2c is missing and Homebrew is not installed." >&2
-        echo "Install Homebrew from https://brew.sh, then re-run this installer." >&2
-        echo "Or use curl instead: BDAG_SNAPSHOT_DOWNLOADER=curl ./install.sh" >&2
-        return 1
-    fi
-
-    echo "aria2c is missing. Installing aria2 with Homebrew..."
-    if ! brew install aria2; then
-        echo "Error: brew install aria2 failed." >&2
-        echo "Or use curl instead: BDAG_SNAPSHOT_DOWNLOADER=curl ./install.sh" >&2
-        return 1
-    fi
-
-    command -v aria2c >/dev/null 2>&1
-}
-
-browser_snapshot_download() {
-    if [[ "$OS_NAME" != "macos" ]]; then
-        echo "Error: browser snapshot download helper is only supported on macOS." >&2
-        return 1
-    fi
-
-    local link_file="download-latest-bdsnap.html"
-    local escaped_url escaped_dir answer
-    escaped_url="$(html_escape "$SNAPSHOT_URL")"
-    escaped_dir="$(html_escape "$PACKAGE_ROOT")"
-
-    cat > "$link_file" <<EOF
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <title>Download latest.bdsnap</title>
-  </head>
-  <body>
-    <p><a href="${escaped_url}" download="latest.bdsnap">Download latest.bdsnap</a></p>
-    <p>Save or move the completed file to:</p>
-    <pre>${escaped_dir}/latest.bdsnap</pre>
-  </body>
-</html>
-EOF
-
-    echo ""
-    echo "Opening a browser download link and Finder at this installer folder:"
-    echo "  ${PACKAGE_ROOT}"
-    echo ""
-    echo "Browsers do not let shell scripts force the download folder."
-    echo "If your browser asks where to save, choose this folder and save as latest.bdsnap."
-    echo "Otherwise, move latest.bdsnap here after the browser download finishes."
-    echo ""
-
-    open "$link_file" >/dev/null 2>&1 || true
-    open "$PACKAGE_ROOT" >/dev/null 2>&1 || true
-
-    while true; do
-        if is_valid_snapshot latest.bdsnap; then
-            echo "Found snapshot: latest.bdsnap ($(file_size_bytes latest.bdsnap) bytes)"
-            return 0
-        fi
-
-        read -rp "Press Enter after latest.bdsnap is in this folder, or type 'skip' to stop waiting: " answer
-        if [[ "$answer" == "skip" ]]; then
-            return 1
-        fi
-    done
-}
-
-download_snapshot() {
-    local tmp="latest.bdsnap.part"
-
-    echo "No local snapshot found. Downloading latest.bdsnap from ${SNAPSHOT_URL}."
-    if [[ "$BDAG_SNAPSHOT_DOWNLOADER" == "aria2c" ]]; then
-        if ! ensure_aria2c; then
-            return 1
-        fi
-
-        echo "Using aria2c with ${BDAG_ARIA2_CONNECTIONS} connections."
-        if ! aria2c \
-            --allow-overwrite=true \
-            --auto-file-renaming=false \
-            --continue=true \
-            --connect-timeout=20 \
-            --dir=. \
-            --file-allocation=none \
-            --max-connection-per-server="$BDAG_ARIA2_CONNECTIONS" \
-            --max-tries=3 \
-            --min-split-size=64M \
-            --out "$tmp" \
-            --retry-wait=2 \
-            --split="$BDAG_ARIA2_CONNECTIONS" \
-            --timeout=60 \
-            "$SNAPSHOT_URL"; then
-            return 1
-        fi
-    elif [[ "$BDAG_SNAPSHOT_DOWNLOADER" == "curl" ]]; then
-        rm -f "$tmp"
-        if ! curl --fail --location --show-error --progress-bar --connect-timeout 20 --retry 2 --retry-delay 2 -o "$tmp" "$SNAPSHOT_URL"; then
-            return 1
-        fi
-    elif [[ "$BDAG_SNAPSHOT_DOWNLOADER" == "browser" ]]; then
-        browser_snapshot_download
-        return $?
-    else
-        echo "Error: unsupported BDAG_SNAPSHOT_DOWNLOADER '${BDAG_SNAPSHOT_DOWNLOADER}'. Use aria2c, curl, or browser." >&2
-        return 1
-    fi
-
-    if [[ -f "$tmp" ]]; then
-        if is_valid_snapshot "$tmp"; then
-            mv -f "$tmp" latest.bdsnap
-            echo "Snapshot downloaded ($(file_size_bytes latest.bdsnap) bytes)."
-            return 0
-        fi
-
-        echo "Warning: downloaded snapshot is too small to be valid ($(file_size_bytes "$tmp" 2>/dev/null || echo 0) bytes)." >&2
-    fi
-
-    if [[ "$BDAG_SNAPSHOT_DOWNLOADER" != "aria2c" ]]; then
-        rm -f "$tmp"
-    fi
-    return 1
-}
-
-continue_without_snapshot_or_exit() {
-    if [[ "$BDAG_REQUIRE_SNAPSHOT" == "1" ]]; then
-        echo "Error: snapshot download/import is required (BDAG_REQUIRE_SNAPSHOT=1), but no valid snapshot is available." >&2
-        exit 1
-    fi
-
-    echo "No snapshot available; continuing with genesis/P2P sync."
 }
 
 compose_project_name() {
@@ -355,8 +177,6 @@ run_release_preflight() {
         echo "jq not found; continuing because installer parsing avoids a jq dependency."
     fi
 
-    curl --fail --location --head --silent --show-error --connect-timeout 10 "$SNAPSHOT_URL" >/dev/null \
-        || warn_or_fail_preflight "could not reach snapshot seed URL ${SNAPSHOT_URL}; the installer will fall back to genesis/P2P sync."
     echo ""
 }
 
@@ -392,23 +212,6 @@ clean_build_context_metadata() {
     find . -name 'System Volume Information' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 }
 
-ensure_dockerignore_pattern() {
-    local pattern="$1"
-    touch .dockerignore
-    if ! grep -Fxq "$pattern" .dockerignore; then
-        printf '\n%s\n' "$pattern" >> .dockerignore
-    fi
-}
-
-ensure_dockerignore_excludes_snapshots() {
-    # Snapshots are mounted at runtime; sending them to Docker build context can
-    # exhaust Docker Desktop's Linux VM disk and fail with input/output errors.
-    ensure_dockerignore_pattern "*.bdsnap"
-    ensure_dockerignore_pattern "latest.bdsnap.part"
-    ensure_dockerignore_pattern "latest.bdsnap.part.*"
-    ensure_dockerignore_pattern "*.aria2"
-}
-
 set_env_value() {
     local file="$1"
     local key="$2"
@@ -432,14 +235,46 @@ env_file_value() {
     printf '%s\n' "$value"
 }
 
-package_path() {
-    local raw="$1"
-    raw="${raw:-./data/node}"
-    case "$raw" in
-        /*) printf '%s\n' "$raw" ;;
-        ./*) printf '%s/%s\n' "$PACKAGE_ROOT" "${raw#./}" ;;
-        *) printf '%s/%s\n' "$PACKAGE_ROOT" "$raw" ;;
-    esac
+absolute_package_path() {
+    local path="$1"
+    if [[ "$path" == /* ]]; then
+        printf '%s\n' "$path"
+    else
+        printf '%s\n' "$PACKAGE_ROOT/${path#./}"
+    fi
+}
+
+ensure_node_datadir_bind_mount() {
+    local node_data_dir node_data_path
+    node_data_dir="$(env_file_value .env NODE_DATA_DIR)"
+    if [[ -z "$node_data_dir" ]]; then
+        node_data_dir="./node-data"
+    fi
+    node_data_path="$(absolute_package_path "$node_data_dir")"
+    if [[ -e "$node_data_path" && ! -d "$node_data_path" ]]; then
+        echo "Error: NODE_DATA_DIR points at a non-directory: $node_data_path" >&2
+        exit 1
+    fi
+    mkdir -p "$node_data_path"
+    set_env_value .env NODE_DATA_DIR "$node_data_dir"
+    set_env_value .env BDAG_NODE_DATA_DIR "$node_data_dir"
+    echo "Node data bind mount: $node_data_path"
+}
+
+apply_chain_db_archive_env_overrides() {
+    local key
+    for key in \
+        BDAG_CHAIN_DB_ARCHIVE_URL \
+        BDAG_CHAIN_DB_ARCHIVE_MIN_BYTES \
+        BDAG_CHAIN_DB_ARCHIVE_KEEP \
+        BDAG_CHAIN_DB_ARCHIVE_FORCE \
+        BDAG_CHAIN_DB_IMPORT_BINARY \
+        BDAG_CHAIN_DB_IMPORT_BATCH_BYTES \
+        BDAG_CHAIN_DB_IMPORT_NO_NETWORK_CHECK; do
+        if [[ -n "${!key:-}" ]]; then
+            set_env_value .env "$key" "${!key}"
+        fi
+    done
 }
 
 detect_lan_ip() {
@@ -700,22 +535,16 @@ select_chain_mode() {
     echo ""
 }
 
-# Resolves the snapshot link and archival flag for the selected chain mode.
-# Snapshot host convention: latest.bdsnap is the non-archive (pruned) snapshot,
-# latest-archive.bdsnap is the archive (full history) snapshot.
+# Resolves the archival flag for the selected chain mode. Chain DB snapshot
+# download/import is handled by ops/release-install.sh after .env is
+# written, using BDAG_CHAIN_DB_ARCHIVE_URL from .env.example by default.
 resolve_mode_settings() {
-    local snapshot_file
     if [[ "$CHAIN_MODE" == "archive" ]]; then
         BDAG_NODE_ARCHIVAL=1
-        snapshot_file="latest-archive.bdsnap"
     else
         BDAG_NODE_ARCHIVAL=0
-        snapshot_file="latest.bdsnap"
     fi
-    if [[ -z "$SNAPSHOT_URL" ]]; then
-        SNAPSHOT_URL="${BDAG_SNAPSHOT_BASE_URL%/}/${snapshot_file}"
-    fi
-    echo "Snapshot source: $SNAPSHOT_URL"
+    echo "Chain snapshot source: BDAG_CHAIN_DB_ARCHIVE_URL from .env"
     echo ""
 }
 
@@ -723,40 +552,11 @@ install_mode_is_node_only() {
     [[ "$DEPLOY_KIND" == "node" ]]
 }
 
-chain_marker_exists() {
-    local network_dir="$1"
-    [[ -d "$network_dir/BdagChain" || -d "$network_dir/bdageth/chaindata" || -d "$network_dir/chaindata" ]]
-}
-
-stage_snapshot_for_node_datadir() {
-    [[ "$SNAPSHOT_PATH" == "./latest.bdsnap" && -f latest.bdsnap ]] || return 0
-
-    local node_dir network_dir target
-    node_dir="$(package_path "$(env_file_value .env BDAG_NODE_DATA_DIR)")"
-    network_dir="$node_dir/mainnet"
-    target="$network_dir/snapshot.bdsnap"
-
-    if chain_marker_exists "$network_dir"; then
-        echo "Existing chain markers found in $network_dir; preserving node data and skipping snapshot staging."
-        return 0
-    fi
-    if [[ -f "$target" && "${BDAG_REPLACE_STAGED_SNAPSHOT:-0}" != "1" ]]; then
-        echo "Existing staged node snapshot found: $target"
-        return 0
-    fi
-
-    mkdir -p "$network_dir"
-    if ln -f latest.bdsnap "$target" 2>/dev/null; then
-        echo "Staged snapshot for node datadir using hard link: $target"
-    else
-        cp -f latest.bdsnap "$target"
-        echo "Staged snapshot for node datadir: $target"
-    fi
-}
-
 if [[ "${BDAG_INSTALL_TEST_WRITE_ENV_ONLY:-0}" == "1" ]]; then
     cp .env.example .env
     set_env_value .env DOCKER_PLATFORM "$DOCKER_PLATFORM"
+    apply_chain_db_archive_env_overrides
+    ensure_node_datadir_bind_mount
     exit 0
 fi
 
@@ -810,7 +610,7 @@ Fix daemon access, then re-run this installer:
 DOCKER_ACCESS
     exit 1
 fi
-require_command curl "Install curl or place latest.bdsnap in this folder before running the installer."
+require_command curl "Install curl so the host-side chain snapshot importer can download the node database."
 
 if [[ ! -f .env.example || ! -f node.conf.example || ! -f docker-compose.yml ]]; then
     echo "Error: run this installer from the extracted pool-stack-docker release folder." >&2
@@ -824,41 +624,6 @@ resolve_mode_settings
 
 run_release_preflight
 enforce_wired_route_policy
-
-SNAPSHOT_PATH="docker/no-snapshot.marker"
-SNAPSHOT_FILE=""
-if [[ -f latest.bdsnap ]] && is_valid_snapshot latest.bdsnap; then
-    SNAPSHOT_FILE="latest.bdsnap"
-else
-    SNAPSHOT_FILE="$(find . -maxdepth 1 -type f -name '*.bdsnap' -print | head -n 1 || true)"
-    if [[ -n "$SNAPSHOT_FILE" ]]; then
-        SNAPSHOT_FILE="${SNAPSHOT_FILE#./}"
-        if is_valid_snapshot "$SNAPSHOT_FILE"; then
-            mv -f "$SNAPSHOT_FILE" latest.bdsnap
-            SNAPSHOT_FILE="latest.bdsnap"
-        else
-            echo "Ignoring invalid snapshot file: $SNAPSHOT_FILE ($(file_size_bytes "$SNAPSHOT_FILE" 2>/dev/null || echo 0) bytes)"
-            SNAPSHOT_FILE=""
-        fi
-    fi
-fi
-
-if [[ -n "$SNAPSHOT_FILE" ]]; then
-    echo "Found snapshot: $SNAPSHOT_FILE ($(file_size_bytes "$SNAPSHOT_FILE") bytes)"
-    SNAPSHOT_HOST_PATH="./latest.bdsnap"
-    SNAPSHOT_IMPORT_ENABLED="1"
-else
-    if download_snapshot; then
-        SNAPSHOT_HOST_PATH="./latest.bdsnap"
-        SNAPSHOT_IMPORT_ENABLED="1"
-    elif [[ "$BDAG_BROWSER_SNAPSHOT_FALLBACK" == "1" ]] && browser_snapshot_download; then
-        SNAPSHOT_HOST_PATH="./latest.bdsnap"
-        SNAPSHOT_IMPORT_ENABLED="1"
-    else
-        rm -f latest.bdsnap
-        continue_without_snapshot_or_exit
-    fi
-fi
 
 echo ""
 echo "=== Configuration ==="
@@ -876,9 +641,9 @@ fi
 cp .env.example .env
 set_env_value .env POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
 set_env_value .env DOCKER_PLATFORM "$DOCKER_PLATFORM"
-set_env_value .env SNAPSHOT_PATH "$SNAPSHOT_PATH"
-set_env_value .env BDAG_SNAPSHOT_URL "$SNAPSHOT_URL"
 set_env_value .env BDAG_NODE_ARCHIVAL "$BDAG_NODE_ARCHIVAL"
+apply_chain_db_archive_env_overrides
+ensure_node_datadir_bind_mount
 
 if install_mode_is_node_only; then
     echo "Node-only install: skipping pool, dashboard, and ASIC configuration."
@@ -938,7 +703,6 @@ if ! install_mode_is_node_only; then
 fi
 
 clean_build_context_metadata
-stage_snapshot_for_node_datadir
 plan_orphan_container_cleanup
 
 export DOCKER_DEFAULT_PLATFORM="$DOCKER_PLATFORM"
@@ -961,11 +725,49 @@ else
     nice -n 19 docker compose build $BUILD_SERVICES
 fi
 
+bootstrap_chain_db_archive() {
+    local archive_url
+    archive_url="$(env_file_value .env BDAG_CHAIN_DB_ARCHIVE_URL)"
+    if [[ -z "$archive_url" ]]; then
+        echo ""
+        echo "No BDAG_CHAIN_DB_ARCHIVE_URL set; node will sync from peers."
+        return 0
+    fi
+    if [[ ! -f ops/release-install.sh ]]; then
+        echo "Error: ops/release-install.sh is missing; cannot bootstrap node data before start." >&2
+        exit 1
+    fi
+
+    echo ""
+    echo "=== Bootstrapping node data ==="
+    BDAG_RELEASE_INSTALL_CHAIN_DB_ONLY=1 bash ops/release-install.sh --chain-db-only
+}
+
+wait_for_node_sync() {
+    echo ""
+    echo "=== Waiting for node sync ==="
+    python3 ops/wait_for_node_sync.py
+}
+
+bootstrap_chain_db_archive
+
 if install_mode_is_node_only; then
     echo ""
     echo "=== Starting node ==="
     docker compose up -d --no-build --pull never node
+else
+    echo ""
+    echo "=== Starting node for initial sync ==="
+    python3 ops/automation_control.py ensure-normal \
+        --owner release-installer \
+        --owner-unit install-unix-common \
+        --reason "Provision default automation control before sync-only first start" >/dev/null
+    docker compose up -d --no-build --pull never node
+fi
 
+wait_for_node_sync
+
+if install_mode_is_node_only; then
     NODE_KIND="non-archive"
     if [[ "$BDAG_NODE_ARCHIVAL" == "1" ]]; then
         NODE_KIND="archive"
@@ -985,23 +787,20 @@ if install_mode_is_node_only; then
 EOF
 else
     echo ""
-    echo "=== Starting sync services ==="
-    python3 ops/automation_control.py ensure-normal \
-        --owner release-installer \
-        --owner-unit install-unix-common \
-        --reason "Provision default automation control before sync-only first start" >/dev/null
-    docker compose up -d --no-build --pull never postgres node dashboard
+    echo "=== Starting remaining services ==="
+    docker compose up -d --no-build --pull never pool-db pool collector dashboard
 
     cat <<'EOF'
 
 =================================================
-  BlockDAG Pool Stack sync services are running.
+  BlockDAG node sync complete and stack services are starting.
 =================================================
-  Dashboard:  http://localhost:9280
-  Stratum:    starts after chain safety gates pass
+  Dashboard:  docker compose up -d pool-db pool dashboard
+  Collector:  docker compose up -d collector
+  Stratum:    docker compose up -d pool-db pool
   EVM RPC:    http://localhost:18545
 
-  View logs:  docker compose logs -f
+  View logs:  docker compose logs -f node
   Stop:       docker compose down
 =================================================
 EOF

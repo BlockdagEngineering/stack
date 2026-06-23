@@ -33,7 +33,6 @@ addpeer=/ip4/16.28.133.168/tcp/8150/p2p/16Uiu2HAkvnS42JoJSUNawLmbsHio2ikQWNWXqSM
 addpeer=/ip4/18.142.70.83/tcp/8150/p2p/16Uiu2HAmBSdn2taoteYwLZJZkDm2iCwL6eQ4UaXYNBBtAwaBU18X
 addpeer=/ip4/47.156.6.142/tcp/8151/p2p/16Uiu2HAmJz7PTCxSWTnuJhvbf4oXEffFZ1KAE3yNBX9SY72jS1ta
 addpeer=/ip4/52.8.54.60/tcp/8150/p2p/16Uiu2HAkzUWr4YUM7mAhLdCVZgFoV9He6aQzKTyWWrJ7SWQKRTN7
-addpeer=/ip4/52.8.80.249/tcp/8150/p2p/16Uiu2HAkxWjKnodZCv7RAJv4XPEFgVZQokoqiFeo7N2nswXHcRMv
 addpeer=/ip4/52.76.239.180/tcp/8150/p2p/16Uiu2HAmMq9zCdQzbUiqzg4dN49cvFck6c8HhjmbBpSChT4ND4Sq
 addpeer=/ip4/54.151.18.92/tcp/8150/p2p/16Uiu2HAmVm91o1JXS2C7P6uTVuVX5empgnRtzuK4UaC8fHmePbKP
 addpeer=/ip4/60.244.89.49/tcp/34040/p2p/16Uiu2HAm24L6Bi9MyAWiJJSazvyuFjy4nCFHzas9NWVCsZa17xDk
@@ -64,7 +63,7 @@ logdir=/var/log/bdagStack
 
 # Native metrics endpoint
 metrics=true
-profile=0.0.0.0:6060
+profile=0.0.0.0:1234
 
 # Keep empty unless node mining is intentionally enabled.
 miningaddr=
@@ -76,7 +75,7 @@ evm.http.api=eth,net,web3,txpool,debug
 http.readtimeout=45s
 http.writetimeout=45s
 http.idletimeout=45s
-evmenv="--rpc.allow-unprotected-txs --metrics --metrics.addr 0.0.0.0 --metrics.port 6060 --cache 2048 --maxpeers 50 --port 30303"
+evmenv="--rpc.allow-unprotected-txs --metrics --cache 2048 --maxpeers 50 --port 30303"
 rpcmaxclients=64
 rpcmaxclientsperhost=16
 rpcmaxconcurrentreqs=500

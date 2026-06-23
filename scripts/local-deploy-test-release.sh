@@ -130,8 +130,15 @@ cp "$TARGET_DIR/node.conf.example" "$TARGET_DIR/node.conf"
 if [[ -f "$CURRENT_STACK/.env" && ! -f "$TARGET_DIR/.env" ]]; then
   cp "$CURRENT_STACK/.env" "$TARGET_DIR/.env"
 fi
+if [[ ! -f "$TARGET_DIR/.env" ]]; then
+  cp "$TARGET_DIR/.env.example" "$TARGET_DIR/.env"
+fi
 
 if [[ -f "$TARGET_DIR/.env" ]]; then
+  set_env_value "$TARGET_DIR/.env" "NODE_DATA_DIR" "./node-data"
+  set_env_value "$TARGET_DIR/.env" "BDAG_NODE_DATA_DIR" "./node-data"
+  mkdir -p "$TARGET_DIR/node-data"
+
   set_env_value "$TARGET_DIR/.env" "BDAG_STACK_HOST_ROOT" "$TARGET_DIR"
 
   asic_lan_interface="$(configured_env_value BDAG_ASIC_LAN_INTERFACE)"

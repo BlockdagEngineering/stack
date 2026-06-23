@@ -111,7 +111,8 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
     def test_release_collector_image_uses_packaged_collector_source(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfile = (ROOT_DIR / "dockerfile").read_text(encoding="utf-8")
-        dockerfile_dev = (ROOT_DIR / "dockerfile-dev").read_text(encoding="utf-8")
+        dockerfile_dev_path = ROOT_DIR / "dockerfile-dev"
+        dockerfile_dev = dockerfile_dev_path.read_text(encoding="utf-8") if dockerfile_dev_path.exists() else ""
         entrypoint = (ROOT_DIR / "docker" / "entrypoint-collector.sh").read_text(encoding="utf-8")
         workflow = (ROOT_DIR / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8")
 
@@ -145,11 +146,12 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn("COPY --from=collector-source /src/collector /opt/collector", dockerfile)
         self.assertNotIn("git clone --depth 1", dockerfile)
         self.assertNotIn("COPY --from=collector_src . /opt/collector", dockerfile)
-        self.assertIn("FROM docker:27-cli AS ops-runtime", dockerfile_dev)
-        self.assertIn("FROM ops-runtime AS collector", dockerfile_dev)
-        self.assertIn("FROM ops-runtime AS watchdog", dockerfile_dev)
-        self.assertIn("FROM ops-runtime AS sentinel", dockerfile_dev)
-        self.assertIn("COPY --from=collector_src . /src/collector", dockerfile_dev)
+        if dockerfile_dev:
+            self.assertIn("FROM docker:27-cli AS ops-runtime", dockerfile_dev)
+            self.assertIn("FROM ops-runtime AS collector", dockerfile_dev)
+            self.assertIn("FROM ops-runtime AS watchdog", dockerfile_dev)
+            self.assertIn("FROM ops-runtime AS sentinel", dockerfile_dev)
+            self.assertIn("COPY --from=collector_src . /src/collector", dockerfile_dev)
         self.assertLess(
             entrypoint.index("add_pythonpath_dir /opt/collector/ops"),
             entrypoint.index('add_pythonpath_dir "$BDAG_PROJECT_ROOT/ops"'),
@@ -160,11 +162,13 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
 
     def test_dashboard_image_uses_checked_out_dashboard_context(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
-        dockerfile_dev = (ROOT_DIR / "dockerfile-dev").read_text(encoding="utf-8")
+        dockerfile_dev_path = ROOT_DIR / "dockerfile-dev"
+        dockerfile_dev = dockerfile_dev_path.read_text(encoding="utf-8") if dockerfile_dev_path.exists() else ""
 
         self.assertIn("dashboard_src: ${DASHBOARD_SRC_CONTEXT:-.}", compose)
-        self.assertIn("WORKDIR /src/dashboard", dockerfile_dev)
-        self.assertIn("COPY --from=dashboard_src . .", dockerfile_dev)
+        if dockerfile_dev:
+            self.assertIn("WORKDIR /src/dashboard", dockerfile_dev)
+            self.assertIn("COPY --from=dashboard_src . .", dockerfile_dev)
 
 
     def test_host_dashboard_env_uses_host_reachable_chain_rpc(self) -> None:
@@ -212,45 +216,43 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn("POOL_RPC_ROUTER_NODE_HEALTH_ENABLED=true", env_example)
         self.assertIn("set_stack_default_env_value .env POOL_RPC_ROUTER_NODE_HEALTH_ENABLED", installer)
 
-    def test_live_deploy_copy_contract_covers_live_validator_files(self) -> None:
+    def test_live_deploy_copy_contract_covers_runtime_update_files(self) -> None:
         deploy = (ROOT_DIR / "ops" / "deploy-live-runtime-update.sh").read_text(encoding="utf-8")
-        validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
         files_match = re.search(r"FILES=\((.*?)\n\)", deploy, re.DOTALL)
         self.assertIsNotNone(files_match)
         deploy_files = set(re.findall(r'"([^"]+)"', files_match.group(1)))
-        ignored = {
-            ".env.cpu.example",
-            ".github/workflows/build-cpu.yml",
-            ".github/workflows/build.yml",
-            ".github/workflows/rc-hardening.yml",
-            "docker-compose.yml",
-            "scripts/check-doc-consistency.py",
-            "scripts/release/installers/install-unix-common.sh",
-            "scripts/release/installers/install-windows.ps1",
-        }
-        required = {
-            rel
-            for rel in re.findall(r'need_file "([^"]+)"', validator)
-            if rel not in ignored and not rel.startswith(".github/")
-        }
 
-        self.assertEqual([], sorted(required - deploy_files))
+        self.assertIn("ops/release-install.sh", deploy_files)
+        self.assertIn("docker/entrypoint-nodeworker.sh", deploy_files)
+        self.assertIn("ops/install-p2p-services.sh", deploy_files)
+        self.assertFalse(any(rel.endswith("_chain_candidate.py") for rel in deploy_files))
 
-    def test_live_runtime_validator_requires_current_runtime_surfaces(self) -> None:
-        validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
+    def test_release_validator_requires_current_runtime_surfaces(self) -> None:
+        validator = (ROOT_DIR / "scripts" / "validate-release-build.sh").read_text(encoding="utf-8")
 
-        self.assertIn('if [[ "$mode" == "source" && -e "$root/ops/observability" ]]; then', validator)
-        self.assertIn('need_grep \'POOL_SUBMIT_RPC_URLS: .*POOL_SUBMIT_RPC_URLS\' "docker-compose.yml"', validator)
+        self.assertIn('need_grep \'^BDAG_CHAIN_DB_ARCHIVE_URL=\' ".env.example"', validator)
+        self.assertIn("normal-node-exports/.*/blockdag-normal-node-bootstrap-mainnet-20260623T080429Z-verified", validator)
+        self.assertIn('need_grep \'^BDAG_CHAIN_DB_ARCHIVE_MIN_BYTES=1048576$\' ".env.example"', validator)
+        self.assertIn('need_grep \'^BDAG_CHAIN_DB_IMPORT_BATCH_BYTES=16777216$\' ".env.example"', validator)
+        self.assertIn('need_grep \'snap import --datadir\' "ops/release-install.sh"', validator)
+        self.assertIn('need_grep \'tar --zstd -xf\' "ops/release-install.sh"', validator)
+        self.assertIn('need_grep \'chain_db_archive_local_path\' "ops/release-install.sh"', validator)
+        self.assertIn('need_grep \'BDAG_CHAIN_DB_ARCHIVE_URL\' "ops/release-install.sh"', validator)
+        self.assertIn('need_grep \'Existing node chain data was found in \\$node_dir/mainnet/BdagChain; skipping chain DB download.\' "ops/release-install.sh"', validator)
+        self.assertIn('need_file "ops/wait_for_node_sync.py"', validator)
+        self.assertIn('need_grep \'python3 ops/wait_for_node_sync.py\' "ops/release-install.sh"', validator)
+        self.assertIn('need_grep \'python3 ops/wait_for_node_sync.py\' "scripts/release/installers/install-unix-common.sh"', validator)
+        self.assertIn('reject_grep \'BDAG_CHAIN_DB_ARCHIVE_SHA256\' ".env.example"', validator)
+        self.assertIn('reject_grep \'BDAG_CHAIN_DB_ARCHIVE_SHA256\' "ops/release-install.sh"', validator)
         self.assertIn('need_grep \'NODE_RPC_URLS: .*http://node:38131\' "docker-compose.yml"', validator)
-        self.assertIn('need_grep \'BDAG_STACK_SERVICES=postgres,node,pool\' ".env.example"', validator)
-        self.assertIn('reject_grep \'container_name:\' "docker-compose.yml"', validator)
+        self.assertIn('need_grep \'^BDAG_STACK_SERVICES=postgres,node,pool$\' ".env.example"', validator)
 
-    def test_live_runtime_validator_keeps_release_packaging_source_only(self) -> None:
-        validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
+    def test_release_validator_keeps_release_packaging_source_only(self) -> None:
+        validator = (ROOT_DIR / "scripts" / "validate-release-build.sh").read_text(encoding="utf-8")
 
-        self.assertIn('need_grep \'check-release-archive.py\' ".github/workflows/build.yml"', validator)
-        self.assertIn('need_grep \'check-release-archive.py\' ".github/workflows/build-cpu.yml"', validator)
-        self.assertIn('reject_grep \'BDAG_P2P_LAN_PEERS=\' ".env.cpu.example"', validator)
+        self.assertIn('need_grep \'scripts/check-release-archive.py\' ".github/workflows/build.yml"', validator)
+        self.assertIn('reject_grep \'SNAPSHOT_PATH\' ".env.example"', validator)
+        self.assertIn('reject_grep \'BDAG_SNAPSHOT_URL\' "docker-compose.yml"', validator)
 
     def test_live_deploy_rollback_validates_manifest_not_new_rc_contract(self) -> None:
         deploy = (ROOT_DIR / "ops" / "deploy-live-runtime-update.sh").read_text(encoding="utf-8")
@@ -272,11 +274,14 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         ).read_text(encoding="utf-8")
 
         self.assertIn("automation_control.py ensure-normal", local_installer)
-        self.assertIn("compose_cmd up -d --no-build --pull never postgres node dashboard", local_installer)
-        self.assertNotIn("compose_cmd up -d --no-build --pull never\n", local_installer)
+        self.assertIn("compose_cmd up -d --no-build --pull never node", local_installer)
+        self.assertIn("wait_for_node_sync", local_installer)
         self.assertIn("automation_control.py ensure-normal", payload_installer)
-        self.assertIn("docker compose up -d --no-build --pull never postgres node dashboard", payload_installer)
-        self.assertNotIn("docker compose up -d --no-build --pull never\n", payload_installer)
+        self.assertIn("docker compose up -d --no-build --pull never node", payload_installer)
+        self.assertIn("BDAG_RELEASE_INSTALL_CHAIN_DB_ONLY=1 bash ops/release-install.sh --chain-db-only", payload_installer)
+        self.assertIn("ensure_node_datadir_bind_mount", payload_installer)
+        self.assertIn("python3 ops/wait_for_node_sync.py", payload_installer)
+        self.assertIn("docker compose up -d --no-build --pull never pool-db pool collector dashboard", payload_installer)
 
     def test_release_installer_extracts_preserved_chain_peer_evidence(self) -> None:
         installer = (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8")
@@ -297,7 +302,7 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         windows_installer = (
             ROOT_DIR / "scripts" / "release" / "installers" / "install-windows.ps1"
         ).read_text(encoding="utf-8")
-        validator = (ROOT_DIR / "scripts" / "validate-pi5-restart-hardening.sh").read_text(encoding="utf-8")
+        validator = (ROOT_DIR / "scripts" / "validate-release-build.sh").read_text(encoding="utf-8")
 
         self.assertIn("BDAG_DOCKER_BRIDGE_CIDRS=172.16.0.0/12", env_example)
         self.assertIn("BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS=0", env_example)

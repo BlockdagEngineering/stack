@@ -58,7 +58,6 @@ WATCHDOG_LOG = LOG_DIR / "watchdog.log"
 EFFICIENCY_EVENTS_FILE = LOG_DIR / "efficiency-events.jsonl"
 LOCK_FILE = RUNTIME_DIR / "repair.lock"
 DIRTY_SHUTDOWN_MARKER = RUNTIME_DIR / "dirty-shutdown.marker"
-HOURLY_SNAPSHOT_LOCK_FILE = RUNTIME_DIR / "hourly-chain-snapshot.lock"
 AUTONOMOUS_STACK_LAB_LOCK_FILE = RUNTIME_DIR / "autonomous-stack-lab.lock"
 
 DEFAULT_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_INTERVAL", "60"))
@@ -875,15 +874,13 @@ def lock_is_held(path: Path) -> bool:
     return False
 
 
-def refresh_maintenance_state(state: dict, snapshot_active: bool, autonomous_lab_active: bool) -> None:
+def refresh_maintenance_state(state: dict, autonomous_lab_active: bool) -> None:
     previous = state.get("maintenance") if isinstance(state.get("maintenance"), dict) else {}
     previous_active = bool(previous.get("active"))
     previous_reason = str(previous.get("reason") or "")
 
     reason = ""
-    if snapshot_active:
-        reason = "hourly snapshot lock is held"
-    elif autonomous_lab_active:
+    if autonomous_lab_active:
         reason = "autonomous stack lab lock is held"
 
     if reason:
@@ -1802,9 +1799,8 @@ def check_once(
         else {}
     )
     docker_access_error = status.get("docker_access_error")
-    snapshot_active = lock_is_held(HOURLY_SNAPSHOT_LOCK_FILE)
     autonomous_lab_active = lock_is_held(AUTONOMOUS_STACK_LAB_LOCK_FILE)
-    refresh_maintenance_state(state, snapshot_active, autonomous_lab_active)
+    refresh_maintenance_state(state, autonomous_lab_active)
     triage = build_mining_health_triage(
         status=status,
         now=now,
@@ -1963,22 +1959,7 @@ def check_once(
         elif repair:
             record_failed_repair("watchdog_enable_node_mining_template_support", message)
 
-    if stack_failures and snapshot_active:
-        state["consecutive_failures"] = 0
-        state["consecutive_syncing"] = 0
-        state["consecutive_share_stalls"] = 0
-        state["last_status"] = "maintenance"
-        state["last_failures"] = []
-        state["last_sync_warnings"] = []
-        state["last_share_warnings"] = []
-        state["maintenance"] = {
-            "active": True,
-            "reason": "hourly snapshot lock is held",
-            "stack_failures_suppressed": stack_failures,
-            "updated_at": now_iso(),
-        }
-        log("stack repair suppressed during hourly snapshot: " + "; ".join(stack_failures))
-    elif stack_failures:
+    if stack_failures:
         if pool_start_blocked and pool_stopped_is_only_stack_failure(stack_failures):
             state["consecutive_failures"] = 0
             state["consecutive_syncing"] = 0
@@ -2076,15 +2057,7 @@ def check_once(
             cooldown_remaining = DEFAULT_NODE_ORPHAN_STORM_RESTART_COOLDOWN - (
                 now - int(node_orphan_restart_by_node.get(target_node, 0) or 0)
             )
-            if snapshot_active:
-                log(f"node orphan storm repair for {target_node} suppressed during hourly snapshot")
-                record_efficiency_event(
-                    "repair_suppressed",
-                    "warning",
-                    f"node orphan storm repair for {target_node} suppressed during hourly snapshot",
-                    {"reason": reason, "target_node": target_node},
-                )
-            elif autonomous_lab_active:
+            if autonomous_lab_active:
                 log(f"node orphan storm repair for {target_node} suppressed during autonomous stack lab")
                 record_efficiency_event(
                     "repair_suppressed",
@@ -2580,15 +2553,7 @@ def check_once(
                     )
                 except (TypeError, ValueError):
                     recovery_grace_remaining = DEFAULT_SUBMIT_PATH_SELF_RECOVERY_GRACE_SECONDS
-            if snapshot_active:
-                log("pool submit-path restart suppressed during hourly snapshot")
-                record_efficiency_event(
-                    "repair_suppressed",
-                    "warning",
-                    "pool submit-path restart suppressed during hourly snapshot",
-                    {"reason": reason},
-                )
-            elif autonomous_lab_active:
+            if autonomous_lab_active:
                 log("pool submit-path restart suppressed during autonomous stack lab")
                 record_efficiency_event(
                     "repair_suppressed",

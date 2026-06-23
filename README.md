@@ -57,10 +57,11 @@ The payload installer makes two independent choices in two steps:
 
 **Step 2 — chain data type (applies to either deployment):**
 
-1. **Non-archive** (default) — pruned chain data, bootstrapped from the standard
-   snapshot.
+1. **Non-archive** (default) — pruned chain data, bootstrapped from the chain DB
+   snapshot archive.
 2. **Archive** — node started with `--archival` (consensus keeps full block
-   history instead of pruning), bootstrapped from the archive snapshot.
+   history instead of pruning), bootstrapped from a matching chain DB snapshot
+   archive.
 
 Set `BDAG_DEPLOY_KIND=pool|node` and/or `BDAG_CHAIN_MODE=archive|non-archive` to
 preselect either step for non-interactive installs (the legacy
@@ -75,48 +76,37 @@ bash install-node.sh --archive      # archive node, no prompt
 bash install-node.sh --no-archive   # pruned node, no prompt
 ```
 
-The chain-data choice determines the snapshot link written to `BDAG_SNAPSHOT_URL`
-in `.env`. By convention the snapshot host serves `latest.bdsnap`
-(non-archive/pruned) and `latest-archive.bdsnap` (archive/full history); the
-host can be overridden with `BDAG_SNAPSHOT_BASE_URL` and the full link with
-`BDAG_SNAPSHOT_URL`. The node container also reads `BDAG_SNAPSHOT_URL` at
-first start and downloads/imports the snapshot itself when no local snapshot
-or chain data exists. Choosing archive additionally sets `BDAG_NODE_ARCHIVAL=1`
-in `.env`, which makes the node entrypoint append the `--archival` flag.
+The installer reads `BDAG_CHAIN_DB_ARCHIVE_URL` from `.env`, downloads or copies
+the trusted chain DB archive on the host, materializes it into
+`BDAG_NODE_DATA_DIR`, and validates `mainnet/BdagChain` before starting the node
+container. It accepts `.tar.zst` datadir archives and legacy `.bdsnap` exports.
+Existing chain data is preserved by default; the installer prompts before
+replacing it and parks the previous node data directory as a timestamped backup. Choosing archive
+additionally sets `BDAG_NODE_ARCHIVAL=1` in `.env`, which makes the node
+entrypoint append the `--archival` flag.
 
 The payload installer writes `.env` and `node.conf`, generates a strong Postgres
-password unless `POSTGRES_PASSWORD` is already set, downloads the snapshot
-when needed, sets `DOCKER_PLATFORM` from the downloaded payload's
+password unless `POSTGRES_PASSWORD` is already set, sets `DOCKER_PLATFORM` from
+the downloaded payload's
 `release-payload.env`, and runs
-`docker compose build && docker compose up -d --no-build --pull never postgres node dashboard`
-(pool stack) or `docker compose build node && docker compose up -d --no-build --pull never node`
-(node-only).
+`docker compose build`, bootstraps the node datadir when
+`BDAG_CHAIN_DB_ARCHIVE_URL` is set, and then starts only
+`docker compose up -d --no-build --pull never node` for initial sync. Node-only
+installs build only the node image.
 
 Fresh installs assume zero miner sources. Initial install and chain sync must
 work with no ASICs or Stratum miners configured; operators can opt in to the
 miner wizard after sync and may configure 0..N miner sources. The RC must not
 treat this host's five X100 devices as a release default.
 
-On macOS, the installer uses `aria2c` for faster, resumable snapshot downloads and installs it with Homebrew when missing. If that path fails, it opens a browser download link and Finder at the installer folder, then waits for `latest.bdsnap` to appear there. Browsers may still save to Downloads unless you choose the installer folder. To skip the dependency install, force curl with `BDAG_SNAPSHOT_DOWNLOADER=curl bash install.sh`; to go straight to the browser helper, use `BDAG_SNAPSHOT_DOWNLOADER=browser bash install.sh`. On Windows, the installer uses `aria2c` when available, tries to install it with `winget`, then falls back to BITS and PowerShell download.
-
-The installer uses host-path chain storage at `BDAG_NODE_DATA_DIR` and preserves
-existing chain data. When a valid `latest.bdsnap` is available and the configured
-node datadir has no chain markers, the installer stages that snapshot into the
-host datadir so the container can import it on first start. To replace existing
-chain data, stop the stack and move the configured datadir aside deliberately
-before running the installer.
-
-If the default snapshot host is unavailable, point the installer at the snapshot URL you want to use:
+If the default chain DB snapshot archive is unavailable, point the installer at the archive URL you want to use:
 
 ```bash
-BDAG_SNAPSHOT_URL=https://your-host.example/latest.bdsnap bash install.sh
+BDAG_CHAIN_DB_ARCHIVE_URL=https://your-host.example/mainnet.tar.zst bash install.sh
 ```
 
-The installer requires a valid snapshot by default. To allow the node to sync from P2P when no valid snapshot can be downloaded, use:
-
-```bash
-BDAG_REQUIRE_SNAPSHOT=0 bash install.sh
-```
+To skip snapshot bootstrap and sync from peers, leave `BDAG_CHAIN_DB_ARCHIVE_URL`
+empty in `.env` before running the installer.
 
 On macOS, if Docker reports an `xattr` error for files such as `._.env.example`, those are AppleDouble metadata files from the extracted folder or external drive. Current release packages include `.dockerignore` and the installer removes those files before building. For an older extracted folder, clean it manually and run the installer again:
 
@@ -182,42 +172,6 @@ startup logs, probes candidate multiaddrs for TCP reachability, writes
 bootstrap hint; install completion and mining readiness still require normal
 peer handshakes, sync freshness, RPC health, and template checks.
 
-## Fast Artifact Sync V2 Directory Mode
-
-Fast Artifact Sync V2 directory artifacts are now the preferred empty-datadir
-bootstrap path when a peer offers them. The node entrypoint first checks whether
-the packaged `fastsnap` binary supports directory install flags. When supported,
-it passes both `--dir-out` and `--out`: directory-capable peers install verified
-manifest files directly into the node datadir, while archive-only peers still
-fall back to the `.bdsnap` path. If the binary is older, the entrypoint stays on
-the V2 archive path instead of failing before normal sync can start.
-
-`BDAG_FASTSNAP_DIRECTORY_MODE=1` is the default. Set
-`BDAG_FASTSNAP_DIRECTORY_STAGING` only when the staging directory must live on a
-specific filesystem; otherwise the entrypoint creates a temporary staging path
-beside the node datadir. Serving a maintained directory hot stage is opt-in:
-set `BDAG_FASTSYNC_ARTIFACT_DIRECTORY` to the verified file root and
-`BDAG_FASTSYNC_ARTIFACT_MANIFEST` to the manifest sidecar. When a node was
-bootstrapped from a directory artifact, the entrypoint automatically exposes
-that verified checkpoint from the node datadir by using
-`artifact.manifest.json`.
-
-## IPFS Content Discovery
-
-Future systems should read `ops/ipfs-content-discovery.json` for the durable
-IPFS/IPNS discovery contract. The stable latest pointer is
-`/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk`; the current
-immutable latest-index CID is
-recorded in that discovery file. At the first live segment publish on
-2026-05-31 it was `bafkreifvqj7qhkoifykybbvlxxmq3jhydgzq2kjxuq5fznjizjjogzgthi`.
-The stale monolithic FastSnap seed has been deprecated. The current implementation
-writes append-only live-tail chain-order segments from the local node. The
-durable protocol design is recorded in
-`docs/ipfs-append-only-segment-protocol.html`. IPFS and IPNS are
-not chain trust. Receivers must verify segment CIDs, payload hashes, order
-continuity, network/genesis identity, tip/state roots, and normal consensus
-before using the data.
-
 ## Runtime Stability Defaults
 
 No-miner deployments are sync-only by default: `BDAG_ENABLE_NODE_MINING=0`,
@@ -225,11 +179,10 @@ No-miner deployments are sync-only by default: `BDAG_ENABLE_NODE_MINING=0`,
 mining/template flags only when real miners are attached. Do not add unsynced
 mining bypass flags; readiness gates must fail closed until node sync and P2P
 freshness are healthy. The dashboard,
-watchdog, stack sentinel, P2P guard, peer refresh, chain restore guard, and
-snapshot timers are installed by `ops/install-dashboard.sh` unless explicitly
-disabled. Runtime tooling uses the current stack service names: `node`, `pool`,
-and `postgres`. Concrete Compose container names may include project and ordinal
-suffixes.
+watchdog, stack sentinel, P2P guard, and peer refresh timers are installed by
+`ops/install-dashboard.sh` unless explicitly disabled. Runtime tooling uses the
+current stack service names: `node`, `pool`, and `postgres`. Concrete Compose
+container names may include project and ordinal suffixes.
 
 Catch-up has priority over mining when a production node is I/O-bound while it
 is behind peers or while the selected backend is not mineable/submit-ready.
@@ -278,28 +231,11 @@ through the guards with `ops/replay_triage.py`. Watchdog, sentinel, and the
 30-minute mining guard all support dry-run execution so they can classify
 incidents without mutating the stack.
 
-If a node stops importing while peers continue advancing, the dashboard must not
-describe the state as ordinary catch-up. Node logs that contain `Irreparable
-error`, `Not DAG block`, DAG tip/block damage, or repeated `missing trie node`
-warnings are chain-data restore triggers. The status sampler fails mining closed,
-starts the one-shot `${INSTANCE}-chain-state-self-heal.service`, and the script
-`ops/chain-state-self-heal.sh` quarantines the damaged node datadir, restores
-from `BDAG_CHAIN_STATE_RESTORE_SOURCE` or `BDAG_CHAIN_STATE_RESTORE_SNAPSHOT`,
-restarts `node` and `dashboard` with `--no-build --pull never`, and leaves
-`pool` stopped until readiness gates pass. A softer adjacent detector records
-sustained stuck height while peer lag grows; by default it requires 900 seconds,
-at least 1000 blocks of peer lead, and 60 blocks of gap growth before it triggers
-the same fail-closed self-heal flow. Remote restore sources should use key-based
-SSH via `BDAG_CHAIN_STATE_RESTORE_SSH_COMMAND`; do not put passwords in source or
-checked-in env files.
-
 The Pi5 release builder marks generated runtime compose files with
 `BDAG_GENERATED_PI5_RUNTIME_COMPOSE=1` and rejects `build:`/`dockerfile:`
 entries in runtime packages. Runtime starts use `--no-build --pull never` by
 default; set an explicit pull/build flag only when intentionally refreshing
-images. Keep `scripts/validate-pi5-restart-hardening.sh` in the release gate
-before cutting an RC, and use `--mode live-runtime` for an installed stack where
-`ops/runtime` and Python bytecode are expected service artifacts.
+images. Run `scripts/validate-release-build.sh` before cutting an RC.
 
 Constrained mining appliances also run a read-only install preflight before
 chain seeding or stack start. `scripts/mining-appliance-preflight.py` checks the
@@ -313,9 +249,8 @@ it has enough headroom. USB-backed chain data always prefers this split. Small
 ephemeral scratch is kept on bounded tmpfs through `BDAG_EPHEMERAL_DIR`,
 `BDAG_CONTAINER_TMPFS_SIZE`, and node-specific `BDAG_NODE_TMPFS_SIZE`; service
 containers also mount `/var/tmp` as tmpfs and export `TMPDIR`, `TMP`, and
-`TEMP` to avoid accidental temp spillover into overlay layers. Large
-snapshot and chain-artifact staging stays on capacity storage unless
-deliberately overridden. The installer reports
+`TEMP` to avoid accidental temp spillover into overlay layers. Large chain
+archive staging stays on capacity storage unless deliberately overridden. The installer reports
 warnings and continues by default. Set `BDAG_APPLIANCE_PREFLIGHT_STRICT=1` to
 make hard failures stop the install, or `BDAG_APPLIANCE_PREFLIGHT=0` to skip it
 explicitly. The field report behind these checks is in
@@ -433,41 +368,12 @@ restarts. Docker bridge networks default to `172.16.0.0/12` and are filtered
 from ASIC discovery and displayed Stratum endpoints; seeing `172.*` as a miner
 IP or pool endpoint is a configuration failure, not a valid physical miner.
 
-## Default V2 Sync Source
+## Chain DB Snapshot Bootstrap
 
-New installs use Fast Artifact Sync V2 as the preferred bootstrap path. Client
-sync is enabled by default; source serving is disabled unless
-`SYNC_SOURCE_NODE=1` is set and the chain, sidecar, artifact, temporary, and
-Docker paths are not USB/removable/external and the host has enough CPU, RAM,
-and disk headroom.
-
-Eligible source hosts maintain a low-priority raw datadir sidecar and publish a
-signed `raw_datadir_checkpoint` artifact from a finalized sidecar generation.
-The artifact publisher does not stop the live node automatically. Set
-`BDAG_RAWDATADIR_FINALIZE=1` only for an operator-approved
-finalization window.
-
-The archive seed timer is not part of this stack because IPFS segments and
-finalized raw-datadir sidecars now own source publication.
-
-Check source eligibility and status with:
-
-```bash
-./ops/fastartifact_source_eligibility.py --full --json
-```
-
-Refresh/publish the raw datadir source path with:
-
-```bash
-./ops/publish-rawdatadir-artifact.sh
-```
-
-See `docs/rawdatadir-libp2p-sync.md` and
-`docs/ipfs-append-only-segment-protocol.html`.
-
-IPFS segments and finalized raw-datadir sidecars are the supported
-content-publication paths. Published files must be manifest-indexed and
-consensus-validated before use.
+New installs use the host-side chain DB snapshot archive path by default. The
+installer downloads or copies the configured archive before the node starts,
+extracts `.tar.zst` datadir archives into `BDAG_NODE_DATA_DIR`, and validates
+`mainnet/BdagChain`. Runtime containers do not download bootstrap data.
 
 ## Release readiness
 

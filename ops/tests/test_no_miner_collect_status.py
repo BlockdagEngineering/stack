@@ -915,7 +915,7 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
             },
         }
 
-        decision = pool_ops.background_maintenance_decision("rawdatadir_content_seal", status)
+        decision = pool_ops.background_maintenance_decision("archive_cache_cleanup", status)
 
         self.assertFalse(decision["allowed"])
         self.assertFalse(decision["pool_ready_required"])
@@ -979,15 +979,10 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
         self.assertTrue(any("mode=ready_no_miners" in reason for reason in decision["reasons"]))
         self.assertTrue(any("pool can_mine=false" in reason for reason in decision["reasons"]))
 
-    def test_rawdatadir_sidecar_can_run_when_pool_is_intentionally_not_ready(self) -> None:
+    def test_lazy_task_can_run_when_pool_is_intentionally_not_ready_without_pool_ready_requirement(self) -> None:
         pool_ops.BACKGROUND_MAINTENANCE_BACKOFF_ENABLED = True
-        pool_ops.BACKGROUND_MAINTENANCE_LAZY_TASKS = {"rawdatadir_sidecar"}
-        pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = {
-            "rawdatadir_publish",
-            "rawdatadir_content_seal",
-            "ipfs_content_sidecar",
-            "ipfs_segment_writer",
-        }
+        pool_ops.BACKGROUND_MAINTENANCE_LAZY_TASKS = {"archive_cache_cleanup"}
+        pool_ops.BACKGROUND_MAINTENANCE_POOL_READY_TASKS = set()
         pool_ops.host_runtime_profile = lambda: {"cpu_count": 8}
         status = {
             "overall": "syncing",
@@ -1004,7 +999,7 @@ class BackgroundMaintenanceDecisionTests(unittest.TestCase):
             },
         }
 
-        decision = pool_ops.background_maintenance_decision("rawdatadir_sidecar", status)
+        decision = pool_ops.background_maintenance_decision("archive_cache_cleanup", status)
 
         self.assertTrue(decision["allowed"])
         self.assertTrue(decision["task_is_lazy"])

@@ -74,10 +74,19 @@ class NodeworkerEntrypointTest(unittest.TestCase):
 
         self.assert_stdout_contains(result, "NODE_ARGS_APPEND=")
 
+    def test_print_mode_enables_native_metrics_collection_by_default(self) -> None:
+        result = self.run_entrypoint({})
+
+        self.assert_stdout_contains(result, "--metrics")
+
+    def test_print_mode_preserves_explicit_metrics_flag(self) -> None:
+        result = self.run_entrypoint({"NODE_ARGS_APPEND": "--metrics=false"})
+
+        self.assert_stdout_contains(result, "NODE_ARGS_APPEND=--metrics=false")
+
     def test_print_mode_does_not_emit_removed_sync_flags(self) -> None:
         result = self.run_entrypoint(
             {
-                "SYNC_SOURCE_NODE": "1",
                 "NODE_ARGS_APPEND": "--cache=1024",
             }
         )
@@ -120,7 +129,6 @@ class NodeworkerEntrypointTest(unittest.TestCase):
             }
         )
 
-        self.assertNotIn("--fastartifactsync", result.stdout)
         self.assert_stdout_contains(result, "--miner")
         self.assert_stdout_contains(result, "--miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc")
         self.assertNotIn("--allowminingwhennearlysynced", result.stdout)

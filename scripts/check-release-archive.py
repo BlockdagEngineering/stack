@@ -16,18 +16,19 @@ DENY_COMPONENTS = {
     ".github",
     ".pytest_cache",
     "__pycache__",
+    "chain-db-archives",
     "runtime",
     "data",
 }
 DENY_BASENAMES = {
     ".env",
     "node.conf",
-    "latest.bdsnap",
     ".DS_Store",
     "Thumbs.db",
     "desktop.ini",
 }
 DENY_SUFFIXES = (".pyc", ".pyo")
+DENY_TEMP_SUFFIXES = (".tar.zst.part", ".bdsnap", ".bdsnap.part", ".bdsnap.download", ".tmp")
 
 LOCAL_SKIP_COMPONENTS = {
     ".git",
@@ -70,8 +71,8 @@ def blocked_reason(member: str) -> str | None:
         return "VCS metadata, cache, or mutable runtime/data directory"
     if basename.endswith(DENY_SUFFIXES):
         return "Python bytecode/cache file"
-    if basename in DENY_BASENAMES or basename.endswith(".bdsnap.part") or basename.endswith(".tmp"):
-        return "mutable host config, snapshot, or temporary file"
+    if basename in DENY_BASENAMES or basename.endswith(DENY_TEMP_SUFFIXES):
+        return "mutable host config, chain snapshot cache, or temporary file"
     return None
 
 

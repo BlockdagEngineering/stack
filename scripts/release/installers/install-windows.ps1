@@ -59,13 +59,6 @@ $deployKind = $env:BDAG_DEPLOY_KIND
 $chainMode = $env:BDAG_CHAIN_MODE
 $nodeOnlyInstall = $false
 $nodeArchival = '0'
-$snapshotBaseUrl = if ($env:BDAG_SNAPSHOT_BASE_URL) { $env:BDAG_SNAPSHOT_BASE_URL } else { 'https://bdagstack.bdagdev.xyz' }
-$snapshotUrl = $env:BDAG_SNAPSHOT_URL
-$snapshotMinBytes = if ($env:BDAG_SNAPSHOT_MIN_BYTES) { [int64]$env:BDAG_SNAPSHOT_MIN_BYTES } else { [int64]1048576 }
-$requireSnapshot = $env:BDAG_REQUIRE_SNAPSHOT -eq '1'
-$requestedSnapshotDownloader = if ($env:BDAG_SNAPSHOT_DOWNLOADER) { $env:BDAG_SNAPSHOT_DOWNLOADER.ToLowerInvariant() } else { 'auto' }
-$aria2Connections = if ($env:BDAG_ARIA2_CONNECTIONS) { [int]$env:BDAG_ARIA2_CONNECTIONS } else { 8 }
-$installAria2 = $env:BDAG_INSTALL_ARIA2 -ne '0'
 $installMinFreeBytes = if ($env:BDAG_INSTALL_MIN_FREE_BYTES) { [int64]$env:BDAG_INSTALL_MIN_FREE_BYTES } else { [int64]10737418240 }
 $installCheckPorts = if ($env:BDAG_INSTALL_CHECK_PORTS) { $env:BDAG_INSTALL_CHECK_PORTS -split '[, ]+' } else { @('3334', '8080', '9280', '18545', '18546', '38131') }
 $strictPreflight = $env:BDAG_INSTALL_STRICT_PREFLIGHT -eq '1'
@@ -137,11 +130,6 @@ function Invoke-ReleasePreflight {
         Write-Host "jq not found; continuing because installer parsing avoids a jq dependency."
     }
 
-    try {
-        Invoke-WebRequest -Uri $snapshotUrl -Method Head -UseBasicParsing -TimeoutSec 10 | Out-Null
-    } catch {
-        Warn-OrFailPreflight "could not reach snapshot seed URL $snapshotUrl; the installer will fall back to genesis/P2P sync."
-    }
     Write-Host ""
 }
 
@@ -170,164 +158,64 @@ function Get-EnvFileValue([string]$Path, [string]$Key) {
     return $value
 }
 
-function Resolve-PackagePath([string]$Value) {
-    if (-not $Value) { $Value = './data/node' }
-    if ([System.IO.Path]::IsPathRooted($Value)) { return $Value }
-    $clean = $Value -replace '^[.][\\/]', ''
-    return (Join-Path (Get-Location).Path $clean)
+function Resolve-PackagePath([string]$Path) {
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return $Path
+    }
+    return (Join-Path $packageRoot ($Path -replace '^[.][\\/]', ''))
 }
 
-function Test-ChainMarkers([string]$NetworkDir) {
-    return (
-        (Test-Path (Join-Path $NetworkDir 'BdagChain')) -or
-        (Test-Path (Join-Path $NetworkDir 'bdageth\chaindata')) -or
-        (Test-Path (Join-Path $NetworkDir 'chaindata'))
-    )
+function Ensure-NodeDatadirBindMount {
+    $nodeDataDir = Get-EnvFileValue '.env' 'NODE_DATA_DIR'
+    if (-not $nodeDataDir) {
+        $nodeDataDir = './node-data'
+    }
+    $nodeDataPath = Resolve-PackagePath $nodeDataDir
+    if ((Test-Path $nodeDataPath) -and -not (Test-Path $nodeDataPath -PathType Container)) {
+        throw "NODE_DATA_DIR points at a non-directory: $nodeDataPath"
+    }
+    New-Item -ItemType Directory -Force -Path $nodeDataPath | Out-Null
+    Set-EnvValue .env NODE_DATA_DIR $nodeDataDir
+    Set-EnvValue .env BDAG_NODE_DATA_DIR $nodeDataDir
+    Write-Host "Node data bind mount: $nodeDataPath"
 }
 
-function Stage-SnapshotForNodeDatadir {
-    if ($snapshotPath -ne './latest.bdsnap' -or -not (Test-Path 'latest.bdsnap')) { return }
-
-    $nodeDir = Resolve-PackagePath (Get-EnvFileValue '.env' 'BDAG_NODE_DATA_DIR')
-    $networkDir = Join-Path $nodeDir 'mainnet'
-    $target = Join-Path $networkDir 'snapshot.bdsnap'
-
-    if (Test-ChainMarkers $networkDir) {
-        Write-Host "Existing chain markers found in $networkDir; preserving node data and skipping snapshot staging."
-        return
+function Apply-ChainDbArchiveEnvOverrides {
+    foreach ($key in @(
+        'BDAG_CHAIN_DB_ARCHIVE_URL',
+        'BDAG_CHAIN_DB_ARCHIVE_MIN_BYTES',
+        'BDAG_CHAIN_DB_ARCHIVE_KEEP',
+        'BDAG_CHAIN_DB_ARCHIVE_FORCE',
+        'BDAG_CHAIN_DB_IMPORT_BINARY',
+        'BDAG_CHAIN_DB_IMPORT_BATCH_BYTES',
+        'BDAG_CHAIN_DB_IMPORT_NO_NETWORK_CHECK'
+    )) {
+        $value = [Environment]::GetEnvironmentVariable($key)
+        if ($value) {
+            Set-EnvValue .env $key $value
+        }
     }
-    if ((Test-Path $target) -and $env:BDAG_REPLACE_STAGED_SNAPSHOT -ne '1') {
-        Write-Host "Existing staged node snapshot found: $target"
-        return
-    }
+}
 
-    New-Item -ItemType Directory -Force -Path $networkDir | Out-Null
-    Remove-Item -Path $target -ErrorAction SilentlyContinue
-    try {
-        New-Item -ItemType HardLink -Path $target -Target (Get-Item 'latest.bdsnap').FullName | Out-Null
-        Write-Host "Staged snapshot for node datadir using hard link: $target"
-    } catch {
-        Copy-Item -Path 'latest.bdsnap' -Destination $target -Force
-        Write-Host "Staged snapshot for node datadir: $target"
-    }
+function Wait-ForNodeSync {
+    Write-Host ""
+    Write-Host "=== Waiting for node sync ===" -ForegroundColor Cyan
+    & python3 (Join-Path $packageRoot 'ops\wait_for_node_sync.py')
+    if ($LASTEXITCODE -ne 0) { throw "node sync wait failed." }
 }
 
 if ($env:BDAG_INSTALL_TEST_WRITE_ENV_ONLY -eq '1') {
     Copy-Item .env.example .env -Force
     Set-EnvValue .env DOCKER_PLATFORM $dockerPlatform
+    Apply-ChainDbArchiveEnvOverrides
+    Ensure-NodeDatadirBindMount
     exit 0
-}
-
-function Test-ValidSnapshot([string]$Path) {
-    if (-not (Test-Path $Path)) { return $false }
-    return ((Get-Item $Path).Length -ge $snapshotMinBytes)
 }
 
 function New-PostgresPassword {
     $bytes = New-Object byte[] 32
     [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
     return [Convert]::ToBase64String($bytes)
-}
-
-function Install-Aria2IfPossible {
-    if (Get-Command aria2c -ErrorAction SilentlyContinue) { return $true }
-    if (-not $installAria2) { return $false }
-    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { return $false }
-
-    Write-Host "aria2c is missing. Installing aria2 with winget..." -ForegroundColor Yellow
-    & winget install --id aria2.aria2 -e --accept-package-agreements --accept-source-agreements
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "Warning: winget failed to install aria2; falling back to the next downloader." -ForegroundColor Yellow
-        return $false
-    }
-
-    return [bool](Get-Command aria2c -ErrorAction SilentlyContinue)
-}
-
-function Resolve-SnapshotDownloader {
-    switch ($requestedSnapshotDownloader) {
-        'auto' {
-            if (Install-Aria2IfPossible) { return 'aria2c' }
-            if (Get-Command Start-BitsTransfer -ErrorAction SilentlyContinue) { return 'bits' }
-            return 'powershell'
-        }
-        'aria2c' {
-            if (-not (Install-Aria2IfPossible)) {
-                throw "aria2c was requested but was not found. Install it with 'winget install aria2.aria2', or set BDAG_SNAPSHOT_DOWNLOADER=powershell."
-            }
-            return 'aria2c'
-        }
-        'bits' {
-            if (-not (Get-Command Start-BitsTransfer -ErrorAction SilentlyContinue)) {
-                throw "BITS was requested but Start-BitsTransfer is not available. Set BDAG_SNAPSHOT_DOWNLOADER=powershell."
-            }
-            return 'bits'
-        }
-        'powershell' { return 'powershell' }
-        default { throw "Unsupported BDAG_SNAPSHOT_DOWNLOADER '$requestedSnapshotDownloader'. Use auto, aria2c, bits, or powershell." }
-    }
-}
-
-function Download-Snapshot {
-    $tmp = 'latest.bdsnap.part'
-    $destination = Join-Path (Get-Location).Path $tmp
-    $downloader = Resolve-SnapshotDownloader
-    if ($downloader -ne 'aria2c') {
-        Remove-Item -Path $tmp -ErrorAction SilentlyContinue
-    }
-
-    Write-Host "No local snapshot found. Downloading latest.bdsnap from $snapshotUrl." -ForegroundColor Yellow
-    Write-Host "Using $downloader for snapshot download."
-    try {
-        if ($downloader -eq 'aria2c') {
-            $ariaArgs = @(
-                '--allow-overwrite=true',
-                '--auto-file-renaming=false',
-                '--continue=true',
-                '--connect-timeout=20',
-                '--dir=.',
-                '--file-allocation=none',
-                "--max-connection-per-server=$aria2Connections",
-                '--max-tries=3',
-                '--min-split-size=64M',
-                "--out=$tmp",
-                '--retry-wait=2',
-                "--split=$aria2Connections",
-                '--timeout=60',
-                $snapshotUrl
-            )
-            & aria2c @ariaArgs
-            if ($LASTEXITCODE -ne 0) { throw "aria2c exited with code $LASTEXITCODE" }
-        } elseif ($downloader -eq 'bits') {
-            Start-BitsTransfer -Source $snapshotUrl -Destination $destination -TransferType Download -ErrorAction Stop
-        } else {
-            $ProgressPreference = 'Continue'
-            Invoke-WebRequest -Uri $snapshotUrl -OutFile $tmp -UseBasicParsing
-        }
-
-        if (Test-ValidSnapshot $tmp) {
-            Move-Item -Path $tmp -Destination 'latest.bdsnap' -Force
-            Write-Host "Snapshot downloaded ($((Get-Item latest.bdsnap).Length) bytes)."
-            return $true
-        }
-
-        Write-Host "Warning: downloaded snapshot is too small to be valid ($((Get-Item $tmp).Length) bytes)." -ForegroundColor Yellow
-    } catch {
-        Write-Host "Warning: snapshot download failed: $($_.Exception.Message)" -ForegroundColor Yellow
-    }
-
-    if ($downloader -ne 'aria2c') {
-        Remove-Item -Path $tmp -ErrorAction SilentlyContinue
-    }
-    return $false
-}
-
-function Continue-WithoutSnapshotOrExit {
-    if ($requireSnapshot) {
-        throw "Snapshot download/import is required (BDAG_REQUIRE_SNAPSHOT=1), but no valid snapshot is available."
-    }
-
-    Write-Host "No snapshot available; continuing with genesis/P2P sync."
 }
 
 function Get-ComposeProjectName {
@@ -366,26 +254,6 @@ function Clean-BuildContextMetadata {
     Get-ChildItem -Force -Recurse -Directory -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -eq '__MACOSX' -or $_.Name -eq '$RECYCLE.BIN' -or $_.Name -eq 'System Volume Information' } |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-function Ensure-DockerignorePattern([string]$Pattern) {
-    if (-not (Test-Path .dockerignore)) {
-        New-Item -ItemType File -Path .dockerignore | Out-Null
-    }
-
-    $lines = Get-Content .dockerignore -ErrorAction SilentlyContinue
-    if ($lines -notcontains $Pattern) {
-        Add-Content -Path .dockerignore -Value $Pattern
-    }
-}
-
-function Ensure-DockerignoreExcludesSnapshots {
-    # Snapshots are mounted at runtime; sending them to Docker build context can
-    # exhaust Docker Desktop's Linux VM disk and fail with input/output errors.
-    Ensure-DockerignorePattern '*.bdsnap'
-    Ensure-DockerignorePattern 'latest.bdsnap.part'
-    Ensure-DockerignorePattern 'latest.bdsnap.part.*'
-    Ensure-DockerignorePattern '*.aria2'
 }
 
 Require-Command docker "Install Docker Desktop, then re-run this installer."
@@ -472,55 +340,10 @@ if ($chainMode) {
 
 $nodeOnlyInstall = $deployKind -eq 'node'
 if ($chainMode -eq 'archive') { $nodeArchival = '1' }
-# Snapshot host convention: latest.bdsnap is the non-archive (pruned) snapshot,
-# latest-archive.bdsnap is the archive (full history) snapshot.
-if (-not $snapshotUrl) {
-    $snapshotFile = if ($chainMode -eq 'archive') { 'latest-archive.bdsnap' } else { 'latest.bdsnap' }
-    $snapshotUrl = "$($snapshotBaseUrl.TrimEnd('/'))/$snapshotFile"
-}
-Write-Host "Snapshot source: $snapshotUrl"
+Write-Host "Chain snapshot source: BDAG_CHAIN_DB_ARCHIVE_URL from .env"
 Write-Host ""
 
 Invoke-ReleasePreflight
-
-$snapshotPath = 'docker/no-snapshot.marker'
-if (Test-ValidSnapshot latest.bdsnap) {
-    Write-Host "Found snapshot: latest.bdsnap ($((Get-Item latest.bdsnap).Length) bytes)"
-    $snapshotHostPath = './latest.bdsnap'
-    $snapshotImportEnabled = '1'
-} else {
-    if (Test-Path latest.bdsnap) {
-        Write-Host "Ignoring invalid snapshot file: latest.bdsnap ($((Get-Item latest.bdsnap).Length) bytes)" -ForegroundColor Yellow
-        Remove-Item -Path 'latest.bdsnap' -ErrorAction SilentlyContinue
-    }
-
-    $snap = Get-ChildItem -File -Filter '*.bdsnap' | Select-Object -First 1
-    if ($snap) {
-        if (Test-ValidSnapshot $snap.FullName) {
-            Write-Host "Found snapshot: $($snap.Name) ($($snap.Length) bytes)"
-            Move-Item -Path $snap.FullName -Destination (Join-Path (Get-Location) 'latest.bdsnap') -Force
-            $snapshotHostPath = './latest.bdsnap'
-            $snapshotImportEnabled = '1'
-        } else {
-            Write-Host "Ignoring invalid snapshot file: $($snap.Name) ($($snap.Length) bytes)" -ForegroundColor Yellow
-            Remove-Item -Path $snap.FullName -ErrorAction SilentlyContinue
-        }
-    }
-
-    if ($snapshotHostPath -ne './latest.bdsnap') {
-        if (Download-Snapshot) {
-            $snapshotHostPath = './latest.bdsnap'
-            $snapshotImportEnabled = '1'
-        } else {
-            Remove-Item -Path 'latest.bdsnap' -ErrorAction SilentlyContinue
-            Continue-WithoutSnapshotOrExit
-        }
-    }
-}
-
-if ($snapshotHostPath -ne './latest.bdsnap' -and $requireSnapshot) {
-    throw "Snapshot download/import is required (BDAG_REQUIRE_SNAPSHOT=1), but no valid snapshot is available."
-}
 
 Write-Host ""
 Write-Host "=== Configuration ===" -ForegroundColor Cyan
@@ -584,9 +407,9 @@ if ($env:POSTGRES_PASSWORD) {
 Copy-Item .env.example .env -Force
 Set-EnvValue .env POSTGRES_PASSWORD $pgPassword
 Set-EnvValue .env DOCKER_PLATFORM $dockerPlatform
-Set-EnvValue .env SNAPSHOT_PATH $snapshotPath
-Set-EnvValue .env BDAG_SNAPSHOT_URL $snapshotUrl
 Set-EnvValue .env BDAG_NODE_ARCHIVAL $nodeArchival
+Apply-ChainDbArchiveEnvOverrides
+Ensure-NodeDatadirBindMount
 
 $miningAddr = ''
 if ($nodeOnlyInstall) {
@@ -652,7 +475,6 @@ if (-not $nodeOnlyInstall) {
     New-Item -ItemType Directory -Force -Path 'collector\logs' | Out-Null
 }
 Clean-BuildContextMetadata
-Stage-SnapshotForNodeDatadir
 Plan-OrphanContainerCleanup
 $env:DOCKER_DEFAULT_PLATFORM = $dockerPlatform
 
@@ -670,10 +492,17 @@ if ($nodeOnlyInstall) {
     Write-Host "=== Starting node ===" -ForegroundColor Cyan
     & docker compose up -d --no-build --pull never node
 } else {
-    Write-Host "=== Starting services ===" -ForegroundColor Cyan
-    & docker compose up -d --no-build --pull never
+    Write-Host "=== Starting node for initial sync ===" -ForegroundColor Cyan
+    & docker compose up -d --no-build --pull never node
 }
 if ($LASTEXITCODE -ne 0) { throw "docker compose up failed." }
+Wait-ForNodeSync
+if (-not $nodeOnlyInstall) {
+    Write-Host ""
+    Write-Host "=== Starting remaining services ===" -ForegroundColor Cyan
+    & docker compose up -d --no-build --pull never pool-db pool collector dashboard
+    if ($LASTEXITCODE -ne 0) { throw "docker compose up for remaining services failed." }
+}
 
 Write-Host ""
 Write-Host "=================================================" -ForegroundColor Green
@@ -687,14 +516,14 @@ if ($nodeOnlyInstall) {
     Write-Host ""
     Write-Host "  View logs:  docker compose logs -f node"
 } else {
-    Write-Host "  BlockDAG Pool Stack is running." -ForegroundColor Green
+    Write-Host "  BlockDAG node sync complete and stack services are starting." -ForegroundColor Green
     Write-Host "=================================================" -ForegroundColor Green
-    Write-Host "  Dashboard:  http://localhost:8080"
-    Write-Host "  Collector:  http://localhost:9280"
-    Write-Host "  Stratum:    stratum+tcp://localhost:3334"
+    Write-Host "  Dashboard:  docker compose up -d pool-db pool dashboard"
+    Write-Host "  Collector:  docker compose up -d collector"
+    Write-Host "  Stratum:    docker compose up -d pool-db pool"
     Write-Host "  EVM RPC:    http://localhost:18545"
     Write-Host ""
-    Write-Host "  View logs:  docker compose logs -f"
+    Write-Host "  View logs:  docker compose logs -f node"
 }
 Write-Host "  Stop:       docker compose down"
 Write-Host "=================================================" -ForegroundColor Green

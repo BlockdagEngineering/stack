@@ -63,7 +63,7 @@ Those bypass flags can make template health report ready while the node has
 stale or absent P2P mining freshness; future runtime repair must remove them
 and keep the pool stopped until direct readiness passes.
 For constrained USB/router appliances also keep `--maxinbound=1`, because
-inbound catch-up peers and artifact requests have caused rewind/sync churn that
+inbound catch-up peers and bulk data requests have caused rewind/sync churn that
 converted valid ASIC work into `node-syncing`, `tip-overdue`, and
 `invalidated_job` losses.
 
@@ -73,13 +73,11 @@ override `POOL_GBT_MIN_INTERVAL_MS` below `1000`, do not override
 least `10` seconds apart unless a measured soak test proves the node can absorb
 more frequent RPC traffic while importing and mining.
 
-Any system with USB-backed blockchain data is a FastSync/FastArtifact consumer,
-not a source, by default. Keep `SYNC_SOURCE_NODE=0`; do not reintroduce
-`NODE_ARGS_APPEND=--fastartifactsync` or artifact serving on low-IO USB hosts.
-These nodes must still do normal outbound sync and block relay, but must not
-serve bulk range, snapshot, or artifact traffic from the USB chain path unless a
-human deliberately overrides the policy for a proven
-high-IO source host.
+Any system with USB-backed blockchain data is a sync consumer, not a bulk data
+source, by default. Do not reintroduce bulk range serving on low-IO
+USB hosts. These nodes must still do normal outbound sync and block relay, but
+must not serve high-volume chain data from the USB path unless a human
+deliberately overrides the policy for a proven high-IO source host.
 
 Fresh installs assume zero miner sources. Do not hard-code one, four, five, or
 any other miner count into release defaults, installers, watchdog repairs,
@@ -106,11 +104,6 @@ until the leader is within 1000 blocks. During that one-node catch-up window,
 the selected leader must receive the highest Docker CPU shares and block IO
 weight available on the host. Do not weaken this behavior or reintroduce a
 productive-mining exception without a measured release-candidate test.
-
-Startup seed freshness must have operational slack. If a remote seed is within
-`BDAG_SYNC_ACCEPTABLE_STARTUP_LAG_BLOCKS` (default 4000 blocks), start the node
-and let P2P catch the tail. Use the recorded copy duration allowance to avoid
-repeated full copies; do not recopy just to close an already-acceptable lag.
 
 ## Five ASIC Template Conversion Invariant
 
@@ -179,8 +172,8 @@ RPC at the same time. Hard diagnostic paths can force a direct sample with
 
 The node entrypoint must not recursively `chown` the full chain datadir on every
 start. Keep ownership repair conditional through `BDAG_ENTRYPOINT_CHOWN_MODE`
-and only run the second repair pass after snapshot import has actually mutated
-the datadir.
+and only run the second repair pass after host-side chain archive extraction has
+actually replaced the datadir.
 
 The stack sentinel must be single-flight and must never build or pull images as
 part of automatic repair. Recreate repairs must use Compose with
@@ -205,15 +198,15 @@ at a bounded threshold. Do not reintroduce full-history rewrite loops for every
 sample on the Pi USB data path.
 
 Recurring timers must include modest `RandomizedDelaySec` jitter so node-child
-guard, sync coordinator, incident reporter, runtime priority, snapshot, and
+guard, sync coordinator, incident reporter, runtime priority, and
 peer-discovery work do not wake together and stampede Docker/RPC on constrained
 hosts.
 
 Optional background work must respect `background_maintenance_decision()`.
-Hourly snapshot staging and global dashboard blockchain scans must defer while
-the node is catching up or host IO/CPU pressure is above the configured release
-thresholds. Chain import and live mining are the primary jobs; background
-freshness work is allowed to lag until the host is healthy.
+Global dashboard blockchain scans must defer while the node is catching up or
+host IO/CPU pressure is above the configured release thresholds. Chain import
+and live mining are the primary jobs; background freshness work is allowed to
+lag until the host is healthy.
 
 Runtime limits must be platform-adaptive. Do not hard-code Pi-only worker
 counts as universal behavior: the stack must support Linux AMD64 and ARM64

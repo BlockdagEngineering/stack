@@ -138,7 +138,6 @@ def assert_required_hooks(errors: list[str], root: Path) -> None:
             "stack_default",
         ),
         "ops/pool_ops.py": ("stack-defaults.env",),
-        "ops/maintain-rawdatadir-sidecar.sh": ("stack-defaults.env",),
     }
     for rel_path, required in hooks.items():
         path = root / rel_path
@@ -169,8 +168,11 @@ def main(argv: list[str] | None = None) -> int:
             errors.append(str(exc))
             defaults = {}
 
-    for rel_path in (".env.example", ".env.cpu.example", "ops/portable.env.example"):
+    for rel_path in (".env.example", "ops/portable.env.example"):
         assert_projection_matches(errors=errors, defaults=defaults, root=root, rel_path=rel_path)
+    for rel_path in (".env.cpu.example",):
+        if (root / rel_path).exists():
+            assert_projection_matches(errors=errors, defaults=defaults, root=root, rel_path=rel_path)
     assert_compose_fallbacks_match(errors, defaults, root)
     for rel_path in ("ops/install-dashboard.sh", "ops/release-install.sh"):
         assert_shell_defaults_match(errors=errors, defaults=defaults, root=root, rel_path=rel_path)

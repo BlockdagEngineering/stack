@@ -249,7 +249,6 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         preflight.check_env_defaults(
             checks,
             {
-                "SYNC_SOURCE_NODE": "0",
                 "BDAG_STORAGE_PROFILE": "single-usb-constrained",
                 "BDAG_DETECTED_NETWORK_TOPOLOGY": "asic-router",
             },
@@ -260,7 +259,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         self.assertEqual(found["node_mining_runtime"].status, "pass")
         self.assertEqual(found["fastsync_acceleration"].status, "pass")
 
-    def test_sync_source_zero_does_not_make_single_device_receiver_constrained(self) -> None:
+    def test_single_device_profile_does_not_make_standard_host_constrained(self) -> None:
         profile = preflight.HostProfile(
             os_name="linux",
             arch="x86_64",
@@ -273,7 +272,6 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         preflight.check_env_defaults(
             checks,
             {
-                "SYNC_SOURCE_NODE": "0",
                 "BDAG_STORAGE_PROFILE": "single-device",
             },
             profile,
@@ -356,7 +354,6 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 {
                     "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
                     "BDAG_NETWORK_TOPOLOGY": "asic-router",
-                    "SYNC_SOURCE_NODE": "1",
                     "MINING_ADDRESS": "0x1111111111111111111111111111111111111111",
                 },
                 profile,
