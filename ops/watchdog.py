@@ -131,6 +131,15 @@ DEFAULT_NODE_TEMPLATE_RESTART_COOLDOWN = int(os.environ.get("BDAG_WATCHDOG_NODE_
 DEFAULT_NODE_ORPHAN_STORM_RESTART_COOLDOWN = int(
     os.environ.get("BDAG_WATCHDOG_NODE_ORPHAN_STORM_RESTART_COOLDOWN", "300")
 )
+DEFAULT_NODE_RPC_REFUSED_CONFIRM_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_RPC_REFUSED_CONFIRM_SECONDS", "60")
+)
+DEFAULT_NODE_RPC_REFUSED_REPAIR_COOLDOWN = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_RPC_REFUSED_REPAIR_COOLDOWN", "300")
+)
+DEFAULT_NODE_RPC_REFUSED_POOL_RESTART_GRACE_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_RPC_REFUSED_POOL_RESTART_GRACE_SECONDS", "30")
+)
 DEFAULT_NODE_DAG_TIP_CLEANUP_COOLDOWN = int(
     os.environ.get("BDAG_WATCHDOG_NODE_DAG_TIP_CLEANUP_COOLDOWN", "1800")
 )
@@ -253,11 +262,156 @@ def sync_progress_pool_pause_reason(status: dict[str, Any]) -> str:
     return ""
 
 
+def node_rpc_refused_text_matches(text: str, *, trusted_pool_context: bool = False) -> bool:
+    text = str(text or "").lower()
+    if not text:
+        return False
+    if any(
+        fragment in text
+        for fragment in (
+            "dial tcp 127.0.0.1:38131",
+            "dial tcp node:",
+            "node-health-transport",
+            "rpc transport",
+        )
+    ):
+        return True
+    refused = "connection refused" in text or "connect: connection refused" in text
+    if not refused:
+        return False
+    if trusted_pool_context:
+        return True
+    return any(
+        fragment in text
+        for fragment in (
+            "rpc",
+            "node rpc",
+            "node-health",
+            "node transport",
+            "template",
+            "backend",
+            "block template",
+            "getblocktemplate",
+            "submitblock",
+        )
+    )
+
+
+def node_rpc_refused_evidence(status: dict[str, Any]) -> dict[str, Any]:
+    pool_health = status.get("pool_health", status.get("pool", {}))
+    if not isinstance(pool_health, dict):
+        pool_health = {}
+    pool_metrics = status.get("pool_metrics") if isinstance(status.get("pool_metrics"), dict) else {}
+    source_job_health = pool_health.get("source_job_health")
+    if not isinstance(source_job_health, dict):
+        source_job_health = pool_metrics.get("source_job_health") if isinstance(pool_metrics.get("source_job_health"), dict) else {}
+    source_backend_health = pool_health.get("source_backend_health")
+    if not isinstance(source_backend_health, dict):
+        source_backend_health = (
+            pool_metrics.get("source_backend_health")
+            if isinstance(pool_metrics.get("source_backend_health"), dict)
+            else {}
+        )
+    pool_job_state = status.get("pool_job_state") if isinstance(status.get("pool_job_state"), dict) else {}
+    warnings = [
+        *[str(item) for item in status.get("sync_warnings", []) if item],
+        *[str(item) for item in status.get("warnings", []) if item],
+        *[str(item) for item in status.get("failures", []) if item],
+    ]
+    pool_text = " ".join(
+        str(value or "")
+        for value in (
+            pool_health.get("last_rpc_refused_line"),
+            pool_health.get("source_job_reason"),
+            pool_health.get("source_job_status"),
+            source_job_health.get("reason"),
+            source_job_health.get("reason_code"),
+            source_job_health.get("last_error"),
+            source_job_health.get("error"),
+            source_backend_health.get("reason"),
+            source_backend_health.get("reason_code"),
+            source_backend_health.get("last_error"),
+            source_backend_health.get("error"),
+            pool_job_state.get("reason_code"),
+        )
+    ).lower()
+    warning_text = " ".join(item for item in warnings if node_rpc_refused_text_matches(item))
+    text = f"{pool_text} {warning_text}".strip().lower()
+    refused_recent = bool(
+        pool_health.get("rpc_refused_recent")
+        or pool_health.get("rpc_refused")
+        or (
+            pool_health.get("last_rpc_refused_age_seconds") is not None
+            and int_or_none(pool_health.get("last_rpc_refused_age_seconds")) is not None
+            and (int_or_none(pool_health.get("last_rpc_refused_age_seconds")) or 0)
+            <= (int_or_none(pool_health.get("rpc_refused_warn_seconds")) or 120)
+        )
+    )
+    transport_failure = (
+        node_rpc_refused_text_matches(pool_text, trusted_pool_context=True)
+        or bool(warning_text)
+    )
+    if not (refused_recent or transport_failure):
+        return {"active": False}
+    return {
+        "active": True,
+        "rpc_refused_recent": refused_recent,
+        "transport_failure": transport_failure,
+        "last_rpc_refused_age_seconds": pool_health.get("last_rpc_refused_age_seconds"),
+        "pool_job_reason": pool_job_state.get("reason_code"),
+        "source_job_reason": source_job_health.get("reason") or source_job_health.get("reason_code"),
+        "source_backend_reason": source_backend_health.get("reason") or source_backend_health.get("reason_code"),
+        "text": text[:1000],
+    }
+
+
+def pool_needs_restart_after_node_rpc_recovery(status: dict[str, Any]) -> bool:
+    pool_job_state = status.get("pool_job_state") if isinstance(status.get("pool_job_state"), dict) else {}
+    miner_health = status.get("miner_health") if isinstance(status.get("miner_health"), dict) else {}
+    connected = (
+        int_or_none(pool_job_state.get("active_connections"))
+        or int_or_none(miner_health.get("connected_count_effective"))
+        or int_or_none(miner_health.get("connected_count"))
+        or 0
+    )
+    authorized = int_or_none(pool_job_state.get("authorized_connections")) or 0
+    ready = int_or_none(pool_job_state.get("ready_connections")) or 0
+    without_job = int_or_none(pool_job_state.get("connections_without_current_job")) or 0
+    template_seq = int_or_none(pool_job_state.get("current_template_seq")) or 0
+    last_broadcast_age = int_or_none(pool_job_state.get("last_broadcast_age_ms"))
+    reason = str(pool_job_state.get("reason_code") or "").strip().lower()
+    return bool(
+        connected > 0
+        and (
+            without_job > 0
+            or (authorized > 0 and ready <= 0)
+            or template_seq <= 0
+            or last_broadcast_age is None
+            or reason in {"miners_without_current_job", "no_current_template", "template_unavailable"}
+        )
+    )
+
+
 def is_primary_pool_identity(row: dict[str, Any], mining_address: str) -> bool:
     defaults = default_miner_pool_settings()
-    expected_url = str(row.get("expected_pool_url") or "")
-    expected = str(row.get("expected_worker_user") or "").lower()
-    workers = [str(item).lower() for item in row.get("workers", []) if item]
+    expected_url = str(row.get("expected_pool_url") or row.get("configured_pool_url") or "")
+    expected = str(
+        row.get("expected_worker_user")
+        or row.get("intended_wallet")
+        or row.get("configured_pool_user")
+        or row.get("active_pool_user")
+        or ""
+    ).lower()
+    workers = [
+        str(item).lower()
+        for item in [
+            *(row.get("workers", []) if isinstance(row.get("workers"), list) else []),
+            row.get("intended_wallet"),
+            row.get("configured_pool_user"),
+            row.get("active_pool_user"),
+        ]
+        if item
+    ]
     if expected_url == defaults["pool_url"] and (
         re.fullmatch(r"0x[a-f0-9]{40}", expected)
         or any(re.fullmatch(r"0x[a-f0-9]{40}", worker) for worker in workers)
@@ -2226,6 +2380,107 @@ def check_once(
         write_state(state)
         return {"status": status, "watchdog_state": state}
 
+    node_rpc_refused = node_rpc_refused_evidence(status)
+    rpc_pool_pending = (
+        state.get("node_rpc_refused_pool_restart_pending")
+        if isinstance(state.get("node_rpc_refused_pool_restart_pending"), dict)
+        else {}
+    )
+    if rpc_pool_pending and not node_rpc_refused.get("active"):
+        pending_since = int_or_none(rpc_pool_pending.get("since")) or now
+        grace_remaining = DEFAULT_NODE_RPC_REFUSED_POOL_RESTART_GRACE_SECONDS - (now - pending_since)
+        if repair and grace_remaining <= 0 and pool_needs_restart_after_node_rpc_recovery(status):
+            reason = (
+                "pool still has miners without current work after node RPC transport recovered "
+                f"(prior evidence={rpc_pool_pending.get('evidence') or 'unknown'})"
+            )
+            ok = run_pool_restart(reason)
+            state["last_repair_at"] = int(time.time())
+            state["last_pool_repair_at"] = int(time.time())
+            state["last_node_rpc_refused_pool_restart"] = {"ok": ok, "reason": reason, "at": now_iso()}
+            if ok:
+                state.pop("node_rpc_refused_pool_restart_pending", None)
+                state["consecutive_syncing"] = 0
+                state["last_status"] = "pool_restarted_after_node_rpc_refused"
+                state["last_sync_warnings"] = [reason]
+                state["updated_at"] = now_iso()
+                write_state(state)
+                return {"status": status, "watchdog_state": state}
+        elif pool_needs_restart_after_node_rpc_recovery(status):
+            state["last_status"] = "node_rpc_refused_pool_restart_pending"
+            state["last_sync_warnings"] = [
+                "waiting to restart pool after node RPC recovery "
+                f"grace_remaining={max(grace_remaining, 0)}s"
+            ]
+            state["updated_at"] = now_iso()
+            write_state(state)
+            return {"status": status, "watchdog_state": state}
+        else:
+            state.pop("node_rpc_refused_pool_restart_pending", None)
+
+    if node_rpc_refused.get("active") and container_running(status, NODES[0] if NODES else "node"):
+        since = int_or_none(state.get("node_rpc_refused_since")) or now
+        state["node_rpc_refused_since"] = since
+        refused_for = now - since
+        last_restart = int_or_none(state.get("last_node_rpc_refused_restart_at")) or 0
+        cooldown_remaining = DEFAULT_NODE_RPC_REFUSED_REPAIR_COOLDOWN - (now - last_restart)
+        node_service = NODES[0] if NODES else "node"
+        node_age = container_started_age_seconds(status, node_service, now)
+        startup_remaining = (
+            DEFAULT_NODE_RPC_REFUSED_CONFIRM_SECONDS - node_age
+            if node_age is not None and node_age < DEFAULT_NODE_RPC_REFUSED_CONFIRM_SECONDS
+            else 0
+        )
+        reason = (
+            "node RPC refused pool template requests or reported transport failure "
+            f"for {refused_for}s"
+        )
+        state["consecutive_failures"] = 0
+        state["consecutive_syncing"] = int(state.get("consecutive_syncing", 0) or 0) + 1
+        state["consecutive_share_stalls"] = 0
+        state["last_status"] = "node_rpc_refused"
+        state["last_failures"] = []
+        state["last_sync_warnings"] = [reason]
+        state["last_node_rpc_refused_evidence"] = node_rpc_refused
+        log(
+            "node_rpc_refused "
+            f"refused_for={refused_for}s cooldown_remaining={max(cooldown_remaining, 0)}s "
+            f"startup_remaining={max(startup_remaining, 0)}s evidence={node_rpc_refused}"
+        )
+        record_efficiency_event(
+            "node_rpc_refused",
+            "critical",
+            reason,
+            {
+                "evidence": node_rpc_refused,
+                "refused_for_seconds": refused_for,
+                "cooldown_remaining_seconds": max(cooldown_remaining, 0),
+                "startup_remaining_seconds": max(startup_remaining, 0),
+            },
+        )
+        if (
+            repair
+            and refused_for >= DEFAULT_NODE_RPC_REFUSED_CONFIRM_SECONDS
+            and cooldown_remaining <= 0
+            and startup_remaining <= 0
+        ):
+            ok = run_node_restart(node_service, reason)
+            state["last_repair_at"] = int(time.time())
+            state["last_sync_repair_at"] = int(time.time())
+            state["last_node_rpc_refused_restart_at"] = now
+            state["node_rpc_refused_pool_restart_pending"] = {
+                "since": now,
+                "node": node_service,
+                "evidence": node_rpc_refused,
+            }
+            if ok:
+                state["consecutive_syncing"] = 0
+        state["updated_at"] = now_iso()
+        write_state(state)
+        return {"status": status, "watchdog_state": state}
+    else:
+        state.pop("node_rpc_refused_since", None)
+
     sync_pause_reason = sync_progress_pool_pause_reason(status)
     if sync_pause_reason and container_running(status, POOL_CONTAINER):
         state["consecutive_failures"] = 0
@@ -3342,6 +3597,9 @@ def loop(
         f"asic_api_stall_stale={DEFAULT_ASIC_API_STALL_STALE_SECONDS}s "
         f"asic_api_stall_confirm={DEFAULT_ASIC_API_STALL_CONFIRM_SECONDS}s "
         f"asic_api_stall_cooldown={DEFAULT_ASIC_API_STALL_REPAIR_COOLDOWN}s "
+        f"node_rpc_refused_confirm={DEFAULT_NODE_RPC_REFUSED_CONFIRM_SECONDS}s "
+        f"node_rpc_refused_cooldown={DEFAULT_NODE_RPC_REFUSED_REPAIR_COOLDOWN}s "
+        f"node_rpc_refused_pool_grace={DEFAULT_NODE_RPC_REFUSED_POOL_RESTART_GRACE_SECONDS}s "
         f"earnings_snapshot_interval={DEFAULT_EARNINGS_SNAPSHOT_INTERVAL_SECONDS}s"
     )
     while True:

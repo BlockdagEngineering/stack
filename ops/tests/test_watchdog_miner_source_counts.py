@@ -238,6 +238,11 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         )
         row["debug"] = {}
         row["debug_error"] = None
+        row["expected_pool_url"] = None
+        row["expected_worker_user"] = None
+        row["configured_pool_url"] = DEFAULT_POOL_URL
+        row["intended_wallet"] = ADDRESS
+        row["workers"] = []
         row["issue"] = "no active stratum connection from managed ASIC"
         status = {
             "mining_address": ADDRESS,

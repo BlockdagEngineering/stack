@@ -317,6 +317,159 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertIn("node sync progress is syncing", result["watchdog_state"]["last_sync_warnings"][0])
         self.assertTrue(written)
 
+    def test_check_once_restarts_node_for_confirmed_rpc_refused_before_sync_pause(self) -> None:
+        now = 1_779_200_000
+        status = {
+            **node_status(importing=True, last_import_age_seconds=20),
+            "failures": [],
+            "stack_failures": [],
+            "miner_failures": [],
+            "warnings": ["pool recently saw RPC connection refused"],
+            "mode": "sync_blocked",
+            "overall": "syncing",
+            "containers": {
+                "node": {"running": True, "started_at": "2026-01-14T12:00:00.000000000Z"},
+                watchdog.POOL_CONTAINER: {"running": True, "started_at": "2026-01-14T12:00:00.000000000Z"},
+            },
+            "pool_health": {
+                "initial_download": True,
+                "rpc_refused_recent": True,
+                "last_rpc_refused_age_seconds": 20,
+                "rpc_refused_warn_seconds": 120,
+                "source_job_health": {"ok": False, "reason_code": "node-health-transport"},
+            },
+            "pool_job_state": {
+                "active_connections": 1,
+                "authorized_connections": 1,
+                "ready_connections": 0,
+                "connections_without_current_job": 1,
+                "current_template_seq": 0,
+                "reason_code": "miners_without_current_job",
+            },
+            "miner_health": {"connected_count": 1, "connected_count_effective": 1, "miners": []},
+        }
+        state = {"node_rpc_refused_since": now - watchdog.DEFAULT_NODE_RPC_REFUSED_CONFIRM_SECONDS}
+        restarts: list[tuple[str, str]] = []
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=lambda node, reason: restarts.append((node, reason)) or True
+        ), mock.patch.object(
+            watchdog, "run_pool_restart", side_effect=AssertionError("node RPC refusal must restart node first")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("node_rpc_refused", result["watchdog_state"]["last_status"])
+        self.assertEqual(1, len(restarts))
+        self.assertEqual("node", restarts[0][0])
+        self.assertIn("node RPC refused", restarts[0][1])
+        self.assertIn("node_rpc_refused_pool_restart_pending", result["watchdog_state"])
+        self.assertTrue(written)
+
+    def test_node_rpc_refused_evidence_ignores_unrelated_connection_refused_warning(self) -> None:
+        status = {
+            "warnings": [
+                'Could not read collector logs: Get "http://host.docker.internal:9280/api/logs/node": '
+                "dial tcp 172.17.0.1:9280: connect: connection refused"
+            ],
+            "pool_health": {
+                "source_job_health": {"ok": True, "reason_code": "ok"},
+                "source_backend_health": {"ok": True, "reason_code": "ok"},
+            },
+            "pool_job_state": {"reason_code": "ok"},
+        }
+
+        self.assertEqual({"active": False}, watchdog.node_rpc_refused_evidence(status))
+
+    def test_check_once_restarts_pool_after_node_rpc_recovers_but_pool_has_no_current_jobs(self) -> None:
+        now = 1_779_200_000
+        status = {
+            **node_status(importing=False, last_import_age_seconds=5),
+            "failures": [],
+            "stack_failures": [],
+            "miner_failures": [],
+            "warnings": [],
+            "mode": "mining",
+            "overall": "degraded",
+            "containers": {
+                "node": {"running": True, "started_at": "2026-01-14T12:00:00.000000000Z"},
+                watchdog.POOL_CONTAINER: {"running": True, "started_at": "2026-01-14T12:00:00.000000000Z"},
+            },
+            "pool_health": {},
+            "sync_health": {"needs_fast_sync_repair": False},
+            "pool_job_state": {
+                "active_connections": 1,
+                "authorized_connections": 1,
+                "ready_connections": 0,
+                "connections_without_current_job": 1,
+                "current_template_seq": 0,
+                "reason_code": "miners_without_current_job",
+            },
+            "miner_health": {"connected_count": 1, "connected_count_effective": 1, "miners": []},
+        }
+        state = {
+            "node_rpc_refused_pool_restart_pending": {
+                "since": now - watchdog.DEFAULT_NODE_RPC_REFUSED_POOL_RESTART_GRACE_SECONDS,
+                "node": "node",
+                "evidence": {"rpc_refused_recent": True},
+            }
+        }
+        restarts: list[str] = []
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("node RPC has recovered")
+        ), mock.patch.object(
+            watchdog, "run_pool_restart", side_effect=lambda reason: restarts.append(reason) or True
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("pool_restarted_after_node_rpc_refused", result["watchdog_state"]["last_status"])
+        self.assertEqual(1, len(restarts))
+        self.assertIn("miners without current work", restarts[0])
+        self.assertNotIn("node_rpc_refused_pool_restart_pending", result["watchdog_state"])
+        self.assertTrue(written)
+
     def test_targeted_node_restart_uses_runtime_container_name(self) -> None:
         commands: list[list[str]] = []
 

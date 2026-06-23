@@ -601,8 +601,8 @@ configure_env() {
   set_env_value .env BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT "$(env_value BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT 0)"
   set_env_value .env BDAG_OPS_UID "$(id -u)"
   set_env_value .env BDAG_OPS_GID "$(id -g)"
-  set_env_value .env BDAG_STATUS_SOURCE_URL "http://dashboard:8088/api/status"
-  set_env_value .env BDAG_SENTINEL_STATUS_URL "http://dashboard:8088/api/status"
+  set_env_value .env BDAG_STATUS_SOURCE_URL "http://host.docker.internal:8088/api/status"
+  set_env_value .env BDAG_SENTINEL_STATUS_URL "http://host.docker.internal:8088/api/status"
   set_env_value .env POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE "$(env_value POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE false)"
   fastartifact_enabled=1
   if [[ "$node_mining_enabled" == "1" ]]; then
