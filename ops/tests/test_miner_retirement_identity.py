@@ -255,6 +255,49 @@ class MinerRegistryIdentityTests(unittest.TestCase):
         self.assertEqual([item["ip"] for item in registry["miners"]], ["192.168.1.107"])
         self.assertEqual(registry["miners"][0]["mac"], "28:e2:97:1e:c0:b5")
 
+    def test_lan_hints_rehome_macs_when_dhcp_ips_swap(self) -> None:
+        old_target = os.environ.get("BDAG_MINER_SCAN_TARGET")
+        old_read_neighbor_macs = pool_ops.read_neighbor_macs
+        os.environ["BDAG_MINER_SCAN_TARGET"] = "192.168.1.0/24"
+        self.addCleanup(lambda: os.environ.pop("BDAG_MINER_SCAN_TARGET", None) if old_target is None else os.environ.__setitem__("BDAG_MINER_SCAN_TARGET", old_target))
+        self.addCleanup(lambda: setattr(pool_ops, "read_neighbor_macs", old_read_neighbor_macs))
+        pool_ops.read_neighbor_macs = lambda: {
+            "192.168.1.80": "28:e2:97:3d:95:13",
+            "192.168.1.83": "28:e2:97:2e:00:1b",
+        }
+        self.registry_file.write_text(
+            json.dumps(
+                {
+                    "updated_at": "2026-06-23T15:00:00+0000",
+                    "miners": [
+                        {
+                            "ip": "192.168.1.80",
+                            "mac": "28:e2:97:2e:00:1b",
+                            "device_id": "mac:28:e2:97:2e:00:1b",
+                            "device_type": "asic",
+                            "managed": True,
+                        },
+                        {
+                            "ip": "192.168.1.83",
+                            "mac": "28:e2:97:3d:95:13",
+                            "device_id": "mac:28:e2:97:3d:95:13",
+                            "device_type": "asic",
+                            "managed": True,
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        registry = pool_ops.read_miner_registry()
+
+        by_mac = {item["mac"]: item for item in registry["miners"]}
+        self.assertEqual(by_mac["28:e2:97:3d:95:13"]["ip"], "192.168.1.80")
+        self.assertEqual(by_mac["28:e2:97:2e:00:1b"]["ip"], "192.168.1.83")
+        self.assertIn("192.168.1.83", by_mac["28:e2:97:3d:95:13"].get("ip_history", []))
+        self.assertIn("192.168.1.80", by_mac["28:e2:97:2e:00:1b"].get("ip_history", []))
+
     def test_scan_targets_reject_docker_bridge_cidrs(self) -> None:
         with self.assertRaises(ValueError):
             pool_ops.parse_scan_targets("172.18.0.0/30")

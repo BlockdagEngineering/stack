@@ -453,6 +453,7 @@ services:
       target: dashboard
       additional_contexts:
         <<: *dev-source-contexts
+    network_mode: host
     restart: unless-stopped
     logging: *mining-logging
     tmpfs:
@@ -461,11 +462,10 @@ services:
       - /run/dashboard-redis:size=16m,mode=0700
     volumes:
       - dashboard-redis:/var/lib/dashboard-redis
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       node: { condition: service_started }
       pool: { condition: service_started }
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     environment:
       TMPDIR: /tmp
       TMP: /tmp
@@ -479,10 +479,10 @@ services:
       BDAG_REDIS_APPENDFSYNC: ${BDAG_REDIS_APPENDFSYNC:-everysec}
       BDAG_REDIS_MAXMEMORY: ${BDAG_REDIS_MAXMEMORY:-256mb}
       BDAG_REDIS_MAXMEMORY_POLICY: ${BDAG_REDIS_MAXMEMORY_POLICY:-noeviction}
-      BDAG_EVM_HTTP_URL: ${BDAG_EVM_HTTP_URL:-http://host.docker.internal:18545}
-      BDAG_EVM_WS_URL: ${BDAG_EVM_WS_URL:-ws://host.docker.internal:18546}
-      BDAG_POOL_METRICS_URL: ${BDAG_POOL_METRICS_URL:-http://host.docker.internal:9090/metrics}
-      BDAG_NODE_RPC_URL: ${BDAG_NODE_RPC_URL:-http://host.docker.internal:38131}
+      BDAG_EVM_HTTP_URL: ${BDAG_EVM_HTTP_URL:-http://127.0.0.1:18545}
+      BDAG_EVM_WS_URL: ${BDAG_EVM_WS_URL:-ws://127.0.0.1:18546}
+      BDAG_POOL_METRICS_URL: ${BDAG_POOL_METRICS_URL:-http://127.0.0.1:9090/metrics}
+      BDAG_NODE_RPC_URL: ${BDAG_NODE_RPC_URL:-http://127.0.0.1:38131}
       BDAG_GLOBAL_BLOCK_WINDOW: ${BDAG_GLOBAL_BLOCK_WINDOW:-600}
       BDAG_GLOBAL_FAST_WARMUP_BLOCKS: ${BDAG_GLOBAL_FAST_WARMUP_BLOCKS:-120}
       BDAG_GLOBAL_RPC_WORKERS: ${BDAG_GLOBAL_RPC_WORKERS:-24}
@@ -499,12 +499,21 @@ services:
       BDAG_TREND_SPARSE_MAX_SAMPLE_BLOCKS: ${BDAG_TREND_SPARSE_MAX_SAMPLE_BLOCKS:-2048}
       BDAG_TREND_BACKFILL_SLEEP_MS: ${BDAG_TREND_BACKFILL_SLEEP_MS:-100}
       BDAG_TREND_CATCHUP_INTERVAL_SECONDS: ${BDAG_TREND_CATCHUP_INTERVAL_SECONDS:-30}
+      BDAG_PRICE_INGEST_ENABLED: ${BDAG_PRICE_INGEST_ENABLED:-1}
+      BDAG_PRICE_CMC_MARKETS_URL: "${BDAG_PRICE_CMC_MARKETS_URL:-https://api.coinmarketcap.com/data-api/v3/cryptocurrency/market-pairs/latest?slug=blockdag&start=1&limit=50&category=spot&centerType=all&sort=cmc_rank_advanced}"
+      BDAG_PRICE_POLL_SECONDS: ${BDAG_PRICE_POLL_SECONDS:-300}
+      BDAG_PRICE_TOP_MARKETS: ${BDAG_PRICE_TOP_MARKETS:-3}
       BDAG_CHAIN_POLL_SECONDS: ${BDAG_CHAIN_POLL_SECONDS:-2}
       BDAG_CHAIN_POLL_FALLBACK_AFTER_SECONDS: ${BDAG_CHAIN_POLL_FALLBACK_AFTER_SECONDS:-3}
       BDAG_CHAIN_WS_READ_LIMIT_BYTES: ${BDAG_CHAIN_WS_READ_LIMIT_BYTES:-1048576}
       BDAG_CHAIN_WS_READ_TIMEOUT_SECONDS: ${BDAG_CHAIN_WS_READ_TIMEOUT_SECONDS:-10}
+      BDAG_LOW_IMPACT_NATIVE_DAG_WINDOW: ${BDAG_LOW_IMPACT_NATIVE_DAG_WINDOW:-90}
       BDAG_DASHBOARD_HEALTH_STALE_SECONDS: ${BDAG_DASHBOARD_HEALTH_STALE_SECONDS:-20}
-      BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://host.docker.internal:9280}
+      BDAG_DASHBOARD_LOG_SOURCE: ${BDAG_DASHBOARD_LOG_SOURCE:-docker}
+      BDAG_DASHBOARD_DOCKER_SOCKET: ${BDAG_DASHBOARD_DOCKER_SOCKET:-/var/run/docker.sock}
+      BDAG_NODE_LOG_CONTAINER: ${BDAG_NODE_LOG_CONTAINER:-node}
+      BDAG_POOL_LOG_CONTAINER: ${BDAG_POOL_LOG_CONTAINER:-pool}
+      BDAG_COLLECTOR_API: ${BDAG_COLLECTOR_API:-http://127.0.0.1:9280}
       DASHBOARD_TIMEZONE: ${DASHBOARD_TIMEZONE:-Africa/Johannesburg}
       BDAG_MINER_CONTROL_ENABLED: ${BDAG_MINER_CONTROL_ENABLED:-1}
       BDAG_MINER_CONTROL_TOKEN: ${BDAG_MINER_CONTROL_TOKEN:-}

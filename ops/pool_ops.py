@@ -1950,7 +1950,12 @@ def augment_miner_registry_with_lan_hints(registry: dict[str, Any]) -> dict[str,
             continue
         if retired_miner_identity_decision(hint, ip, mac).get("retired"):
             continue
-        item = existing_by_mac.get(mac) or existing_by_ip.get(ip)
+        item = existing_by_mac.get(mac)
+        if item is None:
+            ip_match = existing_by_ip.get(ip)
+            ip_match_mac = normalize_mac(ip_match.get("mac")) if ip_match else ""
+            if ip_match and ip_match_mac in {"", mac}:
+                item = ip_match
         if item is None:
             item = {
                 "ip": ip,
@@ -1964,12 +1969,16 @@ def augment_miner_registry_with_lan_hints(registry: dict[str, Any]) -> dict[str,
             }
             miners.append(item)
             changed = True
+        previous_ip = str(item.get("ip") or "")
+        if item.get("ip") != ip:
+            item["ip"] = ip
+            changed = True
         for key in ("hostname", "lease_expires_epoch", "lease_active", "lease_file"):
             if hint.get(key) not in (None, "", []):
                 item[key] = hint[key]
         before_sources = list(item.get("sources") or [])
         item["sources"] = merge_unique_strings(item.get("sources"), hint.get("sources"), "lan-hint")
-        item["ip_history"] = merge_unique_strings(item.get("ip_history"), ip)
+        item["ip_history"] = merge_unique_strings(item.get("ip_history"), previous_ip, ip)
         item["expected_pool_url"] = item.get("expected_pool_url") or defaults["pool_url"]
         item["expected_worker_user"] = item.get("expected_worker_user") or defaults["worker_user"]
         if item.get("sources") != before_sources:
