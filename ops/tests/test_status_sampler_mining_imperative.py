@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 import os
 import pathlib
 import sys
@@ -36,6 +37,17 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "CATCHUP_NODE_CACHE_MB",
                 "CATCHUP_NODE_CACHE_MIN_MB",
                 "CATCHUP_NODE_CACHE_MEMORY_PERCENT",
+                "CATCHUP_NODE_CACHE_RESTORE_ENABLED",
+                "CATCHUP_NODE_CACHE_RESTORE_STABLE_SAMPLES",
+                "CATCHUP_NODE_CACHE_RESTORE_COOLDOWN_SECONDS",
+                "CATCHUP_NODE_CACHE_MEMORY_SOME_RESTORE_THRESHOLD",
+                "CATCHUP_NODE_CACHE_MEMORY_FULL_RESTORE_THRESHOLD",
+                "CATCHUP_NODE_CACHE_STEADY_IOWAIT_MAX",
+                "CATCHUP_NODE_CACHE_STEADY_IO_SOME_MAX",
+                "CATCHUP_NODE_CACHE_STEADY_IO_FULL_MAX",
+                "CATCHUP_NODE_CACHE_STEADY_MEMORY_SOME_MAX",
+                "CATCHUP_NODE_CACHE_STEADY_MEMORY_FULL_MAX",
+                "CATCHUP_CACHE_STATE_FILE",
                 "CATCHUP_IO_PRESSURE_PAUSE_ENABLED",
                 "CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS",
                 "CATCHUP_IOWAIT_WARN_PERCENT",
@@ -84,6 +96,16 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         status_sampler.CATCHUP_NODE_CACHE_MB = 6144
         status_sampler.CATCHUP_NODE_CACHE_MIN_MB = 1024
         status_sampler.CATCHUP_NODE_CACHE_MEMORY_PERCENT = 40.0
+        status_sampler.CATCHUP_NODE_CACHE_RESTORE_ENABLED = True
+        status_sampler.CATCHUP_NODE_CACHE_RESTORE_STABLE_SAMPLES = 3
+        status_sampler.CATCHUP_NODE_CACHE_RESTORE_COOLDOWN_SECONDS = 300
+        status_sampler.CATCHUP_NODE_CACHE_MEMORY_SOME_RESTORE_THRESHOLD = 1.0
+        status_sampler.CATCHUP_NODE_CACHE_MEMORY_FULL_RESTORE_THRESHOLD = 0.1
+        status_sampler.CATCHUP_NODE_CACHE_STEADY_IOWAIT_MAX = 5.0
+        status_sampler.CATCHUP_NODE_CACHE_STEADY_IO_SOME_MAX = 2.0
+        status_sampler.CATCHUP_NODE_CACHE_STEADY_IO_FULL_MAX = 1.0
+        status_sampler.CATCHUP_NODE_CACHE_STEADY_MEMORY_SOME_MAX = 0.5
+        status_sampler.CATCHUP_NODE_CACHE_STEADY_MEMORY_FULL_MAX = 0.1
         status_sampler.CATCHUP_IO_PRESSURE_PAUSE_ENABLED = True
         status_sampler.CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS = 25
         status_sampler.CATCHUP_IOWAIT_WARN_PERCENT = 15.0
@@ -397,6 +419,309 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertIn("# miner=true disabled during catch-up pause", node_conf)
         self.assertFalse(any(command[-2:] == ["stop", status_sampler.POOL_CONTAINER] for command in commands))
         self.assertTrue(any("--force-recreate" in command for command in commands))
+
+    def test_catchup_cache_target_uses_memory_percent_bounds(self) -> None:
+        status_sampler.CATCHUP_NODE_CACHE_MB = 6144
+        status_sampler.CATCHUP_NODE_CACHE_MIN_MB = 1024
+        status_sampler.CATCHUP_NODE_CACHE_MEMORY_PERCENT = 40.0
+
+        status_sampler.detect_total_memory_bytes = lambda: 16 * 1024 * 1024 * 1024
+        self.assertEqual(6144, status_sampler.catchup_target_node_cache_mb())
+
+        status_sampler.detect_total_memory_bytes = lambda: 8 * 1024 * 1024 * 1024
+        self.assertEqual(3276, status_sampler.catchup_target_node_cache_mb())
+
+        status_sampler.CATCHUP_NODE_CACHE_MIN_MB = 2048
+        status_sampler.detect_total_memory_bytes = lambda: 4 * 1024 * 1024 * 1024
+        self.assertEqual(2048, status_sampler.catchup_target_node_cache_mb())
+
+        status_sampler.CATCHUP_NODE_CACHE_MB = 0
+        self.assertEqual(0, status_sampler.catchup_target_node_cache_mb())
+
+    def test_catchup_pause_records_automation_owned_cache_raise(self) -> None:
+        env_updates = {}
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.update_stalled_import_watch = lambda _payload: {}
+        os.environ["BDAG_ENABLE_NODE_MINING"] = "1"
+        os.environ["BDAG_NODE_CACHE_MB"] = "2048"
+        os.environ["BDAG_EVM_CACHE_MB"] = "2048"
+        os.environ["BDAG_NODE_SERVICES"] = "node"
+        payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=450)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["catchup_policy"] = {
+            "active": True,
+            "lag_blocks": 450,
+            "threshold_blocks": 300,
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            status_sampler.PROJECT_ROOT = root
+            status_sampler.CATCHUP_CACHE_STATE_FILE = root / "runtime" / "catchup-cache-state.json"
+            (root / "node.conf").write_text('cache=2048\nevmenv="--cache 2048"\n', encoding="utf-8")
+
+            def fake_set_runtime_env(key: str, value: str):
+                env_updates[key] = value
+                os.environ[key] = value
+                return [f"/runtime/{key}"]
+
+            status_sampler.set_runtime_env_value = fake_set_runtime_env
+            status_sampler.detect_total_memory_bytes = lambda: 16 * 1024 * 1024 * 1024
+            status_sampler.run = lambda command, timeout=20: self.command_result(command)
+
+            repair = status_sampler.mining_imperative_repair(payload)
+            state = json.loads(status_sampler.CATCHUP_CACHE_STATE_FILE.read_text(encoding="utf-8"))
+
+        self.assertIn("applied_catchup_node_runtime", repair["actions"])
+        self.assertEqual(env_updates["BDAG_NODE_CACHE_MB"], "6144")
+        self.assertEqual(env_updates["BDAG_EVM_CACHE_MB"], "6144")
+        self.assertEqual(state["status"], "raised")
+        self.assertEqual(state["target_cache_mb"], 6144)
+        self.assertEqual(state["original_values"]["BDAG_NODE_CACHE_MB"]["value"], "2048")
+        self.assertEqual(state["original_values"]["BDAG_EVM_CACHE_MB"]["value"], "2048")
+        self.assertEqual(state["original_values"][status_sampler.CATCHUP_NODE_CONF_CACHE_KEY]["value"], "2048")
+        self.assertEqual(state["raised_values"]["BDAG_NODE_CACHE_MB"]["value"], "6144")
+        self.assertEqual(state["raised_values"]["BDAG_EVM_CACHE_MB"]["value"], "6144")
+
+    def test_restores_automation_owned_catchup_cache_after_stable_inactive_samples(self) -> None:
+        commands = []
+        env_updates = {}
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.CATCHUP_NODE_CACHE_RESTORE_STABLE_SAMPLES = 1
+        status_sampler.CATCHUP_NODE_CACHE_RESTORE_COOLDOWN_SECONDS = 0
+        status_sampler.update_stalled_import_watch = lambda _payload: {}
+        os.environ["BDAG_ENABLE_NODE_MINING"] = "1"
+        os.environ["BDAG_NODE_CACHE_MB"] = "6144"
+        os.environ["BDAG_EVM_CACHE_MB"] = "6144"
+        os.environ["BDAG_NODE_SERVICES"] = "node"
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["catchup_policy"] = {"active": False, "lag_blocks": 0, "threshold_blocks": 300}
+        payload["host_pressure"] = {
+            "iowait_percent": 0.0,
+            "io_some_avg10": 0.0,
+            "io_full_avg10": 0.0,
+            "memory_some_avg10": 0.0,
+            "memory_full_avg10": 0.0,
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            status_sampler.PROJECT_ROOT = root
+            status_sampler.CATCHUP_CACHE_STATE_FILE = root / "runtime" / "catchup-cache-state.json"
+            status_sampler.CATCHUP_CACHE_STATE_FILE.parent.mkdir(parents=True)
+            status_sampler.CATCHUP_CACHE_STATE_FILE.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "status": "raised",
+                        "last_raise_epoch": 0,
+                        "original_values": {
+                            "BDAG_NODE_CACHE_MB": {"value": "2048", "source": "env", "present": True},
+                            "BDAG_EVM_CACHE_MB": {"value": "2048", "source": "env", "present": True},
+                            status_sampler.CATCHUP_NODE_CONF_CACHE_KEY: {
+                                "value": "2048",
+                                "source": "node_conf",
+                                "present": True,
+                            },
+                        },
+                        "raised_values": {
+                            "BDAG_NODE_CACHE_MB": {"value": "6144", "source": "env", "present": True},
+                            "BDAG_EVM_CACHE_MB": {"value": "6144", "source": "env", "present": True},
+                            status_sampler.CATCHUP_NODE_CONF_CACHE_KEY: {
+                                "value": "6144",
+                                "source": "node_conf",
+                                "present": True,
+                            },
+                        },
+                        "inactive_stable_samples": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "node.conf").write_text('cache=6144\nevmenv="--cache 6144"\n', encoding="utf-8")
+
+            def fake_set_runtime_env(key: str, value: str):
+                env_updates[key] = value
+                os.environ[key] = value
+                return [f"/runtime/{key}"]
+
+            def fake_run(command: list[str], timeout: int = 20):
+                commands.append(command)
+                return self.command_result(command)
+
+            status_sampler.set_runtime_env_value = fake_set_runtime_env
+            status_sampler.run = fake_run
+
+            repair = status_sampler.mining_imperative_repair(payload)
+            node_conf = (root / "node.conf").read_text(encoding="utf-8")
+            state = status_sampler.read_catchup_cache_state()
+
+        self.assertIn("restored_catchup_node_cache", repair["actions"])
+        self.assertEqual(env_updates["BDAG_NODE_CACHE_MB"], "2048")
+        self.assertEqual(env_updates["BDAG_EVM_CACHE_MB"], "2048")
+        self.assertIn("cache=2048", node_conf)
+        self.assertIn("--cache 2048", node_conf)
+        self.assertEqual("restored", state["status"])
+        self.assertEqual({}, state["raised_values"])
+        self.assertTrue(any("--force-recreate" in command for command in commands))
+
+    def test_restores_only_recorded_automation_owned_catchup_cache_values(self) -> None:
+        env_updates = {}
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.CATCHUP_NODE_RECREATE_ENABLED = False
+        status_sampler.CATCHUP_NODE_CACHE_RESTORE_STABLE_SAMPLES = 1
+        status_sampler.CATCHUP_NODE_CACHE_RESTORE_COOLDOWN_SECONDS = 0
+        status_sampler.update_stalled_import_watch = lambda _payload: {}
+        os.environ["BDAG_NODE_CACHE_MB"] = "6144"
+        os.environ["BDAG_EVM_CACHE_MB"] = "6144"
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["catchup_policy"] = {"active": False, "lag_blocks": 0, "threshold_blocks": 300}
+        payload["host_pressure"] = {
+            "iowait_percent": 0.0,
+            "io_some_avg10": 0.0,
+            "io_full_avg10": 0.0,
+            "memory_some_avg10": 0.0,
+            "memory_full_avg10": 0.0,
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            status_sampler.CATCHUP_CACHE_STATE_FILE = root / "runtime" / "catchup-cache-state.json"
+            status_sampler.CATCHUP_CACHE_STATE_FILE.parent.mkdir(parents=True)
+            status_sampler.CATCHUP_CACHE_STATE_FILE.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "status": "raised",
+                        "last_raise_epoch": 0,
+                        "original_values": {
+                            "BDAG_NODE_CACHE_MB": {"value": "2048", "source": "env", "present": True},
+                        },
+                        "raised_values": {
+                            "BDAG_NODE_CACHE_MB": {"value": "6144", "source": "env", "present": True},
+                        },
+                        "inactive_stable_samples": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def fake_set_runtime_env(key: str, value: str):
+                env_updates[key] = value
+                os.environ[key] = value
+                return [f"/runtime/{key}"]
+
+            status_sampler.set_runtime_env_value = fake_set_runtime_env
+            repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertIn("restored_catchup_node_cache", repair["actions"])
+        self.assertEqual({"BDAG_NODE_CACHE_MB": "2048"}, env_updates)
+        self.assertEqual("2048", os.environ["BDAG_NODE_CACHE_MB"])
+        self.assertEqual("6144", os.environ["BDAG_EVM_CACHE_MB"])
+
+    def test_does_not_restore_catchup_cache_after_operator_edit(self) -> None:
+        env_updates = {}
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.CATCHUP_NODE_CACHE_RESTORE_STABLE_SAMPLES = 1
+        status_sampler.CATCHUP_NODE_CACHE_RESTORE_COOLDOWN_SECONDS = 0
+        status_sampler.update_stalled_import_watch = lambda _payload: {}
+        os.environ["BDAG_NODE_CACHE_MB"] = "3072"
+        os.environ["BDAG_EVM_CACHE_MB"] = "6144"
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["catchup_policy"] = {"active": False, "lag_blocks": 0, "threshold_blocks": 300}
+        payload["host_pressure"] = {"memory_some_avg10": 3.0}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            status_sampler.PROJECT_ROOT = root
+            status_sampler.CATCHUP_CACHE_STATE_FILE = root / "runtime" / "catchup-cache-state.json"
+            status_sampler.CATCHUP_CACHE_STATE_FILE.parent.mkdir(parents=True)
+            status_sampler.CATCHUP_CACHE_STATE_FILE.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "status": "raised",
+                        "last_raise_epoch": 0,
+                        "original_values": {
+                            "BDAG_NODE_CACHE_MB": {"value": "2048", "source": "env", "present": True},
+                            "BDAG_EVM_CACHE_MB": {"value": "2048", "source": "env", "present": True},
+                            status_sampler.CATCHUP_NODE_CONF_CACHE_KEY: {
+                                "value": "2048",
+                                "source": "node_conf",
+                                "present": True,
+                            },
+                        },
+                        "raised_values": {
+                            "BDAG_NODE_CACHE_MB": {"value": "6144", "source": "env", "present": True},
+                            "BDAG_EVM_CACHE_MB": {"value": "6144", "source": "env", "present": True},
+                            status_sampler.CATCHUP_NODE_CONF_CACHE_KEY: {
+                                "value": "6144",
+                                "source": "node_conf",
+                                "present": True,
+                            },
+                        },
+                        "inactive_stable_samples": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "node.conf").write_text('cache=6144\nevmenv="--cache 6144"\n', encoding="utf-8")
+
+            def fake_set_runtime_env(key: str, value: str):
+                env_updates[key] = value
+                return [f"/runtime/{key}"]
+
+            status_sampler.set_runtime_env_value = fake_set_runtime_env
+            status_sampler.run = lambda command, timeout=20: self.command_result(command)
+
+            repair = status_sampler.mining_imperative_repair(payload)
+            state = json.loads(status_sampler.CATCHUP_CACHE_STATE_FILE.read_text(encoding="utf-8"))
+
+        self.assertNotIn("restored_catchup_node_cache", repair["actions"])
+        self.assertEqual(env_updates, {})
+        self.assertEqual(state["status"], "operator_edit_detected")
+        self.assertIn("BDAG_NODE_CACHE_MB", state["disowned_values"])
+
+    def test_does_not_restore_catchup_cache_while_active_or_unstable(self) -> None:
+        status_sampler.CATCHUP_NODE_CACHE_RESTORE_STABLE_SAMPLES = 1
+        status_sampler.CATCHUP_NODE_CACHE_RESTORE_COOLDOWN_SECONDS = 0
+        os.environ["BDAG_NODE_CACHE_MB"] = "6144"
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["host_pressure"] = {"memory_some_avg10": 3.0}
+        status_sampler.set_runtime_env_value = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("cache must not restore while catch-up is active or unstable")
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            status_sampler.CATCHUP_CACHE_STATE_FILE = root / "runtime" / "catchup-cache-state.json"
+            status_sampler.CATCHUP_CACHE_STATE_FILE.parent.mkdir(parents=True)
+            state = {
+                "schema_version": 1,
+                "status": "raised",
+                "last_raise_epoch": 0,
+                "original_values": {
+                    "BDAG_NODE_CACHE_MB": {"value": "2048", "source": "env", "present": True},
+                },
+                "raised_values": {
+                    "BDAG_NODE_CACHE_MB": {"value": "6144", "source": "env", "present": True},
+                },
+                "inactive_stable_samples": 0,
+            }
+            for policy in (
+                {"active": True, "sync_status": "syncing", "lag_blocks": 450, "threshold_blocks": 300},
+                {"active": False, "sync_status": "syncing", "lag_blocks": 0, "threshold_blocks": 300},
+            ):
+                with self.subTest(policy=policy):
+                    status_sampler.CATCHUP_CACHE_STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
+                    restored = status_sampler.restore_catchup_node_cache(payload, policy)
+                    written = status_sampler.read_catchup_cache_state()
+
+                    self.assertFalse(restored)
+                    self.assertEqual("waiting_catchup_stable", written["status"])
+                    self.assertEqual(0, written["inactive_stable_samples"])
+                    self.assertEqual("6144", os.environ["BDAG_NODE_CACHE_MB"])
 
     def test_catchup_pause_does_not_restart_stopped_pool_for_visible_miners(self) -> None:
         commands = []

@@ -30,6 +30,7 @@ from pool_ops import (
     env_bool,
     now_iso,
     read_env_file_value,
+    read_json_file,
     read_miner_registry,
     read_neighbor_macs,
     read_latest_earnings_snapshot_info,
@@ -157,12 +158,43 @@ CATCHUP_NODE_RECREATE_ENABLED = env_bool("BDAG_CATCHUP_NODE_RECREATE_ENABLED", T
 CATCHUP_NODE_CACHE_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MB", 6144, minimum=0)
 CATCHUP_NODE_CACHE_MIN_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MIN_MB", 1024, minimum=256)
 CATCHUP_NODE_CACHE_MEMORY_PERCENT = env_float("BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT", 40.0, minimum=5.0)
+CATCHUP_NODE_CACHE_RESTORE_ENABLED = env_bool("BDAG_CATCHUP_NODE_CACHE_RESTORE_ENABLED", True)
+CATCHUP_NODE_CACHE_RESTORE_STABLE_SAMPLES = env_int("BDAG_CATCHUP_NODE_CACHE_RESTORE_STABLE_SAMPLES", 3, minimum=1)
+CATCHUP_NODE_CACHE_RESTORE_COOLDOWN_SECONDS = env_int(
+    "BDAG_CATCHUP_NODE_CACHE_RESTORE_COOLDOWN_SECONDS",
+    300,
+    minimum=0,
+)
+CATCHUP_NODE_CACHE_MEMORY_SOME_RESTORE_THRESHOLD = env_float(
+    "BDAG_CATCHUP_NODE_CACHE_MEMORY_SOME_RESTORE_THRESHOLD",
+    1.0,
+    minimum=0.0,
+)
+CATCHUP_NODE_CACHE_MEMORY_FULL_RESTORE_THRESHOLD = env_float(
+    "BDAG_CATCHUP_NODE_CACHE_MEMORY_FULL_RESTORE_THRESHOLD",
+    0.1,
+    minimum=0.0,
+)
+CATCHUP_NODE_CACHE_STEADY_IOWAIT_MAX = env_float("BDAG_CATCHUP_NODE_CACHE_STEADY_IOWAIT_MAX", 5.0, minimum=0.0)
+CATCHUP_NODE_CACHE_STEADY_IO_SOME_MAX = env_float("BDAG_CATCHUP_NODE_CACHE_STEADY_IO_SOME_MAX", 2.0, minimum=0.0)
+CATCHUP_NODE_CACHE_STEADY_IO_FULL_MAX = env_float("BDAG_CATCHUP_NODE_CACHE_STEADY_IO_FULL_MAX", 1.0, minimum=0.0)
+CATCHUP_NODE_CACHE_STEADY_MEMORY_SOME_MAX = env_float(
+    "BDAG_CATCHUP_NODE_CACHE_STEADY_MEMORY_SOME_MAX",
+    0.5,
+    minimum=0.0,
+)
+CATCHUP_NODE_CACHE_STEADY_MEMORY_FULL_MAX = env_float(
+    "BDAG_CATCHUP_NODE_CACHE_STEADY_MEMORY_FULL_MAX",
+    0.1,
+    minimum=0.0,
+)
 CATCHUP_IO_PRESSURE_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED", True)
 CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS = env_int("BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS", 25, minimum=1)
 CATCHUP_IOWAIT_WARN_PERCENT = env_float("BDAG_CATCHUP_IOWAIT_WARN_PERCENT", 15.0, minimum=0.0)
 CATCHUP_IO_SOME_AVG10_WARN = env_float("BDAG_CATCHUP_IO_SOME_AVG10_WARN", 20.0, minimum=0.0)
 CATCHUP_IO_FULL_AVG10_WARN = env_float("BDAG_CATCHUP_IO_FULL_AVG10_WARN", 10.0, minimum=0.0)
 LOG_FILE = LOG_DIR / "status-sampler.log"
+CATCHUP_CACHE_STATE_FILE = STATUS_SAMPLER_FILE.parent / "catchup-cache-state.json"
 
 
 def log(message: str) -> None:
@@ -1307,6 +1339,318 @@ def catchup_target_node_cache_mb() -> int:
     return max(256, min(CATCHUP_NODE_CACHE_MB, max(CATCHUP_NODE_CACHE_MIN_MB, percent_target)))
 
 
+CATCHUP_CACHE_ENV_KEYS = ("BDAG_NODE_CACHE_MB", "BDAG_EVM_CACHE_MB")
+CATCHUP_NODE_CONF_CACHE_KEY = "node.conf:cache"
+
+
+def read_catchup_cache_state() -> dict[str, Any]:
+    state = read_json_file(CATCHUP_CACHE_STATE_FILE, {})
+    return state if isinstance(state, dict) else {}
+
+
+def write_catchup_cache_state(state: dict[str, Any]) -> None:
+    now_epoch = time.time()
+    payload = {
+        "schema_version": 1,
+        "owner": "status-sampler",
+        **state,
+        "updated_at": now_iso(),
+        "updated_at_epoch": now_epoch,
+    }
+    write_json_file(CATCHUP_CACHE_STATE_FILE, payload, mode=0o600)
+
+
+def cache_value_record(value: Any, source: str) -> dict[str, Any]:
+    text = "" if value is None else str(value)
+    return {"value": text, "source": source, "present": bool(text)}
+
+
+def cache_record_value(record: Any) -> str:
+    if isinstance(record, dict):
+        return str(record.get("value") or "")
+    return "" if record is None else str(record)
+
+
+def record_catchup_cache_raise(
+    *,
+    policy: dict[str, Any],
+    target_cache: int,
+    original_values: dict[str, dict[str, Any]],
+    raised_values: dict[str, dict[str, Any]],
+    changed_paths: list[str],
+) -> None:
+    if not raised_values:
+        return
+    previous = read_catchup_cache_state()
+    previous_originals = dict_value(previous.get("original_values"))
+    merged_originals = {
+        **original_values,
+        **{key: value for key, value in previous_originals.items() if isinstance(value, dict)},
+    }
+    previous_raised = dict_value(previous.get("raised_values"))
+    state = {
+        **previous,
+        "status": "raised",
+        "last_raise_at": now_iso(),
+        "last_raise_epoch": time.time(),
+        "target_cache_mb": target_cache,
+        "original_values": merged_originals,
+        "raised_values": {
+            **{key: value for key, value in previous_raised.items() if isinstance(value, dict)},
+            **raised_values,
+        },
+        "changed_paths": sorted(set([*(previous.get("changed_paths") or []), *changed_paths])),
+        "inactive_stable_samples": 0,
+        "last_policy": policy,
+    }
+    write_catchup_cache_state(state)
+
+
+def catchup_cache_inactive_stable(policy: dict[str, Any]) -> bool:
+    if bool(policy.get("active")):
+        return False
+    if bool(policy.get("syncing_active")) or bool(policy.get("io_pressure_active")) or bool(policy.get("lag_threshold_active")):
+        return False
+    if str(policy.get("sync_status") or "").lower() in {"syncing", "catchup_pause"}:
+        return False
+    lag = safe_int(policy.get("lag_blocks"), 0)
+    threshold = safe_int(policy.get("threshold_blocks"), CATCHUP_PAUSE_THRESHOLD_BLOCKS)
+    return lag <= threshold
+
+
+def catchup_cache_restore_pressure_reasons(payload: dict[str, Any]) -> list[str]:
+    host_pressure = dict_value(payload.get("host_pressure"))
+    if not host_pressure:
+        return []
+    reasons: list[str] = []
+    memory_some = host_pressure.get("memory_some_avg10")
+    memory_full = host_pressure.get("memory_full_avg10")
+    if memory_some is not None and safe_float(memory_some) >= CATCHUP_NODE_CACHE_MEMORY_SOME_RESTORE_THRESHOLD:
+        reasons.append(
+            f"memory_some_avg10={safe_float(memory_some):.2f}>={CATCHUP_NODE_CACHE_MEMORY_SOME_RESTORE_THRESHOLD:.2f}"
+        )
+    if memory_full is not None and safe_float(memory_full) >= CATCHUP_NODE_CACHE_MEMORY_FULL_RESTORE_THRESHOLD:
+        reasons.append(
+            f"memory_full_avg10={safe_float(memory_full):.2f}>={CATCHUP_NODE_CACHE_MEMORY_FULL_RESTORE_THRESHOLD:.2f}"
+        )
+    if reasons:
+        return reasons
+
+    values = {
+        "iowait_percent": host_pressure.get("iowait_percent"),
+        "io_some_avg10": host_pressure.get("io_some_avg10"),
+        "io_full_avg10": host_pressure.get("io_full_avg10"),
+        "memory_some_avg10": memory_some,
+        "memory_full_avg10": memory_full,
+    }
+    if not any(value is not None for value in values.values()):
+        return []
+    steady = (
+        not bool(host_pressure.get("iowait_warning_active"))
+        and safe_float(values["iowait_percent"]) <= CATCHUP_NODE_CACHE_STEADY_IOWAIT_MAX
+        and safe_float(values["io_some_avg10"]) <= CATCHUP_NODE_CACHE_STEADY_IO_SOME_MAX
+        and safe_float(values["io_full_avg10"]) <= CATCHUP_NODE_CACHE_STEADY_IO_FULL_MAX
+        and safe_float(values["memory_some_avg10"]) <= CATCHUP_NODE_CACHE_STEADY_MEMORY_SOME_MAX
+        and safe_float(values["memory_full_avg10"]) <= CATCHUP_NODE_CACHE_STEADY_MEMORY_FULL_MAX
+    )
+    return ["host_pressure_steady_state"] if steady else []
+
+
+def update_catchup_cache_wait_state(state: dict[str, Any], status: str, policy: dict[str, Any], samples: int) -> None:
+    write_catchup_cache_state(
+        {
+            **state,
+            "status": status,
+            "inactive_stable_samples": samples,
+            "last_policy": policy,
+        }
+    )
+
+
+def restore_catchup_node_cache(payload: dict[str, Any], policy: dict[str, Any]) -> bool:
+    if not CATCHUP_NODE_CACHE_RESTORE_ENABLED:
+        return False
+    state = read_catchup_cache_state()
+    raised_values = {
+        key: value for key, value in dict_value(state.get("raised_values")).items() if isinstance(value, dict)
+    }
+    original_values = {
+        key: value for key, value in dict_value(state.get("original_values")).items() if isinstance(value, dict)
+    }
+    if not raised_values:
+        return False
+
+    if not catchup_cache_inactive_stable(policy):
+        update_catchup_cache_wait_state(state, "waiting_catchup_stable", policy, 0)
+        return False
+
+    stable_samples = safe_int(state.get("inactive_stable_samples"), 0) + 1
+    if stable_samples < CATCHUP_NODE_CACHE_RESTORE_STABLE_SAMPLES:
+        update_catchup_cache_wait_state(state, "waiting_stable_samples", policy, stable_samples)
+        return False
+
+    pressure_reasons = catchup_cache_restore_pressure_reasons(payload)
+    if not pressure_reasons:
+        update_catchup_cache_wait_state(state, "waiting_host_pressure_signal", policy, stable_samples)
+        return False
+
+    now_epoch = time.time()
+    last_raise_epoch = safe_float(state.get("last_raise_epoch"), 0.0)
+    cooldown_remaining = CATCHUP_NODE_CACHE_RESTORE_COOLDOWN_SECONDS - max(0.0, now_epoch - last_raise_epoch)
+    if cooldown_remaining > 0:
+        write_catchup_cache_state(
+            {
+                **state,
+                "status": "waiting_restore_cooldown",
+                "inactive_stable_samples": stable_samples,
+                "cooldown_remaining_seconds": round(cooldown_remaining, 3),
+                "last_policy": policy,
+            }
+        )
+        return False
+
+    if not automation_repair_mutation_allowed(
+        automation_control.ACTION_CONFIG_EDIT,
+        target="catchup-node-cache-restore",
+        reason=f"restore automation-owned catch-up cache values after {stable_samples} stable sample(s)",
+        payload=payload,
+        event_type="catchup_cache_restore_config_edit_blocked",
+        message="Catch-up cache controller could not restore node cache because automation control blocked config edits",
+        severity="warning",
+    ):
+        return False
+
+    changed_paths: list[str] = []
+    restored_values: dict[str, dict[str, Any]] = {}
+    operator_edits: dict[str, dict[str, Any]] = {}
+    disowned_values = {
+        key: value for key, value in dict_value(state.get("disowned_values")).items() if isinstance(value, dict)
+    }
+
+    for key in CATCHUP_CACHE_ENV_KEYS:
+        raised_record = raised_values.get(key)
+        if not raised_record or key not in original_values:
+            continue
+        current = str(config_value(key))
+        raised = cache_record_value(raised_record)
+        if current != raised:
+            operator_edits[key] = cache_value_record(current, "env")
+            disowned_values[key] = {"raised": raised_record, "current": operator_edits[key]}
+
+    raised_conf = raised_values.get(CATCHUP_NODE_CONF_CACHE_KEY)
+    original_conf = original_values.get(CATCHUP_NODE_CONF_CACHE_KEY)
+    if raised_conf and original_conf:
+        current_conf = node_conf_cache_mb()
+        raised_conf_mb = safe_int(cache_record_value(raised_conf), 0)
+        if current_conf != raised_conf_mb:
+            operator_edits[CATCHUP_NODE_CONF_CACHE_KEY] = cache_value_record(current_conf, "node_conf")
+            disowned_values[CATCHUP_NODE_CONF_CACHE_KEY] = {
+                "raised": raised_conf,
+                "current": operator_edits[CATCHUP_NODE_CONF_CACHE_KEY],
+            }
+
+    remaining_raised = {
+        key: value
+        for key, value in raised_values.items()
+        if key not in operator_edits
+    }
+    if operator_edits:
+        write_catchup_cache_state(
+            {
+                **state,
+                "status": "operator_edit_detected",
+                "inactive_stable_samples": stable_samples,
+                "raised_values": remaining_raised,
+                "operator_edits": operator_edits,
+                "disowned_values": disowned_values,
+                "last_policy": policy,
+            }
+        )
+        return False
+
+    for key in CATCHUP_CACHE_ENV_KEYS:
+        raised_record = raised_values.get(key)
+        original_record = original_values.get(key)
+        if not raised_record or not original_record:
+            continue
+        original = cache_record_value(original_record)
+        changed_paths.extend(set_runtime_env_value(key, original))
+        restored_values[key] = cache_value_record(original, "env")
+
+    if raised_conf and original_conf:
+        original_conf_mb = safe_int(cache_record_value(original_conf), 0)
+        if original_conf_mb > 0:
+            changed_paths.extend(update_node_conf_cache(original_conf_mb))
+            restored_values[CATCHUP_NODE_CONF_CACHE_KEY] = cache_value_record(original_conf_mb, "node_conf")
+
+    remaining_raised = {
+        key: value
+        for key, value in raised_values.items()
+        if key not in restored_values
+    }
+    if not restored_values:
+        write_catchup_cache_state(
+            {
+                **state,
+                "status": "no_owned_cache_values_to_restore",
+                "inactive_stable_samples": stable_samples,
+                "raised_values": remaining_raised,
+                "operator_edits": operator_edits,
+                "disowned_values": disowned_values,
+                "last_policy": policy,
+            }
+        )
+        return False
+
+    changed_paths = sorted(set(changed_paths))
+    node_results: list[dict[str, Any]] = []
+    ok = True
+    if changed_paths and CATCHUP_NODE_RECREATE_ENABLED:
+        ok, node_results = recreate_node_services(payload, "recreate node after restoring catch-up cache values")
+    action = {
+        "policy": policy,
+        "restored_values": restored_values,
+        "operator_edits": operator_edits,
+        "changed_paths": changed_paths,
+        "node_recreate_results": node_results,
+        "pressure_reasons": pressure_reasons,
+        "inactive_stable_samples": stable_samples,
+    }
+    write_catchup_cache_state(
+        {
+            **state,
+            "status": "restored" if ok else "restore_recreate_failed",
+            "last_restore_at": now_iso(),
+            "last_restore_epoch": time.time(),
+            "inactive_stable_samples": stable_samples,
+            "raised_values": remaining_raised,
+            "restored_values": restored_values,
+            "operator_edits": operator_edits,
+            "disowned_values": disowned_values,
+            "last_policy": policy,
+        }
+    )
+    if ok:
+        log(f"catch-up cache controller restored automation-owned cache values paths={','.join(changed_paths)}")
+        record_incident(
+            "catchup_cache_restored",
+            "warning",
+            "Restored automation-owned node cache values after catch-up stabilized",
+            action,
+            payload,
+        )
+        return True
+    log("catch-up cache controller failed to recreate node after restoring cache values")
+    record_incident(
+        "catchup_cache_restore_recreate_failed",
+        "warning",
+        "Catch-up cache values were restored but the node could not be recreated",
+        action,
+        payload,
+    )
+    return False
+
+
 def apply_catchup_node_runtime(payload: dict[str, Any], policy: dict[str, Any]) -> bool:
     if not automation_repair_mutation_allowed(
         automation_control.ACTION_CONFIG_EDIT,
@@ -1319,6 +1663,8 @@ def apply_catchup_node_runtime(payload: dict[str, Any], policy: dict[str, Any]) 
         return False
     changed_paths: list[str] = []
     env_updates: dict[str, str] = {}
+    cache_originals: dict[str, dict[str, Any]] = {}
+    cache_raised: dict[str, dict[str, Any]] = {}
     disabled_values = {
         "BDAG_ENABLE_NODE_MINING": "0",
         "BDAG_NODE_MODULES": NODE_MINING_MODULES,
@@ -1333,19 +1679,34 @@ def apply_catchup_node_runtime(payload: dict[str, Any], policy: dict[str, Any]) 
 
     target_cache = catchup_target_node_cache_mb()
     if target_cache > 0:
-        if safe_int(config_value("BDAG_NODE_CACHE_MB"), 0) < target_cache:
+        current_node_cache = config_value("BDAG_NODE_CACHE_MB")
+        if safe_int(current_node_cache, 0) < target_cache:
+            cache_originals["BDAG_NODE_CACHE_MB"] = cache_value_record(current_node_cache, "env")
             changed_paths.extend(set_runtime_env_value("BDAG_NODE_CACHE_MB", str(target_cache)))
             env_updates["BDAG_NODE_CACHE_MB"] = str(target_cache)
-        if safe_int(config_value("BDAG_EVM_CACHE_MB"), 0) < target_cache:
+            cache_raised["BDAG_NODE_CACHE_MB"] = cache_value_record(target_cache, "env")
+        current_evm_cache = config_value("BDAG_EVM_CACHE_MB")
+        if safe_int(current_evm_cache, 0) < target_cache:
+            cache_originals["BDAG_EVM_CACHE_MB"] = cache_value_record(current_evm_cache, "env")
             changed_paths.extend(set_runtime_env_value("BDAG_EVM_CACHE_MB", str(target_cache)))
             env_updates["BDAG_EVM_CACHE_MB"] = str(target_cache)
+            cache_raised["BDAG_EVM_CACHE_MB"] = cache_value_record(target_cache, "env")
         current_conf_cache = node_conf_cache_mb()
         if current_conf_cache and current_conf_cache < target_cache:
+            cache_originals[CATCHUP_NODE_CONF_CACHE_KEY] = cache_value_record(current_conf_cache, "node_conf")
             changed_paths.extend(update_node_conf_cache(target_cache))
+            cache_raised[CATCHUP_NODE_CONF_CACHE_KEY] = cache_value_record(target_cache, "node_conf")
 
     changed_paths = sorted(set(changed_paths))
     if not changed_paths:
         return False
+    record_catchup_cache_raise(
+        policy=policy,
+        target_cache=target_cache,
+        original_values=cache_originals,
+        raised_values=cache_raised,
+        changed_paths=changed_paths,
+    )
 
     node_results: list[dict[str, Any]] = []
     ok = True
@@ -1599,6 +1960,10 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
             actions.append(f"template_pause:{POOL_CONTAINER}:catchup_pause")
         if apply_catchup_node_runtime(payload, catchup_policy):
             actions.append("applied_catchup_node_runtime")
+
+    if not catchup_active:
+        if restore_catchup_node_cache(payload, catchup_policy):
+            actions.append("restored_catchup_node_cache")
 
     if not catchup_active and node_mining_template_support_should_repair(payload):
         if repair_node_mining_template_support(payload):
