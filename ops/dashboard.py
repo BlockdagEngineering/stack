@@ -1591,7 +1591,6 @@ HTML = r"""<!doctype html>
   </header>
   <nav class="tabs">
     <button id="tabButton-status" class="tab-button active" onclick="showTab('status')">Status: Stack</button>
-    <button id="tabButton-miners" class="tab-button" onclick="showTab('miners')">Miners: Local ASICs</button>
     <button id="tabButton-global" class="tab-button" onclick="showTab('global')">Global: Chain Production</button>
     <button id="tabButton-earnings" class="tab-button" onclick="showTab('earnings')">Earnings: Wallet</button>
   </nav>
@@ -1667,84 +1666,6 @@ HTML = r"""<!doctype html>
         <pre id="actionLog"></pre>
       </div>
     </section>
-    </section>
-    <section id="tab-miners" class="tab-page hidden">
-      <section class="grid">
-        <div class="panel span-12">
-          <div class="kpi-label">Active Miner Lanes</div>
-          <div id="minerHealthSummary" class="subtle" style="margin-top: 8px;"></div>
-          <div class="table-scroll">
-          <table class="wide-table">
-            <thead><tr><th class="nowrap">Miner</th><th class="nowrap">Type</th><th>Status</th><th>Configured</th><th>Connected</th><th class="nowrap">Workers</th><th class="right">Shares</th><th class="right">Work %</th><th class="right">Expected %</th><th class="nowrap">Lane</th><th class="right">Work</th><th class="right">Found Blocks</th><th>Last Share</th><th>Issue</th></tr></thead>
-            <tbody id="managedMinersTable"></tbody>
-          </table>
-          </div>
-        </div>
-      </section>
-      <section class="grid">
-        <div class="panel span-12">
-          <div class="kpi-label">Miner Performance Trend</div>
-          <div class="subtle" id="minerWorkChartMetricSummary" style="margin-top: 8px;">Accepted work percentage by miner</div>
-          <div class="chart-head">
-            <div class="chart-controls">
-              <button class="secondary range-button miner-work-range-button active" data-range="1" onclick="setMinerWorkChartRange(1)">1h</button>
-              <button class="secondary range-button miner-work-range-button" data-range="4" onclick="setMinerWorkChartRange(4)">4h</button>
-              <button class="secondary range-button miner-work-range-button" data-range="12" onclick="setMinerWorkChartRange(12)">12h</button>
-              <button class="secondary range-button miner-work-range-button" data-range="24" onclick="setMinerWorkChartRange(24)">24h</button>
-              <button class="secondary range-button miner-work-range-button" data-range="72" onclick="setMinerWorkChartRange(72)">3d</button>
-              <button class="secondary range-button miner-work-range-button" data-range="168" onclick="setMinerWorkChartRange(168)">Week</button>
-              <button class="secondary range-button miner-work-range-button" data-range="720" onclick="setMinerWorkChartRange(720)">Month</button>
-              <button class="secondary range-button miner-work-metric-button active" data-metric="work" onclick="setMinerWorkChartMetric('work')">Work %</button>
-              <button class="secondary range-button miner-work-metric-button" data-metric="blocks" onclick="setMinerWorkChartMetric('blocks')">Blocks</button>
-              <button class="secondary range-button miner-work-metric-button" data-metric="hashrate" onclick="setMinerWorkChartMetric('hashrate')">Hashrate</button>
-            </div>
-            <div class="subtle" id="minerWorkChartRangeLabel"></div>
-          </div>
-          <div id="minerWorkSamplerAlert" class="sampler-alert hidden"></div>
-          <div class="chart-wrap"><canvas id="minerWorkChart"></canvas></div>
-          <div class="chart-legend" id="minerWorkChartLegend"></div>
-        </div>
-      </section>
-      <section class="grid">
-        <div class="panel span-12">
-          <div class="kpi-label">LAN Miner Configuration</div>
-          <div class="form-grid" style="margin-top: 12px;">
-            <label class="field-span-3">Scan Target
-              <input id="minerScanTarget" placeholder="192.168.1.0/24">
-            </label>
-            <label class="field-span-3">Pool URL
-              <input id="minerPoolUrl" placeholder="stratum+tcp://POOL_LAN_IP:3334">
-            </label>
-            <label class="field-span-3">Worker / Wallet
-              <input id="minerWorkerUser" placeholder="0x...">
-            </label>
-            <label class="field-span-2">Pool Password
-              <input id="minerPoolPassword" value="1234">
-            </label>
-            <label class="field-span-3">Admin Password
-              <input id="minerAdminPassword" type="password" autocomplete="off" placeholder="ASIC admin password">
-            </label>
-            <div class="field-span-6 button-row">
-              <button onclick="scanMinerLan()">Scan LAN</button>
-              <button class="secondary" onclick="selectAllMiners(true)">Select All</button>
-              <button class="secondary" onclick="selectAllMiners(false)">Clear</button>
-              <button onclick="configureSelectedMiners()">Configure Selected</button>
-              <button class="secondary" onclick="saveMinerAuth()">Save Password For Watchdog</button>
-            </div>
-          </div>
-          <div class="subtle" style="margin-top: 10px;">Scans are limited to private LAN IPv4 targets. Existing miner pool lists are backed up before changes.</div>
-        </div>
-      </section>
-      <section class="grid">
-        <div class="panel span-12">
-          <div class="kpi-label">Discovered Miners</div>
-          <table>
-            <thead><tr><th class="checkbox-cell"></th><th>Miner</th><th>Model</th><th>Firmware</th><th>Current Pool</th><th>Active</th><th>Result</th></tr></thead>
-            <tbody id="minersTable"></tbody>
-          </table>
-          <pre id="minersOutput">No scan has run yet.</pre>
-        </div>
-      </section>
     </section>
     <section id="tab-global" class="tab-page hidden">
       <section class="grid">
@@ -2111,10 +2032,12 @@ HTML = r"""<!doctype html>
     function showTab(name) {
       for (const page of document.querySelectorAll(".tab-page")) page.classList.add("hidden");
       for (const button of document.querySelectorAll(".tab-button")) button.classList.remove("active");
-      document.getElementById("tab-" + name).classList.remove("hidden");
-      document.getElementById("tabButton-" + name).classList.add("active");
+      const page = document.getElementById("tab-" + name);
+      const button = document.getElementById("tabButton-" + name);
+      if (!page || !button) return;
+      page.classList.remove("hidden");
+      button.classList.add("active");
       if (name === "earnings") refreshEarnings();
-      if (name === "miners") refreshEarnings();
       if (name === "global") refreshGlobal();
     }
     function scheduleRebuildPoll(active) {
@@ -2542,14 +2465,21 @@ HTML = r"""<!doctype html>
     }
     function hydrateMinerDefaults(data) {
       if (minerDefaultsLoaded) return;
+      const scanTarget = document.getElementById("minerScanTarget");
+      const poolUrlInput = document.getElementById("minerPoolUrl");
+      const workerInput = document.getElementById("minerWorkerUser");
+      if (!scanTarget || !poolUrlInput || !workerInput) {
+        minerDefaultsLoaded = true;
+        return;
+      }
       const endpoint = data.pool_endpoint || `127.0.0.1:${data.pool_port || "3334"}`;
       const firstIp = (data.local_ips || [])[0] || "192.168.1.1";
       const parts = firstIp.split(".");
-      if (!document.getElementById("minerScanTarget").value && parts.length === 4) {
-        document.getElementById("minerScanTarget").value = `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+      if (!scanTarget.value && parts.length === 4) {
+        scanTarget.value = `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
       }
-      if (!document.getElementById("minerPoolUrl").value) document.getElementById("minerPoolUrl").value = `stratum+tcp://${endpoint}`;
-      if (!document.getElementById("minerWorkerUser").value && data.mining_address) document.getElementById("minerWorkerUser").value = data.mining_address;
+      if (!poolUrlInput.value) poolUrlInput.value = `stratum+tcp://${endpoint}`;
+      if (!workerInput.value && data.mining_address) workerInput.value = data.mining_address;
       minerDefaultsLoaded = true;
     }
     function renderMiners() {
@@ -3987,15 +3917,12 @@ HTML = r"""<!doctype html>
     refresh();
     setInterval(refresh, 60000);
     setInterval(() => {
-      if (earningsLoaded && (
-        !document.getElementById("tab-earnings").classList.contains("hidden")
-        || !document.getElementById("tab-miners").classList.contains("hidden")
-      )) refreshEarnings();
+      const earningsTab = document.getElementById("tab-earnings");
+      if (earningsLoaded && earningsTab && !earningsTab.classList.contains("hidden")) refreshEarnings();
     }, 60000);
     setInterval(() => { if (globalLoaded && !document.getElementById("tab-global").classList.contains("hidden")) refreshGlobal(); }, 60000);
     window.addEventListener("resize", () => {
       if (lastEarningsData && !document.getElementById("tab-earnings").classList.contains("hidden")) drawEarningsChart(lastEarningsData);
-      if (lastEarningsData && !document.getElementById("tab-miners").classList.contains("hidden")) drawMinerWorkChart(lastEarningsData);
       if (lastGlobalData && !document.getElementById("tab-global").classList.contains("hidden")) drawGlobalChart(lastGlobalData);
     });
   </script>

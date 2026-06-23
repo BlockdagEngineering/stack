@@ -56,17 +56,24 @@ class DashboardGlobalRenderingTests(unittest.TestCase):
         self.assertIn('colspan="8"', html)
         self.assertNotIn('colspan="9"', html)
 
-    def test_miners_table_filters_stale_inactive_inventory_rows(self) -> None:
+    def test_miner_control_tab_is_not_rendered(self) -> None:
         html = dashboard.HTML
 
-        self.assertIn("Active Miner Lanes", html)
+        self.assertNotIn('id="tabButton-miners"', html)
+        self.assertNotIn('id="tab-miners"', html)
+        self.assertNotIn("Miners: Local ASICs", html)
+        self.assertNotIn("LAN Miner Configuration", html)
+        self.assertNotIn("Discovered Miners", html)
+        self.assertNotIn("scanMinerLan()", html)
+        self.assertNotIn("configureSelectedMiners()", html)
+        self.assertNotIn("saveMinerAuth()", html)
+        self.assertIn("Estimated Earnings By Miner", html)
         self.assertIn("function activeMinerLaneRow(miner)", html)
         self.assertIn("function localAsicMinerLaneRow(miner)", html)
         self.assertIn('String(miner.device_type || "").toLowerCase() === "asic"', html)
         self.assertIn("const rows = allRows.filter(localAsicMinerLaneRow);", html)
         self.assertIn("hidden-non-asic-or-inactive=", html)
         self.assertIn("stratum-hidden=", html)
-        self.assertIn("No active local ASIC lanes are currently present.", html)
         self.assertNotIn("Tracked Miner Health", html)
 
     def test_status_tab_keeps_single_backend_header_in_one_row(self) -> None:
@@ -109,7 +116,7 @@ class DashboardGlobalRenderingTests(unittest.TestCase):
         self.assertEqual(dashboard.EARNINGS_SAMPLER_INTERVAL_SECONDS, 60.0)
         self.assertEqual(dashboard.GLOBAL_SAMPLER_INTERVAL_SECONDS, 60.0)
         self.assertIn("setInterval(refresh, 60000);", html)
-        self.assertIn(")) refreshEarnings();\n    }, 60000);", html)
+        self.assertIn("if (earningsLoaded && earningsTab && !earningsTab.classList.contains(\"hidden\")) refreshEarnings();", html)
         self.assertIn("refreshGlobal(); }, 60000);", html)
         self.assertIn("let earningsRefreshInFlight = false;", html)
         self.assertIn("let globalRefreshInFlight = false;", html)
