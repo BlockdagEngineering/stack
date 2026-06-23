@@ -139,8 +139,8 @@ detect_lan_ip() {
       printf '%s\n' "$detected"
       return 0
     fi
-    ip -o -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i=="src") {print $(i+1); exit}}' || true
   fi
+  return 0
 }
 
 wired_route_policy_script() {
@@ -670,12 +670,22 @@ configure_env() {
   fi
 
   local node_rpc_pass postgres_password postgres_user postgres_db
-  node_rpc_pass="$(random_secret)"
-  postgres_password="$(random_secret)"
+  node_rpc_pass="$(env_value_unquoted NODE_RPC_PASS "")"
+  if [[ -z "$node_rpc_pass" || "$node_rpc_pass" == "test" ]]; then
+    node_rpc_pass="$(random_secret)"
+  fi
+  postgres_password="$(env_value_unquoted POSTGRES_PASSWORD "")"
+  if [[ -n "${POSTGRES_PASSWORD:-}" ]]; then
+    postgres_password="$POSTGRES_PASSWORD"
+  elif [[ -z "$postgres_password" || "$postgres_password" == "change_me_to_a_strong_secret" ]]; then
+    postgres_password="$(random_secret)"
+  else
+    say "Reusing POSTGRES_PASSWORD from existing .env"
+  fi
   postgres_user="$(grep -E '^POSTGRES_USER=' .env | cut -d= -f2-)"
   postgres_db="$(grep -E '^POSTGRES_DB=' .env | cut -d= -f2-)"
-  postgres_user="${postgres_user:-test}"
-  postgres_db="${postgres_db:-pool}"
+  postgres_user="${postgres_user:-bdag_pool}"
+  postgres_db="${postgres_db:-bdagpool}"
 
   set_env_value .env MINING_ADDRESS "$mining_address"
   set_env_value .env NODE_RPC_PASS "$node_rpc_pass"

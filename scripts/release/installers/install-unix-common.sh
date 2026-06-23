@@ -310,8 +310,8 @@ detect_lan_ip() {
             printf '%s\n' "$detected"
             return 0
         fi
-        ip -o -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i=="src") {print $(i+1); exit}}' || true
     fi
+    return 0
 }
 
 wired_route_policy_script() {
@@ -553,7 +553,7 @@ install_mode_is_node_only() {
 }
 
 if [[ "${BDAG_INSTALL_TEST_WRITE_ENV_ONLY:-0}" == "1" ]]; then
-    cp .env.example .env
+    [[ -f .env ]] || cp .env.example .env
     set_env_value .env DOCKER_PLATFORM "$DOCKER_PLATFORM"
     apply_chain_db_archive_env_overrides
     ensure_node_datadir_bind_mount
@@ -629,8 +629,14 @@ echo ""
 echo "=== Configuration ==="
 echo ""
 
+[[ -f .env ]] || cp .env.example .env
+
+existing_postgres_password="$(env_file_value .env POSTGRES_PASSWORD)"
 if [[ -n "${POSTGRES_PASSWORD:-}" ]]; then
     echo "Using POSTGRES_PASSWORD from environment."
+elif [[ -n "$existing_postgres_password" && "$existing_postgres_password" != "change_me_to_a_strong_secret" ]]; then
+    POSTGRES_PASSWORD="$existing_postgres_password"
+    echo "Reusing POSTGRES_PASSWORD from existing .env."
 else
     # Always set; docker-compose interpolation requires a value even when the
     # pool database service is not started (node-only installs).
@@ -638,7 +644,6 @@ else
     echo "Generated Postgres password."
 fi
 
-cp .env.example .env
 set_env_value .env POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
 set_env_value .env DOCKER_PLATFORM "$DOCKER_PLATFORM"
 set_env_value .env BDAG_NODE_ARCHIVAL "$BDAG_NODE_ARCHIVAL"

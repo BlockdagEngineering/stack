@@ -243,9 +243,14 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn('need_grep \'python3 ops/wait_for_node_sync.py\' "ops/release-install.sh"', validator)
         self.assertIn('need_grep \'python3 ops/wait_for_node_sync.py\' "scripts/release/installers/install-unix-common.sh"', validator)
         self.assertIn('need_grep \'Syncing graph state\' "ops/wait_for_node_sync.py"', validator)
-        self.assertIn('need_grep \'docker logs -f --tail\' "ops/wait_for_node_sync.py"', validator)
+        self.assertIn('need_grep \'"docker", "logs", "-f", "--tail"\' "ops/wait_for_node_sync.py"', validator)
         self.assertIn('need_grep \'docker_logs\\(LOG_CONTAINER, lines=LOG_LINES\\)\' "ops/wait_for_node_sync.py"', validator)
-        self.assertIn('need_grep \'Syncing graph state ETA\' "p2p/synch/peersync.go"', validator)
+        self.assertIn('need_grep \'Reusing POSTGRES_PASSWORD from existing [.][e]nv\' "ops/release-install.sh"', validator)
+        self.assertIn('need_grep \'Reusing POSTGRES_PASSWORD from existing [.][e]nv\' "scripts/release/installers/install-unix-common.sh"', validator)
+        self.assertIn('need_grep \'Reusing POSTGRES_PASSWORD from existing [.][e]nv\' "scripts/release/installers/install-windows.ps1"', validator)
+        self.assertIn('need_grep \'Preserving existing [.][e]nv\' "scripts/sim-release.sh"', validator)
+        self.assertIn('reject_grep \'^[[:space:]]*ip -o -4 route get 1[.]1[.]1[.]1 .*awk\' "ops/release-install.sh"', validator)
+        self.assertIn('reject_grep \'^[[:space:]]*ip -o -4 route get 1[.]1[.]1[.]1 .*awk\' "scripts/release/installers/install-unix-common.sh"', validator)
         self.assertIn('reject_grep \'BDAG_CHAIN_DB_ARCHIVE_SHA256\' ".env.example"', validator)
         self.assertIn('reject_grep \'BDAG_CHAIN_DB_ARCHIVE_SHA256\' "ops/release-install.sh"', validator)
         self.assertIn('need_grep \'NODE_RPC_URLS: .*http://node:38131\' "docker-compose.yml"', validator)
@@ -286,6 +291,36 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn("ensure_node_datadir_bind_mount", payload_installer)
         self.assertIn("python3 ops/wait_for_node_sync.py", payload_installer)
         self.assertIn("docker compose up -d --no-build --pull never pool-db pool collector dashboard", payload_installer)
+
+    def test_installers_preserve_existing_postgres_password(self) -> None:
+        local_installer = (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8")
+        payload_installer = (
+            ROOT_DIR / "scripts" / "release" / "installers" / "install-unix-common.sh"
+        ).read_text(encoding="utf-8")
+        windows_installer = (
+            ROOT_DIR / "scripts" / "release" / "installers" / "install-windows.ps1"
+        ).read_text(encoding="utf-8")
+        sim_release = (ROOT_DIR / "scripts" / "sim-release.sh").read_text(encoding="utf-8")
+
+        self.assertIn('postgres_password="$(env_value_unquoted POSTGRES_PASSWORD "")"', local_installer)
+        self.assertIn('postgres_password="$POSTGRES_PASSWORD"', local_installer)
+        self.assertIn('say "Reusing POSTGRES_PASSWORD from existing .env"', local_installer)
+        self.assertIn('postgres_user="${postgres_user:-bdag_pool}"', local_installer)
+        self.assertIn('postgres_db="${postgres_db:-bdagpool}"', local_installer)
+
+        self.assertIn("[[ -f .env ]] || cp .env.example .env", payload_installer)
+        self.assertNotIn("\ncp .env.example .env\nset_env_value .env POSTGRES_PASSWORD", payload_installer)
+        self.assertIn('existing_postgres_password="$(env_file_value .env POSTGRES_PASSWORD)"', payload_installer)
+        self.assertIn('POSTGRES_PASSWORD="$existing_postgres_password"', payload_installer)
+        self.assertIn('echo "Reusing POSTGRES_PASSWORD from existing .env."', payload_installer)
+
+        self.assertIn("if (-not (Test-Path '.env'))", windows_installer)
+        self.assertIn("$existingPgPassword = Get-EnvFileValue '.env' 'POSTGRES_PASSWORD'", windows_installer)
+        self.assertIn("Write-Host \"Reusing POSTGRES_PASSWORD from existing .env.\"", windows_installer)
+        self.assertNotIn("Copy-Item .env.example .env -Force", windows_installer)
+
+        self.assertIn("Preserving existing .env", sim_release)
+        self.assertIn("! -name node-data ! -name .env", sim_release)
 
     def test_release_installer_extracts_preserved_chain_peer_evidence(self) -> None:
         installer = (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8")
@@ -333,6 +368,17 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn("Refusing Docker bridge pool endpoint", windows_installer)
         self.assertIn("BDAG_DOCKER_BRIDGE_CIDRS=172.16.0.0/12", validator)
         self.assertIn("BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS=0", validator)
+
+    def test_installers_do_not_offer_docker_bridge_lan_defaults(self) -> None:
+        local_installer = (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8")
+        payload_installer = (
+            ROOT_DIR / "scripts" / "release" / "installers" / "install-unix-common.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(1, local_installer.count("route get 1.1.1.1"))
+        self.assertEqual(1, payload_installer.count("route get 1.1.1.1"))
+        self.assertIn("172\\.(1[6-9]|2[0-9]|3[0-1])", local_installer)
+        self.assertIn("172\\.(1[6-9]|2[0-9]|3[0-1])", payload_installer)
 
     def test_release_docs_keep_zero_miner_default_invariant(self) -> None:
         agents = (ROOT_DIR / "AGENTS.md").read_text(encoding="utf-8")

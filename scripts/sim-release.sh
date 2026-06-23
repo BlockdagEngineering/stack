@@ -13,9 +13,9 @@ usage() {
   cat <<'EOF'
 usage: scripts/sim-release.sh
 
-Clears the local test stack directory except for node-data/, rebuilds release
-payload artifacts, packages a local release zip, deploys that zip back into the
-test stack directory, and validates the rendered compose config.
+Clears the local test stack directory except for node-data/ and .env, rebuilds
+release payload artifacts, packages a local release zip, deploys that zip back
+into the test stack directory, and validates the rendered compose config.
 
 Environment overrides:
   REPOS_DIR=/home/ben/repos
@@ -66,10 +66,13 @@ clear_target_dir() {
   if [[ -e "$TARGET_DIR/node-data" ]]; then
     echo "Preserving existing node-data/"
   fi
+  if [[ -f "$TARGET_DIR/.env" ]]; then
+    echo "Preserving existing .env"
+  fi
   local attempt
   for attempt in 1 2 3; do
     chmod -R u+rwX "$TARGET_DIR" 2>/dev/null || true
-    if find "$TARGET_DIR" -mindepth 1 -maxdepth 1 ! -name node-data -exec rm -rf -- {} +; then
+    if find "$TARGET_DIR" -mindepth 1 -maxdepth 1 ! -name node-data ! -name .env -exec rm -rf -- {} +; then
       return 0
     fi
     sleep "$attempt"

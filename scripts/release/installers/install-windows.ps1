@@ -205,7 +205,9 @@ function Wait-ForNodeSync {
 }
 
 if ($env:BDAG_INSTALL_TEST_WRITE_ENV_ONLY -eq '1') {
-    Copy-Item .env.example .env -Force
+    if (-not (Test-Path '.env')) {
+        Copy-Item .env.example .env
+    }
     Set-EnvValue .env DOCKER_PLATFORM $dockerPlatform
     Apply-ChainDbArchiveEnvOverrides
     Ensure-NodeDatadirBindMount
@@ -396,15 +398,22 @@ function Assert-PoolLanConfig {
     }
 }
 
+if (-not (Test-Path '.env')) {
+    Copy-Item .env.example .env
+}
+
+$existingPgPassword = Get-EnvFileValue '.env' 'POSTGRES_PASSWORD'
 if ($env:POSTGRES_PASSWORD) {
     $pgPassword = $env:POSTGRES_PASSWORD
     Write-Host "Using POSTGRES_PASSWORD from environment."
+} elseif ($existingPgPassword -and $existingPgPassword -ne 'change_me_to_a_strong_secret') {
+    $pgPassword = $existingPgPassword
+    Write-Host "Reusing POSTGRES_PASSWORD from existing .env."
 } else {
     $pgPassword = New-PostgresPassword
     Write-Host "Generated Postgres password."
 }
 
-Copy-Item .env.example .env -Force
 Set-EnvValue .env POSTGRES_PASSWORD $pgPassword
 Set-EnvValue .env DOCKER_PLATFORM $dockerPlatform
 Set-EnvValue .env BDAG_NODE_ARCHIVAL $nodeArchival
