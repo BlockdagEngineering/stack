@@ -1361,6 +1361,20 @@ def restore_catchup_node_cache(payload: dict[str, Any], policy: dict[str, Any]) 
         update_catchup_cache_wait_state(state, "waiting_stable_samples", policy, stable_samples)
         return False
 
+    runtime_guard_reasons = runtime_mining_activity_guard_reasons(payload)
+    if runtime_guard_reasons:
+        write_catchup_cache_state(
+            {
+                **state,
+                "status": "waiting_active_mining",
+                "inactive_stable_samples": stable_samples,
+                "active_mining_guard_reasons": runtime_guard_reasons,
+                "last_policy": policy,
+            }
+        )
+        record_catchup_cache_restore_skipped(payload, policy, runtime_guard_reasons)
+        return False
+
     pressure_reasons = catchup_cache_restore_pressure_reasons(payload)
     if not pressure_reasons:
         update_catchup_cache_wait_state(state, "waiting_host_pressure_signal", policy, stable_samples)
@@ -1537,6 +1551,28 @@ def record_catchup_node_runtime_skipped(
         "catchup_pause_node_runtime_skipped_active_mining",
         "warning",
         "Catch-up pause left node runtime unchanged because ASIC work or recent paid work is visible",
+        {
+            "policy": policy,
+            "guard_reasons": reasons,
+        },
+        payload,
+    )
+
+
+def record_catchup_cache_restore_skipped(
+    payload: dict[str, Any],
+    policy: dict[str, Any],
+    reasons: list[str],
+) -> None:
+    reason_text = "; ".join(reasons)
+    log(
+        "catch-up cache restore left node runtime unchanged because mining activity is visible: "
+        f"{reason_text}"
+    )
+    record_incident(
+        "catchup_cache_restore_skipped_active_mining",
+        "warning",
+        "Catch-up cache restore left node runtime unchanged because ASIC work or recent paid work is visible",
         {
             "policy": policy,
             "guard_reasons": reasons,

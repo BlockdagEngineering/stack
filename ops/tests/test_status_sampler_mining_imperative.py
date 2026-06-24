@@ -552,7 +552,6 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         os.environ["BDAG_EVM_CACHE_MB"] = "6144"
         os.environ["BDAG_NODE_SERVICES"] = "node"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
-        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
         payload["catchup_policy"] = {"active": False, "lag_blocks": 0, "threshold_blocks": 300}
         payload["host_pressure"] = {
             "iowait_percent": 0.0,
@@ -622,6 +621,81 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertEqual("restored", state["status"])
         self.assertEqual({}, state["raised_values"])
         self.assertTrue(any("--force-recreate" in command for command in commands))
+
+    def test_does_not_restore_catchup_cache_while_pool_is_running(self) -> None:
+        commands = []
+        env_updates = {}
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.CATCHUP_NODE_CACHE_RESTORE_STABLE_SAMPLES = 1
+        status_sampler.CATCHUP_NODE_CACHE_RESTORE_COOLDOWN_SECONDS = 0
+        status_sampler.update_stalled_import_watch = lambda _payload: {}
+        os.environ["BDAG_NODE_CACHE_MB"] = "6144"
+        os.environ["BDAG_EVM_CACHE_MB"] = "6144"
+        os.environ["BDAG_NODE_SERVICES"] = "node"
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["catchup_policy"] = {"active": False, "lag_blocks": 0, "threshold_blocks": 300}
+        payload["host_pressure"] = {
+            "iowait_percent": 0.0,
+            "io_some_avg10": 0.0,
+            "io_full_avg10": 0.0,
+            "memory_some_avg10": 3.0,
+            "memory_full_avg10": 0.0,
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            status_sampler.PROJECT_ROOT = root
+            status_sampler.CATCHUP_CACHE_STATE_FILE = root / "runtime" / "catchup-cache-state.json"
+            status_sampler.CATCHUP_CACHE_STATE_FILE.parent.mkdir(parents=True)
+            status_sampler.CATCHUP_CACHE_STATE_FILE.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "status": "raised",
+                        "last_raise_epoch": 0,
+                        "original_values": {
+                            "BDAG_NODE_CACHE_MB": {"value": "2048", "source": "env", "present": True},
+                            "BDAG_EVM_CACHE_MB": {"value": "2048", "source": "env", "present": True},
+                            status_sampler.CATCHUP_NODE_CONF_CACHE_KEY: {
+                                "value": "2048",
+                                "source": "node_conf",
+                                "present": True,
+                            },
+                        },
+                        "raised_values": {
+                            "BDAG_NODE_CACHE_MB": {"value": "6144", "source": "env", "present": True},
+                            "BDAG_EVM_CACHE_MB": {"value": "6144", "source": "env", "present": True},
+                            status_sampler.CATCHUP_NODE_CONF_CACHE_KEY: {
+                                "value": "6144",
+                                "source": "node_conf",
+                                "present": True,
+                            },
+                        },
+                        "inactive_stable_samples": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "node.conf").write_text('cache=6144\nevmenv="--cache 6144"\n', encoding="utf-8")
+
+            def fake_set_runtime_env(key: str, value: str):
+                env_updates[key] = value
+                return [f"/runtime/{key}"]
+
+            status_sampler.set_runtime_env_value = fake_set_runtime_env
+            status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
+
+            repair = status_sampler.mining_imperative_repair(payload)
+            state = status_sampler.read_catchup_cache_state()
+            node_conf = (root / "node.conf").read_text(encoding="utf-8")
+
+        self.assertNotIn("restored_catchup_node_cache", repair["actions"])
+        self.assertEqual({}, env_updates)
+        self.assertEqual("waiting_active_mining", state["status"])
+        self.assertIn("status payload reports running pool container", state["active_mining_guard_reasons"])
+        self.assertIn("cache=6144", node_conf)
+        self.assertFalse(any("--force-recreate" in command for command in commands))
 
     def test_restores_only_recorded_automation_owned_catchup_cache_values(self) -> None:
         env_updates = {}
