@@ -85,7 +85,7 @@ install_rawdatadir_source_timer() {
   network="mainnet"
   active_service="$(env_value BDAG_NODE_SERVICES node)"
   active_service="${active_service%%,*}"
-  source_dir="$(env_value BDAG_NODE_DATA_DIR ./data/node)/$network"
+  source_dir="$(env_value NODE_DATA_DIR ./data/node)/$network"
   sidecar_dir="$(env_value BDAG_RAWDATADIR_SIDECAR_DIR ./data-restore/rawdatadir-sidecar/$network)"
   artifact_base="$(env_value BDAG_RAWDATADIR_ARTIFACT_BASE ./data-restore/rawdatadir)"
   sidecar_content_base="$(env_value BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE ./data-restore/rawdatadir-sidecar-content)"

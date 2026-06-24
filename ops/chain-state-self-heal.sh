@@ -224,8 +224,8 @@ abs_path() {
 }
 
 CHAIN_DATA_DIR="$(abs_path "${BDAG_CHAIN_DATA_DIR:-${BDAG_DATA_DIR:-./data}}")"
-if [[ -n "${BDAG_NODE_DATA_DIR:-}" ]]; then
-  NODE_DATA_DIR="$(abs_path "$BDAG_NODE_DATA_DIR")"
+if [[ -n "${NODE_DATA_DIR:-}" ]]; then
+  NODE_DATA_DIR="$(abs_path "$NODE_DATA_DIR")"
 elif [[ -d "$CHAIN_DATA_DIR/node1/mainnet" ]]; then
   NODE_DATA_DIR="$CHAIN_DATA_DIR/node1"
 else

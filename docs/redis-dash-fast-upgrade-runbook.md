@@ -52,6 +52,12 @@ is the only dashboard source repo for this release line.
 - Preserve data volumes. Destructive reinstall means remove old code/images
   after verification, not deleting chain, peers, accounting, or dashboard Redis
   history.
+- `NODE_DATA_DIR=./data/node` is the only canonical node datadir. The obsolete
+  `BDAG_NODE_DATA_DIR` variable must not appear in final runtime config. Run
+  `scripts/preflight-chain-data.sh` before compose start, and migrate legacy
+  `stack_node-data` into `./data/node` with
+  `scripts/migrate-node-data-volume-to-host.sh` when it is the best preserved
+  source.
 
 ## Preserve List
 
@@ -82,21 +88,25 @@ Run this before stopping mining:
    the upgrade.
 5. Confirm `.env` has `BDAG_NETWORK=mainnet`, production RPC credentials, and
    production DB defaults.
-6. Confirm `node.conf` has matching `rpcuser` / `rpcpass`, `modules=Blockdag`
+6. Confirm `.env` has `NODE_DATA_DIR=./data/node` and no
+   `BDAG_NODE_DATA_DIR`.
+7. Run `scripts/preflight-chain-data.sh`; resolve any mismatch before the mining
+   freeze.
+8. Confirm `node.conf` has matching `rpcuser` / `rpcpass`, `modules=Blockdag`
    and `modules=miner` when ASIC mining is expected, and no bypass flags such
    as `--allowminingwhennearlysynced`.
-7. Record `docker ps`, `docker compose ps`, `docker images` for stack images,
+9. Record `docker ps`, `docker compose ps`, `docker images` for stack images,
    and `docker compose config --quiet`.
-8. Check disk/RAM/load with `df -h`, `free -h`, `docker system df`, and
+10. Check disk/RAM/load with `df -h`, `free -h`, `docker system df`, and
    `docker stats --no-stream`.
-9. Record MAC/IP mapping for managed ASICs in the private site checkpoint.
-10. Check live gates before mutation:
+11. Record MAC/IP mapping for managed ASICs in the private site checkpoint.
+12. Check live gates before mutation:
     - node RPC `getTemplateHealth`
     - dashboard `/api/status`
     - dashboard `/api/live/global`
     - pool metrics and recent logs
     - accepted block submission delta over a short window
-11. Check peer hygiene:
+13. Check peer hygiene:
     - peer count has at least two fresh consensus peers
     - no stale peer dominates readiness
     - no private/loopback/ephemeral peerstore entries are being promoted as

@@ -724,7 +724,7 @@ stage_snapshot_for_node_datadir() {
     [[ "$SNAPSHOT_PATH" == "./latest.bdsnap" && -f latest.bdsnap ]] || return 0
 
     local node_dir network_dir target
-    node_dir="$(package_path "$(env_file_value .env BDAG_NODE_DATA_DIR)")"
+    node_dir="$(package_path "$(env_file_value .env NODE_DATA_DIR)")"
     network_dir="$node_dir/mainnet"
     target="$network_dir/snapshot.bdsnap"
 
@@ -823,7 +823,7 @@ stage_chain_data_archive_for_node_datadir() {
     [[ -n "${CHAIN_DATA_ARCHIVE_PATH:-}" ]] || return 0
 
     local node_dir network_dir
-    node_dir="$(package_path "$(env_file_value .env BDAG_NODE_DATA_DIR)")"
+    node_dir="$(package_path "$(env_file_value .env NODE_DATA_DIR)")"
     network_dir="$node_dir/mainnet"
 
     if chain_marker_exists "$network_dir"; then
@@ -835,6 +835,23 @@ stage_chain_data_archive_for_node_datadir() {
     echo "Extracting local chain data archive into $network_dir"
     chain_data_archive_extract "$CHAIN_DATA_ARCHIVE_PATH" "$network_dir"
     echo "Local chain data archive extracted."
+}
+
+run_chain_data_preflight() {
+    if [[ "${BDAG_CHAIN_DATA_PREFLIGHT:-1}" != "1" ]]; then
+        echo "Skipping chain data preflight because BDAG_CHAIN_DATA_PREFLIGHT=0."
+        return 0
+    fi
+    if [[ ! -x scripts/preflight-chain-data.sh ]]; then
+        echo "Error: scripts/preflight-chain-data.sh is missing or not executable." >&2
+        exit 1
+    fi
+    local args=()
+    if [[ "${BDAG_FRESH_CHAIN_OK:-0}" == "1" ]]; then
+        args+=(--fresh-chain-ok)
+    fi
+    echo "=== Chain data preflight ==="
+    bash scripts/preflight-chain-data.sh "${args[@]}"
 }
 
 if [[ "${BDAG_INSTALL_TEST_WRITE_ENV_ONLY:-0}" == "1" ]]; then
@@ -1034,6 +1051,7 @@ fi
 clean_build_context_metadata
 stage_snapshot_for_node_datadir
 stage_chain_data_archive_for_node_datadir
+run_chain_data_preflight
 plan_orphan_container_cleanup
 
 export DOCKER_DEFAULT_PLATFORM="$DOCKER_PLATFORM"

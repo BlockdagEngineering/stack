@@ -432,11 +432,11 @@ configure_storage_profile() {
   runtime_base="$(absolute_path "$(select_runtime_data_base "$chain_base")")"
   existing_profile="$(env_value BDAG_STORAGE_PROFILE auto)"
   if [[ "$existing_profile" == "auto" || -z "$existing_profile" ]]; then
-    node_dir="$(env_path_value_for_auto_profile BDAG_NODE_DATA_DIR "$chain_base/node" "./data/node")"
+    node_dir="$(env_path_value_for_auto_profile NODE_DATA_DIR "$chain_base/node" "./data/node")"
     postgres_dir="$(env_path_value_for_auto_profile BDAG_POSTGRES_DATA_DIR "$runtime_base/postgres" "./data/postgres")"
     runtime_dir="$(env_path_value_for_auto_profile BDAG_RUNTIME_DIR "$runtime_base/ops-runtime" "./ops/runtime")"
   else
-    node_dir="$(env_path_value BDAG_NODE_DATA_DIR "$chain_base/node")"
+    node_dir="$(env_path_value NODE_DATA_DIR "$chain_base/node")"
     postgres_dir="$(env_path_value BDAG_POSTGRES_DATA_DIR "$runtime_base/postgres")"
     runtime_dir="$(env_path_value BDAG_RUNTIME_DIR "$runtime_base/ops-runtime")"
   fi
@@ -457,7 +457,7 @@ configure_storage_profile() {
   set_env_value .env BDAG_STORAGE_PROFILE "$profile"
   set_env_value .env BDAG_CHAIN_DATA_DIR "$chain_base"
   set_env_value .env BDAG_DATA_DIR "$chain_base"
-  set_env_value .env BDAG_NODE_DATA_DIR "$node_dir"
+  set_env_value .env NODE_DATA_DIR "$node_dir"
   set_env_value .env BDAG_POSTGRES_DATA_DIR "$postgres_dir"
   set_env_value .env BDAG_RUNTIME_DIR "$runtime_dir"
   set_env_value .env BDAG_STORAGE_MIN_CHAIN_FREE_GIB "$(env_value BDAG_STORAGE_MIN_CHAIN_FREE_GIB "${BDAG_STORAGE_MIN_CHAIN_FREE_GIB:-50}")"
@@ -757,6 +757,23 @@ run_appliance_preflight() {
   fi
 }
 
+run_chain_data_preflight() {
+  if [[ "${BDAG_CHAIN_DATA_PREFLIGHT:-1}" != "1" ]]; then
+    warn "Skipping chain data preflight because BDAG_CHAIN_DATA_PREFLIGHT=0."
+    return 0
+  fi
+  if [[ ! -x scripts/preflight-chain-data.sh ]]; then
+    echo "Chain data preflight script is missing or not executable." >&2
+    exit 1
+  fi
+  local args=()
+  if [[ "${BDAG_FRESH_CHAIN_OK:-0}" == "1" ]]; then
+    args+=(--fresh-chain-ok)
+  fi
+  say "Running chain data preflight"
+  bash scripts/preflight-chain-data.sh "${args[@]}"
+}
+
 load_or_build_images() {
   local arch="$1"
   say "Loading BlockDAG images for linux/$arch"
@@ -821,7 +838,7 @@ seed_chain_data() {
   fi
 
   chain_base="$(env_path_value BDAG_CHAIN_DATA_DIR data)"
-  node_dir="$(env_path_value BDAG_NODE_DATA_DIR "$chain_base/node")"
+  node_dir="$(env_path_value NODE_DATA_DIR "$chain_base/node")"
   template_dir="$chain_base/chain-template"
   if [[ -z "$template_dir" || "$template_dir" == "/" ]]; then
     echo "Refusing unsafe chain template directory: $template_dir" >&2
@@ -851,7 +868,7 @@ publish_p2p_snapshot_archive() {
   local arch="$1"
   local bdag_bin="artifacts/binaries/linux-$arch/bdag"
   local node_dir source_datadir target_datadir
-  node_dir="$(env_path_value BDAG_NODE_DATA_DIR data/node)"
+  node_dir="$(env_path_value NODE_DATA_DIR data/node)"
   source_datadir="$node_dir/mainnet"
   target_datadir="$node_dir/mainnet"
   local source_archive="$source_datadir/snapshot.bdsnap"
@@ -1059,6 +1076,7 @@ main() {
   load_or_build_images "$arch"
   seed_chain_data
   publish_p2p_snapshot_archive "$arch"
+  run_chain_data_preflight
   start_stack
   start_repair_services
   install_stack_support_services

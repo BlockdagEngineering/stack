@@ -318,7 +318,7 @@ def env_path(root: Path, env: dict[str, str], key: str, default: str | Path) -> 
 
 
 def env_node_data_dir(root: Path, env: dict[str, str]) -> Path:
-    return env_path(root, env, "BDAG_NODE_DATA_DIR", env_data_dir(root, env) / "node")
+    return env_path(root, env, "NODE_DATA_DIR", env_data_dir(root, env) / "node")
 
 
 def env_postgres_dir(root: Path, env: dict[str, str]) -> Path:

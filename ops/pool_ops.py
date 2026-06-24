@@ -283,7 +283,37 @@ STACK_SERVICES = split_env_list(
     "postgres,node,pool",
 )
 SERVICES = unique_names([*STACK_SERVICES, POOL_DB_CONTAINER, *NODES, *POOL_CONTAINERS])
-NODE_DATA_DIRS = split_env_list("BDAG_NODE_DATA_DIRS", "node")
+NODE_DATA_DIRS = split_env_list("NODE_DATA_DIRS", os.environ.get("NODE_DATA_DIR", "node"))
+CANONICAL_NODE_DATA_DIR = (PROJECT_ROOT / "data" / "node").resolve()
+BDAG_NETWORK = os.environ.get("BDAG_NETWORK", "mainnet")
+NODE_DATA_PROVENANCE_ENABLED = env_bool("BDAG_NODE_DATA_PROVENANCE_ENABLED", True)
+NODE_DATA_MISMATCH_PEER_GAP_BLOCKS = env_int(
+    "BDAG_NODE_DATA_MISMATCH_PEER_GAP_BLOCKS",
+    1_000_000,
+    minimum=1,
+)
+NODE_DATA_MISMATCH_LOW_LOCAL_HEIGHT_BLOCKS = env_int(
+    "BDAG_NODE_DATA_MISMATCH_LOW_LOCAL_HEIGHT_BLOCKS",
+    1_000_000,
+    minimum=0,
+)
+NODE_DATA_MISMATCH_MATERIAL_BYTES = env_int(
+    "BDAG_NODE_DATA_MISMATCH_MATERIAL_BYTES",
+    1024 * 1024 * 1024,
+    minimum=1,
+)
+NODE_DATA_MISMATCH_SIZE_RATIO_NUMERATOR = env_int(
+    "BDAG_NODE_DATA_MISMATCH_SIZE_RATIO_NUMERATOR",
+    2,
+    minimum=1,
+)
+NODE_DATA_PROVENANCE_VOLUME_PROBE_TTL_SECONDS = env_int(
+    "BDAG_NODE_DATA_PROVENANCE_VOLUME_PROBE_TTL_SECONDS",
+    300,
+    minimum=30,
+)
+DOCKER_HELPER_IMAGE = os.environ.get("BDAG_DOCKER_HELPER_IMAGE", "alpine:3.20")
+_NODE_DATA_VOLUME_PROBE_CACHE: dict[str, Any] = {}
 NODE_METRIC_PORTS = {
     "node": int(os.environ.get("BDAG_NODE_METRICS_PORT", "6060")),
 }
@@ -3159,6 +3189,217 @@ def chain_data_restore_candidate_reasons(node: str, info: Mapping[str, Any]) -> 
             f"{node} has repeated orphan-only sync errors while {peer_ahead} blocks behind peers"
         )
     return reasons
+
+
+def resolve_project_path_value(value: str | None) -> Path | None:
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = PROJECT_ROOT / value.removeprefix("./")
+    return path.resolve()
+
+
+def chain_data_has_markers(path: Path) -> bool:
+    network_dir = path / BDAG_NETWORK
+    if (network_dir / "snapshot.bdsnap").is_file():
+        return True
+    return (
+        (network_dir / "BdagChain").is_dir()
+        and (network_dir / "bdageth").is_dir()
+        and (network_dir / "peerstore").is_dir()
+        and (network_dir / "network.key").is_file()
+    )
+
+
+def chain_data_size_bytes(path: Path) -> int:
+    if not path.exists():
+        return 0
+    result = run(["du", "-sb", str(path)], timeout=30)
+    if result.ok:
+        return safe_int(result.stdout.strip().split()[0] if result.stdout.strip() else None, 0)
+    return 0
+
+
+def docker_volume_chain_candidate(volume: str = "stack_node-data") -> dict[str, Any]:
+    now = time.time()
+    cached = _NODE_DATA_VOLUME_PROBE_CACHE.get(volume)
+    if isinstance(cached, dict) and now - safe_float(cached.get("epoch"), 0.0) < NODE_DATA_PROVENANCE_VOLUME_PROBE_TTL_SECONDS:
+        return dict(cached.get("payload") or {})
+
+    inspect = run(["docker", "volume", "inspect", volume, "--format", "{{ .Mountpoint }}"], timeout=8)
+    if not inspect.ok or not inspect.stdout.strip():
+        payload = {"volume": volume, "exists": False, "valid": False, "size_bytes": 0, "path": ""}
+        _NODE_DATA_VOLUME_PROBE_CACHE[volume] = {"epoch": now, "payload": payload}
+        return payload
+
+    mountpoint = inspect.stdout.strip().splitlines()[-1].strip()
+    script = f"""
+network={shlex.quote(BDAG_NETWORK)}
+path=/candidate
+valid=0
+if [ -f "$path/$network/snapshot.bdsnap" ] || {{
+  [ -d "$path/$network/BdagChain" ] &&
+  [ -d "$path/$network/bdageth" ] &&
+  [ -d "$path/$network/peerstore" ] &&
+  [ -f "$path/$network/network.key" ]
+}}; then
+  valid=1
+fi
+size="$(du -sb "$path" 2>/dev/null | awk '{{print $1}}')"
+printf 'valid=%s\\n' "$valid"
+printf 'size_bytes=%s\\n' "${{size:-0}}"
+"""
+    probe = run(
+        ["docker", "run", "--rm", "-v", f"{volume}:/candidate:ro", DOCKER_HELPER_IMAGE, "sh", "-lc", script],
+        timeout=45,
+    )
+    fields: dict[str, str] = {}
+    if probe.ok:
+        for line in probe.stdout.splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                fields[key.strip()] = value.strip()
+    payload = {
+        "volume": volume,
+        "exists": True,
+        "path": mountpoint,
+        "valid": fields.get("valid") == "1",
+        "size_bytes": safe_int(fields.get("size_bytes"), 0),
+        "probe_error": "" if probe.ok else (probe.stderr.strip() or probe.stdout.strip() or f"docker volume probe failed rc={probe.returncode}"),
+    }
+    _NODE_DATA_VOLUME_PROBE_CACHE[volume] = {"epoch": now, "payload": payload}
+    return payload
+
+
+def _max_positive_int(values: list[Any]) -> int | None:
+    parsed = [safe_int(value, -1) for value in values]
+    positives = [value for value in parsed if value >= 0]
+    return max(positives) if positives else None
+
+
+def node_data_provenance_health(
+    sync_progress: Mapping[str, Any],
+    node_details: Mapping[str, Any],
+    selected_source_health: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not NODE_DATA_PROVENANCE_ENABLED:
+        return {"enabled": False, "status": "disabled", "restore_required": False, "reasons": []}
+
+    reasons: list[str] = []
+    selected_raw = read_env_value("NODE_DATA_DIR")
+    obsolete_raw = read_env_value("BDAG_NODE_DATA_DIR") or os.environ.get("BDAG_NODE_DATA_DIR")
+    selected_path = resolve_project_path_value(selected_raw)
+    selected_markers = bool(selected_path and chain_data_has_markers(selected_path))
+    canonical_override = truthy_env_value(os.environ.get("BDAG_ALLOW_NODE_DATA_DIR_OVERRIDE"))
+
+    if obsolete_raw:
+        reasons.append("obsolete BDAG_NODE_DATA_DIR is still configured; use NODE_DATA_DIR only")
+    if not selected_raw or not selected_path:
+        reasons.append("NODE_DATA_DIR is unset")
+    elif selected_path != CANONICAL_NODE_DATA_DIR and not canonical_override:
+        reasons.append(f"NODE_DATA_DIR resolves to {selected_path}, expected canonical {CANONICAL_NODE_DATA_DIR}")
+
+    local_values: list[Any] = [
+        sync_progress.get("chain_block_count"),
+        sync_progress.get("chain_main_height"),
+        sync_progress.get("current_block"),
+    ]
+    gap_values: list[Any] = [
+        sync_progress.get("remaining_blocks"),
+        sync_progress.get("native_sync_lead_blocks"),
+    ]
+    highest = safe_int(sync_progress.get("highest_block"), -1)
+    current = safe_int(sync_progress.get("current_block"), -1)
+    if highest >= 0 and current >= 0 and highest >= current:
+        gap_values.append(highest - current)
+    progress_nodes = sync_progress.get("nodes") if isinstance(sync_progress.get("nodes"), dict) else {}
+    for progress in progress_nodes.values():
+        if not isinstance(progress, Mapping):
+            continue
+        local_values.extend(
+            [
+                progress.get("chain_block_count"),
+                progress.get("chain_main_height"),
+                progress.get("current_block"),
+            ]
+        )
+        gap_values.extend(
+            [
+                progress.get("remaining_blocks"),
+                progress.get("native_sync_lead_blocks"),
+            ]
+        )
+        node_highest = safe_int(progress.get("highest_block"), -1)
+        node_current = safe_int(progress.get("current_block"), -1)
+        if node_highest >= 0 and node_current >= 0 and node_highest >= node_current:
+            gap_values.append(node_highest - node_current)
+    for info in node_details.values():
+        if not isinstance(info, Mapping):
+            continue
+        local_values.extend(
+            [
+                info.get("latest_block"),
+                info.get("best_main_order"),
+                info.get("chain_block_count"),
+                info.get("chain_main_height"),
+            ]
+        )
+        gap_values.append(info.get("peer_ahead_blocks"))
+    if isinstance(selected_source_health, Mapping):
+        gap_values.append(selected_source_health.get("node_p2p_best_peer_lead_blocks"))
+
+    local_height = _max_positive_int(local_values)
+    peer_gap = _max_positive_int(gap_values) or 0
+    suspicious_low_height = local_height is None or local_height <= NODE_DATA_MISMATCH_LOW_LOCAL_HEIGHT_BLOCKS
+    suspicious_gap = peer_gap >= NODE_DATA_MISMATCH_PEER_GAP_BLOCKS and suspicious_low_height
+    selected_size = 0
+    legacy_candidate: dict[str, Any] = {}
+
+    if reasons or suspicious_gap or not selected_markers:
+        selected_size = chain_data_size_bytes(selected_path) if selected_path else 0
+        legacy_candidate = docker_volume_chain_candidate()
+        legacy_size = safe_int(legacy_candidate.get("size_bytes"), 0)
+        legacy_valid = bool(legacy_candidate.get("valid"))
+        selected_materially_smaller = bool(
+            legacy_valid
+            and (
+                not selected_markers
+                or (
+                    legacy_size - selected_size > NODE_DATA_MISMATCH_MATERIAL_BYTES
+                    and legacy_size >= selected_size * NODE_DATA_MISMATCH_SIZE_RATIO_NUMERATOR
+                )
+            )
+        )
+        if selected_materially_smaller:
+            reasons.append(
+                "Node data mount mismatch suspected: current node data path appears reset while preserved chain data exists."
+            )
+        elif suspicious_gap and selected_size < NODE_DATA_MISMATCH_MATERIAL_BYTES:
+            reasons.append(
+                "Node data mount mismatch suspected: local chain height is far behind peers and selected node data is not material."
+            )
+        elif not selected_markers and selected_path:
+            reasons.append(f"NODE_DATA_DIR {selected_path} has no complete {BDAG_NETWORK} chain markers")
+
+    restore_required = bool(reasons)
+    return {
+        "enabled": True,
+        "status": "restore_required" if restore_required else "ok",
+        "restore_required": restore_required,
+        "node_data_mount_mismatch_suspected": any("mount mismatch suspected" in reason for reason in reasons),
+        "reasons": merge_unique_strings(reasons),
+        "selected_raw": selected_raw or "",
+        "selected_path": str(selected_path) if selected_path else "",
+        "canonical_path": str(CANONICAL_NODE_DATA_DIR),
+        "selected_has_markers": selected_markers,
+        "selected_size_bytes": selected_size,
+        "legacy_candidate": legacy_candidate,
+        "local_height": local_height,
+        "peer_gap_blocks": peer_gap,
+        "low_local_height_threshold_blocks": NODE_DATA_MISMATCH_LOW_LOCAL_HEIGHT_BLOCKS,
+        "peer_gap_threshold_blocks": NODE_DATA_MISMATCH_PEER_GAP_BLOCKS,
+    }
 
 
 def parse_pool_log(log: str) -> dict[str, Any]:
@@ -6278,6 +6519,33 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         node_details[node]["chain_rpc_timeout_seconds"] = progress.get("chain_rpc_timeout_seconds")
         node_details[node]["chain_rpc_retry_limit"] = progress.get("chain_rpc_retry_limit")
         node_details[node]["chain_rpc_error"] = progress.get("chain_rpc_error") or progress.get("error") or ""
+    node_data_provenance = node_data_provenance_health(sync_progress, node_details, selected_source_health)
+    if node_data_provenance.get("restore_required"):
+        provenance_reasons = [
+            str(item)
+            for item in node_data_provenance.get("reasons", [])
+            if item
+        ]
+        if not provenance_reasons:
+            provenance_reasons = ["node data provenance check requires chain data restore or migration"]
+        for reason in provenance_reasons:
+            if reason not in stack_failures:
+                stack_failures.append(reason)
+        sync_health["node_data_mount_mismatch_suspected"] = bool(
+            node_data_provenance.get("node_data_mount_mismatch_suspected")
+        )
+        sync_health["node_data_provenance"] = node_data_provenance
+        sync_health["chain_data_restore_required"] = True
+        sync_health["needs_chain_data_restore"] = True
+        restore_nodes = dict(sync_health.get("chain_data_restore_nodes") or {})
+        restore_nodes["node-data-provenance"] = {
+            "reasons": provenance_reasons,
+            "node_data_provenance": node_data_provenance,
+        }
+        sync_health["chain_data_restore_nodes"] = restore_nodes
+        failures = stack_failures + blocking_miner_failures
+    else:
+        sync_health["node_data_provenance"] = node_data_provenance
     busy_syncing_nodes = [
         node
         for node in managed_node_details
@@ -6460,6 +6728,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "nodes": node_details,
         "sync_progress": sync_progress,
         "sync_health": sync_health,
+        "node_data_provenance": node_data_provenance,
         "sync_coordinator": sync_coordinator,
         "catchup_policy": catchup_policy,
         "rpc_template_health": template_probe_health,

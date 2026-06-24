@@ -226,7 +226,7 @@ function Test-ChainMarkers([string]$NetworkDir) {
 function Stage-SnapshotForNodeDatadir {
     if ($snapshotPath -ne './latest.bdsnap' -or -not (Test-Path 'latest.bdsnap')) { return }
 
-    $nodeDir = Resolve-PackagePath (Get-EnvFileValue '.env' 'BDAG_NODE_DATA_DIR')
+    $nodeDir = Resolve-PackagePath (Get-EnvFileValue '.env' 'NODE_DATA_DIR')
     $networkDir = Join-Path $nodeDir 'mainnet'
     $target = Join-Path $networkDir 'snapshot.bdsnap'
 
@@ -247,6 +247,27 @@ function Stage-SnapshotForNodeDatadir {
     } catch {
         Copy-Item -Path 'latest.bdsnap' -Destination $target -Force
         Write-Host "Staged snapshot for node datadir: $target"
+    }
+}
+
+function Invoke-ChainDataPreflight {
+    if ($env:BDAG_CHAIN_DATA_PREFLIGHT -eq '0') {
+        Write-Host "Skipping chain data preflight because BDAG_CHAIN_DATA_PREFLIGHT=0."
+        return
+    }
+    if (Get-EnvFileValue '.env' 'BDAG_NODE_DATA_DIR') {
+        throw "Obsolete BDAG_NODE_DATA_DIR is present in .env; use NODE_DATA_DIR only."
+    }
+    $nodeDirValue = Get-EnvFileValue '.env' 'NODE_DATA_DIR'
+    if (-not $nodeDirValue) {
+        throw "NODE_DATA_DIR is unset."
+    }
+    $nodeDir = Resolve-PackagePath $nodeDirValue
+    $networkDir = Join-Path $nodeDir 'mainnet'
+    $hasMarkers = Test-ChainMarkers $networkDir
+    $hasSnapshot = Test-Path (Join-Path $networkDir 'snapshot.bdsnap')
+    if (-not $hasMarkers -and -not $hasSnapshot -and $env:BDAG_FRESH_CHAIN_OK -ne '1') {
+        throw "NODE_DATA_DIR has no chain markers or staged snapshot. Set BDAG_FRESH_CHAIN_OK=1 only for an intentional fresh sync."
     }
 }
 
@@ -689,6 +710,7 @@ $nodeText = $nodeText -replace "`r`n", "`n"
 
 Clean-BuildContextMetadata
 Stage-SnapshotForNodeDatadir
+Invoke-ChainDataPreflight
 Plan-OrphanContainerCleanup
 $env:DOCKER_DEFAULT_PLATFORM = $dockerPlatform
 

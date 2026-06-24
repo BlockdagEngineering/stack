@@ -382,8 +382,8 @@ def env_path(env: dict[str, str], key: str, default: str | Path) -> Path:
 
 def node_data_dir(env: dict[str, str], service: str) -> Path:
     if service == "node" or service.endswith("node-1"):
-        return env_path(env, "BDAG_NODE_DATA_DIR", env.get("BDAG_DATA_DIR") or "./data/node")
-    return env_path(env, "BDAG_NODE_DATA_DIR", env.get("BDAG_DATA_DIR") or "./data/node")
+        return env_path(env, "NODE_DATA_DIR", env.get("BDAG_DATA_DIR") or "./data/node")
+    return env_path(env, "NODE_DATA_DIR", env.get("BDAG_DATA_DIR") or "./data/node")
 
 
 def build_payload(full: bool) -> dict[str, Any]:

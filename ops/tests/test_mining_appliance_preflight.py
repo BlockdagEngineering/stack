@@ -481,7 +481,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 {
                     "BDAG_STORAGE_PROFILE": "auto",
                     "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
-                    "BDAG_NODE_DATA_DIR": "/mnt/usb/blockdag-chain/node",
+                    "NODE_DATA_DIR": "/mnt/usb/blockdag-chain/node",
                     "BDAG_POSTGRES_DATA_DIR": "/opt/blockdag-pool/runtime-data/postgres",
                     "BDAG_RUNTIME_DIR": "/opt/blockdag-pool/runtime-data/ops-runtime",
                 },
@@ -516,7 +516,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 {
                     "BDAG_STORAGE_PROFILE": "usb-chain-internal-runtime",
                     "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
-                    "BDAG_NODE_DATA_DIR": "/mnt/usb/blockdag-chain/node",
+                    "NODE_DATA_DIR": "/mnt/usb/blockdag-chain/node",
                     "BDAG_POSTGRES_DATA_DIR": "/mnt/usb/blockdag-chain/runtime/postgres",
                     "BDAG_RUNTIME_DIR": "/mnt/usb/blockdag-chain/runtime/ops-runtime",
                 },
@@ -555,7 +555,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
                 {
                     "BDAG_STORAGE_PROFILE": "auto",
                     "BDAG_CHAIN_DATA_DIR": "/mnt/usb/blockdag-chain",
-                    "BDAG_NODE_DATA_DIR": "/mnt/usb/blockdag-chain/node",
+                    "NODE_DATA_DIR": "/mnt/usb/blockdag-chain/node",
                     "BDAG_POSTGRES_DATA_DIR": "/mnt/usb/runtime/postgres",
                     "BDAG_RUNTIME_DIR": "/mnt/usb/runtime/ops-runtime",
                 },

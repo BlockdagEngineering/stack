@@ -214,6 +214,17 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
     catchup_policy = status.get("catchup_policy") if isinstance(status.get("catchup_policy"), dict) else {}
     if sync_health.get("public_chain_divergence") or sync_health.get("public_chain_divergence_nodes"):
         reasons.append("public-chain divergence containment is active")
+    if (
+        sync_health.get("needs_chain_data_restore")
+        or sync_health.get("chain_data_restore_required")
+        or sync_health.get("node_data_mount_mismatch_suspected")
+    ):
+        provenance = sync_health.get("node_data_provenance")
+        provenance_reasons = provenance.get("reasons") if isinstance(provenance, dict) else []
+        detail = ""
+        if isinstance(provenance_reasons, list) and provenance_reasons:
+            detail = f": {provenance_reasons[0]}"
+        reasons.append(f"node chain data restore or migration is required{detail}")
     if catchup_policy.get("active") or sync_health.get("catchup_pause_active"):
         reasons.append("chain catch-up pause is active")
 

@@ -116,12 +116,19 @@ treat this host's five X100 devices as a release default.
 
 On macOS, the installer uses `aria2c` for faster, resumable snapshot downloads and installs it with Homebrew when missing. If that path fails, it opens a browser download link and Finder at the installer folder, then waits for `latest.bdsnap` to appear there. Browsers may still save to Downloads unless you choose the installer folder. To skip the dependency install, force curl with `BDAG_SNAPSHOT_DOWNLOADER=curl bash install.sh`; to go straight to the browser helper, use `BDAG_SNAPSHOT_DOWNLOADER=browser bash install.sh`. On Windows, the installer uses `aria2c` when available, tries to install it with `winget`, then falls back to BITS and PowerShell download.
 
-The installer uses host-path chain storage at `BDAG_NODE_DATA_DIR` and preserves
+The installer uses host-path chain storage at `NODE_DATA_DIR` and preserves
 existing chain data. When a valid `latest.bdsnap` is available and the configured
 node datadir has no chain markers, the installer stages that snapshot into the
 host datadir so the container can import it on first start. To replace existing
 chain data, stop the stack and move the configured datadir aside deliberately
 before running the installer.
+
+`NODE_DATA_DIR` is the only supported node datadir variable. The obsolete
+`BDAG_NODE_DATA_DIR` name is rejected by the chain-data preflight. Before a
+clean upgrade or destructive reinstall, run `scripts/preflight-chain-data.sh`;
+if an old `stack_node-data` Docker volume or another preserved datadir is newer
+or larger than `./data/node`, migrate it into `./data/node` with
+`scripts/migrate-node-data-volume-to-host.sh` before starting the node.
 
 If you already have a raw node datadir archive rather than a `.bdsnap`, set
 `BDAG_CHAIN_DATA_ARCHIVE=/path/to/archive.tar.zst` before running the installer.

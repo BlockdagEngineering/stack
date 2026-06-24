@@ -53,22 +53,33 @@ and use the newer data only after recording a rollback copy of the old live data
 After the human verifies the upgraded stack, remove stale extra copies and keep
 only the live data plus the intentional rollback set.
 
+`NODE_DATA_DIR=./data/node` is the only canonical node datadir contract. The
+obsolete `BDAG_NODE_DATA_DIR` name must not appear in generated runtime config.
+Before any compose start, run `scripts/preflight-chain-data.sh`; if a legacy
+`stack_node-data` volume or other preserved data is better than `./data/node`,
+migrate it with `scripts/migrate-node-data-volume-to-host.sh` before starting
+the node. See `docs/chain-data-provenance-guard.md`.
+
 ## Fast Upgrade Flow
 
 1. Pull the memory repo and source repos.
 2. Record source SHAs, `docker ps`, `docker compose ps`, image IDs, compose
    config, disk/RAM/load, and ASIC MAC/IP mapping.
-3. Run release validation before stopping mining.
+3. Run release validation and `scripts/preflight-chain-data.sh` before stopping
+   mining.
 4. Build node, pool, dashboard, watchdog, status-sampler, and sentinel images
    from source before the mining freeze when possible.
 5. Stop repair automation that could race the cutover.
 6. Stop `pool` before touching node/dashboard so ASICs do not receive stale work.
-7. Recreate services in order: `pool-db`, `node`, `dashboard`, `status-sampler`,
-   `pool`, then `watchdog`, `sentinel`, and `miner-route` when configured.
-8. Validate node RPC, native template health, P2P freshness, pool active miners,
+7. Start `node` by itself first and verify the selected datadir height is
+   plausible.
+8. Recreate remaining services in order: `pool-db`, `dashboard`,
+   `status-sampler`, `pool`, then `watchdog`, `sentinel`, and `miner-route`
+   when configured.
+9. Validate node RPC, native template health, P2P freshness, pool active miners,
    accepted block submissions, dashboard live global data, dashboard DAG data,
    Redis memory, and logs.
-9. Ask for explicit human verification before pruning old images/caches or
+10. Ask for explicit human verification before pruning old images/caches or
    deleting rollback data.
 
 ## Required Release Guards

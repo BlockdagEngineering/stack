@@ -100,7 +100,7 @@ has at least 4 GiB free:
 
 ```bash
 BDAG_CHAIN_DATA_DIR=/mnt/bdag-usb/blockdag-chain
-BDAG_NODE_DATA_DIR=/mnt/bdag-usb/blockdag-chain/node
+NODE_DATA_DIR=/mnt/bdag-usb/blockdag-chain/node
 BDAG_POSTGRES_DATA_DIR=/opt/blockdag-pool/runtime-data/postgres
 BDAG_RUNTIME_DIR=/opt/blockdag-pool/runtime-data/ops-runtime
 ```

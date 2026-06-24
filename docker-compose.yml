@@ -125,10 +125,10 @@ services:
       BDAG_ENTRYPOINT_CHOWN_MODE: ${BDAG_ENTRYPOINT_CHOWN_MODE:-needed}
       BDAG_NODEWORKER_LIVENESS_TIMEOUT: ${BDAG_NODEWORKER_LIVENESS_TIMEOUT:-5m}
     volumes:
-    # Note: The default behaviour is to keep any DB state from a previous run, 
-    # to prevent unintentional loss of synced chain data.
-    # so if you want to start fresh, you need to delete the volume explicity.
-    # `docker compose down && docker volume rm <project>_node-data`\
+    # NODE_DATA_DIR is the only canonical node datadir mount. Installers must
+    # run scripts/preflight-chain-data.sh before starting this service so a
+    # fresh ./data/node cannot hide better preserved chain data such as a
+    # legacy stack_node-data Docker volume. Do not use BDAG_NODE_DATA_DIR.
 
       - ${NODE_DATA_DIR:-./data/node}:/var/lib/bdagStack/node
       - nodeworker-data:/var/lib/bdagStack/nodeworker
