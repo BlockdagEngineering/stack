@@ -247,6 +247,65 @@ class ChainDataProvenanceTests(unittest.TestCase):
         self.assertTrue(health["node_data_mount_mismatch_suspected"])
         self.assertIn("Node data mount mismatch suspected", " ".join(health["reasons"]))
 
+    def test_runtime_provenance_degrades_on_unreadable_selected_datadir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            selected = root / "data" / "node"
+            network = selected / "mainnet"
+            network.mkdir(parents=True)
+            write_env(root, "NODE_DATA_DIR=./data/node\n")
+            network.chmod(0)
+            originals = {
+                "PROJECT_ROOT": pool_ops.PROJECT_ROOT,
+                "POOL_ENV_FILE": pool_ops.POOL_ENV_FILE,
+                "CANONICAL_NODE_DATA_DIR": pool_ops.CANONICAL_NODE_DATA_DIR,
+                "NODE_DATA_MISMATCH_PEER_GAP_BLOCKS": pool_ops.NODE_DATA_MISMATCH_PEER_GAP_BLOCKS,
+                "NODE_DATA_MISMATCH_LOW_LOCAL_HEIGHT_BLOCKS": pool_ops.NODE_DATA_MISMATCH_LOW_LOCAL_HEIGHT_BLOCKS,
+                "docker_volume_chain_candidate": pool_ops.docker_volume_chain_candidate,
+                "chain_data_marker_probe": pool_ops.chain_data_marker_probe,
+            }
+
+            def restore() -> None:
+                for name, value in originals.items():
+                    setattr(pool_ops, name, value)
+
+            try:
+                pool_ops.PROJECT_ROOT = root
+                pool_ops.POOL_ENV_FILE = root / ".env"
+                pool_ops.CANONICAL_NODE_DATA_DIR = selected.resolve()
+                pool_ops.NODE_DATA_MISMATCH_PEER_GAP_BLOCKS = 100
+                pool_ops.NODE_DATA_MISMATCH_LOW_LOCAL_HEIGHT_BLOCKS = 1_000
+                pool_ops.docker_volume_chain_candidate = lambda _volume="stack_node-data": {
+                    "volume": "stack_node-data",
+                    "exists": False,
+                    "valid": False,
+                    "path": "",
+                    "size_bytes": 0,
+                }
+                pool_ops.chain_data_marker_probe = lambda _path: (
+                    False,
+                    "PermissionError: [Errno 13] Permission denied: 'snapshot.bdsnap'",
+                )
+
+                with unittest.mock.patch.dict(
+                    pool_ops.os.environ,
+                    {"NODE_DATA_DIR": "./data/node", "BDAG_NODE_DATA_DIR": ""},
+                    clear=False,
+                ):
+                    health = pool_ops.node_data_provenance_health(
+                        {"status": "synced", "chain_block_count": 2_000_000, "remaining_blocks": 0},
+                        {"node": {"latest_block": 2_000_000, "peer_ahead_blocks": 0}},
+                        {},
+                    )
+            finally:
+                network.chmod(0o755)
+                restore()
+
+        self.assertFalse(health["restore_required"])
+        self.assertEqual(health["status"], "degraded")
+        self.assertIn("PermissionError", health["selected_marker_error"])
+        self.assertIn("marker inspection unavailable", " ".join(health["warnings"]))
+
     def test_pool_start_gate_blocks_chain_data_restore_required(self) -> None:
         decision = pool_start_gate.pool_start_decision(
             {

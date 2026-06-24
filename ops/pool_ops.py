@@ -3203,16 +3203,23 @@ def resolve_project_path_value(value: str | None) -> Path | None:
     return path.resolve()
 
 
-def chain_data_has_markers(path: Path) -> bool:
+def chain_data_marker_probe(path: Path) -> tuple[bool, str]:
     network_dir = path / BDAG_NETWORK
-    if (network_dir / "snapshot.bdsnap").is_file():
-        return True
-    return (
-        (network_dir / "BdagChain").is_dir()
-        and (network_dir / "bdageth").is_dir()
-        and (network_dir / "peerstore").is_dir()
-        and (network_dir / "network.key").is_file()
-    )
+    try:
+        if (network_dir / "snapshot.bdsnap").is_file():
+            return True, ""
+        return (
+            (network_dir / "BdagChain").is_dir()
+            and (network_dir / "bdageth").is_dir()
+            and (network_dir / "peerstore").is_dir()
+            and (network_dir / "network.key").is_file()
+        ), ""
+    except OSError as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def chain_data_has_markers(path: Path) -> bool:
+    return chain_data_marker_probe(path)[0]
 
 
 def chain_data_size_bytes(path: Path) -> int:
@@ -3293,8 +3300,13 @@ def node_data_provenance_health(
     selected_raw = read_env_value("NODE_DATA_DIR")
     obsolete_raw = read_env_value("BDAG_NODE_DATA_DIR") or os.environ.get("BDAG_NODE_DATA_DIR")
     selected_path = resolve_project_path_value(selected_raw)
-    selected_markers = bool(selected_path and chain_data_has_markers(selected_path))
+    selected_markers = False
+    selected_marker_error = ""
+    if selected_path:
+        selected_markers, selected_marker_error = chain_data_marker_probe(selected_path)
+    selected_markers_known = not selected_marker_error
     canonical_override = truthy_env_value(os.environ.get("BDAG_ALLOW_NODE_DATA_DIR_OVERRIDE"))
+    warnings: list[str] = []
 
     if obsolete_raw:
         reasons.append("obsolete BDAG_NODE_DATA_DIR is still configured; use NODE_DATA_DIR only")
@@ -3302,6 +3314,8 @@ def node_data_provenance_health(
         reasons.append("NODE_DATA_DIR is unset")
     elif selected_path != CANONICAL_NODE_DATA_DIR and not canonical_override:
         reasons.append(f"NODE_DATA_DIR resolves to {selected_path}, expected canonical {CANONICAL_NODE_DATA_DIR}")
+    if selected_marker_error:
+        warnings.append(f"NODE_DATA_DIR marker inspection unavailable: {selected_marker_error}")
 
     local_values: list[Any] = [
         sync_progress.get("chain_block_count"),
@@ -3359,7 +3373,7 @@ def node_data_provenance_health(
     selected_size = 0
     legacy_candidate: dict[str, Any] = {}
 
-    if reasons or suspicious_gap or not selected_markers:
+    if reasons or suspicious_gap or (selected_markers_known and not selected_markers):
         selected_size = chain_data_size_bytes(selected_path) if selected_path else 0
         legacy_candidate = docker_volume_chain_candidate()
         legacy_size = safe_int(legacy_candidate.get("size_bytes"), 0)
@@ -3367,7 +3381,7 @@ def node_data_provenance_health(
         selected_materially_smaller = bool(
             legacy_valid
             and (
-                not selected_markers
+                (selected_markers_known and not selected_markers)
                 or (
                     legacy_size - selected_size > NODE_DATA_MISMATCH_MATERIAL_BYTES
                     and legacy_size >= selected_size * NODE_DATA_MISMATCH_SIZE_RATIO_NUMERATOR
@@ -3382,20 +3396,23 @@ def node_data_provenance_health(
             reasons.append(
                 "Node data mount mismatch suspected: local chain height is far behind peers and selected node data is not material."
             )
-        elif not selected_markers and selected_path:
+        elif selected_markers_known and not selected_markers and selected_path:
             reasons.append(f"NODE_DATA_DIR {selected_path} has no complete {BDAG_NETWORK} chain markers")
 
     restore_required = bool(reasons)
+    status = "restore_required" if restore_required else ("degraded" if warnings else "ok")
     return {
         "enabled": True,
-        "status": "restore_required" if restore_required else "ok",
+        "status": status,
         "restore_required": restore_required,
         "node_data_mount_mismatch_suspected": any("mount mismatch suspected" in reason for reason in reasons),
         "reasons": merge_unique_strings(reasons),
+        "warnings": merge_unique_strings(warnings),
         "selected_raw": selected_raw or "",
         "selected_path": str(selected_path) if selected_path else "",
         "canonical_path": str(CANONICAL_NODE_DATA_DIR),
         "selected_has_markers": selected_markers,
+        "selected_marker_error": selected_marker_error,
         "selected_size_bytes": selected_size,
         "legacy_candidate": legacy_candidate,
         "local_height": local_height,
