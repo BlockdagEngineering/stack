@@ -131,15 +131,21 @@ def status_api() -> tuple[dict[str, Any] | None, str]:
 
 
 def compose_command(*args: str) -> list[str]:
-    return [
+    command = [
         "docker",
         "compose",
+        "-p",
+        os.environ.get("BDAG_COMPOSE_PROJECT_NAME") or os.environ.get("COMPOSE_PROJECT_NAME") or PROJECT_ROOT.name,
         "--env-file",
         str(POOL_ENV_FILE),
         "-f",
         str(PROJECT_ROOT / "docker-compose.yml"),
-        *args,
     ]
+    override = PROJECT_ROOT / "docker-compose.override.yml"
+    if override.exists():
+        command.extend(["-f", str(override)])
+    command.extend(args)
+    return command
 
 
 def compose_service_name(name: str) -> str:

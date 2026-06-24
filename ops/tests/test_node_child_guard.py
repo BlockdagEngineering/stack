@@ -82,6 +82,27 @@ class NodeChildGuardTests(unittest.TestCase):
         self.assertNotIn("--env-file", command)
         self.assertEqual(command[-3:], ["-f", f"{tmpdir}/docker-compose.yml", "ps"])
 
+    def test_compose_command_includes_override_when_present(self) -> None:
+        original_root = node_child_guard.PROJECT_ROOT
+        original_env = node_child_guard.POOL_ENV_FILE
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            (root / "docker-compose.override.yml").write_text("services: {}\n", encoding="utf-8")
+            try:
+                node_child_guard.PROJECT_ROOT = root
+                node_child_guard.POOL_ENV_FILE = root / ".env"
+                command = node_child_guard.compose_command("up", "node")
+            finally:
+                node_child_guard.PROJECT_ROOT = original_root
+                node_child_guard.POOL_ENV_FILE = original_env
+
+        compose_files = [command[index + 1] for index, value in enumerate(command) if value == "-f"]
+        self.assertEqual(
+            [f"{tmpdir}/docker-compose.yml", f"{tmpdir}/docker-compose.override.yml"],
+            compose_files,
+        )
+        self.assertEqual(command[-2:], ["up", "node"])
+
     def test_compose_command_uses_existing_env_file(self) -> None:
         original_root = node_child_guard.PROJECT_ROOT
         original_env = node_child_guard.POOL_ENV_FILE

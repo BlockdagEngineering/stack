@@ -252,6 +252,31 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertIn("-p", command)
         self.assertEqual(command[command.index("-p") + 1], "blockdag-asic-pool")
 
+    def test_docker_compose_command_includes_override_file_when_present(self) -> None:
+        original_root = pool_ops.PROJECT_ROOT
+        original_env = pool_ops.POOL_ENV_FILE
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            env_path = root / ".env"
+            env_path.write_text("POSTGRES_PASSWORD=test\n", encoding="utf-8")
+            (root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+            (root / "docker-compose.override.yml").write_text("services: {}\n", encoding="utf-8")
+            try:
+                pool_ops.PROJECT_ROOT = root
+                pool_ops.POOL_ENV_FILE = env_path
+                command = pool_ops.docker_compose_command("up", "node")
+            finally:
+                pool_ops.PROJECT_ROOT = original_root
+                pool_ops.POOL_ENV_FILE = original_env
+
+        compose_files = [
+            command[index + 1]
+            for index, value in enumerate(command)
+            if value == "-f" and index + 1 < len(command)
+        ]
+        self.assertEqual([str(root / "docker-compose.yml"), str(root / "docker-compose.override.yml")], compose_files)
+        self.assertEqual(command[-2:], ["up", "node"])
+
     def test_leaves_stopped_idle_pool_when_chain_is_synced_without_miner_demand(self) -> None:
         commands = []
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []

@@ -39,12 +39,18 @@ class NoMinerCollectStatusTests(unittest.TestCase):
                 "collect_pool_prometheus_metrics",
                 "collect_miner_health",
                 "collect_sync_progress",
+                "node_data_provenance_health",
                 "observe_sync_progress_health",
                 "read_sync_coordinator_state",
                 "collect_host_pressure",
             )
         }
         self.old_time = pool_ops.time.time
+        pool_ops.node_data_provenance_health = lambda *_args, **_kwargs: {
+            "restore_required": False,
+            "safe": True,
+            "reasons": [],
+        }
         self.addCleanup(self.restore_globals)
 
     def restore_globals(self) -> None:

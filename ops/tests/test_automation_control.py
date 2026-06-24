@@ -479,6 +479,27 @@ class AutomationControlTests(unittest.TestCase):
         self.assertGreaterEqual(len(self.event_lines()), 3)
         self.assertTrue(all(item[0] == "automation_control_suppressed" for item in incidents))
 
+    def test_sentinel_compose_command_includes_override_when_present(self) -> None:
+        original_root = stack_sentinel.PROJECT_ROOT
+        original_env = stack_sentinel.POOL_ENV_FILE
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            env_path = root / ".env"
+            env_path.write_text("MINING_POOL_ADDRESS=0xabc\n", encoding="utf-8")
+            (root / "docker-compose.override.yml").write_text("services: {}\n", encoding="utf-8")
+            try:
+                stack_sentinel.PROJECT_ROOT = root
+                stack_sentinel.POOL_ENV_FILE = env_path
+                command = stack_sentinel.compose_command("up", "-d", "--no-deps", "node")
+            finally:
+                stack_sentinel.PROJECT_ROOT = original_root
+                stack_sentinel.POOL_ENV_FILE = original_env
+
+        compose_files = [command[index + 1] for index, value in enumerate(command) if value == "-f"]
+        self.assertEqual([str(root / "docker-compose.yml"), str(root / "docker-compose.override.yml")], compose_files)
+        self.assertIn("-p", command)
+        self.assertEqual(command[-4:], ["up", "-d", "--no-deps", "node"])
+
     def test_sentinel_blocks_pool_start_when_status_cannot_prove_safe(self) -> None:
         blocked, reason = stack_sentinel.pool_start_blocked_by_status(None)
         self.assertTrue(blocked)

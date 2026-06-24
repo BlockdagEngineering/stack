@@ -1285,8 +1285,11 @@ def docker_compose_command(*args: str) -> list[str]:
     command.extend([
         "-f",
         str(PROJECT_ROOT / "docker-compose.yml"),
-        *args,
     ])
+    override = PROJECT_ROOT / "docker-compose.override.yml"
+    if override.exists():
+        command.extend(["-f", str(override)])
+    command.extend(args)
     return command
 
 
