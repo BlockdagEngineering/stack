@@ -23,6 +23,7 @@ from pool_ops import (
     PROJECT_ROOT,
     STATUS_SAMPLER_FILE,
     collect_pool_activity,
+    collect_pool_job_state_activity,
     collect_status_cached,
     detect_total_memory_bytes,
     docker_compose_command,
@@ -693,6 +694,69 @@ def pool_has_recent_share_evidence(payload: dict[str, Any]) -> bool:
         if recent_age_seconds(pool_health.get(key)) or recent_age_seconds(pool.get(key)) or recent_age_seconds(pool_metrics.get(key)):
             return True
     return False
+
+
+def pool_job_state_activity_rows() -> list[dict[str, Any]]:
+    try:
+        rows = collect_pool_job_state_activity()
+    except Exception as exc:  # noqa: BLE001 - a guard probe must fail closed to payload-only evidence.
+        log(f"catch-up runtime guard could not collect live pool job-state activity: {exc}")
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def pool_job_state_activity_guard_reasons(rows: list[dict[str, Any]]) -> list[str]:
+    if not rows:
+        return []
+    ready = sum(1 for row in rows if row.get("pool_job_state_ready"))
+    authorized = sum(1 for row in rows if row.get("pool_job_state_authorized"))
+    subscribed = sum(1 for row in rows if row.get("pool_job_state_subscribed"))
+    reasons: list[str] = []
+    if ready > 0:
+        reasons.append(f"live pool job-state reports {ready} ready ASIC lane(s)")
+    if authorized > 0:
+        reasons.append(f"live pool job-state reports {authorized} authorized ASIC lane(s)")
+    elif subscribed > 0:
+        reasons.append(f"live pool job-state reports {subscribed} subscribed ASIC lane(s)")
+    return reasons
+
+
+def runtime_mining_activity_guard_reasons(payload: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    pool = dict_value(payload.get("pool"))
+    pool_health = dict_value(payload.get("pool_health"))
+    pool_metrics = dict_value(payload.get("pool_metrics")) or dict_value(pool.get("metrics"))
+    source_job_health = dict_value(pool.get("source_job_health")) or dict_value(pool_metrics.get("source_job_health"))
+    sync_health = dict_value(payload.get("sync_health"))
+    if pool_container_running(payload):
+        reasons.append("status payload reports running pool container")
+    if status_payload_has_miner_demand(payload):
+        reasons.append("status payload reports miner demand")
+    ready_miners = safe_int(source_job_health.get("ready_miners"), 0)
+    authorized_miners = safe_int(source_job_health.get("authorized_miners"), 0)
+    if ready_miners > 0:
+        reasons.append(f"status payload reports {ready_miners} ready miner(s)")
+    elif authorized_miners > 0:
+        reasons.append(f"status payload reports {authorized_miners} authorized miner(s)")
+    if pool_has_recent_share_evidence(payload):
+        reasons.append("status payload reports recent share evidence")
+    if sync_health.get("pool_has_recent_paid_work"):
+        reasons.append("sync health reports recent paid block work")
+    for key in ("last_block_submit_age_seconds", "last_submit_age_seconds"):
+        if recent_age_seconds(pool.get(key), max_age=90) or recent_age_seconds(pool_health.get(key), max_age=90):
+            reasons.append(f"status payload reports recent {key}")
+            break
+    block_submit_success = max(
+        safe_int(pool.get("block_submit_success_count"), 0),
+        safe_int(pool_health.get("block_submit_success_count"), 0),
+    )
+    if block_submit_success > 0 and (
+        recent_age_seconds(pool.get("last_block_submit_age_seconds"), max_age=300)
+        or recent_age_seconds(pool_health.get("last_block_submit_age_seconds"), max_age=300)
+    ):
+        reasons.append("status payload reports recent successful block submission")
+    reasons.extend(pool_job_state_activity_guard_reasons(pool_job_state_activity_rows()))
+    return sorted(set(reasons))
 
 
 def miner_row_has_visible_share_evidence(row: dict[str, Any]) -> bool:
@@ -1459,6 +1523,28 @@ def restore_catchup_node_cache(payload: dict[str, Any], policy: dict[str, Any]) 
     return False
 
 
+def record_catchup_node_runtime_skipped(
+    payload: dict[str, Any],
+    policy: dict[str, Any],
+    reasons: list[str],
+) -> None:
+    reason_text = "; ".join(reasons)
+    log(
+        "catch-up pause left node runtime unchanged because mining activity is visible: "
+        f"{reason_text}"
+    )
+    record_incident(
+        "catchup_pause_node_runtime_skipped_active_mining",
+        "warning",
+        "Catch-up pause left node runtime unchanged because ASIC work or recent paid work is visible",
+        {
+            "policy": policy,
+            "guard_reasons": reasons,
+        },
+        payload,
+    )
+
+
 def apply_catchup_node_runtime(payload: dict[str, Any], policy: dict[str, Any]) -> bool:
     if not automation_repair_mutation_allowed(
         automation_control.ACTION_CONFIG_EDIT,
@@ -1473,17 +1559,6 @@ def apply_catchup_node_runtime(payload: dict[str, Any], policy: dict[str, Any]) 
     env_updates: dict[str, str] = {}
     cache_originals: dict[str, dict[str, Any]] = {}
     cache_raised: dict[str, dict[str, Any]] = {}
-    disabled_values = {
-        "BDAG_ENABLE_NODE_MINING": "0",
-        "BDAG_NODE_MODULES": NODE_MINING_MODULES,
-        "BDAG_NODE_MINING_ARGS": "",
-        "NODE_ARGS_APPEND": "",
-    }
-    for key, wanted in disabled_values.items():
-        if config_value(key) != wanted:
-            changed_paths.extend(set_runtime_env_value(key, wanted))
-            env_updates[key] = wanted
-    changed_paths.extend(update_node_conf_mining(False))
 
     target_cache = catchup_target_node_cache_mb()
     if target_cache > 0:
@@ -1756,7 +1831,11 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
         if pool_container_running(payload):
             log(f"catch-up pause active; leaving {POOL_CONTAINER} running for pool-side template pause: {reason}")
             actions.append(f"template_pause:{POOL_CONTAINER}:catchup_pause")
-        if apply_catchup_node_runtime(payload, catchup_policy):
+        runtime_guard_reasons = runtime_mining_activity_guard_reasons(payload)
+        if runtime_guard_reasons:
+            record_catchup_node_runtime_skipped(payload, catchup_policy, runtime_guard_reasons)
+            actions.append("skipped_catchup_node_runtime_active_mining")
+        elif apply_catchup_node_runtime(payload, catchup_policy):
             actions.append("applied_catchup_node_runtime")
 
     if not catchup_active:
