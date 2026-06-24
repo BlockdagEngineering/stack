@@ -500,6 +500,15 @@ class AutomationControlTests(unittest.TestCase):
         self.assertIn("-p", command)
         self.assertEqual(command[-4:], ["up", "-d", "--no-deps", "node"])
 
+    def test_sentinel_compose_command_scrubs_container_env_overrides(self) -> None:
+        command = stack_sentinel.compose_command("up", "-d", "--no-deps", "node")
+        docker_index = command.index("docker")
+        scrub_prefix = command[:docker_index]
+
+        self.assertEqual(command[docker_index:docker_index + 2], ["docker", "compose"])
+        self.assertIn("BDAG_ENABLE_NODE_MINING", scrub_prefix)
+        self.assertIn("DOCKERFILE", scrub_prefix)
+
     def test_sentinel_blocks_pool_start_when_status_cannot_prove_safe(self) -> None:
         blocked, reason = stack_sentinel.pool_start_blocked_by_status(None)
         self.assertTrue(blocked)

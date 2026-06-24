@@ -130,17 +130,42 @@ def status_api() -> tuple[dict[str, Any] | None, str]:
         return None, str(exc)
 
 
+COMPOSE_ENV_UNSET = (
+    "BDAG_ENABLE_NODE_MINING",
+    "BDAG_NODE_MODULES",
+    "BDAG_NODE_MINING_ARGS",
+    "BDAG_NODE_OBSOLETE_HEIGHT",
+    "BDAG_NODE_DEBUG_LEVEL",
+    "BDAG_NODE_NO_FILE_LOGGING",
+    "NODE_ARGS_APPEND",
+    "MINING_ADDRESS",
+    "MINING_POOL_ADDRESS",
+    "POOL_COINBASE_ADDRESS",
+    "NODE_DATA_DIR",
+    "BDAG_NODE_DATA_DIR",
+    "BOOTSTRAP_PEER_ADDRESSES",
+    "DOCKERFILE",
+)
+
+
+def docker_compose_base_command() -> list[str]:
+    command = ["env"]
+    for name in COMPOSE_ENV_UNSET:
+        command.extend(["-u", name])
+    command.extend(["docker", "compose"])
+    return command
+
+
 def compose_command(*args: str) -> list[str]:
-    command = [
-        "docker",
-        "compose",
+    command = docker_compose_base_command()
+    command.extend([
         "-p",
         os.environ.get("BDAG_COMPOSE_PROJECT_NAME") or os.environ.get("COMPOSE_PROJECT_NAME") or PROJECT_ROOT.name,
         "--env-file",
         str(POOL_ENV_FILE),
         "-f",
         str(PROJECT_ROOT / "docker-compose.yml"),
-    ]
+    ])
     override = PROJECT_ROOT / "docker-compose.override.yml"
     if override.exists():
         command.extend(["-f", str(override)])

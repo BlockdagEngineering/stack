@@ -277,6 +277,15 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertEqual([str(root / "docker-compose.yml"), str(root / "docker-compose.override.yml")], compose_files)
         self.assertEqual(command[-2:], ["up", "node"])
 
+    def test_docker_compose_command_scrubs_container_env_overrides(self) -> None:
+        command = pool_ops.docker_compose_command("up", "-d", "node")
+        docker_index = command.index("docker")
+        scrub_prefix = command[:docker_index]
+
+        self.assertEqual(command[docker_index:docker_index + 2], ["docker", "compose"])
+        self.assertIn("BDAG_ENABLE_NODE_MINING", scrub_prefix)
+        self.assertIn("DOCKERFILE", scrub_prefix)
+
     def test_leaves_stopped_idle_pool_when_chain_is_synced_without_miner_demand(self) -> None:
         commands = []
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []

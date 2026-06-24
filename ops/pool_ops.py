@@ -1273,13 +1273,38 @@ def docker_compose_project_name() -> str:
     return PROJECT_ROOT.name
 
 
+COMPOSE_ENV_UNSET = (
+    "BDAG_ENABLE_NODE_MINING",
+    "BDAG_NODE_MODULES",
+    "BDAG_NODE_MINING_ARGS",
+    "BDAG_NODE_OBSOLETE_HEIGHT",
+    "BDAG_NODE_DEBUG_LEVEL",
+    "BDAG_NODE_NO_FILE_LOGGING",
+    "NODE_ARGS_APPEND",
+    "MINING_ADDRESS",
+    "MINING_POOL_ADDRESS",
+    "POOL_COINBASE_ADDRESS",
+    "NODE_DATA_DIR",
+    "BDAG_NODE_DATA_DIR",
+    "BOOTSTRAP_PEER_ADDRESSES",
+    "DOCKERFILE",
+)
+
+
+def docker_compose_base_command() -> list[str]:
+    command = ["env"]
+    for name in COMPOSE_ENV_UNSET:
+        command.extend(["-u", name])
+    command.extend(["docker", "compose"])
+    return command
+
+
 def docker_compose_command(*args: str) -> list[str]:
-    command = [
-        "docker",
-        "compose",
+    command = docker_compose_base_command()
+    command.extend([
         "-p",
         docker_compose_project_name(),
-    ]
+    ])
     if POOL_ENV_FILE.exists():
         command.extend(["--env-file", str(POOL_ENV_FILE)])
     command.extend([

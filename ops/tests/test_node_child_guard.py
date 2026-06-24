@@ -120,6 +120,16 @@ class NodeChildGuardTests(unittest.TestCase):
         self.assertIn("--env-file", command)
         self.assertEqual(command[command.index("--env-file") + 1], str(env_path))
 
+    def test_compose_command_scrubs_container_env_overrides(self) -> None:
+        command = node_child_guard.compose_command("up", "-d", "node")
+        docker_index = command.index("docker")
+        scrub_prefix = command[:docker_index]
+
+        self.assertEqual(command[docker_index:docker_index + 2], ["docker", "compose"])
+        self.assertIn("BDAG_ENABLE_NODE_MINING", scrub_prefix)
+        self.assertIn("DOCKERFILE", scrub_prefix)
+        self.assertLess(scrub_prefix.index("BDAG_ENABLE_NODE_MINING"), docker_index)
+
     def test_restart_uses_compose_service_label(self) -> None:
         calls: list[list[str]] = []
         original_run = node_child_guard.run
@@ -148,7 +158,7 @@ class NodeChildGuardTests(unittest.TestCase):
             calls.append(command)
             if command[:2] == ["docker", "inspect"]:
                 return SimpleNamespace(returncode=1, stdout="", stderr="not found")
-            if command[:3] == ["docker", "compose", "-p"]:
+            if "docker" in command and "compose" in command and "restart" in command:
                 return SimpleNamespace(returncode=1, stdout="", stderr="compose failed")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
