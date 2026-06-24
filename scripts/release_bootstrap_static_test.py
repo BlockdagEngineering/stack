@@ -96,9 +96,21 @@ class PayloadInstallerTests(unittest.TestCase):
 
 
 class BootstrapPeerDefaultTests(unittest.TestCase):
-    LIVE_PUBLIC_BOOTSTRAP_PEER = (
+    STABLE_BOOTSTRAP_PEERS = (
+        (
+            "/ip4/3.126.64.13/tcp/8152/p2p/"
+            "16Uiu2HAmEFxRaBbbf3sRi43CCvMk5Y6zPkuGY9s4uRK2FKJVJkqo"
+        ),
+        (
+            "/ip4/63.182.36.180/tcp/8150/p2p/"
+            "16Uiu2HAmP8HsTF9ks8JjFamzT9JBZb3ymSiCJ8rkzXBZqYj4yKtP"
+        ),
+        (
+            "/ip4/16.28.133.168/tcp/8150/p2p/"
+            "16Uiu2HAm9UcTayJDSajjJYsWwVaN2qqGeczcs9kXse3dMdvGDRjz"
+        ),
         "/ip4/13.57.132.47/tcp/8150/p2p/"
-        "16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus"
+        "16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus",
     )
 
     def test_release_defaults_pass_bootstrap_peers_to_node(self) -> None:
@@ -106,15 +118,27 @@ class BootstrapPeerDefaultTests(unittest.TestCase):
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         node_conf = (ROOT / "node.conf.example").read_text(encoding="utf-8")
 
-        self.assertIn(f"BOOTSTRAP_PEER_ADDRESSES={self.LIVE_PUBLIC_BOOTSTRAP_PEER}", env_example)
+        bootstrap_line = next(
+            line
+            for line in env_example.splitlines()
+            if line.startswith("BOOTSTRAP_PEER_ADDRESSES=")
+        )
         self.assertIn("BOOTSTRAP_PEER_ADDRESSES: ${BOOTSTRAP_PEER_ADDRESSES:-}", compose)
-        self.assertIn(f"addpeer={self.LIVE_PUBLIC_BOOTSTRAP_PEER}", node_conf)
+        for peer in self.STABLE_BOOTSTRAP_PEERS:
+            self.assertIn(peer, bootstrap_line)
+            self.assertIn(f"addpeer={peer}", node_conf)
 
     def test_release_defaults_do_not_ship_dead_or_site_local_seed_peers(self) -> None:
         node_conf = (ROOT / "node.conf.example").read_text(encoding="utf-8")
+        env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
 
-        self.assertNotIn("/ip4/52.8.80.249/tcp/8150/p2p/", node_conf)
-        self.assertNotIn("/ip4/192.168.", node_conf)
+        for text in (node_conf, env_example):
+            self.assertNotIn("/ip4/52.8.80.249/tcp/8150/p2p/", text)
+            self.assertNotIn("/ip4/192.168.", text)
+            self.assertNotIn("/ip4/199.229.220.118/tcp/8151/p2p/", text)
+            self.assertNotIn("/ip4/16.28.133.168/tcp/8151/p2p/16Uiu2HAkx4", text)
+            self.assertNotIn("/tcp/52604/p2p/", text)
+            self.assertNotIn("/tcp/34040/p2p/", text)
 
 
 if __name__ == "__main__":
