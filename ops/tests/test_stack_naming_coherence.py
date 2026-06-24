@@ -26,10 +26,11 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("BDAG_POOL_CONTAINER: pool", compose)
         self.assertIn("BDAG_POOL_DB_CONTAINER: postgres", compose)
         self.assertIn("BDAG_NODE_RPC_URLS: node=http://host.docker.internal:38131", compose)
-        self.assertIn("BDAG_COLLECTOR_DIRECT_STATUS_FALLBACK: ${BDAG_COLLECTOR_DIRECT_STATUS_FALLBACK:-0}", compose)
-        self.assertIn("BDAG_COLLECTOR_STATUS_CACHE_SECONDS: ${BDAG_COLLECTOR_STATUS_CACHE_SECONDS:-10}", compose)
-        self.assertIn("BDAG_COLLECTOR_SAMPLER_CACHE_SECONDS: ${BDAG_COLLECTOR_SAMPLER_CACHE_SECONDS:-120}", compose)
-        self.assertIn("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS: ${BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS:-120}", compose)
+        self.assertIn("BDAG_STATUS_SOURCE_URL: ${BDAG_STATUS_SOURCE_URL:-http://host.docker.internal:8088/api/status}", compose)
+        self.assertIn("BDAG_DASHBOARD_REDIS_ENABLED: ${BDAG_DASHBOARD_REDIS_ENABLED:-1}", compose)
+        stack_defaults = read("ops/config/stack-defaults.env")
+        self.assertIn("BDAG_DASHBOARD_STATUS_CACHE_SECONDS=10", stack_defaults)
+        self.assertIn("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=120", stack_defaults)
 
     def test_env_examples_and_installer_use_current_names(self) -> None:
         env_example = read(".env.example")
@@ -57,7 +58,6 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("BDAG_NODE_SERVICES=$(stack_default BDAG_NODE_SERVICES)", installer)
         self.assertIn("BDAG_STACK_SERVICES=$(stack_default BDAG_STACK_SERVICES)", installer)
         self.assertIn("BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK=$(stack_default BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK)", installer)
-        self.assertIn("BDAG_COLLECTOR_STATUS_CACHE_SECONDS=$(stack_default BDAG_COLLECTOR_STATUS_CACHE_SECONDS)", installer)
         self.assertIn("BDAG_DASHBOARD_STATUS_CACHE_SECONDS=$(stack_default BDAG_DASHBOARD_STATUS_CACHE_SECONDS)", installer)
         self.assertIn("BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS=$(stack_default BDAG_DASHBOARD_SAMPLER_CACHE_SECONDS)", installer)
         self.assertIn("BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS=$(stack_default BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS)", installer)
@@ -65,7 +65,6 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("ensure_stack_default_env_value BDAG_STACK_SERVICES", installer)
         self.assertIn("ensure_stack_default_env_value BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED", installer)
         self.assertIn("ensure_stack_default_env_value BDAG_STATUS_SAMPLER_MAX_AGE_SECONDS", installer)
-        self.assertIn("ensure_stack_default_env_value BDAG_COLLECTOR_STATUS_CACHE_SECONDS", installer)
         self.assertIn("ensure_stack_default_env_value BDAG_DASHBOARD_DIRECT_STATUS_FALLBACK", installer)
 
     def test_release_installer_generates_current_runtime_topology(self) -> None:
@@ -79,7 +78,7 @@ class StackNamingCoherenceTests(unittest.TestCase):
         self.assertIn("container_name: node", compose)
         self.assertIn("container_name: pool", compose)
         self.assertIn("NODE_RPC_URLS: ${NODE_RPC_URLS:-http://127.0.0.1:38131}", compose)
-        self.assertIn("BDAG_NODE_RPC_URL: ${BDAG_NODE_RPC_URL:-http://host.docker.internal:38131}", compose)
+        self.assertIn("BDAG_NODE_RPC_URL: ${BDAG_NODE_RPC_URL:-http://127.0.0.1:38131}", compose)
         self.assertIn("BDAG_STACK_SERVICES: postgres,node,pool", compose)
         self.assertIn("set_stack_default_env_value .env BDAG_NODE_SERVICES", installer)
         self.assertIn("set_stack_default_env_value .env BDAG_STACK_SERVICES", installer)

@@ -8,9 +8,9 @@ services:
     blkio_config: !reset null
   pool:
     blkio_config: !reset null
-  collector:
-    blkio_config: !reset null
   watchdog:
+    blkio_config: !reset null
+  status-sampler:
     blkio_config: !reset null
   sentinel:
     blkio_config: !reset null

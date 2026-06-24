@@ -1,16 +1,14 @@
 # syntax=docker/dockerfile:1.7
 # Pool-Stack Docker Compose Dev Build
 #
-# Builds the BlockDAG node + nodeworker, mining-pool,
-# and the cpu-miner from LOCAL CLONES of the source repositories.
+# Builds the BlockDAG node + nodeworker, mining pool, and Redis dashboard from
+# local clones of the source repositories.
 # Build inputs are provided as named BuildKit contexts from compose:
 #
-#   stack_src          -> pool-stack-docker repo root
+#   stack_src          -> stack repo root
 #   blockdag_corechain -> local clone of blockdag node source
 #   pool_src           -> local clone of mining pool source
-#   cpu_miner_src      -> local clone of cpu miner source
-#   collector_src      -> local clone of the status API source
-#   dashboard_src      -> local clone of dashboard source
+#   dashboard_src      -> local clone of BlockdagEngineering/redis-dash
 #
 # Optional snapshot import: SNAPSHOT_PATH copies a .bdsnap from the build context
 # (see compose / Makefile). No URL download. Datadir matches node.conf.
@@ -44,23 +42,6 @@ RUN make build && \
     mkdir -p /out && \
     cp -f ./bin/pool           /out/mining-pool && \
     cp -f ./bin/dashboard-api  /out/dashboard-api
-
-# ----------------------------------------------------------------------------
-# Miner Build Stage (cpu-miner)
-# ----------------------------------------------------------------------------
-FROM base AS miner-build
-WORKDIR /src/cpu-miner
-COPY --from=cpu_miner_src . .
-# CGO is required for the C-implemented scrypt inner loop. Use portable -O2
-# instead of -march=native so the resulting binary runs on any x86_64 host.
-RUN CGO_ENABLED=1 CGO_CFLAGS='-O2' go build -o /out/scrypt-miner ./cmd/miner
-
-# ----------------------------------------------------------------------------
-# Collector Source Stage
-# ----------------------------------------------------------------------------
-FROM alpine:3.20 AS collector-source
-COPY --from=collector_src . /src/collector
-RUN rm -rf /src/collector/.git
 
 # ----------------------------------------------------------------------------
 # Dashboard Build Stage
@@ -149,31 +130,6 @@ EXPOSE 3334 8080
 ENTRYPOINT ["/usr/local/bin/mining-pool"]
 
 # ----------------------------------------------------------------------------
-# CPU Miner Runtime Stage 
-# ----------------------------------------------------------------------------
-FROM ubuntu:24.04 AS miner
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates tzdata \
- && rm -rf /var/lib/apt/lists/*
-
-COPY --from=miner-build /out/scrypt-miner /usr/local/bin/cpu-miner
-RUN chmod +x /usr/local/bin/cpu-miner
-
-RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack \
- && mkdir -p /var/lib/bdagStack/miner \
- && chown -R bdagStack:bdagStack /var/lib/bdagStack/miner
-
-USER bdagStack
-WORKDIR /var/lib/bdagStack/miner
-
-ENV POOL_URL=stratum+tcp://pool:3334 \
-    POOL_USER=0x0000000000000000000000000000000000000000 \
-    POOL_PASS=x \
-    WORKERS=1
-
-ENTRYPOINT ["/usr/local/bin/cpu-miner"]
-
-# ----------------------------------------------------------------------------
 # Shared Ops Runtime Stage (Docker repair helpers)
 # ----------------------------------------------------------------------------
 FROM docker:27-cli AS ops-runtime
@@ -200,34 +156,16 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /workspace
 
 # ----------------------------------------------------------------------------
-# Collector Runtime Stage (read-only Python API)
-# ----------------------------------------------------------------------------
-FROM ops-runtime AS collector
-
-COPY --from=collector-source /src/collector /opt/collector
-COPY --from=stack_src docker/entrypoint-collector.sh /usr/local/bin/entrypoint-collector.sh
-RUN chmod +x /usr/local/bin/entrypoint-collector.sh \
- && mkdir -p /var/lib/bdag-collector/runtime /workspace \
- && if [ -f /opt/collector/requirements.txt ]; then \
-      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/collector/requirements.txt; \
-    fi
-
-ENV PYTHONUNBUFFERED=1 \
-    BDAG_PROJECT_ROOT=/workspace \
-    BDAG_RUNTIME_DIR=/var/lib/bdag-collector/runtime \
-    BDAG_POOL_ENV_FILE=/workspace/.env \
-    BDAG_COLLECTOR_BIND=0.0.0.0 \
-    BDAG_COLLECTOR_PORT=9280
-
-WORKDIR /opt/collector
-EXPOSE 9280
-ENTRYPOINT ["/usr/local/bin/entrypoint-collector.sh"]
-
-# ----------------------------------------------------------------------------
 # Watchdog Runtime Stage (containerized repair loop)
 # ----------------------------------------------------------------------------
 FROM ops-runtime AS watchdog
 LABEL org.opencontainers.image.title="BlockDAG Stack Watchdog"
+
+# ----------------------------------------------------------------------------
+# Status Sampler Runtime Stage (shared status and mining imperative loop)
+# ----------------------------------------------------------------------------
+FROM ops-runtime AS status-sampler
+LABEL org.opencontainers.image.title="BlockDAG Stack Status Sampler"
 
 # ----------------------------------------------------------------------------
 # Sentinel Runtime Stage (last-resort liveness repair loop)
@@ -236,7 +174,7 @@ FROM ops-runtime AS sentinel
 LABEL org.opencontainers.image.title="BlockDAG Stack Sentinel"
 
 # ----------------------------------------------------------------------------
-# Dashboard Runtime Stage (Go UI over status API)
+# Dashboard Runtime Stage (Redis-backed Go UI)
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS dashboard
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -249,8 +187,7 @@ RUN chmod +x /usr/local/bin/dashboard \
  && mkdir -p /run/dashboard-redis /var/lib/dashboard-redis /app/redis/functions \
  && chmod 700 /run/dashboard-redis /var/lib/dashboard-redis
 
-ENV ADDR=0.0.0.0:8088 \
-    BDAG_COLLECTOR_API=http://collector:9280
+ENV ADDR=0.0.0.0:8088
 
 EXPOSE 8088
 ENTRYPOINT ["/usr/local/bin/dashboard"]

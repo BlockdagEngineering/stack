@@ -109,7 +109,7 @@ class DashboardStatusFallbackTests(unittest.TestCase):
 
         self.assertEqual(payload["overall"], "degraded")
         self.assertFalse(payload["fresh"])
-        self.assertTrue(payload["collector_budget_exceeded"])
+        self.assertTrue(payload["status_budget_exceeded"])
         self.assertIsInstance(payload["failures"][0], str)
         self.assertIsInstance(payload["pool"], dict)
         self.assertTrue(payload["status_sampler"]["stale"])
@@ -190,7 +190,7 @@ class DashboardStatusFallbackTests(unittest.TestCase):
         self.assertEqual(first["status_sampler"]["age_seconds"], 9.0)
         self.assertEqual(second["overall"], "degraded")
         self.assertFalse(second["fresh"])
-        self.assertTrue(second["collector_budget_exceeded"])
+        self.assertTrue(second["status_budget_exceeded"])
         self.assertTrue(second["status_sampler"]["stale"])
 
     def test_status_payload_returns_bounded_fallback_when_cache_missing(self) -> None:
@@ -201,7 +201,7 @@ class DashboardStatusFallbackTests(unittest.TestCase):
 
         self.assertEqual(payload["overall"], "degraded")
         self.assertFalse(payload["fresh"])
-        self.assertTrue(payload["collector_budget_exceeded"])
+        self.assertTrue(payload["status_budget_exceeded"])
         self.assertEqual(payload["chain_rpc_error"], "not_checked_budgeted_status_fallback")
         self.assertIsInstance(payload["failures"][0], str)
         self.assertIsInstance(payload["pool"], dict)
@@ -217,9 +217,9 @@ class DashboardStatusFallbackTests(unittest.TestCase):
             payload["sync_estimate"]["next_step"],
             "wait about 30s for the next dashboard status sample; mining may still be running",
         )
-        self.assertEqual(payload["collector_budget_failure"]["class"], "waiting_for_status_sample")
-        self.assertEqual(payload["collector_budget_failure"]["estimated_wait_seconds"], 30)
-        self.assertIsNone(payload["collector_budget_failure"]["newest_cache_age_seconds"])
+        self.assertEqual(payload["status_budget_failure"]["class"], "waiting_for_status_sample")
+        self.assertEqual(payload["status_budget_failure"]["estimated_wait_seconds"], 30)
+        self.assertIsNone(payload["status_budget_failure"]["newest_cache_age_seconds"])
 
     def test_sync_estimate_uses_catchup_pause_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -292,8 +292,8 @@ class DashboardStatusFallbackTests(unittest.TestCase):
             payload["sync_estimate"]["next_step"],
             "wait about 15s for the next dashboard status sample; mining may still be running",
         )
-        self.assertEqual(payload["collector_budget_failure"]["estimated_wait_seconds"], 15)
-        self.assertEqual(payload["collector_budget_failure"]["newest_cache_age_seconds"], 15.0)
+        self.assertEqual(payload["status_budget_failure"]["estimated_wait_seconds"], 15)
+        self.assertEqual(payload["status_budget_failure"]["newest_cache_age_seconds"], 15.0)
 
     def test_stale_ok_cache_is_not_served_as_ok(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -322,7 +322,7 @@ class DashboardStatusFallbackTests(unittest.TestCase):
 
         self.assertEqual(payload["overall"], "degraded")
         self.assertFalse(payload["fresh"])
-        self.assertTrue(payload["collector_budget_exceeded"])
+        self.assertTrue(payload["status_budget_exceeded"])
         self.assertTrue(payload["shared_status_cache"]["stale"])
 
 

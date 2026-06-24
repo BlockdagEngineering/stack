@@ -45,7 +45,7 @@ def collect_status_sample(status_url: str | None = None, timeout: float = 8.0) -
         source = status_url
     else:
         status = collect_status_cached(include_logs=False)
-        source = "local-collector"
+        source = "local-status-cache"
     collection_ms = round((time.monotonic() - started) * 1000, 3)
     return flatten_status_sample(status, source, collection_ms, dashboard_latency_ms)
 

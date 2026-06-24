@@ -2,7 +2,7 @@
 """Shared status source for local BlockDAG stack agents.
 
 This module keeps status acquisition behind one interface. Repair actors should
-consume stack status here instead of each choosing between collector HTTP,
+consume stack status here instead of each choosing between dashboard HTTP,
 status-sampler reuse, and direct in-process collection on their own.
 """
 
@@ -19,7 +19,7 @@ from typing import Any
 from pool_ops import POOL_CONTAINERS, collect_pool_prometheus_metrics, collect_status_cached
 
 
-DEFAULT_COLLECTOR_STATUS_URL = "http://127.0.0.1:9280/api/status"
+DEFAULT_DASHBOARD_STATUS_URL = "http://127.0.0.1:8088/api/status"
 DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("BDAG_STATUS_SOURCE_TIMEOUT", "20"))
 POOL_METRIC_ENRICHMENT_KEYS = (
     "stratum_no_request_disconnects",
@@ -38,8 +38,8 @@ def _env_urls() -> list[str]:
     raw = (
         os.environ.get("BDAG_STATUS_SOURCE_URLS")
         or os.environ.get("BDAG_STATUS_SOURCE_URL")
-        or os.environ.get("BDAG_COLLECTOR_STATUS_URL")
-        or DEFAULT_COLLECTOR_STATUS_URL
+        or os.environ.get("BDAG_DASHBOARD_STATUS_URL")
+        or DEFAULT_DASHBOARD_STATUS_URL
     )
     return [item.strip() for item in raw.replace(";", ",").split(",") if item.strip()]
 
@@ -346,11 +346,11 @@ def _with_direct_pool_metric_enrichment(payload: dict[str, Any]) -> dict[str, An
     return result
 
 
-def fetch_collector_status(url: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict[str, Any]:
+def fetch_status_endpoint(url: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict[str, Any]:
     with urllib.request.urlopen(url, timeout=timeout) as response:
         payload = json.loads(response.read(8_000_000).decode("utf-8", "replace"))
     if not isinstance(payload, dict):
-        raise StackStatusUnavailable(f"collector returned non-object payload from {url}")
+        raise StackStatusUnavailable(f"status endpoint returned non-object payload from {url}")
     return payload
 
 
@@ -358,14 +358,14 @@ def collect_stack_status(
     *,
     include_logs: bool = True,
     max_age_seconds: float | None = None,
-    collector_url: str | None = None,
+    status_url: str | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
-    prefer_collector: bool = True,
+    prefer_http: bool = True,
 ) -> dict[str, Any]:
     """Return the best available stack status payload.
 
     Adapter order:
-    1. Collector HTTP, unless the caller explicitly requests a live local sample
+    1. Dashboard HTTP, unless the caller explicitly requests a live local sample
        with max_age_seconds <= 0.
     2. In-process collect_status_cached, which already reuses the status sampler
        and short shared status cache when they are fresh.
@@ -378,16 +378,16 @@ def collect_stack_status(
     if fixture is not None:
         return _annotate(fixture, "fixture", errors)
 
-    if prefer_collector and not force_live_local:
-        urls = [collector_url] if collector_url else _env_urls()
+    if prefer_http and not force_live_local:
+        urls = [status_url] if status_url else _env_urls()
         for url in [item for item in urls if item]:
             try:
                 payload = _with_dashboard_asic_telemetry_enrichment(
-                    _with_direct_pool_metric_enrichment(fetch_collector_status(url, timeout=timeout))
+                    _with_direct_pool_metric_enrichment(fetch_status_endpoint(url, timeout=timeout))
                 )
-                return _annotate(payload, "collector-http", errors)
+                return _annotate(payload, "dashboard-http", errors)
             except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, StackStatusUnavailable) as exc:
-                errors.append(f"collector {url}: {exc}")
+                errors.append(f"dashboard {url}: {exc}")
 
     try:
         return _annotate(

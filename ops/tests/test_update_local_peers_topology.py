@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -21,10 +22,17 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
         "BDAG_P2P_LAN_PEERS",
         "BDAG_P2P_VPN_PEERS",
         "BDAG_P2P_PUBLIC_PEERS",
+        "BDAG_NODE_PEER_ADDRESSES",
         "BOOTSTRAP_PEER_ADDRESSES",
+        "DISCOVERED_LAN_PEER_ADDRESSES",
+        "DISCOVERED_ZEROTIER_PEER_ADDRESSES",
         "EXTRA_PEER_ADDRESSES",
+        "LAN_PEER_ADDRESSES",
+        "LOCAL_PEER_ADDRESSES",
         "P2P_PORT",
         "PEER_ADDRESSES",
+        "VPN_PEER_ADDRESSES",
+        "ZEROTIER_PEER_ADDRESSES",
         "BDAG_NETWORK_TOPOLOGY",
         "BDAG_DETECTED_NETWORK_TOPOLOGY",
         "BDAG_ASIC_LAN_ENABLED",
@@ -35,11 +43,32 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self._old_env = {key: os.environ.get(key) for key in self.ENV_KEYS}
+        self._tmp_runtime = tempfile.TemporaryDirectory()
+        self._old_runtime_paths = {
+            "RUNTIME_DIR": update_local_peers.RUNTIME_DIR,
+            "RUNTIME_ENV_FILE": update_local_peers.RUNTIME_ENV_FILE,
+            "SYNC_COORDINATOR_STATE_FILE": update_local_peers.SYNC_COORDINATOR_STATE_FILE,
+            "DEFERRED_APPLY_FILE": update_local_peers.DEFERRED_APPLY_FILE,
+            "CHAIN_PEERSTORE_CANDIDATES_FILE": update_local_peers.CHAIN_PEERSTORE_CANDIDATES_FILE,
+            "LIVE_PEERS_FILE": update_local_peers.LIVE_PEERS_FILE,
+            "PEER_DISCOVERY_FILE": update_local_peers.PEER_DISCOVERY_FILE,
+        }
+        runtime = Path(self._tmp_runtime.name)
+        update_local_peers.RUNTIME_DIR = runtime
+        update_local_peers.RUNTIME_ENV_FILE = runtime / "ops.env"
+        update_local_peers.SYNC_COORDINATOR_STATE_FILE = runtime / "sync-coordinator-state.json"
+        update_local_peers.DEFERRED_APPLY_FILE = runtime / "local-peers-deferred-apply"
+        update_local_peers.CHAIN_PEERSTORE_CANDIDATES_FILE = runtime / "chain-peerstore-candidates.txt"
+        update_local_peers.LIVE_PEERS_FILE = runtime / "live-peers-current.txt"
+        update_local_peers.PEER_DISCOVERY_FILE = runtime / "peer-discovery-current.json"
         for key in self.ENV_KEYS:
             os.environ.pop(key, None)
         os.environ["BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED"] = "0"
 
     def tearDown(self) -> None:
+        for name, value in self._old_runtime_paths.items():
+            setattr(update_local_peers, name, value)
+        self._tmp_runtime.cleanup()
         for key, value in self._old_env.items():
             if value is None:
                 os.environ.pop(key, None)

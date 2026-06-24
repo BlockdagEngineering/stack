@@ -37,8 +37,8 @@ load_runtime_env_defaults()
 
 STATUS_URL = (
     os.environ.get("BDAG_MINING_GUARD_STATUS_URL")
-    or os.environ.get("BDAG_MINING_GUARD_COLLECTOR_URL")
-    or "http://127.0.0.1:9280/api/status"
+    or os.environ.get("BDAG_DASHBOARD_STATUS_URL")
+    or "http://127.0.0.1:8088/api/status"
 )
 STATUS_TIMEOUT = float(os.environ.get("BDAG_MINING_GUARD_STATUS_TIMEOUT", "20"))
 EXPECTED_ASIC_IP = os.environ.get("BDAG_EXPECTED_ASIC_IP", "").strip()
@@ -50,16 +50,17 @@ MINING_GUARD_ENABLED = os.environ.get(
 INCIDENT_COOLDOWN_SECONDS = int(os.environ.get("BDAG_MINING_GUARD_INCIDENT_COOLDOWN_SECONDS", "1800"))
 SHARE_STALE_SECONDS = int(os.environ.get("BDAG_MINING_GUARD_SHARE_STALE_SECONDS", "900"))
 SYNC_PROGRESS_LOOKBACK_SECONDS = int(os.environ.get("BDAG_MINING_GUARD_SYNC_PROGRESS_LOOKBACK_SECONDS", "2700"))
-SOURCE_BRANCH = os.environ.get("BDAG_MINING_GUARD_SOURCE_BRANCH", "develop").strip() or "develop"
+SOURCE_BRANCH = os.environ.get("BDAG_MINING_GUARD_SOURCE_BRANCH", "main").strip() or "main"
 SOURCE_REPOS = [
     Path(item).expanduser()
     for item in os.environ.get(
         "BDAG_MINING_GUARD_SOURCE_REPOS",
         os.pathsep.join(
             [
-                "/home/jeremy/blockdag-source/pool-stack-docker",
-                "/home/jeremy/blockdag-source/pool",
-                "/home/jeremy/blockdag-source/dashboard",
+                "/home/jeremy/github/BlockdagEngineering/stack",
+                "/home/jeremy/github/BlockdagEngineering/pool",
+                "/home/jeremy/github/BlockdagEngineering/redis-dash",
+                "/home/jeremy/github/BlockdagEngineering/blockdag-corechain",
             ]
         ),
     ).split(os.pathsep)
@@ -185,7 +186,7 @@ def as_float(value: Any) -> float | None:
 
 def status_api() -> tuple[dict[str, Any] | None, str]:
     try:
-        return collect_stack_status(include_logs=True, collector_url=STATUS_URL, timeout=STATUS_TIMEOUT), ""
+        return collect_stack_status(include_logs=True, status_url=STATUS_URL, timeout=STATUS_TIMEOUT), ""
     except (StackStatusUnavailable, OSError, TimeoutError, json.JSONDecodeError) as exc:
         return None, str(exc)
 

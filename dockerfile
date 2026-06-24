@@ -44,14 +44,6 @@ RUN set -eu; mkdir -p /out; \
     chmod +x /out/mining-pool 
 
 # ----------------------------------------------------------------------------
-# Collector Source Stage (packaged from BlockdagEngineering/collector)
-# ----------------------------------------------------------------------------
-FROM alpine:3.20 AS collector-source
-COPY --from=collector_src . /src/collector
-RUN rm -rf /src/collector/.git /src/collector/.github \
- && find /src/collector -type d -name __pycache__ -prune -exec rm -rf {} +
-
-# ----------------------------------------------------------------------------
 # Dashboard Build Stage
 # ----------------------------------------------------------------------------
 FROM base AS dashboard-build
@@ -165,34 +157,16 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /workspace
 
 # ----------------------------------------------------------------------------
-# Collector Runtime Stage (read-only Python API)
-# ----------------------------------------------------------------------------
-FROM ops-runtime AS collector
-
-COPY --from=collector-source /src/collector /opt/collector
-COPY docker/entrypoint-collector.sh /usr/local/bin/entrypoint-collector.sh
-RUN chmod +x /usr/local/bin/entrypoint-collector.sh \
- && mkdir -p /var/lib/bdag-collector/runtime /workspace \
- && if [ -f /opt/collector/requirements.txt ]; then \
-      python3 -m pip install --break-system-packages --no-cache-dir -r /opt/collector/requirements.txt; \
-    fi
-
-ENV PYTHONUNBUFFERED=1 \
-    BDAG_PROJECT_ROOT=/workspace \
-    BDAG_RUNTIME_DIR=/var/lib/bdag-collector/runtime \
-    BDAG_POOL_ENV_FILE=/workspace/.env \
-    BDAG_COLLECTOR_BIND=0.0.0.0 \
-    BDAG_COLLECTOR_PORT=9280
-
-WORKDIR /opt/collector
-EXPOSE 9280
-ENTRYPOINT ["/usr/local/bin/entrypoint-collector.sh"]
-
-# ----------------------------------------------------------------------------
 # Watchdog Runtime Stage (containerized repair loop)
 # ----------------------------------------------------------------------------
 FROM ops-runtime AS watchdog
 LABEL org.opencontainers.image.title="BlockDAG Stack Watchdog"
+
+# ----------------------------------------------------------------------------
+# Status Sampler Runtime Stage (shared status and mining imperative loop)
+# ----------------------------------------------------------------------------
+FROM ops-runtime AS status-sampler
+LABEL org.opencontainers.image.title="BlockDAG Stack Status Sampler"
 
 # ----------------------------------------------------------------------------
 # Sentinel Runtime Stage (last-resort liveness repair loop)
@@ -208,10 +182,9 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     ca-certificates tzdata curl redis-server redis-tools \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard2
+COPY --from=dashboard-build /out/dashboard /usr/local/bin/dashboard
 COPY docker/dashboard-redis.conf /etc/redis/redis.conf
-RUN chmod +x /usr/local/bin/dashboard2 \
- && ln -sf /usr/local/bin/dashboard2 /usr/local/bin/dashboard \
+RUN chmod +x /usr/local/bin/dashboard \
  && mkdir -p /run/dashboard-redis /var/lib/dashboard-redis /app/redis/functions \
  && chmod 700 /run/dashboard-redis /var/lib/dashboard-redis
 
@@ -222,8 +195,7 @@ ENV ADDR=0.0.0.0:8088 \
     BDAG_REDIS_CONFIG=/etc/redis/redis.conf \
     BDAG_EVM_HTTP_URL=http://node:18545 \
     BDAG_EVM_WS_URL=ws://node:18546 \
-    BDAG_POOL_METRICS_URL=http://pool:9090/metrics \
-    BDAG_COLLECTOR_API=http://collector:9280
+    BDAG_POOL_METRICS_URL=http://pool:9090/metrics
 
 EXPOSE 8088
-ENTRYPOINT ["/usr/local/bin/dashboard2"]
+ENTRYPOINT ["/usr/local/bin/dashboard"]

@@ -389,8 +389,8 @@ class WatchdogSyncRestartTests(unittest.TestCase):
     def test_node_rpc_refused_evidence_ignores_unrelated_connection_refused_warning(self) -> None:
         status = {
             "warnings": [
-                'Could not read collector logs: Get "http://host.docker.internal:9280/api/logs/node": '
-                "dial tcp 172.17.0.1:9280: connect: connection refused"
+                'Could not read dashboard logs: Get "http://host.docker.internal:8088/api/logs/node": '
+                "dial tcp 172.17.0.1:8088: connect: connection refused"
             ],
             "pool_health": {
                 "source_job_health": {"ok": True, "reason_code": "ok"},

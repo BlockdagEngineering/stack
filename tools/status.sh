@@ -15,6 +15,6 @@ fi
 
 "${COMPOSE[@]}" ps
 echo
-echo "Collector status API:"
-curl -fsS "http://127.0.0.1:${COLLECTOR_HOST_PORT:-9280}/api/status" || true
+echo "Dashboard status API:"
+curl -fsS "http://127.0.0.1:${DASHBOARD_HOST_PORT:-8088}/api/status" || true
 echo

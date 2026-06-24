@@ -39,8 +39,8 @@ LOG_FILE = LOG_DIR / "stack-sentinel.log"
 LOCK_FILE = RUNTIME_DIR / "stack-sentinel.lock"
 STATUS_URL = (
     os.environ.get("BDAG_SENTINEL_STATUS_URL")
-    or os.environ.get("BDAG_SENTINEL_COLLECTOR_URL")
-    or "http://127.0.0.1:9280/api/status"
+    or os.environ.get("BDAG_DASHBOARD_STATUS_URL")
+    or "http://127.0.0.1:8088/api/status"
 )
 STATUS_TIMEOUT = float(os.environ.get("BDAG_SENTINEL_STATUS_TIMEOUT", "20"))
 INCIDENT_COOLDOWN_SECONDS = int(os.environ.get("BDAG_SENTINEL_INCIDENT_COOLDOWN_SECONDS", "300"))
@@ -126,7 +126,7 @@ def automation_action_for_container(service: str, recreate: bool = False) -> str
 
 def status_api() -> tuple[dict[str, Any] | None, str]:
     try:
-        return collect_stack_status(include_logs=True, collector_url=STATUS_URL, timeout=STATUS_TIMEOUT), ""
+        return collect_stack_status(include_logs=True, status_url=STATUS_URL, timeout=STATUS_TIMEOUT), ""
     except (StackStatusUnavailable, OSError, TimeoutError, json.JSONDecodeError) as exc:
         return None, str(exc)
 

@@ -1,6 +1,9 @@
 # pool-stack-docker-stack
 
-This stack can be run in any environment where docker is installed. It includes an upgradable BDAG node, a mining pool with its database, a read-only status API, and the Go dashboard UI.
+This stack can be run in any environment where docker is installed. It includes
+an upgradable BDAG node, a mining pool with its database, the Redis-backed
+dashboard runtime from `BlockdagEngineering/redis-dash`, and containerized
+watchdog/sentinel repair services.
 
 On Ubuntu/Debian hosts, install the required Docker packages before running the
 payload installer:
@@ -20,8 +23,9 @@ Open a new shell, then verify `docker compose version` works without sudo.
 | `node` | BlockDAG node, supervised by nodeworker | Consensus, P2P, and RPC |
 | `pool` | Mining pool (Stratum :3334) | ASIC Stratum and block submission |
 | `pool-db` | Postgres | Pool persistence, schema auto-loaded |
-| `collector` | Python collector | Read-only status API and normalized logs |
-| `dashboard` | Go dashboard | Browser UI over the status API |
+| `dashboard` | Redis-backed Go dashboard | Browser UI, private Redis state, live ingest, status API |
+| `status-sampler` | Python ops runtime | Shared low-impact status sampling and mining imperative checks |
+| `watchdog` / `sentinel` | Python ops runtime | Runtime repair and last-resort liveness recovery |
 
 
 ## Release package
@@ -39,12 +43,13 @@ the matching payload zip from that same tag. Linux ARM64, macOS ARM64, and
 Windows ARM64 hosts use the `linux-arm64` runtime payload.
 
 Each payload zip contains `bin/` (pre-built `blockdag-node`, `nodeworker`,
-`mining-pool`, `dashboard-api`, and `dashboard`), `docker-compose.yml`, `dockerfile`,
-`.env.example`,
-`docker/`, `collector/` from `BlockdagEngineering/collector`, and the
-cross-platform payload installers. **Node and pool release images** stage
-binaries from `./bin`; the `collector` image stages the packaged collector
-source from `./collector`.
+`mining-pool`, `dashboard-api`, and `dashboard`), `docker-compose.yml`,
+`dockerfile`, `.env.example`, `docker/`, the cross-platform payload installers,
+and the ops scripts required by the repair services. **Release images** stage
+their binaries from `./bin`; release workflow source checkouts are limited to
+`BlockdagEngineering/blockdag-corechain`, `BlockdagEngineering/pool`, and
+`BlockdagEngineering/redis-dash` from `main`. Legacy collector, dashboard2,
+CPU-miner, and GPU-miner source trees are not packaged or run.
 
 Run the bootstrap script from the GitHub release, or manually unpack the
 matching payload zip and run the payload installer from the extracted directory:
@@ -64,7 +69,7 @@ The payload installer makes two independent choices in two steps:
 **Step 1 — what to install:**
 
 1. **Mining pool stack with dashboard** (default) — the full stack: node, pool,
-   Postgres, collector, and dashboard.
+   Postgres, redis-dash dashboard, status sampler, watchdog, and sentinel.
 2. **Standalone node only** — just the node, no pool/dashboard/ASIC services.
 
 **Step 2 — chain data type (applies to either deployment):**
@@ -263,22 +268,23 @@ The dashboard reports this as a deliberate catch-up pause, not a pool failure,
 and tells operators to leave miners configured until I/O pressure drops, peer lag
 is back inside the safe window, and template health is ready.
 
-Collector block height is sourced from chain RPC `getBlockCount`; template
+Dashboard block height is sourced from chain RPC `getBlockCount`; template
 height, logs, and main-order values are shown only as
 diagnostics. Build and release flows should run through
 `scripts/bdag-low-io-build.sh`, which uses idle I/O priority, low CPU priority,
 and `BDAG_BUILD_TMPDIR` so image builds do not compete with chain sync or block
 submission. Chain RPC checks retry slow storage-bound samples via
 `BDAG_NODE_CHAIN_RPC_TIMEOUT` and `BDAG_NODE_CHAIN_RPC_RETRIES`, and the status
-payload exposes RPC latency and Linux IO pressure metrics. When PSI is unavailable, the collector falls back to `/proc/stat`
-`iowait` deltas and raises a maintenance warning after sustained high IO wait.
+payload exposes RPC latency and Linux IO pressure metrics. When PSI is
+unavailable, the status sampler falls back to `/proc/stat` `iowait` deltas and
+raises a maintenance warning after sustained high IO wait.
 The ops layer also detects a host profile with `BDAG_HOST_PROFILE=auto` and
-uses adaptive worker budgets for expensive collector/global/miner scans. The
+uses adaptive worker budgets for expensive dashboard/global/miner scans. The
 same release source is expected to behave conservatively on constrained ARM64
 hosts, while AMD64 and larger ARM64 hosts can use more parallelism when pressure
 is low. See `docs/platform-adaptive-runtime.md`.
 
-The collector, sync coordinator, P2P guard, and startup checks also share one
+The dashboard, sync coordinator, P2P guard, and startup checks also share one
 cross-process status sample. `ops/status_sampler.py` writes
 `ops/runtime/status-sampler.json` atomically, and routine callers read it
 through `collect_status_cached()` when it is fresh. The default sampler reuse
@@ -286,7 +292,7 @@ window is bounded at 120 seconds so constrained hosts do not repeatedly probe
 Docker, node RPC, pool metrics, and miner state while the node is catching up.
 Diagnostics can still force a live collection with `max_age_seconds=0`.
 Repair actors should acquire stack status through `ops/stack_status_source.py`.
-That module prefers the collector status API, then falls back to the shared
+That module prefers the dashboard status API, then falls back to the shared
 status sampler/direct collection path, so watchdogs and sentinels do not each
 recreate their own monitoring fallback order.
 
@@ -361,16 +367,14 @@ image assembly so ARM64 packages cannot silently receive AMD64 binaries; the
 checker reads ELF/Mach-O/PE headers directly so it can be used from Linux,
 macOS, and Windows build hosts.
 
-The dashboard UI is normally exposed on host port `8080`. It talks to the
-status API, which is bound to localhost on host port `9280` by default. Global
-production data must be sourced from native BlockDAG chain RPC
+The dashboard UI and status API are normally exposed on host port `8088`.
+Global production data must be sourced from native BlockDAG chain RPC
 `getBlockCount`/ordered block/coinbase calls. EVM RPC belongs to wallet balance
-views only. The packaged web dashboard on `DASHBOARD_HOST_PORT`/`9280` is a
-diagnostic chart view and must not be treated as the authoritative mining
-dashboard.
+views only. The packaged redis-dash UI on `DASHBOARD_HOST_PORT` is the
+authoritative operational dashboard for this stack line.
 
-When testing directly from a source checkout, start the status API with
-environment that matches the actual container names for the stack it is
+When testing directly from a source checkout, start the dashboard/status API
+with environment that matches the actual container names for the stack it is
 watching. On Linux, that process needs Docker API access for container status
 and logs; use a system service account with Docker socket access or an explicit
 `DOCKER_HOST`.
@@ -386,13 +390,13 @@ sudo apt-get install -y python3-pytest
 Agents should verify it with `python3 -m pytest --version` before running
 `ops/tests` through pytest-backed deployment checks.
 
-The collector runtime uses Python's standard HTTP client for local
-pool metrics and public enrichment calls. Do not make live status depend on
-host utilities such as `curl`; release packages should behave the same on Linux
-AMD64, Linux ARM64, macOS Docker Desktop, and Windows Docker Desktop once Docker
-and Python are available.
+The ops status runtime uses Python's standard HTTP client for local pool metrics
+and public enrichment calls. Do not make live status depend on host utilities
+such as `curl`; release packages should behave the same on Linux AMD64, Linux
+ARM64, macOS Docker Desktop, and Windows Docker Desktop once Docker and Python
+are available.
 
-For live collector-only updates, use:
+For live runtime updates, use:
 
 ```bash
 ops/deploy-live-runtime-update.sh --target /path/to/installed/runtime --mark-runtime-compose
@@ -411,7 +415,7 @@ evidence with:
 PYTHONDONTWRITEBYTECODE=1 python3 -B ops/optimization_measurement.py --duration-seconds 300 --interval-seconds 15 --label baseline
 ```
 
-Add `--status-url http://127.0.0.1:9280/api/status` when measuring collector
+Add `--status-url http://127.0.0.1:8088/api/status` when measuring dashboard
 HTTP latency as part of the same run. The harness writes JSONL samples and an
 HTML summary under `ops/runtime/measurements`.
 
@@ -429,14 +433,10 @@ docker compose logs -f node
 docker compose logs -f pool
 ```
 
-To include optional services controlled by `.env`, set `COMPOSE_PROFILES` before
-`docker compose up`. Example: `COMPOSE_PROFILES=miner` enables the CPU miner
-service; leave `COMPOSE_PROFILES` empty to disable it.
-
 Once everything is running:
 
-- Dashboard: `http://localhost:8080`
-- Collector API: `http://localhost:9280`
+- Dashboard and status API: `http://localhost:8088`
+- Status payload: `http://localhost:8088/api/status`
 - Mining pool Stratum endpoint: `stratum+tcp://localhost:3334`
 - RPC endpoint: `http://localhost:38131`
 

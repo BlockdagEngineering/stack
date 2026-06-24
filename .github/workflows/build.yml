@@ -48,7 +48,7 @@ jobs:
 
       - name: Checkout packaging repo
         uses: actions/checkout@v4
-      # Use PRIVATE_REPO_TOKEN when set (PAT with Contents: Read on both repos).
+      # Use PRIVATE_REPO_TOKEN when set (PAT with Contents: Read on private repos).
       # If unset, falls back to github.token (works only if org allows this workflow to read those private repos).
       - name: Checkout private blockdag repo
         uses: actions/checkout@v4
@@ -74,14 +74,6 @@ jobs:
           path: src/dashboard
           ref: main
 
-      - name: Checkout collector repo
-        uses: actions/checkout@v4
-        with:
-          repository: BlockdagEngineering/collector
-          token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
-          path: src/collector
-          ref: develop
-
       - name: Verify upstream checkouts
         shell: bash
         run: |
@@ -101,12 +93,6 @@ jobs:
           verify_repo blockdag-corechain src/blockdag-node/cmd/bdag/bdag.go
           verify_repo pool src/pool/cmd/pool/main.go
           verify_repo redis-dash src/dashboard/main.go
-          collector_entry="$(find src/collector -type f -name collector.py -not -path '*/.git/*' -print -quit)"
-          if [[ -z "${collector_entry}" ]]; then
-            echo "::error::Upstream checkout 'collector' missing collector.py"
-            exit 1
-          fi
-          echo "ok: collector (collector.py)"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -233,27 +219,6 @@ jobs:
           cp scripts/release/install.sh scripts/release/install-node.sh scripts/release/install.ps1 scripts/release/install.cmd "${ROOT}/"
           cp -a scripts/release/installers "${ROOT}/installers"
           cp -a bin sql docker tools "${ROOT}/"
-          rsync -a \
-            --exclude='.git/' \
-            --exclude='.github/' \
-            --exclude='.pytest_cache/' \
-            --exclude='__pycache__/' \
-            --exclude='runtime/' \
-            --exclude='runtime-*/' \
-            --exclude='data/' \
-            --exclude='*.pyc' \
-            --exclude='*.pyo' \
-            src/collector/ "${ROOT}/collector/"
-          collector_entry="$(find "${ROOT}/collector" -type f -name collector.py -not -path '*/.git/*' -print -quit)"
-          if [[ -z "${collector_entry}" ]]; then
-            echo "::error::Collector checkout is missing collector.py"
-            exit 1
-          fi
-          if [[ "${collector_entry}" != "${ROOT}/collector/collector.py" ]]; then
-            cp "${collector_entry}" "${ROOT}/collector/collector.py"
-          fi
-          test -f "${ROOT}/collector/collector.py" || \
-            { echo "::error::Collector payload is missing collector.py"; exit 1; }
 
 
           # Earlier test steps generate scripts/__pycache__ in the workspace;
@@ -270,17 +235,6 @@ jobs:
           rm -rf smoke-root
 
           zip -qr "${OUT}" "${ROOT}"
-          python3 - "${OUT}" "${ROOT}" <<'PY'
-          import sys
-          import zipfile
-
-          archive, root = sys.argv[1], sys.argv[2]
-          needle = f"{root}/collector/collector.py"
-          with zipfile.ZipFile(archive) as zf:
-              if needle not in zf.namelist():
-                  print("::error::Release zip is missing collector.py")
-                  raise SystemExit(1)
-          PY
           python3 scripts/check-release-archive.py "${OUT}"
           sha256sum "${OUT}" > "${OUT_SHA256}"
           rm -rf "${ROOT}"

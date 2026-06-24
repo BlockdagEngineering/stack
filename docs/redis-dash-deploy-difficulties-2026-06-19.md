@@ -22,7 +22,7 @@ chain data from `/home/jeremy/Downloads/bdag-latest-snapshot.tar.gz`.
   `127.0.0.1` for Postgres and node RPC.
 - `dashboard` runs on the compose bridge while `node` and `pool` use host
   networking. It needs `host.docker.internal:host-gateway` and host-facing
-  defaults for EVM RPC, pool metrics, and collector API.
+  defaults for EVM RPC, pool metrics, and dashboard status API.
 - Several TCP-open peers rejected libp2p security negotiation because the stored
   peer ID was stale or the peer reset the handshake.
 - The peer `/ip4/13.140.165.186/tcp/8150/p2p/16Uiu2HAm4hHD7Ht5LJrLgaKXr7YP2RzHHjrrCLNt8zv8FQ9s3gBU`

@@ -6842,7 +6842,7 @@ def docker_container_ip(name: str) -> str:
 
 
 def _host_url_for_dashboard(url: str) -> str:
-    """Translate compose-only service hostnames to container IPs for host-side collectors."""
+    """Translate compose-only service hostnames to container IPs for host-side dashboard probes."""
     try:
         parsed = urllib.parse.urlsplit(url)
     except ValueError:

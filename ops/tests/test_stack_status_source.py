@@ -177,7 +177,7 @@ class StackStatusSourceTests(unittest.TestCase):
             self.assertFalse(row["work_pool_active"])
             self.assertFalse(row["debug"]["available"])
 
-    def test_collector_payload_is_enriched_with_new_pool_metrics(self) -> None:
+    def test_dashboard_payload_is_enriched_with_new_pool_metrics(self) -> None:
         captured: list[dict[str, object]] = []
 
         def collect_pool_metrics(containers: dict[str, object]) -> dict[str, object]:
@@ -197,7 +197,7 @@ class StackStatusSourceTests(unittest.TestCase):
             clear=False,
         ), mock.patch.object(
             stack_status_source,
-            "fetch_collector_status",
+            "fetch_status_endpoint",
             return_value={
                 "status": "ok",
                 "containers": {"pool": {"running": True}},

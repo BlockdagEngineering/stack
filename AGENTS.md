@@ -16,6 +16,24 @@ Multi-context repo with shared context in sibling `../codex-memory`; read that m
 
 ## Release Candidate Dashboard Source
 
+`BlockdagEngineering/stack` is now the authoritative stack repository for this
+line. `BlockdagEngineering/stack-redis` is retired as a runtime target; use it
+only as historical donor material when intentionally merging useful scripts,
+defaults, or docs into this repo. Do not instruct humans or agents to build the
+production stack from `stack-redis`.
+
+Release and source installs for this line build from:
+
+- `BlockdagEngineering/stack`
+- `BlockdagEngineering/blockdag-corechain`
+- `BlockdagEngineering/pool`
+- `BlockdagEngineering/redis-dash`
+
+Do not add release workflow checkouts, compose services, build contexts,
+installers, or docs that depend on collector, dashboard2, old dashboard repos,
+CPU miner, or GPU miner. `scripts/validate-release-build.sh` must keep rejecting
+those paths.
+
 The dashboard repository for the redis dashboard release line is
 `BlockdagEngineering/redis-dash`. Release builds for this line must build from
 the checked-out `redis-dash` source context, not an older `dashboard2` checkout
@@ -69,12 +87,13 @@ prevents the node from maintaining at least the required fresh consensus peer
 floor. Prefer enough inbound capacity to hold stable fresh peers, then bound IO
 and background work separately.
 
-Redis dashboard upgrades must follow `docs/redis-dash-fast-upgrade-runbook.md`.
-That runbook is the current fast path for destructive rebuild/redeploy work:
-build from source before freezing mining, preserve chain/Postgres/dashboard
-Redis data, never fall back to `test:test` RPC auth, validate native
-`getTemplateHealth` and dashboard live data before exposing the pool, and prune
-old images only after explicit human verification.
+Redis dashboard upgrades must follow `docs/redis-dash-fast-upgrade-runbook.md`
+and `docs/authoritative-stack-clean-upgrade-playbook.md`. Those runbooks are the
+current fast path for destructive rebuild/redeploy work: build from source
+before freezing mining, preserve chain/Postgres/dashboard Redis data, never fall
+back to `test:test` RPC auth, validate native `getTemplateHealth` and dashboard
+live data before exposing the pool, and prune old images only after explicit
+human verification.
 
 Keep pool `getBlockTemplate` pressure below the node RPC client ceiling. Do not
 override `POOL_GBT_MIN_INTERVAL_MS` below `1000`, do not override
@@ -274,15 +293,14 @@ the dashboard environment and sampler state currently used by systemd. Keep
 `scripts/validate-rc-local.sh` validating a temporary source copy with a
 temporary runtime directory instead of cleaning the checkout in place.
 
-Collector code must avoid host-only command dependencies for normal status. Use
+Status code must avoid host-only command dependencies for normal status. Use
 Python's standard HTTP client for local pool metrics and public
 enrichment calls so Linux AMD64, Linux ARM64/Pi5, macOS Docker Desktop, and
 Windows Docker Desktop behave consistently once Docker and Python are present.
 
-When operating from source, keep surfaces explicit: the Go dashboard is exposed
-on host port `8080`; the status API is bound to localhost on host port
-`9280` and must be configured with the real container names and Docker access
-for the stack being watched.
+When operating from source, keep surfaces explicit: redis-dash exposes the UI
+and status API on host port `8088` by default and must be configured with the
+real container names and Docker access for the stack being watched.
 
 ## P2P Peer Configuration
 

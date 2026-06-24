@@ -24,7 +24,7 @@ BDAG_ARIA2_CONNECTIONS="${BDAG_ARIA2_CONNECTIONS:-8}"
 BDAG_INSTALL_ARIA2="${BDAG_INSTALL_ARIA2:-0}"
 BDAG_BROWSER_SNAPSHOT_FALLBACK="${BDAG_BROWSER_SNAPSHOT_FALLBACK:-0}"
 BDAG_INSTALL_MIN_FREE_KB="${BDAG_INSTALL_MIN_FREE_KB:-10485760}"
-BDAG_INSTALL_CHECK_PORTS="${BDAG_INSTALL_CHECK_PORTS:-3334 8080 9280 18545 18546 38131}"
+BDAG_INSTALL_CHECK_PORTS="${BDAG_INSTALL_CHECK_PORTS:-3334 8088 9090 18545 18546 38131}"
 BDAG_INSTALL_STRICT_PORTS="${BDAG_INSTALL_STRICT_PORTS:-0}"
 BDAG_CLEAN_ORPHAN_CONTAINERS="${BDAG_CLEAN_ORPHAN_CONTAINERS:-0}"
 
@@ -1031,10 +1031,6 @@ else
     echo "  Warning: could not detect external IP. Node will operate outbound-only."
 fi
 
-if ! install_mode_is_node_only; then
-    mkdir -p collector/logs
-fi
-
 clean_build_context_metadata
 stage_snapshot_for_node_datadir
 stage_chain_data_archive_for_node_datadir
@@ -1091,13 +1087,23 @@ else
         --reason "Provision default automation control before sync-only first start" >/dev/null
     docker compose pull pool-db
     docker compose up -d --no-build --pull never pool-db node dashboard
+    guard_services=()
+    available_services="$(docker compose config --services 2>/dev/null || true)"
+    for service in status-sampler watchdog sentinel miner-route; do
+        if printf '%s\n' "$available_services" | grep -qx "$service"; then
+            guard_services+=("$service")
+        fi
+    done
+    if (( ${#guard_services[@]} > 0 )); then
+        docker compose up -d --no-build --pull never "${guard_services[@]}"
+    fi
 
     cat <<'EOF'
 
 =================================================
   BlockDAG Pool Stack sync services are running.
 =================================================
-  Dashboard:  http://localhost:9280
+  Dashboard:  http://localhost:8088
   Stratum:    starts after chain safety gates pass
   EVM RPC:    http://localhost:18545
 

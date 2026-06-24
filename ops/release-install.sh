@@ -288,15 +288,15 @@ configure_active_node_env() {
 
 configure_node_mining_env() {
   local enabled="$1" mining_address="$2"
+  local mining_args=""
   if [[ "$enabled" == "1" ]]; then
-    set_env_value .env BDAG_ENABLE_NODE_MINING 1
-    set_env_value .env BDAG_NODE_MODULES "Blockdag,miner"
-    set_env_value .env BDAG_NODE_MINING_ARGS "--miner --miningaddr=${mining_address} --maxinbound=1"
+    mining_args="--miner --miningaddr=${mining_address} --maxinbound=1"
   else
-    set_env_value .env BDAG_ENABLE_NODE_MINING 0
-    set_env_value .env BDAG_NODE_MODULES "Blockdag,miner"
-    set_env_value .env BDAG_NODE_MINING_ARGS ""
+    enabled=0
   fi
+  set_env_value .env BDAG_ENABLE_NODE_MINING "$enabled"
+  set_env_value .env BDAG_NODE_MODULES "Blockdag,miner"
+  set_env_value .env BDAG_NODE_MINING_ARGS "$mining_args"
 }
 
 env_value() {
@@ -907,7 +907,7 @@ start_repair_services() {
   guard_runtime_compose
   local available service services=()
   available="$(compose_cmd config --services 2>/dev/null || true)"
-  for service in miner-route watchdog sentinel; do
+  for service in miner-route status-sampler watchdog sentinel; do
     if grep -qx "$service" <<<"$available"; then
       services+=("$service")
     fi

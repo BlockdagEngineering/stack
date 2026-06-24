@@ -295,8 +295,8 @@ def dashboard_status_fast_fallback(diagnostics: dict[str, object]) -> dict[str, 
         "warnings": ["dashboard status returned bounded fallback because cached status was unavailable"],
         "sync_warnings": [],
         "maintenance_warnings": [],
-        "collector_budget_exceeded": True,
-        "collector_budget_failure": {
+        "status_budget_exceeded": True,
+        "status_budget_failure": {
             "component": "dashboard_status",
             "class": "waiting_for_status_sample",
             "detail": failure_message,
@@ -2311,7 +2311,7 @@ HTML = r"""<!doctype html>
     function renderSyncEstimate(data, progress) {
       const estimate = data.sync_estimate || {};
       const templateReady = selectedBackendTemplateReady(data);
-      if (data.mode === "status_cache_unavailable" || data.collector_budget_exceeded && !(data.sync_progress || {}).status) {
+      if (data.mode === "status_cache_unavailable" || data.status_budget_exceeded && !(data.sync_progress || {}).status) {
         text("syncNarrative", "Status sampler is unavailable; waiting for a fresh stack sample.");
         text("syncMode", "unknown");
         const activeLabel = document.getElementById("syncActiveLabel");
@@ -2465,7 +2465,7 @@ HTML = r"""<!doctype html>
       const managedNodeNames = data.managed_node_services || [];
       const observerNodeNames = data.observer_node_services || [];
       const singleManagedTopology = managedNodeNames.length === 1 && observerNodeNames.length === 0;
-      const fallbackOnly = data.mode === "status_cache_unavailable" || (data.collector_budget_exceeded && !nodeNames.length);
+      const fallbackOnly = data.mode === "status_cache_unavailable" || (data.status_budget_exceeded && !nodeNames.length);
       const overview = container.closest(".status-overview");
       if (overview) overview.classList.toggle("single-card", singleManagedTopology || fallbackOnly);
       if (singleManagedTopology || fallbackOnly) {

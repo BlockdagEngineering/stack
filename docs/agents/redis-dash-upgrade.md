@@ -1,13 +1,15 @@
 # Agent Notes: Redis Dash Upgrade
 
-Use this with `docs/redis-dash-fast-upgrade-runbook.md`.
+Use this with `docs/redis-dash-fast-upgrade-runbook.md` and
+`docs/authoritative-stack-clean-upgrade-playbook.md`.
 
 Before changing a live mining stack:
 
 1. Pull `/home/jeremy/.codex/memories/codex-memory`.
 2. Read memory stack invariants, especially native readiness gates, MAC-only
    ASIC identity, no `test:test` RPC defaults, and paid-mining evidence.
-3. Fetch all stack repos and record exact target SHAs.
+3. Fetch the authoritative source repos and record exact target SHAs:
+   `stack`, `blockdag-corechain`, `pool`, and `redis-dash`.
 4. Build replacement images from current source before stopping `pool` whenever
    possible.
 5. Preserve `stack_node-data`, `stack_nodeworker-data`, `stack_postgres-data`,

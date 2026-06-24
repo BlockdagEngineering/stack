@@ -16,8 +16,12 @@ DENY_COMPONENTS = {
     ".github",
     ".pytest_cache",
     "__pycache__",
+    "collector",
+    "cpu-miner",
     "runtime",
     "data",
+    "dashboard2",
+    "gpu-miner",
 }
 DENY_BASENAMES = {
     ".env",

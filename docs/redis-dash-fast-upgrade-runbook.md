@@ -16,8 +16,9 @@ Runtime services for this release line are:
 - Optional guard services may exist in the repo, but they must not race a
   controlled upgrade.
 
-Legacy `collector` and old `dashboard2` images are not part of this target.
-`redis-dash` is the dashboard source repo for this release line.
+Retired `collector` and old `dashboard2` images are not part of this target.
+`BlockdagEngineering/stack` is the authoritative stack repo, and `redis-dash`
+is the only dashboard source repo for this release line.
 
 ## Non-Negotiable Invariants
 
@@ -75,7 +76,7 @@ Run this before stopping mining:
 1. Pull memory and read current stack memory:
    `git -C /home/jeremy/.codex/memories/codex-memory pull --ff-only`.
 2. Fetch all source repos and verify the target branch/commit:
-   `stack-redis`, `redis-dash`, `pool`, and `blockdag-corechain`.
+   `stack`, `redis-dash`, `pool`, and `blockdag-corechain`.
 3. Record `git rev-parse HEAD` for each repo.
 4. Confirm worktrees are clean or record exactly what local changes are part of
    the upgrade.
