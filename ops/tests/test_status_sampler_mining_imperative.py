@@ -1184,6 +1184,84 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertEqual(env_updates, {})
         self.assertFalse(any("--force-recreate" in command for command in commands))
 
+    def test_empty_static_mining_args_do_not_repair_when_live_command_is_safe(self) -> None:
+        commands = []
+        env_updates = {}
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        address = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        os.environ["MINING_ADDRESS"] = address
+        os.environ["BDAG_ENABLE_NODE_MINING"] = "1"
+        os.environ["BDAG_NODE_MODULES"] = "Blockdag,miner"
+        os.environ["BDAG_NODE_MINING_ARGS"] = ""
+        os.environ["NODE_ARGS_APPEND"] = ""
+        os.environ["BDAG_NODE_SERVICES"] = "node"
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
+
+        def fake_set_runtime_env(key: str, value: str):
+            env_updates[key] = value
+            os.environ[key] = value
+            return [f"/runtime/{key}"]
+
+        def fake_run(command: list[str], timeout: int = 20):
+            commands.append(command)
+            if "exec" in command and "-T" in command and any("ps -eo args" in part for part in command):
+                stdout = (
+                    "/usr/local/bin/blockdag-node --modules=Blockdag --modules=miner --miner "
+                    f"--miningaddr={address}\n"
+                )
+                return self.command_result(command, stdout=stdout)
+            return self.command_result(command)
+
+        status_sampler.set_runtime_env_value = fake_set_runtime_env
+        status_sampler.run = fake_run
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertEqual(repair["actions"], [])
+        self.assertEqual(env_updates, {})
+        self.assertTrue(any("exec" in command for command in commands))
+        self.assertFalse(any("--force-recreate" in command for command in commands))
+
+    def test_empty_static_mining_args_repair_when_live_command_is_unsafe(self) -> None:
+        commands = []
+        env_updates = {}
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        address = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        os.environ["MINING_ADDRESS"] = address
+        os.environ["BDAG_ENABLE_NODE_MINING"] = "1"
+        os.environ["BDAG_NODE_MODULES"] = "Blockdag,miner"
+        os.environ["BDAG_NODE_MINING_ARGS"] = ""
+        os.environ["NODE_ARGS_APPEND"] = ""
+        os.environ["BDAG_NODE_SERVICES"] = "node"
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
+
+        def fake_set_runtime_env(key: str, value: str):
+            env_updates[key] = value
+            os.environ[key] = value
+            return [f"/runtime/{key}"]
+
+        def fake_run(command: list[str], timeout: int = 20):
+            commands.append(command)
+            if "exec" in command and "-T" in command and any("ps -eo args" in part for part in command):
+                stdout = "/usr/local/bin/blockdag-node --modules=Blockdag --modules=miner\n"
+                return self.command_result(command, stdout=stdout)
+            return self.command_result(command)
+
+        status_sampler.set_runtime_env_value = fake_set_runtime_env
+        status_sampler.run = fake_run
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertIn("enabled_node_mining_template_support", repair["actions"])
+        self.assertIn("--miner", env_updates["BDAG_NODE_MINING_ARGS"])
+        self.assertIn(f"--miningaddr={address}", env_updates["BDAG_NODE_MINING_ARGS"])
+        self.assertEqual(env_updates["NODE_ARGS_APPEND"], env_updates["BDAG_NODE_MINING_ARGS"])
+        self.assertTrue(any("--force-recreate" in command for command in commands))
+
     def test_recreates_node_when_live_process_has_unsafe_sync_bypass(self) -> None:
         commands = []
         env_updates = {}

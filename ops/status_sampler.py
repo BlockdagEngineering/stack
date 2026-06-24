@@ -869,15 +869,20 @@ def node_mining_template_support_should_repair(payload: dict[str, Any]) -> bool:
         return True
     if modules != NODE_MINING_MODULE_SET:
         return True
-    if not node_mining_args_are_safe_and_complete(args, address):
+    if args and not node_mining_args_are_safe_and_complete(args, address):
         return True
     append_args = config_value("NODE_ARGS_APPEND")
     if append_args and not node_mining_args_are_safe_and_complete(append_args, address):
         return True
+    live_command_seen = False
     for service in node_services_for_recreate():
         command_line = node_command_line(service)
-        if command_line and not node_mining_args_are_safe_and_complete(command_line, address):
-            return True
+        if command_line:
+            live_command_seen = True
+            if not node_mining_args_are_safe_and_complete(command_line, address):
+                return True
+    if not args and not append_args and live_command_seen:
+        return False
     return False
 
 
