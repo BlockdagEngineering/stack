@@ -23,14 +23,18 @@ def fail(message: str) -> None:
 
 def main() -> int:
     readme = README.read_text(encoding="utf-8")
-    release_html = RELEASE_DOWNLOADS.read_text(encoding="utf-8")
 
     if INSTALL_COMMAND not in readme:
         fail(f"{README} does not mention {INSTALL_COMMAND!r}")
-    if INSTALL_COMMAND_HTML not in release_html:
-        fail(f"{RELEASE_DOWNLOADS} does not mention {INSTALL_COMMAND_HTML!r}")
 
-    for path, text in ((README, readme), (RELEASE_DOWNLOADS, release_html)):
+    documents = [(README, readme)]
+    if RELEASE_DOWNLOADS.exists():
+        release_html = RELEASE_DOWNLOADS.read_text(encoding="utf-8")
+        if INSTALL_COMMAND_HTML not in release_html:
+            fail(f"{RELEASE_DOWNLOADS} does not mention {INSTALL_COMMAND_HTML!r}")
+        documents.append((RELEASE_DOWNLOADS, release_html))
+
+    for path, text in documents:
         stale = STALE_INSTALL_RE.search(text)
         if stale:
             fail(f"{path} still contains stale install command at byte {stale.start()}")

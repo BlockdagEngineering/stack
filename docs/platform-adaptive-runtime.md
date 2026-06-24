@@ -71,6 +71,5 @@ validation and no-miner sync-only mode stay low-overhead.
 Systemd timers are also staggered. Short-interval guards and priority loops use
 small `RandomizedDelaySec` values so they remain responsive but do not all wake
 on the same second after boot or after a shared interval boundary. Longer
-snapshot, chain pre-sync, local-peer, and incident-report timers
-use larger jitter because freshness can safely lag behind chain import and live
-mining.
+local-peer and incident-report timers use larger jitter because freshness can
+safely lag behind chain import and live mining.

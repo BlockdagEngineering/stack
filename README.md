@@ -174,7 +174,7 @@ must fail configuration/rendering rather than mine to
 `0x0000000000000000000000000000000000000000`.
 
 
-The `**pool`** image bakes `**.env.example`** into the image at `/var/lib/bdagStack/pool/.env` for `godotenv` (release `**dockerfile`** uses `**COPY .env.example**` from repo root; git dev `**dockerfile-dev**` copies it from the named `**stack_src**` context). Compose still sets most variables via `environment:`.
+The `**pool`** image bakes `**.env.example`** into the image at `/var/lib/bdagStack/pool/.env` for `godotenv` (the release `**dockerfile`** uses `**COPY .env.example**` from repo root). Compose still sets most variables via `environment:`.
 
 ## Mining resource priority
 
@@ -457,39 +457,14 @@ configuration failure, not a valid physical miner.
 
 ## Default V2 Sync Source
 
-New installs use Fast Artifact Sync V2 as the preferred bootstrap path. Client
-sync is enabled by default; source serving is disabled unless
-`SYNC_SOURCE_NODE=1` is set and the chain, sidecar, artifact, temporary, and
-Docker paths are not USB/removable/external and the host has enough CPU, RAM,
-and disk headroom.
+New installs use the canonical `NODE_DATA_DIR=./data/node` chain-data path.
+Installers must run the chain-data preflight before starting the node. If a
+valid preserved volume, USB copy, Downloads archive, or configured chain DB
+archive is available, it is selected or migrated before the node starts.
 
-Eligible source hosts maintain a low-priority raw datadir sidecar and publish a
-signed `raw_datadir_checkpoint` artifact from a finalized sidecar generation.
-The artifact publisher does not stop the live node automatically. Set
-`BDAG_RAWDATADIR_FINALIZE=1` only for an operator-approved
-finalization window.
-
-The archive seed timer is not part of this stack because IPFS segments and
-finalized raw-datadir sidecars now own source publication.
-
-Check source eligibility and status with:
-
-```bash
-./ops/fastartifact_source_eligibility.py --full --json
-```
-
-Refresh/publish the raw datadir source path with:
-
-```bash
-./ops/publish-rawdatadir-artifact.sh
-```
-
-See `docs/rawdatadir-libp2p-sync.md` and
-`docs/ipfs-append-only-segment-protocol.html`.
-
-IPFS segments and finalized raw-datadir sidecars are the supported
-content-publication paths. Published files must be manifest-indexed and
-consensus-validated before use.
+Fresh-from-genesis is allowed only when no better chain data exists or when the
+operator explicitly approves a fresh chain start. Pool startup remains gated on
+node data provenance and node readiness.
 
 ## Release readiness
 

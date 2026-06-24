@@ -106,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     env = os.environ.copy()
     env["BDAG_INSTALL_TEST_WRITE_ENV_ONLY"] = "1"
     env["BDAG_NO_PAUSE"] = "1"
+    env["BDAG_CHAIN_DB_ARCHIVE_URL"] = "https://example.invalid/mainnet.tar.zst"
 
     if os.name == "nt":
         result = run_command(["cmd", "/c", "install.cmd"], package_root, env)
@@ -115,13 +116,29 @@ def main(argv: list[str] | None = None) -> int:
     env_path = package_root / ".env"
     env_text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
     expected_platform = f"DOCKER_PLATFORM={expected_docker_platform(package_root)}"
-    ok = result["returncode"] == 0 and expected_platform in env_text
+    node_datadir = package_root / "node-data"
+    env_contains_node_data_dir = "NODE_DATA_DIR=./node-data" in env_text
+    env_contains_legacy_node_data_dir = "BDAG_NODE_DATA_DIR=" in env_text
+    env_contains_archive_url = "BDAG_CHAIN_DB_ARCHIVE_URL=https://example.invalid/mainnet.tar.zst" in env_text
+    node_datadir_created = node_datadir.is_dir()
+    ok = (
+        result["returncode"] == 0
+        and expected_platform in env_text
+        and env_contains_node_data_dir
+        and not env_contains_legacy_node_data_dir
+        and env_contains_archive_url
+        and node_datadir_created
+    )
     payload: dict[str, Any] = {
         "package_root": str(package_root),
         "host_arch": host_arch(),
         "expected_platform": expected_platform,
         "env_written": env_path.exists(),
         "env_contains_expected_platform": expected_platform in env_text,
+        "env_contains_node_data_dir": env_contains_node_data_dir,
+        "env_contains_legacy_node_data_dir": env_contains_legacy_node_data_dir,
+        "env_contains_archive_url": env_contains_archive_url,
+        "node_datadir_created": node_datadir_created,
         "result": result,
         "ok": ok,
     }

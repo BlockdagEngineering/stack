@@ -74,10 +74,19 @@ class NodeworkerEntrypointTest(unittest.TestCase):
 
         self.assert_stdout_contains(result, "NODE_ARGS_APPEND=")
 
+    def test_print_mode_enables_native_metrics_collection_by_default(self) -> None:
+        result = self.run_entrypoint({})
+
+        self.assert_stdout_contains(result, "--metrics")
+
+    def test_print_mode_preserves_explicit_metrics_flag(self) -> None:
+        result = self.run_entrypoint({"NODE_ARGS_APPEND": "--metrics=false"})
+
+        self.assert_stdout_contains(result, "NODE_ARGS_APPEND=--metrics=false")
+
     def test_print_mode_does_not_emit_removed_sync_flags(self) -> None:
         result = self.run_entrypoint(
             {
-                "SYNC_SOURCE_NODE": "1",
                 "NODE_ARGS_APPEND": "--cache=1024",
             }
         )
@@ -86,6 +95,29 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         combined = result.stdout + result.stderr
         self.assertNotIn("FAST", combined.upper())
         self.assertEqual("", result.stderr)
+
+    def test_bootstrap_peers_seed_addpeer_and_native_bootstrapnode(self) -> None:
+        peer_a = "/ip4/10.0.0.2/tcp/8150/p2p/16Uiu2HAm11111111111111111111111111111111111111111"
+        peer_b = "/ip4/10.0.0.3/tcp/8150/p2p/16Uiu2HAm22222222222222222222222222222222222222222"
+        result = self.run_entrypoint({"BOOTSTRAP_PEER_ADDRESSES": f"{peer_a},{peer_b}"})
+
+        self.assert_stdout_contains(result, f"--addpeer={peer_a}")
+        self.assert_stdout_contains(result, f"--addpeer={peer_b}")
+        self.assert_stdout_contains(result, f"--bootstrapnode={peer_a}")
+
+    def test_existing_bootstrapnode_policy_is_preserved(self) -> None:
+        peer = "/ip4/10.0.0.2/tcp/8150/p2p/16Uiu2HAm11111111111111111111111111111111111111111"
+        explicit = "/ip4/10.0.0.9/tcp/8150/p2p/16Uiu2HAm99999999999999999999999999999999999999999"
+        result = self.run_entrypoint(
+            {
+                "BOOTSTRAP_PEER_ADDRESSES": peer,
+                "NODE_ARGS_APPEND": f"--bootstrapnode={explicit}",
+            }
+        )
+
+        self.assert_stdout_contains(result, f"--addpeer={peer}")
+        self.assert_stdout_contains(result, f"--bootstrapnode={explicit}")
+        self.assertNotIn(f"--bootstrapnode={peer}", result.stdout)
 
     def test_node_mining_env_appends_guard_args_without_forcing_rpc_module(self) -> None:
         result = self.run_entrypoint(
@@ -97,7 +129,6 @@ class NodeworkerEntrypointTest(unittest.TestCase):
             }
         )
 
-        self.assertNotIn("--fastartifactsync", result.stdout)
         self.assert_stdout_contains(result, "--miner")
         self.assert_stdout_contains(result, "--miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc")
         self.assertNotIn("--allowminingwhennearlysynced", result.stdout)

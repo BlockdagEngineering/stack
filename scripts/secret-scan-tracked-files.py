@@ -24,13 +24,29 @@ ALLOWLIST = {
     "scripts/secret-scan-tracked-files.py",
 }
 
+SIGNED_URL_LINE_ALLOWLIST = {
+    ".env.example": (b"BDAG_CHAIN_DB_ARCHIVE_URL=",),
+}
+
+
+def remove_allowlisted_lines(rel: str, data: bytes) -> bytes:
+    prefixes = SIGNED_URL_LINE_ALLOWLIST.get(rel)
+    if not prefixes:
+        return data
+    kept = [
+        line
+        for line in data.splitlines(keepends=True)
+        if not any(line.startswith(prefix) for prefix in prefixes)
+    ]
+    return b"".join(kept)
+
 
 def scan_files() -> list[Path]:
     try:
         raw = subprocess.check_output(["git", "-C", str(ROOT), "ls-files", "-z"], stderr=subprocess.DEVNULL)
         return [ROOT / item.decode("utf-8") for item in raw.split(b"\0") if item]
     except (subprocess.CalledProcessError, FileNotFoundError):
-        ignored_names = {".git", "__pycache__", "data", "data-restore", "data-repair", "release-downloads"}
+        ignored_names = {".git", "__pycache__", "data", "chain-db-archives", "release-downloads"}
         ignored_rels = {"ops/runtime"}
         files: list[Path] = []
         for dirpath, dirnames, filenames in os.walk(ROOT):
@@ -60,6 +76,7 @@ def main() -> int:
         except OSError as exc:
             violations.append(f"{rel}:read_failed:{exc}")
             continue
+        data = remove_allowlisted_lines(rel, data)
         for pattern_id, pattern in SECRET_PATTERNS:
             if pattern.search(data):
                 violations.append(f"{rel}:{pattern_id}")

@@ -604,57 +604,9 @@ configure_env() {
   set_env_value .env BDAG_STATUS_SOURCE_URL "http://host.docker.internal:8088/api/status"
   set_env_value .env BDAG_SENTINEL_STATUS_URL "http://host.docker.internal:8088/api/status"
   set_env_value .env POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE "$(env_value POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE false)"
-  fastartifact_enabled=1
-  if [[ "$node_mining_enabled" == "1" ]]; then
-    case "$(env_value BDAG_STORAGE_PROFILE auto)" in
-      usb-chain-internal-runtime|single-usb-constrained)
-        fastartifact_enabled=0
-        ;;
-    esac
-  fi
-  set_env_value .env BDAG_FASTARTIFACTSYNC_ENABLED "$fastartifact_enabled"
   set_stack_default_env_value .env SYNC_SOURCE_NODE
   set_env_value .env NODE_ARGS_APPEND ""
   set_stack_default_env_value .env BDAG_FASTSNAP_SEED_TIMER_ENABLED
-  set_stack_default_env_value .env BDAG_RAWDATADIR_SOURCE_MODE
-  set_env_value .env BDAG_RAWDATADIR_ARTIFACT_BASE "./data-restore/rawdatadir"
-  set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_MODE
-  set_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_BASE "./data-restore/rawdatadir-sidecar-content"
-  set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_KEEP
-  set_stack_default_env_value .env BDAG_RAWDATADIR_SIDECAR_CONTENT_REQUIRE_SIGNED
-  set_env_value .env BDAG_RAWDATADIR_ACTIVE_SERVICE "node"
-  set_stack_default_env_value .env BDAG_RAWDATADIR_FINALIZE
-  set_env_value .env BDAG_RAWDATADIR_PEERS ""
-  set_env_value .env BDAG_RAWDATADIR_TRUSTED_SIGNERS ""
-  set_stack_default_env_value .env BDAG_IPFS_CONTENT_SIDECAR_MODE
-  set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_DIR "./data-restore/rawdatadir-sidecar-content/current"
-  set_env_value .env BDAG_IPFS_CONTENT_ARTIFACT_MANIFEST "./data-restore/rawdatadir-sidecar-content/current/manifest.json"
-  set_stack_default_env_value .env BDAG_IPFS_CONTENT_ALLOW_UNSIGNED_ARTIFACT
-  set_stack_default_env_value .env BDAG_IPFS_CONTENT_PUBLISH_IPNS
-  set_env_value .env BDAG_IPFS_CONTENT_IPNS_KEY ""
-  set_stack_default_env_value .env BDAG_IPFS_CONTENT_REPUBLISH_IPNS_WHILE_WAITING
-  set_stack_default_env_value .env BDAG_IPFS_CONTENT_IPNS_TTL
-  set_stack_default_env_value .env BDAG_IPFS_CONTENT_IPNS_LIFETIME
-  set_env_value .env BDAG_IPFS_CONTENT_DISCOVERY_FILE "./ops/ipfs-content-discovery.json"
-  set_env_value .env BDAG_IPFS_CONTENT_LATEST_IPNS "/ipns/k51qzi5uqu5djjlh4vxtmzyswx0qk4s3wdlf3yrpkszp38gq5sl71zcgmmc3jk"
-  set_env_value .env BDAG_IPFS_CONTENT_DEFAULT_INDEX_CID "bafkreia7jk2ljqi3raiohugp6nw3633njfp7jmnuvqh47po52et4kupu2a"
-  set_stack_default_env_value .env BDAG_IPFS_CONTENT_DEFAULT_ROOT_CID
-  set_env_value .env BDAG_IPFS_CONTENT_STATUS_FILE "./ops/runtime/ipfs-content-sidecar-status.json"
-  set_env_value .env BDAG_IPFS_CONTENT_LATEST_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_WRITER_MODE
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_START_POLICY
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_FINALITY_LAG_ORDERS
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_ORDERS_PER_SEGMENT
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_MAX_SEGMENTS_PER_RUN
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_MAX_RPC_PER_SECOND
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_RPC_TIMEOUT
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_BLOCK_RPC_RETRIES
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_PUBLISH_IPNS
-  set_env_value .env BDAG_IPFS_SEGMENT_IPNS_KEY ""
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_IPNS_TTL
-  set_stack_default_env_value .env BDAG_IPFS_SEGMENT_IPNS_LIFETIME
-  set_env_value .env BDAG_IPFS_SEGMENT_STATUS_FILE "./ops/runtime/ipfs-content/segment-writer-status.json"
-  set_env_value .env BDAG_IPFS_SEGMENT_INDEX_PATH "./ops/runtime/ipfs-content/latest-index.json"
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOTS
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_HOURS
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS

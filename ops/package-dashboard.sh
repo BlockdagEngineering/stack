@@ -12,7 +12,7 @@ OUT="$OUT_DIR/bdag-dashboard-portable-$STAMP.tar.gz"
 tar -czf "$OUT" \
   --exclude='./.git' \
   --exclude='./data' \
-  --exclude='./data-restore' \
+  --exclude='./chain-db-archives' \
   --exclude='./ops/runtime' \
   --exclude='./ops/runtime-*' \
   --exclude='./ops/__pycache__' \

@@ -249,7 +249,7 @@ apply_ordered_fastsync_peers() {
     0|off|false|none) return 0 ;;
   esac
 
-  local node_args ordered addpeer_args total_count ordering
+  local node_args ordered addpeer_args total_count ordering first_peer
   ordering="${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}"
   node_args="$(node_args_from_argv "$@" || true)"
   ordered="$(ordered_fastsync_peers "$node_args")"
@@ -263,6 +263,10 @@ apply_ordered_fastsync_peers() {
     addpeer_args="$(addpeer_args_from_csv "$ordered")"
     NODE_ARGS_APPEND="${addpeer_args}${NODE_ARGS_APPEND:+ $NODE_ARGS_APPEND}"
     export NODE_ARGS_APPEND
+  fi
+  if ! node_args_contains_prefix "$node_args ${NODE_ARGS_APPEND:-}" "--bootstrapnode"; then
+    first_peer="${ordered%%,*}"
+    [ -n "$first_peer" ] && append_node_arg_prefix_once "--bootstrapnode=$first_peer" "$node_args ${NODE_ARGS_APPEND:-}"
   fi
 }
 
@@ -320,6 +324,12 @@ append_node_arg_prefix_once() {
   fi
   NODE_ARGS_APPEND="${NODE_ARGS_APPEND:+$NODE_ARGS_APPEND }$flag"
   export NODE_ARGS_APPEND
+}
+
+apply_node_metrics_runtime_args() {
+  local node_args
+  node_args="$(node_args_from_argv "$@" || true)"
+  append_node_arg_prefix_once "--metrics" "$node_args ${NODE_ARGS_APPEND:-}"
 }
 
 rewrite_node_args_configfile() {
@@ -839,6 +849,7 @@ maybe_http_snapshot_bootstrap() {
 }
 
 apply_ordered_fastsync_peers "$@"
+apply_node_metrics_runtime_args "$@"
 apply_no_fastsync_serve_guard "$@"
 apply_node_mining_runtime_args "$@"
 apply_archival_flag "$@"

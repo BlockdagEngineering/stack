@@ -573,7 +573,7 @@ BACKGROUND_MAINTENANCE_LAZY_TASKS = set(
 BACKGROUND_MAINTENANCE_POOL_READY_TASKS = set(
     split_env_list(
         "BDAG_BACKGROUND_MAINTENANCE_POOL_READY_TASKS",
-        "rawdatadir_publish,rawdatadir_content_seal,ipfs_content_sidecar,ipfs_segment_writer",
+        "",
     )
 )
 BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN = env_float(
@@ -5704,6 +5704,10 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
                 "last_import_at": None,
                 "last_import_age_seconds": None,
                 "import_count": 0,
+                "peer_count": None,
+                "p2p_connections": None,
+                "peer_ips_sample": [],
+                "p2p_connections_error": f"docker access unavailable: {docker_error}",
                 "invalid_peer_errors": 0,
                 "p2p_stream_errors": 0,
                 "p2p_error_lines": [],
@@ -5871,6 +5875,11 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "pool_port": pool_port,
             "local_ips": local_ips,
             "pool_endpoint": pool_endpoint,
+            "peer_count": None,
+            "p2p_connections": None,
+            "peer_sources": {},
+            "peer_ips_sample": [],
+            "p2p_connections_error": f"docker access unavailable: {docker_error}",
             "host_pressure": host_pressure,
             "host_profile": host_profile,
             "adaptive_concurrency": adaptive_concurrency,
@@ -5985,6 +5994,10 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "last_import_at": parsed["last_import_at"],
             "last_import_age_seconds": parsed["last_import_age_seconds"],
             "import_count": parsed["import_count"],
+            "peer_count": 0,
+            "p2p_connections": 0,
+            "peer_ips_sample": [],
+            "p2p_connections_error": "",
             "invalid_peer_errors": parsed["invalid_peer_errors"],
             "p2p_stream_errors": parsed["p2p_stream_errors"],
             "orphan_block_errors": parsed["orphan_block_errors"],
@@ -6169,6 +6182,28 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
                 f"{node} had intermittent mining template probe errors "
                 f"({probe.get('error_count')}/{probe.get('sample_count')} failed)"
             )
+
+    peer_sources: dict[str, list[str]] = {}
+    peer_errors: dict[str, str] = {}
+    for node in display_nodes:
+        ips: list[str] = []
+        error = ""
+        if containers.get(node, {}).get("running"):
+            try:
+                ips = container_peer_ips(node)
+            except Exception as exc:  # noqa: BLE001 - status payload should degrade, not fail.
+                error = str(exc)
+        peer_sources[node] = ips
+        if error:
+            peer_errors[node] = error
+        node_details.setdefault(node, {})
+        node_details[node]["peer_count"] = len(ips)
+        node_details[node]["p2p_connections"] = len(ips)
+        node_details[node]["peer_ips_sample"] = ips[:12]
+        node_details[node]["p2p_connections_error"] = error
+    peer_ips = unique_names(ip for ips in peer_sources.values() for ip in ips)
+    peer_count = len(peer_ips)
+    p2p_connections_error = "; ".join(f"{node}: {error}" for node, error in peer_errors.items())
 
     managed_node_details = {node: node_details.get(node, {}) for node in NODES}
     block_values = [item["latest_block"] for item in managed_node_details.values() if item.get("latest_block") is not None]
@@ -6503,6 +6538,9 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         timeout=docker_images_timeout,
     ).stdout.strip()
     sync_progress = sync_progress_for_display_nodes(collect_sync_progress(), display_nodes)
+    sync_progress["peer_count"] = peer_count
+    sync_progress["p2p_connections"] = peer_count
+    sync_progress["p2p_connections_error"] = p2p_connections_error
     adaptive_concurrency = adaptive_worker_budgets(
         {**host_pressure, "chain_rpc_latency_ms": _sync_chain_rpc_latency_ms(sync_progress)}
     )
@@ -6510,6 +6548,9 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         if not isinstance(progress, dict):
             continue
         node_details.setdefault(node, {})
+        progress["peer_count"] = node_details[node].get("peer_count")
+        progress["p2p_connections"] = node_details[node].get("p2p_connections")
+        progress["p2p_connections_error"] = node_details[node].get("p2p_connections_error") or ""
         node_details[node]["chain_block_count"] = progress.get("chain_block_count")
         node_details[node]["chain_main_height"] = progress.get("chain_main_height")
         node_details[node]["chain_rpc_source"] = progress.get("chain_rpc_source")
@@ -6748,6 +6789,11 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "pool_port": pool_port,
         "local_ips": local_ips,
         "pool_endpoint": pool_endpoint,
+        "peer_count": peer_count,
+        "p2p_connections": peer_count,
+        "peer_sources": peer_sources,
+        "peer_ips_sample": peer_ips[:12],
+        "p2p_connections_error": p2p_connections_error,
         "host_pressure": host_pressure,
         "host_profile": host_profile,
         "adaptive_concurrency": adaptive_concurrency,
@@ -12467,7 +12513,7 @@ def restore_clean(log_path: Path) -> bool:
         backup_node_dir(node_dir, log_path)
 
     for step in (
-        configured_command("BDAG_RESTORE_NODE_COMMAND", ["make", "restore-node-snapshot"]),
+        configured_command("BDAG_RESTORE_NODE_COMMAND", []),
         gated_stack_start_command(log_path),
     ):
         if not step:

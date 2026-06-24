@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # Passive mining-host tuning. This is intentionally safe to reapply: it adjusts
-# block-device queue/read-ahead, Docker weights, and process scheduler hints
-# without changing chain data, node topology, ASIC configuration, or service
-# state.
+# block-device queue/read-ahead, Docker weights, process scheduler hints, and
+# the configured link-local ASIC pool address without changing chain data, node
+# topology, miner configuration, or service state.
 #
 # Policy: paid block production wins local contention. The active node, pool,
 # and PostgreSQL get high work-conserving CPU/IO weights. Dashboard,
@@ -38,6 +38,44 @@ env_value() {
     [ -n "$value" ] && break
   done
   printf '%s\n' "${value:-$fallback}"
+}
+
+is_link_local_ipv4() {
+  case "$1" in
+    169.254.*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+ensure_link_local_asic_pool_address() {
+  pool_host="$(env_value BDAG_POOL_HOST "")"
+  asic_iface="$(env_value BDAG_ASIC_LAN_INTERFACE "")"
+  is_link_local_ipv4 "$pool_host" || return 0
+  if [ -z "$asic_iface" ]; then
+    log "link-local pool_host=$pool_host has no BDAG_ASIC_LAN_INTERFACE; cannot bind host ASIC address"
+    return 0
+  fi
+  command -v ip >/dev/null 2>&1 || {
+    log "ip command missing; cannot bind link-local ASIC pool address $pool_host on $asic_iface"
+    return 0
+  }
+  if ! ip link show "$asic_iface" >/dev/null 2>&1; then
+    log "asic_iface=$asic_iface missing; cannot bind link-local ASIC pool address $pool_host"
+    return 0
+  fi
+  if ip -o -4 addr show dev "$asic_iface" 2>/dev/null \
+    | awk -v want="$pool_host" '{split($4,a,"/"); if (a[1] == want) found=1} END {exit found ? 0 : 1}'; then
+    return 0
+  fi
+  if [ "$(id -u)" != "0" ]; then
+    log "not root; cannot bind link-local ASIC pool address $pool_host on $asic_iface"
+    return 0
+  fi
+  if ip addr replace "$pool_host/16" dev "$asic_iface" scope link >/dev/null 2>&1; then
+    log "asic_iface=$asic_iface bound link-local pool_host=$pool_host/16"
+  else
+    log "failed to bind link-local ASIC pool address $pool_host/16 on $asic_iface"
+  fi
 }
 
 compose_project_name() {
@@ -457,4 +495,5 @@ done
 tune_docker_weights
 tune_cgroups
 tune_processes
+ensure_link_local_asic_pool_address
 tune_network_queue

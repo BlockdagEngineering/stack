@@ -290,10 +290,6 @@ choose_restore_source() {
     return 0
   fi
   local candidates=(
-    "$ROOT/data-restore/rawdatadir-sidecar-content/current/mainnet"
-    "$ROOT/data-restore/rawdatadir-sidecar-content/current"
-    "$ROOT/data-restore/rawdatadir/current/mainnet"
-    "$ROOT/data-restore/rawdatadir/current"
     "$ROOT/data-restore/latest/mainnet"
     "$ROOT/data-restore/latest"
   )

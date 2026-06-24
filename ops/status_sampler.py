@@ -105,39 +105,7 @@ MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED = env_bool(
     "BDAG_MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED",
     True,
 )
-MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED = env_bool(
-    "BDAG_MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED",
-    True,
-)
-CHAIN_STATE_SELF_HEAL_UNIT = os.environ.get(
-    "BDAG_CHAIN_STATE_SELF_HEAL_UNIT",
-    "bdag-chain-state-self-heal.service",
-).strip()
-CHAIN_STATE_IMPORT_WATCH_FILE = STATUS_SAMPLER_FILE.parent / "chain-state-import-watch.json"
-CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS = env_int(
-    "BDAG_CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS",
-    1,
-    minimum=1,
-)
-CHAIN_STATE_STALLED_IMPORT_RESTORE_ENABLED = env_bool(
-    "BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_ENABLED",
-    True,
-)
-CHAIN_STATE_STALLED_IMPORT_RESTORE_SECONDS = env_int(
-    "BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_SECONDS",
-    900,
-    minimum=60,
-)
-CHAIN_STATE_STALLED_IMPORT_RESTORE_PEER_AHEAD_BLOCKS = env_int(
-    "BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_PEER_AHEAD_BLOCKS",
-    1000,
-    minimum=1,
-)
-CHAIN_STATE_STALLED_IMPORT_RESTORE_GAP_GROWTH_BLOCKS = env_int(
-    "BDAG_CHAIN_STATE_STALLED_IMPORT_RESTORE_GAP_GROWTH_BLOCKS",
-    60,
-    minimum=0,
-)
+CHAIN_STATE_MISSING_TRIE_WARNINGS = env_int("BDAG_CHAIN_STATE_MISSING_TRIE_WARNINGS", 1, minimum=1)
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 FASTSYNC_PEER_QUARANTINE_ENV_KEYS = split_env_list(
     "BDAG_MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENV_KEYS",
@@ -672,169 +640,9 @@ def chain_state_restore_hard_reasons(payload: dict[str, Any]) -> list[str]:
         if info.get("dag_tip_damage"):
             reasons.append(f"{node} DAG tip/block data is damaged")
         missing_trie = safe_int(info.get("missing_trie_node_warnings"), 0)
-        if missing_trie >= CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS:
+        if missing_trie >= CHAIN_STATE_MISSING_TRIE_WARNINGS:
             reasons.append(f"{node} has {missing_trie} missing-trie state warning(s)")
     return sorted(set(reasons))
-
-
-def sync_progress_height(payload: dict[str, Any]) -> int:
-    sync = dict_value(payload.get("sync_progress"))
-    values: list[int] = []
-    for key in ("chain_block_count", "latest_block", "height"):
-        value = safe_int(sync.get(key), -1)
-        if value >= 0:
-            values.append(value)
-    for info in dict_value(sync.get("nodes")).values():
-        if not isinstance(info, dict):
-            continue
-        for key in ("chain_block_count", "latest_block", "height"):
-            value = safe_int(info.get(key), -1)
-            if value >= 0:
-                values.append(value)
-    for info in dict_value(payload.get("nodes")).values():
-        if not isinstance(info, dict):
-            continue
-        for key in ("chain_block_count", "latest_block"):
-            value = safe_int(info.get(key), -1)
-            if value >= 0:
-                values.append(value)
-    return max(values) if values else -1
-
-
-def read_import_watch_state() -> dict[str, Any]:
-    try:
-        with CHAIN_STATE_IMPORT_WATCH_FILE.open(encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def update_stalled_import_watch(payload: dict[str, Any]) -> dict[str, Any]:
-    now_epoch = time.time()
-    sync = dict_value(payload.get("sync_progress"))
-    status = str(sync.get("status") or payload.get("mode") or "").lower()
-    height = sync_progress_height(payload)
-    lag = catchup_lag_blocks(payload)
-    candidate = bool(
-        CHAIN_STATE_STALLED_IMPORT_RESTORE_ENABLED
-        and status in {"syncing", "catchup_pause"}
-        and height >= 0
-        and lag >= CHAIN_STATE_STALLED_IMPORT_RESTORE_PEER_AHEAD_BLOCKS
-    )
-    previous = read_import_watch_state()
-    previous_height = safe_int(previous.get("height"), -1)
-    if not candidate or previous_height != height:
-        state = {
-            "schema_version": 1,
-            "updated_at": now_iso(),
-            "epoch": now_epoch,
-            "status": status,
-            "height": height,
-            "lag_blocks": lag,
-            "first_stalled_epoch": now_epoch if candidate else 0,
-            "stalled_seconds": 0,
-            "min_lag_blocks": lag if candidate else 0,
-            "max_lag_blocks": lag if candidate else 0,
-            "gap_growth_blocks": 0,
-            "restore_required": False,
-            "reason": "height changed or stall candidate inactive",
-        }
-        write_json_file(CHAIN_STATE_IMPORT_WATCH_FILE, state, mode=0o600)
-        return state
-
-    first_stalled_epoch = safe_float(previous.get("first_stalled_epoch"), now_epoch)
-    min_lag = min(safe_int(previous.get("min_lag_blocks"), lag), lag)
-    max_lag = max(safe_int(previous.get("max_lag_blocks"), lag), lag)
-    stalled_seconds = max(0, int(now_epoch - first_stalled_epoch))
-    gap_growth = max(0, max_lag - min_lag)
-    restore_required = bool(
-        stalled_seconds >= CHAIN_STATE_STALLED_IMPORT_RESTORE_SECONDS
-        and gap_growth >= CHAIN_STATE_STALLED_IMPORT_RESTORE_GAP_GROWTH_BLOCKS
-    )
-    reason = (
-        f"chain height has stayed at {height} for {stalled_seconds}s while peer lag "
-        f"grew by {gap_growth} block(s) to {lag}"
-    )
-    state = {
-        "schema_version": 1,
-        "updated_at": now_iso(),
-        "epoch": now_epoch,
-        "status": status,
-        "height": height,
-        "lag_blocks": lag,
-        "first_stalled_epoch": first_stalled_epoch,
-        "stalled_seconds": stalled_seconds,
-        "min_lag_blocks": min_lag,
-        "max_lag_blocks": max_lag,
-        "gap_growth_blocks": gap_growth,
-        "restore_required": restore_required,
-        "reason": reason,
-    }
-    write_json_file(CHAIN_STATE_IMPORT_WATCH_FILE, state, mode=0o600)
-    return state
-
-
-def chain_state_restore_decision(payload: dict[str, Any]) -> dict[str, Any]:
-    if not MINING_IMPERATIVE_CHAIN_STATE_RESTORE_ENABLED:
-        return {"should_repair": False, "reasons": [], "stalled_import": {}, "disabled": True}
-    reasons = chain_state_restore_hard_reasons(payload)
-    stalled_import = update_stalled_import_watch(payload)
-    if reasons:
-        return {"should_repair": True, "reasons": reasons, "stalled_import": stalled_import, "hard": True}
-    if stalled_import.get("restore_required"):
-        return {
-            "should_repair": True,
-            "reasons": [str(stalled_import.get("reason") or "sustained stalled import")],
-            "stalled_import": stalled_import,
-            "hard": False,
-        }
-    return {"should_repair": False, "reasons": [], "stalled_import": stalled_import, "hard": False}
-
-
-def start_chain_state_self_heal(payload: dict[str, Any], decision: dict[str, Any]) -> bool:
-    if not CHAIN_STATE_SELF_HEAL_UNIT:
-        log("chain-state self-heal unit is not configured")
-        return False
-    if not automation_repair_mutation_allowed(
-        automation_control.ACTION_SYSTEMD_START,
-        target=CHAIN_STATE_SELF_HEAL_UNIT,
-        reason="start chain-state self-heal after restore-required node state",
-        payload=payload,
-        event_type="chain_state_self_heal_start_blocked",
-        message="Chain-state self-heal was not started because automation control blocked systemd start",
-    ):
-        return False
-    result = systemctl_user("start", "--no-block", CHAIN_STATE_SELF_HEAL_UNIT)
-    details = {
-        "unit": CHAIN_STATE_SELF_HEAL_UNIT,
-        "decision": decision,
-        "returncode": result.returncode,
-        "stdout": result.stdout.strip(),
-        "stderr": result.stderr.strip(),
-    }
-    if result.ok:
-        log(f"started chain-state self-heal unit={CHAIN_STATE_SELF_HEAL_UNIT}")
-        record_incident(
-            "chain_state_self_heal_started",
-            "critical",
-            "Started chain-state self-heal because node import is corrupt or stuck",
-            details,
-            payload,
-        )
-        return True
-    log(
-        "failed to start chain-state self-heal "
-        f"unit={CHAIN_STATE_SELF_HEAL_UNIT} rc={result.returncode} stderr={result.stderr.strip()}"
-    )
-    record_incident(
-        "chain_state_self_heal_start_failed",
-        "critical",
-        "Could not start chain-state self-heal after detecting restore-required node state",
-        details,
-        payload,
-    )
-    return False
 
 
 def status_payload_has_miner_demand(payload: dict[str, Any]) -> bool:
@@ -1930,16 +1738,6 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
             actions.append(f"left_container_running:{POOL_CONTAINER}:public_chain_divergence")
         else:
             log(f"mining imperative found {POOL_CONTAINER} already stopped for public-chain divergence: {reason}")
-        return {"enabled": True, "actions": actions}
-
-    chain_restore_decision = chain_state_restore_decision(payload)
-    if chain_restore_decision.get("should_repair"):
-        reason = "; ".join(chain_restore_decision.get("reasons") or []) or "chain-state restore required"
-        if pool_container_running(payload):
-            leave_pool_running_for_containment(payload, reason, containment="chain_state_restore")
-            actions.append(f"left_container_running:{POOL_CONTAINER}:chain_state_restore")
-        if start_chain_state_self_heal(payload, chain_restore_decision):
-            actions.append("started_chain_state_self_heal")
         return {"enabled": True, "actions": actions}
 
     if status_payload_has_tracking_gap(payload):

@@ -113,10 +113,10 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
     def test_release_runtime_excludes_retired_collector_and_cpu_miner(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfile = (ROOT_DIR / "dockerfile").read_text(encoding="utf-8")
-        dockerfile_dev = (ROOT_DIR / "dockerfile-dev").read_text(encoding="utf-8")
         workflow = (ROOT_DIR / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8")
 
         self.assertFalse((ROOT_DIR / "docker" / "entrypoint-collector.sh").exists())
+        self.assertFalse((ROOT_DIR / "dockerfile-dev").exists())
         self.assertNotIn("Checkout collector repo", workflow)
         self.assertNotIn("path: src/collector", workflow)
         self.assertNotIn("src/collector/", workflow)
@@ -153,41 +153,28 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertNotIn("COPY --from=collector-source", dockerfile)
         self.assertNotIn("dashboard2", dockerfile)
         self.assertNotIn("git clone --depth 1", dockerfile)
-        self.assertIn("FROM docker:27-cli AS ops-runtime", dockerfile_dev)
-        self.assertIn("FROM ops-runtime AS watchdog", dockerfile_dev)
-        self.assertIn("FROM ops-runtime AS status-sampler", dockerfile_dev)
-        self.assertIn("FROM ops-runtime AS sentinel", dockerfile_dev)
-        self.assertNotIn("FROM ops-runtime AS collector", dockerfile_dev)
-        self.assertNotIn("COPY --from=collector_src", dockerfile_dev)
-        self.assertNotIn("COPY --from=collector-source", dockerfile_dev)
-        self.assertNotIn("dashboard2", dockerfile_dev)
-        self.assertNotIn("cpu-miner", dockerfile_dev)
         self.assertFalse((ROOT_DIR / ".github" / "workflows" / "build-cpu.yml").exists())
 
     def test_dashboard_image_uses_checked_out_dashboard_context(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
-        dockerfile_dev = (ROOT_DIR / "dockerfile-dev").read_text(encoding="utf-8")
+        dockerfile = (ROOT_DIR / "dockerfile").read_text(encoding="utf-8")
 
         self.assertIn("dashboard_src: ${DASHBOARD_SRC_CONTEXT:-../redis-dash}", compose)
         self.assertIn('curl -fsS http://127.0.0.1:8088/ >/dev/null', compose)
-        self.assertIn("WORKDIR /src/dashboard", dockerfile_dev)
-        self.assertIn("COPY --from=dashboard_src . .", dockerfile_dev)
-        self.assertIn("curl redis-server redis-tools", dockerfile_dev)
-        self.assertIn("COPY docker/dashboard-redis.conf /etc/redis/redis.conf", dockerfile_dev)
+        self.assertIn("FROM ubuntu:24.04 AS dashboard", dockerfile)
+        self.assertIn("redis-server redis-tools", dockerfile)
+        self.assertIn("COPY docker/dashboard-redis.conf /etc/redis/redis.conf", dockerfile)
 
     def test_redis_dash_release_source_is_not_dashboard2(self) -> None:
         workflow = (ROOT_DIR / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8")
         validator = (ROOT_DIR / "scripts" / "validate-release-build.sh").read_text(encoding="utf-8")
-        receiver = (ROOT_DIR / "scripts" / "fastartifact-local-receiver.sh").read_text(encoding="utf-8")
         agents = (ROOT_DIR / "AGENTS.md").read_text(encoding="utf-8")
 
         self.assertIn("BlockdagEngineering/redis-dash", workflow)
         self.assertIn("verify_repo redis-dash src/dashboard/main.go", workflow)
         self.assertIn("BlockdagEngineering/redis-dash", validator)
-        self.assertIn('DASHBOARD_SRC_CONTEXT="${BDAG_FASTARTIFACT_DASHBOARD_CONTEXT:-$ROOT/../redis-dash}"', receiver)
         self.assertIn("BlockdagEngineering/redis-dash", agents)
         self.assertNotIn("BlockdagEngineering/dashboard2", workflow)
-        self.assertNotIn("../dashboard2", receiver)
 
     def test_mainnet_defaults_do_not_fallback_to_test_rpc_auth(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
@@ -202,10 +189,6 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
             "ops/portable.env.example",
             "ops/pool_ops.py",
             "ops/node_child_guard.py",
-            "ops/build-rawdatadir-artifact.sh",
-            "ops/publish-rawdatadir-artifact.sh",
-            "ops/seal_rawdatadir_sidecar_content.py",
-            "scripts/fastartifact-local-receiver.sh",
             "scripts/release-readiness-check.py",
         ]
         forbidden = [

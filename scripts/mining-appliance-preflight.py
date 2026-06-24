@@ -426,12 +426,12 @@ def check_storage(checks: list[Check], root: Path, env: dict[str, str], profile:
     if project_usage["free_bytes"] < 2 * GIB:
         add(checks, "fail", "project_filesystem_free_space", f"project filesystem has only {project_usage['free_gib']}GiB free.", "Free space or move the release root before starting Docker and Postgres.", evidence)
     elif project_usage["free_bytes"] < 6 * GIB:
-        add(checks, "warn", "project_filesystem_free_space", f"project filesystem has {project_usage['free_gib']}GiB free.", "Keep chain data, Docker root, archives, and old snapshots off the boot filesystem.", evidence)
+        add(checks, "warn", "project_filesystem_free_space", f"project filesystem has {project_usage['free_gib']}GiB free.", "Keep chain data, Docker root, archive caches, and old node-data backups off the boot filesystem.", evidence)
     else:
         add(checks, "pass", "project_filesystem_free_space", f"{project_usage['free_gib']}GiB free", evidence=evidence)
 
     if data_usage["free_bytes"] < 10 * GIB:
-        add(checks, "fail", "chain_data_free_space", f"chain data filesystem has only {data_usage['free_gib']}GiB free.", "Move chain data to a larger disk before initial sync or snapshot import.", evidence)
+        add(checks, "fail", "chain_data_free_space", f"chain data filesystem has only {data_usage['free_gib']}GiB free.", "Move chain data to a larger disk before initial sync or chain snapshot import.", evidence)
     elif data_usage["free_bytes"] < 50 * GIB:
         add(checks, "warn", "chain_data_free_space", f"chain data filesystem has {data_usage['free_gib']}GiB free.", "Allow headroom for chain growth, Postgres, and rollback backups.", evidence)
     else:
@@ -610,7 +610,7 @@ def check_ephemeral_storage(checks: list[Check], root: Path, env: dict[str, str]
             "warn",
             "ephemeral_tmpfs",
             "ephemeral tmpfs placement is disabled.",
-            "Use RAM-backed storage for small temporary files and caches that are safe to lose; keep large snapshot/chain staging on capacity storage.",
+            "Use RAM-backed storage for small temporary files and caches that are safe to lose; keep large chain snapshot import staging on capacity storage.",
             evidence,
         )
         return
@@ -753,7 +753,6 @@ def check_env_defaults(checks: list[Check], env: dict[str, str], profile: HostPr
     evidence = {
         "BDAG_NODE_CACHE_MB": env.get("BDAG_NODE_CACHE_MB"),
         "NODE_MAX_PEERS": env.get("NODE_MAX_PEERS"),
-        "SYNC_SOURCE_NODE": env.get("SYNC_SOURCE_NODE"),
         "BDAG_STORAGE_PROFILE": env.get("BDAG_STORAGE_PROFILE"),
         "BDAG_DETECTED_NETWORK_TOPOLOGY": env.get("BDAG_DETECTED_NETWORK_TOPOLOGY"),
         "BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS": env.get("BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS"),
@@ -918,7 +917,7 @@ def check_swap(checks: list[Check], profile: HostProfile) -> None:
     if profile.profile == "constrained" and non_zram_total > 2 * GIB:
         add(checks, "warn", "swap_budget", f"non-zram swap is {round(non_zram_total / GIB, 2)}GiB.", "Keep disk-backed swap small on flash appliances; large swap can hide memory pressure as disk write latency.", evidence)
     elif profile.profile == "constrained" and total == 0:
-        add(checks, "warn", "swap_budget", "no swap is configured on a constrained host.", "A small emergency swap file or zram device is safer than OOM kills during snapshot import.", evidence)
+        add(checks, "warn", "swap_budget", "no swap is configured on a constrained host.", "A small emergency swap file or zram device is safer than OOM kills during chain snapshot import.", evidence)
     else:
         add(checks, "pass", "swap_budget", f"swap total={round(total / GIB, 2)}GiB used={round(used / GIB, 2)}GiB", evidence=evidence)
 
@@ -1014,7 +1013,7 @@ def check_route_policy_validator(checks: list[Check], root: Path | None = None) 
 def check_network(checks: list[Check], root: Path | None = None) -> None:
     proc = run(["ip", "-o", "-4", "route", "get", "1.1.1.1"], timeout=3)
     if proc.returncode != 0 or not proc.stdout.strip():
-        add(checks, "warn", "default_route", "no IPv4 default route was detected.", "Configure networking before FastSnap peer discovery or ASIC setup.", {"stderr": proc.stderr.strip()})
+        add(checks, "warn", "default_route", "no IPv4 default route was detected.", "Configure networking before P2P peer discovery or ASIC setup.", {"stderr": proc.stderr.strip()})
         check_route_policy_validator(checks, root)
         return
     line = proc.stdout.strip().splitlines()[0]
