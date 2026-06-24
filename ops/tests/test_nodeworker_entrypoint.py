@@ -103,6 +103,35 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         self.assertNotIn("--allowminingwhennearlysynced", result.stdout)
         self.assertNotIn("--allowsubmitwhennotsynced", result.stdout)
 
+    def test_node_mining_env_derives_args_from_pool_address_when_blank(self) -> None:
+        address = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        result = self.run_entrypoint(
+            {
+                "BDAG_ENABLE_NODE_MINING": "1",
+                "BDAG_NODE_MINING_ARGS": "",
+                "MINING_POOL_ADDRESS": address,
+            }
+        )
+
+        self.assert_stdout_contains(result, "--miner")
+        self.assert_stdout_contains(result, f"--miningaddr={address}")
+        self.assertNotIn("--allowminingwhennearlysynced", result.stdout)
+        self.assertNotIn("--allowsubmitwhennotsynced", result.stdout)
+
+    def test_node_mining_env_rejects_zero_derived_address(self) -> None:
+        result = self.run_entrypoint(
+            {
+                "BDAG_ENABLE_NODE_MINING": "1",
+                "BDAG_NODE_MINING_ARGS": "",
+                "MINING_POOL_ADDRESS": "0x0000000000000000000000000000000000000000",
+                "MINING_ADDRESS": "",
+                "POOL_COINBASE_ADDRESS": "",
+            }
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no valid non-zero mining address", result.stderr)
+
     def test_node_mining_env_allows_blockdag_and_miner_rpc_modules(self) -> None:
         result = self.run_entrypoint(
             {

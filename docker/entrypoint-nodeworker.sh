@@ -386,7 +386,7 @@ apply_node_mining_runtime_args() {
     *) return 0 ;;
   esac
 
-  local node_args modules word
+  local node_args modules word mining_args
   node_args="$(node_args_from_argv "$@" || true)"
   modules="${BDAG_NODE_MODULES:-}"
   if [ -n "$modules" ]; then
@@ -396,12 +396,42 @@ apply_node_mining_runtime_args() {
       append_node_arg_once "--modules=${word}" "$node_args ${NODE_ARGS_APPEND:-}"
     done
   fi
-  for word in ${BDAG_NODE_MINING_ARGS:-}; do
+  mining_args="${BDAG_NODE_MINING_ARGS:-}"
+  if [ -z "$mining_args" ]; then
+    local mining_addr
+    if ! mining_addr="$(select_node_mining_address)"; then
+      log "BDAG_ENABLE_NODE_MINING=1 but no valid non-zero mining address is configured; refusing to start mining template support"
+      exit 1
+    fi
+    mining_args="--miner --miningaddr=${mining_addr}"
+  fi
+  for word in $mining_args; do
     case "$word" in
       --miningaddr=*) append_node_arg_prefix_once "$word" "$node_args ${NODE_ARGS_APPEND:-}" ;;
       --*) append_node_arg_once "$word" "$node_args ${NODE_ARGS_APPEND:-}" ;;
     esac
   done
+}
+
+is_nonzero_eth_address() {
+  local value lower zero
+  value="${1:-}"
+  [[ "$value" =~ ^0[xX][0-9a-fA-F]{40}$ ]] || return 1
+  lower="$(lower_ascii "$value")"
+  zero="0x0000000000000000000000000000000000000000"
+  [[ "$lower" != "$zero" ]]
+}
+
+select_node_mining_address() {
+  local key value
+  for key in POOL_COINBASE_ADDRESS MINING_POOL_ADDRESS MINING_ADDRESS; do
+    value="${!key-}"
+    if is_nonzero_eth_address "$value"; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+  done
+  return 1
 }
 
 mount_source_for_path() {
