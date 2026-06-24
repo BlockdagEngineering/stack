@@ -90,6 +90,15 @@ managed Goldshell cloud-box/MCB miners are in this stalled state and the pool ha
 no active/authorized/ready miners, the watchdog treats the no-request EOF storm
 as ASIC-controller failure evidence and uses open `/mcb/restart` for all
 affected ASICs after `BDAG_WATCHDOG_ASIC_API_STALL_NO_ACTIVE_CONFIRM_SECONDS`.
+If open restart and authenticated config/restart recovery both fail, the staged
+state becomes `asic_hardware_power_cycle_required`. That state is surfaced as an
+active dashboard warning. Sites with a smart plug, PDU, USB relay, or local relay
+script can set `BDAG_ASIC_POWER_CYCLE_COMMAND_BY_MAC` or
+`BDAG_ASIC_POWER_CYCLE_COMMANDS_JSON`; the watchdog will then run the configured
+per-MAC command after the hardware-required stage, subject to
+`BDAG_WATCHDOG_ASIC_REMOTE_POWER_CYCLE_COOLDOWN_SECONDS`. The watchdog must not
+restart or power-cycle a miner that is still share-producing or has a ready
+Stratum lane just because read-only web telemetry is degraded.
 
 ## Earnings
 

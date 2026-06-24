@@ -106,6 +106,7 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn("BDAG_DASHBOARD_REDIS_ENABLED: ${BDAG_DASHBOARD_REDIS_ENABLED:-1}", compose)
         self.assertIn("BDAG_DASHBOARD_LOG_SOURCE: ${BDAG_DASHBOARD_LOG_SOURCE:-docker}", compose)
         self.assertIn("BDAG_POOL_URL: ${BDAG_POOL_URL:-}", compose)
+        self.assertIn("${BDAG_HOST_ARP_TABLE_PATH:-/proc/net/arp}:/host/proc/net/arp:ro", compose)
         self.assertIn("ADDR: ${DASHBOARD_LISTEN:-0.0.0.0:8088}", compose)
         self.assertIn('${DASHBOARD_HOST_PORT:-8088}:8088"', compose)
 

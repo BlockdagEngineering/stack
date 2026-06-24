@@ -3,6 +3,7 @@
 import pathlib
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 OPS_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -278,6 +279,50 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         self.assertTrue(affected[0]["api_stall_no_active_pool"])
         self.assertIn("/mcb/pools", affected[0]["api_stall_issue"])
         self.assertTrue(affected[0]["restart_open_first"])
+
+    def test_api_stall_detector_does_not_restart_share_producing_asic_for_telemetry_only(self) -> None:
+        row = api_stalled_asic_row(
+            status="degraded",
+            stale_age=2,
+            device_telemetry_errors="cgminer_devs: HTTP 500",
+        )
+        row.update(
+            {
+                "connected": True,
+                "ready": True,
+                "pool_active": True,
+                "work_pool_active": True,
+                "shares": 25,
+                "last_share_age_seconds": 2,
+            }
+        )
+        status = {
+            "mining_address": ADDRESS,
+            "pool_health": {
+                "initial_download": False,
+                "job_state_reason": "no_active_miners",
+            },
+            "pool_job_state": {
+                "active_connections": 0,
+                "authorized_connections": 0,
+                "ready_connections": 0,
+                "reason_code": "no_active_miners",
+            },
+            "pool_metrics": {
+                "active_connections": 0,
+                "stratum_no_request_disconnects_total": 50,
+            },
+            "sync_health": {},
+            "sync_progress": {"remaining_blocks": 0, "status": "synced"},
+            "miner_health": {
+                "connected_count": 1,
+                "connected_count_effective": 1,
+                "managed_count": 1,
+                "miners": [row],
+            },
+        }
+
+        self.assertEqual([], watchdog.asic_api_stall_primary_miners(status, stale_seconds=180))
 
     def test_api_stall_watchdog_restarts_one_asic_open_first_after_confirmation(self) -> None:
         row = api_stalled_asic_row()
@@ -569,6 +614,44 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         self.assertEqual("hardware-power-cycle-required", staged["last_stage"])
         self.assertTrue(any(event[0] == "asic_hardware_power_cycle_required" for event in events))
         self.assertTrue(any("power-cycle required" in event[2] for event in events))
+
+    def test_remote_power_cycle_runs_configured_command_by_mac(self) -> None:
+        row = api_stalled_asic_row()
+        state: dict[str, object] = {}
+        logged: list[list[str]] = []
+
+        class DummyLock:
+            def close(self) -> None:
+                pass
+
+        with mock.patch.dict(
+            watchdog.os.environ,
+            {"BDAG_ASIC_POWER_CYCLE_COMMAND_BY_MAC": "28:e2:97:4d:44:3a=/bin/true {mac} {ip}"},
+            clear=False,
+        ), mock.patch.object(
+            watchdog, "automation_mutation_allowed", return_value=True
+        ), mock.patch.object(
+            watchdog, "acquire_lock", return_value=DummyLock()
+        ), mock.patch.object(
+            watchdog, "write_action_state", lambda _payload: None
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog,
+            "run_logged",
+            side_effect=lambda command, _log_path, timeout=None: logged.append(command)
+            or SimpleNamespace(ok=True, returncode=0, elapsed=0.1),
+        ):
+            result = watchdog.run_asic_remote_power_cycles([row], "hardware required", state, self.now)
+
+        self.assertEqual("ok", result["status"])
+        self.assertEqual([["/bin/sh", "-c", "/bin/true 28:e2:97:4d:44:3a 192.168.1.16"]], logged)
+        self.assertEqual(
+            self.now,
+            state["last_asic_power_cycle_at_by_identity"]["mac:28:e2:97:4d:44:3a"],
+        )
 
     def test_failed_expired_job_reconnect_without_clients_restarts_pool(self) -> None:
         state: dict[str, object] = {}

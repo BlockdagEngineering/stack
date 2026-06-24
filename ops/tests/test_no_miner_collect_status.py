@@ -836,6 +836,42 @@ class SharedStatusCacheTests(unittest.TestCase):
             self.assertFalse(status["shared_status_cache"]["hit"])
 
 
+class WatchdogWarningStatusTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.original_watchdog_state_file = pool_ops.WATCHDOG_STATE_FILE
+        self.addCleanup(self.restore_globals)
+
+    def restore_globals(self) -> None:
+        pool_ops.WATCHDOG_STATE_FILE = self.original_watchdog_state_file
+
+    def test_hardware_power_cycle_state_becomes_status_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pool_ops.WATCHDOG_STATE_FILE = pathlib.Path(tmp) / "watchdog-state.json"
+            pool_ops.WATCHDOG_STATE_FILE.write_text(
+                """
+{
+  "last_status": "pool_sync_template_pause",
+  "last_share_warnings": [
+    "staged recovery reached hardware-power-cycle-required"
+  ],
+  "last_asic_hardware_power_cycle_required": [
+    {
+      "mac": "28:e2:97:2e:00:1b",
+      "ip": "192.168.100.83"
+    }
+  ]
+}
+""".strip(),
+                encoding="utf-8",
+            )
+
+            warnings = pool_ops.watchdog_hardware_power_cycle_warnings()
+
+        self.assertEqual(1, len(warnings))
+        self.assertIn("28:e2:97:2e:00:1b", warnings[0])
+        self.assertIn("hardware-power-cycle-required", warnings[0])
+
+
 class BackgroundMaintenanceDecisionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.originals = {

@@ -251,6 +251,7 @@ RUNTIME_DIR = path_from_env("BDAG_RUNTIME_DIR", PROJECT_ROOT / "ops" / "runtime"
 LOG_DIR = RUNTIME_DIR / "logs"
 SHARED_STATUS_CACHE_FILE = RUNTIME_DIR / "shared-status-cache.json"
 STATUS_SAMPLER_FILE = RUNTIME_DIR / "status-sampler.json"
+WATCHDOG_STATE_FILE = RUNTIME_DIR / "watchdog-state.json"
 SYNC_PROGRESS_HEALTH_STATE_FILE = RUNTIME_DIR / "sync-progress-health-state.json"
 STATUS_PAYLOAD_STALE_AFTER_SECONDS = env_float(
     "BDAG_STATUS_PAYLOAD_STALE_AFTER_SECONDS",
@@ -5388,6 +5389,32 @@ def build_catchup_policy(
         "next_step": next_step,
     }
 
+def watchdog_hardware_power_cycle_warnings() -> list[str]:
+    state = read_json_file(WATCHDOG_STATE_FILE, {})
+    if not isinstance(state, dict):
+        return []
+    reasons = state.get("last_share_warnings") if isinstance(state.get("last_share_warnings"), list) else []
+    reason = str(reasons[0]) if reasons else "watchdog staged recovery reached hardware-power-cycle-required"
+    miners = (
+        state.get("last_asic_hardware_power_cycle_required")
+        if isinstance(state.get("last_asic_hardware_power_cycle_required"), list)
+        else []
+    )
+    if str(state.get("last_status") or "") != "asic_hardware_power_cycle_required" and not miners:
+        return []
+    warnings: list[str] = []
+    for item in miners:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("mac") or item.get("identity_key") or item.get("ip") or "managed ASIC")
+        ip = str(item.get("ip") or "")
+        if ip and ip not in label:
+            label = f"{label} at {ip}"
+        warnings.append(f"ASIC {label} requires hardware power-cycle: {reason}")
+    if not warnings:
+        warnings.append(f"ASIC hardware power-cycle required: {reason}")
+    return merge_unique_strings(warnings)
+
 
 def collect_status(include_logs: bool = True) -> dict[str, Any]:
     ensure_runtime()
@@ -5635,6 +5662,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         maintenance_warnings.append(message)
 
     for message in host_pressure_warning_messages(host_pressure):
+        add_maintenance_warning(message)
+    for message in watchdog_hardware_power_cycle_warnings():
         add_maintenance_warning(message)
 
     for service in services_for_status:

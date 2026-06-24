@@ -105,6 +105,12 @@ DEFAULT_ASIC_STAGED_AUTH_RETRY_SECONDS = int(
 DEFAULT_ASIC_STAGED_POWER_CYCLE_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_ASIC_STAGED_POWER_CYCLE_SECONDS", "600")
 )
+DEFAULT_ASIC_REMOTE_POWER_CYCLE_COOLDOWN_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_ASIC_REMOTE_POWER_CYCLE_COOLDOWN_SECONDS", "1800")
+)
+DEFAULT_ASIC_REMOTE_POWER_CYCLE_TIMEOUT_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_ASIC_REMOTE_POWER_CYCLE_TIMEOUT_SECONDS", "120")
+)
 DEFAULT_MINER_USEFUL_WORK_STALL_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_MINER_USEFUL_WORK_STALL_SECONDS", "150")
 )
@@ -453,6 +459,16 @@ def miner_stall_identity_key(row: dict[str, Any]) -> str:
     return ""
 
 
+def normalise_mac(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text.startswith("mac:"):
+        text = text.split(":", 1)[1]
+    compact = re.sub(r"[^0-9a-f]", "", text)
+    if len(compact) == 12:
+        return ":".join(compact[index : index + 2] for index in range(0, 12, 2))
+    return text
+
+
 def update_useful_work_stall_since(
     state: dict[str, Any],
     useful_work_stalled_asics: list[dict[str, Any]],
@@ -627,6 +643,7 @@ def mark_asic_hardware_power_cycle_required(
                 "status": item.get("status"),
                 "api_stall_issue": item.get("api_stall_issue"),
                 "api_stall_no_active_pool": item.get("api_stall_no_active_pool"),
+                "api_stall_no_request_pressure": item.get("api_stall_no_request_pressure"),
             }
         )
     state["asic_staged_recovery_by_identity"] = staged
@@ -658,6 +675,38 @@ def float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def asic_has_recent_useful_work(
+    row: dict[str, Any],
+    max_age_seconds: int = DEFAULT_ASIC_API_STALL_STALE_SECONDS,
+) -> bool:
+    if row.get("ready") is True or row.get("pool_active") is True or row.get("work_pool_active") is True:
+        return True
+    status_text = normalise_status_text(row.get("status") or row.get("health") or row.get("lane_status") or "")
+    if row.get("connected") is True and status_text in {"ok", "ready", "connected", "mining", "active"}:
+        return True
+
+    recent_age = None
+    for key in ("last_share_age_seconds", "last_submit_age_seconds", "last_pool_seen_age_seconds"):
+        value = int_or_none(row.get(key))
+        if value is not None:
+            recent_age = value if recent_age is None else min(recent_age, value)
+    if recent_age is None or recent_age > max_age_seconds:
+        return False
+
+    for key in (
+        "shares",
+        "submits",
+        "blocks_found",
+        "device_accepted",
+        "accepted",
+        "accepted_shares",
+    ):
+        value = int_or_none(row.get(key))
+        if value is not None and value > 0:
+            return True
+    return bool(row.get("connected")) and recent_age <= min(max_age_seconds, 60)
 
 
 def pool_initial_download_effective(status: dict[str, Any]) -> bool:
@@ -950,6 +999,8 @@ def asic_api_stall_primary_miners(
         row_connected = bool(
             row.get("connected") or row.get("pool_active") is True or row.get("work_pool_active") is True
         )
+        if asic_has_recent_useful_work(row, stale_seconds):
+            continue
         if row_connected and not (api_stall_evidence and no_active_pool_evidence):
             continue
         if status_text not in ASIC_API_STALL_STATUSES and not (api_stall_evidence and no_active_pool_evidence):
@@ -1760,6 +1811,243 @@ def run_miner_restarts(targets: list[dict[str, Any]], reason: str) -> dict[str, 
     }
 
 
+def asic_power_cycle_command_map() -> dict[str, str]:
+    commands: dict[str, str] = {}
+    raw_json = os.environ.get("BDAG_ASIC_POWER_CYCLE_COMMANDS_JSON", "").strip()
+    if raw_json:
+        try:
+            parsed = json.loads(raw_json)
+        except json.JSONDecodeError as exc:
+            log(f"invalid BDAG_ASIC_POWER_CYCLE_COMMANDS_JSON: {exc}")
+            parsed = {}
+        if isinstance(parsed, dict):
+            for key, value in parsed.items():
+                command = str(value or "").strip()
+                if command:
+                    commands[normalise_mac(key) or str(key).strip().lower()] = command
+
+    raw_by_mac = os.environ.get("BDAG_ASIC_POWER_CYCLE_COMMAND_BY_MAC", "")
+    for line in raw_by_mac.splitlines():
+        text = line.strip()
+        if not text or text.startswith("#") or "=" not in text:
+            continue
+        key, command = text.split("=", 1)
+        command = command.strip()
+        if command:
+            commands[normalise_mac(key) or key.strip().lower()] = command
+
+    fallback = os.environ.get("BDAG_ASIC_POWER_CYCLE_COMMAND", "").strip()
+    if fallback:
+        commands.setdefault("*", fallback)
+    return commands
+
+
+def asic_power_cycle_command_for(item: dict[str, Any]) -> str:
+    commands = asic_power_cycle_command_map()
+    if not commands:
+        return ""
+    mac = normalise_mac(item.get("mac"))
+    identity = miner_stall_identity_key(item).lower()
+    for key in (mac, identity, identity.removeprefix("mac:"), str(item.get("ip") or "").strip(), "*"):
+        if key and key in commands:
+            return commands[key]
+    return ""
+
+
+def render_asic_power_cycle_command(template: str, item: dict[str, Any], reason: str) -> str:
+    mac = normalise_mac(item.get("mac"))
+    identity = miner_stall_identity_key(item)
+    values = {
+        "ip": str(item.get("ip") or ""),
+        "mac": mac,
+        "identity": identity,
+        "reason": reason.replace("\n", " ")[:240],
+    }
+    rendered = template
+    for key, value in values.items():
+        rendered = rendered.replace("{" + key + "}", value)
+    return rendered
+
+
+def run_asic_remote_power_cycles(
+    targets: list[dict[str, Any]],
+    reason: str,
+    state: dict[str, Any],
+    now: int,
+) -> dict[str, Any]:
+    power_cycle_at = (
+        state.get("last_asic_power_cycle_at_by_identity")
+        if isinstance(state.get("last_asic_power_cycle_at_by_identity"), dict)
+        else {}
+    )
+    results: list[dict[str, Any]] = []
+    runnable: list[tuple[dict[str, Any], str, str]] = []
+    for item in targets:
+        identity = miner_stall_identity_key(item)
+        command_template = asic_power_cycle_command_for(item)
+        base = {
+            "identity_key": identity,
+            "ip": item.get("ip"),
+            "mac": item.get("mac"),
+        }
+        if not command_template:
+            results.append({**base, "status": "not_configured", "action": "remote-power-cycle"})
+            continue
+        last_at = int_or_none(power_cycle_at.get(identity)) or 0
+        cooldown_remaining = DEFAULT_ASIC_REMOTE_POWER_CYCLE_COOLDOWN_SECONDS - (now - last_at)
+        if cooldown_remaining > 0:
+            results.append(
+                {
+                    **base,
+                    "status": "skipped",
+                    "action": "remote-power-cycle",
+                    "reason": "cooldown",
+                    "cooldown_remaining_seconds": cooldown_remaining,
+                }
+            )
+            continue
+        runnable.append((item, identity, render_asic_power_cycle_command(command_template, item, reason)))
+
+    if not runnable:
+        status = "not_configured" if results and all(item["status"] == "not_configured" for item in results) else "skipped"
+        payload = {
+            "status": status,
+            "reason": reason,
+            "target_count": len(targets),
+            "results": results,
+            "updated_at": now_iso(),
+        }
+        state["last_asic_power_cycle"] = payload
+        state["last_asic_power_cycle_at_by_identity"] = power_cycle_at
+        return payload
+
+    target_label = ",".join(identity for _item, identity, _command in runnable if identity) or "asic-miners"
+    if not automation_mutation_allowed(
+        actor="watchdog",
+        action=automation_control.ACTION_ASIC_POWER_CYCLE,
+        target=target_label,
+        reason=reason,
+        log=log,
+        incident_source="watchdog",
+    ):
+        payload = {
+            "status": "suppressed",
+            "reason": "automation control denied ASIC power-cycle",
+            "target_count": len(targets),
+            "results": [
+                *results,
+                *[
+                    {
+                        "identity_key": identity,
+                        "ip": item.get("ip"),
+                        "mac": item.get("mac"),
+                        "status": "suppressed",
+                        "action": "remote-power-cycle",
+                    }
+                    for item, identity, _command in runnable
+                ],
+            ],
+            "updated_at": now_iso(),
+        }
+        state["last_asic_power_cycle"] = payload
+        state["last_asic_power_cycle_at_by_identity"] = power_cycle_at
+        return payload
+
+    lock_handle = acquire_lock(blocking=False)
+    if lock_handle is None:
+        payload = {
+            "status": "skipped",
+            "reason": "another repair is running",
+            "target_count": len(targets),
+            "results": [
+                *results,
+                *[
+                    {
+                        "identity_key": identity,
+                        "ip": item.get("ip"),
+                        "mac": item.get("mac"),
+                        "status": "skipped",
+                        "action": "remote-power-cycle",
+                        "reason": "another repair is running",
+                    }
+                    for item, identity, _command in runnable
+                ],
+            ],
+            "updated_at": now_iso(),
+        }
+        state["last_asic_power_cycle"] = payload
+        state["last_asic_power_cycle_at_by_identity"] = power_cycle_at
+        return payload
+
+    started = time.time()
+    action_name = "power-cycle-asic"
+    log_path = action_log_path(action_name)
+    state_payload = {
+        "name": action_name,
+        "mode": "power-cycle-asic",
+        "reason": reason,
+        "targets": [item.get("ip") or identity for item, identity, _command in runnable],
+        "status": "running",
+        "started_at": now_iso(),
+        "finished_at": None,
+        "log_path": str(log_path),
+    }
+    write_action_state(state_payload)
+    log(f"starting ASIC remote power-cycle targets={state_payload['targets']} reason={reason}; log={log_path}")
+    try:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{now_iso()}] ASIC remote power-cycle reason: {reason}\n")
+            for item, identity, command in runnable:
+                result = {
+                    "identity_key": identity,
+                    "ip": item.get("ip"),
+                    "mac": item.get("mac"),
+                    "status": "running",
+                    "action": "remote-power-cycle",
+                }
+                handle.write(json.dumps({**result, "command": command}, default=str) + "\n")
+                handle.flush()
+                command_result = run_logged(
+                    ["/bin/sh", "-c", command],
+                    log_path,
+                    timeout=DEFAULT_ASIC_REMOTE_POWER_CYCLE_TIMEOUT_SECONDS,
+                )
+                result["status"] = "ok" if command_result.ok else "failed"
+                result["returncode"] = command_result.returncode
+                result["elapsed"] = command_result.elapsed
+                if command_result.ok and identity:
+                    power_cycle_at[identity] = now
+                results.append(result)
+    finally:
+        lock_handle.close()
+
+    failed = [item for item in results if item.get("status") == "failed"]
+    state_payload.update(
+        {
+            "status": "failed" if failed else "ok",
+            "finished_at": now_iso(),
+            "elapsed": round(time.time() - started, 3),
+            "results": results,
+        }
+    )
+    write_action_state(state_payload)
+    payload = {
+        "status": state_payload["status"],
+        "reason": reason,
+        "target_count": len(targets),
+        "results": results,
+        "updated_at": now_iso(),
+        "log_path": str(log_path),
+    }
+    state["last_asic_power_cycle"] = payload
+    state["last_asic_power_cycle_at_by_identity"] = power_cycle_at
+    if failed:
+        record_failed_repair("ASIC remote power-cycle", reason, {"failed": failed, "log_path": str(log_path)})
+    else:
+        record_efficiency_event("asic_remote_power_cycle", "warning", reason, {"results": results})
+    return payload
+
+
 def choose_lagging_node(status: dict[str, Any]) -> str | None:
     nodes = status.get("nodes", {}) or {}
     progress_nodes = (status.get("sync_progress", {}) or {}).get("nodes", {}) or {}
@@ -2336,6 +2624,14 @@ def check_once(
     orphan_nodes = triage["orphan_nodes"]
     dag_tip_nodes = triage["dag_tip_nodes"]
     docker_access_error = triage["docker_access_error"]
+    stratum_no_request_pressure = bool(
+        stratum_no_request_delta >= DEFAULT_STRATUM_NO_REQUEST_EVENT_THRESHOLD
+        and (primary_miner_count > 0 or stratum_no_request_has_mac_source)
+    )
+    if stratum_no_request_pressure:
+        for item in api_stall_asics:
+            if not asic_has_recent_useful_work(item):
+                item["api_stall_no_request_pressure"] = True
     useful_work_stall_since = update_useful_work_stall_since(
         state,
         useful_work_stalled_asics,
@@ -2724,6 +3020,7 @@ def check_once(
                 "last_submit_age_seconds": item.get("last_submit_age_seconds"),
                 "api_stall_stale_age_seconds": item.get("api_stall_stale_age_seconds"),
                 "api_stall_no_active_pool": item.get("api_stall_no_active_pool"),
+                "api_stall_no_request_pressure": item.get("api_stall_no_request_pressure"),
                 "issue": item.get("issue"),
                 "debug_error": item.get("debug_error"),
                 "device_telemetry_status": item.get("device_telemetry_status"),
@@ -2744,7 +3041,7 @@ def check_once(
             stalled_for = now - int(asic_api_stall_since.get(identity_key, now) or now)
             confirm_seconds = (
                 DEFAULT_ASIC_API_STALL_NO_ACTIVE_CONFIRM_SECONDS
-                if item.get("api_stall_no_active_pool")
+                if item.get("api_stall_no_active_pool") or item.get("api_stall_no_request_pressure")
                 else DEFAULT_ASIC_API_STALL_CONFIRM_SECONDS
             )
             cooldown_remaining = DEFAULT_ASIC_API_STALL_REPAIR_COOLDOWN - (
@@ -2776,6 +3073,8 @@ def check_once(
                 f"; Stratum also saw {stratum_no_request_delta} no-request disconnect(s) "
                 "since the last watchdog sample"
             )
+        if any(item.get("api_stall_no_request_pressure") for item in api_stall_asics):
+            reason += "; no-request EOF pressure matches the stalled managed ASIC signature"
         state["consecutive_failures"] = 0
         state["consecutive_syncing"] = 0
         state["consecutive_node_orphan_storm"] = 0
@@ -2801,10 +3100,13 @@ def check_once(
                     "status": item.get("status"),
                     "api_stall_issue": item.get("api_stall_issue"),
                     "api_stall_no_active_pool": item.get("api_stall_no_active_pool"),
+                    "api_stall_no_request_pressure": item.get("api_stall_no_request_pressure"),
                 }
                 for item in hardware_required_miners
             ]
             mark_asic_hardware_power_cycle_required(state, hardware_required_miners, hardware_reason, now)
+            if repair:
+                run_asic_remote_power_cycles(hardware_required_miners, hardware_reason, state, now)
         log(
             "asic_api_stall "
             f"affected={affected} eligible={[item.get('ip') for item in eligible_miners]} "
