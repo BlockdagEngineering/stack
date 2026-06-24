@@ -56,6 +56,7 @@ def apply_stack_env_aliases() -> None:
 
 def bootstrap_stack_env() -> None:
     """Load the stack env before module-level defaults are frozen."""
+    explicit_env_keys = set(os.environ)
     project_root = Path(os.environ.get("BDAG_PROJECT_ROOT") or Path(__file__).resolve().parents[1]).expanduser()
     if not project_root.is_absolute():
         project_root = (Path.cwd() / project_root).resolve()
@@ -77,9 +78,16 @@ def bootstrap_stack_env() -> None:
     if not stack_defaults.is_absolute():
         stack_defaults = project_root / stack_defaults
 
+    override_env_paths = {
+        path.resolve()
+        for path in (pool_env, project_root / ".env")
+        if path is not None
+    }
     for path in (stack_defaults, ops_env, pool_env, project_root / ".env"):
         if path is None or not path.exists():
             continue
+        resolved_path = path.resolve()
+        file_overrides_seeded_defaults = resolved_path in override_env_paths
         try:
             raw_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError as exc:
@@ -96,7 +104,10 @@ def bootstrap_stack_env() -> None:
             value = value.strip()
             if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
                 value = value[1:-1]
-            os.environ.setdefault(key, value)
+            if file_overrides_seeded_defaults and key not in explicit_env_keys:
+                os.environ[key] = value
+            else:
+                os.environ.setdefault(key, value)
     apply_stack_env_aliases()
 
 
