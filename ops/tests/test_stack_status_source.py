@@ -265,6 +265,49 @@ class StackStatusSourceTests(unittest.TestCase):
             payload["pool_metrics"]["selected_backend_source_health"]["node_p2p_best_peer_lead_blocks"],
         )
 
+    def test_metric_enrichment_fills_sparse_backend_health_peer_counts(self) -> None:
+        with mock.patch.object(
+            stack_status_source,
+            "collect_pool_prometheus_metrics",
+            return_value={
+                "status": "ok",
+                "source_backend_health": {
+                    "node": {
+                        "node_p2p_best_peer_lead_blocks": -1,
+                        "node_p2p_fresh_consensus_peer_count": 3,
+                        "node_p2p_consensus_peer_count": 4,
+                    }
+                },
+                "selected_backend_source_health": {
+                    "node_p2p_best_peer_lead_blocks": -1,
+                    "node_p2p_fresh_consensus_peer_count": 3,
+                    "node_p2p_consensus_peer_count": 4,
+                },
+                "stratum_no_request_disconnects": {},
+                "stratum_no_request_disconnects_total": 0,
+                "stratum_server_first_difficulty_probes": {},
+                "stratum_server_first_difficulty_probes_total": 0,
+            },
+        ):
+            payload = stack_status_source._with_direct_pool_metric_enrichment(
+                {
+                    "containers": {"pool": {"running": True}},
+                    "pool_metrics": {
+                        "selected_backend_source_health": {
+                            "node_mineable": True,
+                            "node_p2p_best_peer_lead_blocks": -1,
+                        },
+                    },
+                }
+            )
+
+        selected = payload["pool_metrics"]["selected_backend_source_health"]
+        self.assertTrue(payload["pool_metrics_enriched"])
+        self.assertTrue(selected["node_mineable"])
+        self.assertEqual(-1, selected["node_p2p_best_peer_lead_blocks"])
+        self.assertEqual(3, selected["node_p2p_fresh_consensus_peer_count"])
+        self.assertEqual(4, selected["node_p2p_consensus_peer_count"])
+
 
 if __name__ == "__main__":
     unittest.main()

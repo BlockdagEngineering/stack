@@ -246,6 +246,32 @@ def peer_lead_stall_status(*, recent_paid_work: bool = False) -> dict[str, objec
     }
 
 
+def peer_starvation_status(*, recent_paid_work: bool = False, ready_miners: int = 0) -> dict[str, object]:
+    status = peer_lead_stall_status(recent_paid_work=recent_paid_work)
+    pool_health = status["pool_health"]
+    assert isinstance(pool_health, dict)
+    selected = pool_health["selected_backend_source_health"]
+    assert isinstance(selected, dict)
+    selected["node_p2p_best_peer_lead_blocks"] = 0
+    selected["node_p2p_fresh_consensus_peer_count"] = 0
+    selected["node_p2p_consensus_peer_count"] = 0
+    selected["node_template_age_seconds"] = 14
+    selected["node_p2p_mining_fresh_reason_code"] = "insufficient_fresh_peers"
+    selected["node_reason_code"] = "node_syncing"
+    source_job = pool_health["source_job_health"]
+    assert isinstance(source_job, dict)
+    source_job["ready_miners"] = ready_miners
+    source_job["max_current_job_age_seconds"] = 52
+    source_job["reason_code"] = "invalidated_current_job" if ready_miners == 0 else "ok"
+    job_state = status["pool_job_state"]
+    assert isinstance(job_state, dict)
+    job_state["ready_connections"] = ready_miners
+    job_state["connections_without_current_job"] = 0
+    job_state["last_broadcast_age_ms"] = 52_000 if ready_miners == 0 else 1_000
+    job_state["reason_code"] = "invalidated_current_job" if ready_miners == 0 else "ok"
+    return status
+
+
 def native_current_template_sync_wedge_status(*, recent_paid_work: bool = False) -> dict[str, object]:
     last_block_age = 20 if recent_paid_work else None
     block_success_count = 10 if recent_paid_work else 0
@@ -995,6 +1021,28 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertFalse(evidence["p2p_mining_fresh"])
         self.assertFalse(evidence["submit_ready"])
         self.assertFalse(evidence["mineable"])
+
+    def test_peer_lead_stall_evidence_merges_sparse_dashboard_with_pool_metrics(self) -> None:
+        status = peer_starvation_status()
+        pool_health = status["pool_health"]
+        assert isinstance(pool_health, dict)
+        selected = pool_health["selected_backend_source_health"]
+        assert isinstance(selected, dict)
+        selected.pop("node_p2p_fresh_consensus_peer_count")
+        selected.pop("node_p2p_consensus_peer_count")
+        status["pool_metrics"] = {
+            "selected_backend_source_health": {
+                "node_p2p_fresh_consensus_peer_count": 0,
+                "node_p2p_consensus_peer_count": 1,
+            },
+        }
+
+        evidence = watchdog.selected_backend_peer_lead_stall_evidence(status)
+
+        self.assertTrue(evidence["active"])
+        self.assertTrue(evidence["peer_starvation"])
+        self.assertEqual(0, evidence["fresh_consensus_peer_count"])
+        self.assertEqual(1, evidence["consensus_peer_count"])
 
     def test_peer_lead_stall_evidence_uses_enriched_node_label_metrics(self) -> None:
         status = peer_lead_stall_status()
@@ -1850,6 +1898,69 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         assert isinstance(job_state, dict)
         job_state["last_broadcast_age_ms"] = 45_000
         evidence = watchdog.selected_backend_peer_lead_stall_evidence(status)
+        self.assertFalse(watchdog.peer_lead_hard_mining_outage(status, evidence))
+
+    def test_peer_starvation_job_age_restarts_before_peer_lead_is_measurable(self) -> None:
+        now = 1_779_200_000
+        status = peer_starvation_status()
+        state = {"node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS}
+        restarts: list[tuple[str, str]] = []
+        written: list[dict[str, object]] = []
+
+        evidence = watchdog.selected_backend_peer_lead_stall_evidence(status)
+        self.assertTrue(evidence["active"])
+        self.assertTrue(evidence["peer_starvation"])
+        self.assertEqual(0, evidence["lead"])
+        self.assertEqual(0, evidence["fresh_consensus_peer_count"])
+        self.assertEqual(52.0, evidence["pool_job_age_seconds"])
+        self.assertTrue(watchdog.peer_lead_hard_mining_outage(status, evidence))
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=lambda node_name, reason: restarts.append((node_name, reason)) or True
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual(1, len(restarts))
+        self.assertEqual("node", restarts[0][0])
+        self.assertIn("hard peer-starvation mining outage", restarts[0][1])
+        self.assertTrue(result["watchdog_state"]["last_node_peer_lead_hard_mining_outage"])
+        self.assertTrue(written)
+
+    def test_peer_starvation_job_age_does_not_override_recent_paid_work(self) -> None:
+        status = peer_starvation_status(recent_paid_work=True)
+
+        evidence = watchdog.selected_backend_peer_lead_stall_evidence(status)
+
+        self.assertTrue(evidence["peer_starvation"])
+        self.assertFalse(watchdog.peer_lead_hard_mining_outage(status, evidence))
+
+    def test_peer_starvation_with_ready_jobs_is_not_a_hard_outage(self) -> None:
+        status = peer_starvation_status(ready_miners=4)
+
+        evidence = watchdog.selected_backend_peer_lead_stall_evidence(status)
+
+        self.assertTrue(evidence["active"])
+        self.assertTrue(evidence["peer_starvation"])
         self.assertFalse(watchdog.peer_lead_hard_mining_outage(status, evidence))
 
     def test_explicit_block_age_wins_over_broad_recent_paid_work_flag(self) -> None:

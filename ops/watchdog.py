@@ -164,6 +164,9 @@ DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS = int(
 DEFAULT_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS", "20")
 )
+DEFAULT_NODE_PEER_STARVATION_MIN_FRESH_PEERS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_STARVATION_MIN_FRESH_PEERS", "2")
+)
 DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN", "900")
 )
@@ -511,6 +514,9 @@ def selected_backend_peer_lead_stall_evidence(status: dict[str, Any]) -> dict[st
             ]
             if selected_rows:
                 selected_health = selected_rows[0]
+    metrics_selected_health = pool_metrics.get("selected_backend_source_health")
+    if isinstance(metrics_selected_health, dict):
+        selected_health = {**metrics_selected_health, **selected_health}
 
     template_health = pool_health.get("template_health")
     if not isinstance(template_health, dict):
@@ -557,6 +563,20 @@ def selected_backend_peer_lead_stall_evidence(status: dict[str, Any]) -> dict[st
     if tolerance is None:
         tolerance = 10
 
+    fresh_peer_count = int_or_none(
+        first_present(
+            selected_health.get("node_p2p_fresh_consensus_peer_count") if isinstance(selected_health, dict) else None,
+            selected_health.get("p2p_fresh_consensus_peer_count") if isinstance(selected_health, dict) else None,
+            template_health.get("p2p_fresh_consensus_peer_count"),
+        )
+    )
+    consensus_peer_count = int_or_none(
+        first_present(
+            selected_health.get("node_p2p_consensus_peer_count") if isinstance(selected_health, dict) else None,
+            selected_health.get("p2p_consensus_peer_count") if isinstance(selected_health, dict) else None,
+            template_health.get("p2p_consensus_peer_count"),
+        )
+    )
     p2p_fresh_value = first_present(
         selected_health.get("node_p2p_mining_fresh") if isinstance(selected_health, dict) else None,
         selected_health.get("p2p_mining_fresh") if isinstance(selected_health, dict) else None,
@@ -616,6 +636,15 @@ def selected_backend_peer_lead_stall_evidence(status: dict[str, Any]) -> dict[st
     lead_exceeds_tolerance = bool(lead is not None and lead > tolerance)
     peer_lead_reason = "peer_lead_exceeds_tolerance" in reason_text or "peer-lead-exceeds-tolerance" in reason_text
     p2p_peer_lead_unfresh = bool(p2p_fresh is False and (lead_exceeds_tolerance or peer_lead_reason))
+    fresh_peer_starved = bool(
+        fresh_peer_count is not None
+        and fresh_peer_count < DEFAULT_NODE_PEER_STARVATION_MIN_FRESH_PEERS
+    )
+    consensus_peer_starved = bool(
+        consensus_peer_count is not None
+        and consensus_peer_count < DEFAULT_NODE_PEER_STARVATION_MIN_FRESH_PEERS
+    )
+    p2p_peer_starvation = bool(p2p_fresh is False and (fresh_peer_starved or consensus_peer_starved))
     backend_blocks_mining = bool(
         submit_ready is False
         or mineable is False
@@ -626,7 +655,9 @@ def selected_backend_peer_lead_stall_evidence(status: dict[str, Any]) -> dict[st
         or pool_health.get("initial_download")
     )
     peer_lead_stall_active = bool(
-        miner_demand and (lead_exceeds_tolerance or p2p_peer_lead_unfresh) and backend_blocks_mining
+        miner_demand
+        and (lead_exceeds_tolerance or p2p_peer_lead_unfresh or p2p_peer_starvation)
+        and backend_blocks_mining
     )
     if not peer_lead_stall_active:
         return {
@@ -635,6 +666,9 @@ def selected_backend_peer_lead_stall_evidence(status: dict[str, Any]) -> dict[st
             "lead": lead,
             "tolerance": tolerance,
             "p2p_mining_fresh": p2p_fresh,
+            "fresh_consensus_peer_count": fresh_peer_count,
+            "consensus_peer_count": consensus_peer_count,
+            "peer_starvation": p2p_peer_starvation,
         }
 
     return {
@@ -643,6 +677,9 @@ def selected_backend_peer_lead_stall_evidence(status: dict[str, Any]) -> dict[st
         "lead": lead,
         "tolerance": tolerance,
         "p2p_mining_fresh": p2p_fresh,
+        "fresh_consensus_peer_count": fresh_peer_count,
+        "consensus_peer_count": consensus_peer_count,
+        "peer_starvation": p2p_peer_starvation,
         "submit_ready": submit_ready,
         "mineable": mineable,
         "template_age_seconds": template_age_seconds,
@@ -887,6 +924,7 @@ def peer_lead_hard_mining_outage(status: dict[str, Any], evidence: dict[str, Any
 
     lead = int_or_none(evidence.get("lead"))
     tolerance = int_or_none(evidence.get("tolerance")) or 10
+    peer_starvation = bool(evidence.get("peer_starvation"))
     template_age = float_or_none(evidence.get("template_age_seconds"))
     pool_job_age = float_or_none(evidence.get("pool_job_age_seconds"))
     p2p_fresh = evidence.get("p2p_mining_fresh")
@@ -896,7 +934,7 @@ def peer_lead_hard_mining_outage(status: dict[str, Any], evidence: dict[str, Any
     backend_blocked = bool(
         p2p_fresh is False
         and (submit_ready is False or mineable is False)
-        and (lead is None or lead > tolerance)
+        and (lead is None or lead > tolerance or peer_starvation)
     )
     hard_peer_lead = bool(lead is not None and lead > tolerance)
     template_expired = bool(
@@ -913,7 +951,7 @@ def peer_lead_hard_mining_outage(status: dict[str, Any], evidence: dict[str, Any
         job_starved
         and (template_expired or all_jobs_invalidated_long_enough)
         and backend_blocked
-        and (hard_peer_lead or node_syncing)
+        and (hard_peer_lead or node_syncing or peer_starvation)
         and not pool_has_recent_mining_work(status, DEFAULT_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS)
     )
 
@@ -1322,6 +1360,9 @@ def selected_backend_health_for_status(status: dict[str, Any]) -> dict[str, Any]
             ]
             if rows:
                 selected_health = rows[0]
+    metrics_selected_health = pool_metrics.get("selected_backend_source_health")
+    if isinstance(metrics_selected_health, dict):
+        selected_health = {**metrics_selected_health, **selected_health}
     return dict(selected_health) if isinstance(selected_health, dict) else {}
 
 
@@ -3833,6 +3874,8 @@ def check_once(
             f"(lead={peer_lead_stall.get('lead')} "
             f"tolerance={peer_lead_stall.get('tolerance')} "
             f"p2p_fresh={peer_lead_stall.get('p2p_mining_fresh')} "
+            f"fresh_peers={peer_lead_stall.get('fresh_consensus_peer_count')} "
+            f"peer_starvation={peer_lead_stall.get('peer_starvation')} "
             f"submit_ready={peer_lead_stall.get('submit_ready')} "
             f"mineable={peer_lead_stall.get('mineable')} "
             f"ready_miners={peer_lead_stall.get('ready_miners')})"
@@ -3921,6 +3964,8 @@ def check_once(
             and startup_remaining <= 0
         ):
             restart_prefix = "hard peer-lead mining outage: " if hard_mining_outage else "peer-lead exceeds tolerance: "
+            if hard_mining_outage and peer_lead_stall.get("peer_starvation"):
+                restart_prefix = "hard peer-starvation mining outage: "
             ok = run_node_restart(restart_node, restart_prefix + reason)
             state["last_repair_at"] = int(time.time())
             state["last_sync_repair_at"] = int(time.time())
@@ -5210,6 +5255,7 @@ def loop(
         f"node_peer_lead_active_import_suppress={DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_SUPPRESS_SECONDS}s "
         f"node_peer_lead_active_import_worsen={DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_WORSEN_BLOCKS}blocks "
         f"node_peer_lead_active_import_max_lead={DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_MAX_LEAD_BLOCKS}blocks "
+        f"node_peer_starvation_min_fresh_peers={DEFAULT_NODE_PEER_STARVATION_MIN_FRESH_PEERS} "
         f"node_peer_lead_hard_stall_job_age={DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS}s "
         f"node_template_sync_wedge_confirm={DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS}s "
         f"node_template_sync_wedge_cooldown={DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_REPAIR_COOLDOWN}s "

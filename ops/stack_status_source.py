@@ -303,6 +303,35 @@ def _with_dashboard_asic_telemetry_enrichment(payload: dict[str, Any]) -> dict[s
     return result
 
 
+def _merge_missing_nested_metrics(current: dict[str, Any], direct: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(current)
+    for key, value in direct.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            nested = dict(merged[key])
+            for nested_key, nested_value in value.items():
+                if isinstance(nested_value, dict) and isinstance(nested.get(nested_key), dict):
+                    nested[nested_key] = _merge_missing_nested_metrics(nested[nested_key], nested_value)
+                else:
+                    nested.setdefault(nested_key, nested_value)
+            merged[key] = nested
+        else:
+            merged.setdefault(key, value)
+    return merged
+
+
+def _backend_health_has_peer_counts(pool_metrics: dict[str, Any]) -> bool:
+    selected = pool_metrics.get("selected_backend_source_health")
+    if isinstance(selected, dict) and "node_p2p_fresh_consensus_peer_count" in selected:
+        return True
+    backends = pool_metrics.get("source_backend_health")
+    if isinstance(backends, dict):
+        return any(
+            isinstance(row, dict) and "node_p2p_fresh_consensus_peer_count" in row
+            for row in backends.values()
+        )
+    return False
+
+
 def _with_direct_pool_metric_enrichment(payload: dict[str, Any]) -> dict[str, Any]:
     """Add locally parsed pool metrics when an external status payload is older than ops.
 
@@ -320,7 +349,11 @@ def _with_direct_pool_metric_enrichment(payload: dict[str, Any]) -> dict[str, An
         isinstance(pool_metrics.get(key), dict) and bool(pool_metrics.get(key))
         for key in ("source_backend_health", "selected_backend_source_health")
     )
-    if has_backend_health and all(key in pool_metrics for key in POOL_METRIC_ENRICHMENT_KEYS):
+    if (
+        has_backend_health
+        and _backend_health_has_peer_counts(pool_metrics)
+        and all(key in pool_metrics for key in POOL_METRIC_ENRICHMENT_KEYS)
+    ):
         return payload
 
     containers = dict(payload.get("containers") or {}) if isinstance(payload.get("containers"), dict) else {}
@@ -341,9 +374,7 @@ def _with_direct_pool_metric_enrichment(payload: dict[str, Any]) -> dict[str, An
         return payload
 
     result = dict(payload)
-    merged_pool_metrics = dict(pool_metrics)
-    for key, value in direct.items():
-        merged_pool_metrics.setdefault(key, value)
+    merged_pool_metrics = _merge_missing_nested_metrics(pool_metrics, direct)
     result["pool_metrics"] = merged_pool_metrics
     result["pool_metrics_enriched"] = True
     result["pool_metrics_enrichment_source"] = "direct-pool-prometheus"
