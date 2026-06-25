@@ -53,13 +53,26 @@ done
 command -v "$DOCKER_BIN" >/dev/null 2>&1 || die "docker command not found: $DOCKER_BIN"
 command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
 
+docker_tag_component() {
+  local raw="$1" safe
+  safe="$(printf '%s' "$raw" | sed -E 's/[^A-Za-z0-9_.-]+/-/g; s/^[^A-Za-z0-9_]+//')"
+  safe="${safe:0:128}"
+  if [[ -z "$safe" || ! "$safe" =~ ^[A-Za-z0-9_] ]]; then
+    safe="sp-${safe}"
+    safe="${safe:0:128}"
+  fi
+  printf '%s\n' "$safe"
+}
+
 ENV_FILE="$ROOT/.env"
 COMPOSE_FILE="$ROOT/docker-compose.yml"
 SAVEPOINT="$ROOT/ops/runtime/savepoints/$STAMP"
 IMAGES_DIR="$SAVEPOINT/images"
 MANIFEST="$SAVEPOINT/manifest.tsv"
+TAG_STAMP="$(docker_tag_component "$STAMP")"
 
 mkdir -p "$IMAGES_DIR"
+printf '%s\n' "$TAG_STAMP" > "$SAVEPOINT/docker-tag-stamp"
 
 env_value() {
   local key="$1" file="$2" line value
@@ -141,7 +154,7 @@ preserve_images() {
     "$DOCKER_BIN" image inspect "$image_id" > "$IMAGES_DIR/$service-image.json" \
       || die "image preservation failed; Docker cannot inspect image for $service ($image_id)"
 
-    tag="stack-$service:savepoint-$STAMP"
+    tag="stack-$service:savepoint-$TAG_STAMP"
     "$DOCKER_BIN" tag "$image_id" "$tag" \
       || die "image preservation failed; Docker cannot tag image for $service ($image_id)"
 
@@ -149,7 +162,7 @@ preserve_images() {
     tags+=("$tag")
   done
 
-  tar="$IMAGES_DIR/stack-images-savepoint-$STAMP.tar"
+  tar="$IMAGES_DIR/stack-images-savepoint-$TAG_STAMP.tar"
   "$DOCKER_BIN" save -o "$tar" "${tags[@]}" \
     || die "image preservation failed; Docker could not export savepoint images"
 
