@@ -556,6 +556,20 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
     return reasons
 
 
+def sample_node_log_context(sample: dict[str, Any]) -> dict[str, Any]:
+    node_log = sample.get("node_log_tail") if isinstance(sample.get("node_log_tail"), dict) else {}
+    if not node_log:
+        return {}
+    return {
+        "graph_sync_open": bool(node_log.get("graph_sync_open")),
+        "graph_sync_open_process_ids": node_log.get("graph_sync_open_process_ids") or [],
+        "graph_sync_last_open": node_log.get("graph_sync_last_open") or {},
+        "graph_sync_last_end": node_log.get("graph_sync_last_end") or {},
+        "rewind_count_tail": node_log.get("rewind_count_tail") or 0,
+        "latest_import": node_log.get("latest_import") or {},
+    }
+
+
 def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     duration_seconds = float(summary.get("duration_seconds") or 0.0)
@@ -593,6 +607,18 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
         }
         if "hard_peer_lead_template_stall" in critical_reasons:
             reasons.append("hard_peer_lead_template_stall_observed")
+        if any(
+            bool((sample.get("node_log_context") or {}).get("graph_sync_open"))
+            for sample in critical_samples
+            if isinstance(sample, dict)
+        ):
+            reasons.append("graph_sync_open_during_hard_stall")
+        if any(
+            int((sample.get("node_log_context") or {}).get("rewind_count_tail") or 0) > 0
+            for sample in critical_samples
+            if isinstance(sample, dict)
+        ):
+            reasons.append("reorgs_observed_during_hard_stall")
     if (
         ready.get("max") == 0
         and p2p.get("max") == 0
@@ -634,6 +660,7 @@ def summarize_sample_window(samples: list[dict[str, Any]]) -> dict[str, Any]:
                 "mineable": sample_metric(sample, "mineable"),
                 "submit_ready": sample_metric(sample, "submit_ready"),
                 "template_age_seconds": sample_metric(sample, "template_age_seconds"),
+                "node_log_context": sample_node_log_context(sample),
             }
         )
     critical_anomaly_samples = [

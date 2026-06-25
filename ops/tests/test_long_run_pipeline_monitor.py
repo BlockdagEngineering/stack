@@ -264,6 +264,37 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
         self.assertEqual(1, len(summary["critical_anomaly_samples"]))
         self.assertEqual("2026-06-25T05:34:45+02:00", summary["critical_anomaly_samples"][0]["sampled_at"])
 
+    def test_hard_stall_summary_keeps_graph_sync_and_reorg_context(self) -> None:
+        sample = self.sample(
+            "2026-06-25T09:28:45+02:00",
+            accepted_blocks=6770,
+            authorized_miners=4,
+            ready_miners=0,
+            p2p_mining_fresh=0,
+            peer_lead_blocks=19,
+            mineable=0,
+            submit_ready=0,
+            template_age_seconds=73,
+        )
+        sample["node_log_tail"] = {
+            "graph_sync_open": True,
+            "graph_sync_open_process_ids": [820],
+            "graph_sync_last_open": {"peer": "16PeerA", "process_id": 820},
+            "graph_sync_last_end": {"process_id": 819, "spend": "1m27s", "spend_seconds": 87},
+            "rewind_count_tail": 4,
+            "latest_import": {"number": 12194568, "age": "1m24s", "age_seconds": 84},
+        }
+
+        summary = monitor.summarize_sample_window([sample])
+
+        self.assertIn("graph_sync_open_during_hard_stall", summary["window_anomaly_reasons"])
+        self.assertIn("reorgs_observed_during_hard_stall", summary["window_anomaly_reasons"])
+        context = summary["critical_anomaly_samples"][0]["node_log_context"]
+        self.assertTrue(context["graph_sync_open"])
+        self.assertEqual([820], context["graph_sync_open_process_ids"])
+        self.assertEqual(4, context["rewind_count_tail"])
+        self.assertEqual(87, context["graph_sync_last_end"]["spend_seconds"])
+
     def test_sample_window_summary_ignores_safe_backend_readiness_flicker(self) -> None:
         samples = [
             self.sample(
