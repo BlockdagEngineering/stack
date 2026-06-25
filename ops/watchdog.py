@@ -153,10 +153,13 @@ DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS", "120")
 )
 DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS = int(
-    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS", "30")
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS", "15")
 )
 DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS", "30")
+)
+DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS", "20")
 )
 DEFAULT_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS", "20")
@@ -580,6 +583,23 @@ def selected_backend_peer_lead_stall_evidence(status: dict[str, Any]) -> dict[st
             template_health.get("template_age_seconds"),
         )
     )
+    max_current_job_age_seconds = float_or_none(
+        first_present(
+            source_job_health.get("max_current_job_age_seconds"),
+            pool_job_state.get("max_current_job_age_seconds"),
+        )
+    )
+    last_broadcast_age_ms = int_or_none(pool_job_state.get("last_broadcast_age_ms"))
+    if last_broadcast_age_ms is not None:
+        last_broadcast_age_seconds = max(0.0, last_broadcast_age_ms / 1000.0)
+    else:
+        last_broadcast_age_seconds = None
+    pool_job_age_candidates = [
+        value
+        for value in (max_current_job_age_seconds, last_broadcast_age_seconds)
+        if value is not None
+    ]
+    pool_job_age_seconds = max(pool_job_age_candidates) if pool_job_age_candidates else None
     reason_values = [
         selected_health.get("node_p2p_mining_fresh_reason_code") if isinstance(selected_health, dict) else None,
         selected_health.get("p2p_mining_fresh_reason_code") if isinstance(selected_health, dict) else None,
@@ -623,6 +643,10 @@ def selected_backend_peer_lead_stall_evidence(status: dict[str, Any]) -> dict[st
         "submit_ready": submit_ready,
         "mineable": mineable,
         "template_age_seconds": template_age_seconds,
+        "pool_job_age_seconds": round(pool_job_age_seconds, 3) if pool_job_age_seconds is not None else None,
+        "last_broadcast_age_seconds": (
+            round(last_broadcast_age_seconds, 3) if last_broadcast_age_seconds is not None else None
+        ),
         "active_miners": active_count,
         "authorized_miners": authorized,
         "ready_miners": ready,
@@ -861,6 +885,7 @@ def peer_lead_hard_mining_outage(status: dict[str, Any], evidence: dict[str, Any
     lead = int_or_none(evidence.get("lead"))
     tolerance = int_or_none(evidence.get("tolerance")) or 10
     template_age = float_or_none(evidence.get("template_age_seconds"))
+    pool_job_age = float_or_none(evidence.get("pool_job_age_seconds"))
     p2p_fresh = evidence.get("p2p_mining_fresh")
     submit_ready = evidence.get("submit_ready")
     mineable = evidence.get("mineable")
@@ -875,11 +900,15 @@ def peer_lead_hard_mining_outage(status: dict[str, Any], evidence: dict[str, Any
         template_age is not None
         and template_age >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS
     )
+    all_jobs_invalidated_long_enough = bool(
+        pool_job_age is not None
+        and pool_job_age >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS
+    )
     node_syncing = "node_syncing" in reason_text or "node-syncing" in reason_text
     job_starved = ready_miners == 0 and (without_job > 0 or active_miners > 0 or authorized_miners > 0)
     return bool(
         job_starved
-        and template_expired
+        and (template_expired or all_jobs_invalidated_long_enough)
         and backend_blocked
         and (hard_peer_lead or node_syncing)
         and not pool_has_recent_mining_work(status, DEFAULT_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS)
@@ -5170,6 +5199,7 @@ def loop(
         f"node_peer_lead_active_import_suppress={DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_SUPPRESS_SECONDS}s "
         f"node_peer_lead_active_import_worsen={DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_WORSEN_BLOCKS}blocks "
         f"node_peer_lead_active_import_max_lead={DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_MAX_LEAD_BLOCKS}blocks "
+        f"node_peer_lead_hard_stall_job_age={DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS}s "
         f"node_template_sync_wedge_confirm={DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS}s "
         f"node_template_sync_wedge_cooldown={DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_REPAIR_COOLDOWN}s "
         f"earnings_snapshot_interval={DEFAULT_EARNINGS_SNAPSHOT_INTERVAL_SECONDS}s"
