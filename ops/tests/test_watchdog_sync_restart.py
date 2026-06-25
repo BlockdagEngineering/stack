@@ -246,6 +246,105 @@ def peer_lead_stall_status(*, recent_paid_work: bool = False) -> dict[str, objec
     }
 
 
+def native_current_template_sync_wedge_status(*, recent_paid_work: bool = False) -> dict[str, object]:
+    last_block_age = 20 if recent_paid_work else None
+    block_success_count = 10 if recent_paid_work else 0
+    return {
+        "failures": [],
+        "stack_failures": [],
+        "miner_failures": [],
+        "warnings": ["template health unsafe: node pending-template backend is syncing"],
+        "mode": "sync_blocked",
+        "overall": "syncing",
+        "can_submit_blocks": False,
+        "containers": {
+            "node": {"running": True, "started_at": "2026-01-14T12:00:00.000000000Z"},
+            watchdog.POOL_CONTAINER: {"running": True, "started_at": "2026-01-14T12:00:00.000000000Z"},
+        },
+        "nodes": {
+            "node": {
+                "child_running": True,
+                "importing": False,
+                "latest_block": 12552152,
+                "last_import_age_seconds": 900,
+            }
+        },
+        "sync_progress": {
+            "status": "syncing",
+            "source": "template-health",
+            "error": "node pending-template backend is syncing",
+            "current_block": 12552152,
+            "highest_block": 12552152,
+            "remaining_blocks": 0,
+            "peer_ahead_blocks": 0,
+            "nodes": {
+                "node": {
+                    "current_block": 12552152,
+                    "highest_block": 12552152,
+                    "remaining_blocks": 0,
+                    "peer_ahead_blocks": 0,
+                    "status": "synced",
+                }
+            },
+        },
+        "sync_health": {
+            "needs_fast_sync_repair": True,
+            "pool_has_recent_paid_work": recent_paid_work,
+        },
+        "pool_health": {
+            "selected_backend": "node",
+            "source_selected_backend_submit_ready": False,
+            "source_selected_backend_mineable": False,
+            "source_selected_backend_p2p_fresh": True,
+            "block_submit_success_count": block_success_count,
+            "last_block_submit_age_seconds": last_block_age,
+            "selected_backend_source_health": {
+                "node_mineable": False,
+                "node_submit_ready": False,
+                "node_get_block_template_ready": False,
+                "node_p2p_mining_fresh": True,
+                "node_p2p_fresh_consensus_peer_count": 8,
+                "node_p2p_best_peer_lead_blocks": 0,
+                "node_p2p_peer_lead_tolerance_blocks": 10,
+                "node_template_coinbase_valid": True,
+                "node_template_age_seconds": 184,
+                "node_reason_code": "node_syncing",
+                "node_p2p_mining_fresh_reason_code": "ok",
+            },
+            "template_health": {
+                "safe_for_mining": False,
+                "blocking_reasons": ["mineable=false", "submit_ready=false"],
+                "mineable_now": False,
+                "submit_ready": False,
+                "get_block_template_ready": False,
+                "p2p_mining_fresh": True,
+                "p2p_fresh_consensus_peer_count": 8,
+                "p2p_best_peer_lead_blocks": 0,
+                "p2p_peer_lead_tolerance_blocks": 10,
+                "template_coinbase_valid": True,
+                "template_age_seconds": 184,
+                "reason_code": "node_syncing",
+            },
+            "source_job_health": {
+                "ok": False,
+                "authorized_miners": 4,
+                "ready_miners": 0,
+                "reason_code": "miners_without_current_job",
+            },
+        },
+        "pool_job_state": {
+            "active_connections": 4,
+            "authorized_connections": 4,
+            "ready_connections": 0,
+            "connections_without_current_job": 4,
+            "current_template_seq": 0,
+            "reason_code": "miners_without_current_job",
+        },
+        "miner_health": {"connected_count": 4, "connected_count_effective": 4, "managed_count": 4, "miners": []},
+        "mining_address": "0x1111111111111111111111111111111111111111",
+    }
+
+
 class WatchdogSyncRestartTests(unittest.TestCase):
     def test_watchdog_default_interval_matches_hard_stall_observation_cadence(self) -> None:
         self.assertEqual(watchdog.DEFAULT_INTERVAL_SECONDS, 30)
@@ -935,6 +1034,171 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertTrue(evidence["active"])
         self.assertIsNone(evidence["lead"])
         self.assertFalse(evidence["p2p_mining_fresh"])
+
+    def test_template_sync_wedge_evidence_covers_native_current_zero_ready_jobs(self) -> None:
+        status = native_current_template_sync_wedge_status()
+
+        peer_lead = watchdog.selected_backend_peer_lead_stall_evidence(status)
+        wedge = watchdog.selected_backend_template_sync_wedge_evidence(status)
+
+        self.assertFalse(peer_lead["active"])
+        self.assertTrue(wedge["active"])
+        self.assertTrue(wedge["p2p_mining_fresh"])
+        self.assertEqual(0, wedge["lead"])
+        self.assertEqual(0, wedge["ready_miners"])
+        self.assertTrue(wedge["syncing_reason"])
+        self.assertTrue(watchdog.template_sync_wedge_hard_mining_outage(status, wedge))
+
+    def test_check_once_waits_for_template_sync_wedge_confirmation(self) -> None:
+        now = 1_779_200_000
+        status = native_current_template_sync_wedge_status()
+        state: dict[str, object] = {}
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("first template-sync wedge sample must not restart")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("node_template_sync_wedge", result["watchdog_state"]["last_status"])
+        self.assertEqual(now, result["watchdog_state"]["node_template_sync_wedge_since"])
+        self.assertEqual(1, result["watchdog_state"]["consecutive_syncing"])
+        self.assertTrue(written)
+
+    def test_check_once_restarts_node_for_confirmed_template_sync_wedge(self) -> None:
+        now = 1_779_200_000
+        status = native_current_template_sync_wedge_status()
+        state = {"node_template_sync_wedge_since": now - watchdog.DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS}
+        restarts: list[tuple[str, str]] = []
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=lambda node, reason: restarts.append((node, reason)) or True
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual(1, len(restarts))
+        self.assertEqual("node", restarts[0][0])
+        self.assertIn("template-sync mining wedge", restarts[0][1])
+        self.assertIn("last_node_template_sync_wedge_restart", result["watchdog_state"])
+        self.assertNotIn("node_template_sync_wedge_since", result["watchdog_state"])
+        self.assertTrue(written)
+
+    def test_template_sync_wedge_repair_suppressed_by_recent_paid_work(self) -> None:
+        now = 1_779_200_000
+        status = native_current_template_sync_wedge_status(recent_paid_work=True)
+        state = {"node_template_sync_wedge_since": now - watchdog.DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS}
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("fresh paid work suppresses template-sync restart")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("node_template_sync_wedge_observing", result["watchdog_state"]["last_status"])
+        self.assertEqual(0, result["watchdog_state"]["consecutive_syncing"])
+        self.assertTrue(written)
+
+    def test_template_sync_wedge_repair_suppressed_by_active_import(self) -> None:
+        now = 1_779_200_000
+        status = native_current_template_sync_wedge_status()
+        nodes = status["nodes"]
+        assert isinstance(nodes, dict)
+        node = nodes["node"]
+        assert isinstance(node, dict)
+        node["importing"] = True
+        node["last_import_age_seconds"] = 10
+        state = {"node_template_sync_wedge_since": now - watchdog.DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS}
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("active import suppresses template-sync restart")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("node_template_sync_wedge_observing", result["watchdog_state"]["last_status"])
+        self.assertEqual(0, result["watchdog_state"]["consecutive_syncing"])
+        self.assertTrue(written)
 
     def test_check_once_waits_for_peer_lead_stall_confirmation(self) -> None:
         now = 1_779_200_000
