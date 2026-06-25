@@ -28,6 +28,7 @@ DEFAULT_DASHBOARD_STATUS_URL = "http://127.0.0.1:8088/api/status"
 DEFAULT_NODE_RPC_URL = "http://127.0.0.1:38131"
 DEFAULT_ENV_FILE = Path(os.environ.get("BDAG_STACK_ENV_FILE", ".env"))
 DEFAULT_OUTPUT_ROOT = Path("ops/runtime/monitoring")
+PEER_SNAPSHOT_LIMIT = 64
 METRIC_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([-+0-9.eE]+)$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 IMPORTED_RE = re.compile(r"Imported new chain segment.*?number=([0-9,]+)(?P<tail>.*)$")
@@ -287,6 +288,109 @@ def parse_compact_duration_seconds(raw: str | None) -> int | None:
     return total if matched else None
 
 
+def first_mapping_value(mapping: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in mapping:
+            return mapping.get(key)
+    return None
+
+
+def int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip().replace(",", "")
+        if stripped.lstrip("-").isdigit():
+            return int(stripped)
+    return None
+
+
+def str_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def graph_state_from_peer(peer: dict[str, Any]) -> dict[str, Any]:
+    graph_state = first_mapping_value(peer, "graphstate", "graph_state", "graphState")
+    return graph_state if isinstance(graph_state, dict) else {}
+
+
+def normalize_peer_info(peer: dict[str, Any]) -> dict[str, Any]:
+    graph_state = graph_state_from_peer(peer)
+    tips = first_mapping_value(graph_state, "tips", "Tips")
+    bads = peer.get("bads")
+    return {
+        "id": str_or_none(first_mapping_value(peer, "id", "ID", "peer_id", "peerID")),
+        "address": str_or_none(first_mapping_value(peer, "address", "addr", "multiaddr")),
+        "active": peer.get("active"),
+        "state": peer.get("state"),
+        "services": str_or_none(peer.get("services")),
+        "direction": str_or_none(peer.get("direction")),
+        "syncnode": bool(peer.get("syncnode")) if peer.get("syncnode") is not None else None,
+        "graph_main_order": int_or_none(
+            first_mapping_value(graph_state, "mainorder", "mainOrder", "main_order")
+        ),
+        "graph_main_height": int_or_none(
+            first_mapping_value(graph_state, "mainheight", "mainHeight", "main_height")
+        ),
+        "graph_layer": int_or_none(first_mapping_value(graph_state, "layer", "Layer")),
+        "graph_tip": str_or_none(tips[0]) if isinstance(tips, list) and tips else None,
+        "gsupdate": str_or_none(peer.get("gsupdate")),
+        "latency_ms": int_or_none(peer.get("latency_ms")),
+        "reconnect": int_or_none(peer.get("reconnect")),
+        "bad_count": len(bads) if isinstance(bads, list) else 0,
+        "connection_time": str_or_none(first_mapping_value(peer, "conntime", "connection_time", "connTime")),
+        "dagport": int_or_none(peer.get("dagport")),
+    }
+
+
+def summarize_peer_info(peers: Any) -> dict[str, Any]:
+    if not isinstance(peers, list):
+        return {
+            "total": 0,
+            "active": 0,
+            "consensus": 0,
+            "syncnode": 0,
+            "graph_main_order_min": None,
+            "graph_main_order_max": None,
+            "graph_main_order_spread": None,
+            "peers": [],
+            "truncated": 0,
+        }
+    normalized = [
+        normalize_peer_info(peer)
+        for peer in peers[:PEER_SNAPSHOT_LIMIT]
+        if isinstance(peer, dict)
+    ]
+    active_peers = [peer for peer in normalized if peer.get("active") is True and peer.get("state") is True]
+    consensus_peers = [
+        peer
+        for peer in active_peers
+        if "Full" in str(peer.get("services") or "") or "CF" in str(peer.get("services") or "")
+    ]
+    main_orders = [
+        value
+        for value in (int_or_none(peer.get("graph_main_order")) for peer in active_peers)
+        if value is not None
+    ]
+    return {
+        "total": len(peers),
+        "active": len(active_peers),
+        "consensus": len(consensus_peers),
+        "syncnode": sum(1 for peer in active_peers if peer.get("syncnode") is True),
+        "graph_main_order_min": min(main_orders) if main_orders else None,
+        "graph_main_order_max": max(main_orders) if main_orders else None,
+        "graph_main_order_spread": (max(main_orders) - min(main_orders)) if main_orders else None,
+        "peers": normalized,
+        "truncated": max(0, len(peers) - len(normalized)),
+    }
+
+
 def clean_log_line(line: str) -> str:
     return ANSI_RE.sub("", line)
 
@@ -357,17 +461,36 @@ def summarize_node_rpc(
         user=user,
         password=password,
     )
+    peers, peers_error, peers_latency = json_rpc_call(
+        url,
+        "getPeerInfo",
+        timeout=timeout,
+        user=user,
+        password=password,
+    )
+    peer_summary = summarize_peer_info(peers)
     summary: dict[str, Any] = {
         "url": url,
         "errors": {
             "getTemplateHealth": health_error,
             "getBlockCount": block_error,
+            "getPeerInfo": peers_error,
         },
         "latency_ms": {
             "getTemplateHealth": health_latency,
             "getBlockCount": block_latency,
+            "getPeerInfo": peers_latency,
         },
         "block_count": block_count if isinstance(block_count, int) else None,
+        "connected_peer_count": peer_summary["total"],
+        "active_peer_count": peer_summary["active"],
+        "consensus_peer_count": peer_summary["consensus"],
+        "syncnode_peer_count": peer_summary["syncnode"],
+        "peer_graph_main_order_min": peer_summary["graph_main_order_min"],
+        "peer_graph_main_order_max": peer_summary["graph_main_order_max"],
+        "peer_graph_main_order_spread": peer_summary["graph_main_order_spread"],
+        "peer_info_truncated": peer_summary["truncated"],
+        "peers": peer_summary["peers"],
     }
     if isinstance(health, dict):
         summary.update(

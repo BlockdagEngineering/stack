@@ -2011,6 +2011,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(
             [
+                ["docker", "inspect", "-f", "{{json .Config.Env}}", "node"],
                 ["docker", "inspect", "-f", "{{.State.Running}}", watchdog.POOL_CONTAINER],
                 ["docker", "restart", "node"],
             ],
@@ -2028,12 +2029,16 @@ class WatchdogSyncRestartTests(unittest.TestCase):
 
         def fake_run_logged(command: list[str], *_args, **_kwargs):
             commands.append(command)
+            if command == ["docker", "inspect", "-f", "{{json .Config.Env}}", "node"]:
+                return Result('["BOOTSTRAP_PEER_ADDRESSES=/ip4/good/tcp/8150/p2p/16Good"]')
             if command[:3] == ["docker", "inspect", "-f"]:
                 return Result("true\n")
             return Result()
 
         with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
             watchdog, "NODES", ["node"]
+        ), mock.patch.object(
+            watchdog, "POOL_ENV_FILE", pathlib.Path(tmpdir) / ".env"
         ), mock.patch.object(
             watchdog, "automation_mutation_allowed", return_value=True
         ), mock.patch.object(
@@ -2049,11 +2054,16 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         ), mock.patch.object(
             watchdog, "run_logged", side_effect=fake_run_logged
         ):
+            watchdog.POOL_ENV_FILE.write_text(
+                "BOOTSTRAP_PEER_ADDRESSES=/ip4/good/tcp/8150/p2p/16Good\n",
+                encoding="utf-8",
+            )
             ok = watchdog.run_node_restart("node", "unit test")
 
         self.assertTrue(ok)
         self.assertEqual(
             [
+                ["docker", "inspect", "-f", "{{json .Config.Env}}", "node"],
                 ["docker", "inspect", "-f", "{{.State.Running}}", watchdog.POOL_CONTAINER],
                 ["docker", "stop", watchdog.POOL_CONTAINER],
                 ["docker", "restart", "node"],
@@ -2064,6 +2074,76 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertTrue(states[-1]["pool_paused"])
         self.assertTrue(states[-1]["pool_stop_ok"])
         self.assertTrue(states[-1]["pool_start_ok"])
+        self.assertEqual("docker-restart", states[-1]["restart_method"])
+
+    def test_targeted_node_restart_recreates_when_bootstrap_env_is_stale(self) -> None:
+        commands: list[list[str]] = []
+        states: list[dict[str, object]] = []
+
+        class Result:
+            def __init__(self, stdout: str = "") -> None:
+                self.ok = True
+                self.stdout = stdout
+                self.stderr = ""
+
+        def fake_run_logged(command: list[str], *_args, **_kwargs):
+            commands.append(command)
+            if command == ["docker", "inspect", "-f", "{{json .Config.Env}}", "node"]:
+                return Result('["BOOTSTRAP_PEER_ADDRESSES=/ip4/stale/tcp/8151/p2p/16Stale"]')
+            if command == ["docker", "inspect", "-f", "{{.State.Running}}", watchdog.POOL_CONTAINER]:
+                return Result("false\n")
+            return Result()
+
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(
+            watchdog, "POOL_ENV_FILE", pathlib.Path(tmpdir) / ".env"
+        ), mock.patch.object(
+            watchdog, "automation_mutation_allowed", return_value=True
+        ), mock.patch.object(
+            watchdog, "acquire_lock", return_value=mock.Mock(close=lambda: None)
+        ), mock.patch.object(
+            watchdog, "action_log_path", return_value=pathlib.Path(tmpdir) / "restart.log"
+        ), mock.patch.object(
+            watchdog, "write_action_state", side_effect=lambda payload: states.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "record_failed_repair", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "compose_service_name", return_value="node"
+        ), mock.patch.object(
+            watchdog, "docker_compose_command", side_effect=lambda *args: ["compose", *args]
+        ), mock.patch.object(
+            watchdog, "run_logged", side_effect=fake_run_logged
+        ):
+            watchdog.POOL_ENV_FILE.write_text(
+                "BOOTSTRAP_PEER_ADDRESSES=/ip4/fresh/tcp/8150/p2p/16Fresh\n",
+                encoding="utf-8",
+            )
+            ok = watchdog.run_node_restart("node", "unit test")
+
+        self.assertTrue(ok)
+        self.assertEqual(
+            [
+                ["docker", "inspect", "-f", "{{json .Config.Env}}", "node"],
+                ["docker", "inspect", "-f", "{{.State.Running}}", watchdog.POOL_CONTAINER],
+                [
+                    "compose",
+                    "up",
+                    "-d",
+                    "--no-deps",
+                    "--force-recreate",
+                    "--no-build",
+                    "--pull",
+                    "never",
+                    "node",
+                ],
+            ],
+            commands,
+        )
+        self.assertEqual("compose-recreate", states[-1]["restart_method"])
+        self.assertEqual("BOOTSTRAP_PEER_ADDRESSES", states[-1]["env_recreate_mismatches"][0]["key"])
 
     def test_node_log_marks_missing_dag_tip_as_critical_repairable_damage(self) -> None:
         parsed = pool_ops.parse_node_log(

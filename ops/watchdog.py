@@ -29,12 +29,16 @@ from pool_ops import (
     PROJECT_ROOT,
     RUNTIME_DIR,
     action_log_path,
+    compose_service_name,
     configure_miner,
     default_miner_pool_settings,
+    docker_compose_command,
+    docker_env_value,
     ensure_runtime,
     is_lan_ipv4,
     now_iso,
     record_earnings_snapshot,
+    read_env_file_value,
     read_miner_admin_password,
     restart_miner,
     restart_miner_open,
@@ -198,6 +202,16 @@ AUTOMATIC_CLEAN_RESTORE_ENABLED = env_bool("BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE"
 BOOT_REPAIR_DIRTY_POLICY = os.environ.get("BDAG_BOOT_REPAIR_DIRTY_POLICY", "start").strip().lower()
 BOOT_REPAIR_CRITICAL_POLICY = os.environ.get("BDAG_BOOT_REPAIR_CRITICAL_POLICY", "restart").strip().lower()
 PAUSE_POOL_DURING_NODE_RESTART = env_bool("BDAG_WATCHDOG_PAUSE_POOL_DURING_NODE_RESTART", True)
+NODE_RECREATE_ENV_KEYS = (
+    "BOOTSTRAP_PEER_ADDRESSES",
+    "BDAG_ENABLE_NODE_MINING",
+    "BDAG_NODE_MODULES",
+    "BDAG_NODE_MINING_NO_PENDING_TX",
+    "NODE_ARGS_APPEND",
+    "MINING_ADDRESS",
+    "MINING_POOL_ADDRESS",
+    "POOL_COINBASE_ADDRESS",
+)
 
 
 def log(message: str) -> None:
@@ -2160,6 +2174,52 @@ def run_repair(mode: str, reason: str) -> bool:
     return ok
 
 
+def normalize_node_recreate_env_value(name: str, value: str | None) -> str:
+    text = (value or "").strip()
+    if name == "BOOTSTRAP_PEER_ADDRESSES":
+        peers = sorted({item.strip() for item in text.split(",") if item.strip()})
+        return ",".join(peers)
+    return text
+
+
+def node_env_recreate_mismatches(node_service: str, log_path: Path) -> list[dict[str, str]]:
+    result = run_logged(
+        ["docker", "inspect", "-f", "{{json .Config.Env}}", node_service],
+        log_path,
+        timeout=30,
+    )
+    if not result.ok or not result.stdout.strip():
+        log(
+            f"node env drift check skipped for {node_service}: "
+            f"inspect failed stdout={str(getattr(result, 'stdout', '')).strip()} "
+            f"stderr={str(getattr(result, 'stderr', '')).strip()}"
+        )
+        return []
+    try:
+        env_rows = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        log(f"node env drift check skipped for {node_service}: invalid inspect JSON: {exc}")
+        return []
+    mismatches: list[dict[str, str]] = []
+    for key in NODE_RECREATE_ENV_KEYS:
+        desired = read_env_file_value(POOL_ENV_FILE, key)
+        if desired is None:
+            continue
+        actual = docker_env_value(env_rows, key)
+        normalized_desired = normalize_node_recreate_env_value(key, desired)
+        normalized_actual = normalize_node_recreate_env_value(key, actual)
+        if normalized_desired == normalized_actual:
+            continue
+        mismatches.append(
+            {
+                "key": key,
+                "desired": normalized_desired,
+                "actual": normalized_actual,
+            }
+        )
+    return mismatches
+
+
 def run_node_restart(node_service: str, reason: str) -> bool:
     if node_service not in NODES:
         log(f"targeted node restart skipped for unknown node={node_service} reason={reason}")
@@ -2196,7 +2256,16 @@ def run_node_restart(node_service: str, reason: str) -> bool:
     log(f"starting targeted restart for {node_service}: {reason}; log={log_path}")
 
     # NODES contains runtime container names. The Compose service may be named
-    # differently after topology migration, so restart the concrete container.
+    # differently after topology migration. A plain docker restart preserves the
+    # original container environment, so recreate through Compose when .env has
+    # drifted from the running container.
+    env_mismatches = node_env_recreate_mismatches(node_service, log_path)
+    restart_method = "compose-recreate" if env_mismatches else "docker-restart"
+    if env_mismatches:
+        mismatch_keys = ",".join(item["key"] for item in env_mismatches)
+        log(
+            f"targeted node repair will recreate {node_service} to apply env drift keys={mismatch_keys}"
+        )
     pool_was_running = False
     pool_stop_ok = True
     pool_start_ok = True
@@ -2214,7 +2283,19 @@ def run_node_restart(node_service: str, reason: str) -> bool:
             pool_stop_ok = pool_stop_result.ok
 
     if pool_stop_ok:
-        command = ["docker", "restart", node_service]
+        if env_mismatches:
+            command = docker_compose_command(
+                "up",
+                "-d",
+                "--no-deps",
+                "--force-recreate",
+                "--no-build",
+                "--pull",
+                "never",
+                compose_service_name(node_service),
+            )
+        else:
+            command = ["docker", "restart", node_service]
         result = run_logged(command, log_path, timeout=180)
     else:
         result = pool_stop_result
@@ -2233,6 +2314,8 @@ def run_node_restart(node_service: str, reason: str) -> bool:
             "pool_paused": pool_was_running,
             "pool_stop_ok": pool_stop_ok,
             "pool_start_ok": pool_start_ok,
+            "restart_method": restart_method,
+            "env_recreate_mismatches": env_mismatches,
         }
     )
     write_action_state(state_payload)

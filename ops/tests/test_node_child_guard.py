@@ -133,22 +133,71 @@ class NodeChildGuardTests(unittest.TestCase):
     def test_restart_uses_compose_service_label(self) -> None:
         calls: list[list[str]] = []
         original_run = node_child_guard.run
+        original_env = node_child_guard.POOL_ENV_FILE
 
         def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
             calls.append(command)
+            if command == ["docker", "inspect", "-f", "{{json .Config.Env}}", "node"]:
+                return SimpleNamespace(returncode=0, stdout="[]\n", stderr="")
             if command[:2] == ["docker", "inspect"]:
                 return SimpleNamespace(returncode=0, stdout="node\n", stderr="")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-        try:
-            node_child_guard.run = fake_run
-            ok = node_child_guard.restart_node("node", "child missing", {}, 1000)
-        finally:
-            node_child_guard.run = original_run
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                node_child_guard.POOL_ENV_FILE = pathlib.Path(tmpdir) / ".env"
+                node_child_guard.run = fake_run
+                ok = node_child_guard.restart_node("node", "child missing", {}, 1000)
+            finally:
+                node_child_guard.run = original_run
+                node_child_guard.POOL_ENV_FILE = original_env
 
         self.assertTrue(ok)
-        self.assertIn("restart", calls[1])
-        self.assertEqual(calls[1][-2:], ["restart", "node"])
+        self.assertIn("restart", calls[2])
+        self.assertEqual(calls[2][-2:], ["restart", "node"])
+
+    def test_restart_recreates_when_bootstrap_env_is_stale(self) -> None:
+        calls: list[list[str]] = []
+        original_run = node_child_guard.run
+        original_env = node_child_guard.POOL_ENV_FILE
+
+        def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+            calls.append(command)
+            if command == ["docker", "inspect", "-f", '{{ index .Config.Labels "com.docker.compose.service" }}', "node"]:
+                return SimpleNamespace(returncode=0, stdout="node\n", stderr="")
+            if command == ["docker", "inspect", "-f", "{{json .Config.Env}}", "node"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout='["BOOTSTRAP_PEER_ADDRESSES=/ip4/stale/tcp/8151/p2p/16Stale"]\n',
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                node_child_guard.POOL_ENV_FILE = pathlib.Path(tmpdir) / ".env"
+                node_child_guard.POOL_ENV_FILE.write_text(
+                    "BOOTSTRAP_PEER_ADDRESSES=/ip4/fresh/tcp/8150/p2p/16Fresh\n",
+                    encoding="utf-8",
+                )
+                node_child_guard.run = fake_run
+                state: dict[str, object] = {}
+                ok = node_child_guard.restart_node("node", "child missing", state, 1000)
+            finally:
+                node_child_guard.run = original_run
+                node_child_guard.POOL_ENV_FILE = original_env
+
+        self.assertTrue(ok)
+        recreate = calls[2]
+        self.assertEqual(
+            recreate[-8:],
+            ["up", "-d", "--no-deps", "--force-recreate", "--no-build", "--pull", "never", "node"],
+        )
+        self.assertEqual({"node": "compose-recreate"}, state["last_restart_method_by_node"])
+        self.assertEqual(
+            "BOOTSTRAP_PEER_ADDRESSES",
+            state["last_restart_env_mismatches_by_node"]["node"][0]["key"],
+        )
 
     def test_restart_falls_back_to_direct_docker_restart(self) -> None:
         calls: list[list[str]] = []

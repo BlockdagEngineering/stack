@@ -124,6 +124,54 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
                     None,
                     1.25,
                 )
+            if method == "getPeerInfo":
+                return (
+                    [
+                        {
+                            "id": "16PeerFresh",
+                            "address": "/ip4/129.121.92.232/tcp/8152/p2p/16PeerFresh",
+                            "state": True,
+                            "active": True,
+                            "services": "Full|CF",
+                            "direction": "Outbound",
+                            "syncnode": True,
+                            "graphstate": {
+                                "tips": ["0xfresh main"],
+                                "mainorder": 12560870,
+                                "mainheight": 9640000,
+                                "layer": 9650000,
+                            },
+                            "gsupdate": "0s",
+                            "latency_ms": 12,
+                            "reconnect": 1,
+                            "bads": [],
+                            "conntime": "20m53s",
+                            "dagport": 38131,
+                        },
+                        {
+                            "id": "16PeerLagging",
+                            "address": "/ip4/207.244.230.191/tcp/8153/p2p/16PeerLagging",
+                            "state": True,
+                            "active": True,
+                            "services": "Full|CF",
+                            "direction": "Outbound",
+                            "graphstate": {
+                                "tips": ["0xlagging main"],
+                                "mainorder": 12560600,
+                                "mainheight": 9639900,
+                                "layer": 9649900,
+                            },
+                            "gsupdate": "1s",
+                            "latency_ms": 883702,
+                            "reconnect": 4,
+                            "bads": ["ErrStreamBase"],
+                            "conntime": "18m29s",
+                            "dagport": 38131,
+                        },
+                    ],
+                    None,
+                    2.5,
+                )
             return 12559108, None, 0.75
 
         original = monitor.json_rpc_call
@@ -138,7 +186,14 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
         finally:
             monitor.json_rpc_call = original
 
-        self.assertEqual(["http://node:38131:getTemplateHealth", "http://node:38131:getBlockCount"], calls)
+        self.assertEqual(
+            [
+                "http://node:38131:getTemplateHealth",
+                "http://node:38131:getBlockCount",
+                "http://node:38131:getPeerInfo",
+            ],
+            calls,
+        )
         self.assertTrue(summary["chain_current"])
         self.assertFalse(summary["mineable_now"])
         self.assertFalse(summary["submit_ready"])
@@ -147,6 +202,19 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
         self.assertEqual(12560870, summary["p2p_best_peer_main_order"])
         self.assertEqual(1763, summary["p2p_best_peer_lead_blocks"])
         self.assertEqual(12559108, summary["block_count"])
+        self.assertEqual(2, summary["connected_peer_count"])
+        self.assertEqual(2, summary["active_peer_count"])
+        self.assertEqual(2, summary["consensus_peer_count"])
+        self.assertEqual(1, summary["syncnode_peer_count"])
+        self.assertEqual(12560600, summary["peer_graph_main_order_min"])
+        self.assertEqual(12560870, summary["peer_graph_main_order_max"])
+        self.assertEqual(270, summary["peer_graph_main_order_spread"])
+        self.assertEqual(2.5, summary["latency_ms"]["getPeerInfo"])
+        self.assertEqual("16PeerFresh", summary["peers"][0]["id"])
+        self.assertEqual("/ip4/129.121.92.232/tcp/8152/p2p/16PeerFresh", summary["peers"][0]["address"])
+        self.assertEqual(12560870, summary["peers"][0]["graph_main_order"])
+        self.assertEqual("0xfresh main", summary["peers"][0]["graph_tip"])
+        self.assertEqual(1, summary["peers"][1]["bad_count"])
 
     def test_reset_aware_counter_delta_handles_pool_restart(self) -> None:
         samples = [
