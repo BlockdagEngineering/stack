@@ -483,6 +483,91 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
         self.assertEqual(0, summary["anomaly_count"])
         self.assertEqual([], summary["window_anomaly_reasons"])
 
+    def test_sample_window_summary_records_productive_parent_stale_as_advisory(self) -> None:
+        sample = self.sample(
+            "2026-06-25T15:23:21+02:00",
+            accepted_blocks=746,
+            ready_miners=4,
+            p2p_mining_fresh=1,
+            peer_lead_blocks=2,
+            mineable=0,
+            submit_ready=0,
+            template_age_seconds=1.8,
+        )
+        sample["node_rpc"] = {
+            "reason_code": "template_parent_stale",
+            "mineable_now": False,
+            "submit_ready": False,
+            "p2p_mining_fresh": True,
+            "p2p_mining_fresh_reason_code": "ok",
+            "p2p_best_peer_lead_blocks": 2,
+            "p2p_fresh_consensus_peer_count": 9,
+        }
+        sample["node_log_tail"] = {"graph_sync_open": True, "rewind_count_tail": 12}
+
+        summary = monitor.summarize_sample_window([sample])
+
+        self.assertEqual(0, summary["anomaly_count"])
+        self.assertEqual(1, summary["advisory_count"])
+        self.assertIn("productive_template_parent_stale", summary["advisory_samples"][0]["reasons"])
+        self.assertIn("productive_template_parent_stale_observed", summary["window_advisory_reasons"])
+        self.assertEqual([], summary["window_anomaly_reasons"])
+
+    def test_sample_window_summary_records_peer_lead_risk_before_zero_ready(self) -> None:
+        sample = self.sample(
+            "2026-06-25T15:01:21+02:00",
+            accepted_blocks=700,
+            ready_miners=4,
+            p2p_mining_fresh=0,
+            peer_lead_blocks=18,
+            mineable=0,
+            submit_ready=0,
+            template_age_seconds=4,
+        )
+        sample["node_rpc"] = {
+            "reason_code": "node_syncing",
+            "mineable_now": False,
+            "submit_ready": False,
+            "p2p_mining_fresh": False,
+            "p2p_mining_fresh_reason_code": "peer_lead_exceeds_tolerance",
+            "p2p_best_peer_lead_blocks": 18,
+            "p2p_fresh_consensus_peer_count": 9,
+        }
+
+        summary = monitor.summarize_sample_window([sample])
+
+        self.assertEqual(1, summary["anomaly_count"])
+        self.assertIn("peer_lead_risk_before_zero_ready", summary["advisory_samples"][0]["reasons"])
+        self.assertIn("peer_lead_risk_before_zero_ready_observed", summary["window_advisory_reasons"])
+        self.assertNotIn("hard_peer_lead_template_stall", summary["anomaly_samples"][0]["reasons"])
+
+    def test_sample_window_summary_records_graph_turbulence_with_mining_intact(self) -> None:
+        sample = self.sample(
+            "2026-06-25T15:20:21+02:00",
+            accepted_blocks=730,
+            ready_miners=4,
+            p2p_mining_fresh=1,
+            peer_lead_blocks=0,
+            mineable=1,
+            submit_ready=1,
+            template_age_seconds=0.4,
+        )
+        sample["node_rpc"] = {
+            "reason_code": "ok",
+            "mineable_now": True,
+            "submit_ready": True,
+            "p2p_mining_fresh": True,
+            "p2p_best_peer_lead_blocks": 0,
+        }
+        sample["node_log_tail"] = {"graph_sync_open": False, "rewind_count_tail": 8}
+
+        summary = monitor.summarize_sample_window([sample])
+
+        self.assertEqual(0, summary["anomaly_count"])
+        self.assertEqual(1, summary["advisory_count"])
+        self.assertIn("graph_sync_reorg_turbulence_mining_intact", summary["advisory_samples"][0]["reasons"])
+        self.assertIn("graph_sync_reorg_turbulence_mining_intact_observed", summary["window_advisory_reasons"])
+
     def test_sample_window_summary_counts_dashboard_template_skew_when_node_rpc_is_safe(self) -> None:
         sample = self.sample(
             "2026-06-25T13:40:02+02:00",

@@ -820,6 +820,65 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
     return reasons
 
 
+def sample_advisory_reasons(sample: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    job_state = sample.get("pool_job_state") if isinstance(sample.get("pool_job_state"), dict) else {}
+    node_rpc = sample.get("node_rpc") if isinstance(sample.get("node_rpc"), dict) else {}
+    node_log = sample.get("node_log_tail") if isinstance(sample.get("node_log_tail"), dict) else {}
+    ready = sample_metric(sample, "ready_miners")
+    ready_state = job_state.get("ready_connections")
+    try:
+        ready_state_number = None if ready_state is None else int(float(ready_state))
+    except (TypeError, ValueError):
+        ready_state_number = None
+    ready_miners = ready if ready is not None else ready_state_number
+    p2p = sample_metric_or_node(sample, "p2p_mining_fresh")
+    lead = sample_metric_or_node(sample, "peer_lead_blocks")
+    template_age = sample_metric_or_node(sample, "template_age_seconds")
+    mineable = sample_metric_or_node(sample, "mineable")
+    submit_ready = sample_metric_or_node(sample, "submit_ready")
+    node_reason = node_rpc.get("reason_code")
+    p2p_reason = node_rpc.get("p2p_mining_fresh_reason_code")
+
+    mining_lanes_intact = ready_miners is not None and float(ready_miners) >= 4
+    p2p_safe = p2p is not None and p2p >= 1
+    peer_lead_safe = lead is None or lead <= 10
+    template_fresh = template_age is None or template_age <= 5
+    if (
+        node_reason == "template_parent_stale"
+        and mining_lanes_intact
+        and p2p_safe
+        and peer_lead_safe
+        and template_fresh
+        and (
+            (mineable is not None and mineable < 1)
+            or (submit_ready is not None and submit_ready < 1)
+        )
+    ):
+        reasons.append("productive_template_parent_stale")
+
+    if (
+        mining_lanes_intact
+        and (
+            p2p_reason == "peer_lead_exceeds_tolerance"
+            or (lead is not None and lead > 10)
+        )
+    ):
+        reasons.append("peer_lead_risk_before_zero_ready")
+
+    if (
+        mining_lanes_intact
+        and p2p_safe
+        and (
+            bool(node_log.get("graph_sync_open"))
+            or int(node_log.get("rewind_count_tail") or 0) > 0
+        )
+        and not reasons
+    ):
+        reasons.append("graph_sync_reorg_turbulence_mining_intact")
+    return reasons
+
+
 def sample_node_log_context(sample: dict[str, Any]) -> dict[str, Any]:
     node_log = sample.get("node_log_tail") if isinstance(sample.get("node_log_tail"), dict) else {}
     if not node_log:
@@ -909,6 +968,26 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
     return reasons
 
 
+def window_advisory_reasons(summary: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    advisory_samples = summary.get("advisory_samples")
+    if not isinstance(advisory_samples, list):
+        return reasons
+    advisory_reason_set = {
+        str(reason)
+        for sample in advisory_samples
+        if isinstance(sample, dict)
+        for reason in (sample.get("reasons") if isinstance(sample.get("reasons"), list) else [])
+    }
+    if "productive_template_parent_stale" in advisory_reason_set:
+        reasons.append("productive_template_parent_stale_observed")
+    if "peer_lead_risk_before_zero_ready" in advisory_reason_set:
+        reasons.append("peer_lead_risk_before_zero_ready_observed")
+    if "graph_sync_reorg_turbulence_mining_intact" in advisory_reason_set:
+        reasons.append("graph_sync_reorg_turbulence_mining_intact_observed")
+    return reasons
+
+
 def summarize_sample_window(samples: list[dict[str, Any]]) -> dict[str, Any]:
     sample_times = [timestamp for sample in samples if (timestamp := sample_timestamp(sample)) is not None]
     started_at = min(sample_times).isoformat() if sample_times else None
@@ -919,25 +998,26 @@ def summarize_sample_window(samples: list[dict[str, Any]]) -> dict[str, Any]:
     local_reject_delta = sum(counters[name]["delta"] for name in ("stale_job_rejects", "stale_parent_rejects", "duplicate_rejects"))
     accepted_delta = counters["accepted_blocks"]["delta"]
     anomaly_samples: list[dict[str, Any]] = []
+    advisory_samples: list[dict[str, Any]] = []
     for sample in samples:
         reasons = sample_anomaly_reasons(sample)
-        if not reasons:
-            continue
-        anomaly_samples.append(
-            {
-                "sampled_at": sample.get("sampled_at"),
-                "reasons": reasons,
-                "accepted_blocks": sample_metric(sample, "accepted_blocks"),
-                "ready_miners": sample_metric(sample, "ready_miners"),
-                "p2p_mining_fresh": sample_metric_or_node(sample, "p2p_mining_fresh"),
-                "peer_lead_blocks": sample_metric_or_node(sample, "peer_lead_blocks"),
-                "mineable": sample_metric_or_node(sample, "mineable"),
-                "submit_ready": sample_metric_or_node(sample, "submit_ready"),
-                "template_age_seconds": sample_metric_or_node(sample, "template_age_seconds"),
-                "node_log_context": sample_node_log_context(sample),
-                "node_rpc_context": sample_node_rpc_context(sample),
-            }
-        )
+        sample_context = {
+            "sampled_at": sample.get("sampled_at"),
+            "accepted_blocks": sample_metric(sample, "accepted_blocks"),
+            "ready_miners": sample_metric(sample, "ready_miners"),
+            "p2p_mining_fresh": sample_metric_or_node(sample, "p2p_mining_fresh"),
+            "peer_lead_blocks": sample_metric_or_node(sample, "peer_lead_blocks"),
+            "mineable": sample_metric_or_node(sample, "mineable"),
+            "submit_ready": sample_metric_or_node(sample, "submit_ready"),
+            "template_age_seconds": sample_metric_or_node(sample, "template_age_seconds"),
+            "node_log_context": sample_node_log_context(sample),
+            "node_rpc_context": sample_node_rpc_context(sample),
+        }
+        if reasons:
+            anomaly_samples.append({"reasons": reasons, **sample_context})
+        advisory_reasons = sample_advisory_reasons(sample)
+        if advisory_reasons:
+            advisory_samples.append({"reasons": advisory_reasons, **sample_context})
     critical_anomaly_samples = [
         sample
         for sample in anomaly_samples
@@ -959,9 +1039,13 @@ def summarize_sample_window(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "anomaly_samples_truncated": max(0, len(anomaly_samples) - 25),
         "critical_anomaly_samples": critical_anomaly_samples[:10],
         "critical_anomaly_samples_truncated": max(0, len(critical_anomaly_samples) - 10),
+        "advisory_count": len(advisory_samples),
+        "advisory_samples": advisory_samples[:25],
+        "advisory_samples_truncated": max(0, len(advisory_samples) - 25),
         "status_consistency": status_consistency_summary(samples),
     }
     summary["window_anomaly_reasons"] = window_anomaly_reasons(summary)
+    summary["window_advisory_reasons"] = window_advisory_reasons(summary)
     return summary
 
 
