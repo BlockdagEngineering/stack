@@ -247,6 +247,9 @@ def peer_lead_stall_status(*, recent_paid_work: bool = False) -> dict[str, objec
 
 
 class WatchdogSyncRestartTests(unittest.TestCase):
+    def test_watchdog_default_interval_matches_hard_stall_observation_cadence(self) -> None:
+        self.assertEqual(watchdog.DEFAULT_INTERVAL_SECONDS, 30)
+
     def test_active_import_requires_fresh_import_age_when_importing_flag_is_stuck(self) -> None:
         now = 1_779_200_000
         status = node_status(importing=True, last_import_age_seconds=700)
