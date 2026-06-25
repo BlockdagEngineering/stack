@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 import pathlib
+import os
 import sys
+import tempfile
 import unittest
 
 OPS_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -25,6 +27,38 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
                 "reason_code": "ok",
             },
         }
+
+    def test_env_or_file_value_loads_rpc_credentials_from_dotenv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = pathlib.Path(tmp) / ".env"
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "NODE_RPC_USER=test-user",
+                        "NODE_RPC_PASS='test-pass'",
+                        "BDAG_NODE_RPC_URL=http://127.0.0.1:38131",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            monitor._ENV_FILE_CACHE.clear()
+            old_user = os.environ.pop("NODE_RPC_USER", None)
+            old_pass = os.environ.pop("NODE_RPC_PASS", None)
+            try:
+                self.assertEqual("test-user", monitor.env_or_file_value("NODE_RPC_USER", path=env_file))
+                self.assertEqual("test-pass", monitor.env_or_file_value("NODE_RPC_PASS", path=env_file))
+                os.environ["NODE_RPC_USER"] = "env-user"
+                self.assertEqual("env-user", monitor.env_or_file_value("NODE_RPC_USER", path=env_file))
+            finally:
+                monitor._ENV_FILE_CACHE.clear()
+                if old_user is not None:
+                    os.environ["NODE_RPC_USER"] = old_user
+                else:
+                    os.environ.pop("NODE_RPC_USER", None)
+                if old_pass is not None:
+                    os.environ["NODE_RPC_PASS"] = old_pass
+                else:
+                    os.environ.pop("NODE_RPC_PASS", None)
 
     def test_node_log_tail_tracks_import_age_and_open_graph_sync(self) -> None:
         payload = """

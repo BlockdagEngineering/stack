@@ -26,6 +26,7 @@ DEFAULT_JOB_STATE_URL = "http://127.0.0.1:9090/health/job-state"
 DEFAULT_METRICS_URL = "http://127.0.0.1:9090/metrics"
 DEFAULT_DASHBOARD_STATUS_URL = "http://127.0.0.1:8088/api/status"
 DEFAULT_NODE_RPC_URL = "http://127.0.0.1:38131"
+DEFAULT_ENV_FILE = Path(os.environ.get("BDAG_STACK_ENV_FILE", ".env"))
 DEFAULT_OUTPUT_ROOT = Path("ops/runtime/monitoring")
 METRIC_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([-+0-9.eE]+)$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -88,6 +89,37 @@ SUMMARY_COUNTERS = (
     "stale_parent_rejects",
     "duplicate_rejects",
 )
+
+_ENV_FILE_CACHE: dict[Path, dict[str, str]] = {}
+
+
+def read_env_file_values(path: Path) -> dict[str, str]:
+    resolved = path.expanduser()
+    if resolved in _ENV_FILE_CACHE:
+        return dict(_ENV_FILE_CACHE[resolved])
+    values: dict[str, str] = {}
+    try:
+        lines = resolved.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        _ENV_FILE_CACHE[resolved] = values
+        return {}
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        if key:
+            values[key] = value
+    _ENV_FILE_CACHE[resolved] = values
+    return dict(values)
+
+
+def env_or_file_value(name: str, default: str = "", *, path: Path = DEFAULT_ENV_FILE) -> str:
+    return os.environ.get(name) or read_env_file_values(path).get(name, default)
 
 SUMMARY_GAUGES = (
     "ready_miners",
@@ -843,9 +875,9 @@ def main() -> int:
     parser.add_argument("--job-state-url", default=DEFAULT_JOB_STATE_URL)
     parser.add_argument("--metrics-url", default=DEFAULT_METRICS_URL)
     parser.add_argument("--dashboard-status-url", default=DEFAULT_DASHBOARD_STATUS_URL)
-    parser.add_argument("--node-rpc-url", default=os.environ.get("BDAG_NODE_RPC_URL", DEFAULT_NODE_RPC_URL))
-    parser.add_argument("--node-rpc-user", default=os.environ.get("NODE_RPC_USER", ""))
-    parser.add_argument("--node-rpc-pass", default=os.environ.get("NODE_RPC_PASS", ""))
+    parser.add_argument("--node-rpc-url", default=env_or_file_value("BDAG_NODE_RPC_URL", DEFAULT_NODE_RPC_URL))
+    parser.add_argument("--node-rpc-user", default=env_or_file_value("NODE_RPC_USER"))
+    parser.add_argument("--node-rpc-pass", default=env_or_file_value("NODE_RPC_PASS"))
     parser.add_argument("--node-container", default="node")
     parser.add_argument("--node-log-tail-lines", type=int, default=400)
     parser.add_argument("--timeout", type=float, default=6.0)
