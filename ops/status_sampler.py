@@ -730,6 +730,12 @@ def status_payload_has_tracking_gap(payload: dict[str, Any]) -> bool:
     miner_health = dict_value(payload.get("miner_health"))
     if safe_int(miner_health.get("tracked_count")) > 0:
         return False
+    try:
+        registry = read_miner_registry()
+        if len(registry.get("miners") or []) > 0:
+            return False
+    except Exception as exc:  # noqa: BLE001 - repair predicate must fail back to payload evidence.
+        log(f"mining imperative could not read miner registry before tracking-gap repair: {exc}")
     return status_payload_has_miner_demand(payload) or asic_lan_neighbor_present()
 
 

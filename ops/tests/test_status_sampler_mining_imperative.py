@@ -255,6 +255,18 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertIn(("public_chain_divergence_left_pool_running", "warning"), incidents)
         self.assertFalse(any(command[:2] == ["docker", "start"] for command in commands))
 
+    def test_tracking_gap_uses_existing_registry_when_payload_lacks_tracked_count(self) -> None:
+        payload = {
+            "miner_health": {
+                "connected_count_effective": 4,
+                "connected_count_source": "pool-metrics",
+            },
+            "pool": {"metrics": {"active_connections": 4}},
+        }
+        status_sampler.read_miner_registry = lambda: {"miners": [{"mac": "28:e2:97:1e:c0:b5"}]}
+
+        self.assertFalse(status_sampler.status_payload_has_tracking_gap(payload))
+
     def test_native_current_evm_public_alignment_divergence_does_not_block_pool_start(self) -> None:
         commands = []
         incidents = []

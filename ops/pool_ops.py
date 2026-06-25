@@ -7965,8 +7965,8 @@ def evm_public_chain_alignment(
     alignment["public_chain_diverged"] = bool(hash_divergence_suspected or solo_mining_suspected)
     if hash_divergence_suspected:
         alignment["reason"] = (
-            "same-height local EVM block hashes differ from an ahead public reference; "
-            "the local node must not mine until it rejoins the public chain"
+            "same-height local EVM block hashes differ from an ahead public EVM reference; "
+            "EVM public alignment is unsafe until the local EVM index rejoins the public reference"
         )
     elif solo_mining_suspected:
         alignment["reason"] = (
