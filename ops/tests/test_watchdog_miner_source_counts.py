@@ -2,6 +2,7 @@
 
 import pathlib
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -624,7 +625,7 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
             def close(self) -> None:
                 pass
 
-        with mock.patch.dict(
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.dict(
             watchdog.os.environ,
             {"BDAG_ASIC_POWER_CYCLE_COMMAND_BY_MAC": "28:e2:97:4d:44:3a=/bin/true {mac} {ip}"},
             clear=False,
@@ -632,6 +633,8 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
             watchdog, "automation_mutation_allowed", return_value=True
         ), mock.patch.object(
             watchdog, "acquire_lock", return_value=DummyLock()
+        ), mock.patch.object(
+            watchdog, "action_log_path", return_value=pathlib.Path(tmpdir) / "power-cycle.log"
         ), mock.patch.object(
             watchdog, "write_action_state", lambda _payload: None
         ), mock.patch.object(
