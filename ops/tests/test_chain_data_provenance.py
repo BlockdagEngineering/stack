@@ -150,6 +150,23 @@ class ChainDataProvenanceTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_preflight_size_probe_does_not_emit_duplicate_number_on_permission_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_env(root, "NODE_DATA_DIR=./data/node\n")
+            make_chain(root / "data" / "node", payload_bytes=1024)
+            unreadable = root / "data" / "node" / "mainnet" / "bdageth" / "unreadable"
+            unreadable.mkdir()
+            unreadable.chmod(0)
+            try:
+                result = run_script(PREFLIGHT, root)
+            finally:
+                unreadable.chmod(0o755)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("arithmetic syntax error", result.stderr)
+        self.assertNotRegex(result.stderr, r"size_bytes=[0-9]+\\s+0\\b")
+
     def test_preflight_accepts_staged_snapshot_as_non_genesis_seed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

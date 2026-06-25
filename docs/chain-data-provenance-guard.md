@@ -61,6 +61,44 @@ The script accepts either a complete node datadir or a staged
 `mainnet/snapshot.bdsnap` as usable non-genesis chain seed data. A complete,
 newer datadir still wins over a snapshot.
 
+## Local Chain Archive Restore
+
+When a human supplies chain data in `~/Downloads`, on a USB drive, or beside the
+installer, treat it as a candidate data source before allowing genesis sync.
+Do not trust the file extension alone. The 2026-06-25 restore used a file named
+`bdag-latest-snapshot (1).tar.gz` that was actually a zstd-compressed tar
+archive. Always detect the type with `file` or the installer archive detector.
+
+A local chain archive may contain only the chain payload:
+
+```text
+BdagChain/
+bdageth/
+metaData
+```
+
+That is valid chain/EVM state, but it is not the complete runtime identity.
+When replacing a live datadir from such an archive:
+
+1. Stop pool first, then dashboard, status-sampler, watchdog, sentinel, and
+   node.
+2. Preserve `.env`, `node.conf`, pool accounting, ASIC settings, and
+   `MINING_POOL_ADDRESS`.
+3. Preserve peer identity from the existing datadir when present:
+   `mainnet/peerstore`, `mainnet/network.key`, and `mainnet/recent-peers.json`.
+4. Quarantine the previous `BdagChain`, `bdageth`, and `metaData` directories
+   instead of deleting them.
+5. Extract the archive into `NODE_DATA_DIR/mainnet`.
+6. Restore container ownership, normally UID/GID `999:999` for `bdagStack`.
+7. Keep directories searchable by the installer user, normally `0755`, so
+   `scripts/preflight-chain-data.sh` can verify the restore without root.
+8. Run `scripts/preflight-chain-data.sh` before starting node.
+9. Start node and dashboard first. Start or allow pool only after node RPC,
+   P2P freshness, and mining-template gates are sane.
+
+The manifest for the restore must record the archive path, measured size,
+checksum when practical, target path, quarantine path, and preserved peer files.
+
 ## Legacy Volume Migration
 
 If `stack_node-data` is the best valid source, migrate it into canonical

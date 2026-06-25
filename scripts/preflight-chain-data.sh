@@ -53,7 +53,13 @@ resolve_path() {
 size_bytes() {
   local path="$1"
   [[ -e "$path" ]] || { printf '0\n'; return 0; }
-  du -sb "$path" 2>/dev/null | awk '{print $1}' || printf '0\n'
+  local measured
+  measured="$(du -sb "$path" 2>/dev/null | awk 'NR == 1 { print $1; exit }' || true)"
+  if [[ "$measured" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$measured"
+  else
+    printf '0\n'
+  fi
 }
 
 has_chain_markers() {

@@ -897,9 +897,10 @@ validate_chain_data_archive() {
 stage_chain_data_archive_for_node_datadir() {
     [[ -n "${CHAIN_DATA_ARCHIVE_PATH:-}" ]] || return 0
 
-    local node_dir network_dir
+    local node_dir network_dir peer_state_dir item
     node_dir="$(package_path "$(env_file_value .env NODE_DATA_DIR)")"
     network_dir="$node_dir/mainnet"
+    peer_state_dir="$node_dir/.pre-chain-archive-peer-state"
 
     if chain_marker_exists "$network_dir"; then
         echo "Existing chain markers found in $network_dir; preserving node data and skipping chain archive extraction."
@@ -907,8 +908,21 @@ stage_chain_data_archive_for_node_datadir() {
     fi
 
     mkdir -p "$network_dir"
+    rm -rf "$peer_state_dir"
+    mkdir -p "$peer_state_dir"
+    for item in peerstore network.key recent-peers.json; do
+        if [[ -e "$network_dir/$item" ]]; then
+            cp -a "$network_dir/$item" "$peer_state_dir/"
+        fi
+    done
     echo "Extracting local chain data archive into $network_dir"
     chain_data_archive_extract "$CHAIN_DATA_ARCHIVE_PATH" "$network_dir"
+    for item in peerstore network.key recent-peers.json; do
+        if [[ -e "$peer_state_dir/$item" && ! -e "$network_dir/$item" ]]; then
+            cp -a "$peer_state_dir/$item" "$network_dir/"
+        fi
+    done
+    find "$network_dir" -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
     echo "Local chain data archive extracted."
 }
 

@@ -108,6 +108,16 @@ outbound sync and block relay, but must not serve bulk range or snapshot traffic
 from the USB chain path unless a human deliberately overrides the policy for a
 proven high-IO source host.
 
+When restoring local chain data, do not assume the filename tells the archive
+type. Use content detection. A Downloads file named `.tar.gz` may be zstd. If an
+archive contains `BdagChain/`, `bdageth/`, and `metaData`, treat it as chain/EVM
+payload only. Preserve the existing `mainnet/peerstore`, `mainnet/network.key`,
+and `mainnet/recent-peers.json` when present so the reinstall keeps useful peer
+identity. Quarantine replaced chain directories instead of deleting them, restore
+container ownership, keep directories searchable by the installer user, and run
+`scripts/preflight-chain-data.sh` before starting node. Start pool only after
+node RPC, P2P freshness, and mining-template readiness are sane.
+
 Fresh installs assume zero miner sources. Do not hard-code one, four, five, or
 any other miner count into release defaults, installers, watchdog repairs,
 dashboard success criteria, or tests. Miner sources are configured after initial

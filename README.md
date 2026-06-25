@@ -465,6 +465,14 @@ Installers must run the chain-data preflight before starting the node. If a
 valid preserved volume, USB copy, Downloads archive, or configured chain DB
 archive is available, it is selected or migrated before the node starts.
 
+For local archives, inspect content rather than trusting the filename. A file
+ending in `.tar.gz` may still be a zstd tar archive. Archives that contain
+`BdagChain/`, `bdageth/`, and `metaData` are chain/EVM payloads, not complete
+runtime identity. Preserve `mainnet/peerstore`, `mainnet/network.key`, and
+`mainnet/recent-peers.json` from the existing install when available, quarantine
+old chain directories, restore ownership to the container UID/GID, and rerun
+`scripts/preflight-chain-data.sh` as the install user before starting node.
+
 Fresh-from-genesis is allowed only when no better chain data exists or when the
 operator explicitly approves a fresh chain start. Pool startup remains gated on
 node data provenance and node readiness.
