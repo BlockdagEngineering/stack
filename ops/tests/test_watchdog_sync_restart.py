@@ -1657,6 +1657,8 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         selected = pool_health["selected_backend_source_health"]
         assert isinstance(selected, dict)
         selected["node_p2p_best_peer_lead_blocks"] = 38
+        selected["node_p2p_fresh_consensus_peer_count"] = 7
+        selected["node_p2p_consensus_peer_count"] = 7
         state = {"node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS}
         written: list[dict[str, object]] = []
 
@@ -1703,21 +1705,21 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         assert isinstance(pool_health, dict)
         selected = pool_health["selected_backend_source_health"]
         assert isinstance(selected, dict)
-        selected["node_p2p_best_peer_lead_blocks"] = 13
+        selected["node_p2p_best_peer_lead_blocks"] = 38
         selected["node_p2p_fresh_consensus_peer_count"] = 7
         selected["node_p2p_consensus_peer_count"] = 7
-        selected["node_template_age_seconds"] = 4
+        selected["node_template_age_seconds"] = 32
         selected["node_reason_code"] = "node_syncing"
         source_job = pool_health["source_job_health"]
         assert isinstance(source_job, dict)
         source_job["ready_miners"] = 0
-        source_job["max_current_job_age_seconds"] = 19.771
+        source_job["max_current_job_age_seconds"] = 32.771
         source_job["reason_code"] = "invalidated_current_job"
         job_state = status["pool_job_state"]
         assert isinstance(job_state, dict)
         job_state["ready_connections"] = 0
         job_state["connections_without_current_job"] = 0
-        job_state["last_broadcast_age_ms"] = 19_771
+        job_state["last_broadcast_age_ms"] = 32_771
         job_state["reason_code"] = "invalidated_current_job"
         state = {"node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS}
         written: list[dict[str, object]] = []
@@ -1778,7 +1780,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         assert isinstance(pool_health, dict)
         selected = pool_health["selected_backend_source_health"]
         assert isinstance(selected, dict)
-        selected["node_p2p_best_peer_lead_blocks"] = 23
+        selected["node_p2p_best_peer_lead_blocks"] = 38
         selected["node_p2p_fresh_consensus_peer_count"] = 13
         selected["node_p2p_consensus_peer_count"] = 14
         selected["node_template_age_seconds"] = 86
@@ -1801,9 +1803,9 @@ class WatchdogSyncRestartTests(unittest.TestCase):
                     "since": now
                     - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS
                     - 1,
-                    "first_lead": 13,
+                    "first_lead": 38,
                     "best_lead": 0,
-                    "worst_lead": 23,
+                    "worst_lead": 38,
                 }
             },
         }
@@ -1927,6 +1929,8 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         selected = pool_health["selected_backend_source_health"]
         assert isinstance(selected, dict)
         selected["node_p2p_best_peer_lead_blocks"] = 38
+        selected["node_p2p_fresh_consensus_peer_count"] = 7
+        selected["node_p2p_consensus_peer_count"] = 7
         selected["node_template_age_seconds"] = 49
         selected["node_reason_code"] = "node_syncing"
         source_job = pool_health["source_job_health"]

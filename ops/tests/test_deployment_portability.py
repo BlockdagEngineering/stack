@@ -394,6 +394,7 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
     def test_goldshell_server_first_probe_stays_disabled_by_default(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
+        stack_defaults = (ROOT_DIR / "ops" / "config" / "stack-defaults.env").read_text(encoding="utf-8")
         installer = (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8")
         release_validator = (ROOT_DIR / "scripts" / "validate-release-build.sh").read_text(encoding="utf-8")
         runbook = (ROOT_DIR / "docs" / "redis-dash-fast-upgrade-runbook.md").read_text(encoding="utf-8")
@@ -413,6 +414,17 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn("POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE=false", agents)
         self.assertIn("POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE=false", ops_readme)
         self.assertIn("POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE:-false", release_validator)
+        self.assertIn("POOL_TEMPLATE_TTL_REFRESH_MS=1000", env_example)
+        self.assertIn("POOL_TEMPLATE_TTL_REFRESH_MS=1000", stack_defaults)
+        self.assertIn("POOL_TEMPLATE_TTL_REFRESH_MS: ${POOL_TEMPLATE_TTL_REFRESH_MS:-1000}", compose)
+        self.assertIn("POOL_TEMPLATE_TTL_REFRESH_MS:-1000", release_validator)
+        self.assertIn("POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS=2500", env_example)
+        self.assertIn("POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS=2500", stack_defaults)
+        self.assertIn(
+            "POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS: ${POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS:-2500}",
+            compose,
+        )
+        self.assertIn("POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS:-2500", release_validator)
 
     def test_live_deploy_rollback_validates_manifest_not_new_rc_contract(self) -> None:
         deploy = (ROOT_DIR / "ops" / "deploy-live-runtime-update.sh").read_text(encoding="utf-8")

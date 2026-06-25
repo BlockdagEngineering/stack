@@ -402,11 +402,11 @@ pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"} 570
             "authorized_connections": 4,
             "ready_connections": 0,
             "invalid_current_job_connections": 4,
-            "last_broadcast_age_ms": 18411,
-            "max_current_job_age_ms": 18411,
+            "last_broadcast_age_ms": 32411,
+            "max_current_job_age_ms": 32411,
             "clients": [
-                {"ready": False, "reason_code": "invalidated_current_job", "current_job_age_ms": 18411},
-                {"ready": False, "reason_code": "invalidated_current_job", "current_job_age_ms": 18410},
+                {"ready": False, "reason_code": "invalidated_current_job", "current_job_age_ms": 32411},
+                {"ready": False, "reason_code": "invalidated_current_job", "current_job_age_ms": 32410},
             ],
         }
 
@@ -414,12 +414,12 @@ pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"} 570
 
         self.assertEqual(1, summary["anomaly_count"])
         reasons = summary["anomaly_samples"][0]["reasons"]
-        self.assertIn("pool_job_age_over_12s", reasons)
+        self.assertIn("pool_job_age_over_30s", reasons)
         self.assertNotIn("template_age_over_30s", reasons)
         self.assertIn("hard_peer_lead_template_stall", reasons)
         self.assertEqual(1, len(summary["critical_anomaly_samples"]))
-        self.assertEqual(18.411, summary["critical_anomaly_samples"][0]["pool_job_age_seconds"])
-        self.assertEqual(18.411, summary["gauges"]["pool_job_age_seconds"]["max"])
+        self.assertEqual(32.411, summary["critical_anomaly_samples"][0]["pool_job_age_seconds"])
+        self.assertEqual(32.411, summary["gauges"]["pool_job_age_seconds"]["max"])
         self.assertIn("hard_peer_lead_template_stall_observed", summary["window_anomaly_reasons"])
 
     def test_sample_window_summary_does_not_mark_short_job_age_as_hard_stall(self) -> None:

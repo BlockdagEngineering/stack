@@ -28,6 +28,15 @@ DEFAULT_DASHBOARD_STATUS_URL = "http://127.0.0.1:8088/api/status"
 DEFAULT_NODE_RPC_URL = "http://127.0.0.1:38131"
 DEFAULT_ENV_FILE = Path(os.environ.get("BDAG_STACK_ENV_FILE", ".env"))
 DEFAULT_OUTPUT_ROOT = Path("ops/runtime/monitoring")
+DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS", "30")
+)
+DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS", "30")
+)
+DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS", "20")
+)
 PEER_SNAPSHOT_LIMIT = 64
 METRIC_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([-+0-9.eE]+)$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -871,8 +880,8 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
     if template_age is not None and template_age > 30:
         reasons.append("template_age_over_30s")
     pool_job_age = sample_pool_job_age_seconds(sample)
-    if pool_job_age is not None and pool_job_age >= 12:
-        reasons.append("pool_job_age_over_12s")
+    if pool_job_age is not None and pool_job_age >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS:
+        reasons.append(f"pool_job_age_over_{DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS}s")
     mineable = sample_metric_or_node(sample, "mineable")
     submit_ready = sample_metric_or_node(sample, "submit_ready")
     if any(value for value in errors.values()):
@@ -889,8 +898,14 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
         )
     )
     hard_age_evidence = bool(
-        (template_age is not None and template_age >= 45)
-        or (pool_job_age is not None and pool_job_age >= 12)
+        (
+            template_age is not None
+            and template_age >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS
+        )
+        or (
+            pool_job_age is not None
+            and pool_job_age >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS
+        )
     )
     if mineable is not None and mineable < 1 and (core_pipeline_reasons or context_missing):
         reasons.append("mineable_false")
@@ -911,9 +926,10 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
     ):
         reasons.append("hard_peer_lead_template_stall")
     node_rpc = sample.get("node_rpc") if isinstance(sample.get("node_rpc"), dict) else {}
+    job_state = sample.get("pool_job_state") if isinstance(sample.get("pool_job_state"), dict) else {}
     node_reason = str(node_rpc.get("reason_code") or job_state.get("reason_code") or "").lower()
     p2p_safe = p2p is not None and p2p >= 1
-    peer_lead_safe = lead is None or lead <= 10
+    peer_lead_safe = lead is None or lead <= DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS
     if (
         ready_zero
         and p2p_safe
@@ -1079,7 +1095,10 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
         and float(lead["max"]) > 10
         and (
             (template_age.get("max") is not None and float(template_age["max"]) >= 45)
-            or (pool_job_age.get("max") is not None and float(pool_job_age["max"]) >= 12)
+            or (
+                pool_job_age.get("max") is not None
+                and float(pool_job_age["max"]) >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS
+            )
         )
         and (
             (mineable.get("max") is not None and float(mineable["max"]) < 1)
@@ -1094,7 +1113,10 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
         and (lead.get("max") is None or float(lead["max"]) <= 10)
         and (
             (template_age.get("max") is not None and float(template_age["max"]) >= 45)
-            or (pool_job_age.get("max") is not None and float(pool_job_age["max"]) >= 12)
+            or (
+                pool_job_age.get("max") is not None
+                and float(pool_job_age["max"]) >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS
+            )
         )
         and (
             (mineable.get("max") is not None and float(mineable["max"]) < 1)

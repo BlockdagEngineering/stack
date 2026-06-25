@@ -45,6 +45,11 @@ from pool_ops import (
 )
 
 
+TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS", "20")
+)
+
+
 def env_float(name: str, default: float, minimum: float | None = None) -> float:
     try:
         value = float(os.environ.get(name, str(default)))
@@ -531,7 +536,7 @@ def template_sync_wedge_active(payload: dict[str, Any]) -> bool:
         miner_demand
         and job_starved
         and bool(p2p_fresh)
-        and lead <= tolerance
+        and lead <= max(tolerance, TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS)
         and template_blocked
         and syncing_reason
     )
