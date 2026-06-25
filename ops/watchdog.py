@@ -151,6 +151,15 @@ DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS = int(
 DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN", "900")
 )
+DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_SUPPRESS_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_ACTIVE_IMPORT_SUPPRESS_SECONDS", "180")
+)
+DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_WORSEN_BLOCKS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_ACTIVE_IMPORT_WORSEN_BLOCKS", "100")
+)
+DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_MAX_LEAD_BLOCKS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_ACTIVE_IMPORT_MAX_LEAD_BLOCKS", "120")
+)
 DEFAULT_NODE_DAG_TIP_CLEANUP_COOLDOWN = int(
     os.environ.get("BDAG_WATCHDOG_NODE_DAG_TIP_CLEANUP_COOLDOWN", "1800")
 )
@@ -2517,6 +2526,74 @@ def active_sync_import_nodes(
     return active
 
 
+def peer_lead_active_import_suppression(
+    status: dict[str, Any],
+    state: dict[str, Any],
+    now: int,
+    target_node: str,
+    evidence: dict[str, Any],
+) -> tuple[bool, list[str], dict[str, Any]]:
+    active_nodes = active_sync_import_nodes(status, state=state, now=now)
+    if target_node not in active_nodes:
+        return False, active_nodes, {"active_import": False}
+
+    lead = int_or_none(evidence.get("lead"))
+    tolerance = int_or_none(evidence.get("tolerance")) or 10
+    max_lead = max(DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_MAX_LEAD_BLOCKS, tolerance * 6)
+    worsen_blocks = max(DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_WORSEN_BLOCKS, tolerance * 5)
+
+    by_node = state.get("node_peer_lead_active_import_by_node")
+    if not isinstance(by_node, dict):
+        by_node = {}
+    row = by_node.get(target_node) if isinstance(by_node.get(target_node), dict) else {}
+    since = int_or_none(row.get("since")) or now
+    first_lead = int_or_none(row.get("first_lead"))
+    if first_lead is None:
+        first_lead = lead
+    best_lead = int_or_none(row.get("best_lead"))
+    if lead is not None:
+        best_lead = lead if best_lead is None else min(best_lead, lead)
+    worst_lead = int_or_none(row.get("worst_lead"))
+    if lead is not None:
+        worst_lead = lead if worst_lead is None else max(worst_lead, lead)
+
+    age = max(0, now - since)
+    lead_over_hard_limit = bool(lead is not None and lead > max_lead)
+    worsened_from_best = bool(lead is not None and best_lead is not None and lead - best_lead >= worsen_blocks)
+    worsened_from_first = bool(lead is not None and first_lead is not None and lead - first_lead >= worsen_blocks)
+    too_long = age >= DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_SUPPRESS_SECONDS
+    suppression_expired = bool(
+        too_long
+        or (
+            age >= DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS
+            and (lead_over_hard_limit or worsened_from_best or worsened_from_first)
+        )
+    )
+
+    by_node[target_node] = {
+        "since": since,
+        "last_seen": now,
+        "first_lead": first_lead,
+        "last_lead": lead,
+        "best_lead": best_lead,
+        "worst_lead": worst_lead,
+        "tolerance": tolerance,
+        "max_lead": max_lead,
+        "worsen_blocks": worsen_blocks,
+        "age_seconds": age,
+        "suppression_expired": suppression_expired,
+        "too_long": too_long,
+        "lead_over_hard_limit": lead_over_hard_limit,
+        "worsened_from_best": worsened_from_best,
+        "worsened_from_first": worsened_from_first,
+    }
+    state["node_peer_lead_active_import_by_node"] = by_node
+    details = dict(by_node[target_node])
+    details["active_import"] = True
+    details["active_nodes"] = active_nodes
+    return not suppression_expired, active_nodes, details
+
+
 def observe_sync_progress(status: dict[str, Any], state: dict[str, Any], now: int) -> None:
     nodes = status.get("nodes", {}) if isinstance(status.get("nodes"), dict) else {}
     previous = state.get("last_sync_height_by_node") if isinstance(state.get("last_sync_height_by_node"), dict) else {}
@@ -3177,8 +3254,14 @@ def check_once(
         stalled_for = now - since
         recent_mining_work = pool_has_recent_mining_work(status)
         restart_node = choose_lagging_node(status) or primary_node
-        active_import_nodes = active_sync_import_nodes(status, state=state, now=now)
-        active_import = restart_node in active_import_nodes
+        active_import_suppresses, active_import_nodes, active_import_details = peer_lead_active_import_suppression(
+            status,
+            state,
+            now,
+            restart_node,
+            peer_lead_stall,
+        )
+        active_import = bool(active_import_details.get("active_import"))
         last_restart = int_or_none(state.get("last_node_peer_lead_stall_restart_at")) or 0
         cooldown_remaining = DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN - (now - last_restart)
         node_age = container_started_age_seconds(status, restart_node, now)
@@ -3197,7 +3280,7 @@ def check_once(
             f"mineable={peer_lead_stall.get('mineable')} "
             f"ready_miners={peer_lead_stall.get('ready_miners')})"
         )
-        if recent_mining_work or active_import:
+        if recent_mining_work or active_import_suppresses:
             state["consecutive_syncing"] = 0
         else:
             state["consecutive_syncing"] = int(state.get("consecutive_syncing", 0) or 0) + 1
@@ -3205,7 +3288,7 @@ def check_once(
         state["consecutive_share_stalls"] = 0
         state["last_status"] = (
             "node_peer_lead_stall_observing"
-            if recent_mining_work or active_import
+            if recent_mining_work or active_import_suppresses
             else "node_peer_lead_stall"
         )
         state["last_failures"] = []
@@ -3215,19 +3298,23 @@ def check_once(
         log(
             "node_peer_lead_stall "
             f"stalled_for={stalled_for}s recent_mining_work={recent_mining_work} "
-            f"active_import={active_import} active_import_nodes={active_import_nodes} "
+            f"active_import={active_import} active_import_suppresses={active_import_suppresses} "
+            f"active_import_nodes={active_import_nodes} "
             f"cooldown_remaining={max(cooldown_remaining, 0)}s "
-            f"startup_remaining={max(startup_remaining, 0)}s evidence={peer_lead_stall}"
+            f"startup_remaining={max(startup_remaining, 0)}s "
+            f"active_import_details={active_import_details} evidence={peer_lead_stall}"
         )
         record_efficiency_event(
             "node_peer_lead_stall",
-            "warning" if recent_mining_work or active_import else "critical",
+            "warning" if recent_mining_work or active_import_suppresses else "critical",
             reason,
             {
                 "evidence": peer_lead_stall,
                 "stalled_for_seconds": stalled_for,
                 "recent_mining_work": recent_mining_work,
                 "active_import_nodes": active_import_nodes,
+                "active_import_suppresses": active_import_suppresses,
+                "active_import_details": active_import_details,
                 "restart_node": restart_node,
                 "cooldown_remaining_seconds": max(cooldown_remaining, 0),
                 "startup_remaining_seconds": max(startup_remaining, 0),
@@ -3241,16 +3328,21 @@ def check_once(
                 "peer-lead stall repair suppressed because paid block submission is fresh",
                 {"evidence": peer_lead_stall, "freshness_seconds": 60},
             )
-        elif repair and active_import:
+        elif repair and active_import_suppresses:
             log(
                 "peer-lead stall repair suppressed while block import is active "
-                f"target={restart_node} active_nodes={','.join(active_import_nodes)}"
+                f"target={restart_node} active_nodes={','.join(active_import_nodes)} details={active_import_details}"
             )
             record_efficiency_event(
                 "repair_suppressed",
                 "warning",
                 "peer-lead stall repair suppressed while block import is active",
-                {"evidence": peer_lead_stall, "active_nodes": active_import_nodes, "target_node": restart_node},
+                {
+                    "evidence": peer_lead_stall,
+                    "active_nodes": active_import_nodes,
+                    "target_node": restart_node,
+                    "active_import_details": active_import_details,
+                },
             )
         elif (
             repair
@@ -3277,6 +3369,7 @@ def check_once(
         return {"status": status, "watchdog_state": state}
     else:
         state.pop("node_peer_lead_stall_since", None)
+        state.pop("node_peer_lead_active_import_by_node", None)
 
     sync_pause_reason = sync_progress_pool_pause_reason(status)
     if sync_pause_reason and container_running(status, POOL_CONTAINER):
@@ -4412,6 +4505,9 @@ def loop(
         f"node_rpc_refused_pool_grace={DEFAULT_NODE_RPC_REFUSED_POOL_RESTART_GRACE_SECONDS}s "
         f"node_peer_lead_stall_confirm={DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS}s "
         f"node_peer_lead_stall_cooldown={DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN}s "
+        f"node_peer_lead_active_import_suppress={DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_SUPPRESS_SECONDS}s "
+        f"node_peer_lead_active_import_worsen={DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_WORSEN_BLOCKS}blocks "
+        f"node_peer_lead_active_import_max_lead={DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_MAX_LEAD_BLOCKS}blocks "
         f"earnings_snapshot_interval={DEFAULT_EARNINGS_SNAPSHOT_INTERVAL_SECONDS}s"
     )
     while True:

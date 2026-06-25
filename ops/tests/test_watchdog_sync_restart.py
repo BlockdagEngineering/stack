@@ -938,6 +938,57 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertEqual(0, result["watchdog_state"]["consecutive_syncing"])
         self.assertTrue(written)
 
+    def test_recent_paid_work_beats_expired_active_import_peer_lead_grace(self) -> None:
+        now = 1_779_200_000
+        status = peer_lead_stall_status(recent_paid_work=True)
+        nodes = status["nodes"]
+        assert isinstance(nodes, dict)
+        node = nodes["node"]
+        assert isinstance(node, dict)
+        node["importing"] = True
+        node["last_import_age_seconds"] = 10
+        state = {
+            "node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS,
+            "node_peer_lead_active_import_by_node": {
+                "node": {
+                    "since": now - watchdog.DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_SUPPRESS_SECONDS - 1,
+                    "first_lead": 40,
+                    "best_lead": 40,
+                    "worst_lead": 40,
+                }
+            },
+        }
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("fresh paid work suppresses restart")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("node_peer_lead_stall_observing", result["watchdog_state"]["last_status"])
+        self.assertEqual(0, result["watchdog_state"]["consecutive_syncing"])
+        self.assertTrue(written)
+
     def test_peer_lead_stall_repair_suppressed_by_active_import(self) -> None:
         now = 1_779_200_000
         status = peer_lead_stall_status()
@@ -977,6 +1028,118 @@ class WatchdogSyncRestartTests(unittest.TestCase):
 
         self.assertEqual("node_peer_lead_stall_observing", result["watchdog_state"]["last_status"])
         self.assertEqual(0, result["watchdog_state"]["consecutive_syncing"])
+        self.assertTrue(written)
+
+    def test_peer_lead_stall_active_import_grace_expires(self) -> None:
+        now = 1_779_200_000
+        status = peer_lead_stall_status()
+        nodes = status["nodes"]
+        assert isinstance(nodes, dict)
+        node = nodes["node"]
+        assert isinstance(node, dict)
+        node["importing"] = True
+        node["last_import_age_seconds"] = 10
+        state = {
+            "node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS,
+            "node_peer_lead_active_import_by_node": {
+                "node": {
+                    "since": now - watchdog.DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_SUPPRESS_SECONDS - 1,
+                    "first_lead": 40,
+                    "best_lead": 40,
+                    "worst_lead": 40,
+                }
+            },
+        }
+        restarts: list[tuple[str, str]] = []
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=lambda node_name, reason: restarts.append((node_name, reason)) or True
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual(1, len(restarts))
+        self.assertEqual("node", restarts[0][0])
+        self.assertIn("peer-lead exceeds tolerance", restarts[0][1])
+        self.assertIn("last_node_peer_lead_stall_restart", result["watchdog_state"])
+        self.assertTrue(written)
+
+    def test_peer_lead_stall_active_import_grace_expires_when_lead_worsens(self) -> None:
+        now = 1_779_200_000
+        status = peer_lead_stall_status()
+        nodes = status["nodes"]
+        assert isinstance(nodes, dict)
+        node = nodes["node"]
+        assert isinstance(node, dict)
+        node["importing"] = True
+        node["last_import_age_seconds"] = 10
+        pool_health = status["pool_health"]
+        assert isinstance(pool_health, dict)
+        selected = pool_health["selected_backend_source_health"]
+        assert isinstance(selected, dict)
+        selected["node_p2p_best_peer_lead_blocks"] = 180
+        state = {
+            "node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS,
+            "node_peer_lead_active_import_by_node": {
+                "node": {
+                    "since": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS,
+                    "first_lead": 40,
+                    "best_lead": 40,
+                    "worst_lead": 40,
+                }
+            },
+        }
+        restarts: list[tuple[str, str]] = []
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=lambda node_name, reason: restarts.append((node_name, reason)) or True
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual(1, len(restarts))
+        self.assertEqual("node", restarts[0][0])
+        self.assertIn("last_node_peer_lead_stall_restart", result["watchdog_state"])
         self.assertTrue(written)
 
     def test_peer_lead_stall_repair_suppressed_by_cooldown(self) -> None:
