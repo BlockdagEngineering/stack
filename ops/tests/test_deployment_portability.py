@@ -144,6 +144,7 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertNotIn("collector_src", watchdog_block)
         self.assertNotIn("collector_src", sampler_block)
         self.assertNotIn("collector_src", sentinel_block)
+        self.assertIn("BDAG_WATCHDOG_INTERVAL: ${BDAG_WATCHDOG_INTERVAL:-30}", watchdog_block)
         self.assertIn("FROM docker:27-cli AS ops-runtime", dockerfile)
         self.assertIn("FROM ops-runtime AS watchdog", dockerfile)
         self.assertIn("FROM ops-runtime AS status-sampler", dockerfile)
