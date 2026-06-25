@@ -268,6 +268,8 @@ class AutomationControlTests(unittest.TestCase):
         with self.patch_default_control_paths(), unittest.mock.patch.object(
             watchdog, "log", lambda _message: None
         ), unittest.mock.patch.object(
+            guard_core, "append_incident", fake_record
+        ), unittest.mock.patch.object(
             watchdog, "record_efficiency_event", fake_record
         ), unittest.mock.patch.object(
             watchdog, "acquire_lock", side_effect=AssertionError("lock should not be acquired")
@@ -446,6 +448,8 @@ class AutomationControlTests(unittest.TestCase):
         state: dict[str, object] = {}
         with self.patch_default_control_paths(), unittest.mock.patch.object(
             stack_sentinel, "log", lambda _message: None
+        ), unittest.mock.patch.object(
+            guard_core, "append_incident", fake_incident
         ), unittest.mock.patch.object(
             stack_sentinel, "append_incident", fake_incident
         ), unittest.mock.patch.object(
