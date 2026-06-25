@@ -855,6 +855,42 @@ pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"} 570
         self.assertEqual(0, summary["counters"]["paid_blocks"]["delta"])
         self.assertIn("paid_blocks_not_advancing_with_accepted_work", summary["window_anomaly_reasons"])
 
+    def test_sample_window_summary_keeps_peer_graph_spread_as_advisory_when_mining_intact(self) -> None:
+        sample = self.sample(
+            "2026-06-25T18:20:00+02:00",
+            accepted_blocks=100,
+            paid_blocks=90,
+            ready_miners=4,
+            authorized_miners=4,
+            p2p_mining_fresh=1,
+            peer_lead_blocks=0,
+            mineable=1,
+            submit_ready=1,
+            template_age_seconds=1,
+        )
+        sample["node_rpc"] = {
+            "reason_code": "ok",
+            "mineable_now": True,
+            "submit_ready": True,
+            "p2p_mining_fresh": True,
+            "peer_graph_main_order_min": 12055729,
+            "peer_graph_main_order_max": 12633281,
+            "peer_graph_main_order_spread": 577552,
+            "active_peer_count": 14,
+            "consensus_peer_count": 14,
+        }
+
+        summary = monitor.summarize_sample_window([sample])
+
+        self.assertEqual(577552, summary["gauges"]["node_peer_graph_order_spread"]["max"])
+        self.assertEqual(14, summary["gauges"]["node_active_peers"]["max"])
+        self.assertEqual(0, summary["anomaly_count"])
+        self.assertEqual(1, summary["advisory_count"])
+        self.assertIn(
+            "peer_graph_spread_high_mining_intact_observed",
+            summary["window_advisory_reasons"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

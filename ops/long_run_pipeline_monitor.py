@@ -137,6 +137,11 @@ SUMMARY_GAUGES = (
     "template_age_seconds",
     "pool_job_age_seconds",
     "waste_ratio",
+    "node_peer_graph_order_spread",
+    "node_peer_graph_order_min",
+    "node_peer_graph_order_max",
+    "node_active_peers",
+    "node_consensus_peers",
 )
 PEER_GRAPH_SPREAD_ANOMALY_THRESHOLD = 1000
 
@@ -678,6 +683,11 @@ def node_rpc_sample_value(sample: dict[str, Any], name: str) -> float | None:
         "mineable": "mineable_now",
         "submit_ready": "submit_ready",
         "template_age_seconds": "template_age_ms",
+        "node_peer_graph_order_spread": "peer_graph_main_order_spread",
+        "node_peer_graph_order_min": "peer_graph_main_order_min",
+        "node_peer_graph_order_max": "peer_graph_main_order_max",
+        "node_active_peers": "active_peer_count",
+        "node_consensus_peers": "consensus_peer_count",
     }
     key = mapping.get(name)
     if not key:
@@ -764,6 +774,8 @@ def gauge_summary(samples: list[dict[str, Any]], name: str) -> dict[str, Any]:
         values = [value for sample in samples if (value := sample_pool_job_age_seconds(sample)) is not None]
     elif name in {"ready_miners", "authorized_miners"}:
         values = [value for sample in samples if (value := sample_lane_count(sample, name)) is not None]
+    elif name.startswith("node_"):
+        values = [value for sample in samples if (value := node_rpc_sample_value(sample, name)) is not None]
     else:
         values = [value for sample in samples if (value := sample_metric(sample, name)) is not None]
     if not values:
@@ -913,6 +925,7 @@ def sample_advisory_reasons(sample: dict[str, Any]) -> list[str]:
     submit_ready = sample_metric_or_node(sample, "submit_ready")
     node_reason = node_rpc.get("reason_code")
     p2p_reason = node_rpc.get("p2p_mining_fresh_reason_code")
+    graph_spread = node_rpc_sample_value(sample, "node_peer_graph_order_spread")
 
     if lane_count_mismatch(sample, "ready_miners"):
         reasons.append("ready_miners_metric_job_state_mismatch")
@@ -953,6 +966,13 @@ def sample_advisory_reasons(sample: dict[str, Any]) -> list[str]:
         and not reasons
     ):
         reasons.append("graph_sync_reorg_turbulence_mining_intact")
+    if (
+        graph_spread is not None
+        and graph_spread >= PEER_GRAPH_SPREAD_ANOMALY_THRESHOLD
+        and mining_lanes_intact
+        and p2p_safe
+    ):
+        reasons.append("peer_graph_spread_high_mining_intact")
     return reasons
 
 
@@ -1069,6 +1089,8 @@ def window_advisory_reasons(summary: dict[str, Any]) -> list[str]:
         reasons.append("peer_lead_risk_before_zero_ready_observed")
     if "graph_sync_reorg_turbulence_mining_intact" in advisory_reason_set:
         reasons.append("graph_sync_reorg_turbulence_mining_intact_observed")
+    if "peer_graph_spread_high_mining_intact" in advisory_reason_set:
+        reasons.append("peer_graph_spread_high_mining_intact_observed")
     return reasons
 
 
