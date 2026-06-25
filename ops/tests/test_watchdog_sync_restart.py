@@ -1779,6 +1779,28 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         evidence = watchdog.selected_backend_peer_lead_stall_evidence(status)
         self.assertFalse(watchdog.peer_lead_hard_mining_outage(status, evidence))
 
+    def test_explicit_block_age_wins_over_broad_recent_paid_work_flag(self) -> None:
+        status = peer_lead_stall_status(recent_paid_work=True)
+        sync_health = status["sync_health"]
+        assert isinstance(sync_health, dict)
+        sync_health["pool_has_recent_paid_work"] = True
+        pool_health = status["pool_health"]
+        assert isinstance(pool_health, dict)
+        pool_health["last_block_submit_age_seconds"] = 37
+        pool_health["block_submit_success_count"] = 1397
+        source_job = pool_health["source_job_health"]
+        assert isinstance(source_job, dict)
+        source_job["max_current_job_age_seconds"] = 37
+        job_state = status["pool_job_state"]
+        assert isinstance(job_state, dict)
+        job_state["last_broadcast_age_ms"] = 37_000
+
+        evidence = watchdog.selected_backend_peer_lead_stall_evidence(status)
+
+        self.assertFalse(watchdog.pool_has_recent_mining_work(status, 20))
+        self.assertTrue(watchdog.pool_has_recent_mining_work(status, 60))
+        self.assertTrue(watchdog.peer_lead_hard_mining_outage(status, evidence))
+
     def test_hard_peer_lead_mining_outage_keeps_normal_startup_grace(self) -> None:
         now = 1_779_200_000
         status = peer_lead_stall_status()

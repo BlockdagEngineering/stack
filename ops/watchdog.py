@@ -1569,13 +1569,15 @@ def pool_initial_download_effective(status: dict[str, Any]) -> bool:
 
 def pool_has_recent_mining_work(status: dict[str, Any], freshness_seconds: int = 60) -> bool:
     """Return true only for recent accepted block submissions, not accepted shares."""
-    sync_health = status.get("sync_health") if isinstance(status.get("sync_health"), dict) else {}
-    if sync_health.get("pool_has_recent_paid_work"):
-        return True
     pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
     block_age = int_or_none(pool_health.get("last_block_submit_age_seconds"))
     accepted_blocks = int_or_none(pool_health.get("block_submit_success_count")) or 0
-    return bool(accepted_blocks > 0 and block_age is not None and block_age <= freshness_seconds)
+    if block_age is not None:
+        return bool(accepted_blocks > 0 and block_age <= freshness_seconds)
+    sync_health = status.get("sync_health") if isinstance(status.get("sync_health"), dict) else {}
+    if sync_health.get("pool_has_recent_paid_work"):
+        return True
+    return False
 
 
 def pool_has_unpaid_template_loss(status: dict[str, Any]) -> bool:
