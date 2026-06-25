@@ -231,6 +231,40 @@ class StackStatusSourceTests(unittest.TestCase):
         self.assertEqual({"active_connections": 0}, payload["pool_metrics"])
         self.assertNotIn("pool_metrics_enriched", payload)
 
+    def test_metric_enrichment_runs_when_backend_health_missing(self) -> None:
+        with mock.patch.object(
+            stack_status_source,
+            "collect_pool_prometheus_metrics",
+            return_value={
+                "status": "ok",
+                "source_backend_health": {
+                    "node": {"selected": True, "node_p2p_best_peer_lead_blocks": 733}
+                },
+                "selected_backend_source_health": {
+                    "selected": True,
+                    "node_p2p_best_peer_lead_blocks": 733,
+                },
+            },
+        ):
+            payload = stack_status_source._with_direct_pool_metric_enrichment(
+                {
+                    "containers": {"pool": {"running": True}},
+                    "pool_metrics": {
+                        "active_connections": 4,
+                        "stratum_no_request_disconnects": {},
+                        "stratum_no_request_disconnects_total": 0,
+                        "stratum_server_first_difficulty_probes": {},
+                        "stratum_server_first_difficulty_probes_total": 0,
+                    },
+                }
+            )
+
+        self.assertTrue(payload["pool_metrics_enriched"])
+        self.assertEqual(
+            733,
+            payload["pool_metrics"]["selected_backend_source_health"]["node_p2p_best_peer_lead_blocks"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

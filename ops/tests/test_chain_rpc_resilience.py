@@ -18,6 +18,7 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.old_mining_rpc_call = pool_ops.mining_rpc_call
         self.old_json_rpc_call = pool_ops.json_rpc_call
         self.old_evm_reference_rpc_urls = pool_ops.evm_reference_rpc_urls
+        self.old_native_sync_progress = pool_ops.native_sync_progress
         self.old_alignment_always_sample = pool_ops.EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE
         self.old_alignment_min_samples = pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES
         self.old_alignment_sample_blocks = pool_ops.EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS
@@ -32,6 +33,7 @@ class ChainRpcResilienceTests(unittest.TestCase):
         pool_ops.mining_rpc_call = self.old_mining_rpc_call
         pool_ops.json_rpc_call = self.old_json_rpc_call
         pool_ops.evm_reference_rpc_urls = self.old_evm_reference_rpc_urls
+        pool_ops.native_sync_progress = self.old_native_sync_progress
         pool_ops.EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE = self.old_alignment_always_sample
         pool_ops.EVM_PUBLIC_ALIGNMENT_MIN_SAMPLES = self.old_alignment_min_samples
         pool_ops.EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS = self.old_alignment_sample_blocks
@@ -120,7 +122,7 @@ class ChainRpcResilienceTests(unittest.TestCase):
         self.assertEqual(snapshot["chain_main_height_source"], "getMainChainHeight")
         self.assertEqual(snapshot["chain_rpc_source"], "unavailable")
 
-    def test_node_sync_progress_reports_evm_lag_as_syncing(self) -> None:
+    def test_node_sync_progress_reports_evm_lag_as_mining_advisory(self) -> None:
         pool_ops.NODE_CHAIN_RPC_RETRIES = 1
 
         def fake_mining_rpc(_url, method, _params, timeout):
@@ -140,20 +142,27 @@ class ChainRpcResilienceTests(unittest.TestCase):
         pool_ops.mining_rpc_call = fake_mining_rpc
         pool_ops.json_rpc_call = fake_json_rpc
         pool_ops.evm_reference_rpc_urls = lambda: [("reference", "http://reference:18545")]
+        pool_ops.native_sync_progress = lambda _source: None
 
         progress = pool_ops.node_sync_progress("node", "http://127.0.0.1:38131", timeout=8.0)
 
-        self.assertEqual(progress["status"], "syncing")
-        self.assertEqual(progress["source"], "node:evm-head-lag")
-        self.assertEqual(progress["current_block"], 8000)
+        self.assertEqual(progress["status"], "synced")
+        self.assertEqual(progress["source"], "node")
+        self.assertEqual(progress["current_block"], 10000)
         self.assertEqual(progress["highest_block"], 10000)
-        self.assertEqual(progress["remaining_blocks"], 2000)
+        self.assertEqual(progress["remaining_blocks"], 0)
         self.assertEqual(progress["chain_block_count"], 10000)
         self.assertEqual(progress["evm_block_count"], 8000)
         self.assertEqual(progress["evm_lag_to_chain"], 2000)
         self.assertEqual(progress["evm_lag_to_reference"], 2000)
         self.assertEqual(progress["evm_gap_to_chain_count"], 2000)
-        self.assertEqual(progress["current_block_source"], "eth_blockNumber")
+        self.assertEqual(progress["sync_current_block"], 8000)
+        self.assertEqual(progress["sync_highest_block"], 10000)
+        self.assertTrue(progress["evm_chain_syncing"])
+        self.assertTrue(progress["mining_advisory_sync"])
+        self.assertTrue(progress["native_is_current"])
+        self.assertIn("native P2P mining state is current", progress["evm_sync_advisory"])
+        self.assertEqual(progress["current_block_source"], "getBlockCount")
 
     def test_canonical_safety_allows_zero_lag_public_evm_hash_diagnostic(self) -> None:
         pool_ops.EVM_PUBLIC_ALIGNMENT_ALWAYS_SAMPLE = True

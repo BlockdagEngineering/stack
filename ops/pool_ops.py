@@ -4319,7 +4319,7 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
                 "pool_rpc_backend_template_age_seconds",
                 "pool_rpc_backend_ws_connected",
             }:
-                backend = labels.get("backend")
+                backend = labels.get("backend") or labels.get("node")
                 if not backend:
                     continue
                 row = source_backend_health.setdefault(backend, {})
@@ -4336,7 +4336,7 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
                 elif metric_name == "pool_rpc_backend_ws_connected":
                     row["ws_connected"] = value > 0
             elif metric_name.startswith("pool_rpc_backend_node_health_"):
-                backend = labels.get("backend")
+                backend = labels.get("backend") or labels.get("node")
                 if not backend:
                     continue
                 row = source_backend_health.setdefault(backend, {})
@@ -4418,6 +4418,10 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
     payload["source_job_health"] = source_job_health
     payload["source_backend_health"] = source_backend_health
     payload["template_conversion_stall"] = template_conversion_stall
+    if not selected_backend and len(source_backend_health) == 1:
+        selected_backend = next(iter(source_backend_health))
+        source_backend_health[selected_backend].setdefault("selected", True)
+        payload["selected_backend"] = selected_backend
     if source_backend_health:
         payload["template_backend_state"] = {
             "source": template_backend_source,

@@ -776,6 +776,33 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertFalse(evidence["submit_ready"])
         self.assertFalse(evidence["mineable"])
 
+    def test_peer_lead_stall_evidence_uses_enriched_node_label_metrics(self) -> None:
+        status = peer_lead_stall_status()
+        pool_health = status["pool_health"]
+        assert isinstance(pool_health, dict)
+        selected = pool_health.pop("selected_backend_source_health")
+        pool_health.pop("source_selected_backend_p2p_fresh")
+        pool_health.pop("source_selected_backend_submit_ready")
+        pool_health.pop("source_selected_backend_mineable")
+        status["pool_metrics"] = {
+            "selected_backend": "node",
+            "source_backend_health": {"node": dict(selected)},
+            "selected_backend_source_health": dict(selected),
+            "source_job_health": {
+                "authorized_miners": 4,
+                "ready_miners": 0,
+                "reason_code": "miners_without_current_job",
+            },
+        }
+
+        evidence = watchdog.selected_backend_peer_lead_stall_evidence(status)
+
+        self.assertTrue(evidence["active"])
+        self.assertEqual(40, evidence["lead"])
+        self.assertFalse(evidence["p2p_mining_fresh"])
+        self.assertFalse(evidence["submit_ready"])
+        self.assertFalse(evidence["mineable"])
+
     def test_peer_lead_stall_evidence_accepts_explicit_reason_without_numeric_lead(self) -> None:
         status = peer_lead_stall_status()
         pool_health = status["pool_health"]

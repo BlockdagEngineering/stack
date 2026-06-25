@@ -316,7 +316,11 @@ def _with_direct_pool_metric_enrichment(payload: dict[str, Any]) -> dict[str, An
         return payload
 
     pool_metrics = payload.get("pool_metrics") if isinstance(payload.get("pool_metrics"), dict) else {}
-    if all(key in pool_metrics for key in POOL_METRIC_ENRICHMENT_KEYS):
+    has_backend_health = any(
+        isinstance(pool_metrics.get(key), dict) and bool(pool_metrics.get(key))
+        for key in ("source_backend_health", "selected_backend_source_health")
+    )
+    if has_backend_health and all(key in pool_metrics for key in POOL_METRIC_ENRICHMENT_KEYS):
         return payload
 
     containers = dict(payload.get("containers") or {}) if isinstance(payload.get("containers"), dict) else {}

@@ -392,6 +392,36 @@ pool_shares_rejected_total{pool_id="0",reason="invalidated_job"} 15
         self.assertEqual(payload["loss_ledger"]["severity"], "critical")
         self.assertEqual(payload["loss_ledger"]["share_outcomes"]["accepted_ratio_percent"], 25.0)
 
+    def test_pool_metrics_parse_node_label_backend_health(self) -> None:
+        metrics = """
+pool_active_connections 4
+pool_rpc_backend_healthy{node="node",pool_id="0"} 0
+pool_rpc_backend_node_health_mineable{node="node",pool_id="0"} 0
+pool_rpc_backend_node_health_submit_ready{node="node",pool_id="0"} 0
+pool_rpc_backend_node_health_p2p_mining_fresh{node="node",pool_id="0"} 0
+pool_rpc_backend_node_health_p2p_best_peer_lead_blocks{node="node",pool_id="0"} 733
+pool_rpc_backend_node_health_p2p_peer_lead_tolerance_blocks{node="node",pool_id="0"} 10
+pool_rpc_backend_node_health_template_age_seconds{node="node",pool_id="0"} 90
+pool_job_health_ok{pool_id="0"} 0
+pool_job_health_authorized_miners{pool_id="0"} 4
+pool_job_health_ready_miners{pool_id="0"} 0
+"""
+        pool_ops.fetch_text_url = lambda *_args, **_kwargs: metrics
+
+        payload = pool_ops.collect_pool_prometheus_metrics(
+            {"asic-pool": {"running": True, "network_ips": ["10.0.0.2"]}}
+        )
+
+        self.assertEqual(payload["selected_backend"], "node")
+        self.assertIn("node", payload["source_backend_health"])
+        selected = payload["selected_backend_source_health"]
+        self.assertFalse(selected["node_mineable"])
+        self.assertFalse(selected["node_submit_ready"])
+        self.assertFalse(selected["node_p2p_mining_fresh"])
+        self.assertEqual(733, selected["node_p2p_best_peer_lead_blocks"])
+        self.assertEqual(10, selected["node_p2p_peer_lead_tolerance_blocks"])
+        self.assertEqual(90, selected["node_template_age_seconds"])
+
 
 if __name__ == "__main__":
     unittest.main()
