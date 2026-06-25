@@ -168,11 +168,26 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
             "${BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN:-300}",
             watchdog_block,
         )
+        self.assertIn(
+            "BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_RETRY_COOLDOWN: "
+            "${BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_RETRY_COOLDOWN:-90}",
+            watchdog_block,
+        )
+        self.assertIn(
+            "BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS: "
+            "${BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS:-60}",
+            watchdog_block,
+        )
         self.assertIn("Environment=BDAG_WATCHDOG_INTERVAL=5", installer)
         self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS=10", installer)
         self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS=12", installer)
         self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_STARVATION_MIN_FRESH_PEERS=2", installer)
         self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN=300", installer)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_RETRY_COOLDOWN=90", installer)
+        self.assertIn(
+            "Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS=60",
+            installer,
+        )
         self.assertNotIn("Environment=BDAG_WATCHDOG_INTERVAL=30", installer)
         self.assertNotIn("Environment=BDAG_WATCHDOG_INTERVAL=60", installer)
         self.assertIn("Environment=BDAG_WATCHDOG_INTERVAL=5", user_watchdog)
@@ -185,6 +200,16 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_STARVATION_MIN_FRESH_PEERS=2", system_watchdog)
         self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN=300", user_watchdog)
         self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN=300", system_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_RETRY_COOLDOWN=90", user_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_RETRY_COOLDOWN=90", system_watchdog)
+        self.assertIn(
+            "Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS=60",
+            user_watchdog,
+        )
+        self.assertIn(
+            "Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS=60",
+            system_watchdog,
+        )
         self.assertIn("FROM docker:27-cli AS ops-runtime", dockerfile)
         self.assertIn("FROM ops-runtime AS watchdog", dockerfile)
         self.assertIn("FROM ops-runtime AS status-sampler", dockerfile)

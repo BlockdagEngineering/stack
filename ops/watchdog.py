@@ -173,6 +173,9 @@ DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN = int(
 DEFAULT_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN", "300")
 )
+DEFAULT_NODE_PEER_LEAD_HARD_STALL_RETRY_COOLDOWN = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_RETRY_COOLDOWN", "90")
+)
 DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_SUPPRESS_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_ACTIVE_IMPORT_SUPPRESS_SECONDS", "180")
 )
@@ -181,6 +184,9 @@ DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_WORSEN_BLOCKS = int(
 )
 DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_MAX_LEAD_BLOCKS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_ACTIVE_IMPORT_MAX_LEAD_BLOCKS", "120")
+)
+DEFAULT_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS", "60")
 )
 DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS", "45")
@@ -976,6 +982,12 @@ def hard_peer_lead_outage_allows_active_import_wait(
         active_import_details.get("lead_over_hard_limit")
         or active_import_details.get("worsened_from_best")
         or active_import_details.get("worsened_from_first")
+    ):
+        return False
+    age_seconds = int_or_none(active_import_details.get("age_seconds"))
+    if (
+        age_seconds is not None
+        and age_seconds >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS
     ):
         return False
     lead = int_or_none(evidence.get("lead"))
@@ -3890,10 +3902,34 @@ def check_once(
         )
         startup_grace_seconds = max(confirm_seconds, DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS)
         last_restart = int_or_none(state.get("last_node_peer_lead_stall_restart_at")) or 0
-        repair_cooldown = (
+        base_repair_cooldown = (
             DEFAULT_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN
             if hard_mining_outage
             else DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN
+        )
+        retry_pool_job_age = float_or_none(peer_lead_stall.get("pool_job_age_seconds"))
+        retry_template_age = float_or_none(peer_lead_stall.get("template_age_seconds"))
+        retry_stale_work = bool(
+            (
+                retry_pool_job_age is not None
+                and retry_pool_job_age >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS
+            )
+            or (
+                retry_template_age is not None
+                and retry_template_age >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS
+            )
+        )
+        retry_cooldown_applies = bool(
+            hard_mining_outage
+            and not recent_mining_work
+            and last_restart > 0
+            and int_or_none(peer_lead_stall.get("ready_miners")) == 0
+            and retry_stale_work
+        )
+        repair_cooldown = (
+            min(base_repair_cooldown, DEFAULT_NODE_PEER_LEAD_HARD_STALL_RETRY_COOLDOWN)
+            if retry_cooldown_applies
+            else base_repair_cooldown
         )
         cooldown_remaining = repair_cooldown - (now - last_restart)
         node_age = container_started_age_seconds(status, restart_node, now)
@@ -3941,7 +3977,10 @@ def check_once(
             f"active_import={active_import} active_import_suppresses={active_import_suppresses} "
             f"active_import_can_wait={active_import_can_wait} "
             f"active_import_nodes={active_import_nodes} "
-            f"repair_cooldown={repair_cooldown}s cooldown_remaining={max(cooldown_remaining, 0)}s "
+            f"repair_cooldown={repair_cooldown}s "
+            f"retry_cooldown_applies={retry_cooldown_applies} "
+            f"retry_stale_work={retry_stale_work} "
+            f"cooldown_remaining={max(cooldown_remaining, 0)}s "
             f"startup_remaining={max(startup_remaining, 0)}s "
             f"active_import_details={active_import_details} evidence={peer_lead_stall}"
         )
@@ -3964,6 +4003,9 @@ def check_once(
                 "restart_node": restart_node,
                 "cooldown_remaining_seconds": max(cooldown_remaining, 0),
                 "repair_cooldown_seconds": repair_cooldown,
+                "base_repair_cooldown_seconds": base_repair_cooldown,
+                "retry_cooldown_applies": retry_cooldown_applies,
+                "retry_stale_work": retry_stale_work,
                 "startup_remaining_seconds": max(startup_remaining, 0),
             },
         )
@@ -5297,6 +5339,9 @@ def loop(
         f"node_peer_lead_active_import_max_lead={DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_MAX_LEAD_BLOCKS}blocks "
         f"node_peer_starvation_min_fresh_peers={DEFAULT_NODE_PEER_STARVATION_MIN_FRESH_PEERS} "
         f"node_peer_lead_hard_stall_job_age={DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS}s "
+        f"node_peer_lead_hard_stall_retry_cooldown={DEFAULT_NODE_PEER_LEAD_HARD_STALL_RETRY_COOLDOWN}s "
+        f"node_peer_lead_hard_stall_active_import_max_wait="
+        f"{DEFAULT_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS}s "
         f"node_template_sync_wedge_confirm={DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS}s "
         f"node_template_sync_wedge_cooldown={DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_REPAIR_COOLDOWN}s "
         f"earnings_snapshot_interval={DEFAULT_EARNINGS_SNAPSHOT_INTERVAL_SECONDS}s"
