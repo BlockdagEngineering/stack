@@ -300,6 +300,74 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
         self.assertIn("submit_ready_false", reasons)
         self.assertIn("hard_peer_lead_template_stall", reasons)
 
+    def test_sample_window_summary_flags_peer_lead_stall_from_pool_job_age(self) -> None:
+        sample = self.sample(
+            "2026-06-25T15:37:00+02:00",
+            accepted_blocks=1185,
+            authorized_miners=4,
+            ready_miners=0,
+            p2p_mining_fresh=0,
+            peer_lead_blocks=38,
+            mineable=0,
+            submit_ready=0,
+            template_age_seconds=14,
+        )
+        sample["pool_job_state"] = {
+            "status": "degraded",
+            "reason_code": "invalidated_current_job",
+            "active_connections": 4,
+            "authorized_connections": 4,
+            "ready_connections": 0,
+            "invalid_current_job_connections": 4,
+            "last_broadcast_age_ms": 18411,
+            "max_current_job_age_ms": 18411,
+            "clients": [
+                {"ready": False, "reason_code": "invalidated_current_job", "current_job_age_ms": 18411},
+                {"ready": False, "reason_code": "invalidated_current_job", "current_job_age_ms": 18410},
+            ],
+        }
+
+        summary = monitor.summarize_sample_window([sample])
+
+        self.assertEqual(1, summary["anomaly_count"])
+        reasons = summary["anomaly_samples"][0]["reasons"]
+        self.assertIn("pool_job_age_over_12s", reasons)
+        self.assertNotIn("template_age_over_30s", reasons)
+        self.assertIn("hard_peer_lead_template_stall", reasons)
+        self.assertEqual(1, len(summary["critical_anomaly_samples"]))
+        self.assertEqual(18.411, summary["critical_anomaly_samples"][0]["pool_job_age_seconds"])
+        self.assertEqual(18.411, summary["gauges"]["pool_job_age_seconds"]["max"])
+        self.assertIn("hard_peer_lead_template_stall_observed", summary["window_anomaly_reasons"])
+
+    def test_sample_window_summary_does_not_mark_short_job_age_as_hard_stall(self) -> None:
+        sample = self.sample(
+            "2026-06-25T15:36:00+02:00",
+            accepted_blocks=1185,
+            authorized_miners=4,
+            ready_miners=0,
+            p2p_mining_fresh=0,
+            peer_lead_blocks=38,
+            mineable=0,
+            submit_ready=0,
+            template_age_seconds=14,
+        )
+        sample["pool_job_state"] = {
+            "status": "degraded",
+            "reason_code": "invalidated_current_job",
+            "active_connections": 4,
+            "authorized_connections": 4,
+            "ready_connections": 0,
+            "last_broadcast_age_ms": 11000,
+            "clients": [{"ready": False, "current_job_age_ms": 11000}],
+        }
+
+        summary = monitor.summarize_sample_window([sample])
+
+        self.assertEqual(1, summary["anomaly_count"])
+        self.assertNotIn("hard_peer_lead_template_stall", summary["anomaly_samples"][0]["reasons"])
+        self.assertEqual([], summary["critical_anomaly_samples"])
+        self.assertNotIn("hard_peer_lead_template_stall_observed", summary["window_anomaly_reasons"])
+
     def test_sample_window_summary_flags_sustained_hard_peer_lead_stall(self) -> None:
         samples = [
             self.sample(

@@ -79,6 +79,7 @@ SUMMARY_METRICS = {
     "mineable": "pool_rpc_backend_node_health_mineable{node=node,pool_id=0}",
     "submit_ready": "pool_rpc_backend_node_health_submit_ready{node=node,pool_id=0}",
     "template_age_seconds": "pool_rpc_backend_node_health_template_age_seconds{node=node,pool_id=0}",
+    "pool_job_age_seconds": "pool_job_health_max_current_job_age_seconds{pool_id=0}",
     "waste_ratio": "pool_block_timing_controller_waste_ratio{pool_id=0}",
 }
 
@@ -131,6 +132,7 @@ SUMMARY_GAUGES = (
     "mineable",
     "submit_ready",
     "template_age_seconds",
+    "pool_job_age_seconds",
     "waste_ratio",
 )
 PEER_GRAPH_SPREAD_ANOMALY_THRESHOLD = 1000
@@ -534,6 +536,7 @@ def summarize_job_state(job_state: dict[str, Any] | None) -> dict[str, Any]:
         "stale_current_job_connections": job_state.get("stale_current_job_connections"),
         "connections_without_current_job": job_state.get("connections_without_current_job"),
         "last_broadcast_age_ms": job_state.get("last_broadcast_age_ms"),
+        "max_current_job_age_ms": job_state.get("max_current_job_age_ms"),
         "current_template_seq": job_state.get("current_template_seq"),
         "current_parent": job_state.get("current_parent"),
         "router_node": {
@@ -655,6 +658,44 @@ def sample_metric_or_node(sample: dict[str, Any], name: str) -> float | None:
     return node_rpc_sample_value(sample, name) if value is None else value
 
 
+def seconds_from_milliseconds(value: Any) -> float | None:
+    numeric = numeric_or_none(value)
+    if numeric is None:
+        return None
+    return max(0.0, numeric / 1000.0)
+
+
+def sample_pool_job_age_seconds(sample: dict[str, Any]) -> float | None:
+    job_state = sample.get("pool_job_state") if isinstance(sample.get("pool_job_state"), dict) else {}
+    candidates: list[float] = []
+
+    metric_age = sample_metric(sample, "pool_job_age_seconds")
+    if metric_age is not None:
+        candidates.append(max(0.0, metric_age))
+
+    for key in ("max_current_job_age_seconds", "last_broadcast_age_seconds"):
+        value = numeric_or_none(job_state.get(key))
+        if value is not None:
+            candidates.append(max(0.0, value))
+    for key in ("max_current_job_age_ms", "last_broadcast_age_ms"):
+        value = seconds_from_milliseconds(job_state.get(key))
+        if value is not None:
+            candidates.append(value)
+
+    clients = job_state.get("clients") if isinstance(job_state.get("clients"), list) else []
+    for client in clients:
+        if not isinstance(client, dict):
+            continue
+        seconds_value = numeric_or_none(client.get("current_job_age_seconds"))
+        if seconds_value is not None:
+            candidates.append(max(0.0, seconds_value))
+        milliseconds_value = seconds_from_milliseconds(client.get("current_job_age_ms"))
+        if milliseconds_value is not None:
+            candidates.append(milliseconds_value)
+
+    return max(candidates) if candidates else None
+
+
 def reset_aware_counter_delta(samples: list[dict[str, Any]], name: str) -> dict[str, Any]:
     previous: float | None = None
     delta = 0.0
@@ -684,7 +725,10 @@ def reset_aware_counter_delta(samples: list[dict[str, Any]], name: str) -> dict[
 
 
 def gauge_summary(samples: list[dict[str, Any]], name: str) -> dict[str, Any]:
-    values = [value for sample in samples if (value := sample_metric(sample, name)) is not None]
+    if name == "pool_job_age_seconds":
+        values = [value for sample in samples if (value := sample_pool_job_age_seconds(sample)) is not None]
+    else:
+        values = [value for sample in samples if (value := sample_metric(sample, name)) is not None]
     if not values:
         return {"min": None, "max": None, "avg": None}
     return {
@@ -783,6 +827,9 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
     template_age = sample_metric_or_node(sample, "template_age_seconds")
     if template_age is not None and template_age > 30:
         reasons.append("template_age_over_30s")
+    pool_job_age = sample_pool_job_age_seconds(sample)
+    if pool_job_age is not None and pool_job_age >= 12:
+        reasons.append("pool_job_age_over_12s")
     mineable = sample_metric_or_node(sample, "mineable")
     submit_ready = sample_metric_or_node(sample, "submit_ready")
     if any(value for value in errors.values()):
@@ -796,7 +843,12 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
             p2p,
             lead,
             template_age,
+            pool_job_age,
         )
+    )
+    hard_age_evidence = bool(
+        (template_age is not None and template_age >= 45)
+        or (pool_job_age is not None and pool_job_age >= 12)
     )
     if mineable is not None and mineable < 1 and (core_pipeline_reasons or context_missing):
         reasons.append("mineable_false")
@@ -809,8 +861,7 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
         and p2p < 1
         and lead is not None
         and lead > 10
-        and template_age is not None
-        and template_age >= 45
+        and hard_age_evidence
         and (
             (mineable is not None and mineable < 1)
             or (submit_ready is not None and submit_ready < 1)
@@ -904,6 +955,7 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
     p2p = gauges.get("p2p_mining_fresh") if isinstance(gauges.get("p2p_mining_fresh"), dict) else {}
     lead = gauges.get("peer_lead_blocks") if isinstance(gauges.get("peer_lead_blocks"), dict) else {}
     template_age = gauges.get("template_age_seconds") if isinstance(gauges.get("template_age_seconds"), dict) else {}
+    pool_job_age = gauges.get("pool_job_age_seconds") if isinstance(gauges.get("pool_job_age_seconds"), dict) else {}
     mineable = gauges.get("mineable") if isinstance(gauges.get("mineable"), dict) else {}
     submit_ready = gauges.get("submit_ready") if isinstance(gauges.get("submit_ready"), dict) else {}
     accepted_delta = float(accepted.get("delta") or 0.0)
@@ -957,8 +1009,10 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
         and p2p.get("max") == 0
         and lead.get("max") is not None
         and float(lead["max"]) > 10
-        and template_age.get("max") is not None
-        and float(template_age["max"]) >= 45
+        and (
+            (template_age.get("max") is not None and float(template_age["max"]) >= 45)
+            or (pool_job_age.get("max") is not None and float(pool_job_age["max"]) >= 12)
+        )
         and (
             (mineable.get("max") is not None and float(mineable["max"]) < 1)
             or (submit_ready.get("max") is not None and float(submit_ready["max"]) < 1)
@@ -1010,6 +1064,7 @@ def summarize_sample_window(samples: list[dict[str, Any]]) -> dict[str, Any]:
             "mineable": sample_metric_or_node(sample, "mineable"),
             "submit_ready": sample_metric_or_node(sample, "submit_ready"),
             "template_age_seconds": sample_metric_or_node(sample, "template_age_seconds"),
+            "pool_job_age_seconds": sample_pool_job_age_seconds(sample),
             "node_log_context": sample_node_log_context(sample),
             "node_rpc_context": sample_node_rpc_context(sample),
         }
