@@ -133,10 +133,13 @@ CATCHUP_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_PAUSE_ENABLED", True)
 CATCHUP_PAUSE_ON_SYNCING = env_bool("BDAG_CATCHUP_PAUSE_ON_SYNCING", True)
 CATCHUP_PAUSE_THRESHOLD_BLOCKS = env_int("BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS", 300, minimum=1)
 CATCHUP_NODE_RECREATE_ENABLED = env_bool("BDAG_CATCHUP_NODE_RECREATE_ENABLED", True)
-CATCHUP_NODE_CACHE_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MB", 6144, minimum=0)
+CATCHUP_NODE_CACHE_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MB", 2048, minimum=0)
 CATCHUP_NODE_CACHE_MIN_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MIN_MB", 1024, minimum=256)
-CATCHUP_NODE_CACHE_MEMORY_PERCENT = env_float("BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT", 40.0, minimum=5.0)
+CATCHUP_NODE_CACHE_MEMORY_PERCENT = env_float("BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT", 20.0, minimum=5.0)
 CATCHUP_NODE_CACHE_RESTORE_ENABLED = env_bool("BDAG_CATCHUP_NODE_CACHE_RESTORE_ENABLED", True)
+CATCHUP_NODE_CACHE_PRESSURE_RESTORE_ENABLED = env_bool("BDAG_CATCHUP_NODE_CACHE_PRESSURE_RESTORE_ENABLED", True)
+CATCHUP_NODE_CACHE_MIN_AVAILABLE_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MIN_AVAILABLE_MB", 1024, minimum=0)
+CATCHUP_NODE_CACHE_SWAP_USED_RESTORE_MB = env_int("BDAG_CATCHUP_NODE_CACHE_SWAP_USED_RESTORE_MB", 64, minimum=0)
 CATCHUP_NODE_CACHE_RESTORE_STABLE_SAMPLES = env_int("BDAG_CATCHUP_NODE_CACHE_RESTORE_STABLE_SAMPLES", 3, minimum=1)
 CATCHUP_NODE_CACHE_RESTORE_COOLDOWN_SECONDS = env_int(
     "BDAG_CATCHUP_NODE_CACHE_RESTORE_COOLDOWN_SECONDS",
@@ -1450,6 +1453,35 @@ def catchup_cache_restore_pressure_reasons(payload: dict[str, Any]) -> list[str]
     return ["host_pressure_steady_state"] if steady else []
 
 
+def catchup_cache_emergency_pressure_reasons(payload: dict[str, Any]) -> list[str]:
+    if not CATCHUP_NODE_CACHE_PRESSURE_RESTORE_ENABLED:
+        return []
+    host_pressure = dict_value(payload.get("host_pressure"))
+    if not host_pressure:
+        return []
+    reasons: list[str] = []
+    mem_available = host_pressure.get("mem_available_mb")
+    if mem_available is not None and safe_float(mem_available) <= CATCHUP_NODE_CACHE_MIN_AVAILABLE_MB:
+        reasons.append(
+            f"mem_available_mb={safe_float(mem_available):.0f}<={CATCHUP_NODE_CACHE_MIN_AVAILABLE_MB}"
+        )
+    swap_used = host_pressure.get("swap_used_mb")
+    if (
+        CATCHUP_NODE_CACHE_SWAP_USED_RESTORE_MB > 0
+        and swap_used is not None
+        and safe_float(swap_used) >= CATCHUP_NODE_CACHE_SWAP_USED_RESTORE_MB
+    ):
+        reasons.append(
+            f"swap_used_mb={safe_float(swap_used):.0f}>={CATCHUP_NODE_CACHE_SWAP_USED_RESTORE_MB}"
+        )
+    memory_full = host_pressure.get("memory_full_avg10")
+    if memory_full is not None and safe_float(memory_full) >= CATCHUP_NODE_CACHE_MEMORY_FULL_RESTORE_THRESHOLD:
+        reasons.append(
+            f"memory_full_avg10={safe_float(memory_full):.2f}>={CATCHUP_NODE_CACHE_MEMORY_FULL_RESTORE_THRESHOLD:.2f}"
+        )
+    return reasons
+
+
 def update_catchup_cache_wait_state(state: dict[str, Any], status: str, policy: dict[str, Any], samples: int) -> None:
     write_catchup_cache_state(
         {
@@ -1474,12 +1506,13 @@ def restore_catchup_node_cache(payload: dict[str, Any], policy: dict[str, Any]) 
     if not raised_values:
         return False
 
-    if not catchup_cache_inactive_stable(policy):
+    emergency_pressure_reasons = catchup_cache_emergency_pressure_reasons(payload)
+    if not catchup_cache_inactive_stable(policy) and not emergency_pressure_reasons:
         update_catchup_cache_wait_state(state, "waiting_catchup_stable", policy, 0)
         return False
 
     stable_samples = safe_int(state.get("inactive_stable_samples"), 0) + 1
-    if stable_samples < CATCHUP_NODE_CACHE_RESTORE_STABLE_SAMPLES:
+    if stable_samples < CATCHUP_NODE_CACHE_RESTORE_STABLE_SAMPLES and not emergency_pressure_reasons:
         update_catchup_cache_wait_state(state, "waiting_stable_samples", policy, stable_samples)
         return False
 
@@ -1498,6 +1531,8 @@ def restore_catchup_node_cache(payload: dict[str, Any], policy: dict[str, Any]) 
         return False
 
     pressure_reasons = catchup_cache_restore_pressure_reasons(payload)
+    if emergency_pressure_reasons:
+        pressure_reasons = [*pressure_reasons, *emergency_pressure_reasons]
     if not pressure_reasons:
         update_catchup_cache_wait_state(state, "waiting_host_pressure_signal", policy, stable_samples)
         return False
@@ -1505,7 +1540,7 @@ def restore_catchup_node_cache(payload: dict[str, Any], policy: dict[str, Any]) 
     now_epoch = time.time()
     last_raise_epoch = safe_float(state.get("last_raise_epoch"), 0.0)
     cooldown_remaining = CATCHUP_NODE_CACHE_RESTORE_COOLDOWN_SECONDS - max(0.0, now_epoch - last_raise_epoch)
-    if cooldown_remaining > 0:
+    if cooldown_remaining > 0 and not emergency_pressure_reasons:
         write_catchup_cache_state(
             {
                 **state,
@@ -1635,6 +1670,7 @@ def restore_catchup_node_cache(payload: dict[str, Any], policy: dict[str, Any]) 
             "restored_values": restored_values,
             "operator_edits": operator_edits,
             "disowned_values": disowned_values,
+            "last_restore_pressure_reasons": pressure_reasons,
             "last_policy": policy,
         }
     )
@@ -1704,6 +1740,14 @@ def record_catchup_cache_restore_skipped(
 
 
 def apply_catchup_node_runtime(payload: dict[str, Any], policy: dict[str, Any]) -> bool:
+    pressure_reasons = catchup_cache_emergency_pressure_reasons(payload)
+    if pressure_reasons:
+        log(
+            "catch-up pause left node cache unchanged because host memory pressure requires headroom: "
+            + "; ".join(pressure_reasons)
+        )
+        return False
+
     if not automation_repair_mutation_allowed(
         automation_control.ACTION_CONFIG_EDIT,
         target="catchup-node-runtime",
@@ -1981,6 +2025,9 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
         if repair_miner_activity_visibility(payload):
             actions.append("repaired_miner_activity_visibility")
 
+    if restore_catchup_node_cache(payload, catchup_policy):
+        actions.append("restored_catchup_node_cache")
+
     if catchup_active:
         reason = (
             f"node is {catchup_policy.get('lag_blocks')} blocks behind peers "
@@ -1995,10 +2042,6 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
             actions.append("skipped_catchup_node_runtime_active_mining")
         elif apply_catchup_node_runtime(payload, catchup_policy):
             actions.append("applied_catchup_node_runtime")
-
-    if not catchup_active:
-        if restore_catchup_node_cache(payload, catchup_policy):
-            actions.append("restored_catchup_node_cache")
 
     if not catchup_active and node_mining_template_support_should_repair(payload):
         if repair_node_mining_template_support(payload):

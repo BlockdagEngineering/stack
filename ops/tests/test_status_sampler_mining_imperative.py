@@ -39,6 +39,9 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "CATCHUP_NODE_CACHE_MIN_MB",
                 "CATCHUP_NODE_CACHE_MEMORY_PERCENT",
                 "CATCHUP_NODE_CACHE_RESTORE_ENABLED",
+                "CATCHUP_NODE_CACHE_PRESSURE_RESTORE_ENABLED",
+                "CATCHUP_NODE_CACHE_MIN_AVAILABLE_MB",
+                "CATCHUP_NODE_CACHE_SWAP_USED_RESTORE_MB",
                 "CATCHUP_NODE_CACHE_RESTORE_STABLE_SAMPLES",
                 "CATCHUP_NODE_CACHE_RESTORE_COOLDOWN_SECONDS",
                 "CATCHUP_NODE_CACHE_MEMORY_SOME_RESTORE_THRESHOLD",
@@ -95,10 +98,13 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         status_sampler.CATCHUP_PAUSE_ON_SYNCING = True
         status_sampler.CATCHUP_PAUSE_THRESHOLD_BLOCKS = 300
         status_sampler.CATCHUP_NODE_RECREATE_ENABLED = True
-        status_sampler.CATCHUP_NODE_CACHE_MB = 6144
+        status_sampler.CATCHUP_NODE_CACHE_MB = 2048
         status_sampler.CATCHUP_NODE_CACHE_MIN_MB = 1024
-        status_sampler.CATCHUP_NODE_CACHE_MEMORY_PERCENT = 40.0
+        status_sampler.CATCHUP_NODE_CACHE_MEMORY_PERCENT = 20.0
         status_sampler.CATCHUP_NODE_CACHE_RESTORE_ENABLED = True
+        status_sampler.CATCHUP_NODE_CACHE_PRESSURE_RESTORE_ENABLED = True
+        status_sampler.CATCHUP_NODE_CACHE_MIN_AVAILABLE_MB = 1024
+        status_sampler.CATCHUP_NODE_CACHE_SWAP_USED_RESTORE_MB = 64
         status_sampler.CATCHUP_NODE_CACHE_RESTORE_STABLE_SAMPLES = 3
         status_sampler.CATCHUP_NODE_CACHE_RESTORE_COOLDOWN_SECONDS = 300
         status_sampler.CATCHUP_NODE_CACHE_MEMORY_SOME_RESTORE_THRESHOLD = 1.0
@@ -512,6 +518,8 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
     def test_catchup_pause_records_automation_owned_cache_raise(self) -> None:
         env_updates = {}
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.CATCHUP_NODE_CACHE_MB = 3072
+        status_sampler.CATCHUP_NODE_CACHE_MEMORY_PERCENT = 20.0
         status_sampler.update_stalled_import_watch = lambda _payload: {}
         os.environ["BDAG_ENABLE_NODE_MINING"] = "1"
         os.environ["BDAG_NODE_CACHE_MB"] = "2048"
@@ -543,15 +551,15 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
             state = json.loads(status_sampler.CATCHUP_CACHE_STATE_FILE.read_text(encoding="utf-8"))
 
         self.assertIn("applied_catchup_node_runtime", repair["actions"])
-        self.assertEqual(env_updates["BDAG_NODE_CACHE_MB"], "6144")
-        self.assertEqual(env_updates["BDAG_EVM_CACHE_MB"], "6144")
+        self.assertEqual(env_updates["BDAG_NODE_CACHE_MB"], "3072")
+        self.assertEqual(env_updates["BDAG_EVM_CACHE_MB"], "3072")
         self.assertEqual(state["status"], "raised")
-        self.assertEqual(state["target_cache_mb"], 6144)
+        self.assertEqual(state["target_cache_mb"], 3072)
         self.assertEqual(state["original_values"]["BDAG_NODE_CACHE_MB"]["value"], "2048")
         self.assertEqual(state["original_values"]["BDAG_EVM_CACHE_MB"]["value"], "2048")
         self.assertEqual(state["original_values"][status_sampler.CATCHUP_NODE_CONF_CACHE_KEY]["value"], "2048")
-        self.assertEqual(state["raised_values"]["BDAG_NODE_CACHE_MB"]["value"], "6144")
-        self.assertEqual(state["raised_values"]["BDAG_EVM_CACHE_MB"]["value"], "6144")
+        self.assertEqual(state["raised_values"]["BDAG_NODE_CACHE_MB"]["value"], "3072")
+        self.assertEqual(state["raised_values"]["BDAG_EVM_CACHE_MB"]["value"], "3072")
 
     def test_restores_automation_owned_catchup_cache_after_stable_inactive_samples(self) -> None:
         commands = []
@@ -633,6 +641,86 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertIn("--cache 2048", node_conf)
         self.assertEqual("restored", state["status"])
         self.assertEqual({}, state["raised_values"])
+        self.assertTrue(any("--force-recreate" in command for command in commands))
+
+    def test_restores_catchup_cache_immediately_under_memory_pressure(self) -> None:
+        commands = []
+        env_updates = {}
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        status_sampler.CATCHUP_NODE_CACHE_RESTORE_STABLE_SAMPLES = 3
+        status_sampler.CATCHUP_NODE_CACHE_RESTORE_COOLDOWN_SECONDS = 300
+        status_sampler.update_stalled_import_watch = lambda _payload: {}
+        os.environ["BDAG_ENABLE_NODE_MINING"] = "1"
+        os.environ["BDAG_NODE_CACHE_MB"] = "3072"
+        os.environ["BDAG_EVM_CACHE_MB"] = "3072"
+        os.environ["BDAG_NODE_SERVICES"] = "node"
+        payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=1000)
+        payload["catchup_policy"] = {"active": True, "lag_blocks": 1000, "threshold_blocks": 300}
+        payload["host_pressure"] = {
+            "mem_available_mb": 768,
+            "swap_used_mb": 96,
+            "memory_some_avg10": 0.0,
+            "memory_full_avg10": 0.0,
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            status_sampler.PROJECT_ROOT = root
+            status_sampler.CATCHUP_CACHE_STATE_FILE = root / "runtime" / "catchup-cache-state.json"
+            status_sampler.CATCHUP_CACHE_STATE_FILE.parent.mkdir(parents=True)
+            status_sampler.CATCHUP_CACHE_STATE_FILE.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "status": "raised",
+                        "last_raise_epoch": 0,
+                        "original_values": {
+                            "BDAG_NODE_CACHE_MB": {"value": "2048", "source": "env", "present": True},
+                            "BDAG_EVM_CACHE_MB": {"value": "2048", "source": "env", "present": True},
+                            status_sampler.CATCHUP_NODE_CONF_CACHE_KEY: {
+                                "value": "2048",
+                                "source": "node_conf",
+                                "present": True,
+                            },
+                        },
+                        "raised_values": {
+                            "BDAG_NODE_CACHE_MB": {"value": "3072", "source": "env", "present": True},
+                            "BDAG_EVM_CACHE_MB": {"value": "3072", "source": "env", "present": True},
+                            status_sampler.CATCHUP_NODE_CONF_CACHE_KEY: {
+                                "value": "3072",
+                                "source": "node_conf",
+                                "present": True,
+                            },
+                        },
+                        "inactive_stable_samples": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "node.conf").write_text('cache=3072\nevmenv="--cache 3072"\n', encoding="utf-8")
+
+            def fake_set_runtime_env(key: str, value: str):
+                env_updates[key] = value
+                os.environ[key] = value
+                return [f"/runtime/{key}"]
+
+            def fake_run(command: list[str], timeout: int = 20):
+                commands.append(command)
+                return self.command_result(command)
+
+            status_sampler.set_runtime_env_value = fake_set_runtime_env
+            status_sampler.run = fake_run
+
+            repair = status_sampler.mining_imperative_repair(payload)
+            node_conf = (root / "node.conf").read_text(encoding="utf-8")
+            state = status_sampler.read_catchup_cache_state()
+
+        self.assertIn("restored_catchup_node_cache", repair["actions"])
+        self.assertEqual(env_updates["BDAG_NODE_CACHE_MB"], "2048")
+        self.assertEqual(env_updates["BDAG_EVM_CACHE_MB"], "2048")
+        self.assertIn("cache=2048", node_conf)
+        self.assertIn("--cache 2048", node_conf)
+        self.assertIn("mem_available_mb=768<=1024", " ".join(state.get("last_restore_pressure_reasons", [])))
         self.assertTrue(any("--force-recreate" in command for command in commands))
 
     def test_does_not_restore_catchup_cache_while_pool_is_running(self) -> None:

@@ -271,7 +271,7 @@ STATUS_PAYLOAD_STALE_AFTER_SECONDS = env_float(
 )
 CATCHUP_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_PAUSE_ENABLED", True)
 CATCHUP_PAUSE_THRESHOLD_BLOCKS = env_int("BDAG_CATCHUP_PAUSE_THRESHOLD_BLOCKS", 300, minimum=1)
-CATCHUP_NODE_CACHE_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MB", 6144, minimum=0)
+CATCHUP_NODE_CACHE_MB = env_int("BDAG_CATCHUP_NODE_CACHE_MB", 2048, minimum=0)
 CATCHUP_IO_PRESSURE_PAUSE_ENABLED = env_bool("BDAG_CATCHUP_IO_PRESSURE_PAUSE_ENABLED", True)
 CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS = env_int("BDAG_CATCHUP_IO_PRESSURE_MIN_LAG_BLOCKS", 25, minimum=1)
 CATCHUP_IOWAIT_WARN_PERCENT = env_float("BDAG_CATCHUP_IOWAIT_WARN_PERCENT", 15.0, minimum=0.0)
@@ -992,24 +992,32 @@ def host_pressure_iowait_sustained(samples: list[dict[str, Any]], threshold: flo
 
 
 def host_pressure_warning_messages(pressure: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
     samples = pressure.get("samples") if isinstance(pressure.get("samples"), list) else []
-    if not pressure.get("iowait_warning_active"):
-        return []
-    values = [
-        safe_float(item.get("iowait_percent"))
-        for item in samples[-HOST_PRESSURE_IOWAIT_WARN_SAMPLES:]
-    ]
-    values = [value for value in values if value is not None]
-    if values:
-        avg = sum(values) / len(values)
-        current = safe_float(pressure.get("iowait_percent"), avg) or avg
-        detail = f"current={current:.2f}% avg={avg:.2f}%"
-    else:
-        detail = f"threshold={HOST_PRESSURE_IOWAIT_WARN_PERCENT:.2f}%"
-    return [
-        "host IO wait is sustained across recent dashboard samples "
-        f"({detail}, threshold={HOST_PRESSURE_IOWAIT_WARN_PERCENT:.2f}%)"
-    ]
+    if pressure.get("iowait_warning_active"):
+        values = [
+            safe_float(item.get("iowait_percent"))
+            for item in samples[-HOST_PRESSURE_IOWAIT_WARN_SAMPLES:]
+        ]
+        values = [value for value in values if value is not None]
+        if values:
+            avg = sum(values) / len(values)
+            current = safe_float(pressure.get("iowait_percent"), avg) or avg
+            detail = f"current={current:.2f}% avg={avg:.2f}%"
+        else:
+            detail = f"threshold={HOST_PRESSURE_IOWAIT_WARN_PERCENT:.2f}%"
+        warnings.append(
+            "host IO wait is sustained across recent dashboard samples "
+            f"({detail}, threshold={HOST_PRESSURE_IOWAIT_WARN_PERCENT:.2f}%)"
+        )
+
+    mem_available = safe_float(pressure.get("mem_available_mb"))
+    if mem_available is not None and mem_available <= 1024:
+        warnings.append(f"host memory headroom is low (MemAvailable={mem_available:.0f}MiB)")
+    swap_used = safe_float(pressure.get("swap_used_mb"))
+    if swap_used is not None and swap_used > 0:
+        warnings.append(f"host swap is in use (SwapUsed={swap_used:.0f}MiB)")
+    return warnings
 
 
 def collect_host_pressure() -> dict[str, Any]:
@@ -1027,6 +1035,13 @@ def collect_host_pressure() -> dict[str, Any]:
         "iowait_warning_active": False,
         "cpu_some_avg10": None,
         "memory_some_avg10": None,
+        "memory_full_avg10": None,
+        "mem_total_mb": None,
+        "mem_available_mb": None,
+        "mem_free_mb": None,
+        "swap_total_mb": None,
+        "swap_free_mb": None,
+        "swap_used_mb": None,
     }
     try:
         load_parts = Path("/proc/loadavg").read_text(encoding="utf-8").split()
@@ -1044,6 +1059,22 @@ def collect_host_pressure() -> dict[str, Any]:
             continue
         pressure[f"{name}_some_avg10"] = parsed.get("some_avg10")
         pressure[f"{name}_full_avg10"] = parsed.get("full_avg10")
+
+    try:
+        meminfo: dict[str, int] = {}
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                meminfo[parts[0].rstrip(":")] = int(parts[1])
+        pressure["mem_total_mb"] = int(meminfo.get("MemTotal", 0) / 1024) if meminfo.get("MemTotal") else None
+        pressure["mem_available_mb"] = int(meminfo.get("MemAvailable", 0) / 1024) if meminfo.get("MemAvailable") else None
+        pressure["mem_free_mb"] = int(meminfo.get("MemFree", 0) / 1024) if meminfo.get("MemFree") else None
+        pressure["swap_total_mb"] = int(meminfo.get("SwapTotal", 0) / 1024) if meminfo.get("SwapTotal") else None
+        pressure["swap_free_mb"] = int(meminfo.get("SwapFree", 0) / 1024) if meminfo.get("SwapFree") is not None else None
+        if pressure["swap_total_mb"] is not None and pressure["swap_free_mb"] is not None:
+            pressure["swap_used_mb"] = max(0, pressure["swap_total_mb"] - pressure["swap_free_mb"])
+    except OSError:
+        pass
 
     try:
         cpu = parse_proc_stat_cpu(Path("/proc/stat").read_text(encoding="utf-8"))

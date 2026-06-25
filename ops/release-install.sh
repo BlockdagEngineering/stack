@@ -305,6 +305,79 @@ env_value() {
   printf '%s\n' "${value:-$fallback}"
 }
 
+detect_total_memory_mb() {
+  local mem_kb
+  mem_kb="$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  [[ "$mem_kb" =~ ^[0-9]+$ ]] || mem_kb=0
+  printf '%s\n' "$(( mem_kb / 1024 ))"
+}
+
+apply_install_cache_profile() {
+  local enabled mem_mb profile node_cache evm_cache catchup_cache catchup_percent max_peers pg_shared pg_effective
+  enabled="$(env_value BDAG_INSTALL_AUTOTUNE_CACHE "${BDAG_INSTALL_AUTOTUNE_CACHE:-1}")"
+  [[ "$enabled" == "0" ]] && return 0
+
+  mem_mb="$(detect_total_memory_mb)"
+  profile="standard"
+  node_cache=2048
+  evm_cache=2048
+  catchup_cache=2048
+  catchup_percent=20
+  max_peers="$(env_value NODE_MAX_PEERS 350)"
+  pg_shared="$(env_value POSTGRES_SHARED_BUFFERS 512MB)"
+  pg_effective="$(env_value POSTGRES_EFFECTIVE_CACHE_SIZE 2GB)"
+
+  if (( mem_mb > 0 && mem_mb <= 4096 )); then
+    profile="constrained-4gb"
+    node_cache=1024
+    evm_cache=768
+    catchup_cache=1024
+    catchup_percent=20
+    max_peers=120
+    pg_shared=128MB
+    pg_effective=512MB
+  elif (( mem_mb > 0 && mem_mb <= 8192 )); then
+    profile="balanced-8gb"
+    node_cache=2048
+    evm_cache=2048
+    catchup_cache=2048
+    catchup_percent=20
+    max_peers=200
+    pg_shared=256MB
+    pg_effective=1GB
+  elif (( mem_mb > 0 && mem_mb <= 16384 )); then
+    profile="standard-16gb"
+    node_cache=2048
+    evm_cache=2048
+    catchup_cache=3072
+    catchup_percent=20
+    max_peers=300
+    pg_shared=512MB
+    pg_effective=2GB
+  else
+    profile="large"
+    node_cache=3072
+    evm_cache=3072
+    catchup_cache=4096
+    catchup_percent=20
+    max_peers=350
+    pg_shared=512MB
+    pg_effective=4GB
+  fi
+
+  set_env_value .env BDAG_INSTALL_AUTOTUNE_CACHE "$enabled"
+  set_env_value .env BDAG_INSTALL_MEMORY_PROFILE "$profile"
+  set_env_value .env BDAG_INSTALL_DETECTED_MEMORY_MB "$mem_mb"
+  set_env_value .env BDAG_NODE_CACHE_MB "$node_cache"
+  set_env_value .env BDAG_EVM_CACHE_MB "$evm_cache"
+  set_env_value .env BDAG_CATCHUP_NODE_CACHE_MB "$catchup_cache"
+  set_env_value .env BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT "$catchup_percent"
+  set_env_value .env NODE_MAX_PEERS "$max_peers"
+  set_env_value .env POSTGRES_SHARED_BUFFERS "$pg_shared"
+  set_env_value .env POSTGRES_EFFECTIVE_CACHE_SIZE "$pg_effective"
+  say "Memory profile: ${profile} (${mem_mb:-0} MB RAM), node cache ${node_cache} MB, EVM cache ${evm_cache} MB, catch-up ceiling ${catchup_cache} MB"
+}
+
 absolute_path() {
   local path="$1"
   if [[ "$path" == /* ]]; then
@@ -635,16 +708,7 @@ configure_env() {
   set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT
   configure_active_node_env
   configure_node_mining_env "$node_mining_enabled" "$mining_address"
-
-  mem_kb="$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-  mem_gb=$(( mem_kb / 1024 / 1024 ))
-  if (( mem_gb > 0 && mem_gb <= 8 )); then
-    say "Applying Pi/low-memory defaults"
-    set_env_value .env BDAG_NODE_CACHE_MB 1024
-    set_env_value .env NODE_MAX_PEERS 160
-    set_env_value .env POSTGRES_SHARED_BUFFERS 256MB
-    set_env_value .env POSTGRES_EFFECTIVE_CACHE_SIZE 1GB
-  fi
+  apply_install_cache_profile
 
   if yes_no "Expose the local dashboard on the LAN instead of only this machine?" "n"; then
     set_env_value .env BDAG_DASHBOARD_BIND "0.0.0.0"

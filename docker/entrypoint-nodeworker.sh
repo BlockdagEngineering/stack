@@ -880,6 +880,12 @@ if [ "$(basename "${1:-}")" = "nodeworker" ] && ! nodeworker_arg_present "health
   set -- "${args[@]}"
 fi
 
+if [ "$(basename "${1:-}")" = "nodeworker" ] && ! nodeworker_arg_present "health.probe-interval" "$@"; then
+  args=("$@")
+  args+=("--health.probe-interval=${BDAG_NODEWORKER_HEALTH_PROBE_INTERVAL:-2s}")
+  set -- "${args[@]}"
+fi
+
 if [ "$(basename "${1:-}")" = "nodeworker" ] && ! nodeworker_arg_present "health.mining-readiness-timeout" "$@"; then
   args=("$@")
   args+=("--health.mining-readiness-timeout=${BDAG_NODEWORKER_MINING_READINESS_TIMEOUT:-90s}")

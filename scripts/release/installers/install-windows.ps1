@@ -179,6 +179,68 @@ function Get-EnvFileInt([string]$Path, [string]$Key, [int]$Default) {
     return $Default
 }
 
+function Get-TotalMemoryMb {
+    try {
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+        return [int][math]::Floor(([double]$os.TotalVisibleMemorySize) / 1024)
+    } catch {
+        return 0
+    }
+}
+
+function Apply-InstallCacheProfile {
+    $enabled = Get-EnvFileValue '.env' 'BDAG_INSTALL_AUTOTUNE_CACHE'
+    if (-not $enabled) { $enabled = if ($env:BDAG_INSTALL_AUTOTUNE_CACHE) { $env:BDAG_INSTALL_AUTOTUNE_CACHE } else { '1' } }
+    if ($enabled -eq '0') { return }
+
+    $memMb = Get-TotalMemoryMb
+    $profile = 'standard'
+    $nodeCache = 2048
+    $evmCache = 2048
+    $catchupCache = 2048
+    $catchupPercent = 20
+    $maxPeers = 350
+    $pgShared = '512MB'
+    $pgEffective = '2GB'
+
+    if ($memMb -gt 0 -and $memMb -le 4096) {
+        $profile = 'constrained-4gb'
+        $nodeCache = 1024
+        $evmCache = 768
+        $catchupCache = 1024
+        $maxPeers = 120
+        $pgShared = '128MB'
+        $pgEffective = '512MB'
+    } elseif ($memMb -gt 0 -and $memMb -le 8192) {
+        $profile = 'balanced-8gb'
+        $maxPeers = 200
+        $pgShared = '256MB'
+        $pgEffective = '1GB'
+    } elseif ($memMb -gt 0 -and $memMb -le 16384) {
+        $profile = 'standard-16gb'
+        $catchupCache = 3072
+        $maxPeers = 300
+    } else {
+        $profile = 'large'
+        $nodeCache = 3072
+        $evmCache = 3072
+        $catchupCache = 4096
+        $pgEffective = '4GB'
+    }
+
+    Set-EnvValue .env BDAG_INSTALL_AUTOTUNE_CACHE $enabled
+    Set-EnvValue .env BDAG_INSTALL_MEMORY_PROFILE $profile
+    Set-EnvValue .env BDAG_INSTALL_DETECTED_MEMORY_MB "$memMb"
+    Set-EnvValue .env BDAG_NODE_CACHE_MB "$nodeCache"
+    Set-EnvValue .env BDAG_EVM_CACHE_MB "$evmCache"
+    Set-EnvValue .env BDAG_CATCHUP_NODE_CACHE_MB "$catchupCache"
+    Set-EnvValue .env BDAG_CATCHUP_NODE_CACHE_MEMORY_PERCENT "$catchupPercent"
+    Set-EnvValue .env NODE_MAX_PEERS "$maxPeers"
+    Set-EnvValue .env POSTGRES_SHARED_BUFFERS $pgShared
+    Set-EnvValue .env POSTGRES_EFFECTIVE_CACHE_SIZE $pgEffective
+    Write-Host "Memory profile: $profile ($memMb MB RAM), node cache $nodeCache MB, EVM cache $evmCache MB, catch-up ceiling $catchupCache MB."
+}
+
 function Set-NodeConfCacheText([string]$Text) {
     $nodeCache = Get-EnvFileInt '.env' 'BDAG_NODE_CACHE_MB' 2048
     $evmCache = Get-EnvFileInt '.env' 'BDAG_EVM_CACHE_MB' $nodeCache
@@ -678,6 +740,7 @@ if (-not $nodeOnlyInstall) {
         $nodeText = $nodeText.TrimEnd() + "`nminingaddr=$miningAddr`n"
     }
 }
+Apply-InstallCacheProfile
 $nodeText = Set-NodeConfCacheText $nodeText
 
 Write-Host ""
