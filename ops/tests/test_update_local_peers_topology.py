@@ -39,6 +39,7 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
         "BDAG_ASIC_LAN_INTERFACE",
         "BDAG_ASIC_LAN_CIDRS",
         "BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED",
+        "BDAG_CHAIN_PEERSTORE_SERVICE_PORTS",
     )
 
     def setUp(self) -> None:
@@ -268,6 +269,59 @@ class UpdateLocalPeersTopologyTests(unittest.TestCase):
         self.assertEqual(18150, update_local_peers.configured_p2p_port({"P2P_PORT": "18150"}))
         self.assertEqual(8150, update_local_peers.configured_p2p_port({"P2P_PORT": "bad"}))
         self.assertEqual(8150, update_local_peers.configured_p2p_port({"P2P_PORT": "70000"}))
+
+    def test_peerstore_log_candidates_keep_only_public_service_ports(self) -> None:
+        old_docker_logs = update_local_peers.docker_logs
+        os.environ["BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED"] = "1"
+
+        def fake_docker_logs(_node: str, tail: str = "5000", timeout: int = 20) -> str:
+            return "\n".join(
+                [
+                    "Try to connect from peer store:{peerPub: "
+                    "[/ip4/102.182.77.21/tcp/8150 /ip4/102.182.77.21/tcp/52604 "
+                    "/ip4/192.168.1.9/tcp/8150 /ip4/169.254.20.10/tcp/8150 /dns4/node/tcp/8150]}",
+                    "Try to connect from peer store:{peerAlt: [/ip4/129.121.92.232/tcp/8153]}",
+                ]
+            )
+
+        try:
+            update_local_peers.docker_logs = fake_docker_logs
+            peers = update_local_peers.node_peerstore_log_candidates({}, active_nodes=["node"])
+        finally:
+            update_local_peers.docker_logs = old_docker_logs
+
+        self.assertEqual(
+            [
+                "/ip4/102.182.77.21/tcp/8150/p2p/peerPub",
+                "/ip4/129.121.92.232/tcp/8153/p2p/peerAlt",
+            ],
+            peers,
+        )
+
+    def test_peerstore_candidate_file_does_not_replay_private_or_high_ports(self) -> None:
+        old_latency = update_local_peers.peer_tcp_latency
+        public_peer = "/ip4/102.182.77.16/tcp/8150/p2p/peerPublic"
+        private_peer = "/ip4/192.168.1.9/tcp/8150/p2p/peerPrivate"
+        high_port_peer = "/ip4/102.182.77.16/tcp/52604/p2p/peerHighPort"
+        update_local_peers.CHAIN_PEERSTORE_CANDIDATES_FILE.write_text(
+            "\n".join([public_peer, private_peer, high_port_peer]) + "\n",
+            encoding="utf-8",
+        )
+
+        def fake_latency(_peer: str) -> tuple[bool, float]:
+            return True, 1.0
+
+        try:
+            update_local_peers.peer_tcp_latency = fake_latency
+            candidates = update_local_peers.p2p_peer_candidates({})
+        finally:
+            update_local_peers.peer_tcp_latency = old_latency
+
+        self.assertEqual([public_peer], candidates.peers)
+        self.assertEqual(
+            {"chain-peerstore-candidate-file": [public_peer]},
+            candidates.source_peers,
+        )
 
 
 if __name__ == "__main__":
