@@ -152,8 +152,8 @@ class NodeworkerEntrypointTest(unittest.TestCase):
     def test_nodeworker_enables_mining_readiness_recovery_by_default(self) -> None:
         result = self.run_entrypoint({})
 
-        self.assert_stdout_contains(result, "--health.mining-readiness-timeout=90s")
-        self.assert_stdout_contains(result, "--health.mining-readiness-grace=2m")
+        self.assert_stdout_contains(result, "--health.mining-readiness-timeout=30m")
+        self.assert_stdout_contains(result, "--health.mining-readiness-grace=20m")
 
     def test_node_mining_env_enables_no_pending_templates_by_default(self) -> None:
         result = self.run_entrypoint(

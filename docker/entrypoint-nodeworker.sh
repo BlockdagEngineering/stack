@@ -888,13 +888,13 @@ fi
 
 if [ "$(basename "${1:-}")" = "nodeworker" ] && ! nodeworker_arg_present "health.mining-readiness-timeout" "$@"; then
   args=("$@")
-  args+=("--health.mining-readiness-timeout=${BDAG_NODEWORKER_MINING_READINESS_TIMEOUT:-90s}")
+  args+=("--health.mining-readiness-timeout=${BDAG_NODEWORKER_MINING_READINESS_TIMEOUT:-30m}")
   set -- "${args[@]}"
 fi
 
 if [ "$(basename "${1:-}")" = "nodeworker" ] && ! nodeworker_arg_present "health.mining-readiness-grace" "$@"; then
   args=("$@")
-  args+=("--health.mining-readiness-grace=${BDAG_NODEWORKER_MINING_READINESS_GRACE:-2m}")
+  args+=("--health.mining-readiness-grace=${BDAG_NODEWORKER_MINING_READINESS_GRACE:-20m}")
   set -- "${args[@]}"
 fi
 
