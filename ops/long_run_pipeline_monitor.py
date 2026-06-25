@@ -24,21 +24,32 @@ DEFAULT_JOB_STATE_URL = "http://127.0.0.1:9090/health/job-state"
 DEFAULT_METRICS_URL = "http://127.0.0.1:9090/metrics"
 DEFAULT_DASHBOARD_STATUS_URL = "http://127.0.0.1:8088/api/status"
 DEFAULT_OUTPUT_ROOT = Path("ops/runtime/monitoring")
-METRIC_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)\\{?([^}]*)\\}?\\s+([-+0-9.eE]+)$")
+METRIC_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([-+0-9.eE]+)$")
 
 METRIC_NAMES = {
     "pool_block_submit_outcomes_total",
+    "pool_block_submit_backend_outcomes_total",
     "pool_blocks_found_total",
+    "pool_blocks_submitted_total",
+    "pool_duplicate_block_candidates_rejected_local_total",
+    "pool_job_health_authorized_miners",
+    "pool_job_health_ready_miners",
+    "pool_job_health_miners_without_current_job",
+    "pool_job_health_ok",
+    "pool_job_health_max_current_job_age_seconds",
     "pool_rpc_backend_node_health_mineable",
     "pool_rpc_backend_node_health_submit_ready",
     "pool_rpc_backend_node_health_p2p_mining_fresh",
-    "pool_rpc_backend_node_health_peer_count",
-    "pool_rpc_backend_node_health_fresh_peer_count",
-    "pool_rpc_backend_node_health_peer_lead",
+    "pool_rpc_backend_node_health_p2p_consensus_peer_count",
+    "pool_rpc_backend_node_health_p2p_fresh_consensus_peer_count",
+    "pool_rpc_backend_node_health_p2p_best_peer_lead_blocks",
     "pool_rpc_backend_node_health_template_age_ms",
+    "pool_rpc_backend_node_health_template_age_seconds",
+    "pool_block_timing_controller_waste_ratio",
+    "pool_block_timing_controller_job_age_ms",
+    "pool_block_timing_controller_template_ttl_ms",
+    "pool_block_timing_controller_recent_stale_grace_ms",
     "pool_template_broadcast_age_ms",
-    "pool_stratum_connections",
-    "pool_stratum_ready_connections",
     "pool_valid_shares_total",
     "pool_rejected_shares_total",
 }
@@ -107,8 +118,10 @@ def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
         handle.write(json.dumps(payload, sort_keys=True, default=str) + "\n")
 
 
-def labels_to_dict(labels: str) -> dict[str, str]:
+def labels_to_dict(labels: str | None) -> dict[str, str]:
     output: dict[str, str] = {}
+    if not labels:
+        return output
     for item in labels.split(","):
         if "=" not in item:
             continue
