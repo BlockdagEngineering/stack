@@ -255,19 +255,19 @@ def peer_starvation_status(*, recent_paid_work: bool = False, ready_miners: int 
     selected["node_p2p_best_peer_lead_blocks"] = 0
     selected["node_p2p_fresh_consensus_peer_count"] = 0
     selected["node_p2p_consensus_peer_count"] = 0
-    selected["node_template_age_seconds"] = 14
+    selected["node_template_age_seconds"] = 90
     selected["node_p2p_mining_fresh_reason_code"] = "insufficient_fresh_peers"
     selected["node_reason_code"] = "node_syncing"
     source_job = pool_health["source_job_health"]
     assert isinstance(source_job, dict)
     source_job["ready_miners"] = ready_miners
-    source_job["max_current_job_age_seconds"] = 52
+    source_job["max_current_job_age_seconds"] = 92
     source_job["reason_code"] = "invalidated_current_job" if ready_miners == 0 else "ok"
     job_state = status["pool_job_state"]
     assert isinstance(job_state, dict)
     job_state["ready_connections"] = ready_miners
     job_state["connections_without_current_job"] = 0
-    job_state["last_broadcast_age_ms"] = 52_000 if ready_miners == 0 else 1_000
+    job_state["last_broadcast_age_ms"] = 92_000 if ready_miners == 0 else 1_000
     job_state["reason_code"] = "invalidated_current_job" if ready_miners == 0 else "ok"
     return status
 
@@ -374,13 +374,14 @@ def native_current_template_sync_wedge_status(*, recent_paid_work: bool = False)
 class WatchdogSyncRestartTests(unittest.TestCase):
     def test_watchdog_default_interval_limits_hard_stall_detection_latency(self) -> None:
         self.assertEqual(watchdog.DEFAULT_INTERVAL_SECONDS, 5)
-        self.assertGreaterEqual(watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS, 60)
-        self.assertEqual(watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS, 30)
+        self.assertGreaterEqual(watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS, 180)
+        self.assertEqual(watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS, 90)
+        self.assertEqual(watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS, 90)
         self.assertEqual(watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_MIN_LEAD_BLOCKS, 30)
         self.assertEqual(watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN, 300)
-        self.assertEqual(watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_RETRY_COOLDOWN, 90)
-        self.assertEqual(watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS, 60)
-        self.assertEqual(watchdog.DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS, 180)
+        self.assertEqual(watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_RETRY_COOLDOWN, 300)
+        self.assertEqual(watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS, 180)
+        self.assertEqual(watchdog.DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS, 300)
         self.assertEqual(watchdog.DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS, 20)
 
     def test_active_import_requires_fresh_import_age_when_importing_flag_is_stuck(self) -> None:
@@ -1432,7 +1433,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
     def test_check_once_restarts_node_for_confirmed_peer_lead_stall(self) -> None:
         now = 1_779_200_000
         status = peer_lead_stall_status()
-        state = {"node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS}
+        state = {"node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS}
         restarts: list[tuple[str, str]] = []
         written: list[dict[str, object]] = []
 
@@ -1471,7 +1472,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
     def test_confirmed_peer_lead_stall_does_not_use_pool_or_stack_restart(self) -> None:
         now = 1_779_200_000
         status = peer_lead_stall_status()
-        state = {"node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS}
+        state = {"node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS}
         restarts: list[tuple[str, str]] = []
 
         with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
@@ -1708,18 +1709,18 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         selected["node_p2p_best_peer_lead_blocks"] = 38
         selected["node_p2p_fresh_consensus_peer_count"] = 7
         selected["node_p2p_consensus_peer_count"] = 7
-        selected["node_template_age_seconds"] = 32
+        selected["node_template_age_seconds"] = 92
         selected["node_reason_code"] = "node_syncing"
         source_job = pool_health["source_job_health"]
         assert isinstance(source_job, dict)
         source_job["ready_miners"] = 0
-        source_job["max_current_job_age_seconds"] = 32.771
+        source_job["max_current_job_age_seconds"] = 92.771
         source_job["reason_code"] = "invalidated_current_job"
         job_state = status["pool_job_state"]
         assert isinstance(job_state, dict)
         job_state["ready_connections"] = 0
         job_state["connections_without_current_job"] = 0
-        job_state["last_broadcast_age_ms"] = 32_771
+        job_state["last_broadcast_age_ms"] = 92_771
         job_state["reason_code"] = "invalidated_current_job"
         state = {"node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS}
         written: list[dict[str, object]] = []
@@ -1821,7 +1822,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
             "node",
             evidence,
         )
-        self.assertTrue(active_import_suppresses)
+        self.assertFalse(active_import_suppresses)
         self.assertFalse(watchdog.hard_peer_lead_outage_allows_active_import_wait(evidence, details))
 
         with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
@@ -1864,7 +1865,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         selected = pool_health["selected_backend_source_health"]
         assert isinstance(selected, dict)
         selected["node_p2p_best_peer_lead_blocks"] = 51
-        selected["node_template_age_seconds"] = 37
+        selected["node_template_age_seconds"] = 97
         selected["node_reason_code"] = "node_syncing"
         pool_health["last_block_submit_age_seconds"] = 37
         pool_health["block_submit_success_count"] = 1397
@@ -1931,7 +1932,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         selected["node_p2p_best_peer_lead_blocks"] = 38
         selected["node_p2p_fresh_consensus_peer_count"] = 7
         selected["node_p2p_consensus_peer_count"] = 7
-        selected["node_template_age_seconds"] = 49
+        selected["node_template_age_seconds"] = 99
         selected["node_reason_code"] = "node_syncing"
         source_job = pool_health["source_job_health"]
         assert isinstance(source_job, dict)
@@ -1997,20 +1998,20 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         source_job = pool_health["source_job_health"]
         assert isinstance(source_job, dict)
         source_job["ready_miners"] = 0
-        source_job["max_current_job_age_seconds"] = 32
+        source_job["max_current_job_age_seconds"] = 92
         source_job["reason_code"] = "invalidated_current_job"
         job_state = status["pool_job_state"]
         assert isinstance(job_state, dict)
         job_state["ready_connections"] = 0
         job_state["connections_without_current_job"] = 0
-        job_state["last_broadcast_age_ms"] = 32_246
+        job_state["last_broadcast_age_ms"] = 92_246
         job_state["reason_code"] = "invalidated_current_job"
         state = {"node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS}
         restarts: list[tuple[str, str]] = []
         written: list[dict[str, object]] = []
 
         evidence = watchdog.selected_backend_peer_lead_stall_evidence(status)
-        self.assertEqual(32.246, evidence["pool_job_age_seconds"])
+        self.assertEqual(92.246, evidence["pool_job_age_seconds"])
         self.assertTrue(watchdog.peer_lead_hard_mining_outage(status, evidence))
 
         with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
@@ -2069,20 +2070,20 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         assert isinstance(job_state, dict)
         job_state["ready_connections"] = 0
         job_state["connections_without_current_job"] = 0
-        job_state["last_broadcast_age_ms"] = 30_500
+        job_state["last_broadcast_age_ms"] = 90_500
         job_state["reason_code"] = "invalidated_current_job"
         state = {"node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS}
         restarts: list[tuple[str, str]] = []
         written: list[dict[str, object]] = []
 
         evidence = watchdog.selected_backend_peer_lead_stall_evidence(status)
-        self.assertEqual(30.5, evidence["pool_job_age_seconds"])
+        self.assertEqual(90.5, evidence["pool_job_age_seconds"])
         self.assertTrue(watchdog.peer_lead_hard_mining_outage(status, evidence))
 
-        job_state["last_broadcast_age_ms"] = 29_500
+        job_state["last_broadcast_age_ms"] = 89_500
         below_gate = watchdog.selected_backend_peer_lead_stall_evidence(status)
         self.assertFalse(watchdog.peer_lead_hard_mining_outage(status, below_gate))
-        job_state["last_broadcast_age_ms"] = 30_500
+        job_state["last_broadcast_age_ms"] = 90_500
 
         with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
             watchdog, "NODES", ["node"]
@@ -2141,7 +2142,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertTrue(evidence["peer_starvation"])
         self.assertEqual(0, evidence["lead"])
         self.assertEqual(0, evidence["fresh_consensus_peer_count"])
-        self.assertEqual(52.0, evidence["pool_job_age_seconds"])
+        self.assertEqual(92.0, evidence["pool_job_age_seconds"])
         self.assertTrue(watchdog.peer_lead_hard_mining_outage(status, evidence))
 
         with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
@@ -2320,7 +2321,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         node["importing"] = True
         node["last_import_age_seconds"] = 10
         state = {
-            "node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS,
+            "node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS,
             "node_peer_lead_active_import_by_node": {
                 "node": {
                     "since": now - watchdog.DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_SUPPRESS_SECONDS - 1,
@@ -2379,7 +2380,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         assert isinstance(selected, dict)
         selected["node_p2p_best_peer_lead_blocks"] = 180
         state = {
-            "node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS,
+            "node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS,
             "node_peer_lead_active_import_by_node": {
                 "node": {
                     "since": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS,
@@ -2518,19 +2519,19 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertTrue(result["watchdog_state"]["last_node_peer_lead_hard_mining_outage"])
         self.assertTrue(written)
 
-    def test_hard_peer_lead_mining_outage_retries_failed_restart_before_full_cooldown(self) -> None:
+    def test_hard_peer_lead_mining_outage_restarts_after_full_repair_cooldown(self) -> None:
         now = 1_779_200_000
         status = peer_lead_stall_status()
         state = {
             "node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS,
             "last_node_peer_lead_stall_restart_at": now
-            - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_RETRY_COOLDOWN
+            - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN
             - 1,
         }
         restarts: list[tuple[str, str]] = []
         written: list[dict[str, object]] = []
 
-        self.assertLess(
+        self.assertGreater(
             now - state["last_node_peer_lead_stall_restart_at"],
             watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN,
         )

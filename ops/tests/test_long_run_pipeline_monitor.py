@@ -306,7 +306,7 @@ pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"} 570
                 peer_lead_blocks=30,
                 mineable=0,
                 submit_ready=0,
-                template_age_seconds=52,
+                template_age_seconds=92,
             )
         ]
 
@@ -402,11 +402,11 @@ pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"} 570
             "authorized_connections": 4,
             "ready_connections": 0,
             "invalid_current_job_connections": 4,
-            "last_broadcast_age_ms": 32411,
-            "max_current_job_age_ms": 32411,
+            "last_broadcast_age_ms": 92411,
+            "max_current_job_age_ms": 92411,
             "clients": [
-                {"ready": False, "reason_code": "invalidated_current_job", "current_job_age_ms": 32411},
-                {"ready": False, "reason_code": "invalidated_current_job", "current_job_age_ms": 32410},
+                {"ready": False, "reason_code": "invalidated_current_job", "current_job_age_ms": 92411},
+                {"ready": False, "reason_code": "invalidated_current_job", "current_job_age_ms": 92410},
             ],
         }
 
@@ -414,12 +414,12 @@ pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"} 570
 
         self.assertEqual(1, summary["anomaly_count"])
         reasons = summary["anomaly_samples"][0]["reasons"]
-        self.assertIn("pool_job_age_over_30s", reasons)
-        self.assertNotIn("template_age_over_30s", reasons)
+        self.assertIn("pool_job_age_over_90s", reasons)
+        self.assertNotIn("template_age_over_90s", reasons)
         self.assertIn("hard_peer_lead_template_stall", reasons)
         self.assertEqual(1, len(summary["critical_anomaly_samples"]))
-        self.assertEqual(32.411, summary["critical_anomaly_samples"][0]["pool_job_age_seconds"])
-        self.assertEqual(32.411, summary["gauges"]["pool_job_age_seconds"]["max"])
+        self.assertEqual(92.411, summary["critical_anomaly_samples"][0]["pool_job_age_seconds"])
+        self.assertEqual(92.411, summary["gauges"]["pool_job_age_seconds"]["max"])
         self.assertIn("hard_peer_lead_template_stall_observed", summary["window_anomaly_reasons"])
 
     def test_sample_window_summary_does_not_mark_short_job_age_as_hard_stall(self) -> None:
@@ -461,7 +461,7 @@ pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"} 570
                 peer_lead_blocks=30,
                 mineable=0,
                 submit_ready=0,
-                template_age_seconds=52,
+                template_age_seconds=92,
             ),
             self.sample(
                 "2026-06-25T05:39:00+02:00",
@@ -505,7 +505,7 @@ pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"} 570
                 peer_lead_blocks=30,
                 mineable=0,
                 submit_ready=0,
-                template_age_seconds=52,
+                template_age_seconds=92,
             ),
             self.sample(
                 "2026-06-25T05:59:00+02:00",
@@ -538,7 +538,7 @@ pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"} 570
             peer_lead_blocks=19,
             mineable=0,
             submit_ready=0,
-            template_age_seconds=73,
+            template_age_seconds=93,
         )
         sample["node_log_tail"] = {
             "graph_sync_open": True,
@@ -580,7 +580,7 @@ pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"} 570
                 "peer_graph_main_order_min": 12606410,
                 "peer_graph_main_order_max": 12630472,
                 "peer_graph_main_order_spread": 24062,
-                "template_age_ms": 52000,
+                "template_age_ms": 92000,
             },
         }
 
@@ -590,13 +590,13 @@ pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"} 570
         self.assertIn("ready_miners_below_4", reasons)
         self.assertIn("p2p_mining_not_fresh", reasons)
         self.assertIn("peer_lead_exceeds_tolerance", reasons)
-        self.assertIn("template_age_over_30s", reasons)
+        self.assertIn("template_age_over_90s", reasons)
         self.assertIn("mineable_false", reasons)
         self.assertIn("submit_ready_false", reasons)
         self.assertIn("hard_peer_lead_template_stall", reasons)
         anomaly = summary["anomaly_samples"][0]
         self.assertEqual(18.0, anomaly["peer_lead_blocks"])
-        self.assertEqual(52.0, anomaly["template_age_seconds"])
+        self.assertEqual(92.0, anomaly["template_age_seconds"])
         self.assertEqual("node_syncing", anomaly["node_rpc_context"]["reason_code"])
         self.assertEqual(24062, anomaly["node_rpc_context"]["peer_graph_main_order_spread"])
         self.assertIn("peer_graph_spread_observed_during_anomaly", summary["window_anomaly_reasons"])
@@ -729,7 +729,7 @@ pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"} 570
             peer_lead_blocks=0,
             mineable=0,
             submit_ready=0,
-            template_age_seconds=60,
+            template_age_seconds=120,
         )
         sample["pool_job_state"] = {
             "ready_connections": 0,

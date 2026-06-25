@@ -25,11 +25,11 @@ Sync health checks are intentionally conservative. The dashboard and watchdog wa
 
 Only real catch-up problems put the dashboard into `syncing`: pool initial download, node import staleness, peer-ahead lag, or RPC refusal. Maintenance warnings such as malformed peer spam stay visible in the alert list, but they do not mark the pool as syncing when the active node is importing current blocks.
 
-The dashboard also watches for pool share stalls. If miners are connected but the pool stops accepting valid shares for several minutes, that is treated as a recovery condition and the watchdog will restart the stack after the configured threshold.
+The dashboard also watches for pool share stalls. If miners are connected but the pool stops accepting valid shares for several minutes, that is treated as a recovery condition. The watchdog prefers pool refresh/restart and ASIC recovery before any node restart.
 
 When the node is catching up, automation leaves the pool container running. The pool's node-health gate pauses `getBlockTemplate` refreshes while the node reports template generation is not ready, so miners are not disconnected just to reduce template pressure.
 
-The watchdog also has a fast-sync recovery path. If real syncing warnings persist for `BDAG_WATCHDOG_SYNCING_THRESHOLD` checks, default `5`, it runs a normal stack restart to force fresh peer/RPC connections and apply the current config. This restart is cooldown-limited by `BDAG_SYNCING_RESTART_COOLDOWN`, default `900` seconds, so it cannot loop continuously.
+Node restarts are an exception path, not routine sync maintenance. The watchdog observes short peer-lead, template, and RPC-refused turbulence first. By default, RPC-refused evidence must persist for `BDAG_WATCHDOG_NODE_RPC_REFUSED_CONFIRM_SECONDS=180`; hard peer-lead mining outage evidence must persist for `BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS=180` with stale jobs for `BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS=90`; and native-current template-sync wedge evidence must persist for `BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS=300`. Those node restart paths are cooldown-limited so they cannot become a habit.
 
 The persisted peer list in `.env` should contain only valid multiaddrs. Removing a bad peer from `.env` takes effect on the next controlled node restart; it does not interrupt currently running miners by itself.
 

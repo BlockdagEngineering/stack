@@ -2,4 +2,4 @@
 11c04fcfaf6b801ac25ba59dff69fa31709006b8ae27cb10f6fdd7a7c4822310  /home/jeremy/github/BlockdagEngineering/stack/bin/nodeworker
 d4b853b4becfcf4a026652a9c6685a1dba5131ff7ec71e921c0c032f23c3de86  /home/jeremy/github/BlockdagEngineering/stack/bin/mining-pool
 b094592bfa61c529115ec6976acf1b946f49622acd8ddd1d0e64c882c328e393  /home/jeremy/github/BlockdagEngineering/stack/bin/dashboard-api
-5d8ad97172d32b37969d6dc08c90e30f586e6092993e641f24188659af3f3ec7  /home/jeremy/github/BlockdagEngineering/stack/bin/dashboard
+687dd37da9a293a52d43ef170ad9022890c7fd7ed3abef5ce5755a705d46dc6a  /home/jeremy/github/BlockdagEngineering/stack/bin/dashboard

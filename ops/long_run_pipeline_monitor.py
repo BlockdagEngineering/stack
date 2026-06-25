@@ -29,10 +29,10 @@ DEFAULT_NODE_RPC_URL = "http://127.0.0.1:38131"
 DEFAULT_ENV_FILE = Path(os.environ.get("BDAG_STACK_ENV_FILE", ".env"))
 DEFAULT_OUTPUT_ROOT = Path("ops/runtime/monitoring")
 DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS = int(
-    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS", "30")
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS", "90")
 )
 DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS = int(
-    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS", "30")
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS", "90")
 )
 DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS", "20")
@@ -877,8 +877,8 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
     if lead is not None and lead > 10:
         reasons.append("peer_lead_exceeds_tolerance")
     template_age = sample_metric_or_node(sample, "template_age_seconds")
-    if template_age is not None and template_age > 30:
-        reasons.append("template_age_over_30s")
+    if template_age is not None and template_age >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS:
+        reasons.append(f"template_age_over_{DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS}s")
     pool_job_age = sample_pool_job_age_seconds(sample)
     if pool_job_age is not None and pool_job_age >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS:
         reasons.append(f"pool_job_age_over_{DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS}s")
@@ -1094,7 +1094,10 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
         and lead.get("max") is not None
         and float(lead["max"]) > 10
         and (
-            (template_age.get("max") is not None and float(template_age["max"]) >= 45)
+            (
+                template_age.get("max") is not None
+                and float(template_age["max"]) >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS
+            )
             or (
                 pool_job_age.get("max") is not None
                 and float(pool_job_age["max"]) >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS
@@ -1112,7 +1115,10 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
         and float(p2p["min"]) >= 1
         and (lead.get("max") is None or float(lead["max"]) <= 10)
         and (
-            (template_age.get("max") is not None and float(template_age["max"]) >= 45)
+            (
+                template_age.get("max") is not None
+                and float(template_age["max"]) >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS
+            )
             or (
                 pool_job_age.get("max") is not None
                 and float(pool_job_age["max"]) >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS
