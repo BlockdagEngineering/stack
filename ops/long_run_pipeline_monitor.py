@@ -40,6 +40,7 @@ METRIC_NAMES = {
     "pool_block_submit_outcomes_total",
     "pool_block_submit_backend_outcomes_total",
     "pool_blocks_found_total",
+    "pool_blocks_paid_total",
     "pool_blocks_submitted_total",
     "pool_duplicate_block_candidates_rejected_local_total",
     "pool_job_health_authorized_miners",
@@ -67,6 +68,7 @@ METRIC_NAMES = {
 SUMMARY_METRICS = {
     "accepted_blocks": "pool_block_submit_outcomes_total{outcome=accepted,pool_id=0,reason=ok}",
     "blocks_found": "pool_blocks_found_total{pool_id=0}",
+    "paid_blocks": "pool_blocks_paid_total{pool_id=0}",
     "blocks_submitted": "pool_blocks_submitted_total{pool_id=0}",
     "stale_job_rejects": "pool_block_submit_outcomes_total{outcome=rejected-local,pool_id=0,reason=stale-job}",
     "stale_parent_rejects": "pool_block_submit_outcomes_total{outcome=rejected-local,pool_id=0,reason=stale-parent}",
@@ -86,6 +88,7 @@ SUMMARY_METRICS = {
 SUMMARY_COUNTERS = (
     "accepted_blocks",
     "blocks_found",
+    "paid_blocks",
     "blocks_submitted",
     "stale_job_rejects",
     "stale_parent_rejects",
@@ -973,6 +976,7 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
     counters = summary.get("counters") if isinstance(summary.get("counters"), dict) else {}
     gauges = summary.get("gauges") if isinstance(summary.get("gauges"), dict) else {}
     accepted = counters.get("accepted_blocks") if isinstance(counters.get("accepted_blocks"), dict) else {}
+    paid = counters.get("paid_blocks") if isinstance(counters.get("paid_blocks"), dict) else {}
     authorized = gauges.get("authorized_miners") if isinstance(gauges.get("authorized_miners"), dict) else {}
     ready = gauges.get("ready_miners") if isinstance(gauges.get("ready_miners"), dict) else {}
     p2p = gauges.get("p2p_mining_fresh") if isinstance(gauges.get("p2p_mining_fresh"), dict) else {}
@@ -982,6 +986,7 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
     mineable = gauges.get("mineable") if isinstance(gauges.get("mineable"), dict) else {}
     submit_ready = gauges.get("submit_ready") if isinstance(gauges.get("submit_ready"), dict) else {}
     accepted_delta = float(accepted.get("delta") or 0.0)
+    paid_delta = float(paid.get("delta") or 0.0)
     authorized_max = authorized.get("max")
     try:
         miner_demand = authorized_max is not None and float(authorized_max) > 0
@@ -989,6 +994,8 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
         miner_demand = False
     if duration_seconds >= 300 and miner_demand and accepted_delta <= 0:
         reasons.append("accepted_blocks_not_advancing")
+    if duration_seconds >= 1800 and miner_demand and accepted_delta > 0 and paid_delta <= 0:
+        reasons.append("paid_blocks_not_advancing_with_accepted_work")
     if ready.get("min") is not None and ready.get("max") == 0:
         reasons.append("ready_miners_zero_for_window")
     if p2p.get("max") == 0:
@@ -1074,6 +1081,7 @@ def summarize_sample_window(samples: list[dict[str, Any]]) -> dict[str, Any]:
     gauges = {name: gauge_summary(samples, name) for name in SUMMARY_GAUGES}
     local_reject_delta = sum(counters[name]["delta"] for name in ("stale_job_rejects", "stale_parent_rejects", "duplicate_rejects"))
     accepted_delta = counters["accepted_blocks"]["delta"]
+    paid_delta = counters["paid_blocks"]["delta"]
     anomaly_samples: list[dict[str, Any]] = []
     advisory_samples: list[dict[str, Any]] = []
     for sample in samples:
@@ -1109,6 +1117,8 @@ def summarize_sample_window(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "counters": counters,
         "gauges": gauges,
         "accepted_blocks_per_hour": round(accepted_delta / (duration_seconds / 3600), 6) if duration_seconds > 0 else None,
+        "paid_blocks_per_hour": round(paid_delta / (duration_seconds / 3600), 6) if duration_seconds > 0 else None,
+        "paid_blocks_per_accepted": round(paid_delta / accepted_delta, 6) if accepted_delta > 0 else None,
         "local_reject_delta": round(local_reject_delta, 6),
         "local_rejects_per_accepted": round(local_reject_delta / accepted_delta, 6) if accepted_delta > 0 else None,
         "counter_reset_count": sum(item["resets"] for item in counters.values()),

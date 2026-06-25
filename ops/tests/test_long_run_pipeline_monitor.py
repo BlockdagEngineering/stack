@@ -101,6 +101,22 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
         self.assertFalse(summary["graph_sync_open"])
         self.assertEqual({"process_id": 7, "spend": "20s", "spend_seconds": 20}, summary["graph_sync_last_end"])
 
+    def test_parse_metrics_keeps_paid_block_counter(self) -> None:
+        metrics = monitor.parse_metrics(
+            """
+# HELP pool_blocks_paid_total Paid blocks confirmed for the pool.
+# TYPE pool_blocks_paid_total counter
+pool_blocks_paid_total{pool_id="0"} 3508
+pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"} 5705
+"""
+        )
+
+        self.assertEqual(3508.0, metrics["pool_blocks_paid_total{pool_id=0}"])
+        self.assertEqual(
+            5705.0,
+            metrics["pool_block_submit_outcomes_total{outcome=accepted,pool_id=0,reason=ok}"],
+        )
+
     def test_node_rpc_summary_exposes_mining_safety_contradiction(self) -> None:
         calls: list[str] = []
 
@@ -237,6 +253,7 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
                 "2026-06-25T05:00:00+02:00",
                 accepted_blocks=100,
                 blocks_found=100,
+                paid_blocks=95,
                 blocks_submitted=100,
                 stale_job_rejects=2,
                 stale_parent_rejects=1,
@@ -252,6 +269,7 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
                 "2026-06-25T05:10:00+02:00",
                 accepted_blocks=160,
                 blocks_found=160,
+                paid_blocks=151,
                 blocks_submitted=160,
                 stale_job_rejects=5,
                 stale_parent_rejects=3,
@@ -268,9 +286,12 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
         summary = monitor.summarize_sample_window(samples)
 
         self.assertEqual(60, summary["counters"]["accepted_blocks"]["delta"])
+        self.assertEqual(56, summary["counters"]["paid_blocks"]["delta"])
         self.assertEqual(6, summary["local_reject_delta"])
         self.assertEqual(0.1, summary["local_rejects_per_accepted"])
         self.assertEqual(360.0, summary["accepted_blocks_per_hour"])
+        self.assertEqual(336.0, summary["paid_blocks_per_hour"])
+        self.assertEqual(0.933333, summary["paid_blocks_per_accepted"])
         self.assertEqual(4, summary["gauges"]["ready_miners"]["min"])
         self.assertEqual(0, summary["anomaly_count"])
 
@@ -763,6 +784,7 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
                 "2026-06-25T04:00:00+02:00",
                 accepted_blocks=0,
                 blocks_found=0,
+                paid_blocks=0,
                 blocks_submitted=0,
                 ready_miners=0,
                 authorized_miners=4,
@@ -776,6 +798,7 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
                 "2026-06-25T04:10:00+02:00",
                 accepted_blocks=0,
                 blocks_found=0,
+                paid_blocks=0,
                 blocks_submitted=0,
                 ready_miners=0,
                 authorized_miners=4,
@@ -793,6 +816,44 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
         self.assertIn("ready_miners_zero_for_window", summary["window_anomaly_reasons"])
         self.assertIn("p2p_mining_not_fresh_for_window", summary["window_anomaly_reasons"])
         self.assertIn("peer_lead_exceeds_tolerance_for_window", summary["window_anomaly_reasons"])
+
+    def test_sample_window_summary_flags_paid_conversion_stall_after_long_window(self) -> None:
+        samples = [
+            self.sample(
+                "2026-06-25T04:00:00+02:00",
+                accepted_blocks=100,
+                blocks_found=100,
+                paid_blocks=50,
+                blocks_submitted=100,
+                ready_miners=4,
+                authorized_miners=4,
+                p2p_mining_fresh=1,
+                peer_lead_blocks=0,
+                mineable=1,
+                submit_ready=1,
+                template_age_seconds=0.5,
+            ),
+            self.sample(
+                "2026-06-25T04:31:00+02:00",
+                accepted_blocks=160,
+                blocks_found=160,
+                paid_blocks=50,
+                blocks_submitted=160,
+                ready_miners=4,
+                authorized_miners=4,
+                p2p_mining_fresh=1,
+                peer_lead_blocks=0,
+                mineable=1,
+                submit_ready=1,
+                template_age_seconds=0.7,
+            ),
+        ]
+
+        summary = monitor.summarize_sample_window(samples)
+
+        self.assertEqual(60, summary["counters"]["accepted_blocks"]["delta"])
+        self.assertEqual(0, summary["counters"]["paid_blocks"]["delta"])
+        self.assertIn("paid_blocks_not_advancing_with_accepted_work", summary["window_anomaly_reasons"])
 
 
 if __name__ == "__main__":
