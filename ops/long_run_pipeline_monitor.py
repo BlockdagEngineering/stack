@@ -621,6 +621,38 @@ def sample_metric(sample: dict[str, Any], name: str) -> float | None:
         return None
 
 
+def sample_job_state_lane_count(sample: dict[str, Any], name: str) -> float | None:
+    job_state = sample.get("pool_job_state") if isinstance(sample.get("pool_job_state"), dict) else {}
+    mapping = {
+        "ready_miners": "ready_connections",
+        "authorized_miners": "authorized_connections",
+    }
+    key = mapping.get(name)
+    if not key:
+        return None
+    return numeric_or_none(job_state.get(key))
+
+
+def sample_lane_count(sample: dict[str, Any], name: str) -> float | None:
+    """Return authoritative lane counts for current-state decisions.
+
+    Prometheus gauges can be scrape-racy around template transitions. The
+    detailed job-state endpoint is the better source when it is available
+    because it is the same per-connection view used to route ASIC work.
+    """
+
+    job_state_value = sample_job_state_lane_count(sample, name)
+    return job_state_value if job_state_value is not None else sample_metric(sample, name)
+
+
+def lane_count_mismatch(sample: dict[str, Any], name: str) -> bool:
+    metric_value = sample_metric(sample, name)
+    job_state_value = sample_job_state_lane_count(sample, name)
+    if metric_value is None or job_state_value is None:
+        return False
+    return metric_value != job_state_value
+
+
 def numeric_or_none(value: Any) -> float | None:
     if isinstance(value, bool):
         return 1.0 if value else 0.0
@@ -727,6 +759,8 @@ def reset_aware_counter_delta(samples: list[dict[str, Any]], name: str) -> dict[
 def gauge_summary(samples: list[dict[str, Any]], name: str) -> dict[str, Any]:
     if name == "pool_job_age_seconds":
         values = [value for sample in samples if (value := sample_pool_job_age_seconds(sample)) is not None]
+    elif name in {"ready_miners", "authorized_miners"}:
+        values = [value for sample in samples if (value := sample_lane_count(sample, name)) is not None]
     else:
         values = [value for sample in samples if (value := sample_metric(sample, name)) is not None]
     if not values:
@@ -808,15 +842,9 @@ def status_consistency_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
 
 def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
-    job_state = sample.get("pool_job_state") if isinstance(sample.get("pool_job_state"), dict) else {}
     errors = sample.get("errors") if isinstance(sample.get("errors"), dict) else {}
-    ready = sample_metric(sample, "ready_miners")
-    ready_state = job_state.get("ready_connections")
-    try:
-        ready_state_number = None if ready_state is None else int(float(ready_state))
-    except (TypeError, ValueError):
-        ready_state_number = None
-    if (ready is not None and ready < 4) or (ready_state_number is not None and ready_state_number < 4):
+    ready = sample_lane_count(sample, "ready_miners")
+    if ready is not None and ready < 4:
         reasons.append("ready_miners_below_4")
     p2p = sample_metric_or_node(sample, "p2p_mining_fresh")
     if p2p is not None and p2p < 1:
@@ -839,7 +867,6 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
         value is None
         for value in (
             ready,
-            ready_state_number,
             p2p,
             lead,
             template_age,
@@ -854,7 +881,7 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
         reasons.append("mineable_false")
     if submit_ready is not None and submit_ready < 1 and (core_pipeline_reasons or context_missing):
         reasons.append("submit_ready_false")
-    ready_zero = (ready is not None and ready == 0) or (ready_state_number is not None and ready_state_number == 0)
+    ready_zero = ready is not None and ready == 0
     if (
         ready_zero
         and p2p is not None
@@ -873,16 +900,9 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
 
 def sample_advisory_reasons(sample: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
-    job_state = sample.get("pool_job_state") if isinstance(sample.get("pool_job_state"), dict) else {}
     node_rpc = sample.get("node_rpc") if isinstance(sample.get("node_rpc"), dict) else {}
     node_log = sample.get("node_log_tail") if isinstance(sample.get("node_log_tail"), dict) else {}
-    ready = sample_metric(sample, "ready_miners")
-    ready_state = job_state.get("ready_connections")
-    try:
-        ready_state_number = None if ready_state is None else int(float(ready_state))
-    except (TypeError, ValueError):
-        ready_state_number = None
-    ready_miners = ready if ready is not None else ready_state_number
+    ready_miners = sample_lane_count(sample, "ready_miners")
     p2p = sample_metric_or_node(sample, "p2p_mining_fresh")
     lead = sample_metric_or_node(sample, "peer_lead_blocks")
     template_age = sample_metric_or_node(sample, "template_age_seconds")
@@ -890,6 +910,9 @@ def sample_advisory_reasons(sample: dict[str, Any]) -> list[str]:
     submit_ready = sample_metric_or_node(sample, "submit_ready")
     node_reason = node_rpc.get("reason_code")
     p2p_reason = node_rpc.get("p2p_mining_fresh_reason_code")
+
+    if lane_count_mismatch(sample, "ready_miners"):
+        reasons.append("ready_miners_metric_job_state_mismatch")
 
     mining_lanes_intact = ready_miners is not None and float(ready_miners) >= 4
     p2p_safe = p2p is not None and p2p >= 1
@@ -1058,7 +1081,7 @@ def summarize_sample_window(samples: list[dict[str, Any]]) -> dict[str, Any]:
         sample_context = {
             "sampled_at": sample.get("sampled_at"),
             "accepted_blocks": sample_metric(sample, "accepted_blocks"),
-            "ready_miners": sample_metric(sample, "ready_miners"),
+            "ready_miners": sample_lane_count(sample, "ready_miners"),
             "p2p_mining_fresh": sample_metric_or_node(sample, "p2p_mining_fresh"),
             "peer_lead_blocks": sample_metric_or_node(sample, "peer_lead_blocks"),
             "mineable": sample_metric_or_node(sample, "mineable"),

@@ -300,6 +300,68 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
         self.assertIn("submit_ready_false", reasons)
         self.assertIn("hard_peer_lead_template_stall", reasons)
 
+    def test_summary_prefers_job_state_when_ready_metric_is_racy(self) -> None:
+        sample = self.sample(
+            "2026-06-25T16:54:00+02:00",
+            accepted_blocks=100,
+            blocks_found=100,
+            blocks_submitted=100,
+            stale_job_rejects=0,
+            stale_parent_rejects=0,
+            duplicate_rejects=0,
+            authorized_miners=4,
+            ready_miners=0,
+            p2p_mining_fresh=1,
+            peer_lead_blocks=0,
+            mineable=1,
+            submit_ready=1,
+            template_age_seconds=0.5,
+        )
+        sample["pool_job_state"] = {
+            "status": "ok",
+            "reason_code": "ok",
+            "active_connections": 4,
+            "authorized_connections": 4,
+            "ready_connections": 4,
+            "last_broadcast_age_ms": 500,
+            "max_current_job_age_ms": 500,
+        }
+
+        summary = monitor.summarize_sample_window([sample])
+
+        self.assertEqual(4.0, summary["gauges"]["ready_miners"]["min"])
+        self.assertEqual(0, summary["anomaly_count"])
+        self.assertEqual(1, summary["advisory_count"])
+        self.assertIn(
+            "ready_miners_metric_job_state_mismatch",
+            summary["advisory_samples"][0]["reasons"],
+        )
+
+    def test_summary_falls_back_to_ready_metric_without_job_state(self) -> None:
+        sample = self.sample(
+            "2026-06-25T16:55:00+02:00",
+            accepted_blocks=100,
+            blocks_found=100,
+            blocks_submitted=100,
+            stale_job_rejects=0,
+            stale_parent_rejects=0,
+            duplicate_rejects=0,
+            authorized_miners=4,
+            ready_miners=0,
+            p2p_mining_fresh=1,
+            peer_lead_blocks=0,
+            mineable=1,
+            submit_ready=1,
+            template_age_seconds=0.5,
+        )
+        sample["pool_job_state"] = {}
+
+        summary = monitor.summarize_sample_window([sample])
+
+        self.assertEqual(0.0, summary["gauges"]["ready_miners"]["min"])
+        self.assertEqual(1, summary["anomaly_count"])
+        self.assertIn("ready_miners_below_4", summary["anomaly_samples"][0]["reasons"])
+
     def test_sample_window_summary_flags_peer_lead_stall_from_pool_job_age(self) -> None:
         sample = self.sample(
             "2026-06-25T15:37:00+02:00",
