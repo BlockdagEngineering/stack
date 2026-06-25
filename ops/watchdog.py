@@ -161,6 +161,7 @@ def env_bool(name: str, default: bool = False) -> bool:
 AUTOMATIC_CLEAN_RESTORE_ENABLED = env_bool("BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE", False)
 BOOT_REPAIR_DIRTY_POLICY = os.environ.get("BDAG_BOOT_REPAIR_DIRTY_POLICY", "start").strip().lower()
 BOOT_REPAIR_CRITICAL_POLICY = os.environ.get("BDAG_BOOT_REPAIR_CRITICAL_POLICY", "restart").strip().lower()
+PAUSE_POOL_DURING_NODE_RESTART = env_bool("BDAG_WATCHDOG_PAUSE_POOL_DURING_NODE_RESTART", True)
 
 
 def log(message: str) -> None:
@@ -231,6 +232,9 @@ def container_running(status: dict[str, Any], container_name: str) -> bool:
 
 
 def sync_progress_pool_pause_reason(status: dict[str, Any]) -> str:
+    if sync_progress_is_advisory_with_ready_mining_pipeline(status):
+        return ""
+
     sync = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
     sync_status = str(sync.get("status") or "").strip().lower()
     lag = 0
@@ -674,6 +678,185 @@ def float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "ok", "ready"}
+
+
+def sync_current_block_is_evm(sync: dict[str, Any]) -> bool:
+    current = int_or_none(sync.get("current_block"))
+    sync_current = int_or_none(sync.get("sync_current_block"))
+    chain_current = int_or_none(sync.get("chain_block_count"))
+    if current is None:
+        return False
+    if sync_current is not None and current == sync_current:
+        return True
+    return bool(
+        sync.get("eth_syncing")
+        and sync.get("evm_chain_syncing")
+        and chain_current is not None
+        and current < chain_current
+    )
+
+
+def sync_progress_is_advisory_to_mining(status: dict[str, Any]) -> bool:
+    sync = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
+    if boolish(sync.get("mining_advisory_sync")) or bool(sync.get("evm_sync_advisory")):
+        return True
+    if boolish(sync.get("evm_chain_syncing")) and (
+        boolish(sync.get("native_is_current")) or int_or_none(sync.get("p2p_network_gap")) == 0
+    ):
+        return True
+    return sync_current_block_is_evm(sync)
+
+
+def pool_mining_pipeline_ready(status: dict[str, Any]) -> bool:
+    pool_job_state = status.get("pool_job_state") if isinstance(status.get("pool_job_state"), dict) else {}
+    pool_health = status.get("pool_health", status.get("pool", {}))
+    if not isinstance(pool_health, dict):
+        pool_health = {}
+    pool_metrics = status.get("pool_metrics") if isinstance(status.get("pool_metrics"), dict) else {}
+
+    active = (
+        int_or_none(pool_job_state.get("active_connections"))
+        or int_or_none(pool_metrics.get("active_connections"))
+        or 0
+    )
+    ready = (
+        int_or_none(pool_job_state.get("ready_connections"))
+        or int_or_none(pool_metrics.get("ready_connections"))
+        or 0
+    )
+    without_job = int_or_none(pool_job_state.get("connections_without_current_job"))
+    state_text = normalise_status_text(pool_job_state.get("status"))
+    reason_text = normalise_status_text(pool_job_state.get("reason_code"))
+    jobs_ready = bool(
+        ready > 0
+        and (active <= 0 or active >= ready)
+        and (without_job is None or without_job == 0)
+        and (not state_text or state_text in {"ok", "ready", "mining"})
+        and (not reason_text or reason_text == "ok")
+    )
+
+    if not jobs_ready:
+        return False
+    if status.get("can_submit_blocks") is True:
+        return True
+
+    source_backend_health = pool_health.get("source_backend_health")
+    if not isinstance(source_backend_health, dict):
+        source_backend_health = (
+            pool_metrics.get("source_backend_health")
+            if isinstance(pool_metrics.get("source_backend_health"), dict)
+            else {}
+        )
+    backend_submit_ready = (
+        boolish(pool_health.get("source_selected_backend_submit_ready"))
+        or boolish(source_backend_health.get("submit_ready"))
+    )
+    backend_mineable = (
+        boolish(pool_health.get("source_selected_backend_mineable"))
+        or boolish(source_backend_health.get("mineable"))
+        or boolish(source_backend_health.get("mineable_now"))
+    )
+    backend_p2p_fresh = (
+        boolish(pool_health.get("source_selected_backend_p2p_fresh"))
+        or boolish(source_backend_health.get("p2p_mining_fresh"))
+        or int_or_none(pool_health.get("source_selected_backend_p2p_best_peer_lead_blocks")) == 0
+    )
+    return bool(backend_submit_ready and backend_mineable and backend_p2p_fresh)
+
+
+def sync_progress_is_advisory_with_ready_mining_pipeline(status: dict[str, Any]) -> bool:
+    return bool(sync_progress_is_advisory_to_mining(status) and pool_mining_pipeline_ready(status))
+
+
+def primary_native_sync_height(status: dict[str, Any], node_info: dict[str, Any] | None = None) -> int:
+    sync = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
+    values: list[int | None] = []
+    if isinstance(node_info, dict):
+        values.append(int_or_none(node_info.get("latest_block")))
+    values.extend(
+        [
+            int_or_none(sync.get("chain_block_count")),
+            int_or_none(sync.get("p2p_network_height")),
+            int_or_none(sync.get("best_peer_mainorder")),
+        ]
+    )
+    if not sync_current_block_is_evm(sync):
+        values.append(int_or_none(sync.get("current_block")))
+    return max([value for value in values if value is not None] or [0])
+
+
+def primary_node_name() -> str:
+    return NODES[0] if NODES else "node"
+
+
+def sync_progress_for_node(status: dict[str, Any], node: str) -> dict[str, Any]:
+    sync = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
+    progress_nodes = sync.get("nodes") if isinstance(sync.get("nodes"), dict) else {}
+    progress = progress_nodes.get(node) if isinstance(progress_nodes.get(node), dict) else {}
+    if node != primary_node_name():
+        return dict(progress)
+
+    # Redis-dashboard exposes the active node's sync state directly at
+    # sync_progress.* while the in-process sampler exposes sync_progress.nodes.
+    # Watchdog repairs must understand both shapes or a stalled catch-up can be
+    # mistaken for a healthy pool-side pause.
+    merged = dict(progress)
+    for key in (
+        "current_block",
+        "highest_block",
+        "remaining_blocks",
+        "peer_ahead_blocks",
+        "status",
+        "error",
+    ):
+        if merged.get(key) is None and sync.get(key) is not None:
+            merged[key] = sync.get(key)
+    if sync_progress_is_advisory_with_ready_mining_pipeline(status):
+        native_height = primary_native_sync_height(status)
+        if native_height > 0:
+            merged["current_block"] = native_height
+            merged["highest_block"] = max(
+                native_height,
+                int_or_none(sync.get("p2p_network_height")) or 0,
+                int_or_none(sync.get("best_peer_mainorder")) or 0,
+            )
+        if boolish(sync.get("native_is_current")) or int_or_none(sync.get("p2p_network_gap")) == 0:
+            merged["remaining_blocks"] = 0
+            merged["peer_ahead_blocks"] = 0
+            merged["status"] = "synced"
+    return merged
+
+
+def node_running_for_sync(status: dict[str, Any], node: str, node_info: dict[str, Any]) -> bool:
+    if node_info.get("child_running") is True:
+        return True
+    containers = status.get("containers") if isinstance(status.get("containers"), dict) else {}
+    container = containers.get(node) if isinstance(containers.get(node), dict) else {}
+    if container:
+        return bool(container.get("running"))
+    progress = sync_progress_for_node(status, node)
+    return node == primary_node_name() and bool(progress)
+
+
+def node_sync_height(status: dict[str, Any], node: str) -> int:
+    nodes = status.get("nodes") if isinstance(status.get("nodes"), dict) else {}
+    node_info = nodes.get(node) if isinstance(nodes.get(node), dict) else {}
+    if node == primary_node_name() and sync_progress_is_advisory_with_ready_mining_pipeline(status):
+        return primary_native_sync_height(status, node_info)
+    progress = sync_progress_for_node(status, node)
+    values = [
+        int_or_none(node_info.get("latest_block")),
+        int_or_none(progress.get("current_block")),
+    ]
+    return max([value for value in values if value is not None] or [0])
 
 
 def asic_has_recent_useful_work(
@@ -1400,15 +1583,42 @@ def run_node_restart(node_service: str, reason: str) -> bool:
 
     # NODES contains runtime container names. The Compose service may be named
     # differently after topology migration, so restart the concrete container.
-    command = ["docker", "restart", node_service]
-    result = run_logged(command, log_path, timeout=180)
-    ok = result.ok
+    pool_was_running = False
+    pool_stop_ok = True
+    pool_start_ok = True
+    pool_stop_result = None
+    pool_start_result = None
+    if PAUSE_POOL_DURING_NODE_RESTART and POOL_CONTAINER:
+        inspect_result = run_logged(
+            ["docker", "inspect", "-f", "{{.State.Running}}", POOL_CONTAINER],
+            log_path,
+            timeout=30,
+        )
+        pool_was_running = inspect_result.ok and str(getattr(inspect_result, "stdout", "")).strip().lower() == "true"
+        if pool_was_running:
+            pool_stop_result = run_logged(["docker", "stop", POOL_CONTAINER], log_path, timeout=120)
+            pool_stop_ok = pool_stop_result.ok
+
+    if pool_stop_ok:
+        command = ["docker", "restart", node_service]
+        result = run_logged(command, log_path, timeout=180)
+    else:
+        result = pool_stop_result
+
+    if pool_was_running and pool_stop_ok:
+        pool_start_result = run_logged(["docker", "start", POOL_CONTAINER], log_path, timeout=120)
+        pool_start_ok = pool_start_result.ok
+
+    ok = bool(result and result.ok and pool_stop_ok and pool_start_ok)
 
     state_payload.update(
         {
             "status": "ok" if ok else "failed",
             "finished_at": now_iso(),
             "elapsed": round(time.time() - started, 3),
+            "pool_paused": pool_was_running,
+            "pool_stop_ok": pool_stop_ok,
+            "pool_start_ok": pool_start_ok,
         }
     )
     write_action_state(state_payload)
@@ -1417,7 +1627,13 @@ def run_node_restart(node_service: str, reason: str) -> bool:
         record_failed_repair(
             f"targeted node restart for {node_service}",
             reason,
-            {"node": node_service, "log_path": str(log_path)},
+            {
+                "node": node_service,
+                "log_path": str(log_path),
+                "pool_paused": pool_was_running,
+                "pool_stop_ok": pool_stop_ok,
+                "pool_start_ok": pool_start_ok,
+            },
         )
     lock_handle.close()
     return ok
@@ -2047,21 +2263,20 @@ def run_asic_remote_power_cycles(
 
 def choose_lagging_node(status: dict[str, Any]) -> str | None:
     nodes = status.get("nodes", {}) or {}
-    progress_nodes = (status.get("sync_progress", {}) or {}).get("nodes", {}) or {}
     sync_health = status.get("sync_health", {}) or {}
     import_stale_seconds = int(sync_health.get("import_stale_seconds") or 180)
     latest_values = [
-        int(info.get("latest_block") or 0)
-        for info in nodes.values()
-        if int(info.get("latest_block") or 0) > 0
+        node_sync_height(status, node)
+        for node in NODES
+        if node_sync_height(status, node) > 0
     ]
     max_latest = max(latest_values) if latest_values else 0
     candidates: list[tuple[int, str]] = []
     for node in NODES:
         node_info = nodes.get(node, {}) or {}
-        progress = progress_nodes.get(node, {}) or {}
+        progress = sync_progress_for_node(status, node)
         lag = int(progress.get("remaining_blocks") or node_info.get("peer_ahead_blocks") or 0)
-        latest = int(node_info.get("latest_block") or 0)
+        latest = node_sync_height(status, node)
         if max_latest and latest:
             lag = max(lag, max_latest - latest)
         if progress.get("status") == "unknown" or progress.get("error"):
@@ -2084,7 +2299,6 @@ def active_sync_import_nodes(
     grace_seconds: int = DEFAULT_ACTIVE_SYNC_IMPORT_GRACE_SECONDS,
 ) -> list[str]:
     nodes = status.get("nodes", {}) if isinstance(status.get("nodes"), dict) else {}
-    progress_nodes = (status.get("sync_progress", {}) or {}).get("nodes", {}) or {}
     height_changed_at = (
         state.get("last_sync_height_changed_at_by_node")
         if state is not None and isinstance(state.get("last_sync_height_changed_at_by_node"), dict)
@@ -2094,10 +2308,10 @@ def active_sync_import_nodes(
     active: list[str] = []
     for node in NODES:
         info = nodes.get(node, {}) if isinstance(nodes.get(node), dict) else {}
-        if not info.get("child_running"):
+        if not node_running_for_sync(status, node, info):
             continue
-        progress = progress_nodes.get(node, {}) if isinstance(progress_nodes.get(node), dict) else {}
-        latest = max(int(info.get("latest_block") or 0), int(progress.get("current_block") or 0))
+        progress = sync_progress_for_node(status, node)
+        latest = node_sync_height(status, node)
         raw_age = info.get("last_import_age_seconds")
         import_age: int | None = None
         if raw_age is not None:
@@ -2121,7 +2335,6 @@ def active_sync_import_nodes(
 
 def observe_sync_progress(status: dict[str, Any], state: dict[str, Any], now: int) -> None:
     nodes = status.get("nodes", {}) if isinstance(status.get("nodes"), dict) else {}
-    progress_nodes = (status.get("sync_progress", {}) or {}).get("nodes", {}) or {}
     previous = state.get("last_sync_height_by_node") if isinstance(state.get("last_sync_height_by_node"), dict) else {}
     changed_at = (
         state.get("last_sync_height_changed_at_by_node")
@@ -2131,11 +2344,10 @@ def observe_sync_progress(status: dict[str, Any], state: dict[str, Any], now: in
     observed: dict[str, int] = {}
     updated_changed_at = dict(changed_at)
     for node in NODES:
-        info = nodes.get(node, {}) if isinstance(nodes.get(node), dict) else {}
-        progress = progress_nodes.get(node, {}) if isinstance(progress_nodes.get(node), dict) else {}
-        height = max(int(info.get("latest_block") or 0), int(progress.get("current_block") or 0))
+        height = node_sync_height(status, node)
         observed[node] = height
-        if height > int(previous.get(node) or 0):
+        previous_height = int(previous.get(node) or 0)
+        if previous_height > 0 and height > previous_height:
             updated_changed_at[node] = now
     state["last_sync_height_by_node"] = observed
     state["last_sync_height_changed_at_by_node"] = updated_changed_at
@@ -2775,16 +2987,53 @@ def check_once(
 
     sync_pause_reason = sync_progress_pool_pause_reason(status)
     if sync_pause_reason and container_running(status, POOL_CONTAINER):
+        recent_mining_work = pool_has_recent_mining_work(status)
+        restart_node = choose_lagging_node(status) or primary_node_name()
+        active_import_nodes = active_sync_import_nodes(status, state=state, now=now)
+        active_import = restart_node in active_import_nodes
+        if recent_mining_work or active_import:
+            state["consecutive_syncing"] = 0
+        else:
+            state["consecutive_syncing"] = int(state.get("consecutive_syncing", 0) or 0) + 1
         state["consecutive_failures"] = 0
-        state["consecutive_syncing"] = 0
         state["consecutive_share_stalls"] = 0
-        state["last_status"] = "pool_sync_template_pause"
+        state["last_status"] = (
+            "pool_sync_template_pause"
+            if recent_mining_work or active_import
+            else "pool_sync_template_pause_stalled"
+        )
         state["last_failures"] = []
         state["last_sync_warnings"] = [sync_pause_reason]
         state["last_share_warnings"] = []
         state["last_pool_sync_pause_at"] = now_iso()
         state["last_pool_sync_pause_reason"] = sync_pause_reason
-        log(f"pool sync template pause active; leaving {POOL_CONTAINER} running: {sync_pause_reason}")
+        state["last_pool_sync_pause_active_import_nodes"] = active_import_nodes
+        state["last_pool_sync_pause_recent_mining_work"] = recent_mining_work
+        state["last_pool_sync_pause_restart_candidate"] = restart_node
+        state["last_pool_sync_pause_active"] = True
+        log(
+            "pool sync template pause active; leaving "
+            f"{POOL_CONTAINER} running: {sync_pause_reason}; "
+            f"active_import_nodes={','.join(active_import_nodes) or 'none'} "
+            f"recent_mining_work={recent_mining_work} "
+            f"consecutive_syncing={state['consecutive_syncing']}"
+        )
+        if (
+            repair
+            and state["consecutive_syncing"]
+            and should_restart_for_syncing(state, syncing_threshold, syncing_restart_cooldown)
+        ):
+            if suppress_sync_restart_for_active_import(status, state, sync_pause_reason, restart_node):
+                repair_attempted = False
+            else:
+                ok = run_node_restart(restart_node, "stalled catch-up during pool sync pause: " + sync_pause_reason)
+                repair_attempted = True
+            if repair_attempted:
+                state["last_repair_at"] = int(time.time())
+                state["last_sync_repair_at"] = int(time.time())
+                state["last_pool_sync_pause_repair_at"] = now_iso()
+                if ok:
+                    state["consecutive_syncing"] = 0
         state["updated_at"] = now_iso()
         write_state(state)
         return {"status": status, "watchdog_state": state}
@@ -3831,6 +4080,7 @@ def check_once(
         state["last_failures"] = []
         state["last_sync_warnings"] = []
         state["last_share_warnings"] = []
+        state["last_pool_sync_pause_active"] = False
 
     state["updated_at"] = now_iso()
     write_state(state)

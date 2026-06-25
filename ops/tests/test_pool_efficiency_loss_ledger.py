@@ -160,6 +160,131 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
         self.assertIn("stale or invalid work", policy["user_message"])
 
 
+class NodeSyncProgressTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.old_node_chain_rpc_snapshot = pool_ops.node_chain_rpc_snapshot
+        self.old_evm_rpc_lag_snapshot = pool_ops.evm_rpc_lag_snapshot
+        self.old_native_sync_progress = pool_ops.native_sync_progress
+
+    def tearDown(self) -> None:
+        pool_ops.node_chain_rpc_snapshot = self.old_node_chain_rpc_snapshot
+        pool_ops.evm_rpc_lag_snapshot = self.old_evm_rpc_lag_snapshot
+        pool_ops.native_sync_progress = self.old_native_sync_progress
+
+    def test_evm_head_lag_is_advisory_when_native_p2p_is_current(self) -> None:
+        pool_ops.node_chain_rpc_snapshot = lambda *_args, **_kwargs: {
+            "chain_block_count": 12553174,
+            "chain_main_height": 9607762,
+            "chain_rpc_source": "getBlockCount",
+            "chain_syncing": False,
+        }
+        pool_ops.evm_rpc_lag_snapshot = lambda *_args, **_kwargs: {
+            "evm_block_count": 12160943,
+            "evm_reference_block_count": 12193847,
+            "evm_lag_to_reference": 32904,
+        }
+        pool_ops.native_sync_progress = lambda _source: None
+
+        progress = pool_ops.node_sync_progress("node", "http://127.0.0.1:38131")
+
+        self.assertEqual("synced", progress["status"])
+        self.assertEqual(12553174, progress["current_block"])
+        self.assertEqual(12553174, progress["highest_block"])
+        self.assertEqual(0, progress["remaining_blocks"])
+        self.assertTrue(progress["native_is_current"])
+        self.assertTrue(progress["mining_advisory_sync"])
+        self.assertTrue(progress["evm_chain_syncing"])
+        self.assertEqual(12160943, progress["sync_current_block"])
+        self.assertEqual(12193847, progress["sync_highest_block"])
+
+    def test_native_p2p_lead_remains_hard_sync_even_when_evm_lags(self) -> None:
+        pool_ops.node_chain_rpc_snapshot = lambda *_args, **_kwargs: {
+            "chain_block_count": 12553174,
+            "chain_main_height": 9607762,
+            "chain_rpc_source": "getBlockCount",
+            "chain_syncing": False,
+        }
+        pool_ops.evm_rpc_lag_snapshot = lambda *_args, **_kwargs: {
+            "evm_block_count": 12160943,
+            "evm_reference_block_count": 12193847,
+            "evm_lag_to_reference": 32904,
+        }
+        pool_ops.native_sync_progress = lambda _source: {
+            "status": "syncing",
+            "percent": 99.9,
+            "current_block": 12553174,
+            "highest_block": 12553624,
+            "remaining_blocks": 450,
+            "source": "node:native-p2p-lead",
+            "error": "",
+        }
+
+        progress = pool_ops.node_sync_progress("node", "http://127.0.0.1:38131")
+
+        self.assertEqual("syncing", progress["status"])
+        self.assertEqual(12553174, progress["current_block"])
+        self.assertEqual(450, progress["remaining_blocks"])
+        self.assertEqual("node:native-p2p-lead", progress["source"])
+        self.assertNotIn("mining_advisory_sync", progress)
+
+
+class PoolJobStateSummaryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.old_pool_containers = pool_ops.POOL_CONTAINERS
+        self.old_fetch_json_url = pool_ops.fetch_json_url
+        self.old_pool_metrics_endpoint_for_container = pool_ops.pool_metrics_endpoint_for_container
+        pool_ops.POOL_CONTAINERS = ["pool"]
+
+    def tearDown(self) -> None:
+        pool_ops.POOL_CONTAINERS = self.old_pool_containers
+        pool_ops.fetch_json_url = self.old_fetch_json_url
+        pool_ops.pool_metrics_endpoint_for_container = self.old_pool_metrics_endpoint_for_container
+
+    def test_pool_job_state_summary_preserves_live_ready_lanes_for_no_logs_status(self) -> None:
+        pool_ops.pool_metrics_endpoint_for_container = lambda *_args, **_kwargs: ("127.0.0.1:9090", "")
+        pool_ops.fetch_json_url = lambda *_args, **_kwargs: {
+            "status": "ok",
+            "reason_code": "ok",
+            "active_connections": 4,
+            "authorized_connections": 4,
+            "subscribed_connections": 4,
+            "ready_connections": 4,
+            "connections_without_current_job": 0,
+            "clients": [
+                {
+                    "remote_host": "192.168.1.101",
+                    "asic_mac": "2A:71:C7:F5:1F:1E",
+                    "lane_id": "mac:2a:71:c7:f5:1f:1e",
+                    "authorized": True,
+                    "subscribed": True,
+                    "ready": True,
+                    "reason_code": "ok",
+                    "current_job_id": "1",
+                    "template_seq": 10,
+                }
+            ],
+        }
+
+        summary = pool_ops.collect_pool_job_state_summary({"pool": {"running": True}})
+
+        self.assertEqual("ok", summary["status"])
+        self.assertEqual(4, summary["active_connections"])
+        self.assertEqual(4, summary["authorized_connections"])
+        self.assertEqual(4, summary["ready_connections"])
+        self.assertEqual(0, summary["connections_without_current_job"])
+        self.assertEqual("2a:71:c7:f5:1f:1e", summary["clients"][0]["asic_mac"])
+
+        connected = pool_ops.effective_connected_miner_count(
+            {},
+            {"active_connections": summary["active_connections"]},
+            {
+                "authorized_miners": str(summary["authorized_connections"]),
+                "ready_miners": str(summary["ready_connections"]),
+            },
+        )
+        self.assertEqual(4, connected)
+
+
 class PoolPrometheusMetricsParsingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.old_fetch = pool_ops.fetch_text_url

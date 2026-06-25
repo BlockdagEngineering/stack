@@ -41,6 +41,61 @@ def node_status(*, importing: bool, last_import_age_seconds: int, latest_block: 
     }
 
 
+def advisory_evm_sync_with_ready_native_mining_status() -> dict[str, object]:
+    return {
+        "failures": [],
+        "stack_failures": [],
+        "miner_failures": [],
+        "warnings": [],
+        "overall": "ok",
+        "mode": "mining",
+        "can_submit_blocks": True,
+        "containers": {
+            "node": {"running": True, "started_at": "2026-01-14T12:00:00.000000000Z"},
+            watchdog.POOL_CONTAINER: {"running": True, "started_at": "2026-01-14T12:00:00.000000000Z"},
+        },
+        "nodes": {
+            "node": {
+                "child_running": True,
+                "importing": False,
+                "latest_block": 12552152,
+                "last_import_age_seconds": 10,
+            }
+        },
+        "sync_progress": {
+            "status": "syncing",
+            "current_block": 12159946,
+            "highest_block": 12192806,
+            "remaining_blocks": 32860,
+            "sync_current_block": 12159946,
+            "sync_highest_block": 12192806,
+            "chain_block_count": 12552152,
+            "p2p_network_height": 12552145,
+            "p2p_network_gap": 0,
+            "native_is_current": True,
+            "mining_advisory_sync": True,
+            "evm_chain_syncing": True,
+            "evm_sync_advisory": "eth_syncing active while native P2P mining state is current",
+        },
+        "sync_health": {},
+        "pool_health": {
+            "source_selected_backend_submit_ready": True,
+            "source_selected_backend_mineable": True,
+            "source_selected_backend_p2p_fresh": True,
+        },
+        "pool_job_state": {
+            "status": "ok",
+            "reason_code": "ok",
+            "active_connections": 4,
+            "authorized_connections": 4,
+            "ready_connections": 4,
+            "connections_without_current_job": 0,
+        },
+        "miner_health": {"connected_count": 4, "connected_count_effective": 4, "miners": []},
+        "mining_address": "0x1111111111111111111111111111111111111111",
+    }
+
+
 class WatchdogSyncRestartTests(unittest.TestCase):
     def test_active_import_requires_fresh_import_age_when_importing_flag_is_stuck(self) -> None:
         now = 1_779_200_000
@@ -262,6 +317,220 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         )
         self.assertEqual("sync progress is syncing with 90000 block(s) remaining", written[-1]["last_pool_sync_pause_reason"])
 
+    def test_advisory_evm_sync_does_not_mask_ready_native_mining_as_pool_pause(self) -> None:
+        status = advisory_evm_sync_with_ready_native_mining_status()
+
+        with mock.patch.object(watchdog, "NODES", ["node"]):
+            self.assertEqual("", watchdog.sync_progress_pool_pause_reason(status))
+            self.assertEqual(12552152, watchdog.node_sync_height(status, "node"))
+
+        progress = watchdog.sync_progress_for_node(status, "node")
+        self.assertEqual("synced", progress["status"])
+        self.assertEqual(0, progress["remaining_blocks"])
+        self.assertEqual(12552152, progress["current_block"])
+
+    def test_check_once_ignores_advisory_evm_sync_when_native_pipeline_is_ready(self) -> None:
+        now = 1_779_200_000
+        status = advisory_evm_sync_with_ready_native_mining_status()
+        state = {
+            "consecutive_syncing": 4,
+            "last_sync_height_by_node": {"node": 12552140},
+            "last_sync_height_changed_at_by_node": {"node": now - 700},
+            "last_sync_repair_at": 0,
+            "last_pool_sync_pause_active": True,
+        }
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(watchdog, "collect_stack_status", return_value=status), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(watchdog, "record_earnings_snapshot", return_value={}), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("advisory EVM sync must not restart node")
+        ), mock.patch.object(
+            watchdog, "run_repair", side_effect=AssertionError("advisory EVM sync must not restart stack")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("ok", result["watchdog_state"]["last_status"])
+        self.assertEqual(0, result["watchdog_state"]["consecutive_syncing"])
+        self.assertEqual([], result["watchdog_state"]["last_sync_warnings"])
+        self.assertEqual({"node": 12552152}, result["watchdog_state"]["last_sync_height_by_node"])
+        self.assertFalse(result["watchdog_state"]["last_pool_sync_pause_active"])
+        self.assertTrue(written)
+
+    def test_observe_sync_progress_tracks_top_level_primary_node_height_without_false_active_import(self) -> None:
+        now = 1_779_200_000
+        status = {
+            "sync_progress": {
+                "status": "syncing",
+                "current_block": 12156762,
+                "highest_block": 12191150,
+                "remaining_blocks": 34388,
+            },
+            "containers": {
+                "node": {"running": True},
+            },
+        }
+        state: dict[str, object] = {}
+
+        with mock.patch.object(watchdog, "NODES", ["node"]):
+            watchdog.observe_sync_progress(status, state, now)
+
+        self.assertEqual({"node": 12156762}, state["last_sync_height_by_node"])
+        self.assertEqual({}, state["last_sync_height_changed_at_by_node"])
+
+    def test_check_once_restarts_node_when_sync_pause_height_is_flat(self) -> None:
+        now = 1_779_200_000
+        status = {
+            "failures": [],
+            "stack_failures": [],
+            "miner_failures": [],
+            "warnings": [],
+            "overall": "syncing",
+            "mode": "catchup_pause",
+            "containers": {
+                "node": {"running": True, "started_at": "2026-01-14T12:00:00.000000000Z"},
+                watchdog.POOL_CONTAINER: {"running": True, "started_at": "2026-01-14T12:00:00.000000000Z"},
+            },
+            "sync_progress": {
+                "status": "syncing",
+                "current_block": 12156762,
+                "highest_block": 12191150,
+                "remaining_blocks": 34388,
+            },
+            "nodes": {
+                "node": {
+                    "child_running": True,
+                    "importing": False,
+                    "latest_block": None,
+                    "last_import_age_seconds": None,
+                }
+            },
+            "sync_health": {},
+            "pool_health": {},
+            "miner_health": {"connected_count": 4, "connected_count_effective": 4, "miners": []},
+            "mining_address": "0x1111111111111111111111111111111111111111",
+        }
+        state = {
+            "consecutive_syncing": 4,
+            "last_sync_height_by_node": {"node": 12156762},
+            "last_sync_height_changed_at_by_node": {"node": now - 700},
+            "last_sync_repair_at": 0,
+        }
+        restarts: list[tuple[str, str]] = []
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(watchdog, "collect_stack_status", return_value=status), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(watchdog, "record_earnings_snapshot", return_value={}), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=lambda node, reason: restarts.append((node, reason)) or True
+        ), mock.patch.object(
+            watchdog, "run_repair", side_effect=AssertionError("sync-pause stall should restart only the node")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("pool_sync_template_pause_stalled", result["watchdog_state"]["last_status"])
+        self.assertTrue(result["watchdog_state"]["last_pool_sync_pause_active"])
+        self.assertEqual(1, len(restarts))
+        self.assertEqual("node", restarts[0][0])
+        self.assertIn("stalled catch-up during pool sync pause", restarts[0][1])
+        self.assertEqual(0, result["watchdog_state"]["consecutive_syncing"])
+        self.assertTrue(written)
+
+    def test_check_once_does_not_restart_node_when_sync_pause_height_recently_advanced(self) -> None:
+        now = 1_779_200_000
+        status = {
+            "failures": [],
+            "stack_failures": [],
+            "miner_failures": [],
+            "warnings": [],
+            "overall": "syncing",
+            "mode": "catchup_pause",
+            "containers": {
+                "node": {"running": True, "started_at": "2026-01-14T12:00:00.000000000Z"},
+                watchdog.POOL_CONTAINER: {"running": True, "started_at": "2026-01-14T12:00:00.000000000Z"},
+            },
+            "sync_progress": {
+                "status": "syncing",
+                "current_block": 12156762,
+                "highest_block": 12191150,
+                "remaining_blocks": 34388,
+            },
+            "nodes": {
+                "node": {
+                    "child_running": True,
+                    "importing": False,
+                    "latest_block": None,
+                    "last_import_age_seconds": None,
+                }
+            },
+            "sync_health": {},
+            "pool_health": {},
+            "miner_health": {"connected_count": 4, "connected_count_effective": 4, "miners": []},
+            "mining_address": "0x1111111111111111111111111111111111111111",
+        }
+        state = {
+            "consecutive_syncing": 4,
+            "last_sync_height_by_node": {"node": 12156761},
+            "last_sync_height_changed_at_by_node": {"node": now - 700},
+            "last_sync_repair_at": 0,
+        }
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(watchdog, "collect_stack_status", return_value=status), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(watchdog, "record_earnings_snapshot", return_value={}), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("recent height advance must suppress restart")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("pool_sync_template_pause", result["watchdog_state"]["last_status"])
+        self.assertTrue(result["watchdog_state"]["last_pool_sync_pause_active"])
+        self.assertEqual(0, result["watchdog_state"]["consecutive_syncing"])
+        self.assertEqual(["node"], result["watchdog_state"]["last_pool_sync_pause_active_import_nodes"])
+        self.assertTrue(written)
+
     def test_check_once_does_not_restart_pool_when_nested_node_syncing(self) -> None:
         now = 1_779_200_000
         status = {
@@ -475,6 +744,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
 
         class Result:
             ok = True
+            stdout = ""
 
         with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
             watchdog, "NODES", ["node"]
@@ -496,7 +766,61 @@ class WatchdogSyncRestartTests(unittest.TestCase):
             ok = watchdog.run_node_restart("node", "unit test")
 
         self.assertTrue(ok)
-        self.assertEqual([["docker", "restart", "node"]], commands)
+        self.assertEqual(
+            [
+                ["docker", "inspect", "-f", "{{.State.Running}}", watchdog.POOL_CONTAINER],
+                ["docker", "restart", "node"],
+            ],
+            commands,
+        )
+
+    def test_targeted_node_restart_pauses_running_pool(self) -> None:
+        commands: list[list[str]] = []
+        states: list[dict[str, object]] = []
+
+        class Result:
+            def __init__(self, stdout: str = "") -> None:
+                self.ok = True
+                self.stdout = stdout
+
+        def fake_run_logged(command: list[str], *_args, **_kwargs):
+            commands.append(command)
+            if command[:3] == ["docker", "inspect", "-f"]:
+                return Result("true\n")
+            return Result()
+
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(
+            watchdog, "automation_mutation_allowed", return_value=True
+        ), mock.patch.object(
+            watchdog, "acquire_lock", return_value=mock.Mock(close=lambda: None)
+        ), mock.patch.object(
+            watchdog, "action_log_path", return_value=pathlib.Path(tmpdir) / "restart.log"
+        ), mock.patch.object(
+            watchdog, "write_action_state", side_effect=lambda payload: states.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "record_failed_repair", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_logged", side_effect=fake_run_logged
+        ):
+            ok = watchdog.run_node_restart("node", "unit test")
+
+        self.assertTrue(ok)
+        self.assertEqual(
+            [
+                ["docker", "inspect", "-f", "{{.State.Running}}", watchdog.POOL_CONTAINER],
+                ["docker", "stop", watchdog.POOL_CONTAINER],
+                ["docker", "restart", "node"],
+                ["docker", "start", watchdog.POOL_CONTAINER],
+            ],
+            commands,
+        )
+        self.assertTrue(states[-1]["pool_paused"])
+        self.assertTrue(states[-1]["pool_stop_ok"])
+        self.assertTrue(states[-1]["pool_start_ok"])
 
     def test_node_log_marks_missing_dag_tip_as_critical_repairable_damage(self) -> None:
         parsed = pool_ops.parse_node_log(

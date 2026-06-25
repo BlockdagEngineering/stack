@@ -5017,6 +5017,75 @@ def collect_pool_job_state_activity(containers: dict[str, dict[str, Any]] | None
     return rows
 
 
+def collect_pool_job_state_summary(containers: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    if POOL_METRICS_PORT <= 0:
+        return {}
+    if containers is None:
+        containers = docker_inspect(POOL_CONTAINERS)
+
+    totals = {
+        "active_connections": 0,
+        "authorized_connections": 0,
+        "subscribed_connections": 0,
+        "ready_connections": 0,
+        "connections_without_current_job": 0,
+    }
+    clients: list[dict[str, Any]] = []
+    statuses: list[str] = []
+    reasons: list[str] = []
+    generated_at = now_iso()
+    for name in POOL_CONTAINERS:
+        info = containers.get(name) if isinstance(containers, dict) else None
+        if not isinstance(info, dict) or not info.get("running"):
+            continue
+        endpoint, _endpoint_error = pool_metrics_endpoint_for_container(name, info)
+        if not endpoint:
+            continue
+        try:
+            payload = fetch_json_url(
+                f"http://{endpoint}/health/job-state",
+                {"accept": "application/json", "user-agent": HTTP_USER_AGENT},
+                timeout=POOL_METRICS_TIMEOUT,
+            )
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        statuses.append(str(payload.get("status") or "unknown"))
+        reasons.append(str(payload.get("reason_code") or ""))
+        for key in totals:
+            totals[key] += safe_int(payload.get(key), 0)
+        for client in payload.get("clients") or []:
+            if not isinstance(client, dict):
+                continue
+            clients.append(
+                {
+                    "remote_host": client.get("remote_host"),
+                    "asic_mac": normalize_mac(client.get("asic_mac")),
+                    "lane_id": client.get("lane_id"),
+                    "authorized": bool(client.get("authorized")),
+                    "subscribed": bool(client.get("subscribed")),
+                    "ready": bool(client.get("ready")),
+                    "reason_code": str(client.get("reason_code") or ""),
+                    "current_job_id": client.get("current_job_id"),
+                    "template_seq": client.get("template_seq"),
+                    "current_job_age_ms": client.get("current_job_age_ms"),
+                }
+            )
+    if not statuses and not clients and not any(totals.values()):
+        return {}
+    status = "ok" if statuses and all(item == "ok" for item in statuses) else (statuses[0] if statuses else "unknown")
+    reason = "ok" if status == "ok" else next((item for item in reasons if item), "")
+    return {
+        "generated_at": generated_at,
+        "status": status,
+        "reason_code": reason,
+        **totals,
+        "clients": clients,
+        "source": "pool-health-job-state",
+    }
+
+
 def miner_health_count_summary(health: list[dict[str, Any]]) -> dict[str, int]:
     managed_count = sum(1 for item in health if item["managed"])
     return {
@@ -6112,11 +6181,30 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     pool["selected_backend"] = pool_metrics.get("selected_backend") or ""
     pool["metrics_active_connections"] = pool_metrics.get("active_connections")
     pool["metrics_submit_stall_recoveries_total"] = pool_metrics.get("submit_stall_recoveries_total")
+    pool_job_state = collect_pool_job_state_summary(containers)
     source_job_health = (
         pool_metrics.get("source_job_health")
         if isinstance(pool_metrics.get("source_job_health"), dict)
         else {}
     )
+    if pool_job_state:
+        source_job_health = dict(source_job_health)
+        source_job_health.setdefault("authorized_miners", str(safe_int(pool_job_state.get("authorized_connections"), 0)))
+        source_job_health.setdefault("ready_miners", str(safe_int(pool_job_state.get("ready_connections"), 0)))
+        pool_metrics = dict(pool_metrics)
+        pool_metrics["active_connections"] = max(
+            safe_int(pool_metrics.get("active_connections"), 0),
+            safe_int(pool_job_state.get("active_connections"), 0),
+        )
+        pool_metrics["authorized_miners"] = max(
+            safe_int(pool_metrics.get("authorized_miners"), 0),
+            safe_int(pool_job_state.get("authorized_connections"), 0),
+        )
+        pool_metrics["ready_miners"] = max(
+            safe_int(pool_metrics.get("ready_miners"), 0),
+            safe_int(pool_job_state.get("ready_connections"), 0),
+        )
+        pool["metrics"] = pool_metrics
     source_backend_health = (
         pool_metrics.get("source_backend_health")
         if isinstance(pool_metrics.get("source_backend_health"), dict)
@@ -6831,6 +6919,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "rpc_template_health": template_probe_health,
         "pool": pool,
         "pool_metrics": pool_metrics,
+        "pool_job_state": pool_job_state,
         "pool_health": pool_health,
         "failures": failures,
         "stack_failures": stack_failures,
@@ -7945,24 +8034,6 @@ def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TI
                 **evm_lag,
             }
 
-        evm_block = safe_int(evm_lag.get("evm_block_count"), None)
-        evm_reference = safe_int(evm_lag.get("evm_reference_block_count"), None)
-        evm_remaining = safe_int(evm_lag.get("evm_lag_to_reference"), 0)
-        if evm_block is not None and evm_reference is not None and evm_remaining > EVM_SYNC_LAG_THRESHOLD_BLOCKS:
-            return {
-                "status": "syncing",
-                "percent": round(max(0.0, min(100.0, (evm_block / max(1, evm_reference)) * 100)), 2),
-                "current_block": evm_block,
-                "highest_block": evm_reference,
-                "starting_block": None,
-                "remaining_blocks": evm_remaining,
-                "source": f"{source}:evm-head-lag",
-                "error": "",
-                "current_block_source": "eth_blockNumber",
-                **chain,
-                **evm_lag,
-            }
-
         native = native_sync_progress(source)
         if native:
             native.update(chain)
@@ -7971,6 +8042,30 @@ def node_sync_progress(source: str, url: str, timeout: float = NODE_CHAIN_RPC_TI
             native["highest_block"] = None
             native["current_block_source"] = chain.get("chain_rpc_source")
             return native
+
+        evm_block = safe_int(evm_lag.get("evm_block_count"), None)
+        evm_reference = safe_int(evm_lag.get("evm_reference_block_count"), None)
+        evm_remaining = safe_int(evm_lag.get("evm_lag_to_reference"), 0)
+        if evm_block is not None and evm_reference is not None and evm_remaining > EVM_SYNC_LAG_THRESHOLD_BLOCKS:
+            return {
+                "status": "synced",
+                "percent": 100.0,
+                "current_block": current,
+                "highest_block": current,
+                "starting_block": None,
+                "remaining_blocks": 0,
+                "source": source,
+                "error": "",
+                "current_block_source": chain.get("chain_rpc_source"),
+                "sync_current_block": evm_block,
+                "sync_highest_block": evm_reference,
+                "evm_chain_syncing": True,
+                "mining_advisory_sync": True,
+                "native_is_current": True,
+                "evm_sync_advisory": "eth_syncing active while native P2P mining state is current",
+                **chain,
+                **evm_lag,
+            }
 
         return {
             "status": "synced",
@@ -8026,6 +8121,22 @@ def collect_sync_progress() -> dict[str, Any]:
         starting_values = []
         error = "; ".join(item.get("error", "") for item in per_node.values() if item.get("error"))
 
+    evm_advisories = [
+        str(item.get("evm_sync_advisory") or "")
+        for item in known
+        if item.get("evm_sync_advisory")
+    ]
+    evm_current_values = [
+        int(item["sync_current_block"])
+        for item in known
+        if item.get("sync_current_block") is not None
+    ]
+    evm_highest_values = [
+        int(item["sync_highest_block"])
+        for item in known
+        if item.get("sync_highest_block") is not None
+    ]
+
     return {
         "status": status,
         "percent": percent,
@@ -8055,6 +8166,12 @@ def collect_sync_progress() -> dict[str, Any]:
         "source": "nodes",
         "error": error,
         "nodes": per_node,
+        "evm_chain_syncing": any(bool(item.get("evm_chain_syncing")) for item in known),
+        "mining_advisory_sync": any(bool(item.get("mining_advisory_sync")) for item in known),
+        "native_is_current": bool(status == "synced" and known),
+        "evm_sync_advisory": "; ".join(unique_names(evm_advisories)),
+        "sync_current_block": min(evm_current_values) if evm_current_values else None,
+        "sync_highest_block": max(evm_highest_values) if evm_highest_values else None,
     }
 
 
