@@ -59,6 +59,45 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
         self.assertFalse(hard_unready["contradiction"])
         self.assertTrue(hard_unready["hard_unready"])
 
+    def test_pool_job_state_zero_ready_forces_source_job_health_not_ok(self) -> None:
+        job_health = pool_ops.merge_pool_job_state_into_source_job_health(
+            {},
+            {
+                "active_connections": 4,
+                "authorized_connections": 4,
+                "subscribed_connections": 4,
+                "ready_connections": 0,
+                "invalid_current_job_connections": 4,
+                "reason_code": "invalidated_current_job",
+            },
+        )
+
+        self.assertFalse(job_health["ok"])
+        self.assertFalse(job_health["pool_job_state_ok"])
+        self.assertEqual("4", job_health["authorized_miners"])
+        self.assertEqual("0", job_health["ready_miners"])
+        self.assertEqual("4", job_health["invalid_current_job_miners"])
+        self.assertEqual("invalidated_current_job", job_health["reason_code"])
+
+        contract = pool_ops.selected_backend_readiness_contract("node", {}, job_health, False)
+        self.assertTrue(contract["hard_unready"])
+
+    def test_pool_job_state_ready_lanes_can_mark_source_job_health_ok(self) -> None:
+        job_health = pool_ops.merge_pool_job_state_into_source_job_health(
+            {},
+            {
+                "active_connections": 4,
+                "authorized_connections": 4,
+                "subscribed_connections": 4,
+                "ready_connections": 4,
+                "reason_code": "ok",
+            },
+        )
+
+        self.assertTrue(job_health["ok"])
+        self.assertTrue(job_health["pool_job_state_ok"])
+        self.assertEqual("4", job_health["ready_miners"])
+
     def test_selected_backend_unready_reasons_include_peer_freshness(self) -> None:
         reasons = pool_ops.selected_backend_unready_reasons(
             {

@@ -4119,6 +4119,53 @@ def selected_backend_readiness_contract(
     }
 
 
+def merge_pool_job_state_into_source_job_health(
+    source_job_health: dict[str, Any] | None,
+    pool_job_state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Make live pool job-state an authoritative source of ASIC lane readiness."""
+    health = dict(source_job_health or {})
+    state = pool_job_state if isinstance(pool_job_state, dict) else {}
+    if not state:
+        return health
+
+    active = safe_int(state.get("active_connections"), 0)
+    authorized = safe_int(state.get("authorized_connections"), 0)
+    subscribed = safe_int(state.get("subscribed_connections"), 0)
+    ready = safe_int(state.get("ready_connections"), 0)
+    invalid = safe_int(state.get("invalid_current_job_connections"), 0)
+    stale = safe_int(state.get("stale_current_job_connections"), 0)
+    expired = safe_int(state.get("expired_current_job_connections"), 0)
+    without_job = safe_int(state.get("connections_without_current_job"), 0)
+    reason = str(state.get("reason_code") or "").strip()
+
+    health["active_miners"] = str(active)
+    health["authorized_miners"] = str(authorized)
+    health["subscribed_miners"] = str(subscribed)
+    health["ready_miners"] = str(ready)
+    health["invalid_current_job_miners"] = str(invalid)
+    health["stale_current_job_miners"] = str(stale)
+    health["expired_current_job_miners"] = str(expired)
+    health["miners_without_current_job"] = str(without_job)
+    if reason:
+        health["reason_code"] = reason
+
+    job_state_ok: bool | None = None
+    if authorized > 0:
+        job_state_ok = ready >= authorized
+    elif active > 0 or subscribed > 0:
+        job_state_ok = False
+
+    if job_state_ok is not None:
+        health["pool_job_state_ok"] = job_state_ok
+        existing_ok = health.get("ok")
+        if existing_ok is False or job_state_ok is False:
+            health["ok"] = False
+        elif existing_ok is None:
+            health["ok"] = True
+    return health
+
+
 def selected_backend_source_degradation(selected_source_degraded: bool, pool_has_recent_paid_work: bool) -> dict[str, bool]:
     degraded = bool(selected_source_degraded)
     recent_paid = bool(pool_has_recent_paid_work)
@@ -6188,9 +6235,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         else {}
     )
     if pool_job_state:
-        source_job_health = dict(source_job_health)
-        source_job_health.setdefault("authorized_miners", str(safe_int(pool_job_state.get("authorized_connections"), 0)))
-        source_job_health.setdefault("ready_miners", str(safe_int(pool_job_state.get("ready_connections"), 0)))
+        source_job_health = merge_pool_job_state_into_source_job_health(source_job_health, pool_job_state)
         pool_metrics = dict(pool_metrics)
         pool_metrics["active_connections"] = max(
             safe_int(pool_metrics.get("active_connections"), 0),
@@ -6512,10 +6557,28 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             f"mineable={checks.get('node_mineable')} submit_ready={checks.get('node_submit_ready')} "
             "while accepted block submission remains recent"
         )
+    source_authorized_miners = safe_int(source_job_health.get("authorized_miners"), 0)
+    source_ready_miners = safe_int(source_job_health.get("ready_miners"), 0)
+    source_job_reason = str(source_job_health.get("reason_code") or "").strip() or "not-ready"
+    source_zero_ready = bool(source_authorized_miners > 0 and source_ready_miners <= 0)
     if connected_miners > 0 and source_job_hard_degraded:
-        add_sync_warning("pool source job health reports not-ok and accepted block submission is stale")
+        if source_zero_ready:
+            add_sync_warning(
+                "pool job-state reports "
+                f"0/{source_authorized_miners} ready miner lane(s) "
+                f"(reason={source_job_reason}) and accepted block submission is stale"
+            )
+        else:
+            add_sync_warning("pool source job health reports not-ok and accepted block submission is stale")
     elif connected_miners > 0 and source_job_health_ok is False:
-        add_maintenance_warning("pool source job health is advisory-degraded while accepted block submission remains fresh")
+        if source_zero_ready:
+            add_maintenance_warning(
+                "pool job-state reports "
+                f"0/{source_authorized_miners} ready miner lane(s) "
+                f"(reason={source_job_reason}) while accepted block submission remains fresh"
+            )
+        else:
+            add_maintenance_warning("pool source job health is advisory-degraded while accepted block submission remains fresh")
     if connected_miners > 0 and source_selected_backend_hard_degraded:
         backend = pool.get("selected_backend") or "selected backend"
         add_sync_warning(
@@ -6852,14 +6915,22 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             sync_health["needs_fast_sync_repair"] = False
     sync_health["sync_progress_health"] = sync_progress_health
 
+    mining_job_pipeline_ready = not bool(connected_miners > 0 and source_job_health_ok is False)
+
     overall = "ok"
     if failures:
         overall = "down"
     elif sync_warnings:
         overall = "syncing"
+    elif not mining_job_pipeline_ready:
+        overall = "degraded"
     status_reason = ""
     if overall != "ok":
         reason_items = failures or sync_warnings or warnings
+        if not reason_items and not mining_job_pipeline_ready:
+            reason_items = maintenance_warnings or [
+                "pool has authorized miner lanes but no ready jobs"
+            ]
         status_reason = "; ".join(str(item) for item in reason_items[:3])
         if len(reason_items) > 3:
             status_reason += f"; +{len(reason_items) - 3} more"
@@ -6867,12 +6938,19 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     mode = (
         "catchup_pause"
         if catchup_policy.get("active")
+        else "pool_job_degraded"
+        if connected_miners > 0 and not mining_job_pipeline_ready
         else "mining"
         if connected_miners > 0
         else ("sync_only_no_miners" if no_miner_sync_only else "ready_no_miners")
     )
     can_accept_shares = bool(connected_miners > 0 and containers.get(POOL_CONTAINER, {}).get("running") and not failures)
-    can_submit_blocks = bool(can_accept_shares and not pool_health.get("needs_fast_repair") and not sync_warnings)
+    can_submit_blocks = bool(
+        can_accept_shares
+        and mining_job_pipeline_ready
+        and not pool_health.get("needs_fast_repair")
+        and not sync_warnings
+    )
     can_mine = bool(can_accept_shares and can_submit_blocks)
     truth_sources = {
         "chain_block_count": "getBlockCount chain RPC",

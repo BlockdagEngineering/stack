@@ -37,6 +37,7 @@ class NoMinerCollectStatusTests(unittest.TestCase):
                 "parse_pool_log",
                 "collect_template_probe_health",
                 "collect_pool_prometheus_metrics",
+                "collect_pool_job_state_summary",
                 "collect_miner_health",
                 "collect_sync_progress",
                 "node_data_provenance_health",
@@ -656,6 +657,108 @@ class NoMinerCollectStatusTests(unittest.TestCase):
         self.assertIn("accepted block submission remains fresh", joined_maintenance)
         self.assertIn("transient initial-download", joined_maintenance)
         self.assertIn("miner repair required but active mining continues", joined_maintenance)
+
+    def test_zero_ready_job_state_degrades_no_logs_status(self) -> None:
+        pool_ops.NODES = ["node"]
+        pool_ops.OBSERVER_NODES = []
+        pool_ops.STACK_SERVICES = ["node", "pool"]
+        pool_ops.SERVICES = list(pool_ops.STACK_SERVICES)
+        pool_ops.POOL_CONTAINER = "pool"
+        pool_ops.POOL_CONTAINERS = ["pool"]
+        pool_ops.ensure_runtime = lambda: None
+        pool_ops.docker_access_error = lambda: None
+        pool_ops.local_ipv4_addresses = lambda: ["192.168.1.100"]
+        pool_ops.default_miner_pool_settings = lambda: {
+            "pool_url": "stratum+tcp://192.168.1.100:3334",
+            "worker_user": "0x0000000000000000000000000000000000000000",
+            "pool_password": "1234",
+        }
+        pool_ops.run = lambda command, timeout=20: pool_ops.CommandResult(command, 0, "", "", 0.0)
+        pool_ops.read_latest_action = lambda: None
+        pool_ops.discover_observer_node_services = lambda: []
+        pool_ops.docker_top = lambda _name: "UID PID PPID C STIME TTY TIME CMD\nroot 1 0 0 12:00 ? 00:00:01 bdag\n"
+        pool_ops.docker_logs = lambda _name, lines=160: ""
+        pool_ops.docker_logs_many = lambda _names, lines=160: ""
+        pool_ops.collect_template_probe_health = lambda: {"nodes": {}, "failing_nodes": [], "all_nodes_failing": False}
+        pool_ops.collect_host_pressure = lambda: {"iowait_warning_active": False, "samples": []}
+
+        def fake_inspect(names):
+            return {
+                name: {
+                    "name": name,
+                    "image": "test",
+                    "running": True,
+                    "status": "running",
+                    "restart_count": 0,
+                    "exit_code": 0,
+                    "error": "",
+                    "ports": {},
+                }
+                for name in names
+            }
+
+        pool_ops.docker_inspect = fake_inspect
+        pool_ops.collect_pool_prometheus_metrics = lambda _containers: {
+            "generated_at": "2026-06-25T00:50:39+0000",
+            "status": "ok",
+            "active_connections": 4,
+            "selected_backend": "node",
+            "source_job_health": {},
+            "source_backend_health": {},
+            "selected_backend_source_health": {
+                "healthy": True,
+                "node_mineable": True,
+                "node_submit_ready": True,
+                "node_p2p_mining_fresh": True,
+                "ws_connected": True,
+            },
+            "template_conversion_stall": {},
+            "loss_ledger": {},
+        }
+        pool_ops.collect_pool_job_state_summary = lambda _containers: {
+            "status": "degraded",
+            "reason_code": "invalidated_current_job",
+            "active_connections": 4,
+            "authorized_connections": 4,
+            "subscribed_connections": 4,
+            "ready_connections": 0,
+            "invalid_current_job_connections": 4,
+            "connections_without_current_job": 0,
+            "clients": [],
+        }
+        pool_ops.collect_miner_health = lambda: {
+            "managed_count": 0,
+            "connected_count": 0,
+            "failures": [],
+            "warnings": [],
+            "miners": [],
+        }
+        pool_ops.collect_sync_progress = lambda: {
+            "status": "synced",
+            "percent": 100.0,
+            "current_block": 12_556_327,
+            "highest_block": 12_556_327,
+            "remaining_blocks": 0,
+            "source": "nodes",
+            "error": "",
+            "nodes": {"node": {"status": "synced", "current_block": 12_556_327, "highest_block": 12_556_327}},
+        }
+        pool_ops.observe_sync_progress_health = lambda _sync_progress: {
+            "active_nodes": [],
+            "active_node_count": 0,
+            "node_rates_blocks_per_second": {},
+            "lookback_seconds": 2700,
+        }
+        pool_ops.read_sync_coordinator_state = lambda: {}
+
+        status = pool_ops.collect_status(include_logs=False)
+
+        self.assertNotEqual(status["overall"], "ok")
+        self.assertEqual(status["mode"], "pool_job_degraded")
+        self.assertFalse(status["can_submit_blocks"])
+        self.assertFalse(status["can_mine"])
+        self.assertFalse(status["pool"]["source_job_health"]["ok"])
+        self.assertIn("0/4 ready miner lane", status["status_reason"])
 
     def test_miner_failures_block_when_no_active_mining_evidence(self) -> None:
         self.assertTrue(
