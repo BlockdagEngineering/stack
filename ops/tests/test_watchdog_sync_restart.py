@@ -97,6 +97,73 @@ def advisory_evm_sync_with_ready_native_mining_status() -> dict[str, object]:
     }
 
 
+def fresh_paid_backend_readiness_flicker_status() -> dict[str, object]:
+    return {
+        "failures": [],
+        "stack_failures": [],
+        "miner_failures": [],
+        "warnings": ["template health unsafe: mineable=false; submit_ready=false"],
+        "overall": "syncing",
+        "mode": "mining",
+        "can_submit_blocks": False,
+        "containers": {
+            "node": {"running": True, "started_at": "2026-01-14T12:00:00.000000000Z"},
+            watchdog.POOL_CONTAINER: {"running": True, "started_at": "2026-01-14T12:00:00.000000000Z"},
+        },
+        "sync_progress": {
+            "status": "syncing",
+            "source": "template-health",
+            "error": "template health unsafe: mineable=false; submit_ready=false",
+            "remaining_blocks": 0,
+            "nodes": {"node": {"status": "synced", "current_block": 12552152, "remaining_blocks": 0}},
+        },
+        "sync_health": {
+            "needs_fast_sync_repair": True,
+            "pool_has_recent_paid_work": True,
+        },
+        "pool_health": {
+            "selected_backend": "node",
+            "source_selected_backend_submit_ready": False,
+            "source_selected_backend_mineable": False,
+            "source_selected_backend_p2p_fresh": True,
+            "block_submit_success_count": 10,
+            "last_block_submit_age_seconds": 20,
+            "selected_backend_source_health": {
+                "healthy": True,
+                "node_mineable": False,
+                "node_submit_ready": False,
+                "node_p2p_mining_fresh": True,
+                "node_p2p_best_peer_lead_blocks": 0,
+                "node_p2p_peer_lead_tolerance_blocks": 10,
+                "node_template_coinbase_valid": True,
+                "node_template_age_seconds": 1,
+                "ws_connected": True,
+            },
+            "template_health": {
+                "safe_for_mining": False,
+                "blocking_reasons": ["mineable=false", "submit_ready=false"],
+                "mineable_now": False,
+                "submit_ready": False,
+                "p2p_mining_fresh": True,
+                "p2p_best_peer_lead_blocks": 0,
+                "p2p_peer_lead_tolerance_blocks": 10,
+                "template_coinbase_valid": True,
+                "template_age_seconds": 1,
+            },
+        },
+        "pool_job_state": {
+            "status": "ok",
+            "reason_code": "ok",
+            "active_connections": 4,
+            "authorized_connections": 4,
+            "ready_connections": 4,
+            "connections_without_current_job": 0,
+        },
+        "miner_health": {"connected_count": 4, "connected_count_effective": 4, "managed_count": 4, "miners": []},
+        "mining_address": "0x1111111111111111111111111111111111111111",
+    }
+
+
 def peer_lead_stall_status(*, recent_paid_work: bool = False) -> dict[str, object]:
     last_block_age = 20 if recent_paid_work else None
     block_success_count = 10 if recent_paid_work else 0
@@ -411,6 +478,54 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertEqual("synced", progress["status"])
         self.assertEqual(0, progress["remaining_blocks"])
         self.assertEqual(12552152, progress["current_block"])
+
+    def test_fresh_paid_backend_readiness_flicker_does_not_become_pool_sync_pause(self) -> None:
+        status = fresh_paid_backend_readiness_flicker_status()
+
+        self.assertTrue(watchdog.pool_mining_pipeline_ready(status))
+        self.assertTrue(watchdog.fresh_paid_work_bridges_status_backend_readiness_flicker(status))
+        self.assertEqual("", watchdog.sync_progress_pool_pause_reason(status))
+
+    def test_check_once_ignores_fresh_paid_backend_readiness_flicker(self) -> None:
+        now = 1_779_200_000
+        status = fresh_paid_backend_readiness_flicker_status()
+        state = {
+            "consecutive_syncing": 4,
+            "last_sync_repair_at": 0,
+            "last_pool_sync_pause_active": True,
+        }
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(watchdog, "collect_stack_status", return_value=status), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(watchdog, "record_earnings_snapshot", return_value={}), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("fresh production flicker must not restart node")
+        ), mock.patch.object(
+            watchdog, "run_repair", side_effect=AssertionError("fresh production flicker must not restart stack")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertNotIn(
+            result["watchdog_state"]["last_status"],
+            {"pool_sync_template_pause", "pool_sync_template_pause_stalled"},
+        )
+        self.assertFalse(result["watchdog_state"]["last_pool_sync_pause_active"])
+        self.assertEqual(0, result["watchdog_state"]["consecutive_syncing"])
+        self.assertTrue(written)
 
     def test_check_once_ignores_advisory_evm_sync_when_native_pipeline_is_ready(self) -> None:
         now = 1_779_200_000

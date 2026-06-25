@@ -522,6 +522,11 @@ NODE_MINING_RPC_PORT = int(os.environ.get("BDAG_NODE_MINING_RPC_PORT", "38131"))
 NODE_MINING_RPC_USER = os.environ.get("BDAG_NODE_MINING_RPC_USER") or os.environ.get("NODE_RPC_USER", "")
 NODE_MINING_RPC_PASS = os.environ.get("BDAG_NODE_MINING_RPC_PASS") or os.environ.get("NODE_RPC_PASS", "")
 NODE_TEMPLATE_PROBE_CACHE_SECONDS = int(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_CACHE_SECONDS", "60"))
+FRESH_PRODUCTION_TEMPLATE_FLICKER_MAX_TEMPLATE_AGE_SECONDS = env_int(
+    "BDAG_FRESH_PRODUCTION_TEMPLATE_FLICKER_MAX_TEMPLATE_AGE_SECONDS",
+    10,
+    minimum=0,
+)
 NODE_TEMPLATE_PROBE_SAMPLES = max(1, int(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_SAMPLES", "1")))
 NODE_TEMPLATE_PROBE_TIMEOUT = float(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_TIMEOUT", "1.5"))
 NODE_CHAIN_RPC_TIMEOUT = float(os.environ.get("BDAG_NODE_CHAIN_RPC_TIMEOUT", "8.0"))
@@ -4189,18 +4194,47 @@ def merge_pool_job_state_into_source_job_health(
 
     job_state_ok: bool | None = None
     if authorized > 0:
-        job_state_ok = ready >= authorized
+        job_state_ok = pool_job_state_proves_ready(state)
     elif active > 0 or subscribed > 0:
         job_state_ok = False
 
     if job_state_ok is not None:
         health["pool_job_state_ok"] = job_state_ok
         existing_ok = health.get("ok")
-        if existing_ok is False or job_state_ok is False:
+        if job_state_ok is False:
             health["ok"] = False
-        elif existing_ok is None:
+        elif job_state_ok is True:
+            if existing_ok is False:
+                health["source_job_health_raw_ok"] = False
+                health["pool_job_state_overrode_ok"] = True
             health["ok"] = True
     return health
+
+
+def pool_job_state_proves_ready(pool_job_state: Mapping[str, Any] | None) -> bool:
+    state = pool_job_state if isinstance(pool_job_state, Mapping) else {}
+    if not state:
+        return False
+    active = safe_int(state.get("active_connections"), 0)
+    authorized = safe_int(state.get("authorized_connections"), 0)
+    ready = safe_int(state.get("ready_connections"), 0)
+    invalid = safe_int(state.get("invalid_current_job_connections"), 0)
+    stale = safe_int(state.get("stale_current_job_connections"), 0)
+    expired = safe_int(state.get("expired_current_job_connections"), 0)
+    without_job = safe_int(state.get("connections_without_current_job"), 0)
+    status = str(state.get("status") or "").strip().lower()
+    reason = str(state.get("reason_code") or "").strip().lower()
+    return bool(
+        authorized > 0
+        and ready >= authorized
+        and (active <= 0 or active >= authorized)
+        and invalid == 0
+        and stale == 0
+        and expired == 0
+        and without_job == 0
+        and (not status or status in {"ok", "ready", "mining"})
+        and (not reason or reason == "ok")
+    )
 
 
 def selected_backend_source_degradation(selected_source_degraded: bool, pool_has_recent_paid_work: bool) -> dict[str, bool]:
@@ -4211,6 +4245,42 @@ def selected_backend_source_degradation(selected_source_degraded: bool, pool_has
         "hard": bool(degraded and not recent_paid),
         "advisory": bool(degraded and recent_paid),
     }
+
+
+def fresh_production_bridges_backend_readiness_flicker(
+    *,
+    pool_has_recent_paid_work: bool,
+    pool_job_state: Mapping[str, Any] | None,
+    selected_source_health: Mapping[str, Any] | None,
+    template_health: Mapping[str, Any] | None,
+) -> bool:
+    if not pool_has_recent_paid_work or not pool_job_state_proves_ready(pool_job_state):
+        return False
+    source = selected_source_health if isinstance(selected_source_health, Mapping) else {}
+    if not source:
+        return False
+    reasons = selected_backend_unready_reasons(source)
+    allowed_reasons = {"mineable=false", "submit_ready=false"}
+    if not reasons or any(reason not in allowed_reasons for reason in reasons):
+        return False
+    if source.get("node_p2p_mining_fresh") is not True:
+        return False
+    lead = safe_int(source.get("node_p2p_best_peer_lead_blocks"), 0)
+    tolerance = safe_int(source.get("node_p2p_peer_lead_tolerance_blocks"), 10)
+    if lead > tolerance:
+        return False
+    if source.get("node_template_coinbase_valid") is False:
+        return False
+    if source.get("node_last_template_build_error_blocking") is True:
+        return False
+    template = template_health if isinstance(template_health, Mapping) else {}
+    age = safe_float(
+        source.get("node_template_age_seconds", template.get("template_age_seconds")),
+        None,
+    )
+    if age is not None and age > FRESH_PRODUCTION_TEMPLATE_FLICKER_MAX_TEMPLATE_AGE_SECONDS:
+        return False
+    return True
 
 
 def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -6583,7 +6653,15 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         source_job_health,
         pool_has_recent_paid_work,
     )
+    fresh_production_readiness_bridge = fresh_production_bridges_backend_readiness_flicker(
+        pool_has_recent_paid_work=pool_has_recent_paid_work,
+        pool_job_state=pool_job_state,
+        selected_source_health=selected_source_health,
+        template_health=template_health,
+    )
     pool["selected_backend_readiness_contract"] = readiness_contract
+    pool["fresh_production_readiness_bridge"] = fresh_production_readiness_bridge
+    sync_health["fresh_production_readiness_bridge"] = fresh_production_readiness_bridge
     if pool_initial_download_needs_repair:
         add_sync_warning("pool is waiting for node sync to finish")
     elif pool_initial_download_transient:
@@ -6802,9 +6880,15 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         reason = "template health unsafe"
         if template_reasons:
             reason = f"{reason}: {'; '.join(template_reasons[:3])}"
-        add_sync_warning(reason)
         sync_health["template_health"] = template_health
-        if sync_progress.get("status") == "synced":
+        if fresh_production_readiness_bridge:
+            add_maintenance_warning(
+                f"{reason}; accepted block submission and ready ASIC jobs remain fresh"
+            )
+            sync_health["template_health_advisory"] = True
+        else:
+            add_sync_warning(reason)
+        if not fresh_production_readiness_bridge and sync_progress.get("status") == "synced":
             sync_progress = dict(sync_progress)
             sync_progress["status"] = "syncing"
             sync_progress["source"] = "template-health"
@@ -7012,10 +7096,15 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         else ("sync_only_no_miners" if no_miner_sync_only else "ready_no_miners")
     )
     can_accept_shares = bool(connected_miners > 0 and containers.get(POOL_CONTAINER, {}).get("running") and not failures)
+    template_health_allows_submit = bool(
+        not template_health
+        or template_health.get("safe_for_mining", False)
+        or fresh_production_readiness_bridge
+    )
     can_submit_blocks = bool(
         can_accept_shares
         and mining_job_pipeline_ready
-        and (not template_health or template_health.get("safe_for_mining", False))
+        and template_health_allows_submit
         and not pool_health.get("needs_fast_repair")
         and not sync_warnings
     )

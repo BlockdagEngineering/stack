@@ -160,6 +160,9 @@ DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_WORSEN_BLOCKS = int(
 DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_MAX_LEAD_BLOCKS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_ACTIVE_IMPORT_MAX_LEAD_BLOCKS", "120")
 )
+DEFAULT_FRESH_PRODUCTION_TEMPLATE_FLICKER_MAX_TEMPLATE_AGE_SECONDS = int(
+    os.environ.get("BDAG_FRESH_PRODUCTION_TEMPLATE_FLICKER_MAX_TEMPLATE_AGE_SECONDS", "10")
+)
 DEFAULT_NODE_DAG_TIP_CLEANUP_COOLDOWN = int(
     os.environ.get("BDAG_WATCHDOG_NODE_DAG_TIP_CLEANUP_COOLDOWN", "1800")
 )
@@ -248,6 +251,8 @@ def container_running(status: dict[str, Any], container_name: str) -> bool:
 
 def sync_progress_pool_pause_reason(status: dict[str, Any]) -> str:
     if sync_progress_is_advisory_with_ready_mining_pipeline(status):
+        return ""
+    if fresh_paid_work_bridges_status_backend_readiness_flicker(status):
         return ""
 
     sync = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
@@ -940,6 +945,8 @@ def pool_mining_pipeline_ready(status: dict[str, Any]) -> bool:
         return False
     if status.get("can_submit_blocks") is True:
         return True
+    if fresh_paid_work_bridges_status_backend_readiness_flicker(status):
+        return True
 
     source_backend_health = pool_health.get("source_backend_health")
     if not isinstance(source_backend_health, dict):
@@ -963,6 +970,147 @@ def pool_mining_pipeline_ready(status: dict[str, Any]) -> bool:
         or int_or_none(pool_health.get("source_selected_backend_p2p_best_peer_lead_blocks")) == 0
     )
     return bool(backend_submit_ready and backend_mineable and backend_p2p_fresh)
+
+
+def selected_backend_health_for_status(status: dict[str, Any]) -> dict[str, Any]:
+    pool_health = status.get("pool_health", status.get("pool", {}))
+    if not isinstance(pool_health, dict):
+        pool_health = {}
+    pool_metrics = status.get("pool_metrics") if isinstance(status.get("pool_metrics"), dict) else {}
+    selected_backend = str(pool_health.get("selected_backend") or pool_metrics.get("selected_backend") or "")
+    selected_health = pool_health.get("selected_backend_source_health")
+    if not isinstance(selected_health, dict):
+        selected_health = (
+            pool_metrics.get("selected_backend_source_health")
+            if isinstance(pool_metrics.get("selected_backend_source_health"), dict)
+            else {}
+        )
+    source_backend_health = pool_health.get("source_backend_health")
+    if not isinstance(source_backend_health, dict):
+        source_backend_health = (
+            pool_metrics.get("source_backend_health")
+            if isinstance(pool_metrics.get("source_backend_health"), dict)
+            else {}
+        )
+    if not selected_health and source_backend_health:
+        if selected_backend and isinstance(source_backend_health.get(selected_backend), dict):
+            selected_health = source_backend_health[selected_backend]
+        else:
+            rows = [
+                row
+                for row in source_backend_health.values()
+                if isinstance(row, dict) and row.get("selected") is True
+            ]
+            if rows:
+                selected_health = rows[0]
+    return dict(selected_health) if isinstance(selected_health, dict) else {}
+
+
+def fresh_paid_work_bridges_status_backend_readiness_flicker(status: dict[str, Any]) -> bool:
+    if not pool_has_recent_mining_work(status):
+        return False
+    pool_job_state = status.get("pool_job_state") if isinstance(status.get("pool_job_state"), dict) else {}
+    active = int_or_none(pool_job_state.get("active_connections")) or 0
+    authorized = int_or_none(pool_job_state.get("authorized_connections")) or 0
+    ready = int_or_none(pool_job_state.get("ready_connections")) or 0
+    without_job = int_or_none(pool_job_state.get("connections_without_current_job")) or 0
+    state_text = normalise_status_text(pool_job_state.get("status"))
+    reason_text = normalise_status_text(pool_job_state.get("reason_code"))
+    if not (
+        authorized > 0
+        and ready >= authorized
+        and (active <= 0 or active >= authorized)
+        and without_job == 0
+        and (not state_text or state_text in {"ok", "ready", "mining"})
+        and (not reason_text or reason_text == "ok")
+    ):
+        return False
+
+    pool_health = status.get("pool_health", status.get("pool", {}))
+    if not isinstance(pool_health, dict):
+        pool_health = {}
+    template_health = pool_health.get("template_health")
+    if not isinstance(template_health, dict):
+        template_health = status.get("template_health") if isinstance(status.get("template_health"), dict) else {}
+    selected_health = selected_backend_health_for_status(status)
+    if not selected_health and not template_health:
+        return False
+
+    mineable_value = first_present(
+        selected_health.get("node_mineable"),
+        selected_health.get("mineable"),
+        selected_health.get("mineable_now"),
+        pool_health.get("source_selected_backend_mineable"),
+        template_health.get("mineable_now"),
+    )
+    submit_ready_value = first_present(
+        selected_health.get("node_submit_ready"),
+        selected_health.get("submit_ready"),
+        pool_health.get("source_selected_backend_submit_ready"),
+        template_health.get("submit_ready"),
+    )
+    p2p_fresh_value = first_present(
+        selected_health.get("node_p2p_mining_fresh"),
+        selected_health.get("p2p_mining_fresh"),
+        pool_health.get("source_selected_backend_p2p_fresh"),
+        template_health.get("p2p_mining_fresh"),
+    )
+    lead = int_or_none(
+        first_present(
+            selected_health.get("node_p2p_best_peer_lead_blocks"),
+            selected_health.get("p2p_best_peer_lead_blocks"),
+            pool_health.get("source_selected_backend_p2p_best_peer_lead_blocks"),
+            template_health.get("p2p_best_peer_lead_blocks"),
+        )
+    )
+    tolerance = int_or_none(
+        first_present(
+            selected_health.get("node_p2p_peer_lead_tolerance_blocks"),
+            selected_health.get("p2p_peer_lead_tolerance_blocks"),
+            pool_health.get("source_selected_backend_p2p_peer_lead_tolerance_blocks"),
+            template_health.get("p2p_peer_lead_tolerance_blocks"),
+        )
+    )
+    if tolerance is None:
+        tolerance = 10
+    age = float_or_none(
+        first_present(
+            selected_health.get("node_template_age_seconds"),
+            selected_health.get("template_age_seconds"),
+            template_health.get("template_age_seconds"),
+        )
+    )
+    coinbase_valid_value = first_present(
+        selected_health.get("node_template_coinbase_valid"),
+        selected_health.get("template_coinbase_valid"),
+        template_health.get("template_coinbase_valid"),
+    )
+    build_error_blocking = first_present(
+        selected_health.get("node_last_template_build_error_blocking"),
+        selected_health.get("last_template_build_error_blocking"),
+        template_health.get("last_template_build_error_blocking"),
+    )
+    blocking_reasons = [
+        str(item)
+        for item in (template_health.get("blocking_reasons") or [])
+        if item
+    ]
+    allowed_reasons = {"mineable=false", "submit_ready=false"}
+    if blocking_reasons and any(reason not in allowed_reasons for reason in blocking_reasons):
+        return False
+    backend_flicker = bool(
+        mineable_value is not None
+        and submit_ready_value is not None
+        and (not boolish(mineable_value) or not boolish(submit_ready_value))
+    )
+    return bool(
+        backend_flicker
+        and boolish(p2p_fresh_value)
+        and (lead is None or lead <= tolerance)
+        and (age is None or age <= DEFAULT_FRESH_PRODUCTION_TEMPLATE_FLICKER_MAX_TEMPLATE_AGE_SECONDS)
+        and coinbase_valid_value is not False
+        and build_error_blocking is not True
+    )
 
 
 def sync_progress_is_advisory_with_ready_mining_pipeline(status: dict[str, Any]) -> bool:
@@ -4402,7 +4550,7 @@ def check_once(
             state["last_share_repair_at"] = int(time.time())
             if ok:
                 state["consecutive_share_stalls"] = 0
-    elif status.get("sync_health", {}).get("needs_fast_sync_repair"):
+    elif status.get("sync_health", {}).get("needs_fast_sync_repair") and not fresh_paid_work_bridges_status_backend_readiness_flicker(status):
         sync_warnings = status.get("sync_warnings", status.get("warnings", []))
         recent_mining_work = pool_has_recent_mining_work(status)
         state["consecutive_failures"] = 0
