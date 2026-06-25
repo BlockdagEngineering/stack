@@ -133,6 +133,7 @@ SUMMARY_GAUGES = (
     "template_age_seconds",
     "waste_ratio",
 )
+PEER_GRAPH_SPREAD_ANOMALY_THRESHOLD = 1000
 
 
 def now_iso() -> str:
@@ -617,6 +618,43 @@ def sample_metric(sample: dict[str, Any], name: str) -> float | None:
         return None
 
 
+def numeric_or_none(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip().replace(",", "")
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def node_rpc_sample_value(sample: dict[str, Any], name: str) -> float | None:
+    node_rpc = sample.get("node_rpc") if isinstance(sample.get("node_rpc"), dict) else {}
+    mapping = {
+        "p2p_mining_fresh": "p2p_mining_fresh",
+        "peer_lead_blocks": "p2p_best_peer_lead_blocks",
+        "mineable": "mineable_now",
+        "submit_ready": "submit_ready",
+        "template_age_seconds": "template_age_ms",
+    }
+    key = mapping.get(name)
+    if not key:
+        return None
+    value = numeric_or_none(node_rpc.get(key))
+    if value is not None and name == "template_age_seconds":
+        return value / 1000.0
+    return value
+
+
+def sample_metric_or_node(sample: dict[str, Any], name: str) -> float | None:
+    value = sample_metric(sample, name)
+    return node_rpc_sample_value(sample, name) if value is None else value
+
+
 def reset_aware_counter_delta(samples: list[dict[str, Any]], name: str) -> dict[str, Any]:
     previous: float | None = None
     delta = 0.0
@@ -656,6 +694,30 @@ def gauge_summary(samples: list[dict[str, Any]], name: str) -> dict[str, Any]:
     }
 
 
+def sample_node_rpc_context(sample: dict[str, Any]) -> dict[str, Any]:
+    node_rpc = sample.get("node_rpc") if isinstance(sample.get("node_rpc"), dict) else {}
+    if not node_rpc:
+        return {}
+    keys = (
+        "reason_code",
+        "mineable_now",
+        "submit_ready",
+        "p2p_mining_fresh",
+        "p2p_mining_fresh_reason_code",
+        "p2p_best_peer_lead_blocks",
+        "p2p_fresh_consensus_peer_count",
+        "connected_peer_count",
+        "active_peer_count",
+        "consensus_peer_count",
+        "syncnode_peer_count",
+        "peer_graph_main_order_min",
+        "peer_graph_main_order_max",
+        "peer_graph_main_order_spread",
+        "peer_info_truncated",
+    )
+    return {key: node_rpc.get(key) for key in keys if key in node_rpc}
+
+
 def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     job_state = sample.get("pool_job_state") if isinstance(sample.get("pool_job_state"), dict) else {}
@@ -668,17 +730,17 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
         ready_state_number = None
     if (ready is not None and ready < 4) or (ready_state_number is not None and ready_state_number < 4):
         reasons.append("ready_miners_below_4")
-    p2p = sample_metric(sample, "p2p_mining_fresh")
+    p2p = sample_metric_or_node(sample, "p2p_mining_fresh")
     if p2p is not None and p2p < 1:
         reasons.append("p2p_mining_not_fresh")
-    lead = sample_metric(sample, "peer_lead_blocks")
+    lead = sample_metric_or_node(sample, "peer_lead_blocks")
     if lead is not None and lead > 10:
         reasons.append("peer_lead_exceeds_tolerance")
-    template_age = sample_metric(sample, "template_age_seconds")
+    template_age = sample_metric_or_node(sample, "template_age_seconds")
     if template_age is not None and template_age > 30:
         reasons.append("template_age_over_30s")
-    mineable = sample_metric(sample, "mineable")
-    submit_ready = sample_metric(sample, "submit_ready")
+    mineable = sample_metric_or_node(sample, "mineable")
+    submit_ready = sample_metric_or_node(sample, "submit_ready")
     if any(value for value in errors.values()):
         reasons.append("collector_error")
     core_pipeline_reasons = set(reasons)
@@ -777,6 +839,16 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
             if isinstance(sample, dict)
         ):
             reasons.append("reorgs_observed_during_hard_stall")
+    anomaly_samples = summary.get("anomaly_samples")
+    if isinstance(anomaly_samples, list) and any(
+        numeric_or_none((sample.get("node_rpc_context") or {}).get("peer_graph_main_order_spread"))
+        is not None
+        and numeric_or_none((sample.get("node_rpc_context") or {}).get("peer_graph_main_order_spread"))
+        >= PEER_GRAPH_SPREAD_ANOMALY_THRESHOLD
+        for sample in anomaly_samples
+        if isinstance(sample, dict)
+    ):
+        reasons.append("peer_graph_spread_observed_during_anomaly")
     if (
         ready.get("max") == 0
         and p2p.get("max") == 0
@@ -813,12 +885,13 @@ def summarize_sample_window(samples: list[dict[str, Any]]) -> dict[str, Any]:
                 "reasons": reasons,
                 "accepted_blocks": sample_metric(sample, "accepted_blocks"),
                 "ready_miners": sample_metric(sample, "ready_miners"),
-                "p2p_mining_fresh": sample_metric(sample, "p2p_mining_fresh"),
-                "peer_lead_blocks": sample_metric(sample, "peer_lead_blocks"),
-                "mineable": sample_metric(sample, "mineable"),
-                "submit_ready": sample_metric(sample, "submit_ready"),
-                "template_age_seconds": sample_metric(sample, "template_age_seconds"),
+                "p2p_mining_fresh": sample_metric_or_node(sample, "p2p_mining_fresh"),
+                "peer_lead_blocks": sample_metric_or_node(sample, "peer_lead_blocks"),
+                "mineable": sample_metric_or_node(sample, "mineable"),
+                "submit_ready": sample_metric_or_node(sample, "submit_ready"),
+                "template_age_seconds": sample_metric_or_node(sample, "template_age_seconds"),
                 "node_log_context": sample_node_log_context(sample),
+                "node_rpc_context": sample_node_rpc_context(sample),
             }
         )
     critical_anomaly_samples = [

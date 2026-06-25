@@ -408,6 +408,48 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
         self.assertEqual(4, context["rewind_count_tail"])
         self.assertEqual(87, context["graph_sync_last_end"]["spend_seconds"])
 
+    def test_node_rpc_peer_spread_is_kept_when_pool_metrics_are_missing(self) -> None:
+        sample = {
+            "event": "sample",
+            "sampled_at": "2026-06-25T13:08:42+02:00",
+            "errors": {"job_state": None, "metrics": None, "dashboard": None},
+            "metrics": {},
+            "pool_job_state": {"ready_connections": 0, "reason_code": "node_syncing"},
+            "node_rpc": {
+                "reason_code": "node_syncing",
+                "mineable_now": False,
+                "submit_ready": False,
+                "p2p_mining_fresh": False,
+                "p2p_mining_fresh_reason_code": "peer_lead_exceeds_tolerance",
+                "p2p_best_peer_lead_blocks": 18,
+                "p2p_fresh_consensus_peer_count": 16,
+                "connected_peer_count": 16,
+                "active_peer_count": 16,
+                "consensus_peer_count": 16,
+                "peer_graph_main_order_min": 12606410,
+                "peer_graph_main_order_max": 12630472,
+                "peer_graph_main_order_spread": 24062,
+                "template_age_ms": 52000,
+            },
+        }
+
+        summary = monitor.summarize_sample_window([sample])
+
+        reasons = summary["anomaly_samples"][0]["reasons"]
+        self.assertIn("ready_miners_below_4", reasons)
+        self.assertIn("p2p_mining_not_fresh", reasons)
+        self.assertIn("peer_lead_exceeds_tolerance", reasons)
+        self.assertIn("template_age_over_30s", reasons)
+        self.assertIn("mineable_false", reasons)
+        self.assertIn("submit_ready_false", reasons)
+        self.assertIn("hard_peer_lead_template_stall", reasons)
+        anomaly = summary["anomaly_samples"][0]
+        self.assertEqual(18.0, anomaly["peer_lead_blocks"])
+        self.assertEqual(52.0, anomaly["template_age_seconds"])
+        self.assertEqual("node_syncing", anomaly["node_rpc_context"]["reason_code"])
+        self.assertEqual(24062, anomaly["node_rpc_context"]["peer_graph_main_order_spread"])
+        self.assertIn("peer_graph_spread_observed_during_anomaly", summary["window_anomaly_reasons"])
+
     def test_sample_window_summary_ignores_safe_backend_readiness_flicker(self) -> None:
         samples = [
             self.sample(
