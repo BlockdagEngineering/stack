@@ -29,7 +29,8 @@ DEFAULT_NODE_RPC_URL = "http://127.0.0.1:38131"
 DEFAULT_OUTPUT_ROOT = Path("ops/runtime/monitoring")
 METRIC_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([-+0-9.eE]+)$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-IMPORTED_RE = re.compile(r"Imported new chain segment.*?number=([0-9,]+).*?age=([0-9hms]+)")
+IMPORTED_RE = re.compile(r"Imported new chain segment.*?number=([0-9,]+)(?P<tail>.*)$")
+IMPORTED_AGE_RE = re.compile(r"\bage=([0-9hms]+)")
 GRAPH_SYNC_START_RE = re.compile(r"Syncing graph state.*?peer=([^\s]+).*?processID=([0-9]+)")
 GRAPH_SYNC_END_RE = re.compile(r"sync of graph state has ended.*?spend=([^\s]+).*?processID=([0-9]+)")
 
@@ -270,10 +271,12 @@ def summarize_node_log_tail(log_text: str | None) -> dict[str, Any]:
         line = clean_log_line(raw_line)
         imported = IMPORTED_RE.search(line)
         if imported:
+            age_match = IMPORTED_AGE_RE.search(imported.group("tail") or "")
+            age = age_match.group(1) if age_match else None
             latest_import = {
                 "number": int(imported.group(1).replace(",", "")),
-                "age": imported.group(2),
-                "age_seconds": parse_compact_duration_seconds(imported.group(2)),
+                "age": age,
+                "age_seconds": parse_compact_duration_seconds(age),
             }
         start = GRAPH_SYNC_START_RE.search(line)
         if start:

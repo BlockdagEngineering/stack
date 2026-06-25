@@ -45,6 +45,17 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
         self.assertEqual(1, summary["rewind_count_tail"])
         self.assertEqual(1, summary["missing_tip_count_tail"])
 
+    def test_node_log_tail_tracks_import_height_without_age_field(self) -> None:
+        payload = """
+2026-06-25|08:17:39.810 [INFO ] Imported new chain segment number=12,198,983 hash=aed655..0bbb55 blocks=1 txs=0 mgas=0.000 elapsed=28.757ms
+"""
+
+        summary = monitor.summarize_node_log_tail(payload)
+
+        self.assertEqual(12198983, summary["latest_import"]["number"])
+        self.assertIsNone(summary["latest_import"]["age"])
+        self.assertIsNone(summary["latest_import"]["age_seconds"])
+
     def test_node_log_tail_closes_completed_graph_sync(self) -> None:
         payload = """
 2026-06-25|01:46:38.367 [INFO ] Syncing graph state module=SYNC peer=16PeerA processID=7
