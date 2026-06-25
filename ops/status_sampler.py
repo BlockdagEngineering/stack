@@ -474,8 +474,35 @@ def canonical_safety_payloads(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return payloads
 
 
+def native_mining_state_is_current(payload: dict[str, Any]) -> bool:
+    if not chain_ready_for_mining(payload):
+        return False
+    sync = dict_value(payload.get("sync_progress"))
+    if sync.get("native_is_current") is True:
+        return True
+    for node in dict_value(sync.get("nodes")).values():
+        if isinstance(node, dict) and node.get("native_is_current") is True:
+            return True
+    return str(sync.get("status") or "").lower() == "synced"
+
+
+def evm_public_reference_safety(value: Any) -> bool:
+    safety = dict_value(value)
+    schema = str(safety.get("schema") or "").lower()
+    reason = str(safety.get("reason") or safety.get("status") or "").lower()
+    return schema == "stack_evm_public_reference_v1" or "evm" in reason
+
+
+def evm_public_reference_node(node: dict[str, Any]) -> bool:
+    if evm_public_reference_safety(node.get("canonical_mining_safety")):
+        return True
+    alignment = dict_value(node.get("public_chain_alignment"))
+    return bool(alignment.get("local_url") or alignment.get("reference_url"))
+
+
 def public_chain_divergence_reasons(payload: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
+    native_current = native_mining_state_is_current(payload)
     sync_health = dict_value(payload.get("sync_health"))
     if sync_health.get("public_chain_divergence"):
         reasons.append("sync health reports public-chain divergence")
@@ -486,27 +513,35 @@ def public_chain_divergence_reasons(payload: dict[str, Any]) -> list[str]:
         reasons.append(f"public-chain divergence nodes={','.join(str(item) for item in divergence_nodes)}")
 
     sync = dict_value(payload.get("sync_progress"))
-    if sync.get("public_chain_diverged"):
+    if sync.get("public_chain_diverged") and not (
+        native_current and evm_public_reference_safety(sync.get("canonical_mining_safety"))
+    ):
         reasons.append("sync progress reports public-chain divergence")
-    if sync.get("solo_mining_suspected"):
+    if sync.get("solo_mining_suspected") and not (
+        native_current and evm_public_reference_safety(sync.get("canonical_mining_safety"))
+    ):
         reasons.append("sync progress reports solo-mining suspicion")
     for name, node in dict_value(sync.get("nodes")).items():
         if not isinstance(node, dict):
             continue
-        if node.get("public_chain_diverged"):
+        evm_only = native_current and evm_public_reference_node(node)
+        if node.get("public_chain_diverged") and not evm_only:
             reasons.append(f"{name} reports public-chain divergence")
-        if node.get("solo_mining_suspected"):
+        if node.get("solo_mining_suspected") and not evm_only:
             reasons.append(f"{name} reports solo-mining suspicion")
     for name, node in dict_value(payload.get("nodes")).items():
         if not isinstance(node, dict):
             continue
-        if node.get("public_chain_diverged"):
+        evm_only = native_current and evm_public_reference_node(node)
+        if node.get("public_chain_diverged") and not evm_only:
             reasons.append(f"{name} reports public-chain divergence")
-        if node.get("solo_mining_suspected"):
+        if node.get("solo_mining_suspected") and not evm_only:
             reasons.append(f"{name} reports solo-mining suspicion")
 
     for safety in canonical_safety_payloads(payload):
         if safety.get("safe") is True:
+            continue
+        if native_current and evm_public_reference_safety(safety):
             continue
         reason = str(safety.get("reason") or safety.get("status") or "").lower()
         if any(token in reason for token in ("public-chain", "diverg", "solo")):

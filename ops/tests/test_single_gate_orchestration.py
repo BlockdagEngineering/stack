@@ -54,6 +54,24 @@ def safe_canonical_status() -> dict[str, object]:
     }
 
 
+def native_current_evm_public_alignment_divergence_status() -> dict[str, object]:
+    status = safe_canonical_status()
+    sync_progress = status["sync_progress"]
+    sync_progress["native_is_current"] = True
+    sync_progress["nodes"] = {
+        "node": {
+            "native_is_current": True,
+            "public_chain_diverged": True,
+            "canonical_mining_safety": {
+                "safe": False,
+                "schema": "stack_evm_public_reference_v1",
+                "reason": "same-height local EVM block hashes differ from an ahead public reference",
+            },
+        }
+    }
+    return status
+
+
 class SingleGateOrchestrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.original_stack_services = list(pool_ops.STACK_SERVICES)
@@ -110,6 +128,15 @@ class SingleGateOrchestrationTests(unittest.TestCase):
         decision = pool_start_gate.pool_start_decision(safe_canonical_status())
 
         self.assertTrue(decision.allowed, decision.reason)
+
+    def test_shared_gate_allows_native_current_evm_public_alignment_divergence(self) -> None:
+        status = native_current_evm_public_alignment_divergence_status()
+        decision = pool_start_gate.pool_start_decision(status)
+        safe, reason = pool_start_gate.canonical_safety_proven(status)
+
+        self.assertTrue(decision.allowed, decision.reason)
+        self.assertTrue(safe)
+        self.assertIn("EVM public-reference divergence is advisory", reason)
 
     def test_shared_gate_blocks_single_peer_even_when_synced(self) -> None:
         status = safe_canonical_status()

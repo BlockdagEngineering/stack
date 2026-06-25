@@ -220,6 +220,7 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         commands = []
         incidents = []
         status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        os.environ["BDAG_ASIC_LAN_CIDRS"] = "192.168.1.0/24"
         payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
         payload["sync_progress"].pop("nodes", None)
         payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
@@ -253,6 +254,70 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertIn(f"left_container_running:{status_sampler.POOL_CONTAINER}:public_chain_divergence", repair["actions"])
         self.assertIn(("public_chain_divergence_left_pool_running", "warning"), incidents)
         self.assertFalse(any(command[:2] == ["docker", "start"] for command in commands))
+
+    def test_native_current_evm_public_alignment_divergence_does_not_block_pool_start(self) -> None:
+        commands = []
+        incidents = []
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
+        payload["sync_progress"]["native_is_current"] = True
+        payload["sync_progress"]["nodes"] = {
+            "node": {
+                "native_is_current": True,
+                "public_chain_diverged": True,
+                "canonical_mining_safety": {
+                    "schema": "stack_evm_public_reference_v1",
+                    "safe": False,
+                    "reason": "same-height local EVM block hashes differ from an ahead public reference",
+                },
+                "public_chain_alignment": {
+                    "local_url": "http://host.docker.internal:18545",
+                    "reference_url": "https://rpc.blockdag.engineering",
+                    "public_chain_diverged": True,
+                },
+            }
+        }
+        status_sampler.read_neighbor_macs = lambda: {}
+        status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
+        status_sampler.append_incident = (
+            lambda event_type, severity, *_args, **_kwargs: incidents.append((event_type, severity))
+        )
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertIn(f"started_container:{status_sampler.POOL_CONTAINER}", repair["actions"])
+        self.assertTrue(self.pool_compose_start_seen(commands))
+        self.assertNotIn(f"left_container_running:{status_sampler.POOL_CONTAINER}:public_chain_divergence", repair["actions"])
+        self.assertNotIn(("public_chain_divergence_left_pool_running", "warning"), incidents)
+
+    def test_evm_public_alignment_divergence_blocks_pool_start_when_native_is_not_current(self) -> None:
+        commands = []
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=12)
+        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
+        payload["sync_progress"]["nodes"] = {
+            "node": {
+                "public_chain_diverged": True,
+                "canonical_mining_safety": {
+                    "schema": "stack_evm_public_reference_v1",
+                    "safe": False,
+                    "reason": "same-height local EVM block hashes differ from an ahead public reference",
+                },
+                "public_chain_alignment": {
+                    "local_url": "http://host.docker.internal:18545",
+                    "reference_url": "https://rpc.blockdag.engineering",
+                    "public_chain_diverged": True,
+                },
+            }
+        }
+        status_sampler.read_neighbor_macs = lambda: {}
+        status_sampler.run = lambda command, timeout=20: commands.append(command) or self.command_result(command)
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertFalse(self.pool_compose_start_seen(commands))
+        self.assertNotIn(f"started_container:{status_sampler.POOL_CONTAINER}", repair["actions"])
 
     def test_compose_command_uses_stable_project_name_for_symlinked_runtime(self) -> None:
         os.environ.pop("BDAG_COMPOSE_PROJECT_NAME", None)

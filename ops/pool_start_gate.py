@@ -223,6 +223,27 @@ def _canonical_safety_payloads(status: dict[str, Any]) -> list[tuple[str, dict[s
     return payloads
 
 
+def _native_mining_state_is_current(status: dict[str, Any]) -> bool:
+    sync_progress = status.get("sync_progress")
+    if not isinstance(sync_progress, dict):
+        return False
+    if sync_progress.get("native_is_current") is True:
+        return True
+    nodes = sync_progress.get("nodes")
+    if isinstance(nodes, dict):
+        for node in nodes.values():
+            if isinstance(node, dict) and node.get("native_is_current") is True:
+                return True
+    remaining = _safe_int(sync_progress.get("remaining_blocks"))
+    return str(sync_progress.get("status") or "").lower() == "synced" and (remaining is None or remaining <= 0)
+
+
+def _evm_public_reference_safety(payload: dict[str, Any]) -> bool:
+    schema = str(payload.get("schema") or "").lower()
+    reason = str(payload.get("reason") or payload.get("status") or "").lower()
+    return schema == "stack_evm_public_reference_v1" or "evm" in reason
+
+
 def canonical_safety_proven(status: dict[str, Any]) -> tuple[bool, str]:
     payloads = _canonical_safety_payloads(status)
     if not payloads:
@@ -230,6 +251,8 @@ def canonical_safety_proven(status: dict[str, Any]) -> tuple[bool, str]:
     safe_scopes = [scope for scope, payload in payloads if payload.get("safe") is True]
     if safe_scopes:
         return True, f"canonical public-chain safety proof accepted from {', '.join(safe_scopes)}"
+    if _native_mining_state_is_current(status) and all(_evm_public_reference_safety(payload) for _scope, payload in payloads):
+        return True, "native mining state is current; EVM public-reference divergence is advisory for pool start"
     details: list[str] = []
     for scope, payload in payloads[:4]:
         reason = str(payload.get("reason") or payload.get("status") or "unsafe").strip()
