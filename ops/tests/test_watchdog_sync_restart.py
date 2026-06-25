@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from unittest import mock
 
 OPS_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -92,6 +93,88 @@ def advisory_evm_sync_with_ready_native_mining_status() -> dict[str, object]:
             "connections_without_current_job": 0,
         },
         "miner_health": {"connected_count": 4, "connected_count_effective": 4, "miners": []},
+        "mining_address": "0x1111111111111111111111111111111111111111",
+    }
+
+
+def peer_lead_stall_status(*, recent_paid_work: bool = False) -> dict[str, object]:
+    last_block_age = 20 if recent_paid_work else None
+    block_success_count = 10 if recent_paid_work else 0
+    return {
+        "failures": [],
+        "stack_failures": [],
+        "miner_failures": [],
+        "warnings": [
+            "selected pool backend is still catching up by 40 blocks according to pool backend health"
+        ],
+        "mode": "sync_blocked",
+        "overall": "syncing",
+        "can_submit_blocks": False,
+        "containers": {
+            "node": {"running": True, "started_at": "2026-01-14T12:00:00.000000000Z"},
+            watchdog.POOL_CONTAINER: {"running": True, "started_at": "2026-01-14T12:00:00.000000000Z"},
+        },
+        "nodes": {
+            "node": {
+                "child_running": True,
+                "importing": False,
+                "latest_block": 1000,
+                "last_import_age_seconds": 900,
+            }
+        },
+        "sync_progress": {
+            "status": "syncing",
+            "current_block": 1000,
+            "highest_block": 1040,
+            "remaining_blocks": 40,
+            "peer_ahead_blocks": 40,
+            "nodes": {
+                "node": {
+                    "current_block": 1000,
+                    "highest_block": 1040,
+                    "remaining_blocks": 40,
+                    "status": "syncing",
+                }
+            },
+        },
+        "sync_health": {
+            "needs_fast_sync_repair": True,
+            "pool_has_recent_paid_work": recent_paid_work,
+        },
+        "pool_health": {
+            "initial_download": True,
+            "selected_backend": "node",
+            "selected_backend_source_health": {
+                "node_mineable": False,
+                "node_submit_ready": False,
+                "node_p2p_mining_fresh": False,
+                "node_p2p_best_peer_lead_blocks": 40,
+                "node_p2p_peer_lead_tolerance_blocks": 10,
+                "node_template_age_seconds": 90,
+                "node_reason_code": "node_syncing",
+                "node_p2p_mining_fresh_reason_code": "peer_lead_exceeds_tolerance",
+            },
+            "source_selected_backend_submit_ready": False,
+            "source_selected_backend_mineable": False,
+            "source_selected_backend_p2p_fresh": False,
+            "source_job_health": {
+                "ok": False,
+                "authorized_miners": 4,
+                "ready_miners": 0,
+                "reason_code": "miners_without_current_job",
+            },
+            "block_submit_success_count": block_success_count,
+            "last_block_submit_age_seconds": last_block_age,
+        },
+        "pool_job_state": {
+            "active_connections": 4,
+            "authorized_connections": 4,
+            "ready_connections": 0,
+            "connections_without_current_job": 4,
+            "current_template_seq": 0,
+            "reason_code": "miners_without_current_job",
+        },
+        "miner_health": {"connected_count": 4, "connected_count_effective": 4, "managed_count": 4, "miners": []},
         "mining_address": "0x1111111111111111111111111111111111111111",
     }
 
@@ -653,6 +736,358 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertEqual("node", restarts[0][0])
         self.assertIn("node RPC refused", restarts[0][1])
         self.assertIn("node_rpc_refused_pool_restart_pending", result["watchdog_state"])
+        self.assertTrue(written)
+
+    def test_peer_lead_stall_evidence_uses_selected_backend_health(self) -> None:
+        evidence = watchdog.selected_backend_peer_lead_stall_evidence(peer_lead_stall_status())
+
+        self.assertTrue(evidence["active"])
+        self.assertEqual(40, evidence["lead"])
+        self.assertEqual(10, evidence["tolerance"])
+        self.assertFalse(evidence["p2p_mining_fresh"])
+        self.assertEqual(4, evidence["active_miners"])
+        self.assertEqual(0, evidence["ready_miners"])
+
+    def test_peer_lead_stall_evidence_accepts_numeric_metrics_source(self) -> None:
+        status = peer_lead_stall_status()
+        pool_health = status["pool_health"]
+        assert isinstance(pool_health, dict)
+        selected = pool_health.pop("selected_backend_source_health")
+        pool_health.pop("source_selected_backend_p2p_fresh")
+        pool_health.pop("source_selected_backend_submit_ready")
+        pool_health.pop("source_selected_backend_mineable")
+        status["pool_metrics"] = {
+            "selected_backend_source_health": {
+                **selected,
+                "node_p2p_mining_fresh": 0.0,
+                "node_submit_ready": 0.0,
+                "node_mineable": 0.0,
+                "node_p2p_best_peer_lead_blocks": 40.0,
+                "node_p2p_peer_lead_tolerance_blocks": 10.0,
+            },
+        }
+
+        evidence = watchdog.selected_backend_peer_lead_stall_evidence(status)
+
+        self.assertTrue(evidence["active"])
+        self.assertEqual(40, evidence["lead"])
+        self.assertEqual(10, evidence["tolerance"])
+        self.assertFalse(evidence["p2p_mining_fresh"])
+        self.assertFalse(evidence["submit_ready"])
+        self.assertFalse(evidence["mineable"])
+
+    def test_peer_lead_stall_evidence_accepts_explicit_reason_without_numeric_lead(self) -> None:
+        status = peer_lead_stall_status()
+        pool_health = status["pool_health"]
+        assert isinstance(pool_health, dict)
+        selected = pool_health["selected_backend_source_health"]
+        assert isinstance(selected, dict)
+        selected.pop("node_p2p_best_peer_lead_blocks")
+        selected.pop("node_p2p_peer_lead_tolerance_blocks")
+
+        evidence = watchdog.selected_backend_peer_lead_stall_evidence(status)
+
+        self.assertTrue(evidence["active"])
+        self.assertIsNone(evidence["lead"])
+        self.assertFalse(evidence["p2p_mining_fresh"])
+
+    def test_check_once_waits_for_peer_lead_stall_confirmation(self) -> None:
+        now = 1_779_200_000
+        status = peer_lead_stall_status()
+        state: dict[str, object] = {}
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("first peer-lead sample must not restart")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("node_peer_lead_stall", result["watchdog_state"]["last_status"])
+        self.assertEqual(now, result["watchdog_state"]["node_peer_lead_stall_since"])
+        self.assertEqual(1, result["watchdog_state"]["consecutive_syncing"])
+        self.assertTrue(written)
+
+    def test_check_once_restarts_node_for_confirmed_peer_lead_stall(self) -> None:
+        now = 1_779_200_000
+        status = peer_lead_stall_status()
+        state = {"node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS}
+        restarts: list[tuple[str, str]] = []
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=lambda node, reason: restarts.append((node, reason)) or True
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual(1, len(restarts))
+        self.assertEqual("node", restarts[0][0])
+        self.assertIn("peer-lead exceeds tolerance", restarts[0][1])
+        self.assertIn("last_node_peer_lead_stall_restart", result["watchdog_state"])
+        self.assertNotIn("node_peer_lead_stall_since", result["watchdog_state"])
+        self.assertTrue(written)
+
+    def test_confirmed_peer_lead_stall_does_not_use_pool_or_stack_restart(self) -> None:
+        now = 1_779_200_000
+        status = peer_lead_stall_status()
+        state = {"node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS}
+        restarts: list[tuple[str, str]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", lambda _payload: None
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=lambda node, reason: restarts.append((node, reason)) or True
+        ), mock.patch.object(
+            watchdog, "run_pool_restart", side_effect=AssertionError("peer-lead stall must not restart pool directly")
+        ), mock.patch.object(
+            watchdog, "run_repair", side_effect=AssertionError("peer-lead stall must not restart full stack")
+        ):
+            watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual(1, len(restarts))
+
+    def test_peer_lead_stall_repair_suppressed_by_recent_paid_work(self) -> None:
+        now = 1_779_200_000
+        status = peer_lead_stall_status(recent_paid_work=True)
+        state = {"node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS}
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("fresh paid work suppresses peer-lead restart")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("node_peer_lead_stall_observing", result["watchdog_state"]["last_status"])
+        self.assertEqual(0, result["watchdog_state"]["consecutive_syncing"])
+        self.assertTrue(written)
+
+    def test_peer_lead_stall_repair_suppressed_by_active_import(self) -> None:
+        now = 1_779_200_000
+        status = peer_lead_stall_status()
+        nodes = status["nodes"]
+        assert isinstance(nodes, dict)
+        node = nodes["node"]
+        assert isinstance(node, dict)
+        node["importing"] = True
+        node["last_import_age_seconds"] = 10
+        state = {"node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS}
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("active import suppresses peer-lead restart")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("node_peer_lead_stall_observing", result["watchdog_state"]["last_status"])
+        self.assertEqual(0, result["watchdog_state"]["consecutive_syncing"])
+        self.assertTrue(written)
+
+    def test_peer_lead_stall_repair_suppressed_by_cooldown(self) -> None:
+        now = 1_779_200_000
+        status = peer_lead_stall_status()
+        state = {
+            "node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS,
+            "last_node_peer_lead_stall_restart_at": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN + 10,
+        }
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("cooldown suppresses peer-lead restart")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("node_peer_lead_stall", result["watchdog_state"]["last_status"])
+        self.assertIn("node_peer_lead_stall_since", result["watchdog_state"])
+        self.assertTrue(written)
+
+    def test_peer_lead_stall_repair_suppressed_by_node_startup_grace(self) -> None:
+        now = 1_779_200_000
+        status = peer_lead_stall_status()
+        containers = status["containers"]
+        assert isinstance(containers, dict)
+        node_container = containers["node"]
+        assert isinstance(node_container, dict)
+        started_at = datetime.fromtimestamp(now - 30, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
+        node_container["started_at"] = started_at
+        state = {"node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS}
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("startup grace suppresses peer-lead restart")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("node_peer_lead_stall", result["watchdog_state"]["last_status"])
+        self.assertIn("node_peer_lead_stall_since", result["watchdog_state"])
+        self.assertTrue(written)
+
+    def test_peer_lead_stall_state_clears_when_backend_recovers(self) -> None:
+        now = 1_779_200_000
+        status = advisory_evm_sync_with_ready_native_mining_status()
+        state = {"node_peer_lead_stall_since": now - 300}
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertNotIn("node_peer_lead_stall_since", result["watchdog_state"])
         self.assertTrue(written)
 
     def test_node_rpc_refused_evidence_ignores_unrelated_connection_refused_warning(self) -> None:
