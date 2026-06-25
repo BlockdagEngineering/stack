@@ -47,6 +47,7 @@ from pool_ops import (
     run_logged,
     start_stack,
     write_action_state,
+    write_pool_start_lease,
 )
 from status_sampler import (
     fastsync_peer_quarantine_should_repair,
@@ -148,6 +149,9 @@ DEFAULT_NODE_RPC_REFUSED_REPAIR_COOLDOWN = int(
 )
 DEFAULT_NODE_RPC_REFUSED_POOL_RESTART_GRACE_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_RPC_REFUSED_POOL_RESTART_GRACE_SECONDS", "30")
+)
+DEFAULT_NODE_STARTUP_REBUILD_GRACE_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_STARTUP_REBUILD_GRACE_SECONDS", "1800")
 )
 DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS", "120")
@@ -297,6 +301,28 @@ def container_started_age_seconds(status: dict[str, Any], container_name: str, n
     except ValueError:
         return None
     return max(0, now - int(started.timestamp()))
+
+
+def container_startup_grace(
+    status: dict[str, Any],
+    container_name: str,
+    now: int,
+    grace_seconds: int,
+) -> tuple[int, int | None, bool]:
+    """Return remaining startup grace and whether container age was unavailable.
+
+    Node restarts are intentionally exceptional. If a repair path cannot prove
+    that the node has been running beyond its rebuild grace window, keep the
+    restart suppressed and record that the age was unknown.
+    """
+
+    grace = max(0, int(grace_seconds))
+    if grace <= 0:
+        return 0, container_started_age_seconds(status, container_name, now), False
+    age = container_started_age_seconds(status, container_name, now)
+    if age is None:
+        return grace, None, True
+    return max(0, grace - age), age, False
 
 
 def container_running(status: dict[str, Any], container_name: str) -> bool:
@@ -2601,6 +2627,7 @@ def run_node_restart(node_service: str, reason: str) -> bool:
     pool_was_running = False
     pool_stop_ok = True
     pool_start_ok = True
+    pool_resume_blocked_reason = ""
     pool_stop_result = None
     pool_start_result = None
     if PAUSE_POOL_DURING_NODE_RESTART and POOL_CONTAINER:
@@ -2633,8 +2660,21 @@ def run_node_restart(node_service: str, reason: str) -> bool:
         result = pool_stop_result
 
     if pool_was_running and pool_stop_ok:
-        pool_start_result = run_logged(["docker", "start", POOL_CONTAINER], log_path, timeout=120)
-        pool_start_ok = pool_start_result.ok
+        gate = pool_start_gate.pool_start_decision(pool_start_gate.read_latest_status_payload())
+        if gate.allowed:
+            write_pool_start_lease("watchdog", f"resume pool after node restart: {reason}")
+            pool_start_result = run_logged(["docker", "start", POOL_CONTAINER], log_path, timeout=120)
+            pool_start_ok = pool_start_result.ok
+        else:
+            pool_resume_blocked_reason = gate.reason
+            pool_start_ok = True
+            log(f"leaving pool stopped after node restart because pool start gate blocks resume: {gate.reason}")
+            record_efficiency_event(
+                "pool_resume_after_node_restart_blocked",
+                "warning",
+                "pool was left stopped after node restart because readiness gate blocks resume",
+                {"node": node_service, "reason": reason, "blocked_reason": gate.reason, "pool_container": POOL_CONTAINER},
+            )
 
     ok = bool(result and result.ok and pool_stop_ok and pool_start_ok)
 
@@ -2646,6 +2686,7 @@ def run_node_restart(node_service: str, reason: str) -> bool:
             "pool_paused": pool_was_running,
             "pool_stop_ok": pool_stop_ok,
             "pool_start_ok": pool_start_ok,
+            "pool_resume_blocked_reason": pool_resume_blocked_reason,
             "restart_method": restart_method,
             "env_recreate_mismatches": env_mismatches,
         }
@@ -2781,6 +2822,7 @@ def run_pool_restart(reason: str) -> bool:
     }
     write_action_state(state_payload)
     log(f"starting targeted pool restart: {reason}; log={log_path}")
+    write_pool_start_lease("watchdog", reason)
 
     command = [
         "docker",
@@ -4034,11 +4076,15 @@ def check_once(
         last_restart = int_or_none(state.get("last_node_rpc_refused_restart_at")) or 0
         cooldown_remaining = DEFAULT_NODE_RPC_REFUSED_REPAIR_COOLDOWN - (now - last_restart)
         node_service = NODES[0] if NODES else "node"
-        node_age = container_started_age_seconds(status, node_service, now)
-        startup_remaining = (
-            DEFAULT_NODE_RPC_REFUSED_CONFIRM_SECONDS - node_age
-            if node_age is not None and node_age < DEFAULT_NODE_RPC_REFUSED_CONFIRM_SECONDS
-            else 0
+        startup_grace_seconds = max(
+            DEFAULT_NODE_RPC_REFUSED_CONFIRM_SECONDS,
+            DEFAULT_NODE_STARTUP_REBUILD_GRACE_SECONDS,
+        )
+        startup_remaining, node_age, node_age_unknown = container_startup_grace(
+            status,
+            node_service,
+            now,
+            startup_grace_seconds,
         )
         reason = (
             "node RPC refused pool template requests or reported transport failure "
@@ -4054,6 +4100,9 @@ def check_once(
         log(
             "node_rpc_refused "
             f"refused_for={refused_for}s cooldown_remaining={max(cooldown_remaining, 0)}s "
+            f"startup_grace_seconds={startup_grace_seconds} "
+            f"node_age_seconds={node_age if node_age is not None else 'unknown'} "
+            f"node_age_unknown={node_age_unknown} "
             f"startup_remaining={max(startup_remaining, 0)}s evidence={node_rpc_refused}"
         )
         record_efficiency_event(
@@ -4064,6 +4113,9 @@ def check_once(
                 "evidence": node_rpc_refused,
                 "refused_for_seconds": refused_for,
                 "cooldown_remaining_seconds": max(cooldown_remaining, 0),
+                "startup_grace_seconds": startup_grace_seconds,
+                "node_age_seconds": node_age,
+                "node_age_unknown": node_age_unknown,
                 "startup_remaining_seconds": max(startup_remaining, 0),
             },
         )
@@ -4122,7 +4174,11 @@ def check_once(
             if hard_mining_outage
             else DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS
         )
-        startup_grace_seconds = max(confirm_seconds, DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS)
+        startup_grace_seconds = max(
+            confirm_seconds,
+            DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS,
+            DEFAULT_NODE_STARTUP_REBUILD_GRACE_SECONDS,
+        )
         last_restart = int_or_none(state.get("last_node_peer_lead_stall_restart_at")) or 0
         base_repair_cooldown = (
             DEFAULT_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN
@@ -4154,11 +4210,11 @@ def check_once(
             else base_repair_cooldown
         )
         cooldown_remaining = repair_cooldown - (now - last_restart)
-        node_age = container_started_age_seconds(status, restart_node, now)
-        startup_remaining = (
-            startup_grace_seconds - node_age
-            if node_age is not None and node_age < startup_grace_seconds
-            else 0
+        startup_remaining, node_age, node_age_unknown = container_startup_grace(
+            status,
+            restart_node,
+            now,
+            startup_grace_seconds,
         )
         reason = (
             "selected pool backend has a hard peer-lead mining outage "
@@ -4203,6 +4259,8 @@ def check_once(
             f"retry_cooldown_applies={retry_cooldown_applies} "
             f"retry_stale_work={retry_stale_work} "
             f"cooldown_remaining={max(cooldown_remaining, 0)}s "
+            f"node_age_seconds={node_age if node_age is not None else 'unknown'} "
+            f"node_age_unknown={node_age_unknown} "
             f"startup_remaining={max(startup_remaining, 0)}s "
             f"active_import_details={active_import_details} evidence={peer_lead_stall}"
         )
@@ -4228,6 +4286,8 @@ def check_once(
                 "base_repair_cooldown_seconds": base_repair_cooldown,
                 "retry_cooldown_applies": retry_cooldown_applies,
                 "retry_stale_work": retry_stale_work,
+                "node_age_seconds": node_age,
+                "node_age_unknown": node_age_unknown,
                 "startup_remaining_seconds": max(startup_remaining, 0),
             },
         )
@@ -4309,11 +4369,15 @@ def check_once(
         confirm_seconds = DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS
         last_restart = int_or_none(state.get("last_node_template_sync_wedge_restart_at")) or 0
         cooldown_remaining = DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_REPAIR_COOLDOWN - (now - last_restart)
-        node_age = container_started_age_seconds(status, restart_node, now)
-        startup_remaining = (
-            confirm_seconds - node_age
-            if node_age is not None and node_age < confirm_seconds
-            else 0
+        startup_grace_seconds = max(
+            confirm_seconds,
+            DEFAULT_NODE_STARTUP_REBUILD_GRACE_SECONDS,
+        )
+        startup_remaining, node_age, node_age_unknown = container_startup_grace(
+            status,
+            restart_node,
+            now,
+            startup_grace_seconds,
         )
         reason = (
             "selected pool backend has a native-current template-sync mining wedge "
@@ -4350,7 +4414,10 @@ def check_once(
             f"active_import={active_import} active_import_suppresses={effective_active_import_suppresses} "
             f"active_import_nodes={active_import_nodes} "
             f"hard_mining_outage={hard_mining_outage} confirm_seconds={confirm_seconds} "
+            f"startup_grace_seconds={startup_grace_seconds} "
             f"cooldown_remaining={max(cooldown_remaining, 0)}s "
+            f"node_age_seconds={node_age if node_age is not None else 'unknown'} "
+            f"node_age_unknown={node_age_unknown} "
             f"startup_remaining={max(startup_remaining, 0)}s evidence={template_sync_wedge}"
         )
         record_efficiency_event(
@@ -4369,6 +4436,9 @@ def check_once(
                 "confirm_seconds": confirm_seconds,
                 "restart_node": restart_node,
                 "cooldown_remaining_seconds": max(cooldown_remaining, 0),
+                "startup_grace_seconds": startup_grace_seconds,
+                "node_age_seconds": node_age,
+                "node_age_unknown": node_age_unknown,
                 "startup_remaining_seconds": max(startup_remaining, 0),
             },
         )
@@ -5554,6 +5624,7 @@ def loop(
         f"node_rpc_refused_confirm={DEFAULT_NODE_RPC_REFUSED_CONFIRM_SECONDS}s "
         f"node_rpc_refused_cooldown={DEFAULT_NODE_RPC_REFUSED_REPAIR_COOLDOWN}s "
         f"node_rpc_refused_pool_grace={DEFAULT_NODE_RPC_REFUSED_POOL_RESTART_GRACE_SECONDS}s "
+        f"node_startup_rebuild_grace={DEFAULT_NODE_STARTUP_REBUILD_GRACE_SECONDS}s "
         f"node_peer_lead_stall_confirm={DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS}s "
         f"node_peer_lead_hard_stall_confirm={DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS}s "
         f"node_peer_lead_stall_cooldown={DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN}s "

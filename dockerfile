@@ -119,7 +119,8 @@ RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bd
  && chown -R bdagStack:bdagStack /var/lib/bdagStack /var/log/bdagStack /etc/bdagStack
 
 COPY --from=pool-build /out/mining-pool    /usr/local/bin/mining-pool
-RUN chmod +x /usr/local/bin/mining-pool 
+COPY docker/entrypoint-pool.sh /usr/local/bin/docker-entrypoint-pool.sh
+RUN chmod +x /usr/local/bin/mining-pool /usr/local/bin/docker-entrypoint-pool.sh
 
 # godotenv loads this path at runtime; tarball uses committed .env.example. Copy a
 # local `.env` on the host only if you want non-default keys in-file.
@@ -129,7 +130,7 @@ RUN chown bdagStack:bdagStack /var/lib/bdagStack/pool/.env
 USER bdagStack
 WORKDIR /var/lib/bdagStack/pool
 EXPOSE 3334 8080
-ENTRYPOINT ["/usr/local/bin/mining-pool"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint-pool.sh", "/usr/local/bin/mining-pool"]
 
 # ----------------------------------------------------------------------------
 # Shared Ops Runtime Stage (Docker repair helpers)

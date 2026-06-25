@@ -11,6 +11,27 @@ log() {
   printf '[%s] node-entrypoint: %s\n' "$(timestamp_iso)" "$*" >&2
 }
 
+json_string_value() {
+  local key="$1"
+  local file="$2"
+  sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$file" | head -n 1
+}
+
+node_start_guard() {
+  [ "${BDAG_NODE_START_GUARD_ENABLED:-1}" = "1" ] || return 0
+  local control_file state
+  control_file="${BDAG_AUTOMATION_CONTROL_FILE:-/var/lib/bdagStack/runtime/automation-control.json}"
+  if [ ! -r "$control_file" ]; then
+    log "refusing to start node: automation control file is missing or unreadable at $control_file"
+    exit 78
+  fi
+  state="$(json_string_value state "$control_file")"
+  if [ "$state" != "normal" ]; then
+    log "refusing to start node: automation control state is ${state:-unknown}"
+    exit 78
+  fi
+}
+
 lower_ascii() {
   printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
 }
@@ -851,6 +872,7 @@ maybe_http_snapshot_bootstrap() {
   fi
 }
 
+node_start_guard
 apply_ordered_fastsync_peers "$@"
 apply_node_metrics_runtime_args "$@"
 apply_no_fastsync_serve_guard "$@"

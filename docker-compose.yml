@@ -90,7 +90,9 @@ services:
         <<: *dev-source-contexts
       args:
         <<: *build-args
-    restart: unless-stopped
+    # Node is a high-risk mutable service. Do not let Docker restart it behind
+    # the automation control plane; watchdog decides whether node can start.
+    restart: "no"
     logging: *mining-logging
     network_mode: host
     environment:
@@ -128,6 +130,8 @@ services:
       BDAG_NODEWORKER_HEALTH_PROBE_INTERVAL: ${BDAG_NODEWORKER_HEALTH_PROBE_INTERVAL:-2s}
       BDAG_NODEWORKER_MINING_READINESS_TIMEOUT: ${BDAG_NODEWORKER_MINING_READINESS_TIMEOUT:-30m}
       BDAG_NODEWORKER_MINING_READINESS_GRACE: ${BDAG_NODEWORKER_MINING_READINESS_GRACE:-20m}
+      BDAG_NODE_START_GUARD_ENABLED: ${BDAG_NODE_START_GUARD_ENABLED:-1}
+      BDAG_AUTOMATION_CONTROL_FILE: /var/lib/bdagStack/runtime/automation-control.json
     volumes:
     # NODE_DATA_DIR is the only canonical node datadir mount. Installers must
     # run scripts/preflight-chain-data.sh before starting this service so a
@@ -136,6 +140,7 @@ services:
 
       - ${NODE_DATA_DIR:-./data/node}:/var/lib/bdagStack/node
       - nodeworker-data:/var/lib/bdagStack/nodeworker
+      - ${BDAG_STACK_HOST_ROOT:-${PWD}}/ops/runtime:/var/lib/bdagStack/runtime:ro
       - ${SNAPSHOT_HOST_PATH:-./docker/no-snapshot.marker}:/snapshot/latest.bdsnap:ro
       # node.conf in project root (copy from node.conf.example). gitignored.
       - ./node.conf:/etc/bdagStack/node.conf:ro
@@ -155,7 +160,9 @@ services:
         <<: *dev-source-contexts
       args:
         <<: *build-args
-    restart: unless-stopped
+    # Pool must not resume mining work behind the readiness gates. Watchdog is
+    # the only default high-risk controller that may start/restart it.
+    restart: "no"
     logging: *mining-logging
     network_mode: host
     tmpfs:
@@ -237,8 +244,13 @@ services:
       MINING_POOL_ADDRESS: ${MINING_POOL_ADDRESS:?set MINING_POOL_ADDRESS to a non-zero payout address}
       METRICS_ADDR:       ${METRICS_ADDR:-0.0.0.0:9090}
       POOL_INSTANCE_ID:   ${POOL_INSTANCE_ID:-}
+      BDAG_POOL_START_GUARD_ENABLED: ${BDAG_POOL_START_GUARD_ENABLED:-1}
+      BDAG_AUTOMATION_CONTROL_FILE: /var/lib/bdagStack/runtime/automation-control.json
+      BDAG_POOL_START_LEASE_FILE: /var/lib/bdagStack/runtime/pool-start-lease.env
+      BDAG_POOL_START_LEASE_MAX_AGE_SECONDS: ${BDAG_POOL_START_LEASE_MAX_AGE_SECONDS:-120}
     volumes:
       - ${BDAG_HOST_ARP_TABLE_PATH:-/proc/net/arp}:/host/proc/net/arp:ro
+      - ${BDAG_STACK_HOST_ROOT:-${PWD}}/ops/runtime:/var/lib/bdagStack/runtime:ro
   # --------------------------------------------------------------------------
   # Host-side auto-repair layer, containerised. Watchdog and sentinel use
   # dedicated repair targets that inherit the shared ops runtime (python3 +
@@ -284,6 +296,7 @@ services:
       BDAG_PROJECT_ROOT: ${BDAG_STACK_HOST_ROOT:-${PWD}}
       BDAG_RUNTIME_DIR: ${BDAG_STACK_HOST_ROOT:-${PWD}}/ops/runtime
       BDAG_POOL_ENV_FILE: ${BDAG_STACK_HOST_ROOT:-${PWD}}/.env
+      BDAG_AUTOMATION_HIGH_RISK_CONTROLLER: ${BDAG_AUTOMATION_HIGH_RISK_CONTROLLER:-watchdog}
       BDAG_STATUS_SOURCE_URL: ${BDAG_STATUS_SOURCE_URL:-http://host.docker.internal:8088/api/status}
       BDAG_NODE_SERVICES: node
       BDAG_STACK_SERVICES: postgres,node,pool
@@ -309,6 +322,7 @@ services:
       BDAG_WATCHDOG_NODE_RPC_REFUSED_CONFIRM_SECONDS: ${BDAG_WATCHDOG_NODE_RPC_REFUSED_CONFIRM_SECONDS:-180}
       BDAG_WATCHDOG_NODE_RPC_REFUSED_REPAIR_COOLDOWN: ${BDAG_WATCHDOG_NODE_RPC_REFUSED_REPAIR_COOLDOWN:-900}
       BDAG_WATCHDOG_NODE_RPC_REFUSED_POOL_RESTART_GRACE_SECONDS: ${BDAG_WATCHDOG_NODE_RPC_REFUSED_POOL_RESTART_GRACE_SECONDS:-30}
+      BDAG_WATCHDOG_NODE_STARTUP_REBUILD_GRACE_SECONDS: ${BDAG_WATCHDOG_NODE_STARTUP_REBUILD_GRACE_SECONDS:-1800}
       BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS: ${BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS:-180}
       BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS: ${BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS:-90}
       BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS: ${BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS:-90}
@@ -358,6 +372,7 @@ services:
       BDAG_PROJECT_ROOT: ${BDAG_STACK_HOST_ROOT:-${PWD}}
       BDAG_RUNTIME_DIR: ${BDAG_STACK_HOST_ROOT:-${PWD}}/ops/runtime
       BDAG_POOL_ENV_FILE: ${BDAG_STACK_HOST_ROOT:-${PWD}}/.env
+      BDAG_AUTOMATION_HIGH_RISK_CONTROLLER: ${BDAG_AUTOMATION_HIGH_RISK_CONTROLLER:-watchdog}
       BDAG_STATUS_SAMPLER_FILE: ${BDAG_STACK_HOST_ROOT:-${PWD}}/ops/runtime/status-sampler.json
       BDAG_STATUS_SAMPLER_INTERVAL_SECONDS: ${BDAG_STATUS_SAMPLER_INTERVAL_SECONDS:-10}
       BDAG_STATUS_SAMPLER_EARNINGS_SNAPSHOT_INTERVAL_SECONDS: ${BDAG_STATUS_SAMPLER_EARNINGS_SNAPSHOT_INTERVAL_SECONDS:-60}
@@ -417,6 +432,7 @@ services:
       BDAG_PROJECT_ROOT: ${BDAG_STACK_HOST_ROOT:-${PWD}}
       BDAG_RUNTIME_DIR: ${BDAG_STACK_HOST_ROOT:-${PWD}}/ops/runtime
       BDAG_POOL_ENV_FILE: ${BDAG_STACK_HOST_ROOT:-${PWD}}/.env
+      BDAG_AUTOMATION_HIGH_RISK_CONTROLLER: ${BDAG_AUTOMATION_HIGH_RISK_CONTROLLER:-watchdog}
       BDAG_SENTINEL_STATUS_URL: ${BDAG_SENTINEL_STATUS_URL:-http://host.docker.internal:8088/api/status}
       BDAG_SENTINEL_INTERVAL_SECONDS: ${BDAG_SENTINEL_INTERVAL_SECONDS:-60}
       # systemd unit checks do not apply inside a container; empty lists skip them.

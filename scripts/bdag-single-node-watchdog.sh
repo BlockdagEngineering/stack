@@ -12,6 +12,8 @@ LOG_FILE="${BDAG_SINGLE_NODE_WATCHDOG_LOG_FILE:-$LOG_DIR/single-node-watchdog.lo
 STATE_DIR="${BDAG_SINGLE_NODE_WATCHDOG_STATE_DIR:-/opt/miner/backup-state/watchdog}"
 LOCK_FILE="${BDAG_SINGLE_NODE_WATCHDOG_LOCK_FILE:-/tmp/bdag-single-node-watchdog.lock}"
 LAST_RESTART_FILE="${BDAG_SINGLE_NODE_WATCHDOG_LAST_RESTART_FILE:-$STATE_DIR/last-pool-restart.epoch}"
+AUTOMATION_CONTROL="${BDAG_SINGLE_NODE_WATCHDOG_AUTOMATION_CONTROL:-$ROOT/ops/automation_control.py}"
+AUTOMATION_ACTOR="${BDAG_SINGLE_NODE_WATCHDOG_AUTOMATION_ACTOR:-legacy-single-node-watchdog}"
 
 POOL_CONTAINER="${BDAG_SINGLE_NODE_WATCHDOG_POOL_CONTAINER:-bdagminer-pool-1}"
 POOL_SERVICE="${BDAG_SINGLE_NODE_WATCHDOG_POOL_SERVICE:-pool}"
@@ -51,6 +53,30 @@ run_compose() {
     -f "$COMPOSE_FILE" \
     --env-file "$ENV_FILE" \
     "$@"
+}
+
+mutation_allowed() {
+  local action="$1"
+  local target="$2"
+  local reason="$3"
+  local output
+
+  if [[ ! -f "$AUTOMATION_CONTROL" ]]; then
+    log "automation control missing at $AUTOMATION_CONTROL; suppressing $action target=$target"
+    return 1
+  fi
+
+  if output="$(BDAG_PROJECT_ROOT="$ROOT" python3 "$AUTOMATION_CONTROL" check \
+      --action "$action" \
+      --actor "$AUTOMATION_ACTOR" \
+      --target "$target" \
+      --reason "$reason" 2>&1)"; then
+    log "automation control allowed $action target=$target"
+    return 0
+  fi
+
+  log "automation control blocked $action target=$target: $output"
+  return 1
 }
 
 count_pool_logs() {
@@ -103,6 +129,11 @@ get_count() {
 reconcile_containers() {
   log "container reconcile requested"
 
+  if ! mutation_allowed "stack_start" "single-node-stack" "legacy single-node watchdog container reconcile"; then
+    log "container reconcile suppressed by automation control"
+    return 0
+  fi
+
   run_compose up -d --no-build "${SERVICES[@]}" >> "$LOG_FILE" 2>&1
 
   log "container reconcile completed"
@@ -110,6 +141,11 @@ reconcile_containers() {
 
 restart_pool_only() {
   log "semantic failure detected; restarting pool only"
+
+  if ! mutation_allowed "asic_pool_restart" "$POOL_SERVICE" "legacy single-node watchdog expired job recovery"; then
+    log "pool restart suppressed by automation control"
+    return 1
+  fi
 
   run_compose restart "$POOL_SERVICE" >> "$LOG_FILE" 2>&1
 
@@ -197,7 +233,9 @@ REPORT_EOF
 
     log "trigger report=$report $counts"
 
-    restart_pool_only
+    if ! restart_pool_only; then
+      exit 0
+    fi
 
     sleep 30
 

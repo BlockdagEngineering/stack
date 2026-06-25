@@ -23,6 +23,7 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         env = {
             "PATH": os.environ.get("PATH", ""),
             "BDAG_ENTRYPOINT_PRINT_NODE_FLAGS": "1",
+            "BDAG_NODE_START_GUARD_ENABLED": "0",
         }
         env.update(extra_env)
         with tempfile.TemporaryDirectory() as tmp:
@@ -63,6 +64,39 @@ class NodeworkerEntrypointTest(unittest.TestCase):
     def assert_stdout_contains(self, result: subprocess.CompletedProcess[str], needle: str) -> None:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(needle, result.stdout)
+
+    def test_node_start_guard_blocks_chain_incident_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            control = Path(tmp) / "automation-control.json"
+            control.write_text(
+                '{"schema_version":1,"state":"chain_incident","owner":"unit","owner_unit":"unit"}\n',
+                encoding="utf-8",
+            )
+            result = self.run_entrypoint(
+                {
+                    "BDAG_NODE_START_GUARD_ENABLED": "1",
+                    "BDAG_AUTOMATION_CONTROL_FILE": str(control),
+                }
+            )
+
+        self.assertEqual(78, result.returncode)
+        self.assertIn("refusing to start node: automation control state is chain_incident", result.stderr)
+
+    def test_node_start_guard_allows_normal_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            control = Path(tmp) / "automation-control.json"
+            control.write_text(
+                '{"schema_version":1,"state":"normal","owner":"unit","owner_unit":"unit"}\n',
+                encoding="utf-8",
+            )
+            result = self.run_entrypoint(
+                {
+                    "BDAG_NODE_START_GUARD_ENABLED": "1",
+                    "BDAG_AUTOMATION_CONTROL_FILE": str(control),
+                }
+            )
+
+        self.assert_stdout_contains(result, "NODE_ARGS_APPEND=")
 
     def test_print_mode_reports_node_args_append(self) -> None:
         result = self.run_entrypoint({"NODE_ARGS_APPEND": "--miner --maxpeers=160"})

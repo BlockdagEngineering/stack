@@ -306,6 +306,22 @@ class ChainDataProvenanceTests(unittest.TestCase):
         self.assertIn("PermissionError", health["selected_marker_error"])
         self.assertIn("marker inspection unavailable", " ".join(health["warnings"]))
 
+    def test_node_log_evm_rebuild_interrupted_requires_chain_state_restore(self) -> None:
+        log = (
+            '2026-06-25|20:18:07.616 [ERROR] prepare startup evm environment failed '
+            'module=CHAIN mainTipOrder=12648088 mainTipHash=0xabc '
+            'err="bdag chain env error:targetEVM.number=12285979, '
+            'targetEVM.hash=0x25e622, targetState.order=12648088, '
+            'cur.number=0, cur.hash=0x3fb19e, native EVM rebuild interrupted"'
+        )
+
+        parsed = pool_ops.parse_node_log(log)
+        reasons = pool_ops.chain_data_restore_hard_reasons("node", parsed)
+
+        self.assertTrue(parsed["evm_rebuild_interrupted"])
+        self.assertEqual([log], parsed["evm_rebuild_interrupted_lines"])
+        self.assertIn("EVM rebuild from native state was interrupted", " ".join(reasons))
+
     def test_pool_start_gate_blocks_chain_data_restore_required(self) -> None:
         decision = pool_start_gate.pool_start_decision(
             {

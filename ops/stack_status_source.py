@@ -16,7 +16,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from pool_ops import POOL_CONTAINERS, collect_pool_prometheus_metrics, collect_status_cached
+from pool_ops import (
+    POOL_CONTAINERS,
+    SERVICES,
+    collect_pool_prometheus_metrics,
+    collect_status_cached,
+    docker_inspect,
+)
 
 
 DEFAULT_DASHBOARD_STATUS_URL = "http://127.0.0.1:8088/api/status"
@@ -381,6 +387,77 @@ def _with_direct_pool_metric_enrichment(payload: dict[str, Any]) -> dict[str, An
     return result
 
 
+def _with_direct_container_lifecycle_enrichment(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fill sparse dashboard container rows with direct Docker lifecycle fields.
+
+    The watchdog normally consumes dashboard status so every repair actor shares
+    the same view. Dashboard payloads can omit Docker lifecycle timestamps,
+    though, and node restart policy depends on those timestamps to avoid
+    interrupting startup rebuilds. Enrich only missing fields so dashboard
+    status remains authoritative for higher-level health.
+    """
+
+    if not _env_bool("BDAG_STATUS_SOURCE_CONTAINER_LIFECYCLE_ENRICHMENT", True):
+        return payload
+
+    containers = payload.get("containers") if isinstance(payload.get("containers"), dict) else {}
+    names = sorted(
+        {
+            str(name)
+            for name in [*SERVICES, *containers.keys()]
+            if str(name or "").strip()
+        }
+    )
+    if not names:
+        return payload
+
+    try:
+        inspected = docker_inspect(names)
+    except Exception:  # noqa: BLE001 - enrichment must not break status collection.
+        return payload
+    if not inspected:
+        return payload
+
+    changed = False
+    merged = {str(name): dict(info) for name, info in containers.items() if isinstance(info, dict)}
+    lifecycle_fields = (
+        "name",
+        "image",
+        "running",
+        "status",
+        "started_at",
+        "finished_at",
+        "restart_count",
+        "exit_code",
+        "error",
+    )
+    for name, direct in inspected.items():
+        if not isinstance(direct, dict):
+            continue
+        row = dict(merged.get(name) or {})
+        for field in lifecycle_fields:
+            current = row.get(field)
+            if current not in (None, "", "unknown"):
+                continue
+            value = direct.get(field)
+            if value not in (None, ""):
+                row[field] = value
+                changed = True
+        if row and name not in merged:
+            changed = True
+        if row:
+            merged[name] = row
+
+    if not changed:
+        return payload
+
+    result = dict(payload)
+    result["containers"] = merged
+    result["container_lifecycle_enriched"] = True
+    result["container_lifecycle_enrichment_source"] = "direct-docker-inspect"
+    return result
+
+
 def fetch_status_endpoint(url: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict[str, Any]:
     with urllib.request.urlopen(url, timeout=timeout) as response:
         payload = json.loads(response.read(8_000_000).decode("utf-8", "replace"))
@@ -417,8 +494,10 @@ def collect_stack_status(
         urls = [status_url] if status_url else _env_urls()
         for url in [item for item in urls if item]:
             try:
-                payload = _with_dashboard_asic_telemetry_enrichment(
-                    _with_direct_pool_metric_enrichment(fetch_status_endpoint(url, timeout=timeout))
+                payload = _with_direct_container_lifecycle_enrichment(
+                    _with_dashboard_asic_telemetry_enrichment(
+                        _with_direct_pool_metric_enrichment(fetch_status_endpoint(url, timeout=timeout))
+                    )
                 )
                 return _annotate(payload, "dashboard-http", errors)
             except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, StackStatusUnavailable) as exc:

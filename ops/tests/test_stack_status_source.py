@@ -211,12 +211,62 @@ class StackStatusSourceTests(unittest.TestCase):
             stack_status_source,
             "POOL_CONTAINERS",
             ["pool"],
+        ), mock.patch.object(
+            stack_status_source,
+            "docker_inspect",
+            return_value={},
         ):
             payload = stack_status_source.collect_stack_status()
 
         self.assertTrue(payload["pool_metrics_enriched"])
         self.assertEqual(12.0, payload["pool_metrics"]["stratum_no_request_disconnects_total"])
         self.assertEqual("host", captured[0]["pool"]["network_mode"])
+
+    def test_dashboard_payload_is_enriched_with_container_lifecycle_fields(self) -> None:
+        payload = {
+            "status": "ok",
+            "containers": {
+                "node": {"running": True},
+                "pool": {
+                    "running": True,
+                    "started_at": "2026-06-25T10:00:00.000000000Z",
+                },
+            },
+        }
+
+        with mock.patch.object(
+            stack_status_source,
+            "SERVICES",
+            ["node", "pool"],
+        ), mock.patch.object(
+            stack_status_source,
+            "docker_inspect",
+            return_value={
+                "node": {
+                    "running": True,
+                    "status": "running",
+                    "started_at": "2026-06-25T11:00:00.000000000Z",
+                    "restart_count": 4,
+                },
+                "pool": {
+                    "running": True,
+                    "status": "running",
+                    "started_at": "2026-06-25T11:30:00.000000000Z",
+                },
+            },
+        ):
+            enriched = stack_status_source._with_direct_container_lifecycle_enrichment(payload)
+
+        self.assertTrue(enriched["container_lifecycle_enriched"])
+        self.assertEqual(
+            "2026-06-25T11:00:00.000000000Z",
+            enriched["containers"]["node"]["started_at"],
+        )
+        self.assertEqual(4, enriched["containers"]["node"]["restart_count"])
+        self.assertEqual(
+            "2026-06-25T10:00:00.000000000Z",
+            enriched["containers"]["pool"]["started_at"],
+        )
 
     def test_metric_enrichment_failure_keeps_original_payload(self) -> None:
         with mock.patch.object(

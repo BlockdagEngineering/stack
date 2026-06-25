@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import json
+import os
 import pathlib
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 from unittest import mock
 
 
 OPS_DIR = pathlib.Path(__file__).resolve().parents[1]
+ROOT = OPS_DIR.parent
 sys.path.insert(0, str(OPS_DIR))
 
 import pool_ops  # noqa: E402
@@ -75,10 +80,12 @@ def native_current_evm_public_alignment_divergence_status() -> dict[str, object]
 class SingleGateOrchestrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.original_stack_services = list(pool_ops.STACK_SERVICES)
+        self.original_pool_start_lease_file = pool_ops.POOL_START_LEASE_FILE
         self.addCleanup(self.restore)
 
     def restore(self) -> None:
         pool_ops.STACK_SERVICES = self.original_stack_services
+        pool_ops.POOL_START_LEASE_FILE = self.original_pool_start_lease_file
 
     def fake_inspect(self, labels: dict[str, str]):
         def run(command, **_kwargs):
@@ -323,6 +330,111 @@ class SingleGateOrchestrationTests(unittest.TestCase):
             command = pool_ops.docker_compose_start_command(include_pool=False)
 
         self.assertEqual([], command)
+
+    def test_pool_start_lease_writer_creates_shell_readable_lease(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lease_path = pathlib.Path(tmpdir) / "pool-start-lease.env"
+            pool_ops.POOL_START_LEASE_FILE = lease_path
+
+            written = pool_ops.write_pool_start_lease("watchdog", "unit test reason", ttl_seconds=60)
+
+            self.assertEqual(lease_path, written)
+            payload = lease_path.read_text(encoding="utf-8")
+            self.assertIn("BDAG_POOL_START_LEASE_ACTOR=watchdog", payload)
+            self.assertIn("BDAG_POOL_START_LEASE_REASON='unit test reason'", payload)
+            self.assertRegex(payload, r"BDAG_POOL_START_LEASE_EPOCH=[0-9]+")
+            self.assertRegex(payload, r"BDAG_POOL_START_LEASE_EXPIRES=[0-9]+")
+
+    def test_pool_entrypoint_requires_normal_control_and_controller_lease(self) -> None:
+        entrypoint = ROOT / "docker" / "entrypoint-pool.sh"
+        now = int(time.time())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = pathlib.Path(tmpdir)
+            control_file = tmp / "automation-control.json"
+            lease_file = tmp / "pool-start-lease.env"
+            control_file.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "state": "normal",
+                        "owner": "unit-test",
+                        "owner_unit": "unit-test",
+                        "reason": "unit test",
+                        "high_risk_controller": "watchdog",
+                        "allowed_mutations": [],
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            env = {
+                **os.environ,
+                "BDAG_POOL_START_GUARD_ENABLED": "1",
+                "BDAG_AUTOMATION_CONTROL_FILE": str(control_file),
+                "BDAG_POOL_START_LEASE_FILE": str(lease_file),
+                "BDAG_POOL_START_LEASE_MAX_AGE_SECONDS": "120",
+            }
+
+            lease_file.write_text(
+                "\n".join(
+                    [
+                        f"BDAG_POOL_START_LEASE_EPOCH={now}",
+                        f"BDAG_POOL_START_LEASE_EXPIRES={now + 120}",
+                        "BDAG_POOL_START_LEASE_ACTOR=status-sampler",
+                        "BDAG_POOL_START_LEASE_REASON='wrong controller'",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            denied = subprocess.run(
+                ["sh", str(entrypoint), "sh", "-c", "exit 0"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                check=False,
+            )
+            self.assertEqual(78, denied.returncode, denied.stderr)
+            self.assertIn("lease actor status-sampler is not controller watchdog", denied.stderr)
+
+            lease_file.write_text(
+                "\n".join(
+                    [
+                        f"BDAG_POOL_START_LEASE_EPOCH={now}",
+                        f"BDAG_POOL_START_LEASE_EXPIRES={now + 120}",
+                        "BDAG_POOL_START_LEASE_ACTOR=watchdog",
+                        "BDAG_POOL_START_LEASE_REASON='right controller'",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            allowed = subprocess.run(
+                ["sh", str(entrypoint), "sh", "-c", "exit 0"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                check=False,
+            )
+            self.assertEqual(0, allowed.returncode, allowed.stderr)
+            self.assertIn("start lease accepted actor=watchdog controller=watchdog", allowed.stderr)
+
+            control_payload = json.loads(control_file.read_text(encoding="utf-8"))
+            control_payload["state"] = "chain_incident"
+            control_file.write_text(json.dumps(control_payload), encoding="utf-8")
+            incident = subprocess.run(
+                ["sh", str(entrypoint), "sh", "-c", "exit 0"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                check=False,
+            )
+            self.assertEqual(78, incident.returncode, incident.stderr)
+            self.assertIn("automation control state is chain_incident", incident.stderr)
 
 
 if __name__ == "__main__":

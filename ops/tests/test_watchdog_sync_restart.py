@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest import mock
 
 OPS_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -990,6 +991,76 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertIn("node_rpc_refused_pool_restart_pending", result["watchdog_state"])
         self.assertTrue(written)
 
+    def test_confirmed_rpc_refused_does_not_restart_when_node_age_unknown(self) -> None:
+        now = 1_779_200_000
+        status = {
+            **node_status(importing=True, last_import_age_seconds=20),
+            "failures": [],
+            "stack_failures": [],
+            "miner_failures": [],
+            "warnings": ["pool recently saw RPC connection refused"],
+            "mode": "sync_blocked",
+            "overall": "syncing",
+            "containers": {
+                "node": {"running": True},
+                watchdog.POOL_CONTAINER: {"running": True, "started_at": "2026-01-14T12:00:00.000000000Z"},
+            },
+            "pool_health": {
+                "initial_download": True,
+                "rpc_refused_recent": True,
+                "last_rpc_refused_age_seconds": 20,
+                "rpc_refused_warn_seconds": 120,
+                "source_job_health": {"ok": False, "reason_code": "node-health-transport"},
+            },
+            "pool_job_state": {
+                "active_connections": 1,
+                "authorized_connections": 1,
+                "ready_connections": 0,
+                "connections_without_current_job": 1,
+                "current_template_seq": 0,
+                "reason_code": "miners_without_current_job",
+            },
+            "miner_health": {"connected_count": 1, "connected_count_effective": 1, "miners": []},
+        }
+        state = {"node_rpc_refused_since": now - watchdog.DEFAULT_NODE_RPC_REFUSED_CONFIRM_SECONDS}
+        written: list[dict[str, object]] = []
+        events: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog,
+            "record_efficiency_event",
+            side_effect=lambda _event_type, _severity, _message, details=None: events.append(details or {}),
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("unknown node age must suppress restart")
+        ), mock.patch.object(
+            watchdog, "run_pool_restart", side_effect=AssertionError("node RPC refusal must not restart pool first")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("node_rpc_refused", result["watchdog_state"]["last_status"])
+        self.assertNotIn("node_rpc_refused_pool_restart_pending", result["watchdog_state"])
+        self.assertTrue(written)
+        self.assertTrue(any(event.get("node_age_unknown") is True for event in events))
+        self.assertTrue(any(int(event.get("startup_remaining_seconds") or 0) > 0 for event in events))
+
     def test_peer_lead_stall_evidence_uses_selected_backend_health(self) -> None:
         evidence = watchdog.selected_backend_peer_lead_stall_evidence(peer_lead_stall_status())
 
@@ -1220,6 +1291,49 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertIn("last_node_template_sync_wedge_restart", result["watchdog_state"])
         self.assertNotIn("node_template_sync_wedge_since", result["watchdog_state"])
         self.assertTrue(written)
+
+    def test_confirmed_template_sync_wedge_does_not_restart_when_node_age_unknown(self) -> None:
+        now = 1_779_200_000
+        status = native_current_template_sync_wedge_status()
+        containers = status["containers"]
+        assert isinstance(containers, dict)
+        containers["node"] = {"running": True}
+        state = {"node_template_sync_wedge_since": now - watchdog.DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS}
+        written: list[dict[str, object]] = []
+        events: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog,
+            "record_efficiency_event",
+            side_effect=lambda _event_type, _severity, _message, details=None: events.append(details or {}),
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("unknown node age must suppress restart")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("node_template_sync_wedge", result["watchdog_state"]["last_status"])
+        self.assertNotIn("last_node_template_sync_wedge_restart", result["watchdog_state"])
+        self.assertTrue(written)
+        self.assertTrue(any(event.get("node_age_unknown") is True for event in events))
+        self.assertTrue(any(int(event.get("startup_remaining_seconds") or 0) > 0 for event in events))
 
     def test_template_sync_wedge_repair_suppressed_by_recent_paid_work(self) -> None:
         now = 1_779_200_000
@@ -1468,6 +1582,49 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertIn("last_node_peer_lead_stall_restart", result["watchdog_state"])
         self.assertNotIn("node_peer_lead_stall_since", result["watchdog_state"])
         self.assertTrue(written)
+
+    def test_confirmed_peer_lead_stall_does_not_restart_when_node_age_unknown(self) -> None:
+        now = 1_779_200_000
+        status = peer_lead_stall_status()
+        containers = status["containers"]
+        assert isinstance(containers, dict)
+        containers["node"] = {"running": True}
+        state = {"node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS}
+        written: list[dict[str, object]] = []
+        events: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog,
+            "record_efficiency_event",
+            side_effect=lambda _event_type, _severity, _message, details=None: events.append(details or {}),
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("unknown node age must suppress restart")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("node_peer_lead_stall", result["watchdog_state"]["last_status"])
+        self.assertNotIn("last_node_peer_lead_stall_restart", result["watchdog_state"])
+        self.assertTrue(written)
+        self.assertTrue(any(event.get("node_age_unknown") is True for event in events))
+        self.assertTrue(any(int(event.get("startup_remaining_seconds") or 0) > 0 for event in events))
 
     def test_confirmed_peer_lead_stall_does_not_use_pool_or_stack_restart(self) -> None:
         now = 1_779_200_000
@@ -2803,6 +2960,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
     def test_targeted_node_restart_pauses_running_pool(self) -> None:
         commands: list[list[str]] = []
         states: list[dict[str, object]] = []
+        leases: list[tuple[str, str]] = []
 
         class Result:
             def __init__(self, stdout: str = "") -> None:
@@ -2834,6 +2992,16 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         ), mock.patch.object(
             watchdog, "log", lambda _message: None
         ), mock.patch.object(
+            watchdog.pool_start_gate, "read_latest_status_payload", return_value={"overall": "ok"}
+        ), mock.patch.object(
+            watchdog.pool_start_gate,
+            "pool_start_decision",
+            return_value=SimpleNamespace(allowed=True, reason="unit test allow"),
+        ), mock.patch.object(
+            watchdog,
+            "write_pool_start_lease",
+            side_effect=lambda actor, reason: leases.append((actor, reason)) or pathlib.Path(tmpdir) / "lease.env",
+        ), mock.patch.object(
             watchdog, "run_logged", side_effect=fake_run_logged
         ):
             watchdog.POOL_ENV_FILE.write_text(
@@ -2856,7 +3024,75 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertTrue(states[-1]["pool_paused"])
         self.assertTrue(states[-1]["pool_stop_ok"])
         self.assertTrue(states[-1]["pool_start_ok"])
+        self.assertEqual([("watchdog", "resume pool after node restart: unit test")], leases)
         self.assertEqual("docker-restart", states[-1]["restart_method"])
+
+    def test_targeted_node_restart_leaves_pool_stopped_when_resume_gate_blocks(self) -> None:
+        commands: list[list[str]] = []
+        states: list[dict[str, object]] = []
+        events: list[tuple[str, str, dict[str, object]]] = []
+
+        class Result:
+            def __init__(self, stdout: str = "") -> None:
+                self.ok = True
+                self.stdout = stdout
+
+        def fake_run_logged(command: list[str], *_args, **_kwargs):
+            commands.append(command)
+            if command == ["docker", "inspect", "-f", "{{json .Config.Env}}", "node"]:
+                return Result('["BOOTSTRAP_PEER_ADDRESSES=/ip4/good/tcp/8150/p2p/16Good"]')
+            if command[:3] == ["docker", "inspect", "-f"]:
+                return Result("true\n")
+            return Result()
+
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(
+            watchdog, "POOL_ENV_FILE", pathlib.Path(tmpdir) / ".env"
+        ), mock.patch.object(
+            watchdog, "automation_mutation_allowed", return_value=True
+        ), mock.patch.object(
+            watchdog, "acquire_lock", return_value=mock.Mock(close=lambda: None)
+        ), mock.patch.object(
+            watchdog, "action_log_path", return_value=pathlib.Path(tmpdir) / "restart.log"
+        ), mock.patch.object(
+            watchdog, "write_action_state", side_effect=lambda payload: states.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "record_failed_repair", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", side_effect=lambda event_type, severity, _message, details: events.append((event_type, severity, details))
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog.pool_start_gate, "read_latest_status_payload", return_value={"overall": "syncing"}
+        ), mock.patch.object(
+            watchdog.pool_start_gate,
+            "pool_start_decision",
+            return_value=SimpleNamespace(allowed=False, reason="node still syncing"),
+        ), mock.patch.object(
+            watchdog, "write_pool_start_lease", side_effect=AssertionError("blocked resume must not write lease")
+        ), mock.patch.object(
+            watchdog, "run_logged", side_effect=fake_run_logged
+        ):
+            watchdog.POOL_ENV_FILE.write_text(
+                "BOOTSTRAP_PEER_ADDRESSES=/ip4/good/tcp/8150/p2p/16Good\n",
+                encoding="utf-8",
+            )
+            ok = watchdog.run_node_restart("node", "unit test")
+
+        self.assertTrue(ok)
+        self.assertEqual(
+            [
+                ["docker", "inspect", "-f", "{{json .Config.Env}}", "node"],
+                ["docker", "inspect", "-f", "{{.State.Running}}", watchdog.POOL_CONTAINER],
+                ["docker", "stop", watchdog.POOL_CONTAINER],
+                ["docker", "restart", "node"],
+            ],
+            commands,
+        )
+        self.assertTrue(states[-1]["pool_paused"])
+        self.assertEqual("node still syncing", states[-1]["pool_resume_blocked_reason"])
+        self.assertEqual("pool_resume_after_node_restart_blocked", events[0][0])
 
     def test_targeted_node_restart_recreates_when_bootstrap_env_is_stale(self) -> None:
         commands: list[list[str]] = []
@@ -3125,6 +3361,108 @@ exit 0
             self.assertFalse(restart_marker.exists())
             log = (root / "logs" / "single-node-watchdog.log").read_text(encoding="utf-8")
             self.assertIn("node sync mode active; leaving pool running", log)
+
+    def test_legacy_single_node_watchdog_respects_automation_control_denial(self) -> None:
+        script = pathlib.Path("scripts/bdag-single-node-watchdog.sh").resolve()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = pathlib.Path(tmpdir)
+            root = tmp / "root"
+            root.mkdir()
+            (root / "ops").mkdir()
+            fake_bin = tmp / "bin"
+            fake_bin.mkdir()
+            restart_marker = tmp / "pool-restart-called"
+
+            (root / "ops" / "automation_control.py").write_text(
+                """#!/usr/bin/env python3
+import json
+print(json.dumps({"allowed": False, "reason": "observer-only test denial"}))
+raise SystemExit(1)
+""",
+                encoding="utf-8",
+            )
+            (fake_bin / "docker").write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  info)
+    exit 0
+    ;;
+  inspect)
+    template="${3:-}"
+    if [[ "$template" == *State.Status* ]]; then
+      printf 'running\\n'
+    else
+      printf '\\n'
+    fi
+    ;;
+  logs)
+    container="${@: -1}"
+    if [[ "$container" == "bdagminer-pool-1" ]]; then
+      for _ in {1..30}; do
+        printf 'Submit Error not found in acceptedJobs Expired\\n'
+      done
+    fi
+    ;;
+  compose)
+    printf 'restart called\\n' >> "$BDAG_SINGLE_NODE_WATCHDOG_RESTART_MARKER"
+    ;;
+esac
+""",
+                encoding="utf-8",
+            )
+            (fake_bin / "date").write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  --iso-8601=seconds)
+    printf '2026-06-17T12:00:00+00:00\\n'
+    ;;
+  +%s)
+    printf '1779200000\\n'
+    ;;
+  +%Y%m%d-%H%M%S)
+    printf '20260617-120000\\n'
+    ;;
+  *)
+    /bin/date "$@"
+    ;;
+esac
+""",
+                encoding="utf-8",
+            )
+            (fake_bin / "flock").write_text(
+                """#!/usr/bin/env bash
+exit 0
+""",
+                encoding="utf-8",
+            )
+            for fake in fake_bin.iterdir():
+                fake.chmod(0o755)
+
+            env = {
+                **os.environ,
+                "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+                "BDAG_SINGLE_NODE_WATCHDOG_ROOT": str(root),
+                "BDAG_SINGLE_NODE_WATCHDOG_STATE_DIR": str(tmp / "state"),
+                "BDAG_SINGLE_NODE_WATCHDOG_LOCK_FILE": str(tmp / "watchdog.lock"),
+                "BDAG_SINGLE_NODE_WATCHDOG_RESTART_MARKER": str(restart_marker),
+            }
+            result = subprocess.run(
+                ["bash", str(script)],
+                cwd=pathlib.Path(__file__).resolve().parents[2],
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=30,
+            )
+
+            self.assertEqual("", result.stderr)
+            self.assertEqual(0, result.returncode)
+            self.assertFalse(restart_marker.exists())
+            log = (root / "logs" / "single-node-watchdog.log").read_text(encoding="utf-8")
+            self.assertIn("automation control blocked asic_pool_restart", log)
+            self.assertIn("pool restart suppressed by automation control", log)
 
 
 if __name__ == "__main__":

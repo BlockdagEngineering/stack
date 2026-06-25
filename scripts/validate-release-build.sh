@@ -48,6 +48,19 @@ reject_service_block_grep() {
   fi
 }
 
+need_service_block_grep() {
+  local service="$1"
+  local pattern="$2"
+  local file="$3"
+  [[ -f "$root/$file" ]] || fail "missing $file"
+  awk -v service="  ${service}:" -v pattern="$pattern" '
+    $0 == service { in_block = 1; next }
+    in_block && $0 ~ /^  [A-Za-z0-9_-]+:/ { in_block = 0 }
+    in_block && $0 ~ pattern { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' "$root/$file" || fail "$file service $service does not match required pattern: $pattern"
+}
+
 need_file ".github/workflows/build.yml"
 reject_file ".github/workflows/build-cpu.yml"
 reject_file "dockerfile-dev"
@@ -106,6 +119,30 @@ need_grep '^POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS=2500$' ".env.example"
 need_grep 'POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS: \$\{POOL_MAX_BLOCK_CANDIDATE_JOB_AGE_MS:-2500\}' "docker-compose.yml"
 need_grep '^BDAG_WATCHDOG_NODE_RPC_REFUSED_CONFIRM_SECONDS=180$' ".env.example"
 need_grep 'BDAG_WATCHDOG_NODE_RPC_REFUSED_CONFIRM_SECONDS: \$\{BDAG_WATCHDOG_NODE_RPC_REFUSED_CONFIRM_SECONDS:-180\}' "docker-compose.yml"
+need_grep '^BDAG_AUTOMATION_HIGH_RISK_CONTROLLER=watchdog$' ".env.example"
+need_grep 'BDAG_AUTOMATION_HIGH_RISK_CONTROLLER: \$\{BDAG_AUTOMATION_HIGH_RISK_CONTROLLER:-watchdog\}' "docker-compose.yml"
+need_grep '^BDAG_AUTOMATION_HIGH_RISK_CONTROLLER=watchdog$' "ops/config/stack-defaults.env"
+need_grep '^BDAG_NODE_START_GUARD_ENABLED=1$' ".env.example"
+need_grep '^BDAG_NODE_START_GUARD_ENABLED=1$' "ops/config/stack-defaults.env"
+need_grep 'BDAG_NODE_START_GUARD_ENABLED: \$\{BDAG_NODE_START_GUARD_ENABLED:-1\}' "docker-compose.yml"
+need_grep 'node_start_guard' "docker/entrypoint-nodeworker.sh"
+need_grep '^BDAG_POOL_START_GUARD_ENABLED=1$' ".env.example"
+need_grep '^BDAG_POOL_START_LEASE_MAX_AGE_SECONDS=120$' ".env.example"
+need_grep '^BDAG_POOL_START_GUARD_ENABLED=1$' "ops/config/stack-defaults.env"
+need_grep '^BDAG_POOL_START_LEASE_MAX_AGE_SECONDS=120$' "ops/config/stack-defaults.env"
+need_grep 'COPY docker/entrypoint-pool[.]sh /usr/local/bin/docker-entrypoint-pool[.]sh' "dockerfile"
+need_grep 'ENTRYPOINT \["/usr/local/bin/docker-entrypoint-pool[.]sh", "/usr/local/bin/mining-pool"\]' "dockerfile"
+need_grep 'BDAG_POOL_START_GUARD_ENABLED: \$\{BDAG_POOL_START_GUARD_ENABLED:-1\}' "docker-compose.yml"
+need_grep 'BDAG_POOL_START_LEASE_FILE: /var/lib/bdagStack/runtime/pool-start-lease[.]env' "docker-compose.yml"
+need_grep '/ops/runtime:/var/lib/bdagStack/runtime:ro' "docker-compose.yml"
+need_service_block_grep "node" '/ops/runtime:/var/lib/bdagStack/runtime:ro' "docker-compose.yml"
+need_service_block_grep "pool" '/ops/runtime:/var/lib/bdagStack/runtime:ro' "docker-compose.yml"
+need_grep 'pool_resume_after_node_restart_blocked' "ops/watchdog.py"
+need_grep 'write_pool_start_lease\("watchdog", f"resume pool after node restart:' "ops/watchdog.py"
+need_grep 'mutation_allowed "stack_clean_restore" "node-chain-state"' "ops/chain-state-self-heal.sh"
+need_grep '^BDAG_WATCHDOG_NODE_STARTUP_REBUILD_GRACE_SECONDS=1800$' ".env.example"
+need_grep 'BDAG_WATCHDOG_NODE_STARTUP_REBUILD_GRACE_SECONDS: \$\{BDAG_WATCHDOG_NODE_STARTUP_REBUILD_GRACE_SECONDS:-1800\}' "docker-compose.yml"
+need_grep 'BDAG_WATCHDOG_NODE_STARTUP_REBUILD_GRACE_SECONDS=1800' "ops/config/stack-defaults.env"
 need_grep '^BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS=180$' ".env.example"
 need_grep 'BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS: \$\{BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS:-180\}' "docker-compose.yml"
 need_grep '^BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS=90$' ".env.example"
@@ -114,6 +151,8 @@ need_grep '^BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS=300$' ".env.e
 need_grep 'BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS: \$\{BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS:-300\}' "docker-compose.yml"
 need_grep '^BDAG_NODEWORKER_MINING_READINESS_TIMEOUT=30m$' ".env.example"
 need_grep '^BDAG_NODEWORKER_MINING_READINESS_GRACE=20m$' ".env.example"
+need_service_block_grep "node" '^[[:space:]]+restart: "no"$' "docker-compose.yml"
+need_service_block_grep "pool" '^[[:space:]]+restart: "no"$' "docker-compose.yml"
 need_grep 'BDAG_NODEWORKER_MINING_READINESS_TIMEOUT: \$\{BDAG_NODEWORKER_MINING_READINESS_TIMEOUT:-30m\}' "docker-compose.yml"
 need_grep 'BDAG_NODEWORKER_MINING_READINESS_GRACE: \$\{BDAG_NODEWORKER_MINING_READINESS_GRACE:-20m\}' "docker-compose.yml"
 need_grep 'BDAG_NODEWORKER_MINING_READINESS_TIMEOUT=30m' "ops/config/stack-defaults.env"

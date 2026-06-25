@@ -10,6 +10,8 @@ LOG_DIR="$RUNTIME_DIR/logs"
 STATE_FILE="${BDAG_CHAIN_STATE_SELF_HEAL_STATE_FILE:-$RUNTIME_DIR/chain-state-self-heal-state.json}"
 LOG_FILE="${BDAG_CHAIN_STATE_SELF_HEAL_LOG_FILE:-$LOG_DIR/chain-state-self-heal.log}"
 LOCK_FILE="${BDAG_CHAIN_STATE_SELF_HEAL_LOCK_FILE:-$RUNTIME_DIR/chain-state-self-heal.lock}"
+AUTOMATION_CONTROL="${BDAG_CHAIN_STATE_SELF_HEAL_AUTOMATION_CONTROL:-$ROOT/ops/automation_control.py}"
+AUTOMATION_ACTOR="${BDAG_CHAIN_STATE_SELF_HEAL_AUTOMATION_ACTOR:-chain-state-self-heal}"
 
 FORCE=0
 SYSTEMD_MODE=0
@@ -49,6 +51,30 @@ mkdir -p "$RUNTIME_DIR" "$LOG_DIR"
 
 log() {
   printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG_FILE" >&2
+}
+
+mutation_allowed() {
+  local action="$1"
+  local target="$2"
+  local reason="$3"
+  local output
+
+  if [[ ! -f "$AUTOMATION_CONTROL" ]]; then
+    log "automation control missing at $AUTOMATION_CONTROL; suppressing $action target=$target"
+    return 1
+  fi
+
+  if output="$(BDAG_PROJECT_ROOT="$ROOT" BDAG_RUNTIME_DIR="$RUNTIME_DIR" python3 "$AUTOMATION_CONTROL" check \
+      --action "$action" \
+      --actor "$AUTOMATION_ACTOR" \
+      --target "$target" \
+      --reason "$reason" 2>&1)"; then
+    log "automation control allowed $action target=$target"
+    return 0
+  fi
+
+  log "automation control blocked $action target=$target: $output"
+  return 1
 }
 
 json_state() {
@@ -343,6 +369,11 @@ if ! choose_restore_source; then
   log "no trusted restore source or local snapshot was found"
   stop_service_best_effort "$POOL_SERVICE" || true
   json_state "blocked" "chain-state restore needed but no restore source/snapshot is configured"
+  exit 1
+fi
+
+if ! mutation_allowed "stack_clean_restore" "node-chain-state" "chain-state self-heal restore from $RESTORE_MODE_USED"; then
+  json_state "blocked" "chain-state restore blocked by automation control"
   exit 1
 fi
 

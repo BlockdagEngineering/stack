@@ -358,6 +358,10 @@ NODE_IRREPARABLE_SYNC_RE = re.compile(
     re.IGNORECASE,
 )
 NODE_MISSING_TRIE_RE = re.compile(r"missing trie node\s+([0-9a-fA-F]+)", re.IGNORECASE)
+NODE_EVM_REBUILD_INTERRUPTED_RE = re.compile(
+    r"prepare startup evm environment failed.*cur[.]number=0.*native EVM rebuild interrupted",
+    re.IGNORECASE,
+)
 CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS = env_int(
     "BDAG_CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS",
     1,
@@ -400,6 +404,7 @@ SYNC_COORDINATOR_STATE_FILE = RUNTIME_DIR / "sync-coordinator-state.json"
 HOST_PRESSURE_STATE_FILE = RUNTIME_DIR / "host-pressure-state.json"
 PEER_GEO_CACHE_FILE = RUNTIME_DIR / "peer-geo-cache.json"
 NODE_TEMPLATE_PROBE_CACHE_FILE = RUNTIME_DIR / "node-template-probe-cache.json"
+POOL_START_LEASE_FILE = RUNTIME_DIR / "pool-start-lease.env"
 WEI_PER_BDAG = Decimal("1000000000000000000")
 ATOMS_PER_BDAG = Decimal("100000000")
 ZERO_ETH_ADDRESS = "0x" + ("0" * 40)
@@ -3204,6 +3209,9 @@ def parse_node_log(log: str) -> dict[str, Any]:
     not_dag_block_lines = [line for line in recent if NODE_NOT_DAG_BLOCK_RE.search(line)]
     irreparable_sync_lines = [line for line in recent if NODE_IRREPARABLE_SYNC_RE.search(line)]
     missing_trie_lines = [line for line in recent if NODE_MISSING_TRIE_RE.search(line)]
+    evm_rebuild_interrupted_lines = [
+        line for line in recent if NODE_EVM_REBUILD_INTERRUPTED_RE.search(line)
+    ]
     blocker_hash = ""
     for line in reversed(irreparable_sync_lines + not_dag_block_lines):
         match = NODE_IRREPARABLE_SYNC_RE.search(line) or NODE_NOT_DAG_BLOCK_RE.search(line)
@@ -3261,6 +3269,8 @@ def parse_node_log(log: str) -> dict[str, Any]:
         "chain_state_blocker_lines": (irreparable_sync_lines + not_dag_block_lines)[-5:],
         "missing_trie_node_warnings": len(missing_trie_lines),
         "missing_trie_node_lines": missing_trie_lines[-5:],
+        "evm_rebuild_interrupted": bool(evm_rebuild_interrupted_lines),
+        "evm_rebuild_interrupted_lines": evm_rebuild_interrupted_lines[-5:],
         "p2p_error_lines": (invalid_peer_lines + p2p_stream_lines)[-5:],
         "mining_template_error_count": len(template_error_lines),
         "mining_template_hard_error_count": len(template_hard_error_lines),
@@ -3286,6 +3296,8 @@ def chain_data_restore_hard_reasons(node: str, info: Mapping[str, Any]) -> list[
         )
     if info.get("dag_tip_damage"):
         reasons.append(f"{node} DAG tip/block data is damaged")
+    if info.get("evm_rebuild_interrupted"):
+        reasons.append(f"{node} EVM rebuild from native state was interrupted at cur.number=0")
     missing_trie_count = safe_int(info.get("missing_trie_node_warnings"), 0)
     if missing_trie_count >= CHAIN_STATE_MISSING_TRIE_RESTORE_WARNINGS:
         reasons.append(
@@ -6330,6 +6342,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "chain_state_blocker_lines": parsed["chain_state_blocker_lines"],
             "missing_trie_node_warnings": parsed["missing_trie_node_warnings"],
             "missing_trie_node_lines": parsed["missing_trie_node_lines"],
+            "evm_rebuild_interrupted": parsed["evm_rebuild_interrupted"],
+            "evm_rebuild_interrupted_lines": parsed["evm_rebuild_interrupted_lines"],
             "p2p_error_lines": parsed["p2p_error_lines"],
             "mining_template_error_count": parsed["mining_template_error_count"],
             "mining_template_hard_error_count": parsed["mining_template_hard_error_count"],
@@ -6582,6 +6596,8 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
             "dag_tip_damage_lines": info.get("dag_tip_damage_lines") or [],
             "missing_trie_node_warnings": info.get("missing_trie_node_warnings") or 0,
             "missing_trie_node_lines": info.get("missing_trie_node_lines") or [],
+            "evm_rebuild_interrupted": bool(info.get("evm_rebuild_interrupted")),
+            "evm_rebuild_interrupted_lines": info.get("evm_rebuild_interrupted_lines") or [],
         }
         for node, info in managed_node_details.items()
         if (reasons := chain_data_restore_hard_reasons(node, info))
@@ -13005,6 +13021,7 @@ def gated_stack_start_command(log_path: Path) -> list[str]:
     status = pool_start_gate.read_latest_status_payload()
     decision = pool_start_gate.pool_start_decision(status)
     if decision.allowed:
+        write_pool_start_lease("watchdog", "stack start passed pool start gate")
         return configured_command("BDAG_START_COMMAND", docker_compose_start_command(include_pool=True))
 
     configured = configured_command("BDAG_START_COMMAND", [])
@@ -13018,6 +13035,30 @@ def gated_stack_start_command(log_path: Path) -> list[str]:
     with log_path.open("a", encoding="utf-8") as log:
         log.write(f"[{now_iso()}] starting non-pool stack services only: {decision.reason}\n")
     return command
+
+
+def write_pool_start_lease(actor: str, reason: str, *, ttl_seconds: int = 120) -> Path:
+    ensure_runtime()
+    now = int(time.time())
+    expires = now + max(1, int(ttl_seconds))
+    payload = {
+        "BDAG_POOL_START_LEASE_EPOCH": str(now),
+        "BDAG_POOL_START_LEASE_EXPIRES": str(expires),
+        "BDAG_POOL_START_LEASE_ACTOR": actor,
+        "BDAG_POOL_START_LEASE_REASON": reason,
+    }
+    temp_path = POOL_START_LEASE_FILE.with_name(f".{POOL_START_LEASE_FILE.name}.{os.getpid()}.tmp")
+    with temp_path.open("w", encoding="utf-8") as handle:
+        for key, value in payload.items():
+            handle.write(f"{key}={shlex.quote(str(value))}\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp_path, POOL_START_LEASE_FILE)
+    try:
+        POOL_START_LEASE_FILE.chmod(0o644)
+    except OSError:
+        pass
+    return POOL_START_LEASE_FILE
 
 
 def start_stack(log_path: Path) -> bool:

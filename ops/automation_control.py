@@ -25,6 +25,7 @@ RUNTIME_DIR = RUNTIME_DIR.resolve()
 DEFAULT_STATE_PATH = RUNTIME_DIR / "automation-control.json"
 DEFAULT_LOCK_PATH = RUNTIME_DIR / "automation-control.lock"
 DEFAULT_EVENT_PATH = RUNTIME_DIR / "automation-control-events.jsonl"
+DEFAULT_HIGH_RISK_CONTROLLER = os.environ.get("BDAG_AUTOMATION_HIGH_RISK_CONTROLLER", "watchdog").strip() or "watchdog"
 
 SCHEMA_VERSION = 1
 STATE_NORMAL = "normal"
@@ -175,6 +176,9 @@ def validate_control_state(raw: Any, now: datetime | None = None) -> tuple[dict[
         not isinstance(allowed, list) or any(not isinstance(item, str) for item in allowed)
     ):
         return None, "schema_invalid", "allowed_mutations must be a string list"
+    controller = raw.get("high_risk_controller")
+    if controller is not None and not isinstance(controller, str):
+        return None, "schema_invalid", "high_risk_controller must be a string when present"
     expires_at = raw.get("expires_at")
     if expires_at is not None:
         if not isinstance(expires_at, str):
@@ -258,6 +262,7 @@ def default_normal_control_state(
         "created_at": timestamp,
         "updated_at": timestamp,
         "expires_at": None,
+        "high_risk_controller": DEFAULT_HIGH_RISK_CONTROLLER,
         "allowed_mutations": [],
         "suppressed_count": 0,
         "last_transition": {"from": "missing", "to": STATE_NORMAL, "at": timestamp, "by": owner_unit},
@@ -340,6 +345,21 @@ def _transition_hold_allows(control: dict[str, Any], action: str, actor: str, ta
     return any(item in tokens for item in allowed)
 
 
+def high_risk_controller_for_state(control: dict[str, Any]) -> str:
+    configured = str(control.get("high_risk_controller") or DEFAULT_HIGH_RISK_CONTROLLER).strip()
+    return configured or DEFAULT_HIGH_RISK_CONTROLLER
+
+
+def high_risk_controller_allows_actor(control: dict[str, Any], actor: str) -> bool:
+    controller = high_risk_controller_for_state(control)
+    controllers = {item.strip() for item in controller.replace(";", ",").split(",") if item.strip()}
+    if not controllers:
+        return False
+    if controllers.intersection({"*", "any", "all"}):
+        return True
+    return actor in controllers
+
+
 def is_high_risk_action(action: str) -> bool:
     if action in LOW_RISK_ACTIONS or action in CONTAINMENT_ACTIONS:
         return False
@@ -393,6 +413,21 @@ def check_mutation_allowed(
 
     state = str(control.get("state"))
     if state == STATE_NORMAL:
+        if high_risk and not high_risk_controller_allows_actor(control, actor):
+            controller = high_risk_controller_for_state(control)
+            decision = ControlDecision(
+                False,
+                action,
+                actor,
+                target,
+                state,
+                status,
+                f"high-risk mutation controller is {controller}; actor {actor} is observer-only",
+                str(path),
+            )
+            if log_denial:
+                maybe_log_denial_event(decision, requested_reason=reason, event_path=event_path, lock_path=lock_path)
+            return decision
         return ControlDecision(True, action, actor, target, state, status, "normal control state", str(path))
 
     if state == STATE_TRANSITION_HOLD:
@@ -486,6 +521,42 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Replace an invalid/expired control file with normal state. Use only during explicit recovery.",
     )
+    check_parser = subparsers.add_parser(
+        "check",
+        help="Check whether an automation mutation is currently allowed.",
+    )
+    check_parser.add_argument("--action", required=True)
+    check_parser.add_argument("--actor", required=True)
+    check_parser.add_argument("--target", default="")
+    check_parser.add_argument("--reason", default="")
+    check_parser.add_argument("--state-path", type=Path, default=None)
+    check_parser.add_argument("--event-path", type=Path, default=None)
+    check_parser.add_argument("--lock-path", type=Path, default=None)
+    check_parser.add_argument(
+        "--no-log-denial",
+        action="store_true",
+        help="Do not append a denial event when the check fails.",
+    )
+    set_parser = subparsers.add_parser(
+        "set-state",
+        help="Write an explicit automation-control state transition.",
+    )
+    set_parser.add_argument("--state", required=True, choices=sorted(VALID_STATES))
+    set_parser.add_argument("--owner", required=True)
+    set_parser.add_argument("--owner-unit", required=True)
+    set_parser.add_argument("--reason", required=True)
+    set_parser.add_argument("--correlation-id", default="")
+    set_parser.add_argument("--expires-at", default=None)
+    set_parser.add_argument("--state-path", type=Path, default=None)
+    set_parser.add_argument("--lock-path", type=Path, default=None)
+    set_parser.add_argument("--event-path", type=Path, default=None)
+    set_parser.add_argument("--high-risk-controller", default="")
+    set_parser.add_argument(
+        "--allow",
+        action="append",
+        default=[],
+        help="Allowed mutation token for transition_hold. May be repeated.",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "ensure-normal":
@@ -508,6 +579,72 @@ def main(argv: list[str] | None = None) -> int:
                 sort_keys=True,
             )
         )
+        return 0
+    if args.command == "check":
+        decision = check_mutation_allowed(
+            args.action,
+            actor=args.actor,
+            target=args.target,
+            reason=args.reason,
+            state_path=args.state_path,
+            event_path=args.event_path,
+            lock_path=args.lock_path,
+            log_denial=not args.no_log_denial,
+        )
+        print(json.dumps(decision.as_dict(), sort_keys=True))
+        return 0 if decision.allowed else 1
+    if args.command == "set-state":
+        now = datetime.now(timezone.utc)
+        timestamp = now.astimezone().isoformat(timespec="seconds")
+        previous, previous_status, previous_reason = read_control_state(
+            state_path=args.state_path,
+            now=now,
+        )
+        previous_state = str(previous.get("state")) if previous else previous_status
+        controller = (
+            args.high_risk_controller.strip()
+            or (high_risk_controller_for_state(previous) if previous else DEFAULT_HIGH_RISK_CONTROLLER)
+        )
+        state = {
+            "schema_version": SCHEMA_VERSION,
+            "state": args.state,
+            "owner": args.owner,
+            "owner_unit": args.owner_unit,
+            "pid": os.getpid(),
+            "reason": args.reason,
+            "correlation_id": args.correlation_id or f"{args.owner_unit}-{int(time.time())}",
+            "created_at": str(previous.get("created_at")) if previous and previous.get("created_at") else timestamp,
+            "updated_at": timestamp,
+            "expires_at": args.expires_at,
+            "high_risk_controller": controller,
+            "allowed_mutations": list(args.allow or []),
+            "suppressed_count": int(previous.get("suppressed_count", 0)) if previous else 0,
+            "last_transition": {
+                "from": previous_state,
+                "to": args.state,
+                "at": timestamp,
+                "by": args.owner_unit,
+                "reason": args.reason,
+                "previous_status": previous_status,
+                "previous_reason": previous_reason,
+            },
+        }
+        write_control_state(state, state_path=args.state_path, lock_path=args.lock_path, now=now)
+        append_control_event(
+            {
+                "event_type": "automation_control_state_changed",
+                "severity": "warning" if args.state == STATE_NORMAL else "critical",
+                "from": previous_state,
+                "to": args.state,
+                "owner": args.owner,
+                "owner_unit": args.owner_unit,
+                "reason": args.reason,
+                "correlation_id": state["correlation_id"],
+            },
+            event_path=args.event_path,
+            lock_path=args.lock_path,
+        )
+        print(json.dumps({"state": args.state, "previous_state": previous_state, "path": str(_state_path(args.state_path))}, sort_keys=True))
         return 0
     parser.error(f"unknown command: {args.command}")
     return 2

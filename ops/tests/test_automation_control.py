@@ -64,10 +64,15 @@ class AutomationControlTests(unittest.TestCase):
             now=self.now,
         )
 
-    def check(self, action: str = automation_control.ACTION_ASIC_POOL_START, target: str = "asic-pool"):
+    def check(
+        self,
+        action: str = automation_control.ACTION_ASIC_POOL_START,
+        target: str = "asic-pool",
+        actor: str = "watchdog",
+    ):
         return automation_control.check_mutation_allowed(
             action,
-            actor="watchdog",
+            actor=actor,
             target=target,
             reason="test mutation",
             state_path=self.state_path,
@@ -139,6 +144,30 @@ class AutomationControlTests(unittest.TestCase):
         self.assertTrue(decision.allowed)
         self.assertEqual([], self.event_lines())
 
+    def test_normal_control_denies_high_risk_mutation_from_non_controller_actor(self) -> None:
+        self.write_state(self.control_state("normal"))
+
+        sentinel = self.check(actor="sentinel")
+        sampler = self.check(actor="status-sampler")
+        watchdog_decision = self.check(actor="watchdog")
+
+        self.assertFalse(sentinel.allowed)
+        self.assertIn("high-risk mutation controller is watchdog", sentinel.reason)
+        self.assertFalse(sampler.allowed)
+        self.assertTrue(watchdog_decision.allowed)
+        self.assertEqual(2, len(self.event_lines()))
+
+    def test_normal_control_can_explicitly_delegate_high_risk_controller(self) -> None:
+        state = self.control_state("normal")
+        state["high_risk_controller"] = "watchdog,status-sampler"
+        self.write_state(state)
+
+        sampler = self.check(actor="status-sampler")
+        sentinel = self.check(actor="sentinel")
+
+        self.assertTrue(sampler.allowed)
+        self.assertFalse(sentinel.allowed)
+
     def test_ensure_normal_control_state_creates_missing_control(self) -> None:
         created, previous_status, path = automation_control.ensure_normal_control_state(
             state_path=self.state_path,
@@ -160,6 +189,112 @@ class AutomationControlTests(unittest.TestCase):
         self.assertEqual("ok", status)
         self.assertIsNotNone(control)
         self.assertEqual("normal", control["state"])
+        self.assertEqual("watchdog", control["high_risk_controller"])
+
+    def test_check_cli_exits_zero_when_allowed_and_one_when_denied(self) -> None:
+        self.write_state(self.control_state("normal"))
+
+        allowed = subprocess.run(
+            [
+                sys.executable,
+                str(OPS_DIR / "automation_control.py"),
+                "check",
+                "--state-path",
+                str(self.state_path),
+                "--event-path",
+                str(self.event_path),
+                "--lock-path",
+                str(self.lock_path),
+                "--action",
+                automation_control.ACTION_ASIC_POOL_START,
+                "--actor",
+                "watchdog",
+                "--target",
+                "pool",
+                "--reason",
+                "unit test",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        denied = subprocess.run(
+            [
+                sys.executable,
+                str(OPS_DIR / "automation_control.py"),
+                "check",
+                "--state-path",
+                str(self.state_path),
+                "--event-path",
+                str(self.event_path),
+                "--lock-path",
+                str(self.lock_path),
+                "--action",
+                automation_control.ACTION_ASIC_POOL_START,
+                "--actor",
+                "sentinel",
+                "--target",
+                "pool",
+                "--reason",
+                "unit test",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(0, allowed.returncode, allowed.stderr)
+        self.assertTrue(json.loads(allowed.stdout)["allowed"])
+        self.assertEqual(1, denied.returncode, denied.stderr)
+        denied_payload = json.loads(denied.stdout)
+        self.assertFalse(denied_payload["allowed"])
+        self.assertIn("observer-only", denied_payload["reason"])
+
+    def test_set_state_cli_writes_chain_incident_hold(self) -> None:
+        self.write_state(self.control_state("normal"))
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(OPS_DIR / "automation_control.py"),
+                "set-state",
+                "--state",
+                "chain_incident",
+                "--state-path",
+                str(self.state_path),
+                "--event-path",
+                str(self.event_path),
+                "--lock-path",
+                str(self.lock_path),
+                "--owner",
+                "unit-test",
+                "--owner-unit",
+                "test_automation_control",
+                "--reason",
+                "hold node until chain data provenance is repaired",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual("chain_incident", payload["state"])
+        decision = self.check(actor="watchdog")
+        self.assertFalse(decision.allowed)
+        self.assertEqual("chain_incident", decision.control_state)
+        control, status, _reason = automation_control.read_control_state(
+            state_path=self.state_path,
+            now=self.now,
+        )
+        self.assertEqual("ok", status)
+        self.assertEqual("watchdog", control["high_risk_controller"])
+        events = self.event_lines()
+        self.assertEqual("automation_control_state_changed", events[0]["event_type"])
 
     def test_ensure_normal_control_state_preserves_existing_hold(self) -> None:
         self.write_state(self.control_state("repair_hold"))
