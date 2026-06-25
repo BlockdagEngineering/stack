@@ -956,6 +956,37 @@ def peer_lead_hard_mining_outage(status: dict[str, Any], evidence: dict[str, Any
     )
 
 
+def hard_peer_lead_outage_allows_active_import_wait(
+    evidence: dict[str, Any],
+    active_import_details: dict[str, Any],
+) -> bool:
+    if not active_import_details.get("active_import"):
+        return False
+    if active_import_details.get("suppression_expired"):
+        return False
+    if evidence.get("peer_starvation"):
+        return False
+    fresh_peer_count = int_or_none(evidence.get("fresh_consensus_peer_count"))
+    consensus_peer_count = int_or_none(evidence.get("consensus_peer_count"))
+    if fresh_peer_count is None or fresh_peer_count < DEFAULT_NODE_PEER_STARVATION_MIN_FRESH_PEERS:
+        return False
+    if consensus_peer_count is not None and consensus_peer_count < DEFAULT_NODE_PEER_STARVATION_MIN_FRESH_PEERS:
+        return False
+    if (
+        active_import_details.get("lead_over_hard_limit")
+        or active_import_details.get("worsened_from_best")
+        or active_import_details.get("worsened_from_first")
+    ):
+        return False
+    lead = int_or_none(evidence.get("lead"))
+    tolerance = int_or_none(evidence.get("tolerance")) or 10
+    max_lead = int_or_none(active_import_details.get("max_lead")) or max(
+        DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_MAX_LEAD_BLOCKS,
+        tolerance * 6,
+    )
+    return bool(lead is None or lead <= max_lead)
+
+
 def is_primary_pool_identity(row: dict[str, Any], mining_address: str) -> bool:
     defaults = default_miner_pool_settings()
     expected_url = str(row.get("expected_pool_url") or row.get("configured_pool_url") or "")
@@ -3845,7 +3876,13 @@ def check_once(
             peer_lead_stall,
         )
         active_import = bool(active_import_details.get("active_import"))
-        effective_active_import_suppresses = active_import_suppresses and not hard_mining_outage
+        active_import_can_wait = hard_peer_lead_outage_allows_active_import_wait(
+            peer_lead_stall,
+            active_import_details,
+        )
+        effective_active_import_suppresses = active_import_suppresses and (
+            not hard_mining_outage or active_import_can_wait
+        )
         confirm_seconds = (
             DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS
             if hard_mining_outage
@@ -3902,6 +3939,7 @@ def check_once(
             f"hard_mining_outage={hard_mining_outage} confirm_seconds={confirm_seconds} "
             f"startup_grace_seconds={startup_grace_seconds} "
             f"active_import={active_import} active_import_suppresses={active_import_suppresses} "
+            f"active_import_can_wait={active_import_can_wait} "
             f"active_import_nodes={active_import_nodes} "
             f"repair_cooldown={repair_cooldown}s cooldown_remaining={max(cooldown_remaining, 0)}s "
             f"startup_remaining={max(startup_remaining, 0)}s "
@@ -3922,6 +3960,7 @@ def check_once(
                 "active_import_suppresses": effective_active_import_suppresses,
                 "raw_active_import_suppresses": active_import_suppresses,
                 "active_import_details": active_import_details,
+                "active_import_can_wait": active_import_can_wait,
                 "restart_node": restart_node,
                 "cooldown_remaining_seconds": max(cooldown_remaining, 0),
                 "repair_cooldown_seconds": repair_cooldown,
@@ -3955,6 +3994,7 @@ def check_once(
                     "active_nodes": active_import_nodes,
                     "target_node": restart_node,
                     "active_import_details": active_import_details,
+                    "active_import_can_wait": active_import_can_wait,
                 },
             )
         elif (
