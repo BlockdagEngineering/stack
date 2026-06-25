@@ -350,6 +350,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertEqual(watchdog.DEFAULT_INTERVAL_SECONDS, 5)
         self.assertEqual(watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS, 10)
         self.assertEqual(watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS, 12)
+        self.assertEqual(watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN, 300)
 
     def test_active_import_requires_fresh_import_age_when_importing_flag_is_stuck(self) -> None:
         now = 1_779_200_000
@@ -2029,6 +2030,16 @@ class WatchdogSyncRestartTests(unittest.TestCase):
     def test_peer_lead_stall_repair_suppressed_by_cooldown(self) -> None:
         now = 1_779_200_000
         status = peer_lead_stall_status()
+        pool_health = status["pool_health"]
+        assert isinstance(pool_health, dict)
+        source_job = pool_health["source_job_health"]
+        assert isinstance(source_job, dict)
+        source_job["ready_miners"] = 4
+        job_state = status["pool_job_state"]
+        assert isinstance(job_state, dict)
+        job_state["ready_connections"] = 4
+        job_state["connections_without_current_job"] = 0
+        job_state["reason_code"] = "ok"
         state = {
             "node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS,
             "last_node_peer_lead_stall_restart_at": now - watchdog.DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN + 10,
@@ -2062,6 +2073,94 @@ class WatchdogSyncRestartTests(unittest.TestCase):
 
         self.assertEqual("node_peer_lead_stall", result["watchdog_state"]["last_status"])
         self.assertIn("node_peer_lead_stall_since", result["watchdog_state"])
+        self.assertTrue(written)
+
+    def test_hard_peer_lead_mining_outage_uses_shorter_repair_cooldown(self) -> None:
+        now = 1_779_200_000
+        status = peer_lead_stall_status()
+        state = {
+            "node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS,
+            "last_node_peer_lead_stall_restart_at": now
+            - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN
+            - 1,
+        }
+        restarts: list[tuple[str, str]] = []
+        written: list[dict[str, object]] = []
+
+        self.assertTrue(
+            now - state["last_node_peer_lead_stall_restart_at"]
+            < watchdog.DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN
+        )
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=lambda node_name, reason: restarts.append((node_name, reason)) or True
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual(1, len(restarts))
+        self.assertEqual("node", restarts[0][0])
+        self.assertIn("hard peer-lead mining outage", restarts[0][1])
+        self.assertTrue(result["watchdog_state"]["last_node_peer_lead_hard_mining_outage"])
+        self.assertTrue(written)
+
+    def test_hard_peer_lead_mining_outage_suppressed_by_hard_cooldown(self) -> None:
+        now = 1_779_200_000
+        status = peer_lead_stall_status()
+        state = {
+            "node_peer_lead_stall_since": now - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS,
+            "last_node_peer_lead_stall_restart_at": now
+            - watchdog.DEFAULT_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN
+            + 10,
+        }
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=AssertionError("hard cooldown suppresses peer-lead restart")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("node_peer_lead_stall", result["watchdog_state"]["last_status"])
+        self.assertTrue(result["watchdog_state"]["last_node_peer_lead_hard_mining_outage"])
         self.assertTrue(written)
 
     def test_peer_lead_stall_repair_suppressed_by_node_startup_grace(self) -> None:

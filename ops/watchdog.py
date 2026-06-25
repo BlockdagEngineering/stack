@@ -167,6 +167,9 @@ DEFAULT_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS = int(
 DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN", "900")
 )
+DEFAULT_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN", "300")
+)
 DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_SUPPRESS_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_ACTIVE_IMPORT_SUPPRESS_SECONDS", "180")
 )
@@ -3809,7 +3812,12 @@ def check_once(
         )
         startup_grace_seconds = max(confirm_seconds, DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS)
         last_restart = int_or_none(state.get("last_node_peer_lead_stall_restart_at")) or 0
-        cooldown_remaining = DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN - (now - last_restart)
+        repair_cooldown = (
+            DEFAULT_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN
+            if hard_mining_outage
+            else DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN
+        )
+        cooldown_remaining = repair_cooldown - (now - last_restart)
         node_age = container_started_age_seconds(status, restart_node, now)
         startup_remaining = (
             startup_grace_seconds - node_age
@@ -3852,7 +3860,7 @@ def check_once(
             f"startup_grace_seconds={startup_grace_seconds} "
             f"active_import={active_import} active_import_suppresses={active_import_suppresses} "
             f"active_import_nodes={active_import_nodes} "
-            f"cooldown_remaining={max(cooldown_remaining, 0)}s "
+            f"repair_cooldown={repair_cooldown}s cooldown_remaining={max(cooldown_remaining, 0)}s "
             f"startup_remaining={max(startup_remaining, 0)}s "
             f"active_import_details={active_import_details} evidence={peer_lead_stall}"
         )
@@ -3873,6 +3881,7 @@ def check_once(
                 "active_import_details": active_import_details,
                 "restart_node": restart_node,
                 "cooldown_remaining_seconds": max(cooldown_remaining, 0),
+                "repair_cooldown_seconds": repair_cooldown,
                 "startup_remaining_seconds": max(startup_remaining, 0),
             },
         )
