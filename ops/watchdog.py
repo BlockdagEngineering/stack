@@ -781,6 +781,9 @@ def selected_backend_template_sync_wedge_evidence(status: dict[str, Any]) -> dic
             "node is syncing",
             "pending-template backend is syncing",
             "backend is syncing",
+            "template_parent_stale",
+            "template-parent-stale",
+            "parents no longer match current mining tips",
         )
     )
     active = bool(
@@ -3830,6 +3833,7 @@ def check_once(
         restart_node = primary_node
         active_import_nodes = active_sync_import_nodes(status, state=state, now=now)
         active_import = restart_node in active_import_nodes
+        effective_active_import_suppresses = active_import and not hard_mining_outage
         confirm_seconds = DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS
         last_restart = int_or_none(state.get("last_node_template_sync_wedge_restart_at")) or 0
         cooldown_remaining = DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_REPAIR_COOLDOWN - (now - last_restart)
@@ -3852,7 +3856,7 @@ def check_once(
             f"template_age={template_sync_wedge.get('template_age_seconds')} "
             f"ready_miners={template_sync_wedge.get('ready_miners')})"
         )
-        if recent_mining_work or active_import:
+        if recent_mining_work or effective_active_import_suppresses:
             state["consecutive_syncing"] = 0
         else:
             state["consecutive_syncing"] = int(state.get("consecutive_syncing", 0) or 0) + 1
@@ -3860,7 +3864,7 @@ def check_once(
         state["consecutive_share_stalls"] = 0
         state["last_status"] = (
             "node_template_sync_wedge_observing"
-            if recent_mining_work or active_import
+            if recent_mining_work or effective_active_import_suppresses
             else "node_template_sync_wedge"
         )
         state["last_failures"] = []
@@ -3871,7 +3875,8 @@ def check_once(
         log(
             "node_template_sync_wedge "
             f"wedged_for={wedged_for}s recent_mining_work={recent_mining_work} "
-            f"active_import={active_import} active_import_nodes={active_import_nodes} "
+            f"active_import={active_import} active_import_suppresses={effective_active_import_suppresses} "
+            f"active_import_nodes={active_import_nodes} "
             f"hard_mining_outage={hard_mining_outage} confirm_seconds={confirm_seconds} "
             f"cooldown_remaining={max(cooldown_remaining, 0)}s "
             f"startup_remaining={max(startup_remaining, 0)}s evidence={template_sync_wedge}"
@@ -3886,6 +3891,8 @@ def check_once(
                 "recent_mining_work": recent_mining_work,
                 "active_import": active_import,
                 "active_import_nodes": active_import_nodes,
+                "active_import_suppresses": effective_active_import_suppresses,
+                "raw_active_import": active_import,
                 "hard_mining_outage": hard_mining_outage,
                 "confirm_seconds": confirm_seconds,
                 "restart_node": restart_node,
@@ -3901,7 +3908,7 @@ def check_once(
                 "template-sync wedge repair suppressed because paid block submission is fresh",
                 {"evidence": template_sync_wedge},
             )
-        elif repair and active_import:
+        elif repair and effective_active_import_suppresses:
             log(
                 "template-sync wedge repair suppressed while block import is active "
                 f"target={restart_node} active_nodes={','.join(active_import_nodes)}"

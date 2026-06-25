@@ -1049,6 +1049,27 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertTrue(wedge["syncing_reason"])
         self.assertTrue(watchdog.template_sync_wedge_hard_mining_outage(status, wedge))
 
+    def test_template_sync_wedge_evidence_accepts_parent_stale_reason(self) -> None:
+        status = native_current_template_sync_wedge_status()
+        status["warnings"] = []
+        sync = status["sync_progress"]
+        assert isinstance(sync, dict)
+        sync["error"] = ""
+        pool_health = status["pool_health"]
+        assert isinstance(pool_health, dict)
+        selected = pool_health["selected_backend_source_health"]
+        assert isinstance(selected, dict)
+        selected["node_reason_code"] = "template_parent_stale"
+        template = pool_health["template_health"]
+        assert isinstance(template, dict)
+        template["reason_code"] = "template-parent-stale"
+
+        wedge = watchdog.selected_backend_template_sync_wedge_evidence(status)
+
+        self.assertTrue(wedge["active"])
+        self.assertTrue(wedge["syncing_reason"])
+        self.assertEqual(0, wedge["ready_miners"])
+
     def test_check_once_waits_for_template_sync_wedge_confirmation(self) -> None:
         now = 1_779_200_000
         status = native_current_template_sync_wedge_status()
@@ -1162,6 +1183,14 @@ class WatchdogSyncRestartTests(unittest.TestCase):
     def test_template_sync_wedge_repair_suppressed_by_active_import(self) -> None:
         now = 1_779_200_000
         status = native_current_template_sync_wedge_status()
+        pool_health = status["pool_health"]
+        assert isinstance(pool_health, dict)
+        selected = pool_health["selected_backend_source_health"]
+        assert isinstance(selected, dict)
+        selected["node_template_age_seconds"] = 5
+        template = pool_health["template_health"]
+        assert isinstance(template, dict)
+        template["template_age_seconds"] = 5
         nodes = status["nodes"]
         assert isinstance(nodes, dict)
         node = nodes["node"]
@@ -1197,7 +1226,53 @@ class WatchdogSyncRestartTests(unittest.TestCase):
             result = watchdog.check_once(3, 1800, 5, 900, repair=True)
 
         self.assertEqual("node_template_sync_wedge_observing", result["watchdog_state"]["last_status"])
+        self.assertFalse(result["watchdog_state"]["last_node_template_sync_wedge_hard_mining_outage"])
         self.assertEqual(0, result["watchdog_state"]["consecutive_syncing"])
+        self.assertTrue(written)
+
+    def test_hard_template_sync_wedge_restarts_despite_active_import(self) -> None:
+        now = 1_779_200_000
+        status = native_current_template_sync_wedge_status()
+        nodes = status["nodes"]
+        assert isinstance(nodes, dict)
+        node = nodes["node"]
+        assert isinstance(node, dict)
+        node["importing"] = True
+        node["last_import_age_seconds"] = 10
+        state = {"node_template_sync_wedge_since": now - watchdog.DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS}
+        restarts: list[tuple[str, str]] = []
+        written: list[dict[str, object]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_node_restart", side_effect=lambda node_name, reason: restarts.append((node_name, reason)) or True
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual(1, len(restarts))
+        self.assertEqual("node", restarts[0][0])
+        self.assertIn("template-sync mining wedge", restarts[0][1])
+        self.assertTrue(result["watchdog_state"]["last_node_template_sync_wedge_hard_mining_outage"])
+        self.assertIn("last_node_template_sync_wedge_restart", result["watchdog_state"])
         self.assertTrue(written)
 
     def test_check_once_waits_for_peer_lead_stall_confirmation(self) -> None:
