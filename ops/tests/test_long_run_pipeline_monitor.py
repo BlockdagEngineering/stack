@@ -185,6 +185,76 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
         self.assertIn("mineable_false", reasons)
         self.assertIn("submit_ready_false", reasons)
 
+    def test_sample_window_summary_ignores_safe_backend_readiness_flicker(self) -> None:
+        samples = [
+            self.sample(
+                "2026-06-25T06:00:00+02:00",
+                accepted_blocks=100,
+                blocks_found=100,
+                blocks_submitted=100,
+                ready_miners=4,
+                p2p_mining_fresh=1,
+                peer_lead_blocks=0,
+                mineable=0,
+                submit_ready=0,
+                template_age_seconds=0.2,
+            ),
+            self.sample(
+                "2026-06-25T06:01:00+02:00",
+                accepted_blocks=120,
+                blocks_found=120,
+                blocks_submitted=120,
+                ready_miners=4,
+                p2p_mining_fresh=1,
+                peer_lead_blocks=0,
+                mineable=1,
+                submit_ready=1,
+                template_age_seconds=0.4,
+            ),
+        ]
+
+        summary = monitor.summarize_sample_window(samples)
+
+        self.assertEqual(0, summary["anomaly_count"])
+        self.assertEqual([], summary["window_anomaly_reasons"])
+
+    def test_sample_window_summary_flags_no_paid_block_progress_with_miner_demand(self) -> None:
+        samples = [
+            self.sample(
+                "2026-06-25T04:00:00+02:00",
+                accepted_blocks=0,
+                blocks_found=0,
+                blocks_submitted=0,
+                ready_miners=0,
+                authorized_miners=4,
+                p2p_mining_fresh=0,
+                peer_lead_blocks=733,
+                mineable=0,
+                submit_ready=0,
+                template_age_seconds=52,
+            ),
+            self.sample(
+                "2026-06-25T04:10:00+02:00",
+                accepted_blocks=0,
+                blocks_found=0,
+                blocks_submitted=0,
+                ready_miners=0,
+                authorized_miners=4,
+                p2p_mining_fresh=0,
+                peer_lead_blocks=1364,
+                mineable=0,
+                submit_ready=0,
+                template_age_seconds=74,
+            ),
+        ]
+
+        summary = monitor.summarize_sample_window(samples)
+
+        self.assertIn("accepted_blocks_not_advancing", summary["window_anomaly_reasons"])
+        self.assertIn("ready_miners_zero_for_window", summary["window_anomaly_reasons"])
+        self.assertIn("p2p_mining_not_fresh_for_window", summary["window_anomaly_reasons"])
+        self.assertIn("peer_lead_exceeds_tolerance_for_window", summary["window_anomaly_reasons"])
+
 
 if __name__ == "__main__":
     unittest.main()

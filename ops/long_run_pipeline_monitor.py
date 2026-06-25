@@ -516,14 +516,55 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
     lead = sample_metric(sample, "peer_lead_blocks")
     if lead is not None and lead > 10:
         reasons.append("peer_lead_exceeds_tolerance")
+    template_age = sample_metric(sample, "template_age_seconds")
+    if template_age is not None and template_age > 30:
+        reasons.append("template_age_over_30s")
     mineable = sample_metric(sample, "mineable")
     submit_ready = sample_metric(sample, "submit_ready")
-    if mineable is not None and mineable < 1:
-        reasons.append("mineable_false")
-    if submit_ready is not None and submit_ready < 1:
-        reasons.append("submit_ready_false")
     if any(value for value in errors.values()):
         reasons.append("collector_error")
+    core_pipeline_reasons = set(reasons)
+    context_missing = all(
+        value is None
+        for value in (
+            ready,
+            ready_state_number,
+            p2p,
+            lead,
+            template_age,
+        )
+    )
+    if mineable is not None and mineable < 1 and (core_pipeline_reasons or context_missing):
+        reasons.append("mineable_false")
+    if submit_ready is not None and submit_ready < 1 and (core_pipeline_reasons or context_missing):
+        reasons.append("submit_ready_false")
+    return reasons
+
+
+def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    duration_seconds = float(summary.get("duration_seconds") or 0.0)
+    counters = summary.get("counters") if isinstance(summary.get("counters"), dict) else {}
+    gauges = summary.get("gauges") if isinstance(summary.get("gauges"), dict) else {}
+    accepted = counters.get("accepted_blocks") if isinstance(counters.get("accepted_blocks"), dict) else {}
+    authorized = gauges.get("authorized_miners") if isinstance(gauges.get("authorized_miners"), dict) else {}
+    ready = gauges.get("ready_miners") if isinstance(gauges.get("ready_miners"), dict) else {}
+    p2p = gauges.get("p2p_mining_fresh") if isinstance(gauges.get("p2p_mining_fresh"), dict) else {}
+    lead = gauges.get("peer_lead_blocks") if isinstance(gauges.get("peer_lead_blocks"), dict) else {}
+    accepted_delta = float(accepted.get("delta") or 0.0)
+    authorized_max = authorized.get("max")
+    try:
+        miner_demand = authorized_max is not None and float(authorized_max) > 0
+    except (TypeError, ValueError):
+        miner_demand = False
+    if duration_seconds >= 300 and miner_demand and accepted_delta <= 0:
+        reasons.append("accepted_blocks_not_advancing")
+    if ready.get("min") is not None and ready.get("max") == 0:
+        reasons.append("ready_miners_zero_for_window")
+    if p2p.get("max") == 0:
+        reasons.append("p2p_mining_not_fresh_for_window")
+    if lead.get("max") is not None and lead.get("min") is not None and float(lead["max"]) > 10 and float(lead["min"]) > 10:
+        reasons.append("peer_lead_exceeds_tolerance_for_window")
     return reasons
 
 
@@ -554,7 +595,7 @@ def summarize_sample_window(samples: list[dict[str, Any]]) -> dict[str, Any]:
                 "template_age_seconds": sample_metric(sample, "template_age_seconds"),
             }
         )
-    return {
+    summary = {
         "sample_count": len(samples),
         "started_at": started_at,
         "ended_at": ended_at,
@@ -569,6 +610,8 @@ def summarize_sample_window(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "anomaly_samples": anomaly_samples[:25],
         "anomaly_samples_truncated": max(0, len(anomaly_samples) - 25),
     }
+    summary["window_anomaly_reasons"] = window_anomaly_reasons(summary)
+    return summary
 
 
 def load_sample_events(samples_path: Path) -> list[dict[str, Any]]:
