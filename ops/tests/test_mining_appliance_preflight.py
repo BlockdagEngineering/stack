@@ -145,7 +145,7 @@ class MiningAppliancePreflightTest(unittest.TestCase):
             checks,
             {
                 "BDAG_ENABLE_NODE_MINING": "1",
-                "BDAG_NODE_MODULES": "Blockdag",
+                "BDAG_NODE_MODULES": "Blockdag,miner",
                 "BDAG_NODE_MINING_ARGS": "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc",
                 "BDAG_STORAGE_PROFILE": "single-usb-constrained",
                 "BDAG_DETECTED_NETWORK_TOPOLOGY": "asic-router",
@@ -156,6 +156,54 @@ class MiningAppliancePreflightTest(unittest.TestCase):
         found = {check.name: check for check in checks}
         self.assertEqual(found["node_mining_runtime"].status, "warn")
         self.assertIn("--maxinbound=1", found["node_mining_runtime"].detail)
+
+    def test_node_mining_runtime_rejects_missing_miner_module(self) -> None:
+        profile = preflight.HostProfile(
+            os_name="linux",
+            arch="x86_64",
+            cpu_count=8,
+            memory_bytes=16 * preflight.GIB,
+            profile="standard",
+            kernel="test",
+        )
+        checks = []
+        preflight.check_env_defaults(
+            checks,
+            {
+                "BDAG_ENABLE_NODE_MINING": "1",
+                "BDAG_NODE_MODULES": "Blockdag",
+                "BDAG_NODE_MINING_ARGS": "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc",
+            },
+            profile,
+        )
+
+        found = {check.name: check for check in checks}
+        self.assertEqual(found["node_mining_runtime"].status, "fail")
+        self.assertIn("miner RPC module is not exposed", found["node_mining_runtime"].detail)
+
+    def test_node_mining_runtime_rejects_p2p_module(self) -> None:
+        profile = preflight.HostProfile(
+            os_name="linux",
+            arch="x86_64",
+            cpu_count=8,
+            memory_bytes=16 * preflight.GIB,
+            profile="standard",
+            kernel="test",
+        )
+        checks = []
+        preflight.check_env_defaults(
+            checks,
+            {
+                "BDAG_ENABLE_NODE_MINING": "1",
+                "BDAG_NODE_MODULES": "Blockdag,miner," + "p" + "2" + "p",
+                "BDAG_NODE_MINING_ARGS": "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc",
+            },
+            profile,
+        )
+
+        found = {check.name: check for check in checks}
+        self.assertEqual(found["node_mining_runtime"].status, "fail")
+        self.assertIn("must not expose the p2p RPC module", found["node_mining_runtime"].detail)
 
     def test_pool_template_rpc_pressure_rejects_unsafe_overrides(self) -> None:
         profile = preflight.HostProfile(
