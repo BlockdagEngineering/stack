@@ -862,15 +862,52 @@ def miner_failures_block_stack(
 def selected_backend_unready_reasons(selected_source_health: Mapping[str, Any]) -> list[str]:
     reasons: list[str] = []
     for key, label in (
+        ("healthy", "backend_healthy=false"),
         ("node_mineable", "mineable=false"),
         ("node_submit_ready", "submit_ready=false"),
         ("node_p2p_mining_fresh", "p2p_mining_fresh=false"),
+        ("node_template_coinbase_valid", "template_coinbase_valid=false"),
     ):
         if key in selected_source_health and not bool(selected_source_health.get(key)):
             reasons.append(label)
     if selected_source_health.get("node_last_template_build_error_blocking") is True:
         reasons.append("template_build_error_blocking=true")
+    reason_code = str(
+        selected_source_health.get("node_reason_code")
+        or selected_source_health.get("reason_code")
+        or ""
+    ).strip()
+    if reason_code and reason_code not in {"ok", "ready"}:
+        reasons.append(f"reason_code={reason_code}")
+    lead = safe_int(selected_source_health.get("node_p2p_best_peer_lead_blocks"), 0)
+    tolerance = safe_int(selected_source_health.get("node_p2p_peer_lead_tolerance_blocks"), 10)
+    if lead > tolerance:
+        reasons.append(f"p2p_best_peer_lead_blocks={lead}>{tolerance}")
     return reasons
+
+
+def selected_backend_template_health(selected_source_health: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(selected_source_health, Mapping) or not selected_source_health:
+        return {}
+    reasons = selected_backend_unready_reasons(selected_source_health)
+    return {
+        "source": "selected_backend_source_health",
+        "safe_for_mining": not reasons,
+        "blocking_reasons": reasons,
+        "mineable_now": selected_source_health.get("node_mineable"),
+        "submit_ready": selected_source_health.get("node_submit_ready"),
+        "p2p_mining_fresh": selected_source_health.get("node_p2p_mining_fresh"),
+        "template_coinbase_valid": selected_source_health.get("node_template_coinbase_valid"),
+        "template_age_seconds": selected_source_health.get("node_template_age_seconds"),
+        "latest_template_seq": selected_source_health.get("node_template_sequence"),
+        "main_order": selected_source_health.get("node_main_order"),
+        "p2p_best_peer_lead_blocks": selected_source_health.get("node_p2p_best_peer_lead_blocks"),
+        "p2p_peer_lead_tolerance_blocks": selected_source_health.get("node_p2p_peer_lead_tolerance_blocks"),
+        "p2p_fresh_consensus_peer_count": selected_source_health.get("node_p2p_fresh_consensus_peer_count"),
+        "last_template_build_error_blocking": selected_source_health.get("node_last_template_build_error_blocking"),
+        "last_template_build_age_seconds": selected_source_health.get("node_last_template_build_age_seconds"),
+        "pending_template_build": selected_source_health.get("node_pending_template_build"),
+    }
 
 
 def safe_float(value: Any, default: float | None = None) -> float | None:
@@ -4312,6 +4349,7 @@ def collect_pool_prometheus_metrics(containers: dict[str, dict[str, Any]]) -> di
                     "p2p_sync_peer_present",
                     "pending_template_build",
                     "last_template_build_error_blocking",
+                    "template_coinbase_valid",
                 }:
                     row[f"node_{key}"] = value > 0
                 elif key in {"last_template_invalidation_sequence", "pending_template_invalidation"}:
@@ -6281,6 +6319,9 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     pool["source_job_health"] = source_job_health
     pool["source_backend_health"] = source_backend_health
     pool["selected_backend_source_health"] = selected_source_health
+    template_health = selected_backend_template_health(selected_source_health)
+    if template_health:
+        pool["template_health"] = template_health
     pool["template_conversion_stall"] = (
         pool_metrics.get("template_conversion_stall")
         if isinstance(pool_metrics.get("template_conversion_stall"), dict)
@@ -6748,6 +6789,28 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     sync_progress["peer_count"] = peer_count
     sync_progress["p2p_connections"] = peer_count
     sync_progress["p2p_connections_error"] = p2p_connections_error
+    if template_health and not template_health.get("safe_for_mining", False):
+        template_reasons = [
+            str(item)
+            for item in template_health.get("blocking_reasons", [])
+            if item
+        ]
+        reason = "template health unsafe"
+        if template_reasons:
+            reason = f"{reason}: {'; '.join(template_reasons[:3])}"
+        add_sync_warning(reason)
+        sync_health["template_health"] = template_health
+        if sync_progress.get("status") == "synced":
+            sync_progress = dict(sync_progress)
+            sync_progress["status"] = "syncing"
+            sync_progress["source"] = "template-health"
+            sync_progress["error"] = reason
+            lead = safe_int(template_health.get("p2p_best_peer_lead_blocks"), 0)
+            if lead > 0:
+                sync_progress["remaining_blocks"] = max(
+                    safe_int(sync_progress.get("remaining_blocks"), 0),
+                    lead,
+                )
     adaptive_concurrency = adaptive_worker_budgets(
         {**host_pressure, "chain_rpc_latency_ms": _sync_chain_rpc_latency_ms(sync_progress)}
     )
@@ -6948,6 +7011,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
     can_submit_blocks = bool(
         can_accept_shares
         and mining_job_pipeline_ready
+        and (not template_health or template_health.get("safe_for_mining", False))
         and not pool_health.get("needs_fast_repair")
         and not sync_warnings
     )
@@ -6971,6 +7035,7 @@ def collect_status(include_logs: bool = True) -> dict[str, Any]:
         "can_mine": can_mine,
         "can_accept_shares": can_accept_shares,
         "can_submit_blocks": can_submit_blocks,
+        "template_health": template_health,
         "truth_sources": truth_sources,
         "blocking_failures": failures,
         "degraded_reasons": sync_warnings + maintenance_warnings,

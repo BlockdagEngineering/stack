@@ -21,14 +21,14 @@ reject_file() {
 need_grep() {
   local pattern="$1"
   local file="$2"
-  grep -Eq "$pattern" "$root/$file" || fail "$file does not match required pattern: $pattern"
+  grep -Eq -- "$pattern" "$root/$file" || fail "$file does not match required pattern: $pattern"
 }
 
 reject_grep() {
   local pattern="$1"
   local file="$2"
   [[ -f "$root/$file" ]] || return 0
-  if grep -Eq "$pattern" "$root/$file"; then
+  if grep -Eq -- "$pattern" "$root/$file"; then
     fail "$file still matches rejected pattern: $pattern"
   fi
 }
@@ -100,6 +100,10 @@ need_grep '^DASHBOARD_HOST_PORT=8088$' ".env.example"
 need_grep '\$\{DASHBOARD_HOST_PORT:-8088\}:8088' "docker-compose.yml"
 need_grep '^POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE=false$' ".env.example"
 need_grep 'POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE: \$\{POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE:-false\}' "docker-compose.yml"
+need_grep '^BDAG_NODE_MINING_NO_PENDING_TX=1$' ".env.example"
+need_grep 'BDAG_NODE_MINING_NO_PENDING_TX: \$\{BDAG_NODE_MINING_NO_PENDING_TX:-1\}' "docker-compose.yml"
+need_grep 'BDAG_NODE_MINING_NO_PENDING_TX=1' "ops/config/stack-defaults.env"
+need_grep '--miningnopendingtx' "docker/entrypoint-nodeworker.sh"
 need_grep '^DASHBOARD_SRC_CONTEXT=../redis-dash$' ".env.example"
 need_grep '^DASHBOARD_REPO=https://github[.]com/BlockdagEngineering/redis-dash[.]git$' ".env.example"
 need_grep 'dashboard_src: \$\{DASHBOARD_SRC_CONTEXT:-\.\./redis-dash\}' "docker-compose.yml"
@@ -134,6 +138,8 @@ need_grep '^addpeer=/ip4/3\.126\.64\.13/tcp/8152/p2p/16Uiu2HAmEFxRaBbbf3sRi43CCv
 need_grep '^addpeer=/ip4/16\.28\.133\.168/tcp/8150/p2p/16Uiu2HAm9UcTayJDSajjJYsWwVaN2qqGeczcs9kXse3dMdvGDRjz$' "node.conf.example"
 reject_grep '^addpeer=/ip4/52\.8\.80\.249/tcp/8150/p2p/' "node.conf.example"
 reject_grep '^addpeer=/ip4/192\.168\.' "node.conf.example"
+reject_grep '13\.140\.165\.186/tcp/8150/p2p/16Uiu2HAm4hHD7Ht5LJrLgaKXr7YP2RzHHjrrCLNt8zv8FQ9s3gBU' "node.conf.example"
+reject_grep '13\.140\.165\.186/tcp/8150/p2p/16Uiu2HAm4hHD7Ht5LJrLgaKXr7YP2RzHHjrrCLNt8zv8FQ9s3gBU' ".env.example"
 reject_grep '16Uiu2HAkx4trymxQDexfzCNrtWokprH49vNg8shhEhtPMYdq2CtY' "node.conf.example"
 reject_grep '/tcp/52604/p2p/' "node.conf.example"
 reject_grep '/tcp/34040/p2p/' "node.conf.example"

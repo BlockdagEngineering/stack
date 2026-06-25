@@ -30,6 +30,7 @@ REQUIRE_CANONICAL_SAFETY = str(
 ).strip().lower() not in {"0", "false", "no", "off"}
 UNSAFE_MODES = {"catchup_pause", "syncing", "unknown", "waiting_for_status_sample"}
 READY_DOWN_MODES = {"synced", "mining", "ready_no_miners"}
+SEEDABLE_TEMPLATE_REASON_CODES = {"template_unavailable", "worker_unavailable", "worker_stopped"}
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,51 @@ def _sync_progress_lag_blocks(status: dict[str, Any]) -> int:
                 if value is not None and value >= 0:
                     values.append(value)
     return max(values) if values else 0
+
+
+def _template_health_blockers(status: dict[str, Any]) -> list[str]:
+    template_health = status.get("template_health")
+    if not isinstance(template_health, dict):
+        return []
+    if template_health.get("safe_for_mining") is not False:
+        return []
+    if _template_health_seedable(template_health):
+        return []
+    raw_reasons = template_health.get("blocking_reasons")
+    details = []
+    if isinstance(raw_reasons, list):
+        details = [str(item) for item in raw_reasons if item]
+    if details:
+        return [f"template health is unsafe: {'; '.join(details[:3])}"]
+    return ["template health is unsafe"]
+
+
+def _template_health_seedable(template_health: dict[str, Any]) -> bool:
+    reason_code = str(template_health.get("reason_code") or "").strip().lower()
+    raw_reasons = template_health.get("blocking_reasons")
+    reasons = {str(item).strip().lower() for item in raw_reasons or [] if item} if isinstance(raw_reasons, list) else set()
+    if reason_code not in SEEDABLE_TEMPLATE_REASON_CODES and not reasons.intersection(
+        SEEDABLE_TEMPLATE_REASON_CODES
+    ):
+        return False
+    if template_health.get("template_available") is True:
+        return False
+    if template_health.get("last_template_build_error_blocking") is True:
+        return False
+    if template_health.get("get_block_template_ready") is not True:
+        return False
+    if template_health.get("p2p_mining_fresh") is not True:
+        return False
+    if template_health.get("chain_current") is not True and template_health.get("p2p_current") is not True:
+        return False
+    fresh_peers = _safe_int(template_health.get("p2p_fresh_consensus_peer_count"))
+    if fresh_peers is not None and fresh_peers < MIN_POOL_START_PEERS:
+        return False
+    peer_lead = _safe_int(template_health.get("p2p_best_peer_lead_blocks"))
+    peer_tolerance = _safe_int(template_health.get("p2p_peer_lead_tolerance_blocks"))
+    if peer_lead is not None and peer_tolerance is not None and peer_lead > peer_tolerance:
+        return False
+    return True
 
 
 def _status_peer_count(status: dict[str, Any]) -> int | None:
@@ -227,6 +273,7 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
         reasons.append(f"node chain data restore or migration is required{detail}")
     if catchup_policy.get("active") or sync_health.get("catchup_pause_active"):
         reasons.append("chain catch-up pause is active")
+    reasons.extend(_template_health_blockers(status))
 
     sync_progress = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
     sync_status = str(sync_progress.get("status") or "").strip().lower()
@@ -253,9 +300,12 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
     if overall == "down" and mode not in READY_DOWN_MODES:
         reasons.append(f"overall stack status is down with non-ready mode: {mode or 'unknown'}")
 
+    template_health = status.get("template_health")
+    seedable_template = isinstance(template_health, dict) and _template_health_seedable(template_health)
     rpc_template = status.get("rpc_template_health")
     if isinstance(rpc_template, dict) and rpc_template.get("all_nodes_ready") is False:
-        reasons.append("node template health is not ready")
+        if not seedable_template:
+            reasons.append("node template health is not ready")
 
     if REQUIRE_CANONICAL_SAFETY:
         safe, canonical_reason = canonical_safety_proven(status)

@@ -105,6 +105,9 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
                 "node_submit_ready": False,
                 "node_p2p_mining_fresh": False,
                 "node_last_template_build_error_blocking": True,
+                "node_template_coinbase_valid": False,
+                "node_p2p_best_peer_lead_blocks": 40,
+                "node_p2p_peer_lead_tolerance_blocks": 10,
             }
         )
 
@@ -114,9 +117,26 @@ class PoolEfficiencyLossLedgerTests(unittest.TestCase):
                 "mineable=false",
                 "submit_ready=false",
                 "p2p_mining_fresh=false",
+                "template_coinbase_valid=false",
                 "template_build_error_blocking=true",
+                "p2p_best_peer_lead_blocks=40>10",
             ],
         )
+
+    def test_selected_backend_template_health_is_unsafe_on_peer_lead(self) -> None:
+        health = pool_ops.selected_backend_template_health(
+            {
+                "node_mineable": True,
+                "node_submit_ready": True,
+                "node_p2p_mining_fresh": True,
+                "node_template_coinbase_valid": True,
+                "node_p2p_best_peer_lead_blocks": 11,
+                "node_p2p_peer_lead_tolerance_blocks": 10,
+            }
+        )
+
+        self.assertFalse(health["safe_for_mining"])
+        self.assertIn("p2p_best_peer_lead_blocks=11>10", health["blocking_reasons"])
 
     def test_selected_backend_source_degradation_is_advisory_with_recent_paid_work(self) -> None:
         advisory = pool_ops.selected_backend_source_degradation(True, True)

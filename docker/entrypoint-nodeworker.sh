@@ -421,6 +421,9 @@ apply_node_mining_runtime_args() {
       --*) append_node_arg_once "$word" "$node_args ${NODE_ARGS_APPEND:-}" ;;
     esac
   done
+  if env_value_true "${BDAG_NODE_MINING_NO_PENDING_TX:-1}"; then
+    append_node_arg_once "--miningnopendingtx" "$node_args ${NODE_ARGS_APPEND:-}"
+  fi
 }
 
 is_nonzero_eth_address() {
@@ -877,8 +880,21 @@ if [ "$(basename "${1:-}")" = "nodeworker" ] && ! nodeworker_arg_present "health
   set -- "${args[@]}"
 fi
 
+if [ "$(basename "${1:-}")" = "nodeworker" ] && ! nodeworker_arg_present "health.mining-readiness-timeout" "$@"; then
+  args=("$@")
+  args+=("--health.mining-readiness-timeout=${BDAG_NODEWORKER_MINING_READINESS_TIMEOUT:-90s}")
+  set -- "${args[@]}"
+fi
+
+if [ "$(basename "${1:-}")" = "nodeworker" ] && ! nodeworker_arg_present "health.mining-readiness-grace" "$@"; then
+  args=("$@")
+  args+=("--health.mining-readiness-grace=${BDAG_NODEWORKER_MINING_READINESS_GRACE:-2m}")
+  set -- "${args[@]}"
+fi
+
 if [ "${BDAG_ENTRYPOINT_PRINT_NODE_FLAGS:-0}" = "1" ]; then
   printf 'NODE_ARGS_APPEND=%s\n' "${NODE_ARGS_APPEND:-}"
+  printf 'NODEWORKER_ARGS=%s\n' "$*"
   exit 0
 fi
 

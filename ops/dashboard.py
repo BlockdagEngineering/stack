@@ -2039,10 +2039,15 @@ HTML = r"""<!doctype html>
       return poolHealth.selected_backend_source_health || metrics.selected_backend_source_health || {};
     }
     function selectedBackendTemplateReady(data) {
+      const templateHealth = data.template_health || {};
+      if (templateHealth.safe_for_mining === false) return false;
       const selected = selectedBackendSourceHealth(data);
       const readinessKeys = ["healthy", "node_mineable", "node_submit_ready", "node_p2p_mining_fresh"];
       const hasReadinessSignal = readinessKeys.some((key) => hasValue(selected[key]));
-      if (!hasReadinessSignal) return true;
+      if (!hasReadinessSignal) return data.can_submit_blocks !== false;
+      const lead = Number(selected.node_p2p_best_peer_lead_blocks || 0);
+      const tolerance = Number(selected.node_p2p_peer_lead_tolerance_blocks || 10);
+      if (lead > tolerance) return false;
       return readinessKeys.every((key) => !hasValue(selected[key]) || metricEnabled(selected[key]));
     }
     function sourceHealthStatusText(data) {

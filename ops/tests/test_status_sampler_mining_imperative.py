@@ -29,6 +29,8 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
                 "MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS",
                 "MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED",
                 "MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED",
+                "MINING_IMPERATIVE_SYNC_TIMEOUT_PEER_QUARANTINE_ENABLED",
+                "MINING_IMPERATIVE_SYNC_TIMEOUT_PEER_FAILURES",
                 "CATCHUP_PAUSE_ENABLED",
                 "CATCHUP_PAUSE_ON_SYNCING",
                 "CATCHUP_PAUSE_THRESHOLD_BLOCKS",
@@ -85,6 +87,8 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         status_sampler.MINING_IMPERATIVE_MINER_ACTIVITY_STALE_SECONDS = 180
         status_sampler.MINING_IMPERATIVE_NODE_MINING_REPAIR_ENABLED = True
         status_sampler.MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED = True
+        status_sampler.MINING_IMPERATIVE_SYNC_TIMEOUT_PEER_QUARANTINE_ENABLED = True
+        status_sampler.MINING_IMPERATIVE_SYNC_TIMEOUT_PEER_FAILURES = 3
         status_sampler.POOL_ENV_FILE = pathlib.Path("/nonexistent/status-sampler-test.env")
         status_sampler.PROJECT_ROOT = pathlib.Path("/nonexistent/status-sampler-test-root")
         status_sampler.CATCHUP_PAUSE_ENABLED = True
@@ -311,6 +315,15 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
 
         self.assertFalse(self.pool_compose_start_seen(commands))
         self.assertEqual(repair["actions"], [])
+
+    def test_chain_ready_for_mining_rejects_synced_template_unsafe_payload(self) -> None:
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["template_health"] = {
+            "safe_for_mining": False,
+            "blocking_reasons": ["template_unavailable"],
+        }
+
+        self.assertFalse(status_sampler.chain_ready_for_mining(payload))
 
     def test_catchup_policy_pauses_on_syncing_even_when_mining_ready(self) -> None:
         payload = self.stopped_pool_payload(sync_status="syncing", remaining_blocks=5)
@@ -1366,6 +1379,59 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertNotIn(peer_id, env_updates["BDAG_NODE_PEER_ADDRESSES"])
         self.assertNotIn(peer_id, env_updates["BDAG_FASTSYNC_PEERS"])
         self.assertNotIn(peer_id, env_updates["BOOTSTRAP_PEER_ADDRESSES"])
+        self.assertTrue(any("--force-recreate" in command for command in commands))
+
+    def test_quarantines_repeated_graph_sync_timeout_peer(self) -> None:
+        commands = []
+        env_updates = {}
+        peer = "/ip4/13.140.165.186/tcp/8150/p2p/16Uiu2HAm4hHD7Ht5LJrLgaKXr7YP2RzHHjrrCLNt8zv8FQ9s3gBU"
+        peer_token = "/ip4/13.140.165.186/tcp/8150"
+        good_peer = "/ip4/3.126.64.13/tcp/8152/p2p/16Uiu2HAmEFxRaBbbf3sRi43CCvMk5Y6zPkuGY9s4uRK2FKJVJkqo"
+        status_sampler.MINING_IMPERATIVE_GUARD_UNITS = []
+        os.environ["BDAG_DETECTED_NETWORK_TOPOLOGY"] = "asic-router"
+        os.environ["BDAG_STORAGE_PROFILE"] = "usb-chain-internal-runtime"
+        os.environ["BDAG_ENABLE_NODE_MINING"] = "1"
+        os.environ["BDAG_NODE_MODULES"] = "Blockdag"
+        os.environ["MINING_ADDRESS"] = "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc"
+        os.environ["BDAG_NODE_MINING_ARGS"] = (
+            "--miner --miningaddr=0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc --maxinbound=1"
+        )
+        os.environ["BDAG_NODE_PEER_ADDRESSES"] = f"{peer},{good_peer}"
+        os.environ["BDAG_FASTSYNC_PEERS"] = peer
+        os.environ["BOOTSTRAP_PEER_ADDRESSES"] = f"{peer},{good_peer}"
+        os.environ["BDAG_NODE_SERVICES"] = "node"
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["containers"][status_sampler.POOL_CONTAINER]["running"] = True
+        payload["miner_health"] = {"tracked_count": 1, "connected_count": 1, "managed_count": 1}
+        payload["nodes"] = {
+            "node": {
+                "tail": [
+                    "Failed to process update graph state for peer "
+                    f"{peer_token}: ErrStreamRead, i/o deadline reached, graph state request rsp module=SYNC"
+                    for _ in range(3)
+                ]
+            }
+        }
+
+        def fake_set_runtime_env(key: str, value: str):
+            env_updates[key] = value
+            os.environ[key] = value
+            return [f"/runtime/{key}"]
+
+        def fake_run(command: list[str], timeout: int = 20):
+            commands.append(command)
+            return self.command_result(command)
+
+        status_sampler.set_runtime_env_value = fake_set_runtime_env
+        status_sampler.run = fake_run
+
+        repair = status_sampler.mining_imperative_repair(payload)
+
+        self.assertIn("quarantined_graph_sync_timeout_peer", repair["actions"])
+        self.assertNotIn(peer_token, env_updates["BDAG_NODE_PEER_ADDRESSES"])
+        self.assertNotIn(peer_token, env_updates["BDAG_FASTSYNC_PEERS"])
+        self.assertNotIn(peer_token, env_updates["BOOTSTRAP_PEER_ADDRESSES"])
+        self.assertIn(good_peer, env_updates["BDAG_NODE_PEER_ADDRESSES"])
         self.assertTrue(any("--force-recreate" in command for command in commands))
 
 

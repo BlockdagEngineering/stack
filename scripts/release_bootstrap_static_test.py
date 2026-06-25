@@ -96,6 +96,12 @@ class PayloadInstallerTests(unittest.TestCase):
 
 
 class BootstrapPeerDefaultTests(unittest.TestCase):
+    QUARANTINED_BOOTSTRAP_PEERS = (
+        (
+            "/ip4/13.140.165.186/tcp/8150/p2p/"
+            "16Uiu2HAm4hHD7Ht5LJrLgaKXr7YP2RzHHjrrCLNt8zv8FQ9s3gBU"
+        ),
+    )
     STABLE_BOOTSTRAP_PEERS = (
         (
             "/ip4/3.126.64.13/tcp/8152/p2p/"
@@ -127,6 +133,9 @@ class BootstrapPeerDefaultTests(unittest.TestCase):
         for peer in self.STABLE_BOOTSTRAP_PEERS:
             self.assertIn(peer, bootstrap_line)
             self.assertIn(f"addpeer={peer}", node_conf)
+        for peer in self.QUARANTINED_BOOTSTRAP_PEERS:
+            self.assertNotIn(peer, bootstrap_line)
+            self.assertNotIn(f"addpeer={peer}", node_conf)
 
     def test_release_defaults_do_not_ship_dead_or_site_local_seed_peers(self) -> None:
         node_conf = (ROOT / "node.conf.example").read_text(encoding="utf-8")
@@ -139,6 +148,26 @@ class BootstrapPeerDefaultTests(unittest.TestCase):
             self.assertNotIn("/ip4/16.28.133.168/tcp/8151/p2p/16Uiu2HAkx4", text)
             self.assertNotIn("/tcp/52604/p2p/", text)
             self.assertNotIn("/tcp/34040/p2p/", text)
+
+
+class MiningTemplateDefaultTests(unittest.TestCase):
+    def test_release_defaults_use_no_pending_mining_templates(self) -> None:
+        env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        defaults = (ROOT / "ops" / "config" / "stack-defaults.env").read_text(
+            encoding="utf-8"
+        )
+        entrypoint = (ROOT / "docker" / "entrypoint-nodeworker.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("BDAG_NODE_MINING_NO_PENDING_TX=1", env_example)
+        self.assertIn(
+            "BDAG_NODE_MINING_NO_PENDING_TX: ${BDAG_NODE_MINING_NO_PENDING_TX:-1}",
+            compose,
+        )
+        self.assertIn("BDAG_NODE_MINING_NO_PENDING_TX=1", defaults)
+        self.assertIn("--miningnopendingtx", entrypoint)
 
 
 if __name__ == "__main__":

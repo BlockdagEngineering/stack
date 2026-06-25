@@ -8,6 +8,7 @@ starts, stops, restarts, rebuilds, or edits live services.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -23,8 +24,13 @@ from typing import Any
 DEFAULT_JOB_STATE_URL = "http://127.0.0.1:9090/health/job-state"
 DEFAULT_METRICS_URL = "http://127.0.0.1:9090/metrics"
 DEFAULT_DASHBOARD_STATUS_URL = "http://127.0.0.1:8088/api/status"
+DEFAULT_NODE_RPC_URL = "http://127.0.0.1:38131"
 DEFAULT_OUTPUT_ROOT = Path("ops/runtime/monitoring")
 METRIC_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([-+0-9.eE]+)$")
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+IMPORTED_RE = re.compile(r"Imported new chain segment.*?number=([0-9,]+).*?age=([0-9hms]+)")
+GRAPH_SYNC_START_RE = re.compile(r"Syncing graph state.*?peer=([^\s]+).*?processID=([0-9]+)")
+GRAPH_SYNC_END_RE = re.compile(r"sync of graph state has ended.*?spend=([^\s]+).*?processID=([0-9]+)")
 
 METRIC_NAMES = {
     "pool_block_submit_outcomes_total",
@@ -82,6 +88,41 @@ def fetch_json(url: str, timeout: float) -> tuple[dict[str, Any] | None, str | N
     except json.JSONDecodeError as exc:
         return None, f"json decode: {exc}", latency
     return payload if isinstance(payload, dict) else {}, None, latency
+
+
+def basic_auth_header(user: str | None, password: str | None) -> str | None:
+    if not user and not password:
+        return None
+    token = base64.b64encode(f"{user or ''}:{password or ''}".encode("utf-8")).decode("ascii")
+    return f"Basic {token}"
+
+
+def json_rpc_call(
+    url: str,
+    method: str,
+    *,
+    params: list[Any] | None = None,
+    timeout: float,
+    user: str | None = None,
+    password: str | None = None,
+) -> tuple[Any | None, str | None, float]:
+    started = time.monotonic()
+    body = json.dumps({"jsonrpc": "2.0", "id": method, "method": method, "params": params or []}).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    auth = basic_auth_header(user, password)
+    if auth:
+        headers["Authorization"] = auth
+    request = urllib.request.Request(url, data=body, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            decoded = json.loads(response.read().decode("utf-8", "replace"))
+    except Exception as exc:  # noqa: BLE001 - monitor must keep sampling after node stalls.
+        return None, str(exc), round((time.monotonic() - started) * 1000, 3)
+    if not isinstance(decoded, dict):
+        return None, "invalid json-rpc response", round((time.monotonic() - started) * 1000, 3)
+    if decoded.get("error"):
+        return None, f"json-rpc error: {decoded.get('error')}", round((time.monotonic() - started) * 1000, 3)
+    return decoded.get("result"), None, round((time.monotonic() - started) * 1000, 3)
 
 
 def run_command(command: list[str], timeout: float = 8.0) -> dict[str, Any]:
@@ -154,6 +195,127 @@ def parse_metrics(text: str | None) -> dict[str, Any]:
             key = f"{name}{{{label_suffix}}}"
         parsed[key] = value
     return parsed
+
+
+def parse_compact_duration_seconds(raw: str | None) -> int | None:
+    if not raw:
+        return None
+    total = 0
+    matched = False
+    for value, unit in re.findall(r"([0-9]+)([hms])", raw):
+        matched = True
+        number = int(value)
+        if unit == "h":
+            total += number * 3600
+        elif unit == "m":
+            total += number * 60
+        else:
+            total += number
+    return total if matched else None
+
+
+def clean_log_line(line: str) -> str:
+    return ANSI_RE.sub("", line)
+
+
+def summarize_node_log_tail(log_text: str | None) -> dict[str, Any]:
+    if not log_text:
+        return {}
+    latest_import: dict[str, Any] = {}
+    sync_starts: dict[str, dict[str, Any]] = {}
+    sync_ends: dict[str, dict[str, Any]] = {}
+    rewind_count = 0
+    missing_tip_count = 0
+    for raw_line in log_text.splitlines():
+        line = clean_log_line(raw_line)
+        imported = IMPORTED_RE.search(line)
+        if imported:
+            latest_import = {
+                "number": int(imported.group(1).replace(",", "")),
+                "age": imported.group(2),
+                "age_seconds": parse_compact_duration_seconds(imported.group(2)),
+            }
+        start = GRAPH_SYNC_START_RE.search(line)
+        if start:
+            sync_starts[start.group(2)] = {"peer": start.group(1), "process_id": int(start.group(2))}
+        end = GRAPH_SYNC_END_RE.search(line)
+        if end:
+            sync_ends[end.group(2)] = {
+                "process_id": int(end.group(2)),
+                "spend": end.group(1),
+                "spend_seconds": parse_compact_duration_seconds(end.group(1)),
+            }
+        if "Rewinding blockchain to block" in line:
+            rewind_count += 1
+        if "Can't find tip" in line:
+            missing_tip_count += 1
+    open_ids = [process_id for process_id in sync_starts if process_id not in sync_ends]
+    return {
+        "latest_import": latest_import,
+        "graph_sync_open": bool(open_ids),
+        "graph_sync_open_process_ids": [int(process_id) for process_id in sorted(open_ids, key=int)],
+        "graph_sync_last_open": sync_starts.get(open_ids[-1]) if open_ids else {},
+        "graph_sync_last_end": sync_ends.get(sorted(sync_ends, key=int)[-1]) if sync_ends else {},
+        "rewind_count_tail": rewind_count,
+        "missing_tip_count_tail": missing_tip_count,
+    }
+
+
+def summarize_node_rpc(
+    url: str,
+    *,
+    timeout: float,
+    user: str | None,
+    password: str | None,
+) -> dict[str, Any]:
+    health, health_error, health_latency = json_rpc_call(
+        url,
+        "getTemplateHealth",
+        timeout=timeout,
+        user=user,
+        password=password,
+    )
+    block_count, block_error, block_latency = json_rpc_call(
+        url,
+        "getBlockCount",
+        timeout=timeout,
+        user=user,
+        password=password,
+    )
+    summary: dict[str, Any] = {
+        "url": url,
+        "errors": {
+            "getTemplateHealth": health_error,
+            "getBlockCount": block_error,
+        },
+        "latency_ms": {
+            "getTemplateHealth": health_latency,
+            "getBlockCount": block_latency,
+        },
+        "block_count": block_count if isinstance(block_count, int) else None,
+    }
+    if isinstance(health, dict):
+        summary.update(
+            {
+                "mineable_now": health.get("mineable_now"),
+                "submit_ready": health.get("submit_ready"),
+                "reason_code": health.get("reason_code"),
+                "template_available": health.get("template_available"),
+                "template_coinbase_valid": health.get("template_coinbase_valid"),
+                "chain_current": health.get("chain_current"),
+                "main_order": health.get("main_order"),
+                "p2p_best_peer_main_order": health.get("p2p_best_peer_main_order"),
+                "p2p_best_peer_lead_blocks": health.get("p2p_best_peer_lead_blocks"),
+                "p2p_consensus_peer_count": health.get("p2p_consensus_peer_count"),
+                "p2p_fresh_consensus_peer_count": health.get("p2p_fresh_consensus_peer_count"),
+                "p2p_mining_fresh": health.get("p2p_mining_fresh"),
+                "p2p_mining_fresh_reason_code": health.get("p2p_mining_fresh_reason_code"),
+                "p2p_sync_peer_present": health.get("p2p_sync_peer_present"),
+                "p2p_sync_peer_fresh": health.get("p2p_sync_peer_fresh"),
+                "p2p_sync_peer_graph_state_age_ms": health.get("p2p_sync_peer_graph_state_age_ms"),
+            }
+        )
+    return summary
 
 
 def summarize_job_state(job_state: dict[str, Any] | None) -> dict[str, Any]:
@@ -257,6 +419,10 @@ def collect_sample(args: argparse.Namespace) -> dict[str, Any]:
         ["docker", "ps", "--format", "{{json .}}"],
         timeout=args.command_timeout,
     )
+    node_logs = run_command(
+        ["docker", "logs", "--tail", str(args.node_log_tail_lines), args.node_container],
+        timeout=args.command_timeout,
+    )
     return {
         "sampled_at": now_iso(),
         "sampled_epoch": time.time(),
@@ -272,6 +438,13 @@ def collect_sample(args: argparse.Namespace) -> dict[str, Any]:
         },
         "pool_job_state": summarize_job_state(job_state),
         "dashboard_status": summarize_dashboard(dashboard),
+        "node_rpc": summarize_node_rpc(
+            args.node_rpc_url,
+            timeout=args.timeout,
+            user=args.node_rpc_user,
+            password=args.node_rpc_pass,
+        ),
+        "node_log_tail": summarize_node_log_tail(node_logs.get("stdout", "") + node_logs.get("stderr", "")),
         "metrics": parse_metrics(metrics_text),
         "docker_stats_lines": [
             line for line in docker_stats.get("stdout", "").splitlines() if line.strip()
@@ -341,6 +514,11 @@ def main() -> int:
     parser.add_argument("--job-state-url", default=DEFAULT_JOB_STATE_URL)
     parser.add_argument("--metrics-url", default=DEFAULT_METRICS_URL)
     parser.add_argument("--dashboard-status-url", default=DEFAULT_DASHBOARD_STATUS_URL)
+    parser.add_argument("--node-rpc-url", default=os.environ.get("BDAG_NODE_RPC_URL", DEFAULT_NODE_RPC_URL))
+    parser.add_argument("--node-rpc-user", default=os.environ.get("NODE_RPC_USER", ""))
+    parser.add_argument("--node-rpc-pass", default=os.environ.get("NODE_RPC_PASS", ""))
+    parser.add_argument("--node-container", default="node")
+    parser.add_argument("--node-log-tail-lines", type=int, default=400)
     parser.add_argument("--timeout", type=float, default=6.0)
     parser.add_argument("--command-timeout", type=float, default=10.0)
     args = parser.parse_args()

@@ -49,7 +49,7 @@ class NodeworkerEntrypointTest(unittest.TestCase):
                 [
                     "bash",
                     str(ENTRYPOINT),
-                    "/bin/true",
+                    "nodeworker",
                     f"--node-binary={fake_node}",
                     f"--node-args=--datadir={tmp}",
                 ],
@@ -148,6 +148,36 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         self.assert_stdout_contains(result, f"--miningaddr={address}")
         self.assertNotIn("--allowminingwhennearlysynced", result.stdout)
         self.assertNotIn("--allowsubmitwhennotsynced", result.stdout)
+
+    def test_nodeworker_enables_mining_readiness_recovery_by_default(self) -> None:
+        result = self.run_entrypoint({})
+
+        self.assert_stdout_contains(result, "--health.mining-readiness-timeout=90s")
+        self.assert_stdout_contains(result, "--health.mining-readiness-grace=2m")
+
+    def test_node_mining_env_enables_no_pending_templates_by_default(self) -> None:
+        result = self.run_entrypoint(
+            {
+                "BDAG_ENABLE_NODE_MINING": "1",
+                "BDAG_NODE_MINING_ARGS": "",
+                "MINING_POOL_ADDRESS": "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc",
+            }
+        )
+
+        self.assert_stdout_contains(result, "--miningnopendingtx")
+
+    def test_node_mining_env_can_disable_no_pending_templates(self) -> None:
+        result = self.run_entrypoint(
+            {
+                "BDAG_ENABLE_NODE_MINING": "1",
+                "BDAG_NODE_MINING_ARGS": "",
+                "MINING_POOL_ADDRESS": "0xA1Ee1005c4Ff181e93e717D2C624554b66AB7DFc",
+                "BDAG_NODE_MINING_NO_PENDING_TX": "0",
+            }
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("--miningnopendingtx", result.stdout)
 
     def test_node_mining_env_rejects_zero_derived_address(self) -> None:
         result = self.run_entrypoint(

@@ -106,6 +106,15 @@ MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED = env_bool(
     "BDAG_MINING_IMPERATIVE_FASTSYNC_PEER_QUARANTINE_ENABLED",
     True,
 )
+MINING_IMPERATIVE_SYNC_TIMEOUT_PEER_QUARANTINE_ENABLED = env_bool(
+    "BDAG_MINING_IMPERATIVE_SYNC_TIMEOUT_PEER_QUARANTINE_ENABLED",
+    True,
+)
+MINING_IMPERATIVE_SYNC_TIMEOUT_PEER_FAILURES = env_int(
+    "BDAG_MINING_IMPERATIVE_SYNC_TIMEOUT_PEER_FAILURES",
+    3,
+    minimum=1,
+)
 CHAIN_STATE_MISSING_TRIE_WARNINGS = env_int("BDAG_CHAIN_STATE_MISSING_TRIE_WARNINGS", 1, minimum=1)
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 FASTSYNC_PEER_QUARANTINE_ENV_KEYS = split_env_list(
@@ -418,6 +427,20 @@ def ensure_user_unit(unit: str, payload: dict[str, Any]) -> bool:
 
 
 def chain_ready_for_mining(payload: dict[str, Any]) -> bool:
+    template_health = dict_value(payload.get("template_health"))
+    if template_health.get("safe_for_mining") is False:
+        return False
+    selected_health = dict_value(
+        dict_value(payload.get("pool_metrics")).get("selected_backend_source_health")
+    ) or dict_value(dict_value(payload.get("pool")).get("selected_backend_source_health"))
+    if selected_health:
+        for key in ("node_mineable", "node_submit_ready", "node_p2p_mining_fresh"):
+            if key in selected_health and not bool(selected_health.get(key)):
+                return False
+        lead = safe_int(selected_health.get("node_p2p_best_peer_lead_blocks"), 0)
+        tolerance = safe_int(selected_health.get("node_p2p_peer_lead_tolerance_blocks"), 10)
+        if lead > tolerance:
+            return False
     sync = dict_value(payload.get("sync_progress"))
     if str(sync.get("status") or "").lower() == "synced":
         return True
@@ -919,6 +942,34 @@ def fastsync_peer_quarantine_should_repair(payload: dict[str, Any]) -> bool:
     return bool(fastsync_orphan_peer_ids(payload))
 
 
+def graph_sync_timeout_peer_tokens(payload: dict[str, Any]) -> list[str]:
+    counts: dict[str, int] = {}
+    pattern = re.compile(
+        r"Failed to process update graph state for peer "
+        r"(/(?:ip4|ip6|dns|dns4|dns6)/[^/\s]+/tcp/[0-9]+)(?:/p2p/[A-Za-z0-9]+)?"
+    )
+    for line in payload_node_tail_lines(payload):
+        match = pattern.search(line)
+        if not match:
+            continue
+        token = match.group(1)
+        counts[token] = counts.get(token, 0) + 1
+    threshold = max(1, MINING_IMPERATIVE_SYNC_TIMEOUT_PEER_FAILURES)
+    return [token for token, count in counts.items() if count >= threshold]
+
+
+def graph_sync_timeout_peer_quarantine_should_repair(payload: dict[str, Any]) -> bool:
+    if not MINING_IMPERATIVE_SYNC_TIMEOUT_PEER_QUARANTINE_ENABLED:
+        return False
+    if not constrained_storage_profile():
+        return False
+    if not chain_ready_for_mining(payload):
+        return False
+    if not (status_payload_has_miner_demand(payload) or asic_lan_neighbor_present()):
+        return False
+    return bool(graph_sync_timeout_peer_tokens(payload))
+
+
 def control_decision_payload(decision: Any) -> dict[str, Any]:
     if hasattr(decision, "as_dict"):
         return decision.as_dict()
@@ -986,6 +1037,14 @@ def remove_peer_ids_from_csv(value: str, peer_ids: list[str]) -> str:
     if not peers or not peer_ids:
         return value
     kept = [peer for peer in peers if not any(peer_id in peer for peer_id in peer_ids)]
+    return ",".join(kept)
+
+
+def remove_peer_tokens_from_csv(value: str, tokens: list[str]) -> str:
+    peers = [item.strip() for item in value.split(",") if item.strip()]
+    if not peers or not tokens:
+        return value
+    kept = [peer for peer in peers if not any(token in peer for token in tokens)]
     return ",".join(kept)
 
 
@@ -1136,6 +1195,64 @@ def repair_fastsync_orphan_peers(payload: dict[str, Any]) -> bool:
         "mining_imperative_fastsync_peer_quarantine_failed",
         "critical",
         "Could not recreate node after quarantining FastSync orphan peer",
+        action,
+        payload,
+    )
+    return False
+
+
+def repair_graph_sync_timeout_peers(payload: dict[str, Any]) -> bool:
+    tokens = graph_sync_timeout_peer_tokens(payload)
+    if not automation_repair_mutation_allowed(
+        automation_control.ACTION_CONFIG_EDIT,
+        target="graph-sync-peer-config",
+        reason=f"quarantine graph-sync timeout peer(s): {','.join(tokens)}",
+        payload=payload,
+        event_type="mining_imperative_config_edit_blocked",
+        message="Mining imperative could not edit graph-sync peer config because automation control blocked config edits",
+    ):
+        return False
+    changed_paths = []
+    changed_keys = []
+    for key in FASTSYNC_PEER_QUARANTINE_ENV_KEYS:
+        current = config_value(key)
+        updated = remove_peer_tokens_from_csv(current, tokens)
+        if updated != current:
+            changed_paths.extend(set_runtime_env_value(key, updated))
+            changed_keys.append(key)
+    action = {
+        "peer_tokens": tokens,
+        "changed_keys": changed_keys,
+        "changed_env_paths": sorted(set(changed_paths)),
+    }
+    if not changed_keys:
+        log(f"mining imperative found graph-sync timeout peer(s) but no configured peer list matched: {','.join(tokens)}")
+        record_incident(
+            "mining_imperative_graph_sync_peer_quarantine_no_match",
+            "warning",
+            "Graph-sync timeout peer observed but no configured peer list matched it",
+            action,
+            payload,
+        )
+        return False
+
+    ok, node_results = recreate_node_services(payload, "recreate node after quarantining graph-sync timeout peer(s)")
+    action["node_recreate_results"] = node_results
+    if ok:
+        log(f"mining imperative quarantined graph-sync timeout peer(s): {','.join(tokens)}")
+        record_incident(
+            "mining_imperative_graph_sync_peer_quarantined",
+            "critical",
+            "Quarantined peer causing repeated graph-sync timeouts on constrained mining host",
+            action,
+            payload,
+        )
+        return True
+    log("mining imperative failed to recreate node after quarantining graph-sync timeout peer(s)")
+    record_incident(
+        "mining_imperative_graph_sync_peer_quarantine_failed",
+        "critical",
+        "Could not recreate node after quarantining graph-sync timeout peer",
         action,
         payload,
     )
@@ -1890,6 +2007,10 @@ def mining_imperative_repair(payload: dict[str, Any]) -> dict[str, Any]:
     if fastsync_peer_quarantine_should_repair(payload):
         if repair_fastsync_orphan_peers(payload):
             actions.append("quarantined_fastsync_orphan_peer")
+
+    if graph_sync_timeout_peer_quarantine_should_repair(payload):
+        if repair_graph_sync_timeout_peers(payload):
+            actions.append("quarantined_graph_sync_timeout_peer")
 
     if MINING_IMPERATIVE_START_POOL_ENABLED and not pool_container_running(payload):
         miner_demand = status_payload_has_miner_demand(payload)

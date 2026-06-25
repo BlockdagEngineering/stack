@@ -120,6 +120,75 @@ class SingleGateOrchestrationTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertIn("only 1 peer(s) reported; need at least 2 peers", decision.reason)
 
+    def test_shared_gate_blocks_unsafe_template_health_even_when_synced(self) -> None:
+        status = safe_canonical_status()
+        status["template_health"] = {
+            "safe_for_mining": False,
+            "blocking_reasons": ["template_unavailable"],
+        }
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertFalse(decision.allowed)
+        self.assertIn("template health is unsafe: template_unavailable", decision.reason)
+
+    def test_shared_gate_allows_seedable_no_template_start_state(self) -> None:
+        status = safe_canonical_status()
+        status["template_health"] = {
+            "safe_for_mining": False,
+            "reason_code": "template_unavailable",
+            "blocking_reasons": ["template_unavailable"],
+            "template_available": False,
+            "get_block_template_ready": True,
+            "p2p_mining_fresh": True,
+            "chain_current": True,
+            "p2p_fresh_consensus_peer_count": 4,
+            "p2p_best_peer_lead_blocks": 0,
+            "p2p_peer_lead_tolerance_blocks": 10,
+        }
+        status["rpc_template_health"] = {"all_nodes_ready": False}
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertTrue(decision.allowed, decision.reason)
+
+    def test_shared_gate_blocks_seedable_template_state_when_p2p_stale(self) -> None:
+        status = safe_canonical_status()
+        status["template_health"] = {
+            "safe_for_mining": False,
+            "reason_code": "template_unavailable",
+            "blocking_reasons": ["template_unavailable"],
+            "template_available": False,
+            "get_block_template_ready": True,
+            "p2p_mining_fresh": False,
+            "chain_current": True,
+            "p2p_fresh_consensus_peer_count": 4,
+        }
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertFalse(decision.allowed)
+        self.assertIn("template health is unsafe: template_unavailable", decision.reason)
+
+    def test_shared_gate_blocks_zero_coinbase_template_state(self) -> None:
+        status = safe_canonical_status()
+        status["template_health"] = {
+            "safe_for_mining": False,
+            "reason_code": "zero-template-coinbase",
+            "blocking_reasons": ["zero-template-coinbase"],
+            "template_available": True,
+            "template_coinbase_valid": False,
+            "get_block_template_ready": True,
+            "p2p_mining_fresh": True,
+            "chain_current": True,
+            "p2p_fresh_consensus_peer_count": 4,
+        }
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertFalse(decision.allowed)
+        self.assertIn("template health is unsafe: zero-template-coinbase", decision.reason)
+
     def test_status_sampler_cannot_direct_start_pool_when_gate_blocks(self) -> None:
         incidents: list[tuple[str, str]] = []
         with mock.patch.object(status_sampler, "run", side_effect=AssertionError("docker start must not run")), mock.patch.object(
