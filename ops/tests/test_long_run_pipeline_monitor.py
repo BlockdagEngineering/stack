@@ -483,6 +483,65 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
         self.assertEqual(0, summary["anomaly_count"])
         self.assertEqual([], summary["window_anomaly_reasons"])
 
+    def test_sample_window_summary_counts_dashboard_template_skew_when_node_rpc_is_safe(self) -> None:
+        sample = self.sample(
+            "2026-06-25T13:40:02+02:00",
+            accepted_blocks=100,
+            ready_miners=4,
+            p2p_mining_fresh=1,
+            peer_lead_blocks=0,
+            mineable=0,
+            submit_ready=0,
+            template_age_seconds=0.8,
+        )
+        sample["dashboard_status"] = {
+            "can_mine": True,
+            "template_reason_code": "submit-not-ready",
+            "mineable_now": False,
+            "submit_ready": False,
+        }
+        sample["node_rpc"] = {
+            "reason_code": "ok",
+            "mineable_now": True,
+            "submit_ready": True,
+            "p2p_mining_fresh": True,
+        }
+
+        summary = monitor.summarize_sample_window([sample])
+        consistency = summary["status_consistency"]
+
+        self.assertEqual(1, consistency["can_mine_template_contradiction_count"])
+        self.assertEqual(1, consistency["node_rpc_proven_safe_skew_count"])
+        self.assertEqual(0, consistency["unresolved_contradiction_count"])
+        self.assertEqual("submit-not-ready", consistency["first_contradiction"]["template_reason_code"])
+        self.assertEqual("ok", consistency["first_contradiction"]["node_rpc_reason_code"])
+
+    def test_sample_window_summary_counts_unresolved_dashboard_template_contradiction(self) -> None:
+        sample = self.sample(
+            "2026-06-25T13:40:45+02:00",
+            accepted_blocks=100,
+            ready_miners=4,
+            p2p_mining_fresh=1,
+            peer_lead_blocks=0,
+            mineable=0,
+            submit_ready=0,
+            template_age_seconds=0.8,
+        )
+        sample["dashboard_status"] = {
+            "can_mine": True,
+            "template_reason_code": "submit-not-ready",
+            "mineable_now": False,
+            "submit_ready": False,
+        }
+
+        summary = monitor.summarize_sample_window([sample])
+        consistency = summary["status_consistency"]
+
+        self.assertEqual(1, consistency["can_mine_template_contradiction_count"])
+        self.assertEqual(0, consistency["node_rpc_proven_safe_skew_count"])
+        self.assertEqual(1, consistency["unresolved_contradiction_count"])
+        self.assertEqual("submit-not-ready", consistency["last_contradiction"]["template_reason_code"])
+
     def test_sample_window_summary_flags_no_paid_block_progress_with_miner_demand(self) -> None:
         samples = [
             self.sample(

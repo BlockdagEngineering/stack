@@ -718,6 +718,50 @@ def sample_node_rpc_context(sample: dict[str, Any]) -> dict[str, Any]:
     return {key: node_rpc.get(key) for key in keys if key in node_rpc}
 
 
+def status_consistency_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    contradictions: list[dict[str, Any]] = []
+    node_rpc_proven_safe = 0
+    unresolved = 0
+    for sample in samples:
+        dashboard = sample.get("dashboard_status") if isinstance(sample.get("dashboard_status"), dict) else {}
+        if dashboard.get("can_mine") is not True:
+            continue
+        dashboard_submit_ready = dashboard.get("submit_ready")
+        dashboard_mineable = dashboard.get("mineable_now")
+        if dashboard_submit_ready is not False and dashboard_mineable is not False:
+            continue
+        node_rpc = sample.get("node_rpc") if isinstance(sample.get("node_rpc"), dict) else {}
+        rpc_safe = bool(
+            node_rpc.get("reason_code") == "ok"
+            and node_rpc.get("submit_ready") is True
+            and node_rpc.get("mineable_now") is True
+            and node_rpc.get("p2p_mining_fresh") is True
+        )
+        if rpc_safe:
+            node_rpc_proven_safe += 1
+        else:
+            unresolved += 1
+        contradictions.append(
+            {
+                "sampled_at": sample.get("sampled_at"),
+                "template_reason_code": dashboard.get("template_reason_code"),
+                "dashboard_submit_ready": dashboard_submit_ready,
+                "dashboard_mineable_now": dashboard_mineable,
+                "node_rpc_reason_code": node_rpc.get("reason_code"),
+                "node_rpc_submit_ready": node_rpc.get("submit_ready"),
+                "node_rpc_mineable_now": node_rpc.get("mineable_now"),
+                "node_rpc_p2p_mining_fresh": node_rpc.get("p2p_mining_fresh"),
+            }
+        )
+    return {
+        "can_mine_template_contradiction_count": len(contradictions),
+        "node_rpc_proven_safe_skew_count": node_rpc_proven_safe,
+        "unresolved_contradiction_count": unresolved,
+        "first_contradiction": contradictions[0] if contradictions else None,
+        "last_contradiction": contradictions[-1] if contradictions else None,
+    }
+
+
 def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     job_state = sample.get("pool_job_state") if isinstance(sample.get("pool_job_state"), dict) else {}
@@ -915,6 +959,7 @@ def summarize_sample_window(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "anomaly_samples_truncated": max(0, len(anomaly_samples) - 25),
         "critical_anomaly_samples": critical_anomaly_samples[:10],
         "critical_anomaly_samples_truncated": max(0, len(critical_anomaly_samples) - 10),
+        "status_consistency": status_consistency_summary(samples),
     }
     summary["window_anomaly_reasons"] = window_anomaly_reasons(summary)
     return summary
