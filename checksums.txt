@@ -2,4 +2,4 @@
 aace6f654a7aa41cd4b50f72aee7bc73d22af1d410c938bcbcbb0af82aca5661  /home/jeremy/blockdag-source/stack/bin/nodeworker
 d32c1f70d91b81058f223b8b8f45636646252592c6c7160ea10199474c5e252f  /home/jeremy/blockdag-source/stack/bin/mining-pool
 b094592bfa61c529115ec6976acf1b946f49622acd8ddd1d0e64c882c328e393  /home/jeremy/blockdag-source/stack/bin/dashboard-api
-b5769c53bfdac5913f47bc2713a64ad876fe6b018f0d492125c95280c652b297  /home/jeremy/blockdag-source/stack/bin/dashboard
+8896acd68ae9bed7afff04e9ed4e8a9e0727ae9fa21af4d412595f4545770bd0  /home/jeremy/blockdag-source/stack/bin/dashboard
