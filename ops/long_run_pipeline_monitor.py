@@ -538,6 +538,21 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
         reasons.append("mineable_false")
     if submit_ready is not None and submit_ready < 1 and (core_pipeline_reasons or context_missing):
         reasons.append("submit_ready_false")
+    ready_zero = (ready is not None and ready == 0) or (ready_state_number is not None and ready_state_number == 0)
+    if (
+        ready_zero
+        and p2p is not None
+        and p2p < 1
+        and lead is not None
+        and lead > 10
+        and template_age is not None
+        and template_age >= 45
+        and (
+            (mineable is not None and mineable < 1)
+            or (submit_ready is not None and submit_ready < 1)
+        )
+    ):
+        reasons.append("hard_peer_lead_template_stall")
     return reasons
 
 
@@ -551,6 +566,9 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
     ready = gauges.get("ready_miners") if isinstance(gauges.get("ready_miners"), dict) else {}
     p2p = gauges.get("p2p_mining_fresh") if isinstance(gauges.get("p2p_mining_fresh"), dict) else {}
     lead = gauges.get("peer_lead_blocks") if isinstance(gauges.get("peer_lead_blocks"), dict) else {}
+    template_age = gauges.get("template_age_seconds") if isinstance(gauges.get("template_age_seconds"), dict) else {}
+    mineable = gauges.get("mineable") if isinstance(gauges.get("mineable"), dict) else {}
+    submit_ready = gauges.get("submit_ready") if isinstance(gauges.get("submit_ready"), dict) else {}
     accepted_delta = float(accepted.get("delta") or 0.0)
     authorized_max = authorized.get("max")
     try:
@@ -565,6 +583,29 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
         reasons.append("p2p_mining_not_fresh_for_window")
     if lead.get("max") is not None and lead.get("min") is not None and float(lead["max"]) > 10 and float(lead["min"]) > 10:
         reasons.append("peer_lead_exceeds_tolerance_for_window")
+    critical_samples = summary.get("critical_anomaly_samples")
+    if isinstance(critical_samples, list) and critical_samples:
+        critical_reasons = {
+            str(reason)
+            for sample in critical_samples
+            if isinstance(sample, dict)
+            for reason in (sample.get("reasons") if isinstance(sample.get("reasons"), list) else [])
+        }
+        if "hard_peer_lead_template_stall" in critical_reasons:
+            reasons.append("hard_peer_lead_template_stall_observed")
+    if (
+        ready.get("max") == 0
+        and p2p.get("max") == 0
+        and lead.get("max") is not None
+        and float(lead["max"]) > 10
+        and template_age.get("max") is not None
+        and float(template_age["max"]) >= 45
+        and (
+            (mineable.get("max") is not None and float(mineable["max"]) < 1)
+            or (submit_ready.get("max") is not None and float(submit_ready["max"]) < 1)
+        )
+    ):
+        reasons.append("hard_peer_lead_template_stall_for_window")
     return reasons
 
 
@@ -595,6 +636,11 @@ def summarize_sample_window(samples: list[dict[str, Any]]) -> dict[str, Any]:
                 "template_age_seconds": sample_metric(sample, "template_age_seconds"),
             }
         )
+    critical_anomaly_samples = [
+        sample
+        for sample in anomaly_samples
+        if "hard_peer_lead_template_stall" in sample.get("reasons", [])
+    ]
     summary = {
         "sample_count": len(samples),
         "started_at": started_at,
@@ -609,6 +655,8 @@ def summarize_sample_window(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "anomaly_count": len(anomaly_samples),
         "anomaly_samples": anomaly_samples[:25],
         "anomaly_samples_truncated": max(0, len(anomaly_samples) - 25),
+        "critical_anomaly_samples": critical_anomaly_samples[:10],
+        "critical_anomaly_samples_truncated": max(0, len(critical_anomaly_samples) - 10),
     }
     summary["window_anomaly_reasons"] = window_anomaly_reasons(summary)
     return summary

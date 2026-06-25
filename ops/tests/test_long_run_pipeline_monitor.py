@@ -166,6 +166,7 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
             self.sample(
                 "2026-06-25T05:34:00+02:00",
                 accepted_blocks=604,
+                authorized_miners=4,
                 ready_miners=0,
                 p2p_mining_fresh=0,
                 peer_lead_blocks=30,
@@ -184,6 +185,84 @@ class LongRunPipelineMonitorTests(unittest.TestCase):
         self.assertIn("peer_lead_exceeds_tolerance", reasons)
         self.assertIn("mineable_false", reasons)
         self.assertIn("submit_ready_false", reasons)
+        self.assertIn("hard_peer_lead_template_stall", reasons)
+
+    def test_sample_window_summary_flags_sustained_hard_peer_lead_stall(self) -> None:
+        samples = [
+            self.sample(
+                "2026-06-25T05:34:00+02:00",
+                accepted_blocks=604,
+                ready_miners=0,
+                p2p_mining_fresh=0,
+                peer_lead_blocks=30,
+                mineable=0,
+                submit_ready=0,
+                template_age_seconds=52,
+            ),
+            self.sample(
+                "2026-06-25T05:39:00+02:00",
+                accepted_blocks=604,
+                authorized_miners=4,
+                ready_miners=0,
+                p2p_mining_fresh=0,
+                peer_lead_blocks=56,
+                mineable=0,
+                submit_ready=0,
+                template_age_seconds=104,
+            ),
+        ]
+
+        summary = monitor.summarize_sample_window(samples)
+
+        self.assertIn("accepted_blocks_not_advancing", summary["window_anomaly_reasons"])
+        self.assertIn("hard_peer_lead_template_stall_observed", summary["window_anomaly_reasons"])
+        self.assertIn("hard_peer_lead_template_stall_for_window", summary["window_anomaly_reasons"])
+        self.assertEqual(2, len(summary["critical_anomaly_samples"]))
+
+    def test_sample_window_summary_surfaces_single_hard_stall_inside_productive_hour(self) -> None:
+        samples = [
+            self.sample(
+                "2026-06-25T05:00:00+02:00",
+                accepted_blocks=100,
+                authorized_miners=4,
+                ready_miners=4,
+                p2p_mining_fresh=1,
+                peer_lead_blocks=0,
+                mineable=1,
+                submit_ready=1,
+                template_age_seconds=1,
+            ),
+            self.sample(
+                "2026-06-25T05:34:45+02:00",
+                accepted_blocks=604,
+                authorized_miners=4,
+                ready_miners=0,
+                p2p_mining_fresh=0,
+                peer_lead_blocks=30,
+                mineable=0,
+                submit_ready=0,
+                template_age_seconds=52,
+            ),
+            self.sample(
+                "2026-06-25T05:59:00+02:00",
+                accepted_blocks=700,
+                authorized_miners=4,
+                ready_miners=4,
+                p2p_mining_fresh=1,
+                peer_lead_blocks=0,
+                mineable=1,
+                submit_ready=1,
+                template_age_seconds=1,
+            ),
+        ]
+
+        summary = monitor.summarize_sample_window(samples)
+
+        self.assertIn("hard_peer_lead_template_stall_observed", summary["window_anomaly_reasons"])
+        self.assertNotIn("accepted_blocks_not_advancing", summary["window_anomaly_reasons"])
+        self.assertNotIn("hard_peer_lead_template_stall_for_window", summary["window_anomaly_reasons"])
+        self.assertEqual(1, len(summary["critical_anomaly_samples"]))
+        self.assertEqual("2026-06-25T05:34:45+02:00", summary["critical_anomaly_samples"][0]["sampled_at"])
 
     def test_sample_window_summary_ignores_safe_backend_readiness_flicker(self) -> None:
         samples = [

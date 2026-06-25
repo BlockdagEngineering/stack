@@ -148,6 +148,15 @@ DEFAULT_NODE_RPC_REFUSED_POOL_RESTART_GRACE_SECONDS = int(
 DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS", "120")
 )
+DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS", "45")
+)
+DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS", "45")
+)
+DEFAULT_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS", "45")
+)
 DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN", "900")
 )
@@ -597,6 +606,45 @@ def selected_backend_peer_lead_stall_evidence(status: dict[str, Any]) -> dict[st
         "connections_without_current_job": without_job,
         "reason_text": reason_text[:1000],
     }
+
+
+def peer_lead_hard_mining_outage(status: dict[str, Any], evidence: dict[str, Any]) -> bool:
+    if not evidence.get("active"):
+        return False
+    active_miners = int_or_none(evidence.get("active_miners")) or 0
+    authorized_miners = int_or_none(evidence.get("authorized_miners")) or 0
+    ready_miners = int_or_none(evidence.get("ready_miners"))
+    without_job = int_or_none(evidence.get("connections_without_current_job")) or 0
+    miner_demand = active_miners > 0 or authorized_miners > 0
+    if not miner_demand or ready_miners is None or ready_miners > 0:
+        return False
+
+    lead = int_or_none(evidence.get("lead"))
+    tolerance = int_or_none(evidence.get("tolerance")) or 10
+    template_age = float_or_none(evidence.get("template_age_seconds"))
+    p2p_fresh = evidence.get("p2p_mining_fresh")
+    submit_ready = evidence.get("submit_ready")
+    mineable = evidence.get("mineable")
+    reason_text = str(evidence.get("reason_text") or "").lower()
+    backend_blocked = bool(
+        p2p_fresh is False
+        and (submit_ready is False or mineable is False)
+        and (lead is None or lead > tolerance)
+    )
+    hard_peer_lead = bool(lead is not None and lead > tolerance)
+    template_expired = bool(
+        template_age is not None
+        and template_age >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS
+    )
+    node_syncing = "node_syncing" in reason_text or "node-syncing" in reason_text
+    job_starved = ready_miners == 0 and (without_job > 0 or active_miners > 0 or authorized_miners > 0)
+    return bool(
+        job_starved
+        and template_expired
+        and backend_blocked
+        and (hard_peer_lead or node_syncing)
+        and not pool_has_recent_mining_work(status, DEFAULT_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS)
+    )
 
 
 def is_primary_pool_identity(row: dict[str, Any], mining_address: str) -> bool:
@@ -3400,7 +3448,11 @@ def check_once(
         since = int_or_none(state.get("node_peer_lead_stall_since")) or now
         state["node_peer_lead_stall_since"] = since
         stalled_for = now - since
-        recent_mining_work = pool_has_recent_mining_work(status)
+        hard_mining_outage = peer_lead_hard_mining_outage(status, peer_lead_stall)
+        recent_mining_work = pool_has_recent_mining_work(
+            status,
+            DEFAULT_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS if hard_mining_outage else 60,
+        )
         restart_node = choose_lagging_node(status) or primary_node
         active_import_suppresses, active_import_nodes, active_import_details = peer_lead_active_import_suppression(
             status,
@@ -3410,16 +3462,26 @@ def check_once(
             peer_lead_stall,
         )
         active_import = bool(active_import_details.get("active_import"))
+        effective_active_import_suppresses = active_import_suppresses and not hard_mining_outage
+        confirm_seconds = (
+            DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS
+            if hard_mining_outage
+            else DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS
+        )
+        startup_grace_seconds = max(confirm_seconds, DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS)
         last_restart = int_or_none(state.get("last_node_peer_lead_stall_restart_at")) or 0
         cooldown_remaining = DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN - (now - last_restart)
         node_age = container_started_age_seconds(status, restart_node, now)
         startup_remaining = (
-            DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS - node_age
-            if node_age is not None and node_age < DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS
+            startup_grace_seconds - node_age
+            if node_age is not None and node_age < startup_grace_seconds
             else 0
         )
         reason = (
-            "selected pool backend has a sustained peer-lead mining stall "
+            "selected pool backend has a hard peer-lead mining outage "
+            if hard_mining_outage
+            else "selected pool backend has a sustained peer-lead mining stall "
+        ) + (
             f"for {stalled_for}s "
             f"(lead={peer_lead_stall.get('lead')} "
             f"tolerance={peer_lead_stall.get('tolerance')} "
@@ -3428,7 +3490,7 @@ def check_once(
             f"mineable={peer_lead_stall.get('mineable')} "
             f"ready_miners={peer_lead_stall.get('ready_miners')})"
         )
-        if recent_mining_work or active_import_suppresses:
+        if recent_mining_work or effective_active_import_suppresses:
             state["consecutive_syncing"] = 0
         else:
             state["consecutive_syncing"] = int(state.get("consecutive_syncing", 0) or 0) + 1
@@ -3436,16 +3498,19 @@ def check_once(
         state["consecutive_share_stalls"] = 0
         state["last_status"] = (
             "node_peer_lead_stall_observing"
-            if recent_mining_work or active_import_suppresses
+            if recent_mining_work or effective_active_import_suppresses
             else "node_peer_lead_stall"
         )
         state["last_failures"] = []
         state["last_sync_warnings"] = [reason]
         state["last_share_warnings"] = []
         state["last_node_peer_lead_stall_evidence"] = peer_lead_stall
+        state["last_node_peer_lead_hard_mining_outage"] = hard_mining_outage
         log(
             "node_peer_lead_stall "
             f"stalled_for={stalled_for}s recent_mining_work={recent_mining_work} "
+            f"hard_mining_outage={hard_mining_outage} confirm_seconds={confirm_seconds} "
+            f"startup_grace_seconds={startup_grace_seconds} "
             f"active_import={active_import} active_import_suppresses={active_import_suppresses} "
             f"active_import_nodes={active_import_nodes} "
             f"cooldown_remaining={max(cooldown_remaining, 0)}s "
@@ -3453,15 +3518,19 @@ def check_once(
             f"active_import_details={active_import_details} evidence={peer_lead_stall}"
         )
         record_efficiency_event(
-            "node_peer_lead_stall",
-            "warning" if recent_mining_work or active_import_suppresses else "critical",
+            "node_peer_lead_hard_mining_outage" if hard_mining_outage else "node_peer_lead_stall",
+            "warning" if recent_mining_work or effective_active_import_suppresses else "critical",
             reason,
             {
                 "evidence": peer_lead_stall,
                 "stalled_for_seconds": stalled_for,
                 "recent_mining_work": recent_mining_work,
+                "hard_mining_outage": hard_mining_outage,
+                "confirm_seconds": confirm_seconds,
+                "startup_grace_seconds": startup_grace_seconds,
                 "active_import_nodes": active_import_nodes,
-                "active_import_suppresses": active_import_suppresses,
+                "active_import_suppresses": effective_active_import_suppresses,
+                "raw_active_import_suppresses": active_import_suppresses,
                 "active_import_details": active_import_details,
                 "restart_node": restart_node,
                 "cooldown_remaining_seconds": max(cooldown_remaining, 0),
@@ -3474,9 +3543,14 @@ def check_once(
                 "repair_suppressed",
                 "warning",
                 "peer-lead stall repair suppressed because paid block submission is fresh",
-                {"evidence": peer_lead_stall, "freshness_seconds": 60},
+                {
+                    "evidence": peer_lead_stall,
+                    "freshness_seconds": DEFAULT_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS
+                    if hard_mining_outage
+                    else 60,
+                },
             )
-        elif repair and active_import_suppresses:
+        elif repair and effective_active_import_suppresses:
             log(
                 "peer-lead stall repair suppressed while block import is active "
                 f"target={restart_node} active_nodes={','.join(active_import_nodes)} details={active_import_details}"
@@ -3494,11 +3568,12 @@ def check_once(
             )
         elif (
             repair
-            and stalled_for >= DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS
+            and stalled_for >= confirm_seconds
             and cooldown_remaining <= 0
             and startup_remaining <= 0
         ):
-            ok = run_node_restart(restart_node, "peer-lead exceeds tolerance: " + reason)
+            restart_prefix = "hard peer-lead mining outage: " if hard_mining_outage else "peer-lead exceeds tolerance: "
+            ok = run_node_restart(restart_node, restart_prefix + reason)
             state["last_repair_at"] = int(time.time())
             state["last_sync_repair_at"] = int(time.time())
             state["last_node_peer_lead_stall_restart_at"] = now
