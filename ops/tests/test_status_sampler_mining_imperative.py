@@ -423,6 +423,52 @@ class StatusSamplerMiningImperativeTests(unittest.TestCase):
         self.assertEqual(policy["trigger"], "node_syncing")
         self.assertEqual(policy["lag_blocks"], 5)
 
+    def test_catchup_policy_classifies_p2p_fresh_node_syncing_as_template_wedge(self) -> None:
+        payload = self.stopped_pool_payload(sync_status="synced", remaining_blocks=0)
+        payload["overall"] = "syncing"
+        payload["can_mine"] = False
+        payload["can_submit_blocks"] = False
+        payload["miner_health"] = {"connected_count": 2, "managed_count": 2}
+        payload["pool_job_state"] = {
+            "active_connections": 2,
+            "authorized_connections": 2,
+            "ready_connections": 0,
+            "connections_without_current_job": 2,
+            "reason_code": "miners_without_current_job",
+        }
+        payload["pool_health"] = {
+            "selected_backend_source_health": {
+                "node_mineable": False,
+                "node_submit_ready": False,
+                "node_get_block_template_ready": False,
+                "node_p2p_mining_fresh": True,
+                "node_p2p_best_peer_lead_blocks": 0,
+                "node_p2p_peer_lead_tolerance_blocks": 10,
+                "node_reason_code": "node_syncing",
+            },
+            "source_job_health": {
+                "authorized_miners": 2,
+                "ready_miners": 0,
+                "reason_code": "miners_without_current_job",
+            },
+            "template_health": {
+                "mineable_now": False,
+                "submit_ready": False,
+                "get_block_template_ready": False,
+                "p2p_mining_fresh": True,
+                "p2p_best_peer_lead_blocks": 0,
+                "p2p_peer_lead_tolerance_blocks": 10,
+                "reason_code": "node_syncing",
+            },
+        }
+
+        policy = status_sampler.catchup_policy_from_payload(payload)
+
+        self.assertTrue(status_sampler.template_sync_wedge_active(payload))
+        self.assertTrue(policy["active"])
+        self.assertTrue(policy["template_sync_wedge_active"])
+        self.assertEqual("template_sync_wedge", policy["trigger"])
+
     def test_syncing_node_leaves_running_pool_up_below_lag_threshold(self) -> None:
         commands = []
         env_updates = {}

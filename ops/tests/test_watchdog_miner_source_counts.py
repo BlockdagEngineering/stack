@@ -616,6 +616,146 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         self.assertTrue(any(event[0] == "asic_hardware_power_cycle_required" for event in events))
         self.assertTrue(any("power-cycle required" in event[2] for event in events))
 
+    def test_hardware_power_cycle_state_clears_after_live_mining_recovery(self) -> None:
+        mac = "28:e2:97:4d:44:3a"
+        identity = f"mac:{mac}"
+        row = api_stalled_asic_row(
+            mac=mac,
+            stale_age=4,
+            status="mining",
+            device_telemetry_errors=None,
+        )
+        row.update(
+            {
+                "configured": True,
+                "connected": True,
+                "debug": {"available": True, "hashrate": 245.0},
+                "debug_error": None,
+                "device_accepted": "42",
+                "last_pool_seen_age_seconds": 2,
+                "last_share_age_seconds": 2,
+                "pool_active": True,
+                "ready": True,
+                "shares": 42,
+                "work_pool_active": True,
+            }
+        )
+        status = {
+            "failures": [],
+            "stack_failures": [],
+            "miner_failures": [],
+            "overall": "ok",
+            "mining_address": ADDRESS,
+            "nodes": {},
+            "sync_health": {},
+            "sync_progress": {"status": "synced", "remaining_blocks": 0, "nodes": {}},
+            "pool_health": {
+                "initial_download": False,
+                "job_notify_count": 12,
+                "valid_share_count": 42,
+            },
+            "miner_health": {
+                "connected_count": 1,
+                "connected_count_effective": 1,
+                "managed_count": 1,
+                "miners": [row],
+            },
+        }
+        state = {
+            "last_status": "asic_hardware_power_cycle_required",
+            "last_share_warnings": ["hardware power-cycle required"],
+            "last_asic_hardware_power_cycle_required": [
+                {"identity_key": identity, "ip": row["ip"], "mac": mac}
+            ],
+            "asic_api_stall_since": {identity: self.now - 1200},
+            "asic_staged_recovery_by_identity": {
+                identity: {
+                    "first_seen_at": self.now - 1200,
+                    "open_restart_at": self.now - 900,
+                    "auth_retry_at": self.now - 600,
+                    "power_cycle_required_at": self.now - 300,
+                    "last_stage": "hardware-power-cycle-required",
+                }
+            },
+        }
+        events: list[tuple[str, str, str, dict[str, object]]] = []
+        written: list[dict[str, object]] = []
+
+        def record(event_type: str, severity: str, message: str, details=None) -> None:
+            events.append((event_type, severity, message, details or {}))
+
+        with mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", side_effect=record
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_miner_restarts", side_effect=AssertionError("recovered ASIC must not be restarted")
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("ok", result["watchdog_state"]["last_status"])
+        self.assertNotIn("last_asic_hardware_power_cycle_required", result["watchdog_state"])
+        self.assertNotIn(identity, result["watchdog_state"]["asic_staged_recovery_by_identity"])
+        self.assertNotIn(identity, result["watchdog_state"]["asic_api_stall_since"])
+        self.assertEqual(identity, result["watchdog_state"]["last_asic_hardware_power_cycle_cleared"]["recovered_miners"][0]["identity_key"])
+        self.assertTrue(any(event[0] == "asic_hardware_power_cycle_cleared" for event in events))
+        self.assertTrue(written)
+
+    def test_hardware_power_cycle_state_clears_from_ready_pool_client(self) -> None:
+        mac = "28:e2:97:4d:44:3a"
+        identity = f"mac:{mac}"
+        state = {
+            "last_status": "asic_hardware_power_cycle_required",
+            "last_share_warnings": ["hardware power-cycle required"],
+            "last_asic_hardware_power_cycle_required": [
+                {"identity_key": identity, "ip": "192.168.1.16", "mac": mac}
+            ],
+            "asic_staged_recovery_by_identity": {
+                identity: {"power_cycle_required_at": self.now - 300}
+            },
+        }
+        pool_job_state = {
+            "clients": [
+                {
+                    "remote_host": "192.168.1.16",
+                    "asic_mac": mac,
+                    "ready": True,
+                    "authorized": True,
+                    "subscribed": True,
+                    "current_job_id": "9181-test",
+                    "reason_code": "ok",
+                }
+            ]
+        }
+
+        with mock.patch.object(watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ):
+            recovered = watchdog.clear_recovered_asic_hardware_power_cycle_state(
+                state,
+                [],
+                ADDRESS,
+                pool_job_state,
+                [],
+                self.now,
+            )
+
+        self.assertEqual([identity], [item["identity_key"] for item in recovered])
+        self.assertNotIn("last_asic_hardware_power_cycle_required", state)
+        self.assertEqual("asic_hardware_power_cycle_cleared", state["last_status"])
+
     def test_remote_power_cycle_runs_configured_command_by_mac(self) -> None:
         row = api_stalled_asic_row()
         state: dict[str, object] = {}

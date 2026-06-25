@@ -152,14 +152,20 @@ DEFAULT_NODE_RPC_REFUSED_POOL_RESTART_GRACE_SECONDS = int(
 DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS", "120")
 )
-DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS = int(
-    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS", "10")
+DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS = max(
+    60,
+    int(os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS", "60")),
 )
 DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS", "30")
 )
-DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS = int(
-    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS", "12")
+DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS = max(
+    30,
+    int(os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS", "30")),
+)
+DEFAULT_NODE_PEER_LEAD_HARD_STALL_MIN_LEAD_BLOCKS = max(
+    30,
+    int(os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_MIN_LEAD_BLOCKS", "30")),
 )
 DEFAULT_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS", "20")
@@ -189,7 +195,10 @@ DEFAULT_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS", "60")
 )
 DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS = int(
-    os.environ.get("BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS", "45")
+    os.environ.get("BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS", "180")
+)
+DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS", "20")
 )
 DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_REPAIR_COOLDOWN = int(
     os.environ.get(
@@ -641,6 +650,34 @@ def selected_backend_peer_lead_stall_evidence(status: dict[str, Any]) -> dict[st
     reason_text = " ".join(str(value or "") for value in reason_values).lower()
     lead_exceeds_tolerance = bool(lead is not None and lead > tolerance)
     peer_lead_reason = "peer_lead_exceeds_tolerance" in reason_text or "peer-lead-exceeds-tolerance" in reason_text
+    soft_template_wedge_lead = max(tolerance, DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS)
+    node_syncing_reason = any(
+        fragment in reason_text
+        for fragment in (
+            "node_syncing",
+            "node-syncing",
+            "pending-template backend is syncing",
+            "backend is syncing",
+        )
+    )
+    template_sync_wedge_like = bool(
+        p2p_fresh is True
+        and (lead is None or lead <= soft_template_wedge_lead)
+        and (submit_ready is False or mineable is False)
+        and node_syncing_reason
+    )
+    if template_sync_wedge_like:
+        return {
+            "active": False,
+            "miner_demand": miner_demand,
+            "lead": lead,
+            "tolerance": tolerance,
+            "p2p_mining_fresh": p2p_fresh,
+            "fresh_consensus_peer_count": fresh_peer_count,
+            "consensus_peer_count": consensus_peer_count,
+            "peer_starvation": False,
+            "template_sync_wedge_like": True,
+        }
     p2p_peer_lead_unfresh = bool(p2p_fresh is False and (lead_exceeds_tolerance or peer_lead_reason))
     fresh_peer_starved = bool(
         fresh_peer_count is not None
@@ -849,7 +886,7 @@ def selected_backend_template_sync_wedge_evidence(status: dict[str, Any]) -> dic
         *(status.get("warnings", []) if isinstance(status.get("warnings"), list) else []),
     ]
     reason_text = " ".join(str(value or "") for value in reason_values).lower()
-    lead_safe = lead is None or lead <= tolerance
+    lead_safe = lead is None or lead <= max(tolerance, DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS)
     fresh_peers_safe = fresh_peer_count is None or fresh_peer_count >= 2
     p2p_safe = bool(p2p_fresh is True and lead_safe and fresh_peers_safe)
     template_blocked = bool(
@@ -936,13 +973,16 @@ def peer_lead_hard_mining_outage(status: dict[str, Any], evidence: dict[str, Any
     p2p_fresh = evidence.get("p2p_mining_fresh")
     submit_ready = evidence.get("submit_ready")
     mineable = evidence.get("mineable")
-    reason_text = str(evidence.get("reason_text") or "").lower()
+    hard_peer_lead_threshold = max(
+        tolerance + 10,
+        DEFAULT_NODE_PEER_LEAD_HARD_STALL_MIN_LEAD_BLOCKS,
+    )
+    hard_peer_lead = bool(lead is not None and lead >= hard_peer_lead_threshold)
     backend_blocked = bool(
         p2p_fresh is False
         and (submit_ready is False or mineable is False)
-        and (lead is None or lead > tolerance or peer_starvation)
+        and (hard_peer_lead or peer_starvation)
     )
-    hard_peer_lead = bool(lead is not None and lead > tolerance)
     template_expired = bool(
         template_age is not None
         and template_age >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS
@@ -951,13 +991,12 @@ def peer_lead_hard_mining_outage(status: dict[str, Any], evidence: dict[str, Any
         pool_job_age is not None
         and pool_job_age >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS
     )
-    node_syncing = "node_syncing" in reason_text or "node-syncing" in reason_text
     job_starved = ready_miners == 0 and (without_job > 0 or active_miners > 0 or authorized_miners > 0)
     return bool(
         job_starved
         and (template_expired or all_jobs_invalidated_long_enough)
         and backend_blocked
-        and (hard_peer_lead or node_syncing or peer_starvation)
+        and (hard_peer_lead or peer_starvation)
         and not pool_has_recent_mining_work(status, DEFAULT_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS)
     )
 
@@ -1258,6 +1297,181 @@ def mark_asic_hardware_power_cycle_required(
             {"affected_miners": marked},
         )
     return marked
+
+
+def asic_power_cycle_recovered(row: dict[str, Any], max_age_seconds: int = DEFAULT_ASIC_API_STALL_STALE_SECONDS) -> bool:
+    if asic_has_recent_useful_work(row, max_age_seconds):
+        return True
+    api_stall, _issue_text = asic_api_stall_evidence(row)
+    telemetry_status = normalise_status_text(
+        row.get("device_telemetry_status")
+        or row.get("telemetry_status")
+        or row.get("status")
+        or row.get("health")
+        or ""
+    )
+    has_telemetry_errors = bool(row.get("device_telemetry_errors") or row.get("telemetry_errors") or row.get("debug_error"))
+    return bool(
+        not api_stall
+        and not has_telemetry_errors
+        and (
+            telemetry_status in {"ok", "ready", "connected", "mining", "active"}
+            or (row.get("device_type") == "asic" and row.get("connected") is True)
+        )
+    )
+
+
+def miner_identity_aliases(item: dict[str, Any]) -> set[str]:
+    aliases: set[str] = set()
+    key = miner_stall_identity_key(item)
+    if key:
+        aliases.add(key.lower())
+    device_id = str(item.get("device_id") or "").strip().lower()
+    if device_id:
+        aliases.add(device_id)
+    mac = normalise_mac(item.get("mac") or item.get("asic_mac"))
+    if mac:
+        aliases.add(f"mac:{mac}".lower())
+        aliases.add(mac.lower())
+    ip = str(
+        item.get("ip")
+        or item.get("remote_host")
+        or str(item.get("address") or "").split(":", 1)[0]
+        or ""
+    ).strip()
+    if ip:
+        aliases.add(f"ip:{ip}")
+        aliases.add(ip)
+    return {alias for alias in aliases if alias}
+
+
+def clear_recovered_asic_hardware_power_cycle_state(
+    state: dict[str, Any],
+    miner_rows: list[Any],
+    mining_address: str,
+    pool_job_state: dict[str, Any],
+    active_api_stall_asics: list[dict[str, Any]],
+    now: int,
+) -> list[dict[str, Any]]:
+    staged = get_asic_staged_recovery(state)
+    active_stall_keys: set[str] = set()
+    for item in active_api_stall_asics:
+        if isinstance(item, dict):
+            active_stall_keys.update(miner_identity_aliases(item))
+    required_keys = {
+        key
+        for key, record in staged.items()
+        if isinstance(record, dict) and record.get("power_cycle_required_at")
+    }
+    prior_required = (
+        state.get("last_asic_hardware_power_cycle_required")
+        if isinstance(state.get("last_asic_hardware_power_cycle_required"), list)
+        else []
+    )
+    for item in prior_required:
+        if isinstance(item, dict):
+            key = str(item.get("identity_key") or "").strip().lower()
+            if key:
+                required_keys.add(key)
+    if not required_keys:
+        return []
+
+    recovered: list[dict[str, Any]] = []
+    recovered_keys: set[str] = set()
+    for row in miner_rows:
+        if not isinstance(row, dict):
+            continue
+        aliases = miner_identity_aliases(row)
+        matched_keys = aliases & required_keys
+        if not matched_keys or aliases & active_stall_keys:
+            continue
+        if row.get("device_type") not in {"asic", "stratum"}:
+            continue
+        if not is_primary_pool_identity(row, mining_address):
+            continue
+        if not asic_power_cycle_recovered(row, DEFAULT_ASIC_API_STALL_STALE_SECONDS):
+            continue
+        key = sorted(matched_keys)[0]
+        staged.pop(key, None)
+        recovered_keys.add(key)
+        recovered.append(
+            {
+                "identity_key": key,
+                "ip": row.get("ip"),
+                "mac": row.get("mac"),
+                "status": row.get("status"),
+                "pool_active": row.get("pool_active"),
+                "work_pool_active": row.get("work_pool_active"),
+                "ready": row.get("ready"),
+                "last_share_age_seconds": row.get("last_share_age_seconds"),
+                "last_submit_age_seconds": row.get("last_submit_age_seconds"),
+                "last_pool_seen_age_seconds": row.get("last_pool_seen_age_seconds"),
+            }
+        )
+
+    for client in pool_job_state.get("clients", []) if isinstance(pool_job_state.get("clients"), list) else []:
+        if not isinstance(client, dict):
+            continue
+        aliases = miner_identity_aliases(client)
+        matched_keys = aliases & required_keys
+        if not matched_keys or aliases & active_stall_keys:
+            continue
+        if client.get("ready") is not True or client.get("authorized") is not True:
+            continue
+        key = sorted(matched_keys)[0]
+        if key in recovered_keys:
+            continue
+        staged.pop(key, None)
+        recovered_keys.add(key)
+        recovered.append(
+            {
+                "identity_key": key,
+                "ip": client.get("remote_host") or str(client.get("address") or "").split(":", 1)[0],
+                "mac": client.get("asic_mac") or client.get("mac"),
+                "status": "pool-client-ready",
+                "ready": client.get("ready"),
+                "authorized": client.get("authorized"),
+                "subscribed": client.get("subscribed"),
+                "current_job_id": client.get("current_job_id"),
+                "reason_code": client.get("reason_code"),
+            }
+        )
+
+    if not recovered:
+        return []
+
+    state["asic_staged_recovery_by_identity"] = staged
+    api_stall_since = state.get("asic_api_stall_since") if isinstance(state.get("asic_api_stall_since"), dict) else {}
+    if api_stall_since:
+        state["asic_api_stall_since"] = {
+            key: value for key, value in api_stall_since.items() if str(key).lower() not in recovered_keys
+        }
+
+    remaining_required = [
+        item
+        for item in prior_required
+        if isinstance(item, dict) and str(item.get("identity_key") or "").strip().lower() not in recovered_keys
+    ]
+    if remaining_required:
+        state["last_asic_hardware_power_cycle_required"] = remaining_required
+    else:
+        state.pop("last_asic_hardware_power_cycle_required", None)
+        if state.get("last_status") == "asic_hardware_power_cycle_required":
+            state["last_status"] = "asic_hardware_power_cycle_cleared"
+            state["last_share_warnings"] = []
+
+    state["last_asic_hardware_power_cycle_cleared"] = {
+        "at": now_iso(),
+        "recovered_miners": recovered,
+    }
+    log(f"cleared stale ASIC hardware power-cycle state for {recovered}")
+    record_efficiency_event(
+        "asic_hardware_power_cycle_cleared",
+        "warning",
+        "cleared stale ASIC hardware power-cycle requirement after live mining recovery",
+        {"recovered_miners": recovered, "remaining_required": remaining_required},
+    )
+    return recovered
 
 
 def int_or_none(value: Any) -> int | None:
@@ -3591,6 +3805,14 @@ def check_once(
         DEFAULT_ASIC_HASHRATE_STALE_SECONDS,
     )
     degraded_asics = degraded_primary_miners(status, DEFAULT_ASIC_DEGRADED_SECONDS)
+    cleared_power_cycle_asics = clear_recovered_asic_hardware_power_cycle_state(
+        state,
+        miner_rows,
+        mining_address,
+        status.get("pool_job_state") if isinstance(status.get("pool_job_state"), dict) else {},
+        api_stall_asics,
+        now,
+    )
     primary_miner_count = sum(
         1
         for item in miner_rows
@@ -4083,7 +4305,7 @@ def check_once(
         restart_node = primary_node
         active_import_nodes = active_sync_import_nodes(status, state=state, now=now)
         active_import = restart_node in active_import_nodes
-        effective_active_import_suppresses = active_import and not hard_mining_outage
+        effective_active_import_suppresses = active_import
         confirm_seconds = DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS
         last_restart = int_or_none(state.get("last_node_template_sync_wedge_restart_at")) or 0
         cooldown_remaining = DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_REPAIR_COOLDOWN - (now - last_restart)
@@ -5333,16 +5555,19 @@ def loop(
         f"node_rpc_refused_cooldown={DEFAULT_NODE_RPC_REFUSED_REPAIR_COOLDOWN}s "
         f"node_rpc_refused_pool_grace={DEFAULT_NODE_RPC_REFUSED_POOL_RESTART_GRACE_SECONDS}s "
         f"node_peer_lead_stall_confirm={DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS}s "
+        f"node_peer_lead_hard_stall_confirm={DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS}s "
         f"node_peer_lead_stall_cooldown={DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN}s "
         f"node_peer_lead_active_import_suppress={DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_SUPPRESS_SECONDS}s "
         f"node_peer_lead_active_import_worsen={DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_WORSEN_BLOCKS}blocks "
         f"node_peer_lead_active_import_max_lead={DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_MAX_LEAD_BLOCKS}blocks "
         f"node_peer_starvation_min_fresh_peers={DEFAULT_NODE_PEER_STARVATION_MIN_FRESH_PEERS} "
+        f"node_peer_lead_hard_stall_min_lead={DEFAULT_NODE_PEER_LEAD_HARD_STALL_MIN_LEAD_BLOCKS}blocks "
         f"node_peer_lead_hard_stall_job_age={DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS}s "
         f"node_peer_lead_hard_stall_retry_cooldown={DEFAULT_NODE_PEER_LEAD_HARD_STALL_RETRY_COOLDOWN}s "
         f"node_peer_lead_hard_stall_active_import_max_wait="
         f"{DEFAULT_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS}s "
         f"node_template_sync_wedge_confirm={DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS}s "
+        f"node_template_sync_wedge_soft_lead={DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS}blocks "
         f"node_template_sync_wedge_cooldown={DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_REPAIR_COOLDOWN}s "
         f"earnings_snapshot_interval={DEFAULT_EARNINGS_SNAPSHOT_INTERVAL_SECONDS}s"
     )

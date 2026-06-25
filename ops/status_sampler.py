@@ -453,6 +453,90 @@ def chain_ready_for_mining(payload: dict[str, Any]) -> bool:
     return payload.get("overall") == "ok" and not payload.get("sync_warnings")
 
 
+def template_sync_wedge_active(payload: dict[str, Any]) -> bool:
+    pool = dict_value(payload.get("pool"))
+    pool_metrics = dict_value(payload.get("pool_metrics"))
+    pool_health = dict_value(payload.get("pool_health")) or pool
+    template_health = dict_value(payload.get("template_health")) or dict_value(pool_health.get("template_health"))
+    selected_health = (
+        dict_value(pool_metrics.get("selected_backend_source_health"))
+        or dict_value(pool_health.get("selected_backend_source_health"))
+        or dict_value(pool.get("selected_backend_source_health"))
+    )
+    pool_job_state = dict_value(payload.get("pool_job_state"))
+    source_job_health = (
+        dict_value(pool_health.get("source_job_health"))
+        or dict_value(pool_metrics.get("source_job_health"))
+        or dict_value(pool.get("source_job_health"))
+    )
+    miner_health = dict_value(payload.get("miner_health"))
+
+    active = safe_int(pool_job_state.get("active_connections"), 0) or safe_int(pool_metrics.get("active_connections"), 0)
+    authorized = safe_int(pool_job_state.get("authorized_connections"), 0) or safe_int(
+        source_job_health.get("authorized_miners"),
+        0,
+    )
+    managed = safe_int(miner_health.get("managed_count"), 0) or safe_int(miner_health.get("connected_count"), 0)
+    ready = safe_int(pool_job_state.get("ready_connections"), 0) or safe_int(source_job_health.get("ready_miners"), 0)
+    without_job = safe_int(pool_job_state.get("connections_without_current_job"), 0)
+    miner_demand = active > 0 or authorized > 0 or managed > 0
+    job_starved = ready <= 0 and (without_job > 0 or miner_demand)
+
+    p2p_fresh = selected_health.get("node_p2p_mining_fresh")
+    if p2p_fresh is None:
+        p2p_fresh = selected_health.get("p2p_mining_fresh", template_health.get("p2p_mining_fresh"))
+    lead = safe_int(
+        selected_health.get(
+            "node_p2p_best_peer_lead_blocks",
+            selected_health.get("p2p_best_peer_lead_blocks", template_health.get("p2p_best_peer_lead_blocks", 0)),
+        ),
+        0,
+    )
+    tolerance = safe_int(
+        selected_health.get(
+            "node_p2p_peer_lead_tolerance_blocks",
+            selected_health.get("p2p_peer_lead_tolerance_blocks", template_health.get("p2p_peer_lead_tolerance_blocks", 10)),
+        ),
+        10,
+    )
+    mineable = selected_health.get("node_mineable", selected_health.get("mineable", template_health.get("mineable_now")))
+    submit_ready = selected_health.get("node_submit_ready", selected_health.get("submit_ready", template_health.get("submit_ready")))
+    get_block_template_ready = selected_health.get(
+        "node_get_block_template_ready",
+        selected_health.get("get_block_template_ready", template_health.get("get_block_template_ready")),
+    )
+    template_blocked = bool(mineable is False or submit_ready is False or get_block_template_ready is False)
+    reason_values = [
+        selected_health.get("node_reason_code"),
+        selected_health.get("reason_code"),
+        template_health.get("reason_code"),
+        pool_job_state.get("reason_code"),
+        source_job_health.get("reason_code"),
+        source_job_health.get("reason"),
+        dict_value(payload.get("sync_progress")).get("error"),
+    ]
+    reason_text = " ".join(str(value or "") for value in reason_values).lower()
+    syncing_reason = any(
+        fragment in reason_text
+        for fragment in (
+            "node_syncing",
+            "node-syncing",
+            "pending-template backend is syncing",
+            "backend is syncing",
+            "template_parent_stale",
+            "template-parent-stale",
+        )
+    )
+    return bool(
+        miner_demand
+        and job_starved
+        and bool(p2p_fresh)
+        and lead <= tolerance
+        and template_blocked
+        and syncing_reason
+    )
+
+
 def canonical_safety_payloads(payload: dict[str, Any]) -> list[dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
 
@@ -608,6 +692,7 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     lag = catchup_lag_blocks(payload)
     sync = dict_value(payload.get("sync_progress"))
     sync_status = str(sync.get("status") or "").strip().lower()
+    template_sync_wedge = template_sync_wedge_active(payload)
     syncing_active = bool(
         policy.get("syncing_active")
         or (
@@ -635,10 +720,15 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     lag_threshold_active = bool(lag > threshold and (not chain_ready_for_mining(payload) or not mining_ready))
     active = bool(policy.get("active")) if "active" in policy else False
     if not active:
-        active = bool(CATCHUP_PAUSE_ENABLED and (syncing_active or io_pressure_active or lag_threshold_active))
+        active = bool(
+            CATCHUP_PAUSE_ENABLED
+            and (syncing_active or template_sync_wedge or io_pressure_active or lag_threshold_active)
+        )
     trigger = str(policy.get("trigger") or "")
     if not trigger and active:
-        if syncing_active:
+        if template_sync_wedge:
+            trigger = "template_sync_wedge"
+        elif syncing_active:
             trigger = "node_syncing"
         elif io_pressure_active:
             trigger = "io_pressure"
@@ -655,6 +745,7 @@ def catchup_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "threshold_blocks": threshold,
         "syncing_pause_enabled": CATCHUP_PAUSE_ON_SYNCING,
         "syncing_active": syncing_active,
+        "template_sync_wedge_active": template_sync_wedge,
         "sync_status": sync_status,
         "io_pressure_pause_enabled": io_pressure_enabled,
         "io_pressure_active": io_pressure_active,

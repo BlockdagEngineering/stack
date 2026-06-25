@@ -910,6 +910,22 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
         )
     ):
         reasons.append("hard_peer_lead_template_stall")
+    node_rpc = sample.get("node_rpc") if isinstance(sample.get("node_rpc"), dict) else {}
+    node_reason = str(node_rpc.get("reason_code") or job_state.get("reason_code") or "").lower()
+    p2p_safe = p2p is not None and p2p >= 1
+    peer_lead_safe = lead is None or lead <= 10
+    if (
+        ready_zero
+        and p2p_safe
+        and peer_lead_safe
+        and hard_age_evidence
+        and (
+            (mineable is not None and mineable < 1)
+            or (submit_ready is not None and submit_ready < 1)
+        )
+        and node_reason in {"node_syncing", "node-syncing", "template_parent_stale", "template-parent-stale"}
+    ):
+        reasons.append("template_sync_wedge")
     return reasons
 
 
@@ -1032,6 +1048,8 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
         }
         if "hard_peer_lead_template_stall" in critical_reasons:
             reasons.append("hard_peer_lead_template_stall_observed")
+        if "template_sync_wedge" in critical_reasons:
+            reasons.append("template_sync_wedge_observed")
         if any(
             bool((sample.get("node_log_context") or {}).get("graph_sync_open"))
             for sample in critical_samples
@@ -1069,6 +1087,21 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
         )
     ):
         reasons.append("hard_peer_lead_template_stall_for_window")
+    if (
+        ready.get("max") == 0
+        and p2p.get("min") is not None
+        and float(p2p["min"]) >= 1
+        and (lead.get("max") is None or float(lead["max"]) <= 10)
+        and (
+            (template_age.get("max") is not None and float(template_age["max"]) >= 45)
+            or (pool_job_age.get("max") is not None and float(pool_job_age["max"]) >= 12)
+        )
+        and (
+            (mineable.get("max") is not None and float(mineable["max"]) < 1)
+            or (submit_ready.get("max") is not None and float(submit_ready["max"]) < 1)
+        )
+    ):
+        reasons.append("template_sync_wedge_for_window")
     return reasons
 
 
@@ -1129,7 +1162,10 @@ def summarize_sample_window(samples: list[dict[str, Any]]) -> dict[str, Any]:
     critical_anomaly_samples = [
         sample
         for sample in anomaly_samples
-        if "hard_peer_lead_template_stall" in sample.get("reasons", [])
+        if (
+            "hard_peer_lead_template_stall" in sample.get("reasons", [])
+            or "template_sync_wedge" in sample.get("reasons", [])
+        )
     ]
     summary = {
         "sample_count": len(samples),

@@ -150,12 +150,17 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn("BDAG_WATCHDOG_INTERVAL: ${BDAG_WATCHDOG_INTERVAL:-5}", watchdog_block)
         self.assertIn(
             "BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS: "
-            "${BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS:-10}",
+            "${BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS:-60}",
             watchdog_block,
         )
         self.assertIn(
             "BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS: "
-            "${BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS:-12}",
+            "${BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS:-30}",
+            watchdog_block,
+        )
+        self.assertIn(
+            "BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_MIN_LEAD_BLOCKS: "
+            "${BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_MIN_LEAD_BLOCKS:-30}",
             watchdog_block,
         )
         self.assertIn(
@@ -178,9 +183,20 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
             "${BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS:-60}",
             watchdog_block,
         )
+        self.assertIn(
+            "BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS: "
+            "${BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS:-180}",
+            watchdog_block,
+        )
+        self.assertIn(
+            "BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS: "
+            "${BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS:-20}",
+            watchdog_block,
+        )
         self.assertIn("Environment=BDAG_WATCHDOG_INTERVAL=5", installer)
-        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS=10", installer)
-        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS=12", installer)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS=60", installer)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS=30", installer)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_MIN_LEAD_BLOCKS=30", installer)
         self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_STARVATION_MIN_FRESH_PEERS=2", installer)
         self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN=300", installer)
         self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_RETRY_COOLDOWN=90", installer)
@@ -188,14 +204,19 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
             "Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS=60",
             installer,
         )
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS=180", installer)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS=20", installer)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_REPAIR_COOLDOWN=900", installer)
         self.assertNotIn("Environment=BDAG_WATCHDOG_INTERVAL=30", installer)
         self.assertNotIn("Environment=BDAG_WATCHDOG_INTERVAL=60", installer)
         self.assertIn("Environment=BDAG_WATCHDOG_INTERVAL=5", user_watchdog)
         self.assertIn("Environment=BDAG_WATCHDOG_INTERVAL=5", system_watchdog)
-        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS=10", user_watchdog)
-        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS=10", system_watchdog)
-        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS=12", user_watchdog)
-        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS=12", system_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS=60", user_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS=60", system_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS=30", user_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS=30", system_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_MIN_LEAD_BLOCKS=30", user_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_MIN_LEAD_BLOCKS=30", system_watchdog)
         self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_STARVATION_MIN_FRESH_PEERS=2", user_watchdog)
         self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_STARVATION_MIN_FRESH_PEERS=2", system_watchdog)
         self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN=300", user_watchdog)
@@ -210,6 +231,10 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
             "Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECONDS=60",
             system_watchdog,
         )
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS=180", user_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS=180", system_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS=20", user_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS=20", system_watchdog)
         self.assertIn("FROM docker:27-cli AS ops-runtime", dockerfile)
         self.assertIn("FROM ops-runtime AS watchdog", dockerfile)
         self.assertIn("FROM ops-runtime AS status-sampler", dockerfile)

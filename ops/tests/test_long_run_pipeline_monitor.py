@@ -719,6 +719,38 @@ pool_block_submit_outcomes_total{outcome="accepted",pool_id="0",reason="ok"} 570
         self.assertIn("graph_sync_reorg_turbulence_mining_intact", summary["advisory_samples"][0]["reasons"])
         self.assertIn("graph_sync_reorg_turbulence_mining_intact_observed", summary["window_advisory_reasons"])
 
+    def test_sample_window_summary_flags_template_sync_wedge_separately_from_peer_lag(self) -> None:
+        sample = self.sample(
+            "2026-06-25T15:24:21+02:00",
+            accepted_blocks=730,
+            ready_miners=0,
+            authorized_miners=2,
+            p2p_mining_fresh=1,
+            peer_lead_blocks=0,
+            mineable=0,
+            submit_ready=0,
+            template_age_seconds=60,
+        )
+        sample["pool_job_state"] = {
+            "ready_connections": 0,
+            "reason_code": "miners_without_current_job",
+        }
+        sample["node_rpc"] = {
+            "reason_code": "node_syncing",
+            "mineable_now": False,
+            "submit_ready": False,
+            "p2p_mining_fresh": True,
+            "p2p_best_peer_lead_blocks": 0,
+        }
+
+        summary = monitor.summarize_sample_window([sample])
+
+        self.assertEqual(1, summary["anomaly_count"])
+        self.assertIn("template_sync_wedge", summary["anomaly_samples"][0]["reasons"])
+        self.assertIn("template_sync_wedge_observed", summary["window_anomaly_reasons"])
+        self.assertIn("template_sync_wedge_for_window", summary["window_anomaly_reasons"])
+        self.assertNotIn("hard_peer_lead_template_stall", summary["anomaly_samples"][0]["reasons"])
+
     def test_sample_window_summary_counts_dashboard_template_skew_when_node_rpc_is_safe(self) -> None:
         sample = self.sample(
             "2026-06-25T13:40:02+02:00",
