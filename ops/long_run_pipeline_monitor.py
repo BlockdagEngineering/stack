@@ -26,10 +26,13 @@ DEFAULT_JOB_STATE_URL = "http://127.0.0.1:9090/health/job-state"
 DEFAULT_METRICS_URL = "http://127.0.0.1:9090/metrics"
 DEFAULT_DASHBOARD_STATUS_URL = "http://127.0.0.1:8088/api/status"
 DEFAULT_NODE_RPC_URL = "http://127.0.0.1:38131"
+DEFAULT_ENV_FILE = Path(os.environ.get("BDAG_STACK_ENV_FILE", ".env"))
 DEFAULT_OUTPUT_ROOT = Path("ops/runtime/monitoring")
+PEER_SNAPSHOT_LIMIT = 64
 METRIC_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([-+0-9.eE]+)$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-IMPORTED_RE = re.compile(r"Imported new chain segment.*?number=([0-9,]+).*?age=([0-9hms]+)")
+IMPORTED_RE = re.compile(r"Imported new chain segment.*?number=([0-9,]+)(?P<tail>.*)$")
+IMPORTED_AGE_RE = re.compile(r"\bage=([0-9hms]+)")
 GRAPH_SYNC_START_RE = re.compile(r"Syncing graph state.*?peer=([^\s]+).*?processID=([0-9]+)")
 GRAPH_SYNC_END_RE = re.compile(r"sync of graph state has ended.*?spend=([^\s]+).*?processID=([0-9]+)")
 
@@ -76,6 +79,7 @@ SUMMARY_METRICS = {
     "mineable": "pool_rpc_backend_node_health_mineable{node=node,pool_id=0}",
     "submit_ready": "pool_rpc_backend_node_health_submit_ready{node=node,pool_id=0}",
     "template_age_seconds": "pool_rpc_backend_node_health_template_age_seconds{node=node,pool_id=0}",
+    "pool_job_age_seconds": "pool_job_health_max_current_job_age_seconds{pool_id=0}",
     "waste_ratio": "pool_block_timing_controller_waste_ratio{pool_id=0}",
 }
 
@@ -88,6 +92,37 @@ SUMMARY_COUNTERS = (
     "duplicate_rejects",
 )
 
+_ENV_FILE_CACHE: dict[Path, dict[str, str]] = {}
+
+
+def read_env_file_values(path: Path) -> dict[str, str]:
+    resolved = path.expanduser()
+    if resolved in _ENV_FILE_CACHE:
+        return dict(_ENV_FILE_CACHE[resolved])
+    values: dict[str, str] = {}
+    try:
+        lines = resolved.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        _ENV_FILE_CACHE[resolved] = values
+        return {}
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        if key:
+            values[key] = value
+    _ENV_FILE_CACHE[resolved] = values
+    return dict(values)
+
+
+def env_or_file_value(name: str, default: str = "", *, path: Path = DEFAULT_ENV_FILE) -> str:
+    return os.environ.get(name) or read_env_file_values(path).get(name, default)
+
 SUMMARY_GAUGES = (
     "ready_miners",
     "authorized_miners",
@@ -97,8 +132,10 @@ SUMMARY_GAUGES = (
     "mineable",
     "submit_ready",
     "template_age_seconds",
+    "pool_job_age_seconds",
     "waste_ratio",
 )
+PEER_GRAPH_SPREAD_ANOMALY_THRESHOLD = 1000
 
 
 def now_iso() -> str:
@@ -254,6 +291,109 @@ def parse_compact_duration_seconds(raw: str | None) -> int | None:
     return total if matched else None
 
 
+def first_mapping_value(mapping: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in mapping:
+            return mapping.get(key)
+    return None
+
+
+def int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip().replace(",", "")
+        if stripped.lstrip("-").isdigit():
+            return int(stripped)
+    return None
+
+
+def str_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def graph_state_from_peer(peer: dict[str, Any]) -> dict[str, Any]:
+    graph_state = first_mapping_value(peer, "graphstate", "graph_state", "graphState")
+    return graph_state if isinstance(graph_state, dict) else {}
+
+
+def normalize_peer_info(peer: dict[str, Any]) -> dict[str, Any]:
+    graph_state = graph_state_from_peer(peer)
+    tips = first_mapping_value(graph_state, "tips", "Tips")
+    bads = peer.get("bads")
+    return {
+        "id": str_or_none(first_mapping_value(peer, "id", "ID", "peer_id", "peerID")),
+        "address": str_or_none(first_mapping_value(peer, "address", "addr", "multiaddr")),
+        "active": peer.get("active"),
+        "state": peer.get("state"),
+        "services": str_or_none(peer.get("services")),
+        "direction": str_or_none(peer.get("direction")),
+        "syncnode": bool(peer.get("syncnode")) if peer.get("syncnode") is not None else None,
+        "graph_main_order": int_or_none(
+            first_mapping_value(graph_state, "mainorder", "mainOrder", "main_order")
+        ),
+        "graph_main_height": int_or_none(
+            first_mapping_value(graph_state, "mainheight", "mainHeight", "main_height")
+        ),
+        "graph_layer": int_or_none(first_mapping_value(graph_state, "layer", "Layer")),
+        "graph_tip": str_or_none(tips[0]) if isinstance(tips, list) and tips else None,
+        "gsupdate": str_or_none(peer.get("gsupdate")),
+        "latency_ms": int_or_none(peer.get("latency_ms")),
+        "reconnect": int_or_none(peer.get("reconnect")),
+        "bad_count": len(bads) if isinstance(bads, list) else 0,
+        "connection_time": str_or_none(first_mapping_value(peer, "conntime", "connection_time", "connTime")),
+        "dagport": int_or_none(peer.get("dagport")),
+    }
+
+
+def summarize_peer_info(peers: Any) -> dict[str, Any]:
+    if not isinstance(peers, list):
+        return {
+            "total": 0,
+            "active": 0,
+            "consensus": 0,
+            "syncnode": 0,
+            "graph_main_order_min": None,
+            "graph_main_order_max": None,
+            "graph_main_order_spread": None,
+            "peers": [],
+            "truncated": 0,
+        }
+    normalized = [
+        normalize_peer_info(peer)
+        for peer in peers[:PEER_SNAPSHOT_LIMIT]
+        if isinstance(peer, dict)
+    ]
+    active_peers = [peer for peer in normalized if peer.get("active") is True and peer.get("state") is True]
+    consensus_peers = [
+        peer
+        for peer in active_peers
+        if "Full" in str(peer.get("services") or "") or "CF" in str(peer.get("services") or "")
+    ]
+    main_orders = [
+        value
+        for value in (int_or_none(peer.get("graph_main_order")) for peer in active_peers)
+        if value is not None
+    ]
+    return {
+        "total": len(peers),
+        "active": len(active_peers),
+        "consensus": len(consensus_peers),
+        "syncnode": sum(1 for peer in active_peers if peer.get("syncnode") is True),
+        "graph_main_order_min": min(main_orders) if main_orders else None,
+        "graph_main_order_max": max(main_orders) if main_orders else None,
+        "graph_main_order_spread": (max(main_orders) - min(main_orders)) if main_orders else None,
+        "peers": normalized,
+        "truncated": max(0, len(peers) - len(normalized)),
+    }
+
+
 def clean_log_line(line: str) -> str:
     return ANSI_RE.sub("", line)
 
@@ -270,10 +410,12 @@ def summarize_node_log_tail(log_text: str | None) -> dict[str, Any]:
         line = clean_log_line(raw_line)
         imported = IMPORTED_RE.search(line)
         if imported:
+            age_match = IMPORTED_AGE_RE.search(imported.group("tail") or "")
+            age = age_match.group(1) if age_match else None
             latest_import = {
                 "number": int(imported.group(1).replace(",", "")),
-                "age": imported.group(2),
-                "age_seconds": parse_compact_duration_seconds(imported.group(2)),
+                "age": age,
+                "age_seconds": parse_compact_duration_seconds(age),
             }
         start = GRAPH_SYNC_START_RE.search(line)
         if start:
@@ -322,17 +464,36 @@ def summarize_node_rpc(
         user=user,
         password=password,
     )
+    peers, peers_error, peers_latency = json_rpc_call(
+        url,
+        "getPeerInfo",
+        timeout=timeout,
+        user=user,
+        password=password,
+    )
+    peer_summary = summarize_peer_info(peers)
     summary: dict[str, Any] = {
         "url": url,
         "errors": {
             "getTemplateHealth": health_error,
             "getBlockCount": block_error,
+            "getPeerInfo": peers_error,
         },
         "latency_ms": {
             "getTemplateHealth": health_latency,
             "getBlockCount": block_latency,
+            "getPeerInfo": peers_latency,
         },
         "block_count": block_count if isinstance(block_count, int) else None,
+        "connected_peer_count": peer_summary["total"],
+        "active_peer_count": peer_summary["active"],
+        "consensus_peer_count": peer_summary["consensus"],
+        "syncnode_peer_count": peer_summary["syncnode"],
+        "peer_graph_main_order_min": peer_summary["graph_main_order_min"],
+        "peer_graph_main_order_max": peer_summary["graph_main_order_max"],
+        "peer_graph_main_order_spread": peer_summary["graph_main_order_spread"],
+        "peer_info_truncated": peer_summary["truncated"],
+        "peers": peer_summary["peers"],
     }
     if isinstance(health, dict):
         summary.update(
@@ -375,6 +536,7 @@ def summarize_job_state(job_state: dict[str, Any] | None) -> dict[str, Any]:
         "stale_current_job_connections": job_state.get("stale_current_job_connections"),
         "connections_without_current_job": job_state.get("connections_without_current_job"),
         "last_broadcast_age_ms": job_state.get("last_broadcast_age_ms"),
+        "max_current_job_age_ms": job_state.get("max_current_job_age_ms"),
         "current_template_seq": job_state.get("current_template_seq"),
         "current_parent": job_state.get("current_parent"),
         "router_node": {
@@ -459,6 +621,81 @@ def sample_metric(sample: dict[str, Any], name: str) -> float | None:
         return None
 
 
+def numeric_or_none(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip().replace(",", "")
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def node_rpc_sample_value(sample: dict[str, Any], name: str) -> float | None:
+    node_rpc = sample.get("node_rpc") if isinstance(sample.get("node_rpc"), dict) else {}
+    mapping = {
+        "p2p_mining_fresh": "p2p_mining_fresh",
+        "peer_lead_blocks": "p2p_best_peer_lead_blocks",
+        "mineable": "mineable_now",
+        "submit_ready": "submit_ready",
+        "template_age_seconds": "template_age_ms",
+    }
+    key = mapping.get(name)
+    if not key:
+        return None
+    value = numeric_or_none(node_rpc.get(key))
+    if value is not None and name == "template_age_seconds":
+        return value / 1000.0
+    return value
+
+
+def sample_metric_or_node(sample: dict[str, Any], name: str) -> float | None:
+    value = sample_metric(sample, name)
+    return node_rpc_sample_value(sample, name) if value is None else value
+
+
+def seconds_from_milliseconds(value: Any) -> float | None:
+    numeric = numeric_or_none(value)
+    if numeric is None:
+        return None
+    return max(0.0, numeric / 1000.0)
+
+
+def sample_pool_job_age_seconds(sample: dict[str, Any]) -> float | None:
+    job_state = sample.get("pool_job_state") if isinstance(sample.get("pool_job_state"), dict) else {}
+    candidates: list[float] = []
+
+    metric_age = sample_metric(sample, "pool_job_age_seconds")
+    if metric_age is not None:
+        candidates.append(max(0.0, metric_age))
+
+    for key in ("max_current_job_age_seconds", "last_broadcast_age_seconds"):
+        value = numeric_or_none(job_state.get(key))
+        if value is not None:
+            candidates.append(max(0.0, value))
+    for key in ("max_current_job_age_ms", "last_broadcast_age_ms"):
+        value = seconds_from_milliseconds(job_state.get(key))
+        if value is not None:
+            candidates.append(value)
+
+    clients = job_state.get("clients") if isinstance(job_state.get("clients"), list) else []
+    for client in clients:
+        if not isinstance(client, dict):
+            continue
+        seconds_value = numeric_or_none(client.get("current_job_age_seconds"))
+        if seconds_value is not None:
+            candidates.append(max(0.0, seconds_value))
+        milliseconds_value = seconds_from_milliseconds(client.get("current_job_age_ms"))
+        if milliseconds_value is not None:
+            candidates.append(milliseconds_value)
+
+    return max(candidates) if candidates else None
+
+
 def reset_aware_counter_delta(samples: list[dict[str, Any]], name: str) -> dict[str, Any]:
     previous: float | None = None
     delta = 0.0
@@ -488,13 +725,84 @@ def reset_aware_counter_delta(samples: list[dict[str, Any]], name: str) -> dict[
 
 
 def gauge_summary(samples: list[dict[str, Any]], name: str) -> dict[str, Any]:
-    values = [value for sample in samples if (value := sample_metric(sample, name)) is not None]
+    if name == "pool_job_age_seconds":
+        values = [value for sample in samples if (value := sample_pool_job_age_seconds(sample)) is not None]
+    else:
+        values = [value for sample in samples if (value := sample_metric(sample, name)) is not None]
     if not values:
         return {"min": None, "max": None, "avg": None}
     return {
         "min": min(values),
         "max": max(values),
         "avg": round(sum(values) / len(values), 6),
+    }
+
+
+def sample_node_rpc_context(sample: dict[str, Any]) -> dict[str, Any]:
+    node_rpc = sample.get("node_rpc") if isinstance(sample.get("node_rpc"), dict) else {}
+    if not node_rpc:
+        return {}
+    keys = (
+        "reason_code",
+        "mineable_now",
+        "submit_ready",
+        "p2p_mining_fresh",
+        "p2p_mining_fresh_reason_code",
+        "p2p_best_peer_lead_blocks",
+        "p2p_fresh_consensus_peer_count",
+        "connected_peer_count",
+        "active_peer_count",
+        "consensus_peer_count",
+        "syncnode_peer_count",
+        "peer_graph_main_order_min",
+        "peer_graph_main_order_max",
+        "peer_graph_main_order_spread",
+        "peer_info_truncated",
+    )
+    return {key: node_rpc.get(key) for key in keys if key in node_rpc}
+
+
+def status_consistency_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    contradictions: list[dict[str, Any]] = []
+    node_rpc_proven_safe = 0
+    unresolved = 0
+    for sample in samples:
+        dashboard = sample.get("dashboard_status") if isinstance(sample.get("dashboard_status"), dict) else {}
+        if dashboard.get("can_mine") is not True:
+            continue
+        dashboard_submit_ready = dashboard.get("submit_ready")
+        dashboard_mineable = dashboard.get("mineable_now")
+        if dashboard_submit_ready is not False and dashboard_mineable is not False:
+            continue
+        node_rpc = sample.get("node_rpc") if isinstance(sample.get("node_rpc"), dict) else {}
+        rpc_safe = bool(
+            node_rpc.get("reason_code") == "ok"
+            and node_rpc.get("submit_ready") is True
+            and node_rpc.get("mineable_now") is True
+            and node_rpc.get("p2p_mining_fresh") is True
+        )
+        if rpc_safe:
+            node_rpc_proven_safe += 1
+        else:
+            unresolved += 1
+        contradictions.append(
+            {
+                "sampled_at": sample.get("sampled_at"),
+                "template_reason_code": dashboard.get("template_reason_code"),
+                "dashboard_submit_ready": dashboard_submit_ready,
+                "dashboard_mineable_now": dashboard_mineable,
+                "node_rpc_reason_code": node_rpc.get("reason_code"),
+                "node_rpc_submit_ready": node_rpc.get("submit_ready"),
+                "node_rpc_mineable_now": node_rpc.get("mineable_now"),
+                "node_rpc_p2p_mining_fresh": node_rpc.get("p2p_mining_fresh"),
+            }
+        )
+    return {
+        "can_mine_template_contradiction_count": len(contradictions),
+        "node_rpc_proven_safe_skew_count": node_rpc_proven_safe,
+        "unresolved_contradiction_count": unresolved,
+        "first_contradiction": contradictions[0] if contradictions else None,
+        "last_contradiction": contradictions[-1] if contradictions else None,
     }
 
 
@@ -510,17 +818,20 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
         ready_state_number = None
     if (ready is not None and ready < 4) or (ready_state_number is not None and ready_state_number < 4):
         reasons.append("ready_miners_below_4")
-    p2p = sample_metric(sample, "p2p_mining_fresh")
+    p2p = sample_metric_or_node(sample, "p2p_mining_fresh")
     if p2p is not None and p2p < 1:
         reasons.append("p2p_mining_not_fresh")
-    lead = sample_metric(sample, "peer_lead_blocks")
+    lead = sample_metric_or_node(sample, "peer_lead_blocks")
     if lead is not None and lead > 10:
         reasons.append("peer_lead_exceeds_tolerance")
-    template_age = sample_metric(sample, "template_age_seconds")
+    template_age = sample_metric_or_node(sample, "template_age_seconds")
     if template_age is not None and template_age > 30:
         reasons.append("template_age_over_30s")
-    mineable = sample_metric(sample, "mineable")
-    submit_ready = sample_metric(sample, "submit_ready")
+    pool_job_age = sample_pool_job_age_seconds(sample)
+    if pool_job_age is not None and pool_job_age >= 12:
+        reasons.append("pool_job_age_over_12s")
+    mineable = sample_metric_or_node(sample, "mineable")
+    submit_ready = sample_metric_or_node(sample, "submit_ready")
     if any(value for value in errors.values()):
         reasons.append("collector_error")
     core_pipeline_reasons = set(reasons)
@@ -532,7 +843,12 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
             p2p,
             lead,
             template_age,
+            pool_job_age,
         )
+    )
+    hard_age_evidence = bool(
+        (template_age is not None and template_age >= 45)
+        or (pool_job_age is not None and pool_job_age >= 12)
     )
     if mineable is not None and mineable < 1 and (core_pipeline_reasons or context_missing):
         reasons.append("mineable_false")
@@ -545,8 +861,7 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
         and p2p < 1
         and lead is not None
         and lead > 10
-        and template_age is not None
-        and template_age >= 45
+        and hard_age_evidence
         and (
             (mineable is not None and mineable < 1)
             or (submit_ready is not None and submit_ready < 1)
@@ -554,6 +869,79 @@ def sample_anomaly_reasons(sample: dict[str, Any]) -> list[str]:
     ):
         reasons.append("hard_peer_lead_template_stall")
     return reasons
+
+
+def sample_advisory_reasons(sample: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    job_state = sample.get("pool_job_state") if isinstance(sample.get("pool_job_state"), dict) else {}
+    node_rpc = sample.get("node_rpc") if isinstance(sample.get("node_rpc"), dict) else {}
+    node_log = sample.get("node_log_tail") if isinstance(sample.get("node_log_tail"), dict) else {}
+    ready = sample_metric(sample, "ready_miners")
+    ready_state = job_state.get("ready_connections")
+    try:
+        ready_state_number = None if ready_state is None else int(float(ready_state))
+    except (TypeError, ValueError):
+        ready_state_number = None
+    ready_miners = ready if ready is not None else ready_state_number
+    p2p = sample_metric_or_node(sample, "p2p_mining_fresh")
+    lead = sample_metric_or_node(sample, "peer_lead_blocks")
+    template_age = sample_metric_or_node(sample, "template_age_seconds")
+    mineable = sample_metric_or_node(sample, "mineable")
+    submit_ready = sample_metric_or_node(sample, "submit_ready")
+    node_reason = node_rpc.get("reason_code")
+    p2p_reason = node_rpc.get("p2p_mining_fresh_reason_code")
+
+    mining_lanes_intact = ready_miners is not None and float(ready_miners) >= 4
+    p2p_safe = p2p is not None and p2p >= 1
+    peer_lead_safe = lead is None or lead <= 10
+    template_fresh = template_age is None or template_age <= 5
+    if (
+        node_reason == "template_parent_stale"
+        and mining_lanes_intact
+        and p2p_safe
+        and peer_lead_safe
+        and template_fresh
+        and (
+            (mineable is not None and mineable < 1)
+            or (submit_ready is not None and submit_ready < 1)
+        )
+    ):
+        reasons.append("productive_template_parent_stale")
+
+    if (
+        mining_lanes_intact
+        and (
+            p2p_reason == "peer_lead_exceeds_tolerance"
+            or (lead is not None and lead > 10)
+        )
+    ):
+        reasons.append("peer_lead_risk_before_zero_ready")
+
+    if (
+        mining_lanes_intact
+        and p2p_safe
+        and (
+            bool(node_log.get("graph_sync_open"))
+            or int(node_log.get("rewind_count_tail") or 0) > 0
+        )
+        and not reasons
+    ):
+        reasons.append("graph_sync_reorg_turbulence_mining_intact")
+    return reasons
+
+
+def sample_node_log_context(sample: dict[str, Any]) -> dict[str, Any]:
+    node_log = sample.get("node_log_tail") if isinstance(sample.get("node_log_tail"), dict) else {}
+    if not node_log:
+        return {}
+    return {
+        "graph_sync_open": bool(node_log.get("graph_sync_open")),
+        "graph_sync_open_process_ids": node_log.get("graph_sync_open_process_ids") or [],
+        "graph_sync_last_open": node_log.get("graph_sync_last_open") or {},
+        "graph_sync_last_end": node_log.get("graph_sync_last_end") or {},
+        "rewind_count_tail": node_log.get("rewind_count_tail") or 0,
+        "latest_import": node_log.get("latest_import") or {},
+    }
 
 
 def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
@@ -567,6 +955,7 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
     p2p = gauges.get("p2p_mining_fresh") if isinstance(gauges.get("p2p_mining_fresh"), dict) else {}
     lead = gauges.get("peer_lead_blocks") if isinstance(gauges.get("peer_lead_blocks"), dict) else {}
     template_age = gauges.get("template_age_seconds") if isinstance(gauges.get("template_age_seconds"), dict) else {}
+    pool_job_age = gauges.get("pool_job_age_seconds") if isinstance(gauges.get("pool_job_age_seconds"), dict) else {}
     mineable = gauges.get("mineable") if isinstance(gauges.get("mineable"), dict) else {}
     submit_ready = gauges.get("submit_ready") if isinstance(gauges.get("submit_ready"), dict) else {}
     accepted_delta = float(accepted.get("delta") or 0.0)
@@ -593,19 +982,63 @@ def window_anomaly_reasons(summary: dict[str, Any]) -> list[str]:
         }
         if "hard_peer_lead_template_stall" in critical_reasons:
             reasons.append("hard_peer_lead_template_stall_observed")
+        if any(
+            bool((sample.get("node_log_context") or {}).get("graph_sync_open"))
+            for sample in critical_samples
+            if isinstance(sample, dict)
+        ):
+            reasons.append("graph_sync_open_during_hard_stall")
+        if any(
+            int((sample.get("node_log_context") or {}).get("rewind_count_tail") or 0) > 0
+            for sample in critical_samples
+            if isinstance(sample, dict)
+        ):
+            reasons.append("reorgs_observed_during_hard_stall")
+    anomaly_samples = summary.get("anomaly_samples")
+    if isinstance(anomaly_samples, list) and any(
+        numeric_or_none((sample.get("node_rpc_context") or {}).get("peer_graph_main_order_spread"))
+        is not None
+        and numeric_or_none((sample.get("node_rpc_context") or {}).get("peer_graph_main_order_spread"))
+        >= PEER_GRAPH_SPREAD_ANOMALY_THRESHOLD
+        for sample in anomaly_samples
+        if isinstance(sample, dict)
+    ):
+        reasons.append("peer_graph_spread_observed_during_anomaly")
     if (
         ready.get("max") == 0
         and p2p.get("max") == 0
         and lead.get("max") is not None
         and float(lead["max"]) > 10
-        and template_age.get("max") is not None
-        and float(template_age["max"]) >= 45
+        and (
+            (template_age.get("max") is not None and float(template_age["max"]) >= 45)
+            or (pool_job_age.get("max") is not None and float(pool_job_age["max"]) >= 12)
+        )
         and (
             (mineable.get("max") is not None and float(mineable["max"]) < 1)
             or (submit_ready.get("max") is not None and float(submit_ready["max"]) < 1)
         )
     ):
         reasons.append("hard_peer_lead_template_stall_for_window")
+    return reasons
+
+
+def window_advisory_reasons(summary: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    advisory_samples = summary.get("advisory_samples")
+    if not isinstance(advisory_samples, list):
+        return reasons
+    advisory_reason_set = {
+        str(reason)
+        for sample in advisory_samples
+        if isinstance(sample, dict)
+        for reason in (sample.get("reasons") if isinstance(sample.get("reasons"), list) else [])
+    }
+    if "productive_template_parent_stale" in advisory_reason_set:
+        reasons.append("productive_template_parent_stale_observed")
+    if "peer_lead_risk_before_zero_ready" in advisory_reason_set:
+        reasons.append("peer_lead_risk_before_zero_ready_observed")
+    if "graph_sync_reorg_turbulence_mining_intact" in advisory_reason_set:
+        reasons.append("graph_sync_reorg_turbulence_mining_intact_observed")
     return reasons
 
 
@@ -619,23 +1052,27 @@ def summarize_sample_window(samples: list[dict[str, Any]]) -> dict[str, Any]:
     local_reject_delta = sum(counters[name]["delta"] for name in ("stale_job_rejects", "stale_parent_rejects", "duplicate_rejects"))
     accepted_delta = counters["accepted_blocks"]["delta"]
     anomaly_samples: list[dict[str, Any]] = []
+    advisory_samples: list[dict[str, Any]] = []
     for sample in samples:
         reasons = sample_anomaly_reasons(sample)
-        if not reasons:
-            continue
-        anomaly_samples.append(
-            {
-                "sampled_at": sample.get("sampled_at"),
-                "reasons": reasons,
-                "accepted_blocks": sample_metric(sample, "accepted_blocks"),
-                "ready_miners": sample_metric(sample, "ready_miners"),
-                "p2p_mining_fresh": sample_metric(sample, "p2p_mining_fresh"),
-                "peer_lead_blocks": sample_metric(sample, "peer_lead_blocks"),
-                "mineable": sample_metric(sample, "mineable"),
-                "submit_ready": sample_metric(sample, "submit_ready"),
-                "template_age_seconds": sample_metric(sample, "template_age_seconds"),
-            }
-        )
+        sample_context = {
+            "sampled_at": sample.get("sampled_at"),
+            "accepted_blocks": sample_metric(sample, "accepted_blocks"),
+            "ready_miners": sample_metric(sample, "ready_miners"),
+            "p2p_mining_fresh": sample_metric_or_node(sample, "p2p_mining_fresh"),
+            "peer_lead_blocks": sample_metric_or_node(sample, "peer_lead_blocks"),
+            "mineable": sample_metric_or_node(sample, "mineable"),
+            "submit_ready": sample_metric_or_node(sample, "submit_ready"),
+            "template_age_seconds": sample_metric_or_node(sample, "template_age_seconds"),
+            "pool_job_age_seconds": sample_pool_job_age_seconds(sample),
+            "node_log_context": sample_node_log_context(sample),
+            "node_rpc_context": sample_node_rpc_context(sample),
+        }
+        if reasons:
+            anomaly_samples.append({"reasons": reasons, **sample_context})
+        advisory_reasons = sample_advisory_reasons(sample)
+        if advisory_reasons:
+            advisory_samples.append({"reasons": advisory_reasons, **sample_context})
     critical_anomaly_samples = [
         sample
         for sample in anomaly_samples
@@ -657,8 +1094,13 @@ def summarize_sample_window(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "anomaly_samples_truncated": max(0, len(anomaly_samples) - 25),
         "critical_anomaly_samples": critical_anomaly_samples[:10],
         "critical_anomaly_samples_truncated": max(0, len(critical_anomaly_samples) - 10),
+        "advisory_count": len(advisory_samples),
+        "advisory_samples": advisory_samples[:25],
+        "advisory_samples_truncated": max(0, len(advisory_samples) - 25),
+        "status_consistency": status_consistency_summary(samples),
     }
     summary["window_anomaly_reasons"] = window_anomaly_reasons(summary)
+    summary["window_advisory_reasons"] = window_advisory_reasons(summary)
     return summary
 
 
@@ -813,9 +1255,9 @@ def main() -> int:
     parser.add_argument("--job-state-url", default=DEFAULT_JOB_STATE_URL)
     parser.add_argument("--metrics-url", default=DEFAULT_METRICS_URL)
     parser.add_argument("--dashboard-status-url", default=DEFAULT_DASHBOARD_STATUS_URL)
-    parser.add_argument("--node-rpc-url", default=os.environ.get("BDAG_NODE_RPC_URL", DEFAULT_NODE_RPC_URL))
-    parser.add_argument("--node-rpc-user", default=os.environ.get("NODE_RPC_USER", ""))
-    parser.add_argument("--node-rpc-pass", default=os.environ.get("NODE_RPC_PASS", ""))
+    parser.add_argument("--node-rpc-url", default=env_or_file_value("BDAG_NODE_RPC_URL", DEFAULT_NODE_RPC_URL))
+    parser.add_argument("--node-rpc-user", default=env_or_file_value("NODE_RPC_USER"))
+    parser.add_argument("--node-rpc-pass", default=env_or_file_value("NODE_RPC_PASS"))
     parser.add_argument("--node-container", default="node")
     parser.add_argument("--node-log-tail-lines", type=int, default=400)
     parser.add_argument("--timeout", type=float, default=6.0)

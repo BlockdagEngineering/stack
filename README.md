@@ -208,10 +208,13 @@ evidence. After the node starts, the release installer runs
 `ops/update-local-peers.py --force-apply`, parses preserved chain peerstore
 startup logs, probes candidate multiaddrs for TCP reachability, writes
 `ops/runtime/peer-discovery-current.json`, and applies the resulting
-`BDAG_FASTSYNC_PEERS` to the active single node. TCP-open status is only a
-bootstrap hint; install completion and mining readiness still require normal
-peer handshakes, at least two fresh consensus peers, sync freshness, RPC
-health, and template checks.
+`BDAG_FASTSYNC_PEERS` to the active single node. Peerstore-derived candidates
+are intentionally filtered to public bootstrap-style service ports
+(`BDAG_CHAIN_PEERSTORE_SERVICE_PORTS`, default `8150,8151,8152,8153,8154`) so
+private LAN addresses and transient high NAT ports cannot poison the next
+restart. TCP-open status is only a bootstrap hint; install completion and mining
+readiness still require normal peer handshakes, at least two fresh consensus
+peers, sync freshness, RPC health, and template checks.
 
 ## Fast Artifact Sync V2 Directory Mode
 

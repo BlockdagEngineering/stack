@@ -29,12 +29,16 @@ from pool_ops import (
     PROJECT_ROOT,
     RUNTIME_DIR,
     action_log_path,
+    compose_service_name,
     configure_miner,
     default_miner_pool_settings,
+    docker_compose_command,
+    docker_env_value,
     ensure_runtime,
     is_lan_ipv4,
     now_iso,
     record_earnings_snapshot,
+    read_env_file_value,
     read_miner_admin_password,
     restart_miner,
     restart_miner_open,
@@ -60,7 +64,7 @@ LOCK_FILE = RUNTIME_DIR / "repair.lock"
 DIRTY_SHUTDOWN_MARKER = RUNTIME_DIR / "dirty-shutdown.marker"
 AUTONOMOUS_STACK_LAB_LOCK_FILE = RUNTIME_DIR / "autonomous-stack-lab.lock"
 
-DEFAULT_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_INTERVAL", "60"))
+DEFAULT_INTERVAL_SECONDS = int(os.environ.get("BDAG_WATCHDOG_INTERVAL", "5"))
 DEFAULT_FAILURE_THRESHOLD = int(os.environ.get("BDAG_WATCHDOG_FAILURE_THRESHOLD", "3"))
 DEFAULT_CLEAN_RESTORE_COOLDOWN = int(os.environ.get("BDAG_CLEAN_RESTORE_COOLDOWN", "1800"))
 DEFAULT_SYNCING_THRESHOLD = int(os.environ.get("BDAG_WATCHDOG_SYNCING_THRESHOLD", "5"))
@@ -149,16 +153,25 @@ DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS", "120")
 )
 DEFAULT_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS = int(
-    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS", "45")
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS", "10")
 )
 DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS = int(
-    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS", "45")
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS", "30")
+)
+DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS", "12")
 )
 DEFAULT_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS = int(
-    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS", "45")
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS", "20")
+)
+DEFAULT_NODE_PEER_STARVATION_MIN_FRESH_PEERS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_STARVATION_MIN_FRESH_PEERS", "2")
 )
 DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN", "900")
+)
+DEFAULT_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN", "300")
 )
 DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_SUPPRESS_SECONDS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_ACTIVE_IMPORT_SUPPRESS_SECONDS", "180")
@@ -168,6 +181,15 @@ DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_WORSEN_BLOCKS = int(
 )
 DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_MAX_LEAD_BLOCKS = int(
     os.environ.get("BDAG_WATCHDOG_NODE_PEER_LEAD_ACTIVE_IMPORT_MAX_LEAD_BLOCKS", "120")
+)
+DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS = int(
+    os.environ.get("BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS", "45")
+)
+DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_REPAIR_COOLDOWN = int(
+    os.environ.get(
+        "BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_REPAIR_COOLDOWN",
+        str(DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN),
+    )
 )
 DEFAULT_FRESH_PRODUCTION_TEMPLATE_FLICKER_MAX_TEMPLATE_AGE_SECONDS = int(
     os.environ.get("BDAG_FRESH_PRODUCTION_TEMPLATE_FLICKER_MAX_TEMPLATE_AGE_SECONDS", "10")
@@ -189,6 +211,16 @@ AUTOMATIC_CLEAN_RESTORE_ENABLED = env_bool("BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE"
 BOOT_REPAIR_DIRTY_POLICY = os.environ.get("BDAG_BOOT_REPAIR_DIRTY_POLICY", "start").strip().lower()
 BOOT_REPAIR_CRITICAL_POLICY = os.environ.get("BDAG_BOOT_REPAIR_CRITICAL_POLICY", "restart").strip().lower()
 PAUSE_POOL_DURING_NODE_RESTART = env_bool("BDAG_WATCHDOG_PAUSE_POOL_DURING_NODE_RESTART", True)
+NODE_RECREATE_ENV_KEYS = (
+    "BOOTSTRAP_PEER_ADDRESSES",
+    "BDAG_ENABLE_NODE_MINING",
+    "BDAG_NODE_MODULES",
+    "BDAG_NODE_MINING_NO_PENDING_TX",
+    "NODE_ARGS_APPEND",
+    "MINING_ADDRESS",
+    "MINING_POOL_ADDRESS",
+    "POOL_COINBASE_ADDRESS",
+)
 
 
 def log(message: str) -> None:
@@ -482,6 +514,9 @@ def selected_backend_peer_lead_stall_evidence(status: dict[str, Any]) -> dict[st
             ]
             if selected_rows:
                 selected_health = selected_rows[0]
+    metrics_selected_health = pool_metrics.get("selected_backend_source_health")
+    if isinstance(metrics_selected_health, dict):
+        selected_health = {**metrics_selected_health, **selected_health}
 
     template_health = pool_health.get("template_health")
     if not isinstance(template_health, dict):
@@ -528,6 +563,20 @@ def selected_backend_peer_lead_stall_evidence(status: dict[str, Any]) -> dict[st
     if tolerance is None:
         tolerance = 10
 
+    fresh_peer_count = int_or_none(
+        first_present(
+            selected_health.get("node_p2p_fresh_consensus_peer_count") if isinstance(selected_health, dict) else None,
+            selected_health.get("p2p_fresh_consensus_peer_count") if isinstance(selected_health, dict) else None,
+            template_health.get("p2p_fresh_consensus_peer_count"),
+        )
+    )
+    consensus_peer_count = int_or_none(
+        first_present(
+            selected_health.get("node_p2p_consensus_peer_count") if isinstance(selected_health, dict) else None,
+            selected_health.get("p2p_consensus_peer_count") if isinstance(selected_health, dict) else None,
+            template_health.get("p2p_consensus_peer_count"),
+        )
+    )
     p2p_fresh_value = first_present(
         selected_health.get("node_p2p_mining_fresh") if isinstance(selected_health, dict) else None,
         selected_health.get("p2p_mining_fresh") if isinstance(selected_health, dict) else None,
@@ -557,6 +606,23 @@ def selected_backend_peer_lead_stall_evidence(status: dict[str, Any]) -> dict[st
             template_health.get("template_age_seconds"),
         )
     )
+    max_current_job_age_seconds = float_or_none(
+        first_present(
+            source_job_health.get("max_current_job_age_seconds"),
+            pool_job_state.get("max_current_job_age_seconds"),
+        )
+    )
+    last_broadcast_age_ms = int_or_none(pool_job_state.get("last_broadcast_age_ms"))
+    if last_broadcast_age_ms is not None:
+        last_broadcast_age_seconds = max(0.0, last_broadcast_age_ms / 1000.0)
+    else:
+        last_broadcast_age_seconds = None
+    pool_job_age_candidates = [
+        value
+        for value in (max_current_job_age_seconds, last_broadcast_age_seconds)
+        if value is not None
+    ]
+    pool_job_age_seconds = max(pool_job_age_candidates) if pool_job_age_candidates else None
     reason_values = [
         selected_health.get("node_p2p_mining_fresh_reason_code") if isinstance(selected_health, dict) else None,
         selected_health.get("p2p_mining_fresh_reason_code") if isinstance(selected_health, dict) else None,
@@ -570,6 +636,15 @@ def selected_backend_peer_lead_stall_evidence(status: dict[str, Any]) -> dict[st
     lead_exceeds_tolerance = bool(lead is not None and lead > tolerance)
     peer_lead_reason = "peer_lead_exceeds_tolerance" in reason_text or "peer-lead-exceeds-tolerance" in reason_text
     p2p_peer_lead_unfresh = bool(p2p_fresh is False and (lead_exceeds_tolerance or peer_lead_reason))
+    fresh_peer_starved = bool(
+        fresh_peer_count is not None
+        and fresh_peer_count < DEFAULT_NODE_PEER_STARVATION_MIN_FRESH_PEERS
+    )
+    consensus_peer_starved = bool(
+        consensus_peer_count is not None
+        and consensus_peer_count < DEFAULT_NODE_PEER_STARVATION_MIN_FRESH_PEERS
+    )
+    p2p_peer_starvation = bool(p2p_fresh is False and (fresh_peer_starved or consensus_peer_starved))
     backend_blocks_mining = bool(
         submit_ready is False
         or mineable is False
@@ -580,7 +655,9 @@ def selected_backend_peer_lead_stall_evidence(status: dict[str, Any]) -> dict[st
         or pool_health.get("initial_download")
     )
     peer_lead_stall_active = bool(
-        miner_demand and (lead_exceeds_tolerance or p2p_peer_lead_unfresh) and backend_blocks_mining
+        miner_demand
+        and (lead_exceeds_tolerance or p2p_peer_lead_unfresh or p2p_peer_starvation)
+        and backend_blocks_mining
     )
     if not peer_lead_stall_active:
         return {
@@ -589,6 +666,9 @@ def selected_backend_peer_lead_stall_evidence(status: dict[str, Any]) -> dict[st
             "lead": lead,
             "tolerance": tolerance,
             "p2p_mining_fresh": p2p_fresh,
+            "fresh_consensus_peer_count": fresh_peer_count,
+            "consensus_peer_count": consensus_peer_count,
+            "peer_starvation": p2p_peer_starvation,
         }
 
     return {
@@ -597,15 +677,238 @@ def selected_backend_peer_lead_stall_evidence(status: dict[str, Any]) -> dict[st
         "lead": lead,
         "tolerance": tolerance,
         "p2p_mining_fresh": p2p_fresh,
+        "fresh_consensus_peer_count": fresh_peer_count,
+        "consensus_peer_count": consensus_peer_count,
+        "peer_starvation": p2p_peer_starvation,
         "submit_ready": submit_ready,
         "mineable": mineable,
         "template_age_seconds": template_age_seconds,
+        "pool_job_age_seconds": round(pool_job_age_seconds, 3) if pool_job_age_seconds is not None else None,
+        "last_broadcast_age_seconds": (
+            round(last_broadcast_age_seconds, 3) if last_broadcast_age_seconds is not None else None
+        ),
         "active_miners": active_count,
         "authorized_miners": authorized,
         "ready_miners": ready,
         "connections_without_current_job": without_job,
         "reason_text": reason_text[:1000],
     }
+
+
+def source_job_health_for_status(status: dict[str, Any]) -> dict[str, Any]:
+    pool_health = status.get("pool_health", status.get("pool", {}))
+    if not isinstance(pool_health, dict):
+        pool_health = {}
+    pool_metrics = status.get("pool_metrics") if isinstance(status.get("pool_metrics"), dict) else {}
+    source_job_health = pool_health.get("source_job_health")
+    if not isinstance(source_job_health, dict):
+        source_job_health = (
+            pool_metrics.get("source_job_health")
+            if isinstance(pool_metrics.get("source_job_health"), dict)
+            else {}
+        )
+    return dict(source_job_health) if isinstance(source_job_health, dict) else {}
+
+
+def template_health_for_status(status: dict[str, Any]) -> dict[str, Any]:
+    pool_health = status.get("pool_health", status.get("pool", {}))
+    if not isinstance(pool_health, dict):
+        pool_health = {}
+    template_health = pool_health.get("template_health")
+    if not isinstance(template_health, dict):
+        template_health = status.get("template_health") if isinstance(status.get("template_health"), dict) else {}
+    return dict(template_health) if isinstance(template_health, dict) else {}
+
+
+def selected_backend_template_sync_wedge_evidence(status: dict[str, Any]) -> dict[str, Any]:
+    pool_health = status.get("pool_health", status.get("pool", {}))
+    if not isinstance(pool_health, dict):
+        pool_health = {}
+    pool_metrics = status.get("pool_metrics") if isinstance(status.get("pool_metrics"), dict) else {}
+    pool_job_state = status.get("pool_job_state") if isinstance(status.get("pool_job_state"), dict) else {}
+    miner_health = status.get("miner_health") if isinstance(status.get("miner_health"), dict) else {}
+    selected_health = selected_backend_health_for_status(status)
+    source_job_health = source_job_health_for_status(status)
+    template_health = template_health_for_status(status)
+
+    selected_backend = str(pool_health.get("selected_backend") or pool_metrics.get("selected_backend") or "")
+    active_count = (
+        int_or_none(pool_job_state.get("active_connections"))
+        or int_or_none(pool_metrics.get("active_connections"))
+        or int_or_none(miner_health.get("connected_count_effective"))
+        or int_or_none(miner_health.get("connected_count"))
+        or int_or_none(miner_health.get("managed_count"))
+        or 0
+    )
+    authorized = (
+        int_or_none(pool_job_state.get("authorized_connections"))
+        or int_or_none(source_job_health.get("authorized_miners"))
+        or 0
+    )
+    ready = (
+        int_or_none(pool_job_state.get("ready_connections"))
+        or int_or_none(source_job_health.get("ready_miners"))
+        or int_or_none(pool_metrics.get("ready_connections"))
+        or 0
+    )
+    without_job = int_or_none(pool_job_state.get("connections_without_current_job")) or 0
+    miner_demand = active_count > 0 or authorized > 0
+    job_starved = bool(ready <= 0 and (without_job > 0 or miner_demand))
+
+    lead = int_or_none(
+        first_present(
+            selected_health.get("node_p2p_best_peer_lead_blocks"),
+            selected_health.get("p2p_best_peer_lead_blocks"),
+            pool_health.get("source_selected_backend_p2p_best_peer_lead_blocks"),
+            template_health.get("p2p_best_peer_lead_blocks"),
+        )
+    )
+    tolerance = int_or_none(
+        first_present(
+            selected_health.get("node_p2p_peer_lead_tolerance_blocks"),
+            selected_health.get("p2p_peer_lead_tolerance_blocks"),
+            pool_health.get("source_selected_backend_p2p_peer_lead_tolerance_blocks"),
+            template_health.get("p2p_peer_lead_tolerance_blocks"),
+        )
+    )
+    if tolerance is None:
+        tolerance = 10
+    p2p_fresh_value = first_present(
+        selected_health.get("node_p2p_mining_fresh"),
+        selected_health.get("p2p_mining_fresh"),
+        pool_health.get("source_selected_backend_p2p_fresh"),
+        template_health.get("p2p_mining_fresh"),
+    )
+    p2p_fresh = None if p2p_fresh_value is None else boolish(p2p_fresh_value)
+    fresh_peer_count = int_or_none(
+        first_present(
+            selected_health.get("node_p2p_fresh_consensus_peer_count"),
+            selected_health.get("p2p_fresh_consensus_peer_count"),
+            template_health.get("p2p_fresh_consensus_peer_count"),
+        )
+    )
+    submit_ready_value = first_present(
+        selected_health.get("node_submit_ready"),
+        selected_health.get("submit_ready"),
+        pool_health.get("source_selected_backend_submit_ready"),
+        template_health.get("submit_ready"),
+    )
+    submit_ready = None if submit_ready_value is None else boolish(submit_ready_value)
+    mineable_value = first_present(
+        selected_health.get("node_mineable"),
+        selected_health.get("mineable"),
+        selected_health.get("mineable_now"),
+        pool_health.get("source_selected_backend_mineable"),
+        template_health.get("mineable_now"),
+    )
+    mineable = None if mineable_value is None else boolish(mineable_value)
+    gbt_ready_value = first_present(
+        selected_health.get("node_get_block_template_ready"),
+        selected_health.get("get_block_template_ready"),
+        template_health.get("get_block_template_ready"),
+    )
+    get_block_template_ready = None if gbt_ready_value is None else boolish(gbt_ready_value)
+    template_age_seconds = int_or_none(
+        first_present(
+            selected_health.get("node_template_age_seconds"),
+            selected_health.get("template_age_seconds"),
+            template_health.get("template_age_seconds"),
+        )
+    )
+    coinbase_valid_value = first_present(
+        selected_health.get("node_template_coinbase_valid"),
+        selected_health.get("template_coinbase_valid"),
+        template_health.get("template_coinbase_valid"),
+    )
+    coinbase_valid = None if coinbase_valid_value is None else boolish(coinbase_valid_value)
+    sync = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
+    reason_values = [
+        selected_health.get("node_reason_code"),
+        selected_health.get("reason_code"),
+        selected_health.get("node_p2p_mining_fresh_reason_code"),
+        selected_health.get("p2p_mining_fresh_reason_code"),
+        selected_health.get("node_last_template_build_error"),
+        selected_health.get("last_template_build_error"),
+        template_health.get("reason_code"),
+        template_health.get("p2p_mining_fresh_reason_code"),
+        template_health.get("last_template_build_error"),
+        pool_job_state.get("reason_code"),
+        source_job_health.get("reason"),
+        source_job_health.get("reason_code"),
+        pool_health.get("source_job_reason"),
+        pool_health.get("source_job_status"),
+        pool_health.get("last_rpc_refused_line"),
+        sync.get("source"),
+        sync.get("error"),
+        *(status.get("warnings", []) if isinstance(status.get("warnings"), list) else []),
+    ]
+    reason_text = " ".join(str(value or "") for value in reason_values).lower()
+    lead_safe = lead is None or lead <= tolerance
+    fresh_peers_safe = fresh_peer_count is None or fresh_peer_count >= 2
+    p2p_safe = bool(p2p_fresh is True and lead_safe and fresh_peers_safe)
+    template_blocked = bool(
+        submit_ready is False
+        or mineable is False
+        or get_block_template_ready is False
+    )
+    syncing_reason = any(
+        fragment in reason_text
+        for fragment in (
+            "node_syncing",
+            "node-syncing",
+            "node is syncing",
+            "pending-template backend is syncing",
+            "backend is syncing",
+            "template_parent_stale",
+            "template-parent-stale",
+            "parents no longer match current mining tips",
+        )
+    )
+    active = bool(
+        miner_demand
+        and job_starved
+        and p2p_safe
+        and template_blocked
+        and syncing_reason
+        and coinbase_valid is not False
+    )
+    return {
+        "active": active,
+        "selected_backend": selected_backend,
+        "lead": lead,
+        "tolerance": tolerance,
+        "p2p_mining_fresh": p2p_fresh,
+        "fresh_consensus_peer_count": fresh_peer_count,
+        "submit_ready": submit_ready,
+        "mineable": mineable,
+        "get_block_template_ready": get_block_template_ready,
+        "template_coinbase_valid": coinbase_valid,
+        "template_age_seconds": template_age_seconds,
+        "active_miners": active_count,
+        "authorized_miners": authorized,
+        "ready_miners": ready,
+        "connections_without_current_job": without_job,
+        "job_starved": job_starved,
+        "template_blocked": template_blocked,
+        "syncing_reason": syncing_reason,
+        "reason_text": reason_text[:1000],
+    }
+
+
+def template_sync_wedge_hard_mining_outage(status: dict[str, Any], evidence: dict[str, Any]) -> bool:
+    if not evidence.get("active"):
+        return False
+    ready_miners = int_or_none(evidence.get("ready_miners"))
+    template_age = float_or_none(evidence.get("template_age_seconds"))
+    template_expired = bool(
+        template_age is not None
+        and template_age >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS
+    )
+    return bool(
+        ready_miners == 0
+        and template_expired
+        and not pool_has_recent_mining_work(status, DEFAULT_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS)
+    )
 
 
 def peer_lead_hard_mining_outage(status: dict[str, Any], evidence: dict[str, Any]) -> bool:
@@ -621,7 +924,9 @@ def peer_lead_hard_mining_outage(status: dict[str, Any], evidence: dict[str, Any
 
     lead = int_or_none(evidence.get("lead"))
     tolerance = int_or_none(evidence.get("tolerance")) or 10
+    peer_starvation = bool(evidence.get("peer_starvation"))
     template_age = float_or_none(evidence.get("template_age_seconds"))
+    pool_job_age = float_or_none(evidence.get("pool_job_age_seconds"))
     p2p_fresh = evidence.get("p2p_mining_fresh")
     submit_ready = evidence.get("submit_ready")
     mineable = evidence.get("mineable")
@@ -629,20 +934,24 @@ def peer_lead_hard_mining_outage(status: dict[str, Any], evidence: dict[str, Any
     backend_blocked = bool(
         p2p_fresh is False
         and (submit_ready is False or mineable is False)
-        and (lead is None or lead > tolerance)
+        and (lead is None or lead > tolerance or peer_starvation)
     )
     hard_peer_lead = bool(lead is not None and lead > tolerance)
     template_expired = bool(
         template_age is not None
         and template_age >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_TEMPLATE_AGE_SECONDS
     )
+    all_jobs_invalidated_long_enough = bool(
+        pool_job_age is not None
+        and pool_job_age >= DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS
+    )
     node_syncing = "node_syncing" in reason_text or "node-syncing" in reason_text
     job_starved = ready_miners == 0 and (without_job > 0 or active_miners > 0 or authorized_miners > 0)
     return bool(
         job_starved
-        and template_expired
+        and (template_expired or all_jobs_invalidated_long_enough)
         and backend_blocked
-        and (hard_peer_lead or node_syncing)
+        and (hard_peer_lead or node_syncing or peer_starvation)
         and not pool_has_recent_mining_work(status, DEFAULT_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS)
     )
 
@@ -1051,6 +1360,9 @@ def selected_backend_health_for_status(status: dict[str, Any]) -> dict[str, Any]
             ]
             if rows:
                 selected_health = rows[0]
+    metrics_selected_health = pool_metrics.get("selected_backend_source_health")
+    if isinstance(metrics_selected_health, dict):
+        selected_health = {**metrics_selected_health, **selected_health}
     return dict(selected_health) if isinstance(selected_health, dict) else {}
 
 
@@ -1301,13 +1613,15 @@ def pool_initial_download_effective(status: dict[str, Any]) -> bool:
 
 def pool_has_recent_mining_work(status: dict[str, Any], freshness_seconds: int = 60) -> bool:
     """Return true only for recent accepted block submissions, not accepted shares."""
-    sync_health = status.get("sync_health") if isinstance(status.get("sync_health"), dict) else {}
-    if sync_health.get("pool_has_recent_paid_work"):
-        return True
     pool_health = status.get("pool_health") if isinstance(status.get("pool_health"), dict) else {}
     block_age = int_or_none(pool_health.get("last_block_submit_age_seconds"))
     accepted_blocks = int_or_none(pool_health.get("block_submit_success_count")) or 0
-    return bool(accepted_blocks > 0 and block_age is not None and block_age <= freshness_seconds)
+    if block_age is not None:
+        return bool(accepted_blocks > 0 and block_age <= freshness_seconds)
+    sync_health = status.get("sync_health") if isinstance(status.get("sync_health"), dict) else {}
+    if sync_health.get("pool_has_recent_paid_work"):
+        return True
+    return False
 
 
 def pool_has_unpaid_template_loss(status: dict[str, Any]) -> bool:
@@ -1935,6 +2249,52 @@ def run_repair(mode: str, reason: str) -> bool:
     return ok
 
 
+def normalize_node_recreate_env_value(name: str, value: str | None) -> str:
+    text = (value or "").strip()
+    if name == "BOOTSTRAP_PEER_ADDRESSES":
+        peers = sorted({item.strip() for item in text.split(",") if item.strip()})
+        return ",".join(peers)
+    return text
+
+
+def node_env_recreate_mismatches(node_service: str, log_path: Path) -> list[dict[str, str]]:
+    result = run_logged(
+        ["docker", "inspect", "-f", "{{json .Config.Env}}", node_service],
+        log_path,
+        timeout=30,
+    )
+    if not result.ok or not result.stdout.strip():
+        log(
+            f"node env drift check skipped for {node_service}: "
+            f"inspect failed stdout={str(getattr(result, 'stdout', '')).strip()} "
+            f"stderr={str(getattr(result, 'stderr', '')).strip()}"
+        )
+        return []
+    try:
+        env_rows = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        log(f"node env drift check skipped for {node_service}: invalid inspect JSON: {exc}")
+        return []
+    mismatches: list[dict[str, str]] = []
+    for key in NODE_RECREATE_ENV_KEYS:
+        desired = read_env_file_value(POOL_ENV_FILE, key)
+        if desired is None:
+            continue
+        actual = docker_env_value(env_rows, key)
+        normalized_desired = normalize_node_recreate_env_value(key, desired)
+        normalized_actual = normalize_node_recreate_env_value(key, actual)
+        if normalized_desired == normalized_actual:
+            continue
+        mismatches.append(
+            {
+                "key": key,
+                "desired": normalized_desired,
+                "actual": normalized_actual,
+            }
+        )
+    return mismatches
+
+
 def run_node_restart(node_service: str, reason: str) -> bool:
     if node_service not in NODES:
         log(f"targeted node restart skipped for unknown node={node_service} reason={reason}")
@@ -1971,7 +2331,16 @@ def run_node_restart(node_service: str, reason: str) -> bool:
     log(f"starting targeted restart for {node_service}: {reason}; log={log_path}")
 
     # NODES contains runtime container names. The Compose service may be named
-    # differently after topology migration, so restart the concrete container.
+    # differently after topology migration. A plain docker restart preserves the
+    # original container environment, so recreate through Compose when .env has
+    # drifted from the running container.
+    env_mismatches = node_env_recreate_mismatches(node_service, log_path)
+    restart_method = "compose-recreate" if env_mismatches else "docker-restart"
+    if env_mismatches:
+        mismatch_keys = ",".join(item["key"] for item in env_mismatches)
+        log(
+            f"targeted node repair will recreate {node_service} to apply env drift keys={mismatch_keys}"
+        )
     pool_was_running = False
     pool_stop_ok = True
     pool_start_ok = True
@@ -1989,7 +2358,19 @@ def run_node_restart(node_service: str, reason: str) -> bool:
             pool_stop_ok = pool_stop_result.ok
 
     if pool_stop_ok:
-        command = ["docker", "restart", node_service]
+        if env_mismatches:
+            command = docker_compose_command(
+                "up",
+                "-d",
+                "--no-deps",
+                "--force-recreate",
+                "--no-build",
+                "--pull",
+                "never",
+                compose_service_name(node_service),
+            )
+        else:
+            command = ["docker", "restart", node_service]
         result = run_logged(command, log_path, timeout=180)
     else:
         result = pool_stop_result
@@ -2008,6 +2389,8 @@ def run_node_restart(node_service: str, reason: str) -> bool:
             "pool_paused": pool_was_running,
             "pool_stop_ok": pool_stop_ok,
             "pool_start_ok": pool_start_ok,
+            "restart_method": restart_method,
+            "env_recreate_mismatches": env_mismatches,
         }
     )
     write_action_state(state_payload)
@@ -3470,7 +3853,12 @@ def check_once(
         )
         startup_grace_seconds = max(confirm_seconds, DEFAULT_NODE_PEER_LEAD_STALL_CONFIRM_SECONDS)
         last_restart = int_or_none(state.get("last_node_peer_lead_stall_restart_at")) or 0
-        cooldown_remaining = DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN - (now - last_restart)
+        repair_cooldown = (
+            DEFAULT_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN
+            if hard_mining_outage
+            else DEFAULT_NODE_PEER_LEAD_STALL_REPAIR_COOLDOWN
+        )
+        cooldown_remaining = repair_cooldown - (now - last_restart)
         node_age = container_started_age_seconds(status, restart_node, now)
         startup_remaining = (
             startup_grace_seconds - node_age
@@ -3486,6 +3874,8 @@ def check_once(
             f"(lead={peer_lead_stall.get('lead')} "
             f"tolerance={peer_lead_stall.get('tolerance')} "
             f"p2p_fresh={peer_lead_stall.get('p2p_mining_fresh')} "
+            f"fresh_peers={peer_lead_stall.get('fresh_consensus_peer_count')} "
+            f"peer_starvation={peer_lead_stall.get('peer_starvation')} "
             f"submit_ready={peer_lead_stall.get('submit_ready')} "
             f"mineable={peer_lead_stall.get('mineable')} "
             f"ready_miners={peer_lead_stall.get('ready_miners')})"
@@ -3513,7 +3903,7 @@ def check_once(
             f"startup_grace_seconds={startup_grace_seconds} "
             f"active_import={active_import} active_import_suppresses={active_import_suppresses} "
             f"active_import_nodes={active_import_nodes} "
-            f"cooldown_remaining={max(cooldown_remaining, 0)}s "
+            f"repair_cooldown={repair_cooldown}s cooldown_remaining={max(cooldown_remaining, 0)}s "
             f"startup_remaining={max(startup_remaining, 0)}s "
             f"active_import_details={active_import_details} evidence={peer_lead_stall}"
         )
@@ -3534,6 +3924,7 @@ def check_once(
                 "active_import_details": active_import_details,
                 "restart_node": restart_node,
                 "cooldown_remaining_seconds": max(cooldown_remaining, 0),
+                "repair_cooldown_seconds": repair_cooldown,
                 "startup_remaining_seconds": max(startup_remaining, 0),
             },
         )
@@ -3573,6 +3964,8 @@ def check_once(
             and startup_remaining <= 0
         ):
             restart_prefix = "hard peer-lead mining outage: " if hard_mining_outage else "peer-lead exceeds tolerance: "
+            if hard_mining_outage and peer_lead_stall.get("peer_starvation"):
+                restart_prefix = "hard peer-starvation mining outage: "
             ok = run_node_restart(restart_node, restart_prefix + reason)
             state["last_repair_at"] = int(time.time())
             state["last_sync_repair_at"] = int(time.time())
@@ -3593,6 +3986,137 @@ def check_once(
     else:
         state.pop("node_peer_lead_stall_since", None)
         state.pop("node_peer_lead_active_import_by_node", None)
+
+    template_sync_wedge = selected_backend_template_sync_wedge_evidence(status)
+    primary_node = primary_node_name()
+    if template_sync_wedge.get("active") and container_running(status, primary_node):
+        since = int_or_none(state.get("node_template_sync_wedge_since")) or now
+        state["node_template_sync_wedge_since"] = since
+        wedged_for = now - since
+        hard_mining_outage = template_sync_wedge_hard_mining_outage(status, template_sync_wedge)
+        recent_mining_work = pool_has_recent_mining_work(
+            status,
+            DEFAULT_NODE_PEER_LEAD_HARD_STALL_RECENT_WORK_SECONDS if hard_mining_outage else 60,
+        )
+        restart_node = primary_node
+        active_import_nodes = active_sync_import_nodes(status, state=state, now=now)
+        active_import = restart_node in active_import_nodes
+        effective_active_import_suppresses = active_import and not hard_mining_outage
+        confirm_seconds = DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS
+        last_restart = int_or_none(state.get("last_node_template_sync_wedge_restart_at")) or 0
+        cooldown_remaining = DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_REPAIR_COOLDOWN - (now - last_restart)
+        node_age = container_started_age_seconds(status, restart_node, now)
+        startup_remaining = (
+            confirm_seconds - node_age
+            if node_age is not None and node_age < confirm_seconds
+            else 0
+        )
+        reason = (
+            "selected pool backend has a native-current template-sync mining wedge "
+            f"for {wedged_for}s "
+            f"(p2p_fresh={template_sync_wedge.get('p2p_mining_fresh')} "
+            f"lead={template_sync_wedge.get('lead')} "
+            f"tolerance={template_sync_wedge.get('tolerance')} "
+            f"fresh_peers={template_sync_wedge.get('fresh_consensus_peer_count')} "
+            f"submit_ready={template_sync_wedge.get('submit_ready')} "
+            f"mineable={template_sync_wedge.get('mineable')} "
+            f"gbt_ready={template_sync_wedge.get('get_block_template_ready')} "
+            f"template_age={template_sync_wedge.get('template_age_seconds')} "
+            f"ready_miners={template_sync_wedge.get('ready_miners')})"
+        )
+        if recent_mining_work or effective_active_import_suppresses:
+            state["consecutive_syncing"] = 0
+        else:
+            state["consecutive_syncing"] = int(state.get("consecutive_syncing", 0) or 0) + 1
+        state["consecutive_failures"] = 0
+        state["consecutive_share_stalls"] = 0
+        state["last_status"] = (
+            "node_template_sync_wedge_observing"
+            if recent_mining_work or effective_active_import_suppresses
+            else "node_template_sync_wedge"
+        )
+        state["last_failures"] = []
+        state["last_sync_warnings"] = [reason]
+        state["last_share_warnings"] = []
+        state["last_node_template_sync_wedge_evidence"] = template_sync_wedge
+        state["last_node_template_sync_wedge_hard_mining_outage"] = hard_mining_outage
+        log(
+            "node_template_sync_wedge "
+            f"wedged_for={wedged_for}s recent_mining_work={recent_mining_work} "
+            f"active_import={active_import} active_import_suppresses={effective_active_import_suppresses} "
+            f"active_import_nodes={active_import_nodes} "
+            f"hard_mining_outage={hard_mining_outage} confirm_seconds={confirm_seconds} "
+            f"cooldown_remaining={max(cooldown_remaining, 0)}s "
+            f"startup_remaining={max(startup_remaining, 0)}s evidence={template_sync_wedge}"
+        )
+        record_efficiency_event(
+            "node_template_sync_wedge_hard_mining_outage" if hard_mining_outage else "node_template_sync_wedge",
+            "warning" if recent_mining_work or active_import else "critical",
+            reason,
+            {
+                "evidence": template_sync_wedge,
+                "wedged_for_seconds": wedged_for,
+                "recent_mining_work": recent_mining_work,
+                "active_import": active_import,
+                "active_import_nodes": active_import_nodes,
+                "active_import_suppresses": effective_active_import_suppresses,
+                "raw_active_import": active_import,
+                "hard_mining_outage": hard_mining_outage,
+                "confirm_seconds": confirm_seconds,
+                "restart_node": restart_node,
+                "cooldown_remaining_seconds": max(cooldown_remaining, 0),
+                "startup_remaining_seconds": max(startup_remaining, 0),
+            },
+        )
+        if repair and recent_mining_work:
+            log("template-sync wedge repair suppressed because paid block submission is fresh")
+            record_efficiency_event(
+                "repair_suppressed",
+                "warning",
+                "template-sync wedge repair suppressed because paid block submission is fresh",
+                {"evidence": template_sync_wedge},
+            )
+        elif repair and effective_active_import_suppresses:
+            log(
+                "template-sync wedge repair suppressed while block import is active "
+                f"target={restart_node} active_nodes={','.join(active_import_nodes)}"
+            )
+            record_efficiency_event(
+                "repair_suppressed",
+                "warning",
+                "template-sync wedge repair suppressed while block import is active",
+                {
+                    "evidence": template_sync_wedge,
+                    "active_nodes": active_import_nodes,
+                    "target_node": restart_node,
+                },
+            )
+        elif (
+            repair
+            and hard_mining_outage
+            and wedged_for >= confirm_seconds
+            and cooldown_remaining <= 0
+            and startup_remaining <= 0
+        ):
+            ok = run_node_restart(restart_node, "native-current template-sync mining wedge: " + reason)
+            state["last_repair_at"] = int(time.time())
+            state["last_sync_repair_at"] = int(time.time())
+            state["last_node_template_sync_wedge_restart_at"] = now
+            state["last_node_template_sync_wedge_restart"] = {
+                "node": restart_node,
+                "ok": ok,
+                "reason": reason,
+                "at": now_iso(),
+                "evidence": template_sync_wedge,
+            }
+            if ok:
+                state["consecutive_syncing"] = 0
+                state.pop("node_template_sync_wedge_since", None)
+        state["updated_at"] = now_iso()
+        write_state(state)
+        return {"status": status, "watchdog_state": state}
+    else:
+        state.pop("node_template_sync_wedge_since", None)
 
     sync_pause_reason = sync_progress_pool_pause_reason(status)
     if sync_pause_reason and container_running(status, POOL_CONTAINER):
@@ -4731,6 +5255,10 @@ def loop(
         f"node_peer_lead_active_import_suppress={DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_SUPPRESS_SECONDS}s "
         f"node_peer_lead_active_import_worsen={DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_WORSEN_BLOCKS}blocks "
         f"node_peer_lead_active_import_max_lead={DEFAULT_NODE_PEER_LEAD_ACTIVE_IMPORT_MAX_LEAD_BLOCKS}blocks "
+        f"node_peer_starvation_min_fresh_peers={DEFAULT_NODE_PEER_STARVATION_MIN_FRESH_PEERS} "
+        f"node_peer_lead_hard_stall_job_age={DEFAULT_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS}s "
+        f"node_template_sync_wedge_confirm={DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS}s "
+        f"node_template_sync_wedge_cooldown={DEFAULT_NODE_TEMPLATE_SYNC_WEDGE_REPAIR_COOLDOWN}s "
         f"earnings_snapshot_interval={DEFAULT_EARNINGS_SNAPSHOT_INTERVAL_SECONDS}s"
     )
     while True:

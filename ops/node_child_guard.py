@@ -45,6 +45,16 @@ COOLDOWN_SECONDS = int(os.environ.get("BDAG_NODE_CHILD_GUARD_RESTART_COOLDOWN_SE
 RPC_REFUSED_SECONDS = int(os.environ.get("BDAG_NODE_CHILD_GUARD_RPC_REFUSED_SECONDS", "300"))
 RPC_WEDGED_SECONDS = int(os.environ.get("BDAG_NODE_CHILD_GUARD_RPC_WEDGED_SECONDS", "180"))
 RPC_PROBE_TIMEOUT_SECONDS = float(os.environ.get("BDAG_NODE_CHILD_GUARD_RPC_PROBE_TIMEOUT_SECONDS", "2.5"))
+NODE_RECREATE_ENV_KEYS = (
+    "BOOTSTRAP_PEER_ADDRESSES",
+    "BDAG_ENABLE_NODE_MINING",
+    "BDAG_NODE_MODULES",
+    "BDAG_NODE_MINING_NO_PENDING_TX",
+    "NODE_ARGS_APPEND",
+    "MINING_ADDRESS",
+    "MINING_POOL_ADDRESS",
+    "POOL_COINBASE_ADDRESS",
+)
 
 
 def now_iso() -> str:
@@ -138,6 +148,51 @@ def read_env_values(path: Path) -> dict[str, str]:
         value = value.strip().strip('"').strip("'")
         values[key.strip()] = value
     return values
+
+
+def docker_env_value(env_rows: Any, name: str) -> str | None:
+    if not isinstance(env_rows, list):
+        return None
+    prefix = f"{name}="
+    for row in env_rows:
+        text = str(row)
+        if text.startswith(prefix):
+            return text[len(prefix) :]
+    return None
+
+
+def normalize_recreate_env_value(name: str, value: str | None) -> str:
+    text = (value or "").strip()
+    if name == "BOOTSTRAP_PEER_ADDRESSES":
+        peers = sorted({item.strip() for item in text.split(",") if item.strip()})
+        return ",".join(peers)
+    return text
+
+
+def node_env_recreate_mismatches(node: str) -> list[dict[str, str]]:
+    result = run(["docker", "inspect", "-f", "{{json .Config.Env}}", node], timeout=30)
+    if result.returncode != 0 or not result.stdout.strip():
+        log(
+            f"env drift check skipped node={node} rc={result.returncode} "
+            f"stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
+        )
+        return []
+    try:
+        env_rows = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        log(f"env drift check skipped node={node} invalid_json={exc}")
+        return []
+    desired_values = read_env_values(POOL_ENV_FILE)
+    mismatches: list[dict[str, str]] = []
+    for key in NODE_RECREATE_ENV_KEYS:
+        if key not in desired_values:
+            continue
+        desired = normalize_recreate_env_value(key, desired_values.get(key))
+        actual = normalize_recreate_env_value(key, docker_env_value(env_rows, key))
+        if desired == actual:
+            continue
+        mismatches.append({"key": key, "desired": desired, "actual": actual})
+    return mismatches
 
 
 def node_rpc_credentials() -> tuple[str, str]:
@@ -267,16 +322,43 @@ def restart_node(node: str, reason: str, state: dict[str, Any], now: int) -> boo
         log(f"restart suppressed node={node} cooldown_remaining={COOLDOWN_SECONDS - (now - last)}s reason={reason}")
         return False
     compose_target = compose_service_name(node)
-    result = run(compose_command("restart", compose_target), timeout=180)
+    env_mismatches = node_env_recreate_mismatches(node)
+    if env_mismatches:
+        result = run(
+            compose_command(
+                "up",
+                "-d",
+                "--no-deps",
+                "--force-recreate",
+                "--no-build",
+                "--pull",
+                "never",
+                compose_target,
+            ),
+            timeout=180,
+        )
+        method = "compose-recreate"
+    else:
+        result = run(compose_command("restart", compose_target), timeout=180)
+        method = "compose-restart"
     if result.returncode != 0:
         fallback = run(["docker", "restart", node], timeout=180)
         if fallback.returncode == 0:
             result = fallback
+            method = "docker-restart"
     restarted = dict(state.get("last_restart_at_by_node") or {})
     restarted[node] = now
     state["last_restart_at_by_node"] = restarted
     state["last_restart_reason_by_node"] = {**dict(state.get("last_restart_reason_by_node") or {}), node: reason}
-    log(f"restart node={node} rc={result.returncode} reason={reason} stdout={result.stdout.strip()} stderr={result.stderr.strip()}")
+    state["last_restart_method_by_node"] = {**dict(state.get("last_restart_method_by_node") or {}), node: method}
+    state["last_restart_env_mismatches_by_node"] = {
+        **dict(state.get("last_restart_env_mismatches_by_node") or {}),
+        node: env_mismatches,
+    }
+    log(
+        f"restart node={node} method={method} env_mismatch_keys={','.join(item['key'] for item in env_mismatches)} "
+        f"rc={result.returncode} reason={reason} stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
+    )
     return result.returncode == 0
 
 

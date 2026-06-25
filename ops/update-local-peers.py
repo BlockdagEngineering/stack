@@ -44,6 +44,7 @@ STATUS_URL = (
     or "http://127.0.0.1:8088/api/status"
 )
 CHAIN_PEERSTORE_LOG_TAIL = os.environ.get("BDAG_CHAIN_PEERSTORE_LOG_TAIL", "8000")
+DEFAULT_CHAIN_PEERSTORE_SERVICE_PORTS = "8150,8151,8152,8153,8154"
 ACTIVE_MINING_RECENT_SECONDS = int(os.environ.get("BDAG_LOCAL_PEERS_ACTIVE_MINING_RECENT_SECONDS", "300"))
 DEFAULT_ASIC_LAN_CIDRS = ""
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
@@ -307,6 +308,8 @@ def node_peerstore_log_candidates(values: dict[str, str], active_nodes: list[str
         except Exception:
             continue
         for peer in extract_peerstore_log_peers(logs):
+            if not peerstore_candidate_allowed(peer, values):
+                continue
             if peer not in seen:
                 seen.add(peer)
                 peers.append(peer)
@@ -323,6 +326,46 @@ def peer_parts(peer: str) -> tuple[str, int, str] | None:
     except ValueError:
         return None
     return host, port, peer_id
+
+
+def port_set(raw: str, default: str) -> set[int]:
+    ports: set[int] = set()
+    for item in re.split(r"[\s,]+", raw or default):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            port = int(item)
+        except ValueError:
+            continue
+        if 1 <= port <= 65535:
+            ports.add(port)
+    if ports:
+        return ports
+    return {int(item) for item in default.split(",") if item}
+
+
+def chain_peerstore_service_ports(values: dict[str, str]) -> set[int]:
+    return port_set(
+        env_value(values, "BDAG_CHAIN_PEERSTORE_SERVICE_PORTS", DEFAULT_CHAIN_PEERSTORE_SERVICE_PORTS),
+        DEFAULT_CHAIN_PEERSTORE_SERVICE_PORTS,
+    )
+
+
+def public_bootstrap_host(host: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return "." in host
+    return ip.is_global
+
+
+def peerstore_candidate_allowed(peer: str, values: dict[str, str]) -> bool:
+    parts = peer_parts(peer)
+    if not parts:
+        return False
+    host, port, _peer_id = parts
+    return port in chain_peerstore_service_ports(values) and public_bootstrap_host(host)
 
 
 def parse_networks(raw: str, default: str = "") -> list[ipaddress.IPv4Network]:
@@ -493,7 +536,8 @@ def p2p_peer_candidates(values: dict[str, str]) -> PeerCandidates:
         add(peer, "runtime-live-peers")
 
     for peer in read_peer_file(CHAIN_PEERSTORE_CANDIDATES_FILE):
-        add(peer, "chain-peerstore-candidate-file")
+        if peerstore_candidate_allowed(peer, values):
+            add(peer, "chain-peerstore-candidate-file")
 
     for peer in node_peerstore_log_candidates(values):
         add(peer, "chain-peerstore-startup-log")

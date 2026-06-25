@@ -114,6 +114,9 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfile = (ROOT_DIR / "dockerfile").read_text(encoding="utf-8")
         workflow = (ROOT_DIR / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8")
+        installer = (ROOT_DIR / "ops" / "install-dashboard.sh").read_text(encoding="utf-8")
+        user_watchdog = (ROOT_DIR / "ops" / "systemd" / "user-bdag-watchdog.service").read_text(encoding="utf-8")
+        system_watchdog = (ROOT_DIR / "ops" / "systemd" / "bdag-watchdog.service").read_text(encoding="utf-8")
 
         self.assertFalse((ROOT_DIR / "docker" / "entrypoint-collector.sh").exists())
         self.assertFalse((ROOT_DIR / "dockerfile-dev").exists())
@@ -144,6 +147,44 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertNotIn("collector_src", watchdog_block)
         self.assertNotIn("collector_src", sampler_block)
         self.assertNotIn("collector_src", sentinel_block)
+        self.assertIn("BDAG_WATCHDOG_INTERVAL: ${BDAG_WATCHDOG_INTERVAL:-5}", watchdog_block)
+        self.assertIn(
+            "BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS: "
+            "${BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS:-10}",
+            watchdog_block,
+        )
+        self.assertIn(
+            "BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS: "
+            "${BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS:-12}",
+            watchdog_block,
+        )
+        self.assertIn(
+            "BDAG_WATCHDOG_NODE_PEER_STARVATION_MIN_FRESH_PEERS: "
+            "${BDAG_WATCHDOG_NODE_PEER_STARVATION_MIN_FRESH_PEERS:-2}",
+            watchdog_block,
+        )
+        self.assertIn(
+            "BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN: "
+            "${BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN:-300}",
+            watchdog_block,
+        )
+        self.assertIn("Environment=BDAG_WATCHDOG_INTERVAL=5", installer)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS=10", installer)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS=12", installer)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_STARVATION_MIN_FRESH_PEERS=2", installer)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN=300", installer)
+        self.assertNotIn("Environment=BDAG_WATCHDOG_INTERVAL=30", installer)
+        self.assertNotIn("Environment=BDAG_WATCHDOG_INTERVAL=60", installer)
+        self.assertIn("Environment=BDAG_WATCHDOG_INTERVAL=5", user_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_INTERVAL=5", system_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS=10", user_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS=10", system_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS=12", user_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS=12", system_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_STARVATION_MIN_FRESH_PEERS=2", user_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_STARVATION_MIN_FRESH_PEERS=2", system_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN=300", user_watchdog)
+        self.assertIn("Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_REPAIR_COOLDOWN=300", system_watchdog)
         self.assertIn("FROM docker:27-cli AS ops-runtime", dockerfile)
         self.assertIn("FROM ops-runtime AS watchdog", dockerfile)
         self.assertIn("FROM ops-runtime AS status-sampler", dockerfile)

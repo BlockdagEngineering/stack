@@ -29,6 +29,7 @@ data-restore/
 chain-data/
 ops/runtime
 ops/runtime-*/
+ops/savepoints/
 ops/*.pyc
 ops/__pycache__/
 asic-pool/.env

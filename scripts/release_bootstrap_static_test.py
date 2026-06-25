@@ -101,6 +101,14 @@ class BootstrapPeerDefaultTests(unittest.TestCase):
             "/ip4/13.140.165.186/tcp/8150/p2p/"
             "16Uiu2HAm4hHD7Ht5LJrLgaKXr7YP2RzHHjrrCLNt8zv8FQ9s3gBU"
         ),
+        (
+            "/ip4/102.182.77.21/tcp/8151/p2p/"
+            "16Uiu2HAm2uPLqM1dfd3ddbzg3FDAmvuvyo3vbBSXpVHurqAsUxWQ"
+        ),
+        (
+            "/ip4/102.182.77.16/tcp/8152/p2p/"
+            "16Uiu2HAm99a8KYuUkL5LGEQbpRNhz5nzScrwYpEh47BfSaVMCg5G"
+        ),
     )
     STABLE_BOOTSTRAP_PEERS = (
         (
@@ -117,6 +125,22 @@ class BootstrapPeerDefaultTests(unittest.TestCase):
         ),
         "/ip4/13.57.132.47/tcp/8150/p2p/"
         "16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus",
+        (
+            "/ip4/102.182.77.21/tcp/8150/p2p/"
+            "16Uiu2HAm2uPLqM1dfd3ddbzg3FDAmvuvyo3vbBSXpVHurqAsUxWQ"
+        ),
+        (
+            "/ip4/102.182.77.16/tcp/8150/p2p/"
+            "16Uiu2HAm99a8KYuUkL5LGEQbpRNhz5nzScrwYpEh47BfSaVMCg5G"
+        ),
+        (
+            "/ip4/129.121.92.232/tcp/8152/p2p/"
+            "16Uiu2HAmQSJzJjXUxtyX5rc2bQBAsTvhcjp4GQBPmwqEYu9D8zA5"
+        ),
+        (
+            "/ip4/3.120.205.55/tcp/8150/p2p/"
+            "16Uiu2HAm8tJ2Loxi1hc7Apg4v5i8mqpNxWyRknn1tZUcx8AvbNYj"
+        ),
     )
 
     def test_release_defaults_pass_bootstrap_peers_to_node(self) -> None:
