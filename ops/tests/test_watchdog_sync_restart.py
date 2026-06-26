@@ -2923,6 +2923,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
 
     def test_targeted_node_restart_uses_runtime_container_name(self) -> None:
         commands: list[list[str]] = []
+        states: list[dict[str, object]] = []
 
         class Result:
             ok = True
@@ -2937,7 +2938,7 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         ), mock.patch.object(
             watchdog, "action_log_path", return_value=pathlib.Path(tmpdir) / "restart.log"
         ), mock.patch.object(
-            watchdog, "write_action_state", lambda _payload: None
+            watchdog, "write_action_state", side_effect=lambda payload: states.append(dict(payload))
         ), mock.patch.object(
             watchdog, "record_failed_repair", lambda *_args, **_kwargs: None
         ), mock.patch.object(
@@ -2951,11 +2952,14 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         self.assertEqual(
             [
                 ["docker", "inspect", "-f", "{{json .Config.Env}}", "node"],
-                ["docker", "inspect", "-f", "{{.State.Running}}", watchdog.POOL_CONTAINER],
                 ["docker", "restart", "node"],
             ],
             commands,
         )
+        self.assertFalse(states[-1]["pool_pause_requested"])
+        self.assertFalse(states[-1]["pool_paused"])
+        self.assertEqual("pool-self-gates-node-health", states[-1]["pool_pause_reason"])
+        self.assertEqual("auto", states[-1]["pool_pause_mode"])
 
     def test_targeted_node_restart_pauses_running_pool(self) -> None:
         commands: list[list[str]] = []
@@ -2977,6 +2981,8 @@ class WatchdogSyncRestartTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
             watchdog, "NODES", ["node"]
+        ), mock.patch.object(
+            watchdog, "NODE_RESTART_POOL_PAUSE_MODE", "always"
         ), mock.patch.object(
             watchdog, "POOL_ENV_FILE", pathlib.Path(tmpdir) / ".env"
         ), mock.patch.object(
@@ -3022,6 +3028,9 @@ class WatchdogSyncRestartTests(unittest.TestCase):
             commands,
         )
         self.assertTrue(states[-1]["pool_paused"])
+        self.assertTrue(states[-1]["pool_pause_requested"])
+        self.assertEqual("configured-always", states[-1]["pool_pause_reason"])
+        self.assertEqual("always", states[-1]["pool_pause_mode"])
         self.assertTrue(states[-1]["pool_stop_ok"])
         self.assertTrue(states[-1]["pool_start_ok"])
         self.assertEqual([("watchdog", "resume pool after node restart: unit test")], leases)
@@ -3047,6 +3056,8 @@ class WatchdogSyncRestartTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
             watchdog, "NODES", ["node"]
+        ), mock.patch.object(
+            watchdog, "NODE_RESTART_POOL_PAUSE_MODE", "always"
         ), mock.patch.object(
             watchdog, "POOL_ENV_FILE", pathlib.Path(tmpdir) / ".env"
         ), mock.patch.object(
@@ -3091,6 +3102,8 @@ class WatchdogSyncRestartTests(unittest.TestCase):
             commands,
         )
         self.assertTrue(states[-1]["pool_paused"])
+        self.assertTrue(states[-1]["pool_pause_requested"])
+        self.assertEqual("configured-always", states[-1]["pool_pause_reason"])
         self.assertEqual("node still syncing", states[-1]["pool_resume_blocked_reason"])
         self.assertEqual("pool_resume_after_node_restart_blocked", events[0][0])
 
@@ -3161,7 +3174,95 @@ class WatchdogSyncRestartTests(unittest.TestCase):
             commands,
         )
         self.assertEqual("compose-recreate", states[-1]["restart_method"])
+        self.assertTrue(states[-1]["pool_pause_requested"])
+        self.assertFalse(states[-1]["pool_paused"])
+        self.assertEqual("node-compose-recreate", states[-1]["pool_pause_reason"])
         self.assertEqual("BOOTSTRAP_PEER_ADDRESSES", states[-1]["env_recreate_mismatches"][0]["key"])
+
+    def test_targeted_node_recreate_pauses_running_pool_in_auto_mode(self) -> None:
+        commands: list[list[str]] = []
+        states: list[dict[str, object]] = []
+        leases: list[tuple[str, str]] = []
+
+        class Result:
+            def __init__(self, stdout: str = "") -> None:
+                self.ok = True
+                self.stdout = stdout
+                self.stderr = ""
+
+        def fake_run_logged(command: list[str], *_args, **_kwargs):
+            commands.append(command)
+            if command == ["docker", "inspect", "-f", "{{json .Config.Env}}", "node"]:
+                return Result('["BOOTSTRAP_PEER_ADDRESSES=/ip4/stale/tcp/8151/p2p/16Stale"]')
+            if command == ["docker", "inspect", "-f", "{{.State.Running}}", watchdog.POOL_CONTAINER]:
+                return Result("true\n")
+            return Result()
+
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(
+            watchdog, "POOL_ENV_FILE", pathlib.Path(tmpdir) / ".env"
+        ), mock.patch.object(
+            watchdog, "automation_mutation_allowed", return_value=True
+        ), mock.patch.object(
+            watchdog, "acquire_lock", return_value=mock.Mock(close=lambda: None)
+        ), mock.patch.object(
+            watchdog, "action_log_path", return_value=pathlib.Path(tmpdir) / "restart.log"
+        ), mock.patch.object(
+            watchdog, "write_action_state", side_effect=lambda payload: states.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "record_failed_repair", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "compose_service_name", return_value="node"
+        ), mock.patch.object(
+            watchdog, "docker_compose_command", side_effect=lambda *args: ["compose", *args]
+        ), mock.patch.object(
+            watchdog.pool_start_gate, "read_latest_status_payload", return_value={"overall": "ok"}
+        ), mock.patch.object(
+            watchdog.pool_start_gate,
+            "pool_start_decision",
+            return_value=SimpleNamespace(allowed=True, reason="unit test allow"),
+        ), mock.patch.object(
+            watchdog,
+            "write_pool_start_lease",
+            side_effect=lambda actor, reason: leases.append((actor, reason)) or pathlib.Path(tmpdir) / "lease.env",
+        ), mock.patch.object(
+            watchdog, "run_logged", side_effect=fake_run_logged
+        ):
+            watchdog.POOL_ENV_FILE.write_text(
+                "BOOTSTRAP_PEER_ADDRESSES=/ip4/fresh/tcp/8150/p2p/16Fresh\n",
+                encoding="utf-8",
+            )
+            ok = watchdog.run_node_restart("node", "unit test")
+
+        self.assertTrue(ok)
+        self.assertEqual(
+            [
+                ["docker", "inspect", "-f", "{{json .Config.Env}}", "node"],
+                ["docker", "inspect", "-f", "{{.State.Running}}", watchdog.POOL_CONTAINER],
+                ["docker", "stop", watchdog.POOL_CONTAINER],
+                [
+                    "compose",
+                    "up",
+                    "-d",
+                    "--no-deps",
+                    "--force-recreate",
+                    "--no-build",
+                    "--pull",
+                    "never",
+                    "node",
+                ],
+                ["docker", "start", watchdog.POOL_CONTAINER],
+            ],
+            commands,
+        )
+        self.assertEqual("compose-recreate", states[-1]["restart_method"])
+        self.assertTrue(states[-1]["pool_pause_requested"])
+        self.assertTrue(states[-1]["pool_paused"])
+        self.assertEqual("node-compose-recreate", states[-1]["pool_pause_reason"])
+        self.assertEqual([("watchdog", "resume pool after node restart: unit test")], leases)
 
     def test_node_log_marks_missing_dag_tip_as_critical_repairable_damage(self) -> None:
         parsed = pool_ops.parse_node_log(

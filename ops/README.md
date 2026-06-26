@@ -31,6 +31,8 @@ When the node is catching up, automation leaves the pool container running. The 
 
 Node restarts are an exception path, not routine sync maintenance. The watchdog observes short peer-lead, template, and RPC-refused turbulence first. By default, RPC-refused evidence must persist for `BDAG_WATCHDOG_NODE_RPC_REFUSED_CONFIRM_SECONDS=180`; hard peer-lead mining outage evidence must persist for `BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_CONFIRM_SECONDS=180` with stale jobs for `BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_JOB_AGE_SECONDS=90`; and native-current template-sync wedge evidence must persist for `BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS=300`. Those node restart paths are cooldown-limited so they cannot become a habit.
 
+`BDAG_WATCHDOG_PAUSE_POOL_DURING_NODE_RESTART=auto` keeps the pool container running during a plain targeted node restart and relies on the pool's source-level node-health gating to stop unsafe work. The watchdog still pauses the pool for node Compose recreates, because env/topology drift means the node runtime is being replaced rather than briefly restarted. Set the value to `always` for the older fail-closed pause behavior or `never` only for a deliberately tested runtime.
+
 The persisted peer list in `.env` should contain only valid multiaddrs. Removing a bad peer from `.env` takes effect on the next controlled node restart; it does not interrupt currently running miners by itself.
 
 The pool is configured to use the local node service directly as its DAG RPC endpoint on the next stack start. The dashboard compares the local chain view against external references where configured.

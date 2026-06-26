@@ -229,7 +229,9 @@ def env_bool(name: str, default: bool = False) -> bool:
 AUTOMATIC_CLEAN_RESTORE_ENABLED = env_bool("BDAG_ENABLE_AUTOMATIC_CLEAN_RESTORE", False)
 BOOT_REPAIR_DIRTY_POLICY = os.environ.get("BDAG_BOOT_REPAIR_DIRTY_POLICY", "start").strip().lower()
 BOOT_REPAIR_CRITICAL_POLICY = os.environ.get("BDAG_BOOT_REPAIR_CRITICAL_POLICY", "restart").strip().lower()
-PAUSE_POOL_DURING_NODE_RESTART = env_bool("BDAG_WATCHDOG_PAUSE_POOL_DURING_NODE_RESTART", True)
+NODE_RESTART_POOL_PAUSE_MODE = (
+    os.environ.get("BDAG_WATCHDOG_PAUSE_POOL_DURING_NODE_RESTART", "auto").strip().lower() or "auto"
+)
 NODE_RECREATE_ENV_KEYS = (
     "BOOTSTRAP_PEER_ADDRESSES",
     "BDAG_ENABLE_NODE_MINING",
@@ -240,6 +242,26 @@ NODE_RECREATE_ENV_KEYS = (
     "MINING_POOL_ADDRESS",
     "POOL_COINBASE_ADDRESS",
 )
+
+
+def normalize_node_restart_pool_pause_mode(value: str | None) -> str:
+    raw = (value or "auto").strip().lower()
+    if raw in {"1", "true", "yes", "on", "always"}:
+        return "always"
+    if raw in {"0", "false", "no", "off", "never"}:
+        return "never"
+    return "auto"
+
+
+def node_restart_pool_pause_decision(restart_method: str, env_mismatches: list[dict[str, str]]) -> tuple[bool, str]:
+    mode = normalize_node_restart_pool_pause_mode(NODE_RESTART_POOL_PAUSE_MODE)
+    if mode == "always":
+        return True, "configured-always"
+    if mode == "never":
+        return False, "configured-never"
+    if restart_method == "compose-recreate" or env_mismatches:
+        return True, "node-compose-recreate"
+    return False, "pool-self-gates-node-health"
 
 
 def log(message: str) -> None:
@@ -2630,7 +2652,8 @@ def run_node_restart(node_service: str, reason: str) -> bool:
     pool_resume_blocked_reason = ""
     pool_stop_result = None
     pool_start_result = None
-    if PAUSE_POOL_DURING_NODE_RESTART and POOL_CONTAINER:
+    pause_pool, pool_pause_reason = node_restart_pool_pause_decision(restart_method, env_mismatches)
+    if pause_pool and POOL_CONTAINER:
         inspect_result = run_logged(
             ["docker", "inspect", "-f", "{{.State.Running}}", POOL_CONTAINER],
             log_path,
@@ -2640,6 +2663,11 @@ def run_node_restart(node_service: str, reason: str) -> bool:
         if pool_was_running:
             pool_stop_result = run_logged(["docker", "stop", POOL_CONTAINER], log_path, timeout=120)
             pool_stop_ok = pool_stop_result.ok
+    elif not pause_pool:
+        log(
+            f"leaving pool running during targeted node restart because {pool_pause_reason}; "
+            f"node={node_service} reason={reason}"
+        )
 
     if pool_stop_ok:
         if env_mismatches:
@@ -2684,6 +2712,9 @@ def run_node_restart(node_service: str, reason: str) -> bool:
             "finished_at": now_iso(),
             "elapsed": round(time.time() - started, 3),
             "pool_paused": pool_was_running,
+            "pool_pause_requested": pause_pool,
+            "pool_pause_reason": pool_pause_reason,
+            "pool_pause_mode": normalize_node_restart_pool_pause_mode(NODE_RESTART_POOL_PAUSE_MODE),
             "pool_stop_ok": pool_stop_ok,
             "pool_start_ok": pool_start_ok,
             "pool_resume_blocked_reason": pool_resume_blocked_reason,

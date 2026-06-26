@@ -27,6 +27,7 @@ Environment=BDAG_WATCHDOG_NODE_PEER_LEAD_HARD_STALL_ACTIVE_IMPORT_MAX_WAIT_SECON
 Environment=BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_CONFIRM_SECONDS=300
 Environment=BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_SOFT_LEAD_BLOCKS=20
 Environment=BDAG_WATCHDOG_NODE_TEMPLATE_SYNC_WEDGE_REPAIR_COOLDOWN=1800
+Environment=BDAG_WATCHDOG_PAUSE_POOL_DURING_NODE_RESTART=auto
 EnvironmentFile=-/home/jeremy/blockdag-asic-pool/.env
 EnvironmentFile=-/home/jeremy/blockdag-asic-pool/ops/runtime/ops.env
 ExecStartPre=/bin/sh -c 'i=0; while [ "$i" -lt 60 ]; do docker info >/dev/null 2>&1 && exit 0; i=$((i+1)); sleep 5; done; exit 1'
