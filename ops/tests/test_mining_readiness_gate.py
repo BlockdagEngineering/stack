@@ -140,6 +140,9 @@ class MiningReadinessGateTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         failures = result["backends"]["node"]["samples"][0]["failures"]
         self.assertIn("blocking_template_error:template_parent_stale", failures)
+        sample = result["backends"]["node"]["samples"][0]
+        self.assertTrue(sample["get_block_template_skipped"])
+        self.assertNotIn("getBlockTemplate", server.calls)
 
     def test_empty_block_template_is_rejected(self) -> None:
         def handler(method: str, _params: list[Any] | dict[str, Any], _calls: dict[str, int]) -> Any:
@@ -216,6 +219,10 @@ class MiningReadinessGateTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         failures = result["backends"]["node"]["samples"][0]["failures"]
         self.assertIn("template_health_missing_after_chain_incident", failures)
+        sample = result["backends"]["node"]["samples"][0]
+        self.assertTrue(sample["get_block_template_skipped"])
+        self.assertEqual("template_health_unready", sample["get_block_template_skip_reason"])
+        self.assertNotIn("getBlockTemplate", server.calls)
 
     def test_healthy_backend_passes_after_three_non_regressing_samples(self) -> None:
         def handler(method: str, _params: list[Any] | dict[str, Any], calls: dict[str, int]) -> Any:

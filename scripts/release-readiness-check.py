@@ -5,7 +5,8 @@ The checks are intentionally read-only:
   - verify the pool Postgres schema exists,
   - verify the node is synced or explicitly mineable,
   - verify peer sanity while filtering self/loopback peers,
-  - verify getBlockTemplate returns a usable mining template.
+  - verify getBlockTemplate returns a usable mining template only after
+    getTemplateHealth says mining RPC is ready.
 """
 
 from __future__ import annotations
@@ -447,6 +448,15 @@ def check_get_block_template(args: argparse.Namespace) -> CheckResult:
     )
 
 
+def skipped_get_block_template(reason: str) -> CheckResult:
+    return CheckResult(
+        "get_block_template",
+        False,
+        f"skipped fail-closed: {reason}",
+        skipped=True,
+    )
+
+
 def check_mining_rpc_stability(
     args: argparse.Namespace, node_info: dict[str, Any]
 ) -> CheckResult:
@@ -466,11 +476,13 @@ def check_mining_rpc_stability(
         if args.stability_interval:
             time.sleep(args.stability_interval)
         try:
-            sample_results = [
-                check_sync_or_mineable(args),
-                check_peer_sanity(args, node_info),
-                check_get_block_template(args),
-            ]
+            sync_result = check_sync_or_mineable(args)
+            peer_result = check_peer_sanity(args, node_info)
+            sample_results = [sync_result, peer_result]
+            if sync_result.ok:
+                sample_results.append(check_get_block_template(args))
+            else:
+                sample_results.append(skipped_get_block_template(sync_result.detail))
         except CheckError as exc:
             return CheckResult(
                 "mining_rpc_stability",
@@ -532,9 +544,13 @@ def run_checks(args: argparse.Namespace) -> list[CheckResult]:
                 skipped=True,
             )
         )
-    results.append(check_sync_or_mineable(args))
+    sync_result = check_sync_or_mineable(args)
+    results.append(sync_result)
     results.append(check_peer_sanity(args, node_info))
-    results.append(check_get_block_template(args))
+    if sync_result.ok:
+        results.append(check_get_block_template(args))
+    else:
+        results.append(skipped_get_block_template(sync_result.detail))
     results.append(check_mining_rpc_stability(args, node_info))
     return results
 

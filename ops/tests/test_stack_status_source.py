@@ -216,11 +216,30 @@ class StackStatusSourceTests(unittest.TestCase):
             "docker_inspect",
             return_value={},
         ):
-            payload = stack_status_source.collect_stack_status()
+            payload = stack_status_source.collect_stack_status(prefer_http=True)
 
         self.assertTrue(payload["pool_metrics_enriched"])
         self.assertEqual(12.0, payload["pool_metrics"]["stratum_no_request_disconnects_total"])
         self.assertEqual("host", captured[0]["pool"]["network_mode"])
+
+    def test_collect_stack_status_defaults_to_in_process_cache_before_http(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"BDAG_STATUS_SOURCE_URL": "http://dashboard:8088/api/status"},
+            clear=False,
+        ), mock.patch.object(
+            stack_status_source,
+            "fetch_status_endpoint",
+            side_effect=AssertionError("default status source must not call dashboard HTTP"),
+        ), mock.patch.object(
+            stack_status_source,
+            "collect_status_cached",
+            return_value={"overall": "ok"},
+        ):
+            payload = stack_status_source.collect_stack_status()
+
+        self.assertEqual("ok", payload["overall"])
+        self.assertEqual("in-process", payload["stack_status_source"]["source"])
 
     def test_dashboard_payload_is_enriched_with_container_lifecycle_fields(self) -> None:
         payload = {

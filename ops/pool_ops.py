@@ -423,11 +423,12 @@ GLOBAL_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_GLOBAL_CACHE_TTL_SECONDS", "
 GLOBAL_BLOCK_WINDOW = env_int("BDAG_GLOBAL_BLOCK_WINDOW", 600, minimum=1)
 GLOBAL_EVM_FALLBACK_BLOCK_WINDOW = env_int("BDAG_GLOBAL_EVM_FALLBACK_BLOCK_WINDOW", 64, minimum=1)
 GLOBAL_EVM_FALLBACK_RPC_WORKERS = env_int("BDAG_GLOBAL_EVM_FALLBACK_RPC_WORKERS", 4, minimum=1)
-GLOBAL_RPC_WORKERS = env_int("BDAG_GLOBAL_RPC_WORKERS", 24, minimum=1)
+GLOBAL_RPC_WORKERS = env_int("BDAG_GLOBAL_RPC_WORKERS", 4, minimum=1)
 GLOBAL_CHAIN_ORDER_RPC_TIMEOUT = env_float("BDAG_GLOBAL_CHAIN_ORDER_RPC_TIMEOUT", 3.0, minimum=0.5)
 GLOBAL_CHAIN_BLOCK_RPC_TIMEOUT = env_float("BDAG_GLOBAL_CHAIN_BLOCK_RPC_TIMEOUT", 3.0, minimum=0.5)
 GLOBAL_CHAIN_PREFLIGHT_SAMPLE_MIN_BLOCKS = env_int("BDAG_GLOBAL_CHAIN_PREFLIGHT_SAMPLE_MIN_BLOCKS", 64, minimum=1)
 GLOBAL_POOL_HEIGHT_MAX_AGE_SECONDS = env_int("BDAG_GLOBAL_POOL_HEIGHT_MAX_AGE_SECONDS", 600, minimum=0)
+GLOBAL_DISPLAY_TEMPLATE_HEIGHT_DIAGNOSTIC = env_bool("BDAG_GLOBAL_DISPLAY_TEMPLATE_HEIGHT_DIAGNOSTIC", False)
 GLOBAL_HISTORY_LIMIT = int(os.environ.get("BDAG_GLOBAL_HISTORY_LIMIT", "9000"))
 GLOBAL_HISTORY_COMPACT_MULTIPLIER = max(1, int(os.environ.get("BDAG_GLOBAL_HISTORY_COMPACT_MULTIPLIER", "2")))
 GLOBAL_CACHE_SCHEMA_VERSION = 2
@@ -468,12 +469,13 @@ DASHBOARD_HISTORY_TWO_HOUR_SECONDS = env_int("BDAG_DASHBOARD_HISTORY_TWO_HOUR_SE
 DASHBOARD_HISTORY_TWO_HOUR_STEP_SECONDS = env_int("BDAG_DASHBOARD_HISTORY_TWO_HOUR_STEP_SECONDS", 2 * 3600, minimum=60)
 DASHBOARD_HISTORY_DISK_DIR = path_from_env("BDAG_DASHBOARD_HISTORY_DISK_DIR", RUNTIME_DIR / "dashboard-history", PROJECT_ROOT)
 DASHBOARD_HISTORY_REBUILD_BLOCK_WINDOW = env_int("BDAG_DASHBOARD_HISTORY_REBUILD_BLOCK_WINDOW", 64, minimum=1)
-DASHBOARD_HISTORY_REBUILD_RPC_WORKERS = env_int("BDAG_DASHBOARD_HISTORY_REBUILD_RPC_WORKERS", 12, minimum=1)
+DASHBOARD_HISTORY_REBUILD_RPC_WORKERS = env_int("BDAG_DASHBOARD_HISTORY_REBUILD_RPC_WORKERS", 2, minimum=1)
 DASHBOARD_HISTORY_REBUILD_LOOKBACK_ORDERS = env_int("BDAG_DASHBOARD_HISTORY_REBUILD_LOOKBACK_ORDERS", 5_000_000, minimum=1)
 DASHBOARD_HISTORY_REBUILD_RPC_TIMEOUT_SECONDS = env_float("BDAG_DASHBOARD_HISTORY_REBUILD_RPC_TIMEOUT_SECONDS", 6.0, minimum=0.5)
 DASHBOARD_HISTORY_REBUILD_STATE_FILE = path_from_env("BDAG_DASHBOARD_HISTORY_REBUILD_STATE_FILE", RUNTIME_DIR / "dashboard-rpc-history-rebuild-state.json", PROJECT_ROOT)
 DASHBOARD_HISTORY_REBUILD_ACTIVE_STALE_SECONDS = env_int("BDAG_DASHBOARD_HISTORY_REBUILD_ACTIVE_STALE_SECONDS", 120, minimum=10)
 DASHBOARD_HISTORY_REBUILD_PRESERVE_ASIC_HISTORY = env_bool("BDAG_DASHBOARD_HISTORY_REBUILD_PRESERVE_ASIC_HISTORY", True)
+DASHBOARD_HISTORY_REBUILD_ALLOW_DURING_CATCHUP = env_bool("BDAG_DASHBOARD_HISTORY_REBUILD_ALLOW_DURING_CATCHUP", False)
 DASHBOARD_CHAIN_HISTORY_SOURCE_CONTRACT = "blockdag-mining-rpc-history-v1"
 PEER_GEO_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_PEER_GEO_CACHE_TTL_SECONDS", "86400"))
 PEER_GEO_LOOKUP_TIMEOUT = float(os.environ.get("BDAG_PEER_GEO_LOOKUP_TIMEOUT", "8.0"))
@@ -532,6 +534,7 @@ NODE_MINING_RPC_PORT = int(os.environ.get("BDAG_NODE_MINING_RPC_PORT", "38131"))
 NODE_MINING_RPC_USER = os.environ.get("BDAG_NODE_MINING_RPC_USER") or os.environ.get("NODE_RPC_USER", "")
 NODE_MINING_RPC_PASS = os.environ.get("BDAG_NODE_MINING_RPC_PASS") or os.environ.get("NODE_RPC_PASS", "")
 NODE_TEMPLATE_PROBE_CACHE_SECONDS = int(os.environ.get("BDAG_NODE_TEMPLATE_PROBE_CACHE_SECONDS", "60"))
+NODE_TEMPLATE_PROBE_GET_BLOCK_TEMPLATE_ENABLED = env_bool("BDAG_NODE_TEMPLATE_PROBE_GET_BLOCK_TEMPLATE_ENABLED", False)
 FRESH_PRODUCTION_TEMPLATE_FLICKER_MAX_TEMPLATE_AGE_SECONDS = env_int(
     "BDAG_FRESH_PRODUCTION_TEMPLATE_FLICKER_MAX_TEMPLATE_AGE_SECONDS",
     10,
@@ -593,13 +596,13 @@ BACKGROUND_MAINTENANCE_CHAIN_RPC_WARN_MS = env_float(
 BACKGROUND_MAINTENANCE_LAZY_TASKS = set(
     split_env_list(
         "BDAG_BACKGROUND_MAINTENANCE_LAZY_TASKS",
-        "",
+        "global_blockchain_scan,dashboard_history_rebuild",
     )
 )
 BACKGROUND_MAINTENANCE_POOL_READY_TASKS = set(
     split_env_list(
         "BDAG_BACKGROUND_MAINTENANCE_POOL_READY_TASKS",
-        "",
+        "global_blockchain_scan,dashboard_history_rebuild",
     )
 )
 BACKGROUND_MAINTENANCE_LOADAVG_PER_CPU_WARN = env_float(
@@ -3859,10 +3862,57 @@ def mining_rpc_call(url: str, method: str, params: list[Any], timeout: float = N
     return payload.get("result")
 
 
+def mining_ready_for_template_diagnostic(source_url: str, timeout: float = 2.0) -> tuple[bool, str]:
+    try:
+        health = mining_rpc_call(source_url, "getTemplateHealth", [], timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - diagnostic guard only.
+        return False, f"getTemplateHealth unavailable: {exc}"
+    if not isinstance(health, dict):
+        return False, "getTemplateHealth returned non-object"
+    if health.get("get_block_template_ready") is False:
+        return False, f"get_block_template_ready=false:{health.get('get_block_template_reason_code') or 'unknown'}"
+    if health.get("p2p_mining_fresh") is False:
+        return False, f"p2p_mining_fresh=false:{health.get('p2p_mining_fresh_reason_code') or 'unknown'}"
+    if health.get("last_template_build_error_blocking") is True:
+        return False, f"blocking template build error: {health.get('last_template_build_error_code') or 'unknown'}"
+    if not (health.get("mineable_now") or health.get("submit_ready")):
+        return False, f"not mining-ready:{health.get('reason_code') or 'unknown'}"
+    return True, "template health mining-ready"
+
+
 def probe_template_endpoint(name: str, url: str) -> dict[str, Any]:
     ok_count = 0
     errors: list[str] = []
     last_height = None
+    if not NODE_TEMPLATE_PROBE_GET_BLOCK_TEMPLATE_ENABLED:
+        return {
+            "name": name,
+            "url": url,
+            "sample_count": 0,
+            "ok_count": 0,
+            "error_count": 0,
+            "failing": False,
+            "skipped": True,
+            "skip_reason": "getBlockTemplate diagnostic disabled",
+            "last_height": None,
+            "last_error": "",
+            "errors": [],
+        }
+    ready, ready_reason = mining_ready_for_template_diagnostic(url)
+    if not ready:
+        return {
+            "name": name,
+            "url": url,
+            "sample_count": 0,
+            "ok_count": 0,
+            "error_count": 0,
+            "failing": True,
+            "skipped": True,
+            "skip_reason": ready_reason,
+            "last_height": None,
+            "last_error": ready_reason,
+            "errors": [ready_reason],
+        }
     params: list[Any] = [[], 10]
     pool_address = read_env_value("MINING_ADDRESS") or ""
     if pool_address:
@@ -8818,29 +8868,15 @@ def probe_global_display_block_height() -> tuple[int | None, str, dict[str, Any]
     rpc_sources = global_chain_rpc_urls() or [("local-chain", f"http://127.0.0.1:{NODE_MINING_RPC_PORT}")]
     for source_name, source_url in rpc_sources:
         try:
-            template = mining_rpc_call(
-                source_url,
-                "getBlockTemplate",
-                mining_template_params(),
-                timeout=min(5.0, max(1.0, NODE_CHAIN_RPC_TIMEOUT)),
-            )
-            if not isinstance(template, dict):
-                raise RuntimeError(f"getBlockTemplate returned {template!r}")
-            height = safe_int(template.get("height"), None)
-            if height is None or height <= 0:
-                raise RuntimeError(f"getBlockTemplate returned invalid height {template.get('height')!r}")
-            candidates.append((
-                height,
-                f"{source_name}:getBlockTemplate",
-                {
-                    "rpc_url": source_url,
-                    "template_height": height,
-                    "template_blues": template.get("blues"),
-                    "template_curtime": template.get("curtime"),
-                },
-            ))
+            height = parse_rpc_quantity(mining_rpc_call(source_url, "getBlockCount", [], timeout=4.0))
+            if height > 0:
+                candidates.append((
+                    height,
+                    f"{source_name}:getBlockCount",
+                    {"rpc_url": source_url, "chain_block_count": height},
+                ))
         except Exception as exc:  # noqa: BLE001 - fall through to other height sources.
-            errors.append(f"{source_name}: getBlockTemplate: {exc}")
+            errors.append(f"{source_name}: getBlockCount: {exc}")
 
     for source_name, source_url in rpc_sources:
         try:
@@ -8853,6 +8889,39 @@ def probe_global_display_block_height() -> tuple[int | None, str, dict[str, Any]
                 ))
         except Exception as exc:  # noqa: BLE001 - diagnostic only.
             errors.append(f"{source_name}: getMainChainHeight: {exc}")
+
+    if GLOBAL_DISPLAY_TEMPLATE_HEIGHT_DIAGNOSTIC:
+        for source_name, source_url in rpc_sources:
+            try:
+                ready, ready_reason = mining_ready_for_template_diagnostic(source_url)
+                if not ready:
+                    errors.append(f"{source_name}: getBlockTemplate diagnostic skipped: {ready_reason}")
+                    continue
+                template = mining_rpc_call(
+                    source_url,
+                    "getBlockTemplate",
+                    mining_template_params(),
+                    timeout=min(5.0, max(1.0, NODE_CHAIN_RPC_TIMEOUT)),
+                )
+                if not isinstance(template, dict):
+                    raise RuntimeError(f"getBlockTemplate returned {template!r}")
+                height = safe_int(template.get("height"), None)
+                if height is None or height <= 0:
+                    raise RuntimeError(f"getBlockTemplate returned invalid height {template.get('height')!r}")
+                candidates.append((
+                    height,
+                    f"{source_name}:getBlockTemplate",
+                    {
+                        "rpc_url": source_url,
+                        "template_height": height,
+                        "template_blues": template.get("blues"),
+                        "template_curtime": template.get("curtime"),
+                    },
+                ))
+            except Exception as exc:  # noqa: BLE001 - opt-in diagnostic only.
+                errors.append(f"{source_name}: getBlockTemplate: {exc}")
+    else:
+        errors.append("getBlockTemplate display-height diagnostic disabled")
 
     if not candidates:
         return None, "", {}, errors
@@ -9457,6 +9526,13 @@ def rebuild_dashboard_plot_history_from_chain(
     progress=None,
 ) -> dict[str, Any]:
     ensure_runtime()
+    maintenance_decision = background_maintenance_decision("dashboard_history_rebuild")
+    if not DASHBOARD_HISTORY_REBUILD_ALLOW_DURING_CATCHUP and not maintenance_decision.get("allowed", True):
+        reason = "; ".join(str(item) for item in maintenance_decision.get("reasons", []) if item)
+        raise RuntimeError(
+            "dashboard history rebuild deferred by low-impact mode"
+            + (f": {reason}" if reason else "")
+        )
     max_age_seconds = max(3600, int(hours) * 3600)
     block_count, rpc_name, rpc_url, probe_errors = probe_global_chain_block_count()
     if block_count is None or not rpc_url:

@@ -192,25 +192,24 @@ import urllib.request
 url = os.environ.get("BDAG_CHAIN_STATE_SELF_HEAL_STATUS_URL") or ""
 timeout = float(os.environ.get("BDAG_CHAIN_STATE_SELF_HEAL_STATUS_TIMEOUT", "5"))
 payload = None
-if url:
+for path in (
+    os.environ.get("BDAG_STATUS_SAMPLER_FILE"),
+    os.environ.get("BDAG_CHAIN_STATE_SELF_HEAL_STATUS_FILE"),
+):
+    if not path:
+        continue
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+            break
+    except Exception:
+        continue
+if payload is None and url:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except Exception:
         payload = None
-if payload is None:
-    for path in (
-        os.environ.get("BDAG_STATUS_SAMPLER_FILE"),
-        os.environ.get("BDAG_CHAIN_STATE_SELF_HEAL_STATUS_FILE"),
-    ):
-        if not path:
-            continue
-        try:
-            with open(path, encoding="utf-8") as handle:
-                payload = json.load(handle)
-                break
-        except Exception:
-            continue
 if not isinstance(payload, dict):
     print("status unavailable")
     sys.exit(2)
@@ -228,8 +227,7 @@ PY
 }
 
 if [[ "$FORCE" != "1" ]]; then
-  status_url_default="http://127.0.0.1:${BDAG_DASHBOARD_PORT:-8088}/api/status"
-  export BDAG_CHAIN_STATE_SELF_HEAL_STATUS_URL="${BDAG_CHAIN_STATE_SELF_HEAL_STATUS_URL:-$status_url_default}"
+  export BDAG_CHAIN_STATE_SELF_HEAL_STATUS_URL="${BDAG_CHAIN_STATE_SELF_HEAL_STATUS_URL:-}"
   if ! reason="$(status_needs_restore 2>&1)"; then
     log "no chain-state restore trigger: $reason"
     json_state "no_trigger" "$reason"

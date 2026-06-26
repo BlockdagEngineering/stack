@@ -488,6 +488,7 @@ def probe_backend_once(
     else:
         sample["rpc_ok"] = True
 
+    health_failure_start = len(failures)
     health: dict[str, Any] = {}
     try:
         health_result = json_rpc_call(backend.url, "getTemplateHealth", timeout=timeout)
@@ -570,38 +571,45 @@ def probe_backend_once(
             if code in HARD_TEMPLATE_ERROR_CODES:
                 failures.append(f"blocking_template_error:{code}")
 
-    try:
-        template_result = json_rpc_call(
-            backend.url,
-            "getBlockTemplate",
-            get_block_template_params(pow_type, mining_address),
-            timeout=timeout,
-        )
-        if not isinstance(template_result, dict):
-            failures.append("getBlockTemplate returned non-object")
-        elif not template_result:
-            failures.append("getBlockTemplate_empty")
-        else:
-            sample["get_block_template_ok"] = True
-            template_mapping = flatten_mapping(template_result)
-            template_order = extract_main_order(template_result)
-            if sample["main_order"] is not None and template_order is not None:
-                if template_order < int(sample["main_order"]):
-                    failures.append(
-                        f"getBlockTemplate_order_{template_order}_lt_health_main_order_{sample['main_order']}"
-                    )
-            health_parent = first_present(health, "template_parent", "templateParent", "parent")
-            template_parent = first_present(
-                template_mapping,
-                "parent",
-                "template_parent",
-                "previousblockhash",
-                "previous_block_hash",
+    health_failures = failures[health_failure_start:]
+    if health_failures:
+        sample["get_block_template_ok"] = False
+        sample["get_block_template_skipped"] = True
+        sample["get_block_template_skip_reason"] = "template_health_unready"
+        sample["get_block_template_skip_failures"] = health_failures
+    else:
+        try:
+            template_result = json_rpc_call(
+                backend.url,
+                "getBlockTemplate",
+                get_block_template_params(pow_type, mining_address),
+                timeout=timeout,
             )
-            if health_parent and template_parent and str(health_parent) != str(template_parent):
-                failures.append("getBlockTemplate_parent_mismatch")
-    except RpcCallError as exc:
-        failures.append(f"getBlockTemplate failed: {exc.kind}")
+            if not isinstance(template_result, dict):
+                failures.append("getBlockTemplate returned non-object")
+            elif not template_result:
+                failures.append("getBlockTemplate_empty")
+            else:
+                sample["get_block_template_ok"] = True
+                template_mapping = flatten_mapping(template_result)
+                template_order = extract_main_order(template_result)
+                if sample["main_order"] is not None and template_order is not None:
+                    if template_order < int(sample["main_order"]):
+                        failures.append(
+                            f"getBlockTemplate_order_{template_order}_lt_health_main_order_{sample['main_order']}"
+                        )
+                health_parent = first_present(health, "template_parent", "templateParent", "parent")
+                template_parent = first_present(
+                    template_mapping,
+                    "parent",
+                    "template_parent",
+                    "previousblockhash",
+                    "previous_block_hash",
+                )
+                if health_parent and template_parent and str(health_parent) != str(template_parent):
+                    failures.append("getBlockTemplate_parent_mismatch")
+        except RpcCallError as exc:
+            failures.append(f"getBlockTemplate failed: {exc.kind}")
 
     reference = probe_reference(reference_rpc_url, timeout=timeout)
     sample["reference"] = reference

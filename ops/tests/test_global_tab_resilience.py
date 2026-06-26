@@ -94,9 +94,12 @@ class GlobalTabFallbackTests(unittest.TestCase):
         self.old_public_evm_rpc_urls = pool_ops.public_evm_rpc_urls
         self.old_json_rpc_call = pool_ops.json_rpc_call
         self.old_mining_rpc_call = pool_ops.mining_rpc_call
+        self.old_latest_pool_db_block_height = pool_ops.latest_pool_db_block_height
         self.old_background_maintenance_decision = pool_ops.background_maintenance_decision
         self.old_probe_global_display_block_height = pool_ops.probe_global_display_block_height
         self.old_global_evm_fallback_enabled = pool_ops.GLOBAL_EVM_FALLBACK_ENABLED
+        self.old_global_display_template_height_diagnostic = pool_ops.GLOBAL_DISPLAY_TEMPLATE_HEIGHT_DIAGNOSTIC
+        self.old_node_template_probe_get_block_template_enabled = pool_ops.NODE_TEMPLATE_PROBE_GET_BLOCK_TEMPLATE_ENABLED
         pool_ops.probe_global_display_block_height = lambda: (None, "", {}, [])
         self.addCleanup(self.restore_globals)
 
@@ -108,9 +111,12 @@ class GlobalTabFallbackTests(unittest.TestCase):
         pool_ops.public_evm_rpc_urls = self.old_public_evm_rpc_urls
         pool_ops.json_rpc_call = self.old_json_rpc_call
         pool_ops.mining_rpc_call = self.old_mining_rpc_call
+        pool_ops.latest_pool_db_block_height = self.old_latest_pool_db_block_height
         pool_ops.background_maintenance_decision = self.old_background_maintenance_decision
         pool_ops.probe_global_display_block_height = self.old_probe_global_display_block_height
         pool_ops.GLOBAL_EVM_FALLBACK_ENABLED = self.old_global_evm_fallback_enabled
+        pool_ops.GLOBAL_DISPLAY_TEMPLATE_HEIGHT_DIAGNOSTIC = self.old_global_display_template_height_diagnostic
+        pool_ops.NODE_TEMPLATE_PROBE_GET_BLOCK_TEMPLATE_ENABLED = self.old_node_template_probe_get_block_template_enabled
 
     def test_global_rejects_old_evm_cache_instead_of_showing_it_stale(self) -> None:
         cached = {
@@ -145,6 +151,44 @@ class GlobalTabFallbackTests(unittest.TestCase):
         self.assertEqual(payload["clusters"], [])
         self.assertIn("ignored stale global cache", payload["fetch_errors"][0])
         self.assertIn("getBlockCount", payload["error"])
+
+    def test_display_height_probe_avoids_get_block_template_by_default(self) -> None:
+        calls: list[str] = []
+        pool_ops.probe_global_display_block_height = self.old_probe_global_display_block_height
+        pool_ops.latest_pool_db_block_height = lambda: (None, "postgres", {}, [])
+        pool_ops.global_chain_rpc_urls = lambda: [("chain", "http://chain-rpc")]
+        pool_ops.GLOBAL_DISPLAY_TEMPLATE_HEIGHT_DIAGNOSTIC = False
+
+        def fake_mining_rpc(_url: str, method: str, _params: list[object], timeout: float = 0) -> object:
+            calls.append(method)
+            if method == "getBlockCount":
+                return 100
+            if method == "getMainChainHeight":
+                return 99
+            if method == "getBlockTemplate":
+                raise AssertionError("display height must not call getBlockTemplate by default")
+            raise AssertionError(method)
+
+        pool_ops.mining_rpc_call = fake_mining_rpc
+
+        height, source, metadata, errors = pool_ops.probe_global_display_block_height()
+
+        self.assertEqual(100, height)
+        self.assertEqual("chain:getBlockCount", source)
+        self.assertEqual({"rpc_url": "http://chain-rpc", "chain_block_count": 100}, metadata)
+        self.assertEqual(["getBlockCount", "getMainChainHeight"], calls)
+        self.assertIn("getBlockTemplate display-height diagnostic disabled", errors)
+
+    def test_template_probe_health_skips_get_block_template_by_default(self) -> None:
+        pool_ops.NODE_TEMPLATE_PROBE_GET_BLOCK_TEMPLATE_ENABLED = False
+        pool_ops.mining_rpc_call = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("template probe must not call RPC while GBT diagnostic is disabled")
+        )
+
+        probe = pool_ops.probe_template_endpoint("node", "http://chain-rpc")
+
+        self.assertTrue(probe["skipped"])
+        self.assertEqual("getBlockTemplate diagnostic disabled", probe["skip_reason"])
 
     def test_global_does_not_use_evm_fallback_by_default_when_chain_rpc_fails(self) -> None:
         cached = {

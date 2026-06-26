@@ -84,6 +84,9 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+DEFAULT_PREFER_HTTP = _env_bool("BDAG_STATUS_SOURCE_PREFER_HTTP", False)
+
+
 def _normalize_mac(value: Any) -> str:
     raw = str(value or "").strip().lower()
     if raw.startswith("mac:"):
@@ -472,15 +475,15 @@ def collect_stack_status(
     max_age_seconds: float | None = None,
     status_url: str | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
-    prefer_http: bool = True,
+    prefer_http: bool | None = None,
 ) -> dict[str, Any]:
     """Return the best available stack status payload.
 
     Adapter order:
-    1. Dashboard HTTP, unless the caller explicitly requests a live local sample
-       with max_age_seconds <= 0.
-    2. In-process collect_status_cached, which already reuses the status sampler
-       and short shared status cache when they are fresh.
+    1. In-process collect_status_cached, which reuses the status sampler and
+       short shared status cache when they are fresh.
+    2. Dashboard HTTP only when explicitly requested. This avoids pointing
+       high-frequency repair loops at live /api/status.
     """
 
     errors: list[str] = []
@@ -490,7 +493,19 @@ def collect_stack_status(
     if fixture is not None:
         return _annotate(fixture, "fixture", errors)
 
-    if prefer_http and not force_live_local:
+    use_http = DEFAULT_PREFER_HTTP if prefer_http is None else bool(prefer_http)
+
+    if not use_http or force_live_local:
+        try:
+            return _annotate(
+                collect_status_cached(include_logs=include_logs, max_age_seconds=max_age_seconds),
+                "in-process",
+                errors,
+            )
+        except Exception as exc:  # noqa: BLE001 - callers need a single status-source failure.
+            errors.append(f"in-process collect_status_cached: {exc}")
+
+    if use_http and not force_live_local:
         urls = [status_url] if status_url else _env_urls()
         for url in [item for item in urls if item]:
             try:
@@ -503,13 +518,14 @@ def collect_stack_status(
             except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, StackStatusUnavailable) as exc:
                 errors.append(f"dashboard {url}: {exc}")
 
-    try:
-        return _annotate(
-            collect_status_cached(include_logs=include_logs, max_age_seconds=max_age_seconds),
-            "in-process",
-            errors,
-        )
-    except Exception as exc:  # noqa: BLE001 - callers need a single status-source failure.
-        errors.append(f"in-process collect_status_cached: {exc}")
+    if use_http:
+        try:
+            return _annotate(
+                collect_status_cached(include_logs=include_logs, max_age_seconds=max_age_seconds),
+                "in-process",
+                errors,
+            )
+        except Exception as exc:  # noqa: BLE001 - callers need a single status-source failure.
+            errors.append(f"in-process collect_status_cached: {exc}")
 
     raise StackStatusUnavailable("; ".join(errors) or "stack status unavailable")

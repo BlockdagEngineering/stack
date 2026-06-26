@@ -674,8 +674,9 @@ configure_env() {
   set_env_value .env BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT "$(env_value BDAG_INSTALL_STACK_SUPPORT_SERVICES_STRICT 0)"
   set_env_value .env BDAG_OPS_UID "$(id -u)"
   set_env_value .env BDAG_OPS_GID "$(id -g)"
-  set_env_value .env BDAG_STATUS_SOURCE_URL "http://host.docker.internal:8088/api/status"
-  set_env_value .env BDAG_SENTINEL_STATUS_URL "http://host.docker.internal:8088/api/status"
+  set_env_value .env BDAG_STATUS_SOURCE_URL ""
+  set_env_value .env BDAG_SENTINEL_STATUS_URL ""
+  set_stack_default_env_value .env BDAG_STATUS_SOURCE_PREFER_HTTP
   set_env_value .env POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE "$(env_value POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE false)"
   set_stack_default_env_value .env SYNC_SOURCE_NODE
   set_env_value .env NODE_ARGS_APPEND ""
@@ -1031,7 +1032,7 @@ rebuild_dashboard_plot_data() {
   log_file="$runtime_dir/logs/dashboard-rpc-history-rebuild-install.log"
   hours="${BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_HOURS:-720}"
   window_blocks="${BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS:-64}"
-  workers="${BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WORKERS:-12}"
+  workers="${BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WORKERS:-2}"
 
   say "Rebuilding dashboard Global and Wallet plot data from local chain RPC"
   local cmd=(

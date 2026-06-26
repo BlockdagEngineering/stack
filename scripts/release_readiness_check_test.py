@@ -228,6 +228,37 @@ class ReadinessCheckTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("blocking template build error: evm_pending_nonce_drift", result.detail)
 
+    def test_run_checks_skips_block_template_when_template_health_is_unready(self) -> None:
+        args = self.args()
+        args.min_peers = 0
+        calls: list[str] = []
+
+        def fake_rpc_call(url, user, password, method, params=None, timeout=5.0):
+            calls.append(method)
+            if method == "getNodeInfo":
+                return {"ID": "self-node", "network": "mainnet", "connections": 1}
+            if method == "getTemplateHealth":
+                return {
+                    "mineable_now": False,
+                    "submit_ready": False,
+                    "get_block_template_ready": False,
+                    "get_block_template_reason_code": "node_syncing",
+                }
+            if method == "getPeerInfo":
+                return []
+            if method == "getBlockTemplate":
+                raise AssertionError("getBlockTemplate must be skipped after failed template health")
+            raise AssertionError(method)
+
+        with mock.patch.object(readiness, "rpc_call", side_effect=fake_rpc_call):
+            results = readiness.run_checks(args)
+
+        template_result = next(result for result in results if result.name == "get_block_template")
+        self.assertFalse(template_result.ok)
+        self.assertTrue(template_result.skipped)
+        self.assertIn("skipped fail-closed", template_result.detail)
+        self.assertNotIn("getBlockTemplate", calls)
+
     def test_mining_rpc_stability_passes_followup_sample(self) -> None:
         args = self.args()
         args.stability_samples = 2
