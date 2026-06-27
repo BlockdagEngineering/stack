@@ -421,9 +421,7 @@ PRICE_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_PRICE_CACHE_TTL_SECONDS", "30
 PRICE_MIN_OK_SOURCES = int(os.environ.get("BDAG_PRICE_MIN_OK_SOURCES", "2"))
 GLOBAL_CACHE_TTL_SECONDS = int(os.environ.get("BDAG_GLOBAL_CACHE_TTL_SECONDS", "300"))
 GLOBAL_BLOCK_WINDOW = env_int("BDAG_GLOBAL_BLOCK_WINDOW", 600, minimum=1)
-GLOBAL_EVM_FALLBACK_BLOCK_WINDOW = env_int("BDAG_GLOBAL_EVM_FALLBACK_BLOCK_WINDOW", 64, minimum=1)
-GLOBAL_EVM_FALLBACK_RPC_WORKERS = env_int("BDAG_GLOBAL_EVM_FALLBACK_RPC_WORKERS", 4, minimum=1)
-GLOBAL_RPC_WORKERS = env_int("BDAG_GLOBAL_RPC_WORKERS", 4, minimum=1)
+GLOBAL_CHAIN_RPC_WORKERS = env_int("BDAG_CHAIN_DAG_RPC_WORKERS", 1, minimum=1)
 GLOBAL_CHAIN_ORDER_RPC_TIMEOUT = env_float("BDAG_GLOBAL_CHAIN_ORDER_RPC_TIMEOUT", 3.0, minimum=0.5)
 GLOBAL_CHAIN_BLOCK_RPC_TIMEOUT = env_float("BDAG_GLOBAL_CHAIN_BLOCK_RPC_TIMEOUT", 3.0, minimum=0.5)
 GLOBAL_CHAIN_PREFLIGHT_SAMPLE_MIN_BLOCKS = env_int("BDAG_GLOBAL_CHAIN_PREFLIGHT_SAMPLE_MIN_BLOCKS", 64, minimum=1)
@@ -434,7 +432,6 @@ GLOBAL_HISTORY_COMPACT_MULTIPLIER = max(1, int(os.environ.get("BDAG_GLOBAL_HISTO
 GLOBAL_CACHE_SCHEMA_VERSION = 2
 GLOBAL_STATS_SOURCE_TRUTH = "chain-rpc:getBlockCount/getBlockByOrder/getBlockHeader/getCoinbaseAddress"
 GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS = env_int("BDAG_GLOBAL_CACHE_MAX_TIP_LAG_BLOCKS", 30, minimum=0)
-GLOBAL_EVM_FALLBACK_ENABLED = env_bool("BDAG_GLOBAL_EVM_FALLBACK_ENABLED", False)
 NODE_EVM_RPC_PORT = int(os.environ.get("BDAG_NODE_EVM_RPC_PORT", "18545"))
 EVM_SYNC_LAG_THRESHOLD_BLOCKS = env_int("BDAG_EVM_SYNC_LAG_THRESHOLD_BLOCKS", 1000, minimum=0)
 EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS = env_int("BDAG_EVM_PUBLIC_ALIGNMENT_SAMPLE_BLOCKS", 3, minimum=1)
@@ -1224,7 +1221,7 @@ def adaptive_worker_count(
 
 def adaptive_worker_budgets(pressure: dict[str, Any] | None = None) -> dict[str, Any]:
     configured = {
-        "global_rpc": GLOBAL_RPC_WORKERS,
+        "chain_dag_rpc": GLOBAL_CHAIN_RPC_WORKERS,
         "miner_scan": MINER_SCAN_WORKERS,
         "miner_hashrate": MINER_HASHRATE_PROBE_WORKERS,
         "peer_geo": 8,
@@ -10220,20 +10217,6 @@ def is_valid_global_chain_snapshot(snapshot: Mapping[str, Any] | None) -> bool:
     return True
 
 
-def is_valid_global_evm_fallback_snapshot(snapshot: Mapping[str, Any] | None) -> bool:
-    if not isinstance(snapshot, Mapping):
-        return False
-    if snapshot.get("status") not in {"ok", "degraded"}:
-        return False
-    if str(snapshot.get("source_contract") or "") != "evm-rpc-fallback-v1":
-        return False
-    if bool(snapshot.get("head_only")):
-        return False
-    requested_blocks = safe_int(snapshot.get("requested_blocks"), 0)
-    fetched_blocks = safe_int(snapshot.get("fetched_blocks"), 0)
-    return requested_blocks > 1 and fetched_blocks > 0
-
-
 def read_valid_global_history(limit: int | None = None) -> list[dict[str, Any]]:
     return [row for row in read_global_history(limit=limit) if is_valid_global_chain_snapshot(row)]
 
@@ -10801,155 +10784,6 @@ def collect_global_blockchain() -> dict[str, Any]:
             }
         )
 
-    def evm_fallback_global(
-        error: str,
-        errors: list[str],
-        history: list[dict[str, Any]],
-        chain_block_count: int | None = None,
-    ) -> dict[str, Any] | None:
-        freshest = freshest_evm_rpc_source(public_evm_rpc_urls(), timeout=6.0)
-        if freshest is None:
-            return None
-        rpc_name, rpc_url, evm_latest_block, latest_errors = freshest
-        requested_count = min(max(GLOBAL_EVM_FALLBACK_BLOCK_WINDOW, 1), evm_latest_block + 1)
-        start_block = max(0, evm_latest_block - requested_count + 1)
-        block_numbers = list(range(start_block, evm_latest_block + 1))
-        worker_count = min(GLOBAL_EVM_FALLBACK_RPC_WORKERS, len(block_numbers))
-        headers: list[dict[str, Any]] = []
-        fetch_errors = [*errors, *latest_errors]
-
-        def load_block(block_number: int) -> dict[str, Any]:
-            header = fetch_block_header(rpc_url, block_number, timeout=10.0)
-            header["_rpc_source"] = rpc_name
-            return header
-
-        with ThreadPoolExecutor(max_workers=worker_count) as pool:
-            future_map = {pool.submit(load_block, number): number for number in block_numbers}
-            for future in as_completed(future_map):
-                number = future_map[future]
-                try:
-                    headers.append(future.result())
-                except Exception as exc:  # noqa: BLE001
-                    fetch_errors.append(f"{number}: {exc}")
-        if not headers:
-            return None
-
-        headers.sort(key=lambda item: safe_int(str(item.get("number") or "0"), 0))
-        cluster_map: dict[str, dict[str, Any]] = {}
-        first_seen_epoch: int | None = None
-        last_seen_epoch: int | None = None
-        zero_address_blocks = 0
-        for header in headers:
-            miner = str(header.get("miner") or header.get("author") or header.get("coinbase") or "").lower()
-            if not miner:
-                continue
-            try:
-                epoch = int(str(header.get("timestamp") or "0"), 16)
-                height = int(str(header.get("number") or "0"), 16)
-            except (TypeError, ValueError):
-                continue
-            first_seen_epoch = epoch if first_seen_epoch is None else min(first_seen_epoch, epoch)
-            last_seen_epoch = epoch if last_seen_epoch is None else max(last_seen_epoch, epoch)
-            if not is_spendable_eth_address(miner):
-                zero_address_blocks += 1
-                continue
-            entry = cluster_map.setdefault(
-                miner,
-                {
-                    "address": miner,
-                    "blocks": 0,
-                    "first_height": height,
-                    "last_height": height,
-                    "first_seen_epoch": epoch,
-                    "last_seen_epoch": epoch,
-                    "rpc_sources": [],
-                },
-            )
-            entry["blocks"] += 1
-            entry["first_height"] = min(entry["first_height"], height)
-            entry["last_height"] = max(entry["last_height"], height)
-            entry["first_seen_epoch"] = min(entry["first_seen_epoch"], epoch)
-            entry["last_seen_epoch"] = max(entry["last_seen_epoch"], epoch)
-            entry["rpc_sources"].append(str(header.get("_rpc_source") or rpc_name))
-
-        total_blocks = len(headers)
-        window_seconds = max(1, (last_seen_epoch or 0) - (first_seen_epoch or 0))
-        scan_window_hours = Decimal(str(window_seconds)) / Decimal("3600") if window_seconds > 0 else None
-        avg_block_seconds = window_seconds / max(1, total_blocks - 1) if total_blocks > 1 else None
-        enriched_clusters: list[dict[str, Any]] = []
-        clusters = sorted(cluster_map.values(), key=lambda item: (item["blocks"], item["last_seen_epoch"]), reverse=True)
-        for rank, cluster in enumerate(clusters, start=1):
-            blocks = int(cluster["blocks"])
-            share = Decimal(blocks) / Decimal(max(1, total_blocks))
-            enriched_clusters.append(
-                {
-                    "rank": rank,
-                    "address": cluster["address"],
-                    "address_short": short_eth_address(cluster["address"]),
-                    "pool_name": "",
-                    "source": "evm-rpc-fallback",
-                    "local_pool": False,
-                    "blocks": blocks,
-                    "shares": blocks,
-                    "credit_blocks": blocks,
-                    "found_blocks": blocks,
-                    "share_percent": decimal_to_str(share * Decimal("100"), places=2),
-                    "first_height": cluster["first_height"],
-                    "last_height": cluster["last_height"],
-                    "first_seen_at": datetime.fromtimestamp(cluster["first_seen_epoch"], tz=timezone.utc).isoformat(),
-                    "last_seen_at": datetime.fromtimestamp(cluster["last_seen_epoch"], tz=timezone.utc).isoformat(),
-                    "avg_block_seconds": decimal_to_str(Decimal(str(avg_block_seconds)), places=1) if avg_block_seconds is not None and blocks > 1 else None,
-                    "rpc_sources": unique_names(cluster["rpc_sources"]),
-                }
-            )
-        local_pool_clusters = collect_local_pool_global_clusters(window_seconds, total_blocks, scan_window_hours, {})
-        display_clusters = merge_global_local_pool_clusters(enriched_clusters, local_pool_clusters)
-        latest_block = chain_block_count if chain_block_count is not None else evm_latest_block
-        payload: dict[str, Any] = {
-            "status": "degraded",
-            "source": "on-chain-evm-fallback",
-            "source_truth": "evm-rpc:eth_blockNumber/eth_getBlockByNumber fallback",
-            "source_contract": "evm-rpc-fallback-v1",
-            "schema_version": GLOBAL_CACHE_SCHEMA_VERSION,
-            "rpc_kind": "evm-json-rpc",
-            "height_method": "eth_blockNumber",
-            "updated_at": now_iso(),
-            "updated_at_epoch": seconds_since_epoch(),
-            "rpc_source": rpc_name,
-            "chain_block_count": chain_block_count,
-            "latest_block": latest_block,
-            "latest_order": max(0, latest_block - 1),
-            "evm_latest_block": evm_latest_block,
-            "requested_blocks": requested_count,
-            "fetched_blocks": total_blocks,
-            "unknown_blocks": 0,
-            "partial_scan": False,
-            "global_rpc_worker_count": worker_count,
-            "adaptive_concurrency": {},
-            "scan_start_block": start_block,
-            "scan_end_block": evm_latest_block,
-            "scan_start_order": None,
-            "scan_end_order": None,
-            "scan_window_seconds": window_seconds,
-            "scan_window_hours": decimal_to_str(Decimal(str(window_seconds)) / Decimal("3600"), places=2),
-            "avg_block_seconds": decimal_to_str(Decimal(str(avg_block_seconds)), places=1) if avg_block_seconds is not None else None,
-            "unique_miners": len(display_clusters),
-            "chain_unique_miners": len(enriched_clusters),
-            "clusters": display_clusters,
-            "chain_clusters": enriched_clusters,
-            "local_pool_clusters": local_pool_clusters,
-            "peer_location": {"observations": []},
-            "fetch_errors": fetch_errors[:20],
-            "zero_address_blocks": zero_address_blocks,
-            "history": history,
-            "cache_hit": False,
-            "cache": {"hit": False, "ttl_seconds": GLOBAL_CACHE_TTL_SECONDS},
-            "error": f"{error}; using EVM header fallback",
-        }
-        payload = annotate_global_pool_labels(payload)
-        write_global_cache(payload)
-        return payload
-
     def stale_or_failed(
         error: str,
         errors: list[str] | None = None,
@@ -10986,10 +10820,6 @@ def collect_global_blockchain() -> dict[str, Any]:
             head = lightweight_global_head(error, errors or [], history, maintenance_decision)
             if head is not None:
                 return refresh_global_chain_head(head)
-        if GLOBAL_EVM_FALLBACK_ENABLED:
-            fallback = evm_fallback_global(error, fetch_errors, history, chain_block_count)
-            if fallback is not None:
-                return refresh_global_chain_head(fallback)
         return refresh_global_chain_head(
             {
                 "status": "failed",
@@ -11149,7 +10979,7 @@ def collect_global_blockchain() -> dict[str, Any]:
         "cpu_some_avg10": maintenance_decision.get("cpu_some_avg10"),
         "chain_rpc_latency_ms": maintenance_decision.get("chain_rpc_latency_ms"),
     }
-    global_worker_count = adaptive_worker_count("global_rpc", GLOBAL_RPC_WORKERS, len(requested_orders), global_pressure)
+    global_worker_count = adaptive_worker_count("chain_dag_rpc", GLOBAL_CHAIN_RPC_WORKERS, len(requested_orders), global_pressure)
     with ThreadPoolExecutor(max_workers=global_worker_count) as pool:
         future_map = {pool.submit(load_block, order): order for order in requested_orders}
         for future in as_completed(future_map):

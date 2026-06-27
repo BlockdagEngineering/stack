@@ -47,7 +47,7 @@ short cache with `max_age_seconds=0`.
 The existing worker settings remain hard caps:
 
 ```sh
-BDAG_GLOBAL_RPC_WORKERS=24
+BDAG_CHAIN_DAG_RPC_WORKERS=1
 BDAG_MINER_SCAN_WORKERS=64
 BDAG_MINER_HASHRATE_PROBE_WORKERS=8
 ```

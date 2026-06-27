@@ -97,7 +97,6 @@ class GlobalTabFallbackTests(unittest.TestCase):
         self.old_latest_pool_db_block_height = pool_ops.latest_pool_db_block_height
         self.old_background_maintenance_decision = pool_ops.background_maintenance_decision
         self.old_probe_global_display_block_height = pool_ops.probe_global_display_block_height
-        self.old_global_evm_fallback_enabled = pool_ops.GLOBAL_EVM_FALLBACK_ENABLED
         self.old_global_display_template_height_diagnostic = pool_ops.GLOBAL_DISPLAY_TEMPLATE_HEIGHT_DIAGNOSTIC
         self.old_node_template_probe_get_block_template_enabled = pool_ops.NODE_TEMPLATE_PROBE_GET_BLOCK_TEMPLATE_ENABLED
         pool_ops.probe_global_display_block_height = lambda: (None, "", {}, [])
@@ -114,7 +113,6 @@ class GlobalTabFallbackTests(unittest.TestCase):
         pool_ops.latest_pool_db_block_height = self.old_latest_pool_db_block_height
         pool_ops.background_maintenance_decision = self.old_background_maintenance_decision
         pool_ops.probe_global_display_block_height = self.old_probe_global_display_block_height
-        pool_ops.GLOBAL_EVM_FALLBACK_ENABLED = self.old_global_evm_fallback_enabled
         pool_ops.GLOBAL_DISPLAY_TEMPLATE_HEIGHT_DIAGNOSTIC = self.old_global_display_template_height_diagnostic
         pool_ops.NODE_TEMPLATE_PROBE_GET_BLOCK_TEMPLATE_ENABLED = self.old_node_template_probe_get_block_template_enabled
 
@@ -190,7 +188,7 @@ class GlobalTabFallbackTests(unittest.TestCase):
         self.assertTrue(probe["skipped"])
         self.assertEqual("getBlockTemplate diagnostic disabled", probe["skip_reason"])
 
-    def test_global_does_not_use_evm_fallback_by_default_when_chain_rpc_fails(self) -> None:
+    def test_global_never_uses_evm_fallback_when_chain_rpc_fails(self) -> None:
         cached = {
             "status": "degraded",
             "source_contract": "evm-rpc-fallback-v1",
@@ -205,12 +203,11 @@ class GlobalTabFallbackTests(unittest.TestCase):
                 return cached
             return fallback
 
-        pool_ops.GLOBAL_EVM_FALLBACK_ENABLED = False
         pool_ops.read_json_file = fake_read_json_file
         pool_ops.read_global_history = lambda limit=None: []
         pool_ops.seconds_since_epoch = lambda: 120
         pool_ops.global_chain_rpc_urls = lambda: [("bad-node", "http://127.0.0.1:38131")]
-        pool_ops.public_evm_rpc_urls = lambda: (_ for _ in ()).throw(AssertionError("EVM fallback must be opt-in for global production stats"))
+        pool_ops.public_evm_rpc_urls = lambda: (_ for _ in ()).throw(AssertionError("EVM fallback must not run for global production stats"))
         pool_ops.background_maintenance_decision = lambda task: {"allowed": True, "task": task, "reasons": []}
         pool_ops.mining_rpc_call = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("chain rpc unavailable"))
 
