@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "manifest_name": "blocklist-hardening-on-redis-dash-0.0.2",
+  "created_local_date": "2026-06-27",
+  "purpose": "Compose the clean main-based blocklist consensus hardening workstream with the frozen Redis dashboard stack for full-stack runtime testing, without merging redis-dash-0-0-2 history into the main-bound hardening branch.",
+  "gitops_policy": {
+    "canonical_production_line": "main",
+    "clean_workstream_branch": "blocklist-consensus-hardening",
+    "runtime_integration_branch": "integration/blocklist-hardening-on-redis-dash-0.0.2",
+    "frozen_reference": "redis-dash-0.0.2-freeze-20260627",
+    "do_not_merge_into_frozen_branch": true,
+    "do_not_merge_redis_dashboard_history_into_blocklist_prs": true,
+    "desired_state_rule": "Deployable test state is defined by this manifest and exact repository SHAs, not by unpinned moving branch heads."
+  },
+  "repositories": {
+    "blockdag-corechain": {
+      "repo": "BlockdagEngineering/blockdag-corechain",
+      "role": "active blocklist consensus hardening implementation source",
+      "test_ref": "blocklist-consensus-hardening",
+      "test_commit": "f318f8bd89916c28879474cabee6c9c8ee1e3e2d",
+      "base_ref": "main",
+      "base_commit": "f318f8bd89916c28879474cabee6c9c8ee1e3e2d",
+      "update_rule": "Advance test_commit as hardening PR slices land on blocklist-consensus-hardening. Final PR target remains main."
+    },
+    "pool": {
+      "repo": "BlockdagEngineering/pool",
+      "role": "frozen current pool runtime support for Redis dashboard full-stack testing",
+      "test_ref": "redis-dash-0.0.2-freeze-20260627",
+      "test_commit": "0274f2be90f5245f797f6385fa64fb4db6a3a9af",
+      "frozen_branch": "redis-dash-0-0-2",
+      "update_rule": "Do not advance for blocklist work unless a pool-specific compatibility change is required and reviewed separately."
+    },
+    "redis-dash": {
+      "repo": "BlockdagEngineering/redis-dash",
+      "role": "frozen Redis dashboard/control-plane runtime for full-stack testing",
+      "test_ref": "redis-dash-0.0.2-freeze-20260627",
+      "test_commit": "3eb9b5a81810ccf1f1c77accd08cdfa03ffef2a5",
+      "frozen_branch": "redis-dash-0-0-2",
+      "update_rule": "Do not advance for consensus hardening unless dashboard visibility changes are explicitly required."
+    },
+    "stack": {
+      "repo": "BlockdagEngineering/stack",
+      "role": "GitOps desired-state owner and integration-test composition repo",
+      "test_ref": "integration/blocklist-hardening-on-redis-dash-0.0.2",
+      "base_ref": "redis-dash-0.0.2-freeze-20260627",
+      "base_commit": "3e79e85281b38c6bf2960676f011a002d2721b7a",
+      "test_commit": "the git commit containing this manifest",
+      "update_rule": "Update this manifest through PR-reviewed commits when repository SHAs change for integration testing."
+    }
+  },
+  "workflow": {
+    "implementation": [
+      "Create small task branches from blocklist-consensus-hardening, or commit directly to blocklist-consensus-hardening only when the work is narrow and controlled.",
+      "Run targeted tests for each slice.",
+      "Update this manifest only when a new tested full-stack composition is intended."
+    ],
+    "testing": [
+      "Checkout each repo to the test_ref/test_commit listed here.",
+      "Build from source using stack scripts.",
+      "Run the blocklist hardening test matrix from /home/jeremy/Documents/blockdag-corechain-blocklist-hardening-20260627/07-test-matrix-and-acceptance.html.",
+      "Record test evidence before updating release tags or deployment manifests."
+    ],
+    "release": [
+      "Open final PRs from blocklist-consensus-hardening to main after the hardening work passes consensus, txpool, RPC/indexer, and full-stack tests.",
+      "Create immutable tags/releases only from tested commits.",
+      "Do not reuse redis-dash-0-0-2 for future consensus work."
+    ]
+  },
+  "acceptance": {
+    "clean_pr_to_main": "Blocklist hardening PRs to main must not include unrelated Redis dashboard history.",
+    "full_stack_test_available": "A developer can reproduce the current Redis full-stack runtime plus current hardening corechain by checking out the refs pinned in this manifest.",
+    "frozen_branch_preserved": "redis-dash-0-0-2 remains a stable known branch and is not used as a future development base."
+  }
+}

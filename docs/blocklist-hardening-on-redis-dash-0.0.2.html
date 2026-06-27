@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blocklist Hardening On Redis Dashboard 0.0.2 Integration Manifest</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0d1117; --panel:#151b24; --panel2:#1f2937; --text:#eef3f8; --muted:#a8b3c4; --line:#303b4d; --accent:#67d4ad; --warn:#f5c45e; --code:#d7f5ff; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { max-width:1120px; margin:0 auto; padding:28px 22px 56px; }
+    h1 { margin:0 0 8px; font-size:30px; line-height:1.15; }
+    h2 { margin:30px 0 12px; padding-bottom:7px; border-bottom:1px solid var(--line); }
+    p { margin:0 0 12px; }
+    code { color:var(--code); background:#090d13; border:1px solid #263142; border-radius:6px; padding:1px 5px; }
+    table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); margin:14px 0; }
+    th, td { border-bottom:1px solid var(--line); padding:10px 12px; text-align:left; vertical-align:top; }
+    th { background:var(--panel2); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+    tr:last-child td { border-bottom:0; }
+    .lede { color:var(--muted); max-width:920px; }
+    .callout { border-left:4px solid var(--accent); background:#101b17; padding:14px 16px; border-radius:6px; margin:14px 0; }
+    .warn { border-left-color:var(--warn); background:#1d1a10; }
+  </style>
+  <script type="application/json" id="agent-metadata">
+  {
+    "document_type": "gitops_integration_manifest_companion",
+    "created_local_date": "2026-06-27",
+    "native_manifest": "manifests/blocklist-hardening-on-redis-dash-0.0.2.json",
+    "runtime_integration_branch": "integration/blocklist-hardening-on-redis-dash-0.0.2",
+    "clean_workstream_branch": "blocklist-consensus-hardening",
+    "frozen_reference": "redis-dash-0.0.2-freeze-20260627",
+    "intent": "Allow full-stack runtime testing with the Redis dashboard 0.0.2 stack while keeping blocklist consensus hardening PRs clean against main."
+  }
+  </script>
+</head>
+<body>
+<main>
+  <h1>Blocklist Hardening On Redis Dashboard 0.0.2</h1>
+  <p class="lede">This document explains the integration manifest that composes the clean blocklist consensus hardening workstream with the frozen Redis dashboard stack for full-stack runtime testing.</p>
+
+  <div class="callout">
+    <strong>Rule:</strong> do not merge <code>redis-dash-0-0-2</code> into <code>blocklist-consensus-hardening</code>. Use this stack integration manifest to test both lines together without polluting the future PR to <code>main</code>.
+  </div>
+
+  <section>
+    <h2>Manifest</h2>
+    <p>Native manifest file: <code>manifests/blocklist-hardening-on-redis-dash-0.0.2.json</code></p>
+    <p>The JSON manifest is the desired-state file. This HTML file is the human and agent companion explaining how to use it.</p>
+  </section>
+
+  <section>
+    <h2>Repository Composition</h2>
+    <table>
+      <thead><tr><th>Repo</th><th>Role</th><th>Ref</th><th>Commit</th></tr></thead>
+      <tbody>
+        <tr><td><code>blockdag-corechain</code></td><td>Active blocklist hardening source</td><td><code>blocklist-consensus-hardening</code></td><td><code>f318f8bd89916c28879474cabee6c9c8ee1e3e2d</code></td></tr>
+        <tr><td><code>pool</code></td><td>Frozen current runtime support</td><td><code>redis-dash-0.0.2-freeze-20260627</code></td><td><code>0274f2be90f5245f797f6385fa64fb4db6a3a9af</code></td></tr>
+        <tr><td><code>redis-dash</code></td><td>Frozen Redis dashboard/control plane</td><td><code>redis-dash-0.0.2-freeze-20260627</code></td><td><code>3eb9b5a81810ccf1f1c77accd08cdfa03ffef2a5</code></td></tr>
+        <tr><td><code>stack</code></td><td>Desired-state owner</td><td><code>integration/blocklist-hardening-on-redis-dash-0.0.2</code></td><td>The commit containing this manifest</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Operating Rules</h2>
+    <ul>
+      <li><code>main</code> remains the canonical production source line.</li>
+      <li><code>blocklist-consensus-hardening</code> remains the clean integration branch for consensus hardening work.</li>
+      <li><code>redis-dash-0-0-2</code> remains frozen and must not receive future consensus work.</li>
+      <li>This integration branch may update the manifest to point at new tested hardening commits.</li>
+      <li>Release tags must be created only from tested commit sets.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Validation Link</h2>
+    <p>The blocklist implementation and QA plan lives at <code>/home/jeremy/Documents/blockdag-corechain-blocklist-hardening-20260627/00-index.html</code>. Future implementation agents should read that package before modifying consensus, txpool, P2P, RPC, indexer, or gateway code.</p>
+  </section>
+</main>
+</body>
+</html>
