@@ -2,6 +2,7 @@
 
 import pathlib
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -289,7 +290,7 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         ), mock.patch.object(
             watchdog, "log", lambda _message: None
         ), mock.patch.object(
-            watchdog, "run_pool_restart", side_effect=lambda reason: restarts.append(reason) or True
+            watchdog, "run_pool_restart", side_effect=lambda reason, current_status=None, **_kwargs: restarts.append(reason) or True
         ):
             result = watchdog.check_once(3, 1800, 5, 900, repair=True)
 
@@ -299,6 +300,177 @@ class WatchdogMinerSourceCountTests(unittest.TestCase):
         self.assertEqual("pool_expired_job_reconnect_exhausted", events[0][0])
         self.assertEqual("critical", events[0][1])
         self.assertTrue(events[0][3]["expired_job_reconnect_failed"])
+        self.assertTrue(written)
+
+    def test_accepted_jobs_expired_storm_restarts_running_pool_with_current_status_when_sampler_unavailable(self) -> None:
+        state: dict[str, object] = {}
+        events: list[tuple[str, str, str, dict[str, object]]] = []
+        commands: list[list[str]] = []
+        written: list[dict[str, object]] = []
+        status = {
+            "fresh": True,
+            "mode": "synced",
+            "overall": "ok",
+            "failures": [],
+            "stack_failures": [],
+            "miner_failures": [],
+            "mining_address": ADDRESS,
+            "containers": {
+                watchdog.POOL_CONTAINER: {
+                    "running": True,
+                    "started_at": "2026-05-19T08:00:00.000000000Z",
+                }
+            },
+            "nodes": {},
+            "rpc_template_health": {"all_nodes_ready": True},
+            "sync_health": {},
+            "sync_progress": {
+                "status": "synced",
+                "remaining_blocks": 0,
+                "nodes": {
+                    "node": {
+                        "canonical_mining_safety": {
+                            "safe": True,
+                            "schema": "stack_evm_public_reference_v1",
+                            "reason": "unit-test public chain proof",
+                        }
+                    }
+                },
+            },
+            "pool_health": {
+                "accepted_job_expired_storm": True,
+                "accepted_job_expired_storm_threshold": 25,
+                "accepted_job_expired_storm_ratio": 2,
+                "stale_submit_count": 90,
+                "valid_share_count": 0,
+            },
+            "miner_health": {
+                "connected_count": 4,
+                "connected_count_effective": 4,
+                "miners": [],
+            },
+        }
+
+        class Result:
+            ok = True
+
+        def record(event_type: str, severity: str, message: str, details=None) -> None:
+            events.append((event_type, severity, message, details or {}))
+
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
+            watchdog, "read_state", return_value=state
+        ), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog.pool_start_gate,
+            "read_latest_status_payload",
+            side_effect=AssertionError("current watchdog status should avoid stale sampler dependency"),
+        ), mock.patch.object(
+            watchdog, "automation_mutation_allowed", return_value=True
+        ), mock.patch.object(
+            watchdog, "acquire_lock", return_value=mock.Mock(close=lambda: None)
+        ), mock.patch.object(
+            watchdog, "action_log_path", return_value=pathlib.Path(tmpdir) / "restart-pool.log"
+        ), mock.patch.object(
+            watchdog, "write_action_state", lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "run_logged", side_effect=lambda command, *_args, **_kwargs: commands.append(command) or Result()
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", side_effect=record
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("pool_accepted_job_expired_storm", result["watchdog_state"]["last_status"])
+        self.assertEqual(1, len(commands))
+        self.assertEqual("restart", commands[0][-2])
+        self.assertEqual(watchdog.POOL_CONTAINER, commands[0][-1])
+        self.assertEqual(0, [event[0] for event in events].count("pool_restart_blocked"))
+        self.assertTrue(any(event[0] == "pool_accepted_job_expired_storm" for event in events))
+        storm_event = next(event for event in events if event[0] == "pool_accepted_job_expired_storm")
+        self.assertTrue(storm_event[3]["accepted_job_expired_storm"])
+        self.assertEqual(4, storm_event[3]["connected_miners"])
+        self.assertEqual(90, storm_event[3]["expired_job_submit_count"])
+        self.assertEqual(0, storm_event[3]["valid_share_count"])
+        self.assertEqual(0, result["watchdog_state"]["consecutive_submit_path_stalls"])
+        self.assertTrue(written)
+
+    def test_blocked_submit_path_restart_does_not_consume_repair_cooldown(self) -> None:
+        state: dict[str, object] = {}
+        events: list[tuple[str, str, str, dict[str, object]]] = []
+        written: list[dict[str, object]] = []
+        status = {
+            "fresh": True,
+            "mode": "catchup_pause",
+            "overall": "syncing",
+            "status_reason": "catch-up pause active: node is behind peers",
+            "catchup_policy": {"active": True},
+            "failures": [],
+            "stack_failures": [],
+            "miner_failures": [],
+            "mining_address": ADDRESS,
+            "containers": {watchdog.POOL_CONTAINER: {"running": True}},
+            "nodes": {},
+            "sync_health": {"catchup_pause_active": True},
+            "sync_progress": {"status": "catchup_pause", "remaining_blocks": 100, "nodes": {}},
+            "pool_health": {
+                "accepted_job_expired_storm": True,
+                "accepted_job_expired_storm_threshold": 25,
+                "accepted_job_expired_storm_ratio": 2,
+                "stale_submit_count": 90,
+                "valid_share_count": 0,
+            },
+            "miner_health": {
+                "connected_count": 4,
+                "connected_count_effective": 4,
+                "miners": [],
+            },
+        }
+
+        def record(event_type: str, severity: str, message: str, details=None) -> None:
+            events.append((event_type, severity, message, details or {}))
+
+        with mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "automation_mutation_allowed", return_value=True
+        ), mock.patch.object(
+            watchdog, "acquire_lock", side_effect=AssertionError("blocked restart must not acquire repair lock")
+        ), mock.patch.object(
+            watchdog, "run_logged", side_effect=AssertionError("blocked restart must not run docker")
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", side_effect=record
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("pool_accepted_job_expired_storm", result["watchdog_state"]["last_status"])
+        self.assertNotIn("last_repair_at", result["watchdog_state"])
+        self.assertNotIn("last_share_repair_at", result["watchdog_state"])
+        self.assertNotIn("last_submit_path_repair_at", result["watchdog_state"])
+        self.assertTrue(any(event[0] == "pool_restart_blocked" for event in events))
         self.assertTrue(written)
 
 

@@ -730,6 +730,83 @@ def pool_start_blocked_by_status(status: dict[str, Any]) -> tuple[bool, str]:
     return (not decision.allowed), decision.reason
 
 
+def _pool_restart_soft_gate_reason(reason: str) -> bool:
+    text = str(reason or "").strip()
+    soft_reasons = (
+        "stack status unavailable; cannot prove pool start is safe",
+        "stack status is stale; cannot prove pool start is safe",
+        "sync progress is syncing",
+        "overall stack status is syncing",
+        "node template health reports node_syncing",
+        "node log reports node busy syncing",
+        "node log reports bdag pool syncing",
+        "node reports initial download",
+    )
+    if text.startswith(soft_reasons):
+        return True
+    if text.startswith("status mode is not safe for pool start: "):
+        mode = text.rsplit(": ", 1)[-1].strip().lower()
+        return mode in {"syncing", "unknown", "waiting_for_status_sample"}
+    return False
+
+
+def _pool_restart_hard_block_reasons(
+    status: dict[str, Any] | None,
+    gate: pool_start_gate.PoolStartGateDecision,
+) -> list[str]:
+    reasons: list[str] = []
+    if not isinstance(status, dict):
+        reasons.append("current stack status unavailable; cannot prove pool is already running")
+        return reasons
+    if not container_running(status, POOL_CONTAINER):
+        reasons.append(f"{POOL_CONTAINER} is not running; restart would start a stopped pool")
+
+    sync_health = status.get("sync_health") if isinstance(status.get("sync_health"), dict) else {}
+    if sync_health.get("public_chain_divergence") or sync_health.get("public_chain_divergence_nodes"):
+        reasons.append("public-chain divergence containment is active")
+
+    catchup_policy = status.get("catchup_policy") if isinstance(status.get("catchup_policy"), dict) else {}
+    sync_progress = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
+    sync_status = str(sync_progress.get("status") or "").strip().lower()
+    if catchup_policy.get("active") or sync_health.get("catchup_pause_active") or sync_status == "catchup_pause":
+        reasons.append("chain catch-up pause is active")
+
+    canonical_safe, canonical_reason = pool_start_gate.canonical_safety_proven(status)
+    if not canonical_safe and "unsafe" in canonical_reason:
+        reasons.append(canonical_reason)
+
+    for reason in gate.reasons:
+        text = str(reason)
+        if "public-chain divergence" in text and text not in reasons:
+            reasons.append(text)
+        elif "catch-up pause" in text and text not in reasons:
+            reasons.append(text)
+    return reasons
+
+
+def pool_restart_allowed_by_status(
+    status: dict[str, Any] | None,
+    gate: pool_start_gate.PoolStartGateDecision,
+    *,
+    allow_running_pool_gate_bypass: bool = False,
+) -> tuple[bool, str]:
+    hard_reasons = _pool_restart_hard_block_reasons(status, gate)
+    if hard_reasons:
+        return False, "; ".join(hard_reasons)
+    if gate.allowed:
+        return True, ""
+    if not allow_running_pool_gate_bypass:
+        return False, gate.reason
+
+    non_restart_safe = [
+        reason for reason in gate.reasons
+        if not _pool_restart_soft_gate_reason(reason)
+    ]
+    if non_restart_safe:
+        return False, "; ".join(non_restart_safe)
+    return True, f"restart-only allowance for already-running pool: {gate.reason}"
+
+
 def pool_stopped_is_only_stack_failure(stack_failures: list[Any]) -> bool:
     if not stack_failures:
         return False
@@ -1097,7 +1174,12 @@ docker start "$node"
     return ok
 
 
-def run_pool_restart(reason: str) -> bool:
+def run_pool_restart(
+    reason: str,
+    current_status: dict[str, Any] | None = None,
+    *,
+    allow_running_pool_gate_bypass: bool = False,
+) -> bool:
     if not automation_mutation_allowed(
         actor="watchdog",
         action=automation_control.ACTION_ASIC_POOL_RESTART,
@@ -1107,16 +1189,26 @@ def run_pool_restart(reason: str) -> bool:
         incident_source="watchdog",
     ):
         return False
-    gate = pool_start_gate.pool_start_decision(pool_start_gate.read_latest_status_payload())
-    if not gate.allowed:
-        log(f"pool restart blocked by pool start gate: {gate.reason}; reason={reason}")
+    status_for_gate = current_status if isinstance(current_status, dict) else pool_start_gate.read_latest_status_payload()
+    gate_source = "check_once" if isinstance(current_status, dict) else "status-sampler"
+    gate = pool_start_gate.pool_start_decision(status_for_gate, status_source=gate_source)
+    allowed, block_reason = pool_restart_allowed_by_status(
+        status_for_gate,
+        gate,
+        allow_running_pool_gate_bypass=allow_running_pool_gate_bypass,
+    )
+    if not allowed:
+        blocked_reason = block_reason or gate.reason
+        log(f"pool restart blocked by pool start gate: {blocked_reason}; reason={reason}")
         record_efficiency_event(
             "pool_restart_blocked",
             "warning",
             "pool restart blocked by pool start gate",
-            {"reason": reason, "blocked_reason": gate.reason, "pool_container": POOL_CONTAINER},
+            {"reason": reason, "blocked_reason": blocked_reason, "pool_container": POOL_CONTAINER},
         )
         return False
+    if not gate.allowed:
+        log(f"pool restart proceeding despite soft pool start gate blocker: {block_reason}; reason={reason}")
 
     lock_handle = acquire_lock(blocking=False)
     if lock_handle is None:
@@ -1912,7 +2004,8 @@ def check_once(
         return {"status": status, "watchdog_state": state}
 
     sync_pause_reason = sync_progress_pool_pause_reason(status)
-    if sync_pause_reason and container_running(status, POOL_CONTAINER):
+    submit_path_storm = submit_path_zero_success_storm or accepted_job_expired_storm or expired_job_reconnect_failed
+    if sync_pause_reason and container_running(status, POOL_CONTAINER) and not submit_path_storm:
         state["consecutive_failures"] = 0
         state["consecutive_syncing"] = 0
         state["consecutive_share_stalls"] = 0
@@ -2613,11 +2706,15 @@ def check_once(
                     prefix = "pool acceptedJobs expired storm: "
                 else:
                     prefix = "pool submit-path zero-success storm: "
-                ok = run_pool_restart(prefix + reason)
-                state["last_repair_at"] = int(time.time())
-                state["last_share_repair_at"] = int(time.time())
-                state["last_submit_path_repair_at"] = int(time.time())
+                ok = run_pool_restart(
+                    prefix + reason,
+                    current_status=status,
+                    allow_running_pool_gate_bypass=True,
+                )
                 if ok:
+                    state["last_repair_at"] = int(time.time())
+                    state["last_share_repair_at"] = int(time.time())
+                    state["last_submit_path_repair_at"] = int(time.time())
                     state["consecutive_submit_path_stalls"] = 0
     elif degraded_asics:
         affected = [

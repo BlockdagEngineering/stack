@@ -262,6 +262,70 @@ class WatchdogSyncRestartTests(unittest.TestCase):
         )
         self.assertEqual("sync progress is syncing with 90000 block(s) remaining", written[-1]["last_pool_sync_pause_reason"])
 
+    def test_check_once_sync_pause_does_not_hide_accepted_job_expired_storm(self) -> None:
+        now = 1_779_200_000
+        status = {
+            **node_status(importing=True, last_import_age_seconds=20),
+            "failures": [],
+            "stack_failures": [],
+            "miner_failures": [],
+            "warnings": [],
+            "mode": "mining",
+            "overall": "ok",
+            "containers": {
+                watchdog.POOL_CONTAINER: {
+                    "running": True,
+                    "started_at": "2026-01-14T12:00:00.000000000Z",
+                }
+            },
+            "pool_health": {
+                "accepted_job_expired_storm": True,
+                "accepted_job_expired_storm_threshold": 20,
+                "accepted_job_expired_storm_ratio": 0.95,
+                "stale_submit_count": 80,
+                "valid_share_count": 0,
+            },
+            "miner_health": {"connected_count": 4, "connected_count_effective": 4, "miners": []},
+        }
+        status["sync_progress"]["status"] = "syncing"
+        status["sync_progress"]["remaining_blocks"] = 90_000
+        state: dict[str, object] = {}
+        written: list[dict[str, object]] = []
+        restarts: list[tuple[str, dict[str, object] | None]] = []
+
+        with mock.patch.object(watchdog.time, "time", return_value=now), mock.patch.object(
+            watchdog, "NODES", ["node"]
+        ), mock.patch.object(watchdog, "read_state", return_value=state), mock.patch.object(
+            watchdog, "write_state", side_effect=lambda payload: written.append(dict(payload))
+        ), mock.patch.object(
+            watchdog, "collect_stack_status", return_value=status
+        ), mock.patch.object(
+            watchdog, "lock_is_held", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_earnings_snapshot", return_value={}
+        ), mock.patch.object(
+            watchdog, "status_payload_has_tracking_gap", return_value=False
+        ), mock.patch.object(
+            watchdog, "node_mining_template_support_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "fastsync_peer_quarantine_should_repair", return_value=False
+        ), mock.patch.object(
+            watchdog, "record_efficiency_event", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog,
+            "run_pool_restart",
+            side_effect=lambda reason, current_status=None, **_kwargs: restarts.append((reason, current_status)) or True,
+        ):
+            result = watchdog.check_once(3, 1800, 5, 900, repair=True)
+
+        self.assertEqual("pool_accepted_job_expired_storm", result["watchdog_state"]["last_status"])
+        self.assertEqual(1, len(restarts))
+        self.assertIn("pool acceptedJobs expired storm", restarts[0][0])
+        self.assertIs(status, restarts[0][1])
+        self.assertTrue(written)
+
     def test_check_once_does_not_restart_pool_when_nested_node_syncing(self) -> None:
         now = 1_779_200_000
         status = {
