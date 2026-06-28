@@ -80,6 +80,54 @@ def _sync_progress_lag_blocks(status: dict[str, Any]) -> int:
     return max(values) if values else 0
 
 
+def _node_sync_advisory_blockers(status: dict[str, Any]) -> list[str]:
+    """Return node-level sync blockers that can be hidden by aggregate height."""
+
+    blockers: list[str] = []
+    sync_progress = status.get("sync_progress")
+    if not isinstance(sync_progress, dict):
+        return blockers
+
+    sources: list[tuple[str, dict[str, Any]]] = [("sync_progress", sync_progress)]
+    nodes = sync_progress.get("nodes")
+    if isinstance(nodes, dict):
+        for name, node in nodes.items():
+            if isinstance(node, dict):
+                sources.append((f"node {name}", node))
+    elif isinstance(nodes, list):
+        for index, node in enumerate(nodes):
+            if isinstance(node, dict):
+                sources.append((f"node {index}", node))
+
+    for scope, source in sources:
+        if source.get("evm_chain_syncing") is True:
+            blockers.append(f"{scope} reports EVM chain syncing")
+        if source.get("mining_advisory_sync") is True:
+            blockers.append(f"{scope} reports mining advisory sync")
+        for current_key, target_key in (
+            ("sync_current_block", "sync_highest_block"),
+            ("evm_block_count", "evm_reference_block_count"),
+        ):
+            current = _safe_int(source.get(current_key))
+            target = _safe_int(source.get(target_key))
+            if current is not None and target is not None and target > current:
+                blockers.append(f"{scope} {current_key} is {target - current} block(s) behind {target_key}")
+        for lag_key in ("evm_lag_to_reference", "evm_lag_to_chain", "reference_lag_blocks"):
+            lag = _safe_int(source.get(lag_key))
+            if lag is not None and lag > 0:
+                blockers.append(f"{scope} {lag_key} is {lag} block(s)")
+
+    # Preserve the first occurrence of each reason while keeping stable order.
+    unique: list[str] = []
+    seen: set[str] = set()
+    for blocker in blockers:
+        if blocker in seen:
+            continue
+        seen.add(blocker)
+        unique.append(blocker)
+    return unique
+
+
 def _template_health_blockers(status: dict[str, Any]) -> list[str]:
     template_health = status.get("template_health")
     if not isinstance(template_health, dict):
@@ -301,6 +349,7 @@ def pool_start_decision(status: dict[str, Any] | None, *, status_source: str = "
     sync_progress = status.get("sync_progress") if isinstance(status.get("sync_progress"), dict) else {}
     sync_status = str(sync_progress.get("status") or "").strip().lower()
     sync_lag = _sync_progress_lag_blocks(status)
+    reasons.extend(_node_sync_advisory_blockers(status))
     if sync_status in {"syncing", "catchup_pause"}:
         if sync_lag > 0:
             reasons.append(f"sync progress is {sync_status} with {sync_lag} block(s) remaining")

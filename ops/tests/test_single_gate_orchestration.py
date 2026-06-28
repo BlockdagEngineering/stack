@@ -117,6 +117,38 @@ class SingleGateOrchestrationTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertIn("sync progress is syncing with 5 block(s) remaining", decision.reason)
 
+    def test_shared_gate_blocks_node_level_advisory_sync_hidden_by_aggregate_height(self) -> None:
+        status = safe_canonical_status()
+        sync_progress = status["sync_progress"]
+        sync_progress["status"] = "synced"
+        sync_progress["remaining_blocks"] = 0
+        sync_progress["native_is_current"] = True
+        sync_progress["evm_chain_syncing"] = True
+        sync_progress["mining_advisory_sync"] = True
+        sync_progress["sync_current_block"] = 12_480_000
+        sync_progress["sync_highest_block"] = 12_610_000
+        sync_progress["nodes"] = {
+            "node": {
+                "native_is_current": True,
+                "evm_chain_syncing": True,
+                "mining_advisory_sync": True,
+                "sync_current_block": 12_480_000,
+                "sync_highest_block": 12_610_000,
+                "evm_lag_to_reference": 130_000,
+                "canonical_mining_safety": {
+                    "safe": True,
+                    "schema": "stack_evm_public_reference_v1",
+                    "reason": "local EVM headers match an independent public reference at sampled heights",
+                },
+            }
+        }
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertFalse(decision.allowed)
+        self.assertIn("sync_progress reports EVM chain syncing", decision.reason)
+        self.assertIn("node node evm_lag_to_reference is 130000 block(s)", decision.reason)
+
     def test_shared_gate_blocks_synced_status_without_canonical_proof(self) -> None:
         decision = pool_start_gate.pool_start_decision(
             {
