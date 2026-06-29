@@ -117,7 +117,7 @@ class SingleGateOrchestrationTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertIn("sync progress is syncing with 5 block(s) remaining", decision.reason)
 
-    def test_shared_gate_blocks_node_level_advisory_sync_hidden_by_aggregate_height(self) -> None:
+    def test_shared_gate_allows_node_level_advisory_evm_sync_when_native_current(self) -> None:
         status = safe_canonical_status()
         sync_progress = status["sync_progress"]
         sync_progress["status"] = "synced"
@@ -130,6 +130,36 @@ class SingleGateOrchestrationTests(unittest.TestCase):
         sync_progress["nodes"] = {
             "node": {
                 "native_is_current": True,
+                "evm_chain_syncing": True,
+                "mining_advisory_sync": True,
+                "sync_current_block": 12_480_000,
+                "sync_highest_block": 12_610_000,
+                "evm_lag_to_reference": 130_000,
+                "canonical_mining_safety": {
+                    "safe": True,
+                    "schema": "stack_evm_public_reference_v1",
+                    "reason": "local EVM headers match an independent public reference at sampled heights",
+                },
+            }
+        }
+
+        decision = pool_start_gate.pool_start_decision(status)
+
+        self.assertTrue(decision.allowed, decision.reason)
+
+    def test_shared_gate_blocks_node_level_evm_sync_when_native_not_current(self) -> None:
+        status = safe_canonical_status()
+        sync_progress = status["sync_progress"]
+        sync_progress["status"] = "syncing"
+        sync_progress["remaining_blocks"] = 12
+        sync_progress["native_is_current"] = False
+        sync_progress["evm_chain_syncing"] = True
+        sync_progress["mining_advisory_sync"] = True
+        sync_progress["sync_current_block"] = 12_480_000
+        sync_progress["sync_highest_block"] = 12_610_000
+        sync_progress["nodes"] = {
+            "node": {
+                "native_is_current": False,
                 "evm_chain_syncing": True,
                 "mining_advisory_sync": True,
                 "sync_current_block": 12_480_000,

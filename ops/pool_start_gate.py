@@ -80,6 +80,13 @@ def _sync_progress_lag_blocks(status: dict[str, Any]) -> int:
     return max(values) if values else 0
 
 
+def _evm_advisory_sync_is_non_blocking(status: dict[str, Any]) -> bool:
+    if not _native_mining_state_is_current(status):
+        return False
+    safe, _reason = canonical_safety_proven(status)
+    return safe
+
+
 def _node_sync_advisory_blockers(status: dict[str, Any]) -> list[str]:
     """Return node-level sync blockers that can be hidden by aggregate height."""
 
@@ -88,6 +95,7 @@ def _node_sync_advisory_blockers(status: dict[str, Any]) -> list[str]:
     if not isinstance(sync_progress, dict):
         return blockers
 
+    evm_advisory_non_blocking = _evm_advisory_sync_is_non_blocking(status)
     sources: list[tuple[str, dict[str, Any]]] = [("sync_progress", sync_progress)]
     nodes = sync_progress.get("nodes")
     if isinstance(nodes, dict):
@@ -100,10 +108,19 @@ def _node_sync_advisory_blockers(status: dict[str, Any]) -> list[str]:
                 sources.append((f"node {index}", node))
 
     for scope, source in sources:
+        source_is_evm_advisory = evm_advisory_non_blocking and (
+            source.get("evm_chain_syncing") is True
+            or source.get("mining_advisory_sync") is True
+            or bool(source.get("evm_sync_advisory"))
+            or source.get("evm_block_count") is not None
+            or source.get("evm_reference_block_count") is not None
+        )
         if source.get("evm_chain_syncing") is True:
-            blockers.append(f"{scope} reports EVM chain syncing")
+            if not source_is_evm_advisory:
+                blockers.append(f"{scope} reports EVM chain syncing")
         if source.get("mining_advisory_sync") is True:
-            blockers.append(f"{scope} reports mining advisory sync")
+            if not source_is_evm_advisory:
+                blockers.append(f"{scope} reports mining advisory sync")
         for current_key, target_key in (
             ("sync_current_block", "sync_highest_block"),
             ("evm_block_count", "evm_reference_block_count"),
@@ -111,10 +128,14 @@ def _node_sync_advisory_blockers(status: dict[str, Any]) -> list[str]:
             current = _safe_int(source.get(current_key))
             target = _safe_int(source.get(target_key))
             if current is not None and target is not None and target > current:
+                if source_is_evm_advisory:
+                    continue
                 blockers.append(f"{scope} {current_key} is {target - current} block(s) behind {target_key}")
         for lag_key in ("evm_lag_to_reference", "evm_lag_to_chain", "reference_lag_blocks"):
             lag = _safe_int(source.get(lag_key))
             if lag is not None and lag > 0:
+                if source_is_evm_advisory:
+                    continue
                 blockers.append(f"{scope} {lag_key} is {lag} block(s)")
 
     # Preserve the first occurrence of each reason while keeping stable order.
