@@ -174,6 +174,43 @@ need_grep '--miningnopendingtx' "docker/entrypoint-nodeworker.sh"
 need_grep '^DASHBOARD_SRC_CONTEXT=../redis-dash$' ".env.example"
 need_grep '^DASHBOARD_REPO=https://github[.]com/BlockdagEngineering/redis-dash[.]git$' ".env.example"
 need_grep 'dashboard_src: \$\{DASHBOARD_SRC_CONTEXT:-\.\./redis-dash\}' "docker-compose.yml"
+need_grep '^BDAG_GLOBAL_BLOCK_WINDOW=600$' ".env.example"
+need_grep '^BDAG_NATIVE_DAG_LIVE_WINDOW=600$' ".env.example"
+need_grep '^BDAG_CHAIN_DAG_DISPLAY_WINDOW=90$' ".env.example"
+need_grep '^BDAG_NATIVE_DAG_LIVE_WINDOW=600$' "ops/config/stack-defaults.env"
+need_grep '^BDAG_CHAIN_DAG_DISPLAY_WINDOW=90$' "ops/config/stack-defaults.env"
+need_grep 'BDAG_NATIVE_DAG_LIVE_WINDOW: \$\{BDAG_NATIVE_DAG_LIVE_WINDOW:-600\}' "docker-compose.yml"
+need_grep 'BDAG_CHAIN_DAG_DISPLAY_WINDOW: \$\{BDAG_CHAIN_DAG_DISPLAY_WINDOW:-90\}' "docker-compose.yml"
+need_grep '^BDAG_TREND_SETTLE_DELAY_SECONDS=5$' ".env.example"
+need_grep '^BDAG_TREND_SETTLE_DELAY_SECONDS=5$' "ops/config/stack-defaults.env"
+need_grep 'BDAG_TREND_SETTLE_DELAY_SECONDS: \$\{BDAG_TREND_SETTLE_DELAY_SECONDS:-5\}' "docker-compose.yml"
+reject_grep 'BDAG_LOW_IMPACT_NATIVE_DAG_WINDOW' ".env.example"
+reject_grep 'BDAG_LOW_IMPACT_NATIVE_DAG_WINDOW' "docker-compose.yml"
+for removed_dashboard_setting in \
+  BDAG_EVM_WS_URL \
+  BDAG_GLOBAL_RPC_WORKERS \
+  BDAG_GLOBAL_FAST_WARMUP_BLOCKS \
+  BDAG_GLOBAL_SETTLE_DELAY_SECONDS \
+  BDAG_GLOBAL_MAX_INCREMENTAL_GAP \
+  BDAG_GLOBAL_REBUILD_COOLDOWN_SECONDS \
+  BDAG_GLOBAL_RPC_CHUNK_SIZE \
+  BDAG_CHAIN_POLL_SECONDS \
+  BDAG_CHAIN_POLL_FALLBACK_AFTER_SECONDS \
+  BDAG_CHAIN_WS_READ_LIMIT_BYTES \
+  BDAG_CHAIN_WS_READ_TIMEOUT_SECONDS \
+  BDAG_LOW_IMPACT_GLOBAL_WARMUP_BLOCKS \
+  BDAG_LOW_IMPACT_GLOBAL_RPC_WORKERS \
+  BDAG_LOW_IMPACT_FULL_GLOBAL_WARMUP; do
+  reject_grep "$removed_dashboard_setting" ".env.example"
+  reject_grep "$removed_dashboard_setting" "ops/config/stack-defaults.env"
+  reject_grep "$removed_dashboard_setting" "docker-compose.yml"
+  reject_grep "$removed_dashboard_setting" "dockerfile"
+  reject_grep "$removed_dashboard_setting" "ops/install-dashboard.sh"
+  reject_grep "$removed_dashboard_setting" "ops/pool_ops.py"
+done
+reject_grep 'BDAG_GLOBAL_EVM_FALLBACK' "ops/pool_ops.py"
+reject_grep 'evm_fallback_global' "ops/pool_ops.py"
+reject_grep 'evm-rpc-fallback-v1' "ops/pool_ops.py"
 reject_grep 'COLLECTOR_SRC_CONTEXT' ".env.example"
 reject_grep 'CPU_MINER_SRC_CONTEXT' ".env.example"
 reject_grep 'collector_src:' "docker-compose.yml"

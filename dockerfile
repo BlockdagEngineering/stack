@@ -195,7 +195,6 @@ ENV ADDR=0.0.0.0:8088 \
     BDAG_REDIS_SOCKET=/run/dashboard-redis/redis.sock \
     BDAG_REDIS_CONFIG=/etc/redis/redis.conf \
     BDAG_EVM_HTTP_URL=http://node:18545 \
-    BDAG_EVM_WS_URL=ws://node:18546 \
     BDAG_POOL_METRICS_URL=http://pool:9090/metrics
 
 EXPOSE 8088
