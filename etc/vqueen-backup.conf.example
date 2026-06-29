@@ -1,0 +1,72 @@
+# VQueen v6.5.7 near-hot backup tooling.
+# Astute/OpenClaw side-project only.
+# Do not change BlockDAG software logging, internals, or production runtime.
+
+PROJECT_NAME="v657-nearhot-backup"
+STACK_NAME="vqueen"
+STACK_VERSION="v6.5.7"
+CONSISTENCY_MODE="near-hot-live-two-pass-crash-consistent"
+
+# Live v6.5.7 runtime inventory.
+LIVE_COMPOSE_PROJECT="pool-stack-docker-pool-v657-linux-amd64"
+LIVE_RUNTIME_DIR="/home/eddie/blockdag-pool-20260615-nvme/v6.5.7/runtime-amd64/pool-stack-docker-pool-v6.5.7-linux-amd64"
+LIVE_COMPOSE_FILE="${LIVE_RUNTIME_DIR}/docker-compose.yml"
+NODE_DATA_SRC="/home/eddie/blockdag-pool-20260615-nvme/blockdag-chain/node"
+NODEWORKER_VOLUME="pool-stack-docker-pool-v657-linux-amd64_nodeworker-data"
+NODEWORKER_DATA_SRC="/var/lib/docker/volumes/pool-stack-docker-pool-v657-linux-amd64_nodeworker-data/_data"
+COLLECTOR_RUNTIME_VOLUME="pool-stack-docker-pool-v657-linux-amd64_collector-runtime"
+COLLECTOR_RUNTIME_SRC="/var/lib/docker/volumes/pool-stack-docker-pool-v657-linux-amd64_collector-runtime/_data"
+POSTGRES_CONTAINER="postgres"
+POSTGRES_COMPOSE_SERVICE="pool-db"
+POSTGRES_IMAGE_FAMILY="postgres:15-bookworm"
+POSTGRES_DB="bdagpool"
+POSTGRES_USER="bdag_pool"
+
+# Access policy for live sources that eddie cannot read directly.
+# Phase 1 decision: use controlled sudo for unreadable node/Docker volume paths.
+LIVE_READ_ACCESS="controlled-sudo"
+SUDO_BIN="sudo"
+SUDO_FLAGS="-n"
+RSYNC_WRAPPER_BIN="/usr/local/sbin/vqueen-nearhot-rsync"
+MANIFEST_WRAPPER_BIN="/usr/local/sbin/vqueen-nearhot-manifest"
+RESTORE_WRAPPER_BIN="/usr/local/sbin/vqueen-nearhot-restore-proof"
+LOG_LEVEL="INFO"
+LOG_TO_SYSLOG="1"
+LOG_SYSLOG_TAG="vqueen-nearhot-backup"
+
+# Containerized scheduled-cycle runner. The runner never receives docker.sock.
+CONTAINER_RUNNER_IMAGE="vqueen-nearhot-runner:v6.5.7-20260628"
+CONTAINER_RUNNER_NETWORK="${LIVE_COMPOSE_PROJECT}_default"
+POSTGRES_PASSWORD_FILE="/etc/vqueen-nearhot-backup/postgres-password"
+
+# Runtime roots. These are intentionally outside the git-tracked project.
+BACKUP_ROOT="/opt/backups/blockchain/vqueen-v6.5.7-nearhot"
+DEV_RESTORE_ROOT="/opt/backups/blockchain/dev-restore"
+BACKUP_LOG_DIR="/var/log/blockdag/vqueen-backup"
+RESTORE_LOG_DIR="/var/log/blockdag/vqueen-restore-test"
+
+# Project-local runtime state should remain gitignored.
+PROJECT_STATE_DIR="${PROJECT_ROOT}/state"
+OPERATION_LOCK="${PROJECT_STATE_DIR}/vqueen-v657-nearhot-operation.lock"
+BACKUP_LOCK="${PROJECT_STATE_DIR}/vqueen-v657-nearhot-backup.lock"
+RESTORE_LOCK="${PROJECT_STATE_DIR}/vqueen-v657-restore-test.lock"
+CYCLE_LOCK="${PROJECT_STATE_DIR}/vqueen-v657-nearhot-cycle.lock"
+
+# Safety thresholds.
+MIN_FREE_BYTES=$((100 * 1024 * 1024 * 1024))
+RSYNC_NICE="15"
+RSYNC_IONICE_CLASS="2"
+RSYNC_IONICE_LEVEL="7"
+RSYNC_BWLIMIT_KB=""
+# The ignored host-local etc/vqueen-backup.conf used for M3 had
+# RSYNC_BWLIMIT_KB="65536". This is the only intended active-config
+# divergence before requesting M4.
+KEEP_LAST_KNOWN_GOOD="3"
+CANDIDATE_RETENTION_DAYS="14"
+FAILED_RETENTION_DAYS="14"
+
+# Restore isolation defaults.
+RESTORE_COMPOSE_PROJECT_PREFIX="vqueen-v657-restore"
+RESTORE_RPC_HOST="127.0.0.1"
+RESTORE_RPC_PORT="18657"
+RESTORE_POSTGRES_PORT="15432"

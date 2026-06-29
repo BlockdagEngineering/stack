@@ -1,0 +1,12 @@
+[Unit]
+Description=Run VQueen v6.5.7 restore-tested near-hot backup cycle between 02:00 and 04:00
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+RandomizedDelaySec=2h
+AccuracySec=1min
+Persistent=true
+Unit=vqueen-nearhot-cycle.service
+
+[Install]
+WantedBy=timers.target

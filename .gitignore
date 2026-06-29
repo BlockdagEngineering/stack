@@ -1,0 +1,24 @@
+# Runtime output and host-local material
+/run/
+/state/
+/tmp/
+/logs/
+
+# Backup payloads and restore sandboxes must live outside this repo.
+/runs/
+/payload/
+/restore/
+
+# Host-local config may contain paths or credentials.
+/etc/vqueen-backup.conf
+*.local
+*.secret
+*.env
+
+# Generated artifacts
+*.log
+*.dump
+*.sha256
+*.tsv
+*.json.tmp
+
