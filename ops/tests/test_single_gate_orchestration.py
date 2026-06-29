@@ -211,6 +211,88 @@ class SingleGateOrchestrationTests(unittest.TestCase):
         self.assertEqual("restart", commands[0][-2])
         self.assertEqual(watchdog.POOL_CONTAINER, commands[0][-1])
 
+    def test_watchdog_can_restart_running_pool_when_canonical_proof_is_missing_with_explicit_allowance(self) -> None:
+        status = {
+            "fresh": True,
+            "mode": "synced",
+            "overall": "ok",
+            "sync_progress": {"status": "synced", "remaining_blocks": 0},
+            "rpc_template_health": {"all_nodes_ready": True},
+            "containers": {watchdog.POOL_CONTAINER: {"running": True}},
+        }
+        commands: list[list[str]] = []
+
+        class Result:
+            ok = True
+
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
+            watchdog, "automation_mutation_allowed", return_value=True
+        ), mock.patch.object(
+            watchdog, "acquire_lock", return_value=mock.Mock(close=lambda: None)
+        ), mock.patch.object(
+            watchdog, "action_log_path", return_value=pathlib.Path(tmpdir) / "restart.log"
+        ), mock.patch.object(
+            watchdog, "write_action_state", lambda _payload: None
+        ), mock.patch.object(
+            watchdog, "record_failed_repair", lambda *_args, **_kwargs: None
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog, "run_logged", side_effect=lambda command, *_args, **_kwargs: commands.append(command) or Result()
+        ):
+            blocked = watchdog.run_pool_restart("unit test", current_status=status)
+            generic_bypass_blocked = watchdog.run_pool_restart(
+                "unit test",
+                current_status=status,
+                allow_running_pool_gate_bypass=True,
+            )
+            ok = watchdog.run_pool_restart(
+                "unit test",
+                current_status=status,
+                allow_running_pool_gate_bypass=True,
+                allow_missing_canonical_proof=True,
+            )
+
+        self.assertFalse(blocked)
+        self.assertFalse(generic_bypass_blocked)
+        self.assertTrue(ok)
+        self.assertEqual("restart", commands[0][-2])
+        self.assertEqual(watchdog.POOL_CONTAINER, commands[0][-1])
+
+    def test_watchdog_missing_canonical_proof_allowance_does_not_start_stopped_pool(self) -> None:
+        status = {
+            "fresh": True,
+            "mode": "synced",
+            "overall": "ok",
+            "sync_progress": {"status": "synced", "remaining_blocks": 0},
+            "rpc_template_health": {"all_nodes_ready": True},
+            "containers": {watchdog.POOL_CONTAINER: {"running": False}},
+        }
+        events: list[tuple[str, str]] = []
+
+        with mock.patch.object(
+            watchdog, "automation_mutation_allowed", return_value=True
+        ), mock.patch.object(
+            watchdog, "acquire_lock", side_effect=AssertionError("repair lock must not be acquired")
+        ), mock.patch.object(
+            watchdog, "run_logged", side_effect=AssertionError("docker restart must not run")
+        ), mock.patch.object(
+            watchdog, "log", lambda _message: None
+        ), mock.patch.object(
+            watchdog,
+            "record_efficiency_event",
+            side_effect=lambda event_type, severity, *_args, **_kwargs: events.append((event_type, severity)),
+        ):
+            ok = watchdog.run_pool_restart(
+                "unit test",
+                current_status=status,
+                allow_running_pool_gate_bypass=True,
+                allow_missing_canonical_proof=True,
+            )
+
+        self.assertFalse(ok)
+        self.assertEqual([("pool_restart_blocked", "warning")], events)
+
     def test_watchdog_restart_current_status_does_not_bypass_catchup_pause(self) -> None:
         status = unsafe_catchup_status()
         status["containers"] = {watchdog.POOL_CONTAINER: {"running": True}}

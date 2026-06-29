@@ -731,7 +731,11 @@ def pool_start_blocked_by_status(status: dict[str, Any]) -> tuple[bool, str]:
     return (not decision.allowed), decision.reason
 
 
-def _pool_restart_soft_gate_reason(reason: str) -> bool:
+def _pool_restart_soft_gate_reason(
+    reason: str,
+    *,
+    allow_missing_canonical_proof: bool = False,
+) -> bool:
     text = str(reason or "").strip()
     soft_reasons = (
         "stack status unavailable; cannot prove pool start is safe",
@@ -744,6 +748,8 @@ def _pool_restart_soft_gate_reason(reason: str) -> bool:
         "node reports initial download",
     )
     if text.startswith(soft_reasons):
+        return True
+    if allow_missing_canonical_proof and text.startswith("canonical public-chain safety proof is missing"):
         return True
     if text.startswith("status mode is not safe for pool start: "):
         mode = text.rsplit(": ", 1)[-1].strip().lower()
@@ -790,6 +796,7 @@ def pool_restart_allowed_by_status(
     gate: pool_start_gate.PoolStartGateDecision,
     *,
     allow_running_pool_gate_bypass: bool = False,
+    allow_missing_canonical_proof: bool = False,
 ) -> tuple[bool, str]:
     hard_reasons = _pool_restart_hard_block_reasons(status, gate)
     if hard_reasons:
@@ -801,7 +808,10 @@ def pool_restart_allowed_by_status(
 
     non_restart_safe = [
         reason for reason in gate.reasons
-        if not _pool_restart_soft_gate_reason(reason)
+        if not _pool_restart_soft_gate_reason(
+            reason,
+            allow_missing_canonical_proof=allow_missing_canonical_proof,
+        )
     ]
     if non_restart_safe:
         return False, "; ".join(non_restart_safe)
@@ -1182,6 +1192,7 @@ def run_pool_restart(
     current_status: dict[str, Any] | None = None,
     *,
     allow_running_pool_gate_bypass: bool = False,
+    allow_missing_canonical_proof: bool = False,
 ) -> bool:
     if not automation_mutation_allowed(
         actor="watchdog",
@@ -1199,6 +1210,7 @@ def run_pool_restart(
         status_for_gate,
         gate,
         allow_running_pool_gate_bypass=allow_running_pool_gate_bypass,
+        allow_missing_canonical_proof=allow_missing_canonical_proof,
     )
     if not allowed:
         blocked_reason = block_reason or gate.reason
@@ -2745,6 +2757,7 @@ def check_once(
                     prefix + reason,
                     current_status=status,
                     allow_running_pool_gate_bypass=True,
+                    allow_missing_canonical_proof=accepted_job_expired_storm,
                 )
                 if ok:
                     state["last_repair_at"] = int(time.time())
