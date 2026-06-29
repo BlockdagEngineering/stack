@@ -69,8 +69,8 @@ jobs:
 
       - name: Bootstrap renderer checks
         shell: bash
-        run: python scripts/release_bootstrap_static_test.py
+        run: python3 scripts/release_bootstrap_static_test.py
 
       - name: Release installer smoke
         shell: bash
-        run: python scripts/release_install_smoke.py
+        run: python3 scripts/release_install_smoke.py
