@@ -14,7 +14,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/migrate-node-data-volume-to-host.sh [--source PATH] [--force] [--no-stop]
 
-Migrates a legacy preserved node datadir into canonical NODE_DATA_DIR=./node-data.
+Migrates a legacy preserved node datadir into the configured NODE_DATA_DIR.
 The source is preserved; the previous target is quarantined before copy.
 USAGE
 }
@@ -100,8 +100,6 @@ fi
 
 [[ -n "${NODE_DATA_DIR:-}" ]] || fail "NODE_DATA_DIR is unset"
 TARGET="$(resolve_path "$NODE_DATA_DIR")"
-CANONICAL="$(resolve_path "./node-data")"
-[[ "$TARGET" == "$CANONICAL" ]] || fail "NODE_DATA_DIR resolves to $TARGET, expected canonical $CANONICAL"
 
 if [[ -z "$SOURCE" ]]; then
   if command -v docker >/dev/null 2>&1; then

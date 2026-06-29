@@ -175,6 +175,77 @@ class ChainDataProvenanceTests(unittest.TestCase):
         self.assertTrue(health["node_data_mount_mismatch_suspected"])
         self.assertIn("Node data mount mismatch suspected", " ".join(health["reasons"]))
 
+    def test_runtime_provenance_accepts_configured_nondefault_node_data_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            selected = root / "data" / "node"
+            write_env(root, "NODE_DATA_DIR=./data/node\n")
+            make_chain(selected, payload_bytes=4096)
+            originals = {
+                "PROJECT_ROOT": pool_ops.PROJECT_ROOT,
+                "POOL_ENV_FILE": pool_ops.POOL_ENV_FILE,
+                "CANONICAL_NODE_DATA_DIR": pool_ops.CANONICAL_NODE_DATA_DIR,
+                "docker_volume_chain_candidate": pool_ops.docker_volume_chain_candidate,
+            }
+
+            def restore() -> None:
+                for name, value in originals.items():
+                    setattr(pool_ops, name, value)
+
+            self.addCleanup(restore)
+            pool_ops.PROJECT_ROOT = root
+            pool_ops.POOL_ENV_FILE = root / ".env"
+            pool_ops.CANONICAL_NODE_DATA_DIR = selected.resolve()
+            pool_ops.docker_volume_chain_candidate = lambda _volume="stack_node-data": {
+                "volume": "stack_node-data",
+                "exists": False,
+                "valid": False,
+                "path": "",
+                "size_bytes": 0,
+            }
+
+            with unittest.mock.patch.dict(
+                pool_ops.os.environ,
+                {"NODE_DATA_DIR": "./data/node", "BDAG_NODE_DATA_DIR": ""},
+                clear=False,
+            ):
+                health = pool_ops.node_data_provenance_health(
+                    {"status": "synced", "chain_block_count": 13_000_000, "remaining_blocks": 0},
+                    {"node": {"latest_block": 13_000_000, "peer_ahead_blocks": 0}},
+                    {},
+                )
+
+        self.assertFalse(health["restore_required"])
+        self.assertEqual("ok", health["status"])
+        self.assertEqual(str(selected.resolve()), health["canonical_path"])
+        self.assertEqual([], health["reasons"])
+
+    def test_migration_accepts_configured_nondefault_node_data_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "legacy"
+            target = root / "data" / "node"
+            write_env(root, "NODE_DATA_DIR=./data/node\n")
+            make_chain(source, payload_bytes=4096)
+            make_chain(target, payload_bytes=1024)
+
+            result = run_script(
+                MIGRATE,
+                root,
+                ["--source", str(source), "--force", "--no-stop"],
+                {
+                    "BDAG_MIGRATION_USE_SUDO": "0",
+                    "BDAG_MIGRATION_STAMP": "custompath",
+                },
+            )
+
+            manifest = root / "ops" / "runtime" / "chain-data-migration-custompath.json"
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((target / "mainnet" / "BdagChain").is_dir())
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+
+        self.assertEqual(str(target), payload["target_path"])
+
     def test_runtime_provenance_degrades_on_unreadable_selected_datadir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
