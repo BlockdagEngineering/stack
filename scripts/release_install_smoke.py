@@ -51,10 +51,7 @@ def copy_payload_root(dest: Path) -> None:
     )
 
 
-def expected_docker_platform(package_root: Path) -> str:
-    """The installer writes the payload's platform, not the host's, so a
-    cross-built payload (e.g. arm64 packaged on an amd64 runner) must be
-    checked against release-payload.env."""
+def payload_metadata(package_root: Path) -> dict[str, str]:
     metadata_path = package_root / "release-payload.env"
     metadata: dict[str, str] = {}
     if metadata_path.exists():
@@ -63,6 +60,14 @@ def expected_docker_platform(package_root: Path) -> str:
                 continue
             key, _, value = line.partition("=")
             metadata[key.strip()] = value.strip()
+    return metadata
+
+
+def expected_docker_platform(package_root: Path) -> str:
+    """The installer writes the payload's platform, not the host's, so a
+    cross-built payload (e.g. arm64 packaged on an amd64 runner) must be
+    checked against release-payload.env."""
+    metadata = payload_metadata(package_root)
     if metadata.get("DOCKER_PLATFORM"):
         return metadata["DOCKER_PLATFORM"]
     if metadata.get("BDAG_RELEASE_PAYLOAD_ARCH"):
@@ -113,39 +118,47 @@ def main(argv: list[str] | None = None) -> int:
 
     env_path = package_root / ".env"
     env_text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+    metadata = payload_metadata(package_root)
     expected_platform = f"DOCKER_PLATFORM={expected_docker_platform(package_root)}"
+    expected_release_version = metadata.get("BDAG_RELEASE_VERSION", "pool-vsmoke")
+    expected_release_tag = metadata.get("BDAG_STACK_RELEASE_TAG", expected_release_version)
     node_datadir = package_root / "node-data"
     env_contains_node_data_dir = "NODE_DATA_DIR=./node-data" in env_text
     env_contains_legacy_node_data_dir = "BDAG_NODE_DATA_DIR=" in env_text
     env_contains_snapshot_url = "BDAG_SNAPSHOT_URL=https://example.invalid/latest.bdsnap" in env_text
-    env_contains_release_version = "BDAG_RELEASE_VERSION=pool-vsmoke" in env_text
-    env_contains_release_tag = "BDAG_STACK_RELEASE_TAG=pool-vsmoke" in env_text
+    env_contains_release_version = f"BDAG_RELEASE_VERSION={expected_release_version}" in env_text
+    env_contains_release_tag = f"BDAG_STACK_RELEASE_TAG={expected_release_tag}" in env_text
     env_contains_pg_url = "PG_URL=postgres://bdag_pool:" in env_text
     node_datadir_created = node_datadir.is_dir()
-    ok = (
-        result["returncode"] == 0
-        and expected_platform in env_text
-        and env_contains_node_data_dir
-        and not env_contains_legacy_node_data_dir
-        and env_contains_snapshot_url
-        and env_contains_release_version
-        and env_contains_release_tag
-        and env_contains_pg_url
-        and node_datadir_created
-    )
+    checks = {
+        "installer_exit_zero": result["returncode"] == 0,
+        "env_written": env_path.exists(),
+        "expected_platform_written": expected_platform in env_text,
+        "node_data_dir_written": env_contains_node_data_dir,
+        "legacy_node_data_dir_absent": not env_contains_legacy_node_data_dir,
+        "snapshot_url_written": env_contains_snapshot_url,
+        "release_version_written": env_contains_release_version,
+        "release_tag_written": env_contains_release_tag,
+        "pg_url_written": env_contains_pg_url,
+        "node_datadir_created": node_datadir_created,
+    }
+    ok = all(checks.values())
     payload: dict[str, Any] = {
         "package_root": str(package_root),
         "host_arch": host_arch(),
         "expected_platform": expected_platform,
+        "expected_release_version": expected_release_version,
+        "expected_release_tag": expected_release_tag,
         "env_written": env_path.exists(),
         "env_contains_expected_platform": expected_platform in env_text,
         "env_contains_node_data_dir": env_contains_node_data_dir,
         "env_contains_legacy_node_data_dir": env_contains_legacy_node_data_dir,
-            "env_contains_snapshot_url": env_contains_snapshot_url,
-            "env_contains_release_version": env_contains_release_version,
-            "env_contains_release_tag": env_contains_release_tag,
-            "env_contains_pg_url": env_contains_pg_url,
+        "env_contains_snapshot_url": env_contains_snapshot_url,
+        "env_contains_release_version": env_contains_release_version,
+        "env_contains_release_tag": env_contains_release_tag,
+        "env_contains_pg_url": env_contains_pg_url,
         "node_datadir_created": node_datadir_created,
+        "checks": checks,
         "result": result,
         "ok": ok,
     }
@@ -156,6 +169,11 @@ def main(argv: list[str] | None = None) -> int:
             f"release smoke: {'ok' if ok else 'failed'} "
             f"platform={expected_platform} rc={result['returncode']}"
         )
+        if not ok:
+            failed_checks = ", ".join(name for name, passed in checks.items() if not passed)
+            print(f"failed checks: {failed_checks}")
+            if result["stderr"]:
+                print(result["stderr"])
     if cleanup is not None:
         cleanup.cleanup()
     return 0 if ok else 1
