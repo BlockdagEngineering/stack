@@ -16,6 +16,8 @@ class NodeworkerEntrypointTest(unittest.TestCase):
     def run_entrypoint(
         self,
         extra_env: dict[str, str],
+        *,
+        node_args: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         env = {
             "PATH": os.environ.get("PATH", ""),
@@ -45,7 +47,7 @@ class NodeworkerEntrypointTest(unittest.TestCase):
                     str(ENTRYPOINT),
                     "nodeworker",
                     f"--node-binary={fake_node}",
-                    f"--node-args=--datadir={tmp}",
+                    f"--node-args={node_args or f'--datadir={tmp}'}",
                 ],
                 env=env,
                 text=True,
@@ -57,6 +59,35 @@ class NodeworkerEntrypointTest(unittest.TestCase):
     def assert_stdout_contains(self, result: subprocess.CompletedProcess[str], needle: str) -> None:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(needle, result.stdout)
+
+    def run_entrypoint_to_exec_true(
+        self,
+        extra_env: dict[str, str],
+        node_args: str,
+    ) -> subprocess.CompletedProcess[str]:
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "BDAG_NODE_START_GUARD_ENABLED": "0",
+        }
+        env.update(extra_env)
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_node = Path(tmp) / "fake-node"
+            fake_node.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            fake_node.chmod(0o755)
+            return subprocess.run(
+                [
+                    "bash",
+                    str(ENTRYPOINT),
+                    "/bin/true",
+                    f"--node-binary={fake_node}",
+                    f"--node-args={node_args}",
+                ],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
 
     def test_node_start_guard_blocks_chain_incident_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -110,6 +141,38 @@ class NodeworkerEntrypointTest(unittest.TestCase):
         result = self.run_entrypoint({"NODE_ARGS_APPEND": "--metrics=false"})
 
         self.assert_stdout_contains(result, "NODE_ARGS_APPEND=--metrics=false")
+
+    def test_archive_mode_preserves_config_evmenv_and_forces_archive_gcmode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "node.conf"
+            config.write_text(
+                'evmenv="--rpc.allow-unprotected-txs --metrics --cache 2048 --maxpeers 50 --port 30303 --gcmode=full"\n',
+                encoding="utf-8",
+            )
+            result = self.run_entrypoint(
+                {"BDAG_NODE_ARCHIVAL": "1"},
+                node_args=f"--configfile {config} --datadir={tmp}",
+            )
+
+        self.assert_stdout_contains(result, "--archival")
+        self.assert_stdout_contains(result, "--evmenv=\"--rpc.allow-unprotected-txs --metrics --cache 2048 --maxpeers 50 --port 30303 --gcmode=archive\"")
+        self.assertNotIn("--gcmode=full", result.stdout)
+
+    def test_explicit_evm_gcmode_full_overrides_archival_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "node.conf"
+            config.write_text('evmenv="--metrics --cache 2048"\n', encoding="utf-8")
+            result = self.run_entrypoint(
+                {
+                    "BDAG_NODE_ARCHIVAL": "1",
+                    "BDAG_EVM_GCMODE": "full",
+                },
+                node_args=f"--configfile {config} --datadir={tmp}",
+            )
+
+        self.assert_stdout_contains(result, "--archival")
+        self.assert_stdout_contains(result, "--evmenv=\"--metrics --cache 2048 --gcmode=full\"")
+        self.assertNotIn("--gcmode=archive", result.stdout)
 
     def test_print_mode_does_not_emit_removed_sync_flags(self) -> None:
         result = self.run_entrypoint(
@@ -234,6 +297,37 @@ class NodeworkerEntrypointTest(unittest.TestCase):
 
         self.assert_stdout_contains(result, "--modules=Blockdag")
         self.assert_stdout_contains(result, "--modules=miner")
+
+    def test_partial_chain_datadir_is_refused_before_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "node"
+            data_dir = parent / "mainnet"
+            (data_dir / "bdageth").mkdir(parents=True)
+            result = self.run_entrypoint_to_exec_true({}, f"--datadir={parent}")
+
+        self.assertEqual(result.returncode, 78)
+        self.assertIn("refusing partial chain datadir", result.stderr)
+
+    def test_complete_chain_datadir_is_allowed_before_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "node"
+            data_dir = parent / "mainnet"
+            (data_dir / "BdagChain").mkdir(parents=True)
+            (data_dir / "bdageth").mkdir()
+            (data_dir / "metaData").write_text("metadata\n", encoding="utf-8")
+            result = self.run_entrypoint_to_exec_true({}, f"--datadir={parent}")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_nested_chain_datadir_is_refused_before_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "node"
+            nested = parent / "mainnet" / "mainnet"
+            (nested / "BdagChain").mkdir(parents=True)
+            result = self.run_entrypoint_to_exec_true({}, f"--datadir={parent}/mainnet")
+
+        self.assertEqual(result.returncode, 78)
+        self.assertIn("refusing nested chain datadir", result.stderr)
 
     def test_entrypoint_prepares_runtime_config_before_privilege_drop(self) -> None:
         entrypoint = ENTRYPOINT.read_text(encoding="utf-8")

@@ -186,6 +186,38 @@ class PayloadInstallerTests(unittest.TestCase):
         self.assertIn("downloaded snapshot is a chain datadir archive", entrypoint)
         self.assertIn("zstd", dockerfile)
 
+    def test_node_entrypoint_refuses_partial_chain_datadirs_by_default(self) -> None:
+        entrypoint = (ROOT / "docker" / "entrypoint-nodeworker.sh").read_text(
+            encoding="utf-8"
+        )
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+
+        self.assertIn("validate_chain_datadir_state", entrypoint)
+        self.assertIn("refusing partial chain datadir", entrypoint)
+        self.assertIn("BdagChain, bdageth, and metaData together", entrypoint)
+        self.assertIn("BDAG_ALLOW_PARTIAL_CHAIN_DATADIR_BOOTSTRAP=0", env_example)
+        self.assertIn(
+            "BDAG_ALLOW_PARTIAL_CHAIN_DATADIR_BOOTSTRAP: ${BDAG_ALLOW_PARTIAL_CHAIN_DATADIR_BOOTSTRAP:-0}",
+            compose,
+        )
+
+    def test_archive_installs_force_evm_archive_gcmode(self) -> None:
+        installer = self.payload_installer()
+        env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        entrypoint = (ROOT / "docker" / "entrypoint-nodeworker.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("BDAG_EVM_GCMODE=", env_example)
+        self.assertIn("BDAG_EVM_GCMODE: ${BDAG_EVM_GCMODE:-}", compose)
+        self.assertIn("apply_evm_runtime_args", entrypoint)
+        self.assertIn("BDAG_EVM_GCMODE", entrypoint)
+        self.assertIn("--gcmode=archive", entrypoint)
+        self.assertIn("BDAG_EVM_GCMODE=archive", installer)
+        self.assertIn('set_env_value .env BDAG_EVM_GCMODE "$BDAG_EVM_GCMODE"', installer)
+
     def test_installer_writes_url_safe_pool_database_url(self) -> None:
         installer = self.payload_installer()
 

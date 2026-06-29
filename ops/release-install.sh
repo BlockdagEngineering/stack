@@ -726,6 +726,8 @@ configure_env() {
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WORKERS
   set_stack_default_env_value .env BDAG_DASHBOARD_HISTORY_REBUILD_PRESERVE_ASIC_HISTORY
+  set_env_value .env BDAG_EVM_GCMODE "$(env_value BDAG_EVM_GCMODE "")"
+  set_env_value .env BDAG_ALLOW_PARTIAL_CHAIN_DATADIR_BOOTSTRAP "$(env_value BDAG_ALLOW_PARTIAL_CHAIN_DATADIR_BOOTSTRAP 0)"
   set_stack_default_env_value .env BDAG_SYNC_COORDINATOR_ACCELERATE_FASTSYNC
   set_stack_default_env_value .env BDAG_SYNC_COORDINATOR_FAST_RESTART_COOLDOWN_SECONDS
   set_stack_default_env_value .env BDAG_SYNC_COORDINATOR_RESTART_ON_STALE_IMPORT
@@ -890,7 +892,12 @@ seed_chain_data() {
     if ! yes_no "Existing node chain data was found. Replace it from the chain seed?" "n"; then
       return 0
     fi
-    mv "$node_dir" "$node_dir.backup.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+    local backup_dir
+    backup_dir="$node_dir.backup.$(date +%Y%m%d-%H%M%S)"
+    if ! mv "$node_dir" "$backup_dir"; then
+      echo "Failed to preserve existing node chain data at $backup_dir. Refusing seed restore." >&2
+      exit 1
+    fi
     mkdir -p "$node_dir"
   fi
 

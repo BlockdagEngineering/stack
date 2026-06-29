@@ -39,6 +39,7 @@ WAIT_FOR_NODE_SYNC_BEFORE_STACK="${BDAG_WAIT_FOR_NODE_SYNC_BEFORE_STACK:-}"
 HAS_LOCAL_ASIC_MINER="${BDAG_HAS_LOCAL_ASIC_MINER:-}"
 SNAPSHOT_URL_FLAG=""
 BDAG_NODE_ARCHIVAL=0
+BDAG_EVM_GCMODE=""
 BDAG_INSTALL_MIN_FREE_KB="${BDAG_INSTALL_MIN_FREE_KB:-10485760}"
 BDAG_INSTALL_CHECK_PORTS="${BDAG_INSTALL_CHECK_PORTS:-3334 8080 9280 18545 18546 38131}"
 BDAG_INSTALL_STRICT_PORTS="${BDAG_INSTALL_STRICT_PORTS:-0}"
@@ -774,8 +775,10 @@ select_local_asic_miner() {
 resolve_mode_settings() {
     if [[ "$CHAIN_MODE" == "archive" ]]; then
         BDAG_NODE_ARCHIVAL=1
+        BDAG_EVM_GCMODE=archive
     else
         BDAG_NODE_ARCHIVAL=0
+        BDAG_EVM_GCMODE=full
     fi
     echo "Chain data: node startup uses existing NODE_DATA_DIR first, then an explicitly configured BDAG_SNAPSHOT_URL if set."
     echo ""
@@ -870,6 +873,8 @@ ensure_postgres_password_env
 set_env_value .env DOCKER_PLATFORM "$DOCKER_PLATFORM"
 persist_release_metadata_env
 set_env_value .env BDAG_NODE_ARCHIVAL "$BDAG_NODE_ARCHIVAL"
+set_env_value .env BDAG_EVM_GCMODE "$BDAG_EVM_GCMODE"
+set_env_value .env BDAG_ALLOW_PARTIAL_CHAIN_DATADIR_BOOTSTRAP "${BDAG_ALLOW_PARTIAL_CHAIN_DATADIR_BOOTSTRAP:-0}"
 apply_snapshot_env_overrides
 ensure_node_datadir_bind_mount
 

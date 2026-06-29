@@ -557,6 +557,81 @@ apply_archival_flag() {
   log "archival mode enabled; node keeps full block history (--archival)"
 }
 
+strip_wrapping_quotes() {
+  local value="${1:-}"
+  case "$value" in
+    \"*\")
+      value="${value#\"}"
+      value="${value%\"}"
+      ;;
+    \'*\')
+      value="${value#\'}"
+      value="${value%\'}"
+      ;;
+  esac
+  printf '%s\n' "$value"
+}
+
+evm_args_without_gcmode() {
+  local evm_args="$1" word skip_next=0 rewritten=""
+  for word in $evm_args; do
+    if [ "$skip_next" = "1" ]; then
+      skip_next=0
+      continue
+    fi
+    case "$word" in
+      --gcmode)
+        skip_next=1
+        ;;
+      --gcmode=*)
+        ;;
+      *)
+        rewritten="${rewritten:+$rewritten }$word"
+        ;;
+    esac
+  done
+  printf '%s\n' "$rewritten"
+}
+
+apply_evm_runtime_args() {
+  local node_args config_file evm_args gcmode
+  node_args="$(node_args_from_argv "$@" || true)"
+  config_file="$(node_arg_value configfile "$node_args" || true)"
+  evm_args="${BDAG_EVM_ARGS:-${BDAG_NODE_EVM_ARGS:-}}"
+  if [ -z "$evm_args" ] && [ -n "$config_file" ]; then
+    evm_args="$(read_config_value "$config_file" evmenv || true)"
+  fi
+  evm_args="$(strip_wrapping_quotes "$evm_args")"
+
+  gcmode="${BDAG_EVM_GCMODE:-}"
+  if [ -z "$gcmode" ] && env_value_true "${BDAG_NODE_ARCHIVAL:-0}"; then
+    gcmode="archive"
+  fi
+  if [ -n "$gcmode" ]; then
+    case "$(lower_ascii "$gcmode")" in
+      archive|full) gcmode="$(lower_ascii "$gcmode")" ;;
+      *)
+        log "refusing invalid BDAG_EVM_GCMODE=$gcmode; expected archive or full"
+        exit 1
+        ;;
+    esac
+    evm_args="$(evm_args_without_gcmode "$evm_args")"
+    evm_args="${evm_args:+$evm_args }--gcmode=$gcmode"
+  fi
+
+  [ -n "$evm_args" ] || return 0
+  case "$evm_args" in
+    *\"*|*$'\n'*|*$'\r'*)
+      log "refusing unsafe EVM args containing quotes or newlines"
+      exit 1
+      ;;
+  esac
+  append_node_arg_prefix_once "--evmenv=\"$evm_args\"" "$node_args ${NODE_ARGS_APPEND:-}"
+  if [ "$gcmode" = "archive" ]; then
+    log "EVM archive mode enabled; evmenv includes --gcmode=archive"
+  fi
+}
+
 node_binary_from_argv() {
   local arg
   if [ -n "${BDAG_NODE_BINARY:-}" ]; then
@@ -576,6 +651,36 @@ node_binary_from_argv() {
     return 0
   fi
   return 1
+}
+
+chain_datadir_complete() {
+  local data_dir="$1"
+  [ -d "$data_dir/BdagChain" ] && [ -d "$data_dir/bdageth" ] && [ -e "$data_dir/metaData" ]
+}
+
+chain_datadir_has_any_payload() {
+  local data_dir="$1"
+  [ -e "$data_dir/BdagChain" ] || [ -e "$data_dir/bdageth" ] || [ -e "$data_dir/metaData" ]
+}
+
+validate_chain_datadir_state() {
+  local data_dir="$1" network="$2"
+  if [ -d "$data_dir/$network/BdagChain" ] || [ -d "$data_dir/$network/bdageth" ]; then
+    log "refusing nested chain datadir at $data_dir/$network; NODE_DATA_DIR must mount the parent that directly contains $network"
+    exit 78
+  fi
+  if chain_datadir_complete "$data_dir"; then
+    return 0
+  fi
+  if ! chain_datadir_has_any_payload "$data_dir"; then
+    return 0
+  fi
+  if env_value_true "${BDAG_ALLOW_PARTIAL_CHAIN_DATADIR_BOOTSTRAP:-0}"; then
+    log "partial chain datadir allowed by BDAG_ALLOW_PARTIAL_CHAIN_DATADIR_BOOTSTRAP=1: data_dir=$data_dir"
+    return 0
+  fi
+  log "refusing partial chain datadir: data_dir=$data_dir requires BdagChain, bdageth, and metaData together; quarantine or repair it before node startup"
+  exit 78
 }
 
 # Bootstrap chain data from an HTTP(S) snapshot link before node startup.
@@ -605,7 +710,8 @@ maybe_http_snapshot_bootstrap() {
   data_parent="${data_parent:-/var/lib/bdagStack/node}"
   data_dir="$(network_datadir "$data_parent" "$network")"
 
-  if [ -d "$data_dir/BdagChain" ]; then
+  validate_chain_datadir_state "$data_dir" "$network"
+  if chain_datadir_complete "$data_dir"; then
     return 0
   fi
 
@@ -655,6 +761,7 @@ node_start_guard
 apply_node_metrics_runtime_args "$@"
 apply_node_mining_runtime_args "$@"
 apply_archival_flag "$@"
+apply_evm_runtime_args "$@"
 maybe_http_snapshot_bootstrap "$@"
 
 if [ -n "${NODE_ARGS_APPEND:-}" ]; then
