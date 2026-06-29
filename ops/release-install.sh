@@ -608,7 +608,7 @@ install_packages() {
   fi
   need_sudo apt-get update
   need_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    docker.io docker-compose-plugin python3 curl jq rsync unzip zip zstd openssl iproute2
+    docker.io docker-compose-plugin python3 curl jq rsync unzip zip zstd openssl iproute2 arp-scan
   if [[ "$(id -u)" != "0" ]]; then
     need_sudo usermod -aG docker "$USER" || true
     warn "If Docker permission fails, log out and back in, or rerun with: sudo ./install.sh"

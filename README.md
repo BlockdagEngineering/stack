@@ -400,6 +400,15 @@ sudo apt-get install -y python3-pytest
 Agents should verify it with `python3 -m pytest --version` before running
 `ops/tests` through pytest-backed deployment checks.
 
+Live ASIC recovery also requires MAC-level LAN discovery. Install `arp-scan`
+on Ubuntu/Debian mining hosts so recovery tooling can find miners even when
+their IP address changes or the miner HTTP API is stalled:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y arp-scan
+```
+
 The ops status runtime uses Python's standard HTTP client for local pool metrics
 and public enrichment calls. Do not make live status depend on host utilities
 such as `curl`; release packages should behave the same on Linux AMD64, Linux
