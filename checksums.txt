@@ -1,5 +1,5 @@
-823ebdb1320f3abb88c1c90fbea8c0e9fa82e1fff238da83c8aba46279e783b3  /home/jeremy/github/BlockdagEngineering/stack/bin/blockdag-node
-73439e623dafc5c29aa82bdde46c70f599516610fa0da5b3f34542e65eb30703  /home/jeremy/github/BlockdagEngineering/stack/bin/nodeworker
-9e2a526488a77d9a288bc16fa8e9328d03b308753e65eca0981a76e1ca30fdd7  /home/jeremy/github/BlockdagEngineering/stack/bin/mining-pool
-b094592bfa61c529115ec6976acf1b946f49622acd8ddd1d0e64c882c328e393  /home/jeremy/github/BlockdagEngineering/stack/bin/dashboard-api
-57f54e4f888838073818d51f3b366a83bbd8024df2fe2672d6b4d6ba2fe07284  /home/jeremy/github/BlockdagEngineering/stack/bin/dashboard
+f56b67fb0f20f02d2480ec84a55253178ce68c77eba8bbcc6ed4f766b3d29721  /home/jeremy/blockdag-source/stack/bin/blockdag-node
+981fdf3ad2b40093a1d13170f33f246655b452d1b9edadab2d71c324d86cee7e  /home/jeremy/blockdag-source/stack/bin/nodeworker
+1ec5ce89a5d21736d79fa6c97d8d82e1c9afff4c815a440093623b0de105256c  /home/jeremy/blockdag-source/stack/bin/mining-pool
+b094592bfa61c529115ec6976acf1b946f49622acd8ddd1d0e64c882c328e393  /home/jeremy/blockdag-source/stack/bin/dashboard-api
+6f9bad893f9d2471bd7234cc1c2818290e810a94c746f26c6abaf120c0742dc3  /home/jeremy/blockdag-source/stack/bin/dashboard
