@@ -154,7 +154,8 @@ class NodeworkerEntrypointTest(unittest.TestCase):
                 node_args=f"--configfile {config} --datadir={tmp}",
             )
 
-        self.assert_stdout_contains(result, "--archival")
+        self.assertNotIn("--archival", result.stdout)
+        self.assertIn("native archival flag requested but unsupported", result.stderr)
         self.assert_stdout_contains(result, "--evmenv=\"--rpc.allow-unprotected-txs --metrics --cache 2048 --maxpeers 50 --port 30303 --gcmode=archive\"")
         self.assertNotIn("--gcmode=full", result.stdout)
 
@@ -168,9 +169,10 @@ class NodeworkerEntrypointTest(unittest.TestCase):
                     "BDAG_EVM_GCMODE": "full",
                 },
                 node_args=f"--configfile {config} --datadir={tmp}",
-            )
+        )
 
-        self.assert_stdout_contains(result, "--archival")
+        self.assertNotIn("--archival", result.stdout)
+        self.assertIn("native archival flag requested but unsupported", result.stderr)
         self.assert_stdout_contains(result, "--evmenv=\"--metrics --cache 2048 --gcmode=full\"")
         self.assertNotIn("--gcmode=archive", result.stdout)
 

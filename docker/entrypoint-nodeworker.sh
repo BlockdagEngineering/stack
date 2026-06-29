@@ -551,8 +551,13 @@ apply_archival_flag() {
     1|true|True|yes) ;;
     *) return 0 ;;
   esac
-  local node_args
+  local node_args node_binary
   node_args="$(node_args_from_argv "$@" || true)"
+  node_binary="$(node_binary_from_argv "$@" || true)"
+  if [ -n "$node_binary" ] && [ -x "$node_binary" ] && ! "$node_binary" --help 2>&1 | grep -q -- '--archival'; then
+    log "native archival flag requested but unsupported by $node_binary; relying on EVM --gcmode=archive"
+    return 0
+  fi
   append_node_arg_once "--archival" "$node_args ${NODE_ARGS_APPEND:-}"
   log "archival mode enabled; node keeps full block history (--archival)"
 }
