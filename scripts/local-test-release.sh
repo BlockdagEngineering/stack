@@ -67,7 +67,10 @@ cp "$PAYLOAD_SOURCE/bin/blockdag-node" \
    "$PAYLOAD_SOURCE/bin/dashboard" \
    "$STAGE/bin/"
 chmod +x "$STAGE/bin/blockdag-node" "$STAGE/bin/nodeworker" "$STAGE/bin/mining-pool" "$STAGE/bin/dashboard-api" "$STAGE/bin/dashboard"
-sha256sum "$STAGE/bin/blockdag-node" "$STAGE/bin/nodeworker" "$STAGE/bin/mining-pool" "$STAGE/bin/dashboard-api" "$STAGE/bin/dashboard" > "$STAGE/checksums.txt"
+(
+  cd "$STAGE"
+  sha256sum bin/blockdag-node bin/nodeworker bin/mining-pool bin/dashboard-api bin/dashboard > checksums.txt
+)
 
 rsync -a --exclude='__pycache__/' --exclude='*.pyc' scripts "$STAGE/"
 rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "$STAGE/"

@@ -24,6 +24,9 @@ Components:
 Useful overrides:
   REPOS_DIR=/home/ben/repos
   TEST_STACK=/home/ben/repos/test-stack
+  BLOCKDAG_CORECHAIN_SRC=/home/ben/repos/blockdag-corechain
+  POOL_SRC=/home/ben/repos/pool
+  REDIS_DASH_SRC=/home/ben/repos/redis-dash
   GOARCH=amd64|arm64
   CC=gcc|aarch64-linux-gnu-gcc
 EOF
@@ -65,7 +68,7 @@ go_common_env() {
 }
 
 build_node() {
-  local src="$REPOS_DIR/blockdag-corechain"
+  local src="${BLOCKDAG_CORECHAIN_SRC:-$REPOS_DIR/blockdag-corechain}"
   need_file "$src/cmd/bdag/bdag.go"
   need_file "$src/cmd/nodeworker/main.go"
   mkdir -p "$TEST_STACK/bin"
@@ -83,7 +86,7 @@ build_node() {
 }
 
 build_pool() {
-  local src="$REPOS_DIR/pool"
+  local src="${POOL_SRC:-$REPOS_DIR/pool}"
   need_file "$src/cmd/pool/main.go"
   need_file "$src/cmd/dashboard-api/main.go"
   mkdir -p "$TEST_STACK/bin" "$src/build/bin"
@@ -97,7 +100,7 @@ build_pool() {
 }
 
 build_dashboard() {
-  local src="$REPOS_DIR/redis-dash"
+  local src="${REDIS_DASH_SRC:-$REPOS_DIR/redis-dash}"
   need_file "$src/main.go"
   mkdir -p "$TEST_STACK/bin"
   (
@@ -126,11 +129,14 @@ verify_outputs() {
       "$TEST_STACK/bin/dashboard-api" \
       "$TEST_STACK/bin/dashboard"
   fi
-  sha256sum "$TEST_STACK/bin/blockdag-node" \
-            "$TEST_STACK/bin/nodeworker" \
-            "$TEST_STACK/bin/mining-pool" \
-            "$TEST_STACK/bin/dashboard-api" \
-            "$TEST_STACK/bin/dashboard" > "$TEST_STACK/checksums.txt"
+  (
+    cd "$TEST_STACK"
+    sha256sum bin/blockdag-node \
+              bin/nodeworker \
+              bin/mining-pool \
+              bin/dashboard-api \
+              bin/dashboard > checksums.txt
+  )
 }
 
 run_component() {
