@@ -36,7 +36,7 @@ jobs:
             ops/deploy-live-runtime-update.sh \
             ops/release-install.sh \
             scripts/validate-release-build.sh \
-            scripts/release/installers/install-unix-common.sh
+            scripts/release/install.sh
 
       - name: Documentation consistency
         run: python3 scripts/check-doc-consistency.py

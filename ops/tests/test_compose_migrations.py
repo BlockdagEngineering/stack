@@ -10,12 +10,14 @@ import compose_migrations  # noqa: E402
 
 
 class RuntimeComposeMigrationTests(unittest.TestCase):
-    def test_release_env_defaults_keep_chain_archive_and_reconnect_guards(self) -> None:
+    def test_release_env_defaults_keep_snapshot_and_reconnect_guards(self) -> None:
         env_example = (OPS_DIR.parent / ".env.example").read_text()
 
-        self.assertIn("BDAG_CHAIN_DB_ARCHIVE_URL=", env_example)
+        self.assertIn("BDAG_SNAPSHOT_URL=", env_example)
+        self.assertIn("BDAG_SNAPSHOT_PROGRESS_INTERVAL_SECONDS=30", env_example)
+        self.assertIn("BDAG_SNAPSHOT_TOTAL_BYTES=", env_example)
         self.assertIn(".bdsnap", env_example)
-        self.assertIn("BDAG_CHAIN_DB_IMPORT_BATCH_BYTES=16777216\n", env_example)
+        self.assertNotIn("BDAG_CHAIN_DB_ARCHIVE_URL=", env_example)
         self.assertIn("POOL_EXPIRED_JOB_CLIENT_RECONNECT_THRESHOLD=3\n", env_example)
         self.assertIn("POOL_EXPIRED_JOB_CLIENT_RECONNECT_WINDOW_SECONDS=120\n", env_example)
         self.assertIn("POOL_EXPIRED_JOB_CLIENT_RECONNECT_COOLDOWN_SECONDS=60\n", env_example)

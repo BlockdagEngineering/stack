@@ -16,7 +16,6 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_DIR = ROOT / "scripts" / "release"
-INSTALLERS_DIR = RELEASE_DIR / "installers"
 
 
 def host_arch() -> str:
@@ -36,12 +35,11 @@ def copy_payload_root(dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / ".env.example", dest / ".env.example")
     shutil.copy2(RELEASE_DIR / "install.sh", dest / "install.sh")
-    shutil.copy2(RELEASE_DIR / "install.ps1", dest / "install.ps1")
-    shutil.copy2(RELEASE_DIR / "install.cmd", dest / "install.cmd")
-    shutil.copytree(INSTALLERS_DIR, dest / "installers", dirs_exist_ok=True)
     (dest / "release-payload.env").write_text(
         "\n".join(
             [
+                "BDAG_RELEASE_VERSION=pool-vsmoke",
+                "BDAG_STACK_RELEASE_TAG=pool-vsmoke",
                 f"BDAG_RELEASE_PAYLOAD_TARGET={payload_target()}",
                 f"BDAG_RELEASE_PAYLOAD_ARCH={host_arch()}",
                 f"DOCKER_PLATFORM=linux/{host_arch()}",
@@ -106,12 +104,12 @@ def main(argv: list[str] | None = None) -> int:
     env = os.environ.copy()
     env["BDAG_INSTALL_TEST_WRITE_ENV_ONLY"] = "1"
     env["BDAG_NO_PAUSE"] = "1"
-    env["BDAG_CHAIN_DB_ARCHIVE_URL"] = "https://example.invalid/mainnet.tar.zst"
 
-    if os.name == "nt":
-        result = run_command(["cmd", "/c", "install.cmd"], package_root, env)
-    else:
-        result = run_command(["bash", "install.sh"], package_root, env)
+    result = run_command(
+        ["bash", "install.sh", "--snapshot-url", "https://example.invalid/latest.bdsnap"],
+        package_root,
+        env,
+    )
 
     env_path = package_root / ".env"
     env_text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
@@ -119,14 +117,20 @@ def main(argv: list[str] | None = None) -> int:
     node_datadir = package_root / "node-data"
     env_contains_node_data_dir = "NODE_DATA_DIR=./node-data" in env_text
     env_contains_legacy_node_data_dir = "BDAG_NODE_DATA_DIR=" in env_text
-    env_contains_archive_url = "BDAG_CHAIN_DB_ARCHIVE_URL=https://example.invalid/mainnet.tar.zst" in env_text
+    env_contains_snapshot_url = "BDAG_SNAPSHOT_URL=https://example.invalid/latest.bdsnap" in env_text
+    env_contains_release_version = "BDAG_RELEASE_VERSION=pool-vsmoke" in env_text
+    env_contains_release_tag = "BDAG_STACK_RELEASE_TAG=pool-vsmoke" in env_text
+    env_contains_pg_url = "PG_URL=postgres://bdag_pool:" in env_text
     node_datadir_created = node_datadir.is_dir()
     ok = (
         result["returncode"] == 0
         and expected_platform in env_text
         and env_contains_node_data_dir
         and not env_contains_legacy_node_data_dir
-        and env_contains_archive_url
+        and env_contains_snapshot_url
+        and env_contains_release_version
+        and env_contains_release_tag
+        and env_contains_pg_url
         and node_datadir_created
     )
     payload: dict[str, Any] = {
@@ -137,7 +141,10 @@ def main(argv: list[str] | None = None) -> int:
         "env_contains_expected_platform": expected_platform in env_text,
         "env_contains_node_data_dir": env_contains_node_data_dir,
         "env_contains_legacy_node_data_dir": env_contains_legacy_node_data_dir,
-        "env_contains_archive_url": env_contains_archive_url,
+            "env_contains_snapshot_url": env_contains_snapshot_url,
+            "env_contains_release_version": env_contains_release_version,
+            "env_contains_release_tag": env_contains_release_tag,
+            "env_contains_pg_url": env_contains_pg_url,
         "node_datadir_created": node_datadir_created,
         "result": result,
         "ok": ok,

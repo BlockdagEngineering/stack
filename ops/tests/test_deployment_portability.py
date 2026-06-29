@@ -279,11 +279,13 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
     def test_mainnet_defaults_do_not_fallback_to_test_rpc_auth(self) -> None:
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
+        node_conf_example = (ROOT_DIR / "node.conf.example").read_text(encoding="utf-8")
         stack_defaults = (ROOT_DIR / "ops" / "config" / "stack-defaults.env").read_text(encoding="utf-8")
         portable_env = (ROOT_DIR / "ops" / "portable.env.example").read_text(encoding="utf-8")
 
         source_files = [
             ".env.example",
+            "node.conf.example",
             "docker-compose.yml",
             "ops/config/stack-defaults.env",
             "ops/portable.env.example",
@@ -303,6 +305,8 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
             "BDAG_POOL_DB_USER=test",
             "BDAG_POOL_DB_NAME=pool",
             "POSTGRES_USER=test",
+            "rpcuser=test",
+            "rpcpass=test",
         ]
         for relative in source_files:
             text = (ROOT_DIR / relative).read_text(encoding="utf-8")
@@ -312,6 +316,8 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn("BDAG_NETWORK=mainnet", env_example)
         self.assertIn("NODE_RPC_USER=bdag_mainnet_rpc", env_example)
         self.assertIn("NODE_RPC_PASS=change-me-mainnet-rpc-password", env_example)
+        self.assertIn("rpcuser=bdag_mainnet_rpc", node_conf_example)
+        self.assertIn("rpcpass=change-me-mainnet-rpc-password", node_conf_example)
         self.assertIn("BDAG_NETWORK: ${BDAG_NETWORK:-mainnet}", compose)
         self.assertIn("NODE_RPC_USER:      ${NODE_RPC_USER:?set NODE_RPC_USER in .env}", compose)
         self.assertIn("NODE_RPC_PASS:      ${NODE_RPC_PASS:?set NODE_RPC_PASS in .env}", compose)
@@ -380,7 +386,7 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
 
         self.assertIn("postgres-data:/var/lib/postgresql/data", compose)
-        self.assertIn("${NODE_DATA_DIR:-./data/node}:/var/lib/bdagStack/node", compose)
+        self.assertIn("${NODE_DATA_DIR:-./node-data}:/var/lib/bdagStack/node", compose)
         self.assertIn("nodeworker-data:/var/lib/bdagStack/nodeworker", compose)
         self.assertIn("  postgres-data:", compose)
         self.assertIn("  node-data:", compose)
@@ -450,15 +456,34 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
 
     def test_linux_installers_start_sync_services_before_pool(self) -> None:
         local_installer = (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8")
-        payload_installer = (
-            ROOT_DIR / "scripts" / "release" / "installers" / "install-unix-common.sh"
-        ).read_text(encoding="utf-8")
+        payload_installer = (ROOT_DIR / "scripts" / "release" / "install.sh").read_text(encoding="utf-8")
 
         self.assertIn("automation_control.py ensure-normal", local_installer)
+        self.assertIn("pull_missing_image_services pool-db node dashboard", local_installer)
+        self.assertIn('pull_missing_image_services "${services[@]}"', local_installer)
         self.assertIn("compose_cmd up -d --no-build --pull never pool-db node dashboard", local_installer)
         self.assertNotIn("compose_cmd up -d --no-build --pull never\n", local_installer)
         self.assertIn("automation_control.py ensure-normal", payload_installer)
-        self.assertIn("docker compose up -d --no-build --pull never pool-db node dashboard", payload_installer)
+        self.assertIn("docker compose up -d --no-build --pull never node", payload_installer)
+        self.assertIn("--no-wait-for-node-sync", payload_installer)
+        self.assertIn("BDAG_WAIT_FOR_NODE_SYNC_BEFORE_STACK=1|0", payload_installer)
+        self.assertIn("BDAG_HAS_LOCAL_ASIC_MINER=1|0", payload_installer)
+        self.assertIn("Wait for the node to complete sync before starting the rest of the stack?", payload_installer)
+        self.assertIn('prompt_yes_no_default "Wait for the node to complete sync before starting the rest of the stack?" "yes"', payload_installer)
+        self.assertIn('elif [[ "$WAIT_FOR_NODE_SYNC_BEFORE_STACK" == "yes" ]]; then', payload_installer)
+        self.assertIn("Skipping node sync wait before starting remaining services.", payload_installer)
+        self.assertIn("Is there a local ASIC miner connected to this host LAN to configure now?", payload_installer)
+        self.assertIn('prompt_yes_no_default "Is there a local ASIC miner connected to this host LAN to configure now?" "no"', payload_installer)
+        self.assertIn('if [[ "$HAS_LOCAL_ASIC_MINER" == "yes" ]]; then', payload_installer)
+        self.assertIn("No local ASIC miner selected; leaving ASIC LAN discovery scope empty.", payload_installer)
+        self.assertIn("docker compose config --services", payload_installer)
+        self.assertIn('[[ "$service" == "node" ]] && continue', payload_installer)
+        self.assertIn("write_pool_start_lease", payload_installer)
+        self.assertIn('if service_in_list pool "${REMAINING_SERVICES[@]}"; then', payload_installer)
+        self.assertIn('docker compose pull --ignore-buildable --policy missing "$@"', payload_installer)
+        self.assertIn('docker compose up -d --no-build --pull never "${REMAINING_SERVICES[@]}"', payload_installer)
+        self.assertNotIn("docker compose up -d --no-build --pull never pool-db pool dashboard", payload_installer)
+        self.assertNotIn("docker compose up -d --no-build --pull never pool-db pool collector dashboard", payload_installer)
         self.assertNotIn("docker compose up -d --no-build --pull never\n", payload_installer)
 
     def test_release_installer_extracts_preserved_chain_peer_evidence(self) -> None:
@@ -473,12 +498,8 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         local_installer = (ROOT_DIR / "ops" / "release-install.sh").read_text(encoding="utf-8")
         entrypoint = (ROOT_DIR / "docker" / "entrypoint-nodeworker.sh").read_text(encoding="utf-8")
-        payload_installer = (
-            ROOT_DIR / "scripts" / "release" / "installers" / "install-unix-common.sh"
-        ).read_text(encoding="utf-8")
-        windows_installer = (
-            ROOT_DIR / "scripts" / "release" / "installers" / "install-windows.ps1"
-        ).read_text(encoding="utf-8")
+        payload_installer = (ROOT_DIR / "scripts" / "release" / "install.sh").read_text(encoding="utf-8")
+        test_release_deployer = (ROOT_DIR / "scripts" / "local-deploy-test-release.sh").read_text(encoding="utf-8")
 
         self.assertIn("BDAG_DOCKER_BRIDGE_CIDRS=172.16.0.0/12", env_example)
         self.assertIn("BDAG_ALLOW_DOCKER_BRIDGE_ASIC_IPS=0", env_example)
@@ -487,12 +508,13 @@ root 41658 41563 0 16:41 ? 00:00:00 /run/rosetta/rosetta /usr/sbin/runuser runus
         self.assertIn('append_node_arg_once "--modules=${word}"', entrypoint)
         self.assertIn('set_env_value .env BDAG_ASIC_LAN_CIDRS "$scan_target"', local_installer)
         self.assertIn("validate_pool_lan_config", local_installer)
+        self.assertIn("configure_node_conf_rpc_auth", local_installer)
+        self.assertIn("BDAG_HAS_LOCAL_ASIC_MINER", payload_installer)
         self.assertIn('set_env_value .env BDAG_ASIC_LAN_CIDRS "$MINER_SCAN_TARGET"', payload_installer)
         self.assertIn("validate_pool_lan_config", payload_installer)
+        self.assertIn("configure_node_conf_rpc_auth", payload_installer)
+        self.assertIn("sync_node_rpc_auth", test_release_deployer)
         self.assertIn("refusing Docker bridge pool endpoint", payload_installer)
-        self.assertIn("Set-EnvValue .env BDAG_ASIC_LAN_CIDRS $minerScanTarget", windows_installer)
-        self.assertIn("Assert-PoolLanConfig", windows_installer)
-        self.assertIn("Refusing Docker bridge pool endpoint", windows_installer)
 
     def test_release_docs_keep_zero_miner_default_invariant(self) -> None:
         agents = (ROOT_DIR / "AGENTS.md").read_text(encoding="utf-8")

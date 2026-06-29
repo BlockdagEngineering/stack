@@ -67,6 +67,14 @@ compose_cmd() {
   fi
 }
 
+pull_missing_image_services() {
+  if (( $# == 0 )); then
+    return 0
+  fi
+  say "Pulling image-only compose services if missing"
+  compose_cmd pull --ignore-buildable --policy missing "$@"
+}
+
 init_docker_access() {
   if docker info >/dev/null 2>&1; then
     DOCKER=(docker)
@@ -239,6 +247,10 @@ random_secret() {
   fi
 }
 
+sed_escape() {
+  printf '%s' "$1" | sed 's/[\/&|]/\\&/g'
+}
+
 set_env_value() {
   local file="$1" key="$2" value="$3"
   if grep -q "^${key}=" "$file"; then
@@ -303,6 +315,35 @@ env_value() {
   local key="$1" fallback="${2:-}" value
   value="$(grep -E "^${key}=" .env 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
   printf '%s\n' "${value:-$fallback}"
+}
+
+set_node_conf_value() {
+  local file="$1" key="$2" value="$3" escaped
+  escaped="$(sed_escape "$value")"
+  if grep -q "^${key}=" "$file"; then
+    sed -i "s|^${key}=.*|${key}=${escaped}|" "$file"
+  else
+    printf '\n%s=%s\n' "$key" "$value" >> "$file"
+  fi
+}
+
+configure_node_conf_rpc_auth() {
+  local node_rpc_user node_rpc_pass
+  node_rpc_user="$(env_value NODE_RPC_USER)"
+  node_rpc_pass="$(env_value NODE_RPC_PASS)"
+  if [[ -z "$node_rpc_user" || -z "$node_rpc_pass" ]]; then
+    echo "NODE_RPC_USER and NODE_RPC_PASS must be set before writing node.conf" >&2
+    exit 1
+  fi
+  if [[ ! -f node.conf ]]; then
+    if [[ ! -f node.conf.example ]]; then
+      echo "node.conf and node.conf.example are missing; cannot configure node RPC auth" >&2
+      exit 1
+    fi
+    cp node.conf.example node.conf
+  fi
+  set_node_conf_value node.conf rpcuser "$node_rpc_user"
+  set_node_conf_value node.conf rpcpass "$node_rpc_pass"
 }
 
 detect_total_memory_mb() {
@@ -666,6 +707,7 @@ configure_env() {
   set_stack_default_env_value .env BDAG_FASTSYNC_PREPROCESS_WORKERS
   set_stack_default_env_value .env BDAG_CHAIN_PEERSTORE_PEER_EXTRACTION_ENABLED
   set_stack_default_env_value .env BDAG_CHAIN_PEERSTORE_LOG_TAIL
+  set_stack_default_env_value .env BDAG_NODE_STATUS_LOG_TAIL
   set_env_value .env BDAG_INSTALL_APPLIANCE_HOST_PROFILE "$(env_value BDAG_INSTALL_APPLIANCE_HOST_PROFILE 1)"
   set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_DISABLE_SERVICES "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_DISABLE_SERVICES 0)"
   set_env_value .env BDAG_INSTALL_APPLIANCE_PROFILE_RELOAD_DOCKER "$(env_value BDAG_INSTALL_APPLIANCE_PROFILE_RELOAD_DOCKER 1)"
@@ -678,9 +720,7 @@ configure_env() {
   set_env_value .env BDAG_SENTINEL_STATUS_URL ""
   set_stack_default_env_value .env BDAG_STATUS_SOURCE_PREFER_HTTP
   set_env_value .env POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE "$(env_value POOL_STRATUM_SERVER_FIRST_DIFFICULTY_PROBE false)"
-  set_stack_default_env_value .env SYNC_SOURCE_NODE
   set_env_value .env NODE_ARGS_APPEND ""
-  set_stack_default_env_value .env BDAG_FASTSNAP_SEED_TIMER_ENABLED
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOTS
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_HOURS
   set_stack_default_env_value .env BDAG_INSTALL_REBUILD_DASHBOARD_PLOT_WINDOW_BLOCKS
@@ -709,6 +749,7 @@ configure_env() {
   set_stack_default_env_value .env BDAG_FAST_CATCHUP_ARTIFACT_TIMEOUT
   configure_active_node_env
   configure_node_mining_env "$node_mining_enabled" "$mining_address"
+  configure_node_conf_rpc_auth
   apply_install_cache_profile
 
   if yes_no "Expose the local dashboard on the LAN instead of only this machine?" "n"; then
@@ -772,23 +813,6 @@ run_appliance_preflight() {
   else
     python3 scripts/mining-appliance-preflight.py --root "$ROOT" --env-file "$ROOT/.env" --warn-only
   fi
-}
-
-run_chain_data_preflight() {
-  if [[ "${BDAG_CHAIN_DATA_PREFLIGHT:-1}" != "1" ]]; then
-    warn "Skipping chain data preflight because BDAG_CHAIN_DATA_PREFLIGHT=0."
-    return 0
-  fi
-  if [[ ! -x scripts/preflight-chain-data.sh ]]; then
-    echo "Chain data preflight script is missing or not executable." >&2
-    exit 1
-  fi
-  local args=()
-  if [[ "${BDAG_FRESH_CHAIN_OK:-0}" == "1" ]]; then
-    args+=(--fresh-chain-ok)
-  fi
-  say "Running chain data preflight"
-  bash scripts/preflight-chain-data.sh "${args[@]}"
 }
 
 load_or_build_images() {
@@ -927,11 +951,7 @@ start_stack() {
     --owner release-installer \
     --owner-unit release-install \
     --reason "Provision default automation control before sync-only first start" >/dev/null
-  if [[ "${BDAG_RELEASE_PULL_BASE_IMAGES:-0}" == "1" ]]; then
-    compose_cmd pull pool-db || true
-  else
-    warn "Skipping implicit image pulls. Set BDAG_RELEASE_PULL_BASE_IMAGES=1 for an explicit base-image refresh."
-  fi
+  pull_missing_image_services pool-db node dashboard
   compose_cmd up -d --no-build --pull never pool-db node dashboard
   compose_cmd ps
 }
@@ -950,6 +970,7 @@ start_repair_services() {
     warn "No repair services are present in this compose file."
     return 0
   fi
+  pull_missing_image_services "${services[@]}"
   compose_cmd up -d --no-build --pull never "${services[@]}"
   compose_cmd ps "${services[@]}"
 }
@@ -1093,7 +1114,6 @@ main() {
   load_or_build_images "$arch"
   seed_chain_data
   publish_p2p_snapshot_archive "$arch"
-  run_chain_data_preflight
   start_stack
   start_repair_services
   install_stack_support_services

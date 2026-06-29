@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Verify release binaries match the target OS/architecture.
 
-This uses executable headers directly instead of the host `file` command so the
-check works from Linux, macOS, and Windows build hosts.
+This uses executable headers directly instead of the host `file` command and
+runs from Linux build hosts.
 """
 
 from __future__ import annotations

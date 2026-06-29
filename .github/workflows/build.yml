@@ -8,7 +8,7 @@ on:
         required: true
   push:
     tags:
-      - "pool-v*"
+      - "stack-v*"
 
 permissions:
   contents: write
@@ -207,6 +207,7 @@ jobs:
 
           cat > release-payload.env <<EOF
           BDAG_RELEASE_VERSION=${VERSION}
+          BDAG_STACK_RELEASE_TAG=${VERSION}
           BDAG_RELEASE_PAYLOAD_TARGET=${TARGET}
           BDAG_RELEASE_PAYLOAD_ARCH=${{ matrix.goarch }}
           DOCKER_PLATFORM=${{ matrix.docker_platform }}
@@ -216,8 +217,7 @@ jobs:
           mkdir "${ROOT}"
           cp docker-compose.yml dockerfile .dockerignore .env.example node.conf.example README.md checksums.txt release-payload.env "${ROOT}/"
           echo "${VERSION}" > "${ROOT}/version.txt"
-          cp scripts/release/install.sh scripts/release/install-node.sh scripts/release/install.ps1 scripts/release/install.cmd "${ROOT}/"
-          cp -a scripts/release/installers "${ROOT}/installers"
+          cp scripts/release/install.sh "${ROOT}/"
           cp -a bin sql docker tools "${ROOT}/"
 
 
@@ -225,7 +225,7 @@ jobs:
           # check-release-archive.py rejects cache dirs inside the zip.
           rsync -a --exclude='__pycache__/' --exclude='*.pyc' scripts "${ROOT}/"
           rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "${ROOT}/"
-          chmod +x "${ROOT}/install.sh" "${ROOT}/install-node.sh" "${ROOT}/installers/"*.sh
+          chmod +x "${ROOT}/install.sh"
 
           # Smoke-test a disposable copy: install.sh writes .env and __pycache__,
           # which check-release-archive.py rejects if they leak into the zip.

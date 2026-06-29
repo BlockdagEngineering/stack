@@ -53,10 +53,9 @@ and use the newer data only after recording a rollback copy of the old live data
 After the human verifies the upgraded stack, remove stale extra copies and keep
 only the live data plus the intentional rollback set.
 
-`NODE_DATA_DIR=./data/node` is the only canonical node datadir contract. The
+`NODE_DATA_DIR=./node-data` is the only canonical node datadir contract. The
 obsolete `BDAG_NODE_DATA_DIR` name must not appear in generated runtime config.
-Before any compose start, run `scripts/preflight-chain-data.sh`; if a legacy
-`stack_node-data` volume or other preserved data is better than `./data/node`,
+Before any compose start, if a legacy `stack_node-data` volume or other preserved data is better than `./node-data`,
 migrate it with `scripts/migrate-node-data-volume-to-host.sh` before starting
 the node. See `docs/chain-data-provenance-guard.md`.
 
@@ -65,8 +64,7 @@ the node. See `docs/chain-data-provenance-guard.md`.
 1. Pull the memory repo and source repos.
 2. Record source SHAs, `docker ps`, `docker compose ps`, image IDs, compose
    config, disk/RAM/load, and ASIC MAC/IP mapping.
-3. Run release validation and `scripts/preflight-chain-data.sh` before stopping
-   mining.
+3. Run release validation before stopping mining.
 4. Build node, pool, dashboard, watchdog, status-sampler, and sentinel images
    from source before the mining freeze when possible.
 5. Stop repair automation that could race the cutover.

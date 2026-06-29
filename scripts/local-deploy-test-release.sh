@@ -62,12 +62,18 @@ pool_url_host() {
   printf '%s\n' "$value"
 }
 
+sed_escape() {
+  printf '%s' "$1" | sed 's/[\/&|]/\\&/g'
+}
+
 set_env_value() {
   local file="$1"
   local key="$2"
   local value="$3"
+  local escaped
+  escaped="$(sed_escape "$value")"
   if grep -q "^${key}=" "$file"; then
-    sed -i "s|^${key}=.*|${key}=${value}|" "$file"
+    sed -i "s|^${key}=.*|${key}=${escaped}|" "$file"
   else
     printf '\n%s=%s\n' "$key" "$value" >> "$file"
   fi
@@ -89,17 +95,32 @@ detect_host_lan_ip() {
   return 1
 }
 
-node_conf_bootstrap_peers() {
-  awk -F= '$1 == "addpeer" && $2 != "" {
-    if (seen[$2]++) {
-      next
-    }
-    if (out != "") {
-      out = out "," $2
-    } else {
-      out = $2
-    }
-  } END { print out }' "$1"
+set_node_conf_value() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  local escaped
+  escaped="$(sed_escape "$value")"
+  if grep -q "^${key}=" "$file"; then
+    sed -i "s|^${key}=.*|${key}=${escaped}|" "$file"
+  else
+    printf '\n%s=%s\n' "$key" "$value" >> "$file"
+  fi
+}
+
+sync_node_rpc_auth() {
+  local file="$1"
+  local node_rpc_user node_rpc_pass
+  node_rpc_user="$(configured_env_value NODE_RPC_USER)"
+  node_rpc_pass="$(configured_env_value NODE_RPC_PASS)"
+  if [[ -z "$node_rpc_user" || -z "$node_rpc_pass" ]]; then
+    echo "NODE_RPC_USER and NODE_RPC_PASS must be set before writing node.conf" >&2
+    exit 1
+  fi
+  set_env_value "$TARGET_DIR/.env" "NODE_RPC_USER" "$node_rpc_user"
+  set_env_value "$TARGET_DIR/.env" "NODE_RPC_PASS" "$node_rpc_pass"
+  set_node_conf_value "$file" rpcuser "$node_rpc_user"
+  set_node_conf_value "$file" rpcpass "$node_rpc_pass"
 }
 
 mkdir -p "$TARGET_DIR"
@@ -139,6 +160,16 @@ if [[ -f "$TARGET_DIR/.env" ]]; then
   mkdir -p "$TARGET_DIR/node-data"
 
   set_env_value "$TARGET_DIR/.env" "BDAG_STACK_HOST_ROOT" "$TARGET_DIR"
+  release_version="$(env_file_value "$TARGET_DIR/release-payload.env" BDAG_RELEASE_VERSION)"
+  stack_release_tag="$(env_file_value "$TARGET_DIR/release-payload.env" BDAG_STACK_RELEASE_TAG)"
+  stack_release_tag="${stack_release_tag:-$release_version}"
+  if [[ -n "$release_version" ]]; then
+    set_env_value "$TARGET_DIR/.env" "BDAG_RELEASE_VERSION" "$release_version"
+  fi
+  if [[ -n "$stack_release_tag" ]]; then
+    set_env_value "$TARGET_DIR/.env" "BDAG_STACK_RELEASE_TAG" "$stack_release_tag"
+  fi
+  sync_node_rpc_auth "$TARGET_DIR/node.conf"
 
   asic_lan_interface="$(configured_env_value BDAG_ASIC_LAN_INTERFACE)"
   if [[ -n "$asic_lan_interface" ]]; then
@@ -207,10 +238,6 @@ if [[ -f "$TARGET_DIR/.env" ]]; then
   p2p_advertise_ip="$(awk -F= '$1 == "BDAG_P2P_ADVERTISE_IP" {print $2; exit}' "$TARGET_DIR/.env")"
   mining_pool_address="$(awk -F= '$1 == "MINING_POOL_ADDRESS" {print $2; exit}' "$TARGET_DIR/.env")"
   if [[ -f "$TARGET_DIR/node.conf" ]]; then
-    bootstrap_peer_addresses="$(node_conf_bootstrap_peers "$TARGET_DIR/node.conf")"
-    if [[ -n "$bootstrap_peer_addresses" ]]; then
-      set_env_value "$TARGET_DIR/.env" "BOOTSTRAP_PEER_ADDRESSES" "$bootstrap_peer_addresses"
-    fi
     if [[ -n "$mining_pool_address" ]]; then
       if grep -q '^miningaddr=' "$TARGET_DIR/node.conf"; then
         sed -i "s|^miningaddr=.*|miningaddr=${mining_pool_address}|" "$TARGET_DIR/node.conf"

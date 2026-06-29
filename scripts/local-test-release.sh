@@ -50,13 +50,13 @@ cp docker-compose.yml dockerfile .dockerignore .env.example node.conf.example RE
 printf '%s\n' "$VERSION" > "$STAGE/version.txt"
 cat > "$STAGE/release-payload.env" <<EOF
 BDAG_RELEASE_VERSION=${VERSION}
+BDAG_STACK_RELEASE_TAG=${VERSION}
 BDAG_RELEASE_PAYLOAD_TARGET=${TARGET}
 BDAG_RELEASE_PAYLOAD_ARCH=${GOARCH}
 DOCKER_PLATFORM=${DOCKER_PLATFORM}
 EOF
 
-cp scripts/release/install.sh scripts/release/install-node.sh scripts/release/install.ps1 scripts/release/install.cmd "$STAGE/"
-cp -a scripts/release/installers "$STAGE/installers"
+cp scripts/release/install.sh "$STAGE/"
 cp -a sql docker tools "$STAGE/"
 
 mkdir -p "$STAGE/bin"
@@ -71,7 +71,7 @@ sha256sum "$STAGE/bin/blockdag-node" "$STAGE/bin/nodeworker" "$STAGE/bin/mining-
 
 rsync -a --exclude='__pycache__/' --exclude='*.pyc' scripts "$STAGE/"
 rsync -a --exclude='runtime/' --exclude='runtime-*/' --exclude='__pycache__/' --exclude='*.pyc' ops "$STAGE/"
-chmod +x "$STAGE/install.sh" "$STAGE/install-node.sh" "$STAGE/installers/"*.sh
+chmod +x "$STAGE/install.sh"
 
 python3 scripts/check-release-archive.py "$STAGE"
 

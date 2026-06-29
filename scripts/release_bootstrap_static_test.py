@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -33,6 +34,10 @@ class BootstrapSelectionTests(unittest.TestCase):
     def test_rejects_unsupported_bootstrap_selection(self) -> None:
         with self.assertRaisesRegex(ValueError, "unsupported CPU architecture"):
             renderer.select_payload_target("Linux", "riscv64")
+        with self.assertRaisesRegex(ValueError, "unsupported operating system"):
+            renderer.select_payload_target("Darwin", "arm64")
+        with self.assertRaisesRegex(ValueError, "unsupported operating system"):
+            renderer.select_payload_target("Windows", "amd64")
 
     def test_generated_bootstraps_are_pinned_to_one_tag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -55,44 +60,167 @@ class BootstrapSelectionTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             shell = (out_dir / "install.sh").read_text(encoding="utf-8")
-            powershell = (out_dir / "install.ps1").read_text(encoding="utf-8")
-        for text in (shell, powershell):
-            self.assertIn("pool-v1.2.3", text)
-            self.assertIn("releases/download/", text)
-            self.assertNotIn("latest/download", text)
+            self.assertFalse((out_dir / "install.ps1").exists())
+        self.assertIn("pool-v1.2.3", shell)
+        self.assertIn("releases/download/", shell)
+        self.assertNotIn("latest/download", shell)
         self.assertIn('ASSET="$PACKAGE_NAME-$VERSION-$PAYLOAD_TARGET.zip"', shell)
-        self.assertIn("$PackageName-$Version-$PayloadTarget.zip", powershell)
+        self.assertIn('exec bash "$ROOT/install.sh" "$@"', shell)
+        self.assertNotIn("installers/", shell)
 
 
 class PayloadInstallerTests(unittest.TestCase):
-    def test_installers_do_not_warn_arm_hosts_to_use_amd64_emulation(self) -> None:
-        unix = (ROOT / "scripts" / "release" / "installers" / "install-unix-common.sh").read_text(
+    def payload_installer(self) -> str:
+        return (ROOT / "scripts" / "release" / "install.sh").read_text(encoding="utf-8")
+
+    def copy_minimal_payload(self, package_root: Path) -> None:
+        package_root.mkdir(parents=True, exist_ok=True)
+        (package_root / ".env.example").write_text(
+            (ROOT / ".env.example").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        (package_root / "install.sh").write_text(
+            self.payload_installer(),
+            encoding="utf-8",
+        )
+        (package_root / "release-payload.env").write_text(
+            "\n".join(
+                [
+                    "BDAG_RELEASE_PAYLOAD_TARGET=linux-amd64",
+                    "BDAG_RELEASE_PAYLOAD_ARCH=amd64",
+                    "DOCKER_PLATFORM=linux/amd64",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    def test_release_has_one_payload_installer(self) -> None:
+        release_dir = ROOT / "scripts" / "release"
+
+        self.assertTrue((release_dir / "install.sh").is_file())
+        self.assertFalse((release_dir / "install-node.sh").exists())
+        self.assertFalse((release_dir / "installers").exists())
+
+    def test_installer_does_not_warn_arm_hosts_to_use_amd64_emulation(self) -> None:
+        installer = self.payload_installer()
+
+        self.assertIn("release-payload.env", installer)
+        self.assertNotIn("amd64 emulation", installer)
+
+    def test_installer_clears_stale_snapshot_url_without_explicit_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            package_root = Path(tmp)
+            self.copy_minimal_payload(package_root)
+            env_path = package_root / ".env"
+            env_path.write_text(
+                (package_root / ".env.example").read_text(encoding="utf-8").replace(
+                    "BDAG_SNAPSHOT_URL=",
+                    "BDAG_SNAPSHOT_URL=https://stale.invalid/latest.bdsnap",
+                ),
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["BDAG_INSTALL_TEST_WRITE_ENV_ONLY"] = "1"
+            env["BDAG_NO_PAUSE"] = "1"
+            result = subprocess.run(
+                ["bash", "install.sh"],
+                cwd=package_root,
+                env=env,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            env_text = env_path.read_text(encoding="utf-8")
+            self.assertIn("BDAG_SNAPSHOT_URL=", env_text)
+            self.assertNotIn("https://stale.invalid/latest.bdsnap", env_text)
+            self.assertTrue((package_root / "node-data").is_dir())
+
+    def test_installer_leaves_chain_download_to_node_startup(self) -> None:
+        installer = self.payload_installer()
+
+        self.assertIn("--snapshot-url", installer)
+        self.assertIn("BDAG_SNAPSHOT_URL", installer)
+        self.assertIn("existing NODE_DATA_DIR first", installer)
+        self.assertNotIn("BDAG_RELEASE_INSTALL_CHAIN_DB_ONLY", installer)
+        self.assertNotIn("--chain-db-only", installer)
+        self.assertNotIn("bootstrap_chain_db_archive", installer)
+
+    def test_node_entrypoint_logs_http_snapshot_download_progress(self) -> None:
+        entrypoint = (ROOT / "docker" / "entrypoint-nodeworker.sh").read_text(
             encoding="utf-8"
         )
-        self.assertIn("release-payload.env", unix)
-        self.assertNotIn("amd64 emulation", unix)
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
-    def test_unix_installer_supports_local_raw_chain_data_archive(self) -> None:
-        unix = (ROOT / "scripts" / "release" / "installers" / "install-unix-common.sh").read_text(
+        self.assertIn("BDAG_SNAPSHOT_PROGRESS_INTERVAL_SECONDS", entrypoint)
+        self.assertIn("snapshot download ${event}:", entrypoint)
+        self.assertIn("log_snapshot_download_measurement progress", entrypoint)
+        self.assertIn("downloaded_bytes=", entrypoint)
+        self.assertIn("downloaded_mib=", entrypoint)
+        self.assertIn("total_bytes=", entrypoint)
+        self.assertIn("remaining_bytes=", entrypoint)
+        self.assertIn("rate_bytes_per_second=", entrypoint)
+        self.assertIn("eta_seconds=", entrypoint)
+        self.assertIn("eta_text=", entrypoint)
+        self.assertIn("snapshot_download_total_bytes", entrypoint)
+        self.assertIn("download_snapshot_with_progress", entrypoint)
+        self.assertIn(
+            "BDAG_SNAPSHOT_PROGRESS_INTERVAL_SECONDS: ${BDAG_SNAPSHOT_PROGRESS_INTERVAL_SECONDS:-30}",
+            compose,
+        )
+        self.assertIn("BDAG_SNAPSHOT_TOTAL_BYTES: ${BDAG_SNAPSHOT_TOTAL_BYTES:-}", compose)
+
+    def test_node_entrypoint_handles_downloaded_datadir_archives(self) -> None:
+        entrypoint = (ROOT / "docker" / "entrypoint-nodeworker.sh").read_text(
             encoding="utf-8"
         )
+        dockerfile = (ROOT / "dockerfile").read_text(encoding="utf-8")
 
-        self.assertIn("BDAG_CHAIN_DATA_ARCHIVE", unix)
-        self.assertIn("tar --zstd -tf", unix)
-        self.assertIn("chain data archive does not contain recognizable BlockDAG chain markers", unix)
+        self.assertIn("prepare_downloaded_chain_datadir_archive", entrypoint)
+        self.assertIn("find_chain_datadir_payload_root", entrypoint)
+        self.assertIn("BdagChain", entrypoint)
+        self.assertIn("bdageth", entrypoint)
+        self.assertIn("metaData", entrypoint)
+        self.assertIn("downloaded snapshot is a chain datadir archive", entrypoint)
+        self.assertIn("zstd", dockerfile)
 
-    def test_unix_installer_pulls_external_pool_db_image_before_pull_never_start(self) -> None:
-        unix = (ROOT / "scripts" / "release" / "installers" / "install-unix-common.sh").read_text(
-            encoding="utf-8"
+    def test_installer_writes_url_safe_pool_database_url(self) -> None:
+        installer = self.payload_installer()
+
+        self.assertIn("openssl rand -hex 32", installer)
+        self.assertIn("urlencode_component", installer)
+        self.assertIn("set_env_value .env PG_URL", installer)
+
+    def test_installer_starts_node_before_pool_services(self) -> None:
+        installer = self.payload_installer()
+
+        self.assertIn("docker compose up -d --no-build --pull never node", installer)
+        self.assertIn("wait_for_node_sync", installer)
+        self.assertIn("--no-wait-for-node-sync", installer)
+        self.assertIn("BDAG_WAIT_FOR_NODE_SYNC_BEFORE_STACK=1|0", installer)
+        self.assertIn("BDAG_HAS_LOCAL_ASIC_MINER=1|0", installer)
+        self.assertIn("Wait for the node to complete sync before starting the rest of the stack?", installer)
+        self.assertIn('prompt_yes_no_default "Wait for the node to complete sync before starting the rest of the stack?" "yes"', installer)
+        self.assertIn('elif [[ "$WAIT_FOR_NODE_SYNC_BEFORE_STACK" == "yes" ]]; then', installer)
+        self.assertIn("Skipping node sync wait before starting remaining services.", installer)
+        self.assertIn("Is there a local ASIC miner connected to this host LAN to configure now?", installer)
+        self.assertIn('prompt_yes_no_default "Is there a local ASIC miner connected to this host LAN to configure now?" "no"', installer)
+        self.assertIn('if [[ "$HAS_LOCAL_ASIC_MINER" == "yes" ]]; then', installer)
+        self.assertIn("No local ASIC miner selected; leaving ASIC LAN discovery scope empty.", installer)
+        self.assertLess(
+            installer.index("Is there a local ASIC miner connected to this host LAN to configure now?"),
+            installer.index("Pool LAN IP miners should connect to"),
         )
-        windows = (ROOT / "scripts" / "release" / "installers" / "install-windows.ps1").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn("docker compose pull pool-db", unix)
-        self.assertIn("docker compose up -d --no-build --pull never pool-db node dashboard", unix)
-        self.assertIn("docker compose pull pool-db", windows)
-        self.assertIn("docker compose up -d --no-build --pull never pool-db node dashboard", windows)
+        self.assertIn("docker compose config --services", installer)
+        self.assertIn('[[ "$service" == "node" ]] && continue', installer)
+        self.assertIn("write_pool_start_lease", installer)
+        self.assertIn('if service_in_list pool "${REMAINING_SERVICES[@]}"; then', installer)
+        self.assertIn('docker compose pull --ignore-buildable --policy missing "$@"', installer)
+        self.assertIn('docker compose up -d --no-build --pull never "${REMAINING_SERVICES[@]}"', installer)
+        self.assertNotIn("docker compose up -d --no-build --pull never pool-db pool dashboard", installer)
+        self.assertNotIn("docker compose up -d --no-build --pull never pool-db pool collector dashboard", installer)
 
 
 class BootstrapPeerDefaultTests(unittest.TestCase):
@@ -143,22 +271,17 @@ class BootstrapPeerDefaultTests(unittest.TestCase):
         ),
     )
 
-    def test_release_defaults_pass_bootstrap_peers_to_node(self) -> None:
+    def test_release_defaults_keep_bootstrap_peers_in_node_config(self) -> None:
         env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         node_conf = (ROOT / "node.conf.example").read_text(encoding="utf-8")
 
-        bootstrap_line = next(
-            line
-            for line in env_example.splitlines()
-            if line.startswith("BOOTSTRAP_PEER_ADDRESSES=")
-        )
-        self.assertIn("BOOTSTRAP_PEER_ADDRESSES: ${BOOTSTRAP_PEER_ADDRESSES:-}", compose)
+        self.assertNotIn("BOOTSTRAP_PEER_ADDRESSES=", env_example)
+        self.assertNotIn("BOOTSTRAP_PEER_ADDRESSES:", compose)
         for peer in self.STABLE_BOOTSTRAP_PEERS:
-            self.assertIn(peer, bootstrap_line)
             self.assertIn(f"addpeer={peer}", node_conf)
         for peer in self.QUARANTINED_BOOTSTRAP_PEERS:
-            self.assertNotIn(peer, bootstrap_line)
+            self.assertNotIn(peer, env_example)
             self.assertNotIn(f"addpeer={peer}", node_conf)
 
     def test_release_defaults_do_not_ship_dead_or_site_local_seed_peers(self) -> None:

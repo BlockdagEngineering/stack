@@ -23,13 +23,13 @@ while removing local assumptions that caused install or sync drift.
 - Release archives are audited by `scripts/check-release-archive.py` so `.git`,
   package metadata, mutable data directories, local `.env`, `node.conf`, and
   transient chain snapshot downloads do not ship.
-- Payload installers preserve existing node data, peer identity, signer
-  material, and runtime state. When `BDAG_CHAIN_DB_ARCHIVE_URL` is set and the
-  configured node datadir has no chain markers, installers download the trusted
-  `.bdsnap` chain DB snapshot archive, import it into a clean staged
-  `mainnet/` datadir, validate `mainnet/BdagChain`, and move it into that host
-  datadir before first start. They set `DOCKER_PLATFORM` from
-  `release-payload.env`, not from a universal AMD64 assumption.
+- The payload installer preserves existing node data, peer identity, signer
+  material, and runtime state. Optional `.bdsnap` download/import is selected
+  with the installer `--snapshot-url` flag, then owned by node startup through
+  `BDAG_SNAPSHOT_URL` after the node entrypoint checks the configured datadir for
+  existing chain data. The installer sets
+  `DOCKER_PLATFORM` from `release-payload.env`, not from a universal AMD64
+  assumption.
 - Installers preflight architecture, Docker Compose, disk, port occupancy, time
   sync, optional `jq`, and seed reachability. Old/orphan Compose cleanup is a
   dry-run unless `BDAG_CLEAN_ORPHAN_CONTAINERS=1` is set.

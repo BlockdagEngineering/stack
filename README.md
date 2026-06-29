@@ -30,22 +30,20 @@ Open a new shell, then verify `docker compose version` works without sudo.
 
 ## Release package
 
-GitHub Releases attach pinned bootstrap scripts (`install.sh` for Linux/macOS
-and `install.ps1` for Windows) plus one runtime payload zip per Linux container
-architecture:
+GitHub Releases attach a pinned Linux bootstrap script (`install.sh`) plus one
+runtime payload zip per Linux container architecture:
 
 - `pool-stack-docker-<tag>-linux-amd64.zip`
 - `pool-stack-docker-<tag>-linux-arm64.zip`
 
-The bootstrap script is generated for one release tag. It detects the host OS
-and CPU architecture, selects `linux-amd64` or `linux-arm64`, and downloads only
-the matching payload zip from that same tag. Linux ARM64, macOS ARM64, and
-Windows ARM64 hosts use the `linux-arm64` runtime payload.
+The bootstrap script is generated for one release tag. It requires Linux,
+detects the host CPU architecture, selects `linux-amd64` or `linux-arm64`, and
+downloads only the matching payload zip from that same tag.
 
 Each payload zip contains `bin/` (pre-built `blockdag-node`, `nodeworker`,
 `mining-pool`, `dashboard-api`, and `dashboard`), `docker-compose.yml`,
-`dockerfile`, `.env.example`, `docker/`, the cross-platform payload installers,
-and the ops scripts required by the repair services. **Release images** stage
+`dockerfile`, `.env.example`, `docker/`, one Linux payload installer
+(`install.sh`), and the ops scripts required by the repair services. **Release images** stage
 their binaries from `./bin`; release workflow source checkouts are limited to
 `BlockdagEngineering/blockdag-corechain`, `BlockdagEngineering/pool`, and
 `BlockdagEngineering/redis-dash` from `main`. Legacy collector, dashboard2,
@@ -55,13 +53,8 @@ Run the bootstrap script from the GitHub release, or manually unpack the
 matching payload zip and run the payload installer from the extracted directory:
 
 ```bash
-# Linux / macOS
+# Linux
 bash install.sh
-```
-
-```powershell
-# Windows
-.\install.ps1
 ```
 
 The payload installer makes two independent choices in two steps:
@@ -79,76 +72,63 @@ The payload installer makes two independent choices in two steps:
 2. **Archive** — node started with `--archival` (consensus keeps full block
    history instead of pruning), bootstrapped from the archive snapshot.
 
-Set `BDAG_DEPLOY_KIND=pool|node` and/or `BDAG_CHAIN_MODE=archive|non-archive` to
-preselect either step for non-interactive installs (the legacy
-`BDAG_INSTALL_MODE=pool|archive-node|node` is still accepted and seeds both).
-Standalone-node installs can also use the dedicated entry script, which fixes
-step 1 to a node and lets the installer ask step 2:
+Use installer flags or set `BDAG_DEPLOY_KIND=pool|node` and/or
+`BDAG_CHAIN_MODE=archive|non-archive` to preselect either step for
+non-interactive installs. The legacy
+`BDAG_INSTALL_MODE=pool|archive-node|node` is still accepted and seeds both.
 
 ```bash
-# Linux / macOS: install just a node (installer prompts archive vs non-archive)
-bash install-node.sh
-bash install-node.sh --archive      # archive node, no prompt
-bash install-node.sh --no-archive   # pruned node, no prompt
+# Linux examples
+bash install.sh --node              # standalone node; installer prompts chain mode
+bash install.sh --node --archive    # archive standalone node, no prompt
+bash install.sh --pool --no-archive # full pool stack with pruned node, no prompt
+bash install.sh --pool --no-wait-for-node-sync # start stack while node catches up
 ```
 
-The chain-data choice determines the snapshot link written to `BDAG_SNAPSHOT_URL`
-in `.env`. By convention the snapshot host serves `latest.bdsnap`
-(non-archive/pruned) and `latest-archive.bdsnap` (archive/full history); the
-host can be overridden with `BDAG_SNAPSHOT_BASE_URL` and the full link with
-`BDAG_SNAPSHOT_URL`. The node container also reads `BDAG_SNAPSHOT_URL` at
-first start and downloads/imports the snapshot itself when no local snapshot
-or chain data exists. Choosing archive additionally sets `BDAG_NODE_ARCHIVAL=1`
-in `.env`, which makes the node entrypoint append the `--archival` flag.
+The chain-data choice writes `BDAG_NODE_ARCHIVAL=0|1` in `.env`. Choosing archive
+sets `BDAG_NODE_ARCHIVAL=1`, which makes the node entrypoint append the
+`--archival` flag. Snapshot download is optional and node-owned: pass
+`--snapshot-url` to the installer if you want first start to download/import a
+`.bdsnap`; otherwise the node syncs from peers. The installer writes
+`BDAG_SNAPSHOT_URL`, and the node only downloads from it when the configured
+datadir has no local snapshot or chain data.
 
 The payload installer writes `.env` and `node.conf`, generates a strong Postgres
-password unless `POSTGRES_PASSWORD` is already set, downloads the snapshot
-when needed, sets `DOCKER_PLATFORM` from the downloaded payload's
-`release-payload.env`, and runs
-`docker compose build && docker compose up -d --no-build --pull never pool-db node dashboard`
-(pool stack) or `docker compose build node && docker compose up -d --no-build --pull never node`
-(node-only).
+password unless `POSTGRES_PASSWORD` is already set, sets `DOCKER_PLATFORM` from
+the downloaded payload's `release-payload.env`, builds Docker images, starts the
+node first, asks whether to wait for node sync before starting the rest of the
+stack, and waits for sync by default. Answer no, pass
+`--no-wait-for-node-sync`, or set `BDAG_WAIT_FOR_NODE_SYNC_BEFORE_STACK=0` to
+start every remaining service declared by `docker-compose.yml` while the node
+continues syncing. Node-only installs build and start only the `node` service.
+For pool-stack installs, the installer asks whether a local ASIC miner is
+present before asking for ASIC LAN details; answer no to leave local ASIC
+discovery scope empty.
 
 Fresh installs assume zero miner sources. Initial install and chain sync must
 work with no ASICs or Stratum miners configured; operators can opt in to the
 miner wizard after sync and may configure 0..N miner sources. The RC must not
 treat this host's five X100 devices as a release default.
 
-On macOS, the installer uses `aria2c` for faster, resumable snapshot downloads and installs it with Homebrew when missing. If that path fails, it opens a browser download link and Finder at the installer folder, then waits for `latest.bdsnap` to appear there. Browsers may still save to Downloads unless you choose the installer folder. To skip the dependency install, force curl with `BDAG_SNAPSHOT_DOWNLOADER=curl bash install.sh`; to go straight to the browser helper, use `BDAG_SNAPSHOT_DOWNLOADER=browser bash install.sh`. On Windows, the installer uses `aria2c` when available, tries to install it with `winget`, then falls back to BITS and PowerShell download.
-
 The installer uses host-path chain storage at `NODE_DATA_DIR` and preserves
-existing chain data. When a valid `latest.bdsnap` is available and the configured
-node datadir has no chain markers, the installer stages that snapshot into the
-host datadir so the container can import it on first start. To replace existing
-chain data, stop the stack and move the configured datadir aside deliberately
-before running the installer.
+existing chain data. To replace existing chain data, stop the stack and move the
+configured datadir aside deliberately before running the installer.
 
 `NODE_DATA_DIR` is the only supported node datadir variable. The obsolete
-`BDAG_NODE_DATA_DIR` name is rejected by the chain-data preflight. Before a
-clean upgrade or destructive reinstall, run `scripts/preflight-chain-data.sh`;
-if an old `stack_node-data` Docker volume or another preserved datadir is newer
-or larger than `./data/node`, migrate it into `./data/node` with
+`BDAG_NODE_DATA_DIR` name must not be written by installers. Before a clean
+upgrade or destructive reinstall, if an old `stack_node-data` Docker volume or
+another preserved datadir is newer or larger than `./node-data`, migrate it into
+`./node-data` with
 `scripts/migrate-node-data-volume-to-host.sh` before starting the node.
 
-If you already have a raw node datadir archive rather than a `.bdsnap`, set
-`BDAG_CHAIN_DATA_ARCHIVE=/path/to/archive.tar.zst` before running the installer.
-The installer sniffs compression, so a Zstandard archive with a misleading
-`.tar.gz` suffix is accepted when the archive contains `BdagChain/`,
-`bdageth/chaindata/`, or `chaindata/`.
-
-If the default snapshot host is unavailable, point the installer at the snapshot URL you want to use:
+To import a `.bdsnap` on first node start, point the installer at the snapshot
+URL you want to use:
 
 ```bash
-BDAG_SNAPSHOT_URL=https://your-host.example/latest.bdsnap bash install.sh
+bash install.sh --snapshot-url https://your-host.example/latest.bdsnap
 ```
 
-The installer requires a valid snapshot by default. To allow the node to sync from P2P when no valid snapshot can be downloaded, use:
-
-```bash
-BDAG_REQUIRE_SNAPSHOT=0 bash install.sh
-```
-
-On macOS, if Docker reports an `xattr` error for files such as `._.env.example`, those are AppleDouble metadata files from the extracted folder or external drive. Current release packages include `.dockerignore` and the installer removes those files before building. For an older extracted folder, clean it manually and run the installer again:
+If Docker reports an `xattr` error for files such as `._.env.example`, those are metadata files from the extracted folder or external drive. Current release packages include `.dockerignore` and the installer removes those files before building. For an older extracted folder, clean it manually and run the installer again:
 
 ```bash
 find . -name '._*' -type f -delete
@@ -157,7 +137,7 @@ rm -rf __MACOSX
 bash install.sh
 ```
 
-The same cleanup also ignores common Windows metadata such as `Thumbs.db`, `desktop.ini`, `$RECYCLE.BIN`, and `System Volume Information`.
+The same cleanup also ignores common desktop metadata such as `Thumbs.db`, `desktop.ini`, `$RECYCLE.BIN`, and `System Volume Information`.
 
 ## Configuration (what loads where)
 
@@ -374,8 +354,7 @@ dashboard and maintenance work. The policy is safe to reapply and uses the
 
 The release builder also runs `scripts/verify-release-architecture.py` before
 image assembly so ARM64 packages cannot silently receive AMD64 binaries; the
-checker reads ELF/Mach-O/PE headers directly so it can be used from Linux,
-macOS, and Windows build hosts.
+checker reads binary headers directly so it can be used from Linux build hosts.
 
 The dashboard UI and status API are normally exposed on host port `8088`.
 Global production data must be sourced from native BlockDAG chain RPC
@@ -402,9 +381,8 @@ Agents should verify it with `python3 -m pytest --version` before running
 
 The ops status runtime uses Python's standard HTTP client for local pool metrics
 and public enrichment calls. Do not make live status depend on host utilities
-such as `curl`; release packages should behave the same on Linux AMD64, Linux
-ARM64, macOS Docker Desktop, and Windows Docker Desktop once Docker and Python
-are available.
+such as `curl`; release packages should behave the same on Linux AMD64 and
+Linux ARM64 once Docker and Python are available.
 
 For live runtime updates, use:
 
@@ -460,18 +438,18 @@ configuration failure, not a valid physical miner.
 
 ## Default V2 Sync Source
 
-New installs use the canonical `NODE_DATA_DIR=./data/node` chain-data path.
-Installers must run the chain-data preflight before starting the node. If a
-valid preserved volume, USB copy, Downloads archive, or configured chain DB
-archive is available, it is selected or migrated before the node starts.
+New installs use the canonical `NODE_DATA_DIR=./node-data` chain-data path. Node
+startup and runtime provenance checks validate the selected chain DB. If a valid
+preserved volume, USB copy, Downloads archive, or configured chain DB archive is
+available, select or migrate it before the node starts.
 
 For local archives, inspect content rather than trusting the filename. A file
 ending in `.tar.gz` may still be a zstd tar archive. Archives that contain
 `BdagChain/`, `bdageth/`, and `metaData` are chain/EVM payloads, not complete
 runtime identity. Preserve `mainnet/peerstore`, `mainnet/network.key`, and
 `mainnet/recent-peers.json` from the existing install when available, quarantine
-old chain directories, restore ownership to the container UID/GID, and rerun
-`scripts/preflight-chain-data.sh` as the install user before starting node.
+old chain directories, and restore ownership to the container UID/GID before
+starting node.
 
 Fresh-from-genesis is allowed only when no better chain data exists or when the
 operator explicitly approves a fresh chain start. Pool startup remains gated on

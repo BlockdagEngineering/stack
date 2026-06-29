@@ -11,6 +11,222 @@ log() {
   printf '[%s] node-entrypoint: %s\n' "$(timestamp_iso)" "$*" >&2
 }
 
+file_size_bytes() {
+  local path="$1" size
+  size="$(stat -c%s "$path" 2>/dev/null || printf '0')"
+  case "$size" in
+    ''|*[!0-9]*) size=0 ;;
+  esac
+  printf '%s\n' "$size"
+}
+
+snapshot_progress_interval_seconds() {
+  local value="${BDAG_SNAPSHOT_PROGRESS_INTERVAL_SECONDS:-30}"
+  case "$value" in
+    ''|*[!0-9]*) value=30 ;;
+  esac
+  printf '%s\n' "$value"
+}
+
+format_duration_compact() {
+  local seconds="$1" hours minutes
+  case "$seconds" in
+    ''|*[!0-9]*) printf 'unknown\n'; return 0 ;;
+  esac
+  hours=$(( seconds / 3600 ))
+  minutes=$(( (seconds % 3600) / 60 ))
+  seconds=$(( seconds % 60 ))
+  if [ "$hours" -gt 0 ]; then
+    printf '%sh%sm%ss\n' "$hours" "$minutes" "$seconds"
+  elif [ "$minutes" -gt 0 ]; then
+    printf '%sm%ss\n' "$minutes" "$seconds"
+  else
+    printf '%ss\n' "$seconds"
+  fi
+}
+
+snapshot_download_total_bytes() {
+  local url="$1" value
+  value="${BDAG_SNAPSHOT_TOTAL_BYTES:-${BDAG_SNAPSHOT_EXPECTED_BYTES:-}}"
+  case "$value" in
+    ''|*[!0-9]*) value="" ;;
+  esac
+  if [ -n "$value" ]; then
+    printf '%s\n' "$value"
+    return 0
+  fi
+  value="$(
+    curl --fail --location --silent --show-error --head --connect-timeout 20 "$url" 2>/dev/null \
+      | awk -F: 'tolower($1) == "content-length" {
+          value = $2
+          gsub(/^[[:space:]]+|[[:space:]\r]+$/, "", value)
+        } END { print value }' || true
+  )"
+  case "$value" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$value"
+}
+
+log_snapshot_download_measurement() {
+  local event="$1" path="$2" start="$3" total_bytes="${4:-}" exit_code="${5:-}"
+  local now elapsed size rate remaining eta eta_text percent_milli percent_text total_text remaining_text
+  now="$(date +%s 2>/dev/null || echo "$start")"
+  elapsed=$(( now - start ))
+  [ "$elapsed" -ge 0 ] || elapsed=0
+  size="$(file_size_bytes "$path")"
+  if [ "$elapsed" -gt 0 ]; then
+    rate=$(( size / elapsed ))
+  else
+    rate=0
+  fi
+
+  total_text="unknown"
+  remaining_text="unknown"
+  eta="unknown"
+  eta_text="unknown"
+  percent_text="unknown"
+  case "$total_bytes" in
+    ''|*[!0-9]*) ;;
+    *)
+      if [ "$total_bytes" -gt 0 ]; then
+        total_text="$total_bytes"
+        if [ "$size" -lt "$total_bytes" ]; then
+          remaining=$(( total_bytes - size ))
+        else
+          remaining=0
+        fi
+        remaining_text="$remaining"
+        percent_milli=$(( size * 100000 / total_bytes ))
+        percent_text="$(printf '%d.%03d' "$(( percent_milli / 1000 ))" "$(( percent_milli % 1000 ))")"
+        if [ "$rate" -gt 0 ]; then
+          eta=$(( (remaining + rate - 1) / rate ))
+          eta_text="$(format_duration_compact "$eta")"
+        fi
+      fi
+      ;;
+  esac
+
+  if [ -n "$exit_code" ]; then
+    log "snapshot download ${event}: curl_exit=${exit_code} downloaded_bytes=${size} downloaded_mib=$(( size / 1048576 )) total_bytes=${total_text} percent=${percent_text} remaining_bytes=${remaining_text} rate_bytes_per_second=${rate} eta_seconds=${eta} eta_text=${eta_text} elapsed_seconds=${elapsed} path=${path}"
+  else
+    log "snapshot download ${event}: downloaded_bytes=${size} downloaded_mib=$(( size / 1048576 )) total_bytes=${total_text} percent=${percent_text} remaining_bytes=${remaining_text} rate_bytes_per_second=${rate} eta_seconds=${eta} eta_text=${eta_text} elapsed_seconds=${elapsed} path=${path}"
+  fi
+}
+
+snapshot_download_progress_monitor() {
+  local path="$1" interval="$2" start="$3" total_bytes="${4:-}"
+  [ "$interval" -gt 0 ] || return 0
+  while true; do
+    sleep "$interval" || return 0
+    log_snapshot_download_measurement progress "$path" "$start" "$total_bytes"
+  done
+}
+
+download_snapshot_with_progress() {
+  local url="$1" out="$2" interval start curl_pid monitor_pid status total_bytes
+  interval="$(snapshot_progress_interval_seconds)"
+  total_bytes="$(snapshot_download_total_bytes "$url" || true)"
+  start="$(date +%s 2>/dev/null || echo 0)"
+  curl --fail --location --silent --show-error --connect-timeout 20 --retry 2 --retry-delay 2 -o "$out" "$url" &
+  curl_pid="$!"
+  monitor_pid=""
+  if [ "$interval" -gt 0 ]; then
+    snapshot_download_progress_monitor "$out" "$interval" "$start" "$total_bytes" &
+    monitor_pid="$!"
+  fi
+  if wait "$curl_pid"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [ -n "$monitor_pid" ]; then
+    kill "$monitor_pid" >/dev/null 2>&1 || true
+    wait "$monitor_pid" >/dev/null 2>&1 || true
+  fi
+  if [ "$status" -eq 0 ]; then
+    log_snapshot_download_measurement complete "$out" "$start" "$total_bytes"
+  else
+    log_snapshot_download_measurement failed "$out" "$start" "$total_bytes" "$status"
+  fi
+  return "$status"
+}
+
+tar_extract_archive_to_dir() {
+  local path="$1" dest="$2"
+  mkdir -p "$dest"
+  if tar -xf "$path" -C "$dest" >/dev/null 2>&1; then
+    return 0
+  fi
+  if tar -xzf "$path" -C "$dest" >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v zstd >/dev/null 2>&1 && zstd -dc -- "$path" 2>/dev/null | tar -xf - -C "$dest" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+find_chain_datadir_payload_root() {
+  local root="$1" candidate chain_dir
+  for candidate in "$root" "$root/mainnet"; do
+    if [ -d "$candidate/BdagChain" ] && [ -d "$candidate/bdageth" ] && [ -e "$candidate/metaData" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  while IFS= read -r chain_dir; do
+    candidate="${chain_dir%/BdagChain}"
+    if [ -d "$candidate/bdageth" ] && [ -e "$candidate/metaData" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done < <(find "$root" -maxdepth 4 -type d -name BdagChain -print 2>/dev/null || true)
+  return 1
+}
+
+prepare_downloaded_chain_datadir_archive() {
+  local path="$1" data_dir="$2" data_parent="$3" network="$4"
+  local staging payload_root stamp quarantine item
+  staging="${data_parent}/.http-chain-datadir-${network}.$$"
+  rm -rf "$staging"
+  if ! tar_extract_archive_to_dir "$path" "$staging"; then
+    rm -rf "$staging"
+    return 1
+  fi
+  payload_root="$(find_chain_datadir_payload_root "$staging" || true)"
+  if [ -z "$payload_root" ]; then
+    rm -rf "$staging"
+    return 1
+  fi
+
+  log "downloaded snapshot is a chain datadir archive; preparing node datadir from ${path}"
+  mkdir -p "$data_dir"
+  stamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)"
+  quarantine="$data_dir/replaced-by-http-datadir-$stamp"
+  for item in BdagChain bdageth metaData; do
+    if [ -e "$data_dir/$item" ]; then
+      mkdir -p "$quarantine"
+      mv "$data_dir/$item" "$quarantine/$item" || {
+        log "failed to quarantine existing $item before datadir archive restore"
+        rm -rf "$staging"
+        return 1
+      }
+    fi
+  done
+  for item in BdagChain bdageth metaData; do
+    mv "$payload_root/$item" "$data_dir/$item" || {
+      log "failed to install $item from downloaded datadir archive"
+      rm -rf "$staging"
+      return 1
+    }
+  done
+  chown -R bdagStack:bdagStack "$data_dir" || true
+  rm -rf "$staging"
+  log "prepared downloaded chain datadir archive before node startup: data_dir=${data_dir}"
+  return 0
+}
+
 json_string_value() {
   local key="$1"
   local file="$2"
@@ -36,8 +252,6 @@ lower_ascii() {
   printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
 }
 
-FASTSNAP_BOOTSTRAP_MUTATED=0
-
 mainnet_only_network() {
   local requested="${1:-mainnet}"
   if [ -z "$requested" ]; then
@@ -48,7 +262,7 @@ mainnet_only_network() {
       printf 'mainnet\n'
       ;;
     *)
-      log "refusing non-mainnet FastSnap network: $requested"
+      log "refusing non-mainnet snapshot network: $requested"
       exit 2
       ;;
   esac
@@ -161,136 +375,6 @@ node_args_from_argv() {
   return 1
 }
 
-addpeer_values() {
-  local node_args="$1"
-  local word
-  for word in $node_args; do
-    case "$word" in
-      --addpeer=*)
-        printf '%s\n' "${word#*=}"
-        ;;
-    esac
-  done
-}
-
-config_addpeer_values() {
-  local config_file="$1"
-  [ -f "$config_file" ] || return 0
-  awk -F= '
-    $1 ~ /^[[:space:]]*addpeer[[:space:]]*$/ {
-      value = $0
-      sub("^[^=]*=", "", value)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
-      if (value != "") print value
-    }
-  ' "$config_file"
-}
-
-ORDERED_FASTSYNC_SEEN=
-append_unique_peer() {
-  local bucket_name="$1"
-  local peer="$2"
-  local -n bucket="$bucket_name"
-
-  [ -n "$peer" ] || return 0
-  case "$peer" in
-    none|null) return 0 ;;
-  esac
-  case "$ORDERED_FASTSYNC_SEEN" in
-    *"|$peer|"*) return 0 ;;
-  esac
-  bucket+=("$peer")
-  ORDERED_FASTSYNC_SEEN="${ORDERED_FASTSYNC_SEEN}|$peer|"
-}
-
-append_peer_list() {
-  local bucket_name="$1"
-  local raw="$2"
-  local old_ifs="$IFS"
-  local peer
-  IFS=', '
-  for peer in $raw; do
-    peer_allowed_for_p2p "$peer" || continue
-    append_unique_peer "$bucket_name" "$peer"
-  done
-  IFS="$old_ifs"
-}
-
-peer_allowed_for_p2p() {
-  local peer="$1"
-  case "$peer" in
-    */p2p/*) return 0 ;;
-  esac
-  return 1
-}
-
-join_peer_array() {
-  local old_ifs="$IFS"
-  local joined
-  IFS=,
-  joined="${fastsync_peers[*]:-}"
-  IFS="$old_ifs"
-  printf '%s\n' "$joined"
-}
-
-ordered_fastsync_peers() {
-  local node_args="$1"
-  local ordering="${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}"
-  local config_file config_peers generic_peers
-  fastsync_peers=()
-  ORDERED_FASTSYNC_SEEN=
-
-  config_file="$(node_arg_value configfile "$node_args" || true)"
-  config_file="${config_file:-/etc/bdagStack/node.conf}"
-  config_peers="$(config_addpeer_values "$config_file" | paste -sd, - || true)"
-
-  case "$ordering" in
-    p2p-latency|p2p|latency|flat-latency|flat|tiered-latency|legacy-buckets|buckets) ;;
-    *) log "unknown BDAG_FASTSYNC_PEER_ORDERING=$ordering; using p2p-latency" ;;
-  esac
-  generic_peers="${BDAG_FASTSYNC_PEERS:-} ${BDAG_FASTSNAP_PEERS:-} ${BOOTSTRAP_PEER_ADDRESSES:-} $config_peers $(addpeer_values "$node_args" | paste -sd, - || true)"
-  append_peer_list fastsync_peers "$generic_peers"
-
-  join_peer_array
-}
-
-addpeer_args_from_csv() {
-  local csv="$1"
-  local old_ifs="$IFS"
-  local peer
-  IFS=,
-  for peer in $csv; do
-    [ -n "$peer" ] && printf ' --addpeer=%s' "$peer"
-  done
-  IFS="$old_ifs"
-}
-
-apply_ordered_fastsync_peers() {
-  case "${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}" in
-    0|off|false|none) return 0 ;;
-  esac
-
-  local node_args ordered addpeer_args total_count ordering first_peer
-  ordering="${BDAG_FASTSYNC_PEER_ORDERING:-p2p-latency}"
-  node_args="$(node_args_from_argv "$@" || true)"
-  ordered="$(ordered_fastsync_peers "$node_args")"
-  [ -n "$ordered" ] || return 0
-
-  export BDAG_FASTSNAP_PEERS="$ordered"
-  total_count="$(printf '%s' "$ordered" | awk -F, '{print NF}')"
-  log "P2P latency/usefulness FastSync candidates enabled; libp2p selects the fastest useful artifact source; total=${total_count}"
-
-  if [ "${BDAG_FASTSYNC_APPEND_ADDPEERS:-1}" = "1" ]; then
-    addpeer_args="$(addpeer_args_from_csv "$ordered")"
-    NODE_ARGS_APPEND="${addpeer_args}${NODE_ARGS_APPEND:+ $NODE_ARGS_APPEND}"
-    export NODE_ARGS_APPEND
-  fi
-  if ! node_args_contains_prefix "$node_args ${NODE_ARGS_APPEND:-}" "--bootstrapnode"; then
-    first_peer="${ordered%%,*}"
-    [ -n "$first_peer" ] && append_node_arg_prefix_once "--bootstrapnode=$first_peer" "$node_args ${NODE_ARGS_APPEND:-}"
-  fi
-}
-
 node_args_contains_word() {
   local node_args="$1"
   local needle="$2"
@@ -308,19 +392,6 @@ append_node_arg_once() {
     return 0
   fi
   NODE_ARGS_APPEND="${NODE_ARGS_APPEND:+$NODE_ARGS_APPEND }$flag"
-  export NODE_ARGS_APPEND
-}
-
-remove_node_arg_prefix() {
-  local prefix="$1"
-  local filtered="" word
-  for word in ${NODE_ARGS_APPEND:-}; do
-    case "$word" in
-      "$prefix"|"$prefix"=*) continue ;;
-    esac
-    filtered="${filtered:+$filtered }$word"
-  done
-  NODE_ARGS_APPEND="$filtered"
   export NODE_ARGS_APPEND
 }
 
@@ -468,307 +539,11 @@ select_node_mining_address() {
   return 1
 }
 
-mount_source_for_path() {
-  local path="$1" real best_src="" best_target="" src target fstype rest
-  real="$(readlink -m "$path" 2>/dev/null || printf '%s' "$path")"
-  [ -r /proc/mounts ] || {
-    printf '\n'
-    return 0
-  }
-  while read -r src target fstype rest; do
-    target="${target//\\040/ }"
-    if [[ "$real" == "$target" || "$real" == "$target"/* ]]; then
-      if [ "${#target}" -gt "${#best_target}" ]; then
-        best_target="$target"
-        best_src="$src"
-      fi
-    fi
-  done < /proc/mounts
-  printf '%s\n' "$best_src"
-}
-
-block_device_from_source() {
-  local source="$1" base
-  case "$source" in
-    /dev/*) ;;
-    *) return 1 ;;
-  esac
-  base="$(basename "$source")"
-  case "$base" in
-    nvme*n*p*) printf '%s\n' "${base%p[0-9]*}" ;;
-    mmcblk*p*) printf '%s\n' "${base%p[0-9]*}" ;;
-    *) printf '%s\n' "${base%%[0-9]*}" ;;
-  esac
-}
-
-path_is_usb_backed() {
-  local path="$1" source block device_path
-  source="$(mount_source_for_path "$path")"
-  block="$(block_device_from_source "$source" 2>/dev/null || true)"
-  [ -n "$block" ] || return 1
-  device_path="$(readlink -f "/sys/block/$block/device" 2>/dev/null || true)"
-  case "$device_path" in
-    *usb*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 env_value_true() {
   case "${1:-}" in
     1|true|TRUE|yes|YES|on|ON|enabled|ENABLED) return 0 ;;
   esac
   return 1
-}
-
-env_value_false() {
-  case "${1:-}" in
-    0|false|FALSE|no|NO|off|OFF|disabled|DISABLED) return 0 ;;
-  esac
-  return 1
-}
-
-node_data_parent_from_args() {
-  local node_args config_file data_parent
-  node_args="$(node_args_from_argv "$@" || true)"
-  config_file="$(node_arg_value configfile "$node_args" || true)"
-  data_parent="${BDAG_FASTSNAP_DATADIR:-$(node_arg_value datadir "$node_args" || true)}"
-  if [ -z "$data_parent" ] && [ -n "$config_file" ]; then
-    data_parent="$(read_config_value "$config_file" datadir || true)"
-  fi
-  printf '%s\n' "${data_parent:-/var/lib/bdagStack/node}"
-}
-
-fastsync_serving_disable_reason() {
-  local no_serve="${BDAG_NO_FASTSYNC_SERVE:-auto}"
-  if env_value_true "$no_serve"; then
-    printf 'BDAG_NO_FASTSYNC_SERVE=%s\n' "$no_serve"
-    return 0
-  fi
-  if env_value_false "$no_serve"; then
-    return 1
-  fi
-
-  local storage_profile="${BDAG_STORAGE_PROFILE:-}"
-  storage_profile="$(lower_ascii "$storage_profile")"
-  case "$storage_profile" in
-    usb-chain-internal-runtime|single-usb-constrained)
-      printf 'BDAG_STORAGE_PROFILE=%s\n' "$storage_profile"
-      return 0
-      ;;
-  esac
-
-  local data_parent
-  data_parent="$(node_data_parent_from_args "$@")"
-  if path_is_usb_backed "$data_parent"; then
-    printf 'usb_backed_datadir=%s\n' "$data_parent"
-    return 0
-  fi
-
-  return 1
-}
-
-node_binary_from_argv() {
-  local arg
-  if [ -n "${BDAG_NODE_BINARY:-}" ]; then
-    printf '%s\n' "$BDAG_NODE_BINARY"
-    return 0
-  fi
-  for arg in "$@"; do
-    case "$arg" in
-      --node-binary=*)
-        printf '%s\n' "${arg#*=}"
-        return 0
-        ;;
-    esac
-  done
-  if [ "$#" -gt 0 ]; then
-    printf '%s\n' "$1"
-    return 0
-  fi
-  return 1
-}
-
-node_binary_supports_arg() {
-  local flag="$1" binary
-  shift
-  binary="$(node_binary_from_argv "$@" || true)"
-  [ -n "$binary" ] || return 1
-  if [ ! -x "$binary" ]; then
-    binary="$(command -v "$binary" 2>/dev/null || true)"
-  fi
-  [ -n "$binary" ] || return 1
-  "$binary" --help 2>&1 | grep -q -- "$flag"
-}
-
-apply_no_fastsync_serve_guard() {
-  local disable_reason
-  disable_reason="$(fastsync_serving_disable_reason "$@" || true)"
-  if [ -z "$disable_reason" ]; then
-    if env_value_false "${SYNC_SOURCE_NODE:-}"; then
-      log "SYNC_SOURCE_NODE=${SYNC_SOURCE_NODE} disables raw datadir source publishing only; normal sync startup is unchanged unless storage/profile detection requires no-serve."
-    fi
-    return 0
-  fi
-
-  local node_args
-  node_args="$(node_args_from_argv "$@" || true)"
-  unset BDAG_FASTSYNC_ARTIFACT_DIRECTORY BDAG_FASTSYNC_ARTIFACT_MANIFEST
-  if node_binary_supports_arg "--nofastsyncserve" "$@"; then
-    append_node_arg_once "--nofastsyncserve" "$node_args ${NODE_ARGS_APPEND:-}"
-    log "FastSync serving guard active ($disable_reason); disabling bulk FastSync, snapshot, and artifact serving while keeping normal outbound sync and block relay."
-  else
-    log "FastSync serving guard active ($disable_reason); selected node binary does not support --nofastsyncserve."
-  fi
-}
-
-fastsnap_supports_directory_mode() {
-  local fastsnap_bin="$1"
-  "$fastsnap_bin" --help 2>&1 | grep -q -- "--dir-out"
-}
-
-maybe_fastsnap_bootstrap() {
-  if [ "${BDAG_FASTSNAP_ENABLED:-1}" != "1" ]; then
-    return 0
-  fi
-
-  local fastsnap_bin="${BDAG_FASTSNAP_BINARY:-/usr/local/bin/fastsnap}"
-  [ -x "$fastsnap_bin" ] || {
-    log "fastsnap binary missing; skipping P2P snapshot bootstrap"
-    return 0
-  }
-
-  local node_binary
-  node_binary="$(nodeworker_arg_value node-binary "$@" || true)"
-  node_binary="${BDAG_FASTSNAP_NODE_BINARY:-${node_binary:-/usr/local/bin/blockdag-node}}"
-  [ -x "$node_binary" ] || {
-    log "node binary missing at $node_binary; skipping P2P snapshot bootstrap"
-    return 0
-  }
-
-  local node_args
-  node_args="$(node_args_from_argv "$@" || true)"
-  local network
-  network="$(mainnet_only_network "${BDAG_FASTSNAP_NETWORK:-mainnet}")"
-  local config_file data_parent data_dir archive min_tip timeout peers peer tmp_archive tmp_dir directory_mode
-  config_file="$(node_arg_value configfile "$node_args" || true)"
-  data_parent="${BDAG_FASTSNAP_DATADIR:-$(node_arg_value datadir "$node_args" || true)}"
-  if [ -z "$data_parent" ] && [ -n "$config_file" ]; then
-    data_parent="$(read_config_value "$config_file" datadir || true)"
-  fi
-  data_parent="${data_parent:-/var/lib/bdagStack/node}"
-  data_dir="$(network_datadir "$data_parent" "$network")"
-
-  if [ -d "$data_dir/BdagChain" ]; then
-    return 0
-  fi
-
-  archive="$data_dir/snapshot.bdsnap"
-  mkdir -p "$data_dir"
-  if [ -s "$archive" ]; then
-    log "importing existing P2P snapshot archive before node startup: $archive"
-    FASTSNAP_BOOTSTRAP_MUTATED=1
-    "$node_binary" snap import --datadir "$data_dir" --path "$archive"
-    return 0
-  fi
-
-  peers="${BDAG_FASTSNAP_PEERS:-${BOOTSTRAP_PEER_ADDRESSES:-}}"
-  if [ -z "$peers" ]; then
-    peers="$(addpeer_values "$node_args" | paste -sd, -)"
-  fi
-  if [ -z "$peers" ]; then
-    log "no P2P snapshot peers configured; normal FastSync/legacy sync will start"
-    return 0
-  fi
-
-  min_tip="${BDAG_FASTSNAP_MIN_TIP:-0}"
-  timeout="${BDAG_FASTSNAP_TIMEOUT:-90s}"
-  tmp_archive="$archive.download.$$"
-  directory_mode="${BDAG_FASTSNAP_DIRECTORY_MODE:-1}"
-  if [ "$directory_mode" = "1" ] && ! fastsnap_supports_directory_mode "$fastsnap_bin"; then
-    log "fastsnap binary does not support directory install flags; using V2 archive fallback"
-    directory_mode=0
-  fi
-  tmp_dir="${BDAG_FASTSNAP_DIRECTORY_STAGING:-$data_parent/.fastsnap-directory-$network.$$}"
-  rm -f "$tmp_archive" "$tmp_archive.manifest.json"
-  rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
-
-  local fastsnap_args=(
-    --out "$tmp_archive"
-    --network "$network"
-    --min-tip "$min_tip"
-    --timeout "$timeout"
-  )
-  if [ "$directory_mode" = "1" ]; then
-    fastsnap_args+=(--dir-out "$tmp_dir" --install-dir "$data_dir")
-    if [ "${BDAG_FASTSNAP_DIRECTORY_REPLACE_EXISTING:-1}" = "1" ]; then
-      fastsnap_args+=(--replace-existing)
-    fi
-    if [ "${BDAG_FASTSNAP_DIRECTORY_MOVE_STAGING:-1}" = "1" ]; then
-      fastsnap_args+=(--move-staging)
-    fi
-  fi
-  local old_ifs="$IFS"
-  IFS=', '
-  for peer in $peers; do
-    [ -n "$peer" ] || continue
-    fastsnap_args+=(--peer "$peer")
-  done
-  IFS="$old_ifs"
-
-  if [ "${BDAG_FASTSNAP_ARTIFACT_V2:-1}" = "0" ]; then
-    fastsnap_args+=(--artifact-v2=false)
-  fi
-  if [ "${BDAG_FASTSNAP_ALLOW_UNSIGNED:-0}" = "1" ]; then
-    fastsnap_args+=(--allow-unsigned)
-  fi
-  if [ -n "${BDAG_FASTSNAP_PARALLELISM:-}" ]; then
-    fastsnap_args+=(--parallelism "$BDAG_FASTSNAP_PARALLELISM")
-  fi
-  if [ -n "${BDAG_FASTSNAP_LEDGER:-}" ]; then
-    fastsnap_args+=(--ledger "$BDAG_FASTSNAP_LEDGER")
-  fi
-
-  log "trying P2P snapshot bootstrap with libp2p latency-first peer selection"
-  if "$fastsnap_bin" "${fastsnap_args[@]}"; then
-    if [ -d "$data_dir/BdagChain" ]; then
-      if [ -f "$tmp_dir.manifest.json" ]; then
-        mv "$tmp_dir.manifest.json" "$data_dir/artifact.manifest.json"
-      fi
-      rm -f "$tmp_archive" "$tmp_archive.manifest.json"
-      rm -rf "$tmp_dir"
-      log "downloaded and installed P2P directory artifact before node startup"
-      FASTSNAP_BOOTSTRAP_MUTATED=1
-      return 0
-    fi
-    if [ ! -s "$tmp_archive" ]; then
-      log "fastsnap completed but did not install chain data or produce an archive"
-      rm -f "$tmp_archive" "$tmp_archive.manifest.json"
-      rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
-      if [ "${BDAG_FASTSNAP_REQUIRED:-0}" = "1" ]; then
-        log "required P2P snapshot bootstrap failed"
-        exit 1
-      fi
-      log "P2P snapshot bootstrap unavailable; falling back to normal FastSync/legacy sync"
-      return 0
-    fi
-    mv "$tmp_archive" "$archive"
-    if [ -f "$tmp_archive.manifest.json" ]; then
-      mv "$tmp_archive.manifest.json" "$archive.manifest.json"
-    fi
-    log "importing downloaded P2P snapshot before node startup"
-    FASTSNAP_BOOTSTRAP_MUTATED=1
-    "$node_binary" snap import --datadir "$data_dir" --path "$archive"
-    rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
-    return 0
-  fi
-  rm -f "$tmp_archive" "$tmp_archive.manifest.json"
-  rm -rf "$tmp_dir" "$tmp_dir.manifest.json"
-
-  if [ "${BDAG_FASTSNAP_REQUIRED:-0}" = "1" ]; then
-    log "required P2P snapshot bootstrap failed"
-    exit 1
-  fi
-  log "P2P snapshot bootstrap unavailable; falling back to normal FastSync/legacy sync"
 }
 
 apply_archival_flag() {
@@ -805,7 +580,7 @@ node_binary_from_argv() {
 
 # Bootstrap chain data from an HTTP(S) snapshot link before node startup.
 # Order of precedence on an empty datadir: locally staged snapshot.bdsnap,
-# then BDAG_SNAPSHOT_URL download, then the normal P2P/legacy sync paths.
+# then BDAG_SNAPSHOT_URL download, then normal node sync.
 maybe_http_snapshot_bootstrap() {
   if [ "${BDAG_ENTRYPOINT_PRINT_NODE_FLAGS:-0}" = "1" ]; then
     return 0
@@ -813,7 +588,7 @@ maybe_http_snapshot_bootstrap() {
 
   local node_binary
   node_binary="$(node_binary_from_argv "$@" || true)"
-  node_binary="${BDAG_FASTSNAP_NODE_BINARY:-${node_binary:-/usr/local/bin/blockdag-node}}"
+  node_binary="${BDAG_SNAPSHOT_NODE_BINARY:-${node_binary:-/usr/local/bin/blockdag-node}}"
   [ -x "$node_binary" ] || {
     log "node binary missing at $node_binary; skipping snapshot bootstrap"
     return 0
@@ -821,9 +596,9 @@ maybe_http_snapshot_bootstrap() {
 
   local node_args network config_file data_parent data_dir archive tmp min_bytes size
   node_args="$(node_args_from_argv "$@" || true)"
-  network="$(mainnet_only_network "${BDAG_FASTSNAP_NETWORK:-mainnet}")"
+  network="$(mainnet_only_network "${BDAG_SNAPSHOT_NETWORK:-mainnet}")"
   config_file="$(node_arg_value configfile "$node_args" || true)"
-  data_parent="${BDAG_FASTSNAP_DATADIR:-$(node_arg_value datadir "$node_args" || true)}"
+  data_parent="${BDAG_SNAPSHOT_DATADIR:-$(node_arg_value datadir "$node_args" || true)}"
   if [ -z "$data_parent" ] && [ -n "$config_file" ]; then
     data_parent="$(read_config_value "$config_file" datadir || true)"
   fi
@@ -853,15 +628,19 @@ maybe_http_snapshot_bootstrap() {
   min_bytes="${BDAG_SNAPSHOT_MIN_BYTES:-1048576}"
   tmp="$archive.download.$$"
   log "no chain data found; downloading snapshot from ${BDAG_SNAPSHOT_URL}"
-  if ! curl --fail --location --silent --show-error --connect-timeout 20 --retry 2 --retry-delay 2 -o "$tmp" "$BDAG_SNAPSHOT_URL"; then
+  if ! download_snapshot_with_progress "$BDAG_SNAPSHOT_URL" "$tmp"; then
     rm -f "$tmp"
-    log "snapshot download failed; continuing with P2P/legacy sync"
+    log "snapshot download failed; continuing with normal node sync"
     return 0
   fi
-  size="$(stat -c%s "$tmp" 2>/dev/null || echo 0)"
+  size="$(file_size_bytes "$tmp")"
   if [ "$size" -lt "$min_bytes" ]; then
     rm -f "$tmp"
-    log "downloaded snapshot too small ($size bytes < $min_bytes); continuing with P2P/legacy sync"
+    log "downloaded snapshot too small ($size bytes < $min_bytes); continuing with normal node sync"
+    return 0
+  fi
+  if prepare_downloaded_chain_datadir_archive "$tmp" "$data_dir" "$data_parent" "$network"; then
+    rm -f "$tmp"
     return 0
   fi
   mv "$tmp" "$archive"
@@ -873,9 +652,7 @@ maybe_http_snapshot_bootstrap() {
 }
 
 node_start_guard
-apply_ordered_fastsync_peers "$@"
 apply_node_metrics_runtime_args "$@"
-apply_no_fastsync_serve_guard "$@"
 apply_node_mining_runtime_args "$@"
 apply_archival_flag "$@"
 maybe_http_snapshot_bootstrap "$@"

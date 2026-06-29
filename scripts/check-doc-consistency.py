@@ -10,10 +10,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 RELEASE_DOWNLOADS = ROOT / "release-downloads" / "index.html"
-INSTALL_COMMAND = "docker compose build && docker compose up -d --no-build --pull never pool-db node dashboard"
-INSTALL_COMMAND_HTML = INSTALL_COMMAND.replace("&", "&amp;")
+INSTALL_DOC_MARKERS = (
+    "builds Docker images",
+    "starts the node first",
+    "waits for sync",
+    "every remaining service declared by `docker-compose.yml`",
+)
+INSTALL_DOC_MARKERS_HTML = tuple(marker.replace("&", "&amp;") for marker in INSTALL_DOC_MARKERS)
 STALE_INSTALL_RE = re.compile(
-    r"docker compose build (?:&&|&amp;&amp;) docker compose up -d --no-build --pull never(?! pool-db node dashboard)"
+    r"docker compose build (?:&&|&amp;&amp;) docker compose up -d --no-build --pull never"
 )
 
 
@@ -23,15 +28,19 @@ def fail(message: str) -> None:
 
 def main() -> int:
     readme = README.read_text(encoding="utf-8")
+    normalized_readme = re.sub(r"\s+", " ", readme)
 
-    if INSTALL_COMMAND not in readme:
-        fail(f"{README} does not mention {INSTALL_COMMAND!r}")
+    for marker in INSTALL_DOC_MARKERS:
+        if marker not in normalized_readme:
+            fail(f"{README} does not mention {marker!r}")
 
     documents = [(README, readme)]
     if RELEASE_DOWNLOADS.exists():
         release_html = RELEASE_DOWNLOADS.read_text(encoding="utf-8")
-        if INSTALL_COMMAND_HTML not in release_html:
-            fail(f"{RELEASE_DOWNLOADS} does not mention {INSTALL_COMMAND_HTML!r}")
+        normalized_release_html = re.sub(r"\s+", " ", release_html)
+        for marker in INSTALL_DOC_MARKERS_HTML:
+            if marker not in normalized_release_html:
+                fail(f"{RELEASE_DOWNLOADS} does not mention {marker!r}")
         documents.append((RELEASE_DOWNLOADS, release_html))
 
     for path, text in documents:

@@ -18,7 +18,6 @@ sys.path.insert(0, str(OPS_DIR))
 import pool_ops  # noqa: E402
 import pool_start_gate  # noqa: E402
 
-PREFLIGHT = ROOT / "scripts" / "preflight-chain-data.sh"
 MIGRATE = ROOT / "scripts" / "migrate-node-data-volume-to-host.sh"
 
 
@@ -82,7 +81,6 @@ def run_script(script: Path, root: Path, args: list[str] | None = None, extra_en
             "BDAG_ENV_FILE": str(root / ".env"),
             "HOME": str(root),
             "PATH": f"{bin_dir}:{env['PATH']}",
-            "BDAG_CHAIN_PREFLIGHT_MATERIAL_BYTES": "1",
         }
     )
     if extra_env:
@@ -99,99 +97,12 @@ def run_script(script: Path, root: Path, args: list[str] | None = None, extra_en
 
 
 class ChainDataProvenanceTests(unittest.TestCase):
-    def test_preflight_rejects_obsolete_node_data_variable(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write_env(root, "NODE_DATA_DIR=./data/node\nBDAG_NODE_DATA_DIR=./data/node\n")
-            make_chain(root / "data" / "node")
-
-            result = run_script(PREFLIGHT, root)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("BDAG_NODE_DATA_DIR", result.stderr)
-
-    def test_preflight_rejects_unset_node_data_dir(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write_env(root, "BDAG_NETWORK=mainnet\n")
-
-            result = run_script(PREFLIGHT, root)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("NODE_DATA_DIR is unset", result.stderr)
-
-    def test_preflight_blocks_small_selected_datadir_when_legacy_volume_is_better(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            selected = root / "data" / "node"
-            legacy = root / "docker-volumes" / "stack_node-data" / "_data"
-            write_env(root, "NODE_DATA_DIR=./data/node\n")
-            make_chain(selected, payload_bytes=1024)
-            make_chain(legacy, payload_bytes=4096)
-            bin_dir = fake_docker(root, legacy)
-            env = {
-                "PATH": f"{bin_dir}:{os.environ['PATH']}",
-                "BDAG_CHAIN_PREFLIGHT_SIZE_RATIO_NUMERATOR": "2",
-                "BDAG_CHAIN_PREFLIGHT_MATERIAL_BYTES": "1",
-            }
-
-            result = run_script(PREFLIGHT, root, extra_env=env)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("materially smaller", result.stderr)
-
-    def test_preflight_accepts_valid_canonical_datadir(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write_env(root, "NODE_DATA_DIR=./data/node\n")
-            make_chain(root / "data" / "node", payload_bytes=1024)
-
-            result = run_script(PREFLIGHT, root)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_preflight_size_probe_does_not_emit_duplicate_number_on_permission_warning(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write_env(root, "NODE_DATA_DIR=./data/node\n")
-            make_chain(root / "data" / "node", payload_bytes=1024)
-            unreadable = root / "data" / "node" / "mainnet" / "bdageth" / "unreadable"
-            unreadable.mkdir()
-            unreadable.chmod(0)
-            try:
-                result = run_script(PREFLIGHT, root)
-            finally:
-                unreadable.chmod(0o755)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn("arithmetic syntax error", result.stderr)
-        self.assertNotRegex(result.stderr, r"size_bytes=[0-9]+\\s+0\\b")
-
-    def test_preflight_accepts_staged_snapshot_as_non_genesis_seed(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write_env(root, "NODE_DATA_DIR=./data/node\n")
-            make_chain(root / "data" / "node", payload_bytes=1024, snapshot=True)
-
-            result = run_script(PREFLIGHT, root)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_preflight_allows_empty_datadir_only_with_explicit_fresh_flag(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write_env(root, "NODE_DATA_DIR=./data/node\n")
-
-            result = run_script(PREFLIGHT, root, ["--fresh-chain-ok"])
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-
     def test_migration_quarantines_target_and_writes_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "legacy"
-            target = root / "data" / "node"
-            write_env(root, "NODE_DATA_DIR=./data/node\n")
+            target = root / "node-data"
+            write_env(root, "NODE_DATA_DIR=./node-data\n")
             make_chain(source, payload_bytes=4096)
             make_chain(target, payload_bytes=1024)
 
@@ -216,7 +127,7 @@ class ChainDataProvenanceTests(unittest.TestCase):
     def test_runtime_provenance_flags_low_height_with_better_legacy_volume(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            selected = root / "data" / "node"
+            selected = root / "node-data"
             make_chain(selected, payload_bytes=1024)
             originals = {
                 "PROJECT_ROOT": pool_ops.PROJECT_ROOT,
@@ -251,7 +162,7 @@ class ChainDataProvenanceTests(unittest.TestCase):
 
             with unittest.mock.patch.dict(
                 pool_ops.os.environ,
-                {"NODE_DATA_DIR": "./data/node", "BDAG_NODE_DATA_DIR": ""},
+                {"NODE_DATA_DIR": "./node-data", "BDAG_NODE_DATA_DIR": ""},
                 clear=False,
             ):
                 health = pool_ops.node_data_provenance_health(
@@ -267,10 +178,10 @@ class ChainDataProvenanceTests(unittest.TestCase):
     def test_runtime_provenance_degrades_on_unreadable_selected_datadir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            selected = root / "data" / "node"
+            selected = root / "node-data"
             network = selected / "mainnet"
             network.mkdir(parents=True)
-            write_env(root, "NODE_DATA_DIR=./data/node\n")
+            write_env(root, "NODE_DATA_DIR=./node-data\n")
             network.chmod(0)
             originals = {
                 "PROJECT_ROOT": pool_ops.PROJECT_ROOT,
@@ -306,7 +217,7 @@ class ChainDataProvenanceTests(unittest.TestCase):
 
                 with unittest.mock.patch.dict(
                     pool_ops.os.environ,
-                    {"NODE_DATA_DIR": "./data/node", "BDAG_NODE_DATA_DIR": ""},
+                    {"NODE_DATA_DIR": "./node-data", "BDAG_NODE_DATA_DIR": ""},
                     clear=False,
                 ):
                     health = pool_ops.node_data_provenance_health(

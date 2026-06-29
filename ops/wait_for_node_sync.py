@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import json
 import os
 import re
@@ -12,7 +13,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 OPS_DIR = Path(__file__).resolve().parent
@@ -24,6 +25,9 @@ import pool_ops  # noqa: E402
 
 STATE_FILE = Path(os.environ.get("BDAG_SYNC_WAIT_STATE_FILE") or (OPS_DIR / "runtime" / "release-sync-wait-state.json"))
 DEFAULT_INTERVAL_SECONDS = float(os.environ.get("BDAG_SYNC_WAIT_INTERVAL_SECONDS", "10"))
+SYNCED_PROBE_INTERVAL_SECONDS = float(
+    os.environ.get("BDAG_SYNC_WAIT_RPC_PROBE_INTERVAL_SECONDS", str(DEFAULT_INTERVAL_SECONDS))
+)
 LOG_CONTAINER = os.environ.get("BDAG_SYNC_WAIT_LOG_CONTAINER", "node")
 LOG_LINES = int(os.environ.get("BDAG_SYNC_WAIT_LOG_LINES", "2000"))
 EVM_RPC_URL = os.environ.get("BDAG_SYNC_WAIT_EVM_RPC_URL") or (
@@ -37,10 +41,17 @@ STARTUP_STATE_RE = re.compile(
 )
 PROCESSED_BLOCKS_RE = re.compile(r"Processed\s+([0-9,]+)\s+blocks\s+in\s+the\s+last\s+([0-9.]+)s")
 SYNC_ENDED_RE = re.compile(r"The sync of graph state has ended")
+NODE_SHUTDOWN_RE = re.compile(r"Shutdown complete")
+NODE_STARTUP_FAILURE_RE = re.compile(
+    r"(persisted upgrade state .* has no definition|prepare startup .* failed|irreparable error|dag data was damaged|panic:|fatal error:|\[FATAL\])",
+    re.IGNORECASE,
+)
+SHUTDOWN_IDLE_SECONDS = float(os.environ.get("BDAG_SYNC_WAIT_SHUTDOWN_IDLE_SECONDS", "5"))
 NODE_LOG_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\|(\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?")
 SYNC_HINT_RE = re.compile(
     r"(Syncing graph state ETA|Syncing graph state|Start to find cur block state|Imported new chain segment|The sync of graph state has ended)"
 )
+NODE_RPC_READY_RE = re.compile(r"(prepare evm environment|Started P2P networking|Start BdagChain)")
 
 
 def safe_int(value: object) -> int | None:
@@ -364,15 +375,15 @@ def wait_for_eth_sync(
         time.sleep(sleep_seconds)
 
 
-def stream_node_logs(timeout: float = 0.0) -> int:
-    cmd = ["docker", "logs", "-f", "--tail", str(LOG_LINES), LOG_CONTAINER]
+def stream_node_logs(timeout: float = 0.0, synced_probe: Callable[[], bool] | None = None) -> int:
+    cmd = ["docker", "compose", "logs", "--no-color", "-f", "--tail", str(LOG_LINES), LOG_CONTAINER]
     try:
+        print(f"following node logs from compose service '{LOG_CONTAINER}'", flush=True)
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            bufsize=0,
         )
     except OSError as exc:
         print(f"waiting for node logs failed: {exc}", flush=True)
@@ -380,7 +391,49 @@ def stream_node_logs(timeout: float = 0.0) -> int:
 
     assert proc.stdout is not None
     start = time.time()
-    seen_hint = False
+    shutdown_at: float | None = None
+    # The installer can attach after startup markers have already rolled out of
+    # the log tail. Probe EVM RPC from the beginning as a fallback, and keep the
+    # startup marker path for fast success when it is present.
+    saw_rpc_ready = synced_probe is not None
+    last_synced_probe_at = 0.0
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    pending = ""
+
+    def maybe_return_synced() -> int | None:
+        nonlocal last_synced_probe_at
+        if not saw_rpc_ready or synced_probe is None:
+            return None
+        now = time.time()
+        if now - last_synced_probe_at < max(1.0, SYNCED_PROBE_INTERVAL_SECONDS):
+            return None
+        last_synced_probe_at = now
+        if synced_probe():
+            print("EVM RPC reports synced; node sync log marker not required", flush=True)
+            return 0
+        return None
+
+    def process_line(raw_line: str) -> int | None:
+        nonlocal saw_rpc_ready, shutdown_at
+        line = raw_line.rstrip("\r")
+        if line.strip():
+            print(line, flush=True)
+        if SYNC_ENDED_RE.search(line):
+            return 0
+        if NODE_STARTUP_FAILURE_RE.search(line):
+            print("node exited before sync completed; see node error above", flush=True)
+            return 1
+        if NODE_SHUTDOWN_RE.search(line):
+            shutdown_at = time.time()
+        elif line.strip() and shutdown_at is not None:
+            shutdown_at = None
+        if NODE_RPC_READY_RE.search(line):
+            saw_rpc_ready = True
+            result = maybe_return_synced()
+            if result is not None:
+                return result
+        return None
+
     try:
         while True:
             if timeout and time.time() - start >= timeout:
@@ -388,24 +441,31 @@ def stream_node_logs(timeout: float = 0.0) -> int:
                 return 1
             ready, _, _ = select.select([proc.stdout], [], [], 1.0)
             if not ready:
+                result = maybe_return_synced()
+                if result is not None:
+                    return result
+                if shutdown_at is not None and time.time() - shutdown_at >= SHUTDOWN_IDLE_SECONDS:
+                    print("node shut down before sync completed", flush=True)
+                    return 1
                 if proc.poll() is not None:
                     break
                 continue
-            line = proc.stdout.readline()
-            if not line:
+            chunk = os.read(proc.stdout.fileno(), 8192)
+            if not chunk:
                 if proc.poll() is not None:
                     break
                 continue
-            line = line.rstrip("\n")
-            if SYNC_HINT_RE.search(line):
-                seen_hint = True
-                print(line, flush=True)
-                if SYNC_ENDED_RE.search(line):
-                    return 0
-                continue
-            if not seen_hint:
-                print("waiting for node logs", flush=True)
-                seen_hint = True
+            pending += decoder.decode(chunk)
+            while "\n" in pending:
+                line, pending = pending.split("\n", 1)
+                result = process_line(line)
+                if result is not None:
+                    return result
+        pending += decoder.decode(b"", final=True)
+        if pending:
+            result = process_line(pending)
+            if result is not None:
+                return result
         if proc.returncode not in (0, None):
             print("waiting for node logs ended unexpectedly", flush=True)
             return 1
@@ -440,7 +500,10 @@ def main(argv: list[str] | None = None) -> int:
         pass
 
     deadline = time.time() + args.timeout if args.timeout and args.timeout > 0 else None
-    result = stream_node_logs(timeout=seconds_until_deadline(deadline))
+    synced_probe = None
+    if not args.skip_eth_sync and REQUIRE_ETH_SYNC:
+        synced_probe = lambda: eth_sync_progress(args.evm_rpc_url, timeout=args.evm_rpc_timeout).get("status") == "synced"
+    result = stream_node_logs(timeout=seconds_until_deadline(deadline), synced_probe=synced_probe)
     if result != 0:
         return result
     if args.skip_eth_sync or not REQUIRE_ETH_SYNC:

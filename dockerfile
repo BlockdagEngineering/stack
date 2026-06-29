@@ -60,7 +60,7 @@ RUN set -eu; mkdir -p /out; \
 FROM ubuntu:24.04 AS node
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates tzdata curl \
+    ca-certificates tzdata curl zstd \
  && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r bdagStack && useradd -r -g bdagStack -d /var/lib/bdagStack -m bdagStack
@@ -86,9 +86,9 @@ RUN set -eu; \
         --path /tmp/snapshot-candidate.bdsnap; \
       cp -f /tmp/snapshot-candidate.bdsnap /var/lib/bdagStack/node/mainnet/snapshot.bdsnap; \
       chown -R bdagStack:bdagStack /var/lib/bdagStack/node /var/log/bdagStack; \
-      echo "Snapshot import finished and P2P snapshot archive published"; \
+      echo "Snapshot import finished"; \
     else \
-      echo "No snapshot file (marker or tiny file); node will sync from genesis or P2P and cannot serve a P2P snapshot until snapshot.bdsnap exists in its datadir"; \
+      echo "No snapshot file (marker or tiny file); node will sync normally"; \
     fi; \
     rm -f /tmp/snapshot-candidate.bdsnap
 

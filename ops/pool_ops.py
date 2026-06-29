@@ -295,7 +295,7 @@ STACK_SERVICES = split_env_list(
 )
 SERVICES = unique_names([*STACK_SERVICES, POOL_DB_CONTAINER, *NODES, *POOL_CONTAINERS])
 NODE_DATA_DIRS = split_env_list("NODE_DATA_DIRS", os.environ.get("NODE_DATA_DIR", "node"))
-CANONICAL_NODE_DATA_DIR = (PROJECT_ROOT / "data" / "node").resolve()
+CANONICAL_NODE_DATA_DIR = (PROJECT_ROOT / "node-data").resolve()
 BDAG_NETWORK = os.environ.get("BDAG_NETWORK", "mainnet")
 NODE_DATA_PROVENANCE_ENABLED = env_bool("BDAG_NODE_DATA_PROVENANCE_ENABLED", True)
 NODE_DATA_MISMATCH_PEER_GAP_BLOCKS = env_int(

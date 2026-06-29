@@ -103,6 +103,8 @@ services:
       P2P_PORT: ${P2P_PORT:-8150}
       BDAG_EPHEMERAL_DIR: /run/bdag-ephemeral
       BDAG_SNAPSHOT_URL: ${BDAG_SNAPSHOT_URL:-}
+      BDAG_SNAPSHOT_PROGRESS_INTERVAL_SECONDS: ${BDAG_SNAPSHOT_PROGRESS_INTERVAL_SECONDS:-30}
+      BDAG_SNAPSHOT_TOTAL_BYTES: ${BDAG_SNAPSHOT_TOTAL_BYTES:-}
       BDAG_NODE_ARCHIVAL: ${BDAG_NODE_ARCHIVAL:-0}
       BDAG_NODE_DEBUG_LEVEL: ${BDAG_NODE_DEBUG_LEVEL:-warn}
       BDAG_NODE_NO_FILE_LOGGING: ${BDAG_NODE_NO_FILE_LOGGING:-1}
@@ -116,7 +118,6 @@ services:
       POOL_COINBASE_ADDRESS: ${POOL_COINBASE_ADDRESS:-}
       MINING_ADDRESS: ${MINING_ADDRESS:-}
       NODE_ARGS_APPEND: ${NODE_ARGS_APPEND:-}
-      SYNC_SOURCE_NODE: ${SYNC_SOURCE_NODE:-0}
       BDAG_STORAGE_PROFILE: ${BDAG_STORAGE_PROFILE:-auto}
       BDAG_NETWORK_TOPOLOGY: ${BDAG_NETWORK_TOPOLOGY:-auto}
       BDAG_DETECTED_NETWORK_TOPOLOGY: ${BDAG_DETECTED_NETWORK_TOPOLOGY:-}
@@ -124,7 +125,6 @@ services:
       BDAG_ASIC_LAN_CIDRS: ${BDAG_ASIC_LAN_CIDRS:-}
       BDAG_P2P_ADVERTISE_IP: ${BDAG_P2P_ADVERTISE_IP:-}
       BDAG_P2P_INTERFACE: ${BDAG_P2P_INTERFACE:-}
-      BOOTSTRAP_PEER_ADDRESSES: ${BOOTSTRAP_PEER_ADDRESSES:-}
       BDAG_ENTRYPOINT_CHOWN_MODE: ${BDAG_ENTRYPOINT_CHOWN_MODE:-needed}
       BDAG_NODEWORKER_LIVENESS_TIMEOUT: ${BDAG_NODEWORKER_LIVENESS_TIMEOUT:-60m}
       BDAG_NODEWORKER_HEALTH_PROBE_INTERVAL: ${BDAG_NODEWORKER_HEALTH_PROBE_INTERVAL:-2s}
@@ -133,12 +133,10 @@ services:
       BDAG_NODE_START_GUARD_ENABLED: ${BDAG_NODE_START_GUARD_ENABLED:-1}
       BDAG_AUTOMATION_CONTROL_FILE: /var/lib/bdagStack/runtime/automation-control.json
     volumes:
-    # NODE_DATA_DIR is the only canonical node datadir mount. Installers must
-    # run scripts/preflight-chain-data.sh before starting this service so a
-    # fresh ./data/node cannot hide better preserved chain data such as a
-    # legacy stack_node-data Docker volume. Do not use BDAG_NODE_DATA_DIR.
+    # NODE_DATA_DIR is the only canonical node datadir mount. Node startup and
+    # runtime provenance checks own chain DB validation. Do not use BDAG_NODE_DATA_DIR.
 
-      - ${NODE_DATA_DIR:-./data/node}:/var/lib/bdagStack/node
+      - ${NODE_DATA_DIR:-./node-data}:/var/lib/bdagStack/node
       - nodeworker-data:/var/lib/bdagStack/nodeworker
       - ${BDAG_STACK_HOST_ROOT:-${PWD}}/ops/runtime:/var/lib/bdagStack/runtime:ro
       - ${SNAPSHOT_HOST_PATH:-./docker/no-snapshot.marker}:/snapshot/latest.bdsnap:ro
@@ -180,7 +178,7 @@ services:
       POOL_SUBMIT_RPC_URLS: ${POOL_SUBMIT_RPC_URLS:-}
       POOL_RPC_BACKENDS: ${POOL_RPC_BACKENDS:-}
       POOL_RUNTIME_ADMIN_ENABLED: ${POOL_RUNTIME_ADMIN_ENABLED:-true}
-      PG_URL:       postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@${POOL_DB_HOST:-127.0.0.1}:${POOL_DB_PORT:-55432}/${POSTGRES_DB:-bdagpool}?sslmode=disable
+      PG_URL:       ${PG_URL:-postgres://${POSTGRES_USER:-bdag_pool}:${POSTGRES_PASSWORD}@${POOL_DB_HOST:-127.0.0.1}:${POOL_DB_PORT:-55432}/${POSTGRES_DB:-bdagpool}?sslmode=disable}
       # Stratum listen (inside container) — from root .env
       POOL_BIND_ADDR:     ${POOL_BIND_ADDR:-0.0.0.0:3334}
       NODE_RPC_USER:      ${NODE_RPC_USER:?set NODE_RPC_USER in .env}
@@ -515,6 +513,8 @@ services:
       TMP: /tmp
       TEMP: /tmp
       ADDR: ${DASHBOARD_LISTEN:-0.0.0.0:8088}
+      BDAG_STACK_RELEASE_TAG: ${BDAG_STACK_RELEASE_TAG:-}
+      BDAG_RELEASE_VERSION: ${BDAG_RELEASE_VERSION:-}
       BDAG_DASHBOARD_REDIS_ENABLED: ${BDAG_DASHBOARD_REDIS_ENABLED:-1}
       BDAG_DASHBOARD_REDIS_MANAGED: ${BDAG_DASHBOARD_REDIS_MANAGED:-1}
       BDAG_DASHBOARD_SSE_MAX_CLIENTS: ${BDAG_DASHBOARD_SSE_MAX_CLIENTS:-16}
@@ -558,6 +558,7 @@ services:
       BDAG_DASHBOARD_HEALTH_STALE_SECONDS: ${BDAG_DASHBOARD_HEALTH_STALE_SECONDS:-20}
       BDAG_DASHBOARD_LOG_SOURCE: ${BDAG_DASHBOARD_LOG_SOURCE:-docker}
       BDAG_DASHBOARD_DOCKER_SOCKET: ${BDAG_DASHBOARD_DOCKER_SOCKET:-/var/run/docker.sock}
+      BDAG_NODE_STATUS_LOG_TAIL: ${BDAG_NODE_STATUS_LOG_TAIL:-5000}
       BDAG_WATCHDOG_STATE_FILE: ${BDAG_WATCHDOG_STATE_FILE:-/stack-runtime/watchdog-state.json}
       BDAG_NODE_LOG_CONTAINER: ${BDAG_NODE_LOG_CONTAINER:-node}
       BDAG_POOL_LOG_CONTAINER: ${BDAG_POOL_LOG_CONTAINER:-pool}

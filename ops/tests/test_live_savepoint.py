@@ -15,7 +15,7 @@ SCRIPT = ROOT / "scripts" / "create-live-savepoint.sh"
 def make_root(tmp: Path, docker_body: str) -> tuple[Path, Path]:
     root = tmp / "stack"
     root.mkdir()
-    (root / ".env").write_text("DOCKERFILE=dockerfile\nNODE_DATA_DIR=./data/node\n", encoding="utf-8")
+    (root / ".env").write_text("DOCKERFILE=dockerfile\nNODE_DATA_DIR=./node-data\n", encoding="utf-8")
     (root / "dockerfile").write_text("FROM scratch\n", encoding="utf-8")
     (root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     (root / "node.conf").write_text("# test\n", encoding="utf-8")

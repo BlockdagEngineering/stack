@@ -21,10 +21,6 @@ ARCH_ALIASES = {
 
 OS_ALIASES = {
     "linux": "linux",
-    "darwin": "macos",
-    "macos": "macos",
-    "windows": "windows",
-    "win32nt": "windows",
 }
 
 
@@ -37,8 +33,6 @@ def normalize_arch(arch: str) -> str:
 
 def normalize_os(os_name: str) -> str:
     key = os_name.strip().lower()
-    if key.startswith(("mingw", "msys", "cygwin")):
-        return "windows"
     if key not in OS_ALIASES:
         raise ValueError(f"unsupported operating system: {os_name}")
     return OS_ALIASES[key]
@@ -47,7 +41,7 @@ def normalize_os(os_name: str) -> str:
 def select_payload_target(os_name: str, arch: str) -> str:
     normalized_os = normalize_os(os_name)
     normalized_arch = normalize_arch(arch)
-    if normalized_os not in {"linux", "macos", "windows"}:
+    if normalized_os != "linux":
         raise ValueError(f"unsupported operating system: {os_name}")
     return f"linux-{normalized_arch}"
 
@@ -168,6 +162,7 @@ fi
 
 require_command curl
 require_command unzip
+require_command bash
 
 echo "Downloading $ASSET"
 rm -f "$ZIP_PATH" "$ZIP_PATH.part"
@@ -183,59 +178,8 @@ if [ ! -f "$ROOT/install.sh" ]; then
   exit 1
 fi
 
-chmod +x "$ROOT/install.sh" "$ROOT/installers/"*.sh 2>/dev/null || true
-exec sh "$ROOT/install.sh" "$@"
-"""
-
-
-def render_powershell(version: str, repository: str, package_name: str) -> str:
-    return f"""#Requires -Version 5.1
-$ErrorActionPreference = 'Stop'
-
-$Version = '{version}'
-$Repository = '{repository}'
-$PackageName = '{package_name}'
-$DownloadBase = "https://github.com/$Repository/releases/download/$Version"
-
-$platform = [System.Environment]::OSVersion.Platform.ToString()
-if ($platform -notlike 'Win*') {{
-    throw "This bootstrap is for Windows. On Linux or macOS, run install.sh from the same release."
-}}
-
-switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()) {{
-    'X64'   {{ $PayloadTarget = 'linux-amd64' }}
-    'Arm64' {{ $PayloadTarget = 'linux-arm64' }}
-    default {{ throw "Unsupported CPU architecture: $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" }}
-}}
-
-$Asset = "$PackageName-$Version-$PayloadTarget.zip"
-$Root = "$PackageName-$Version-$PayloadTarget"
-$Url = "$DownloadBase/$Asset"
-$ZipPath = Join-Path (Get-Location) $Asset
-
-if ($env:BDAG_INSTALL_DIR) {{
-    throw "BDAG_INSTALL_DIR is not supported by this pinned bootstrap; remove it and re-run."
-}}
-if (Test-Path $Root) {{
-    throw "Refusing to overwrite existing directory: $Root"
-}}
-
-Write-Host "Downloading $Asset"
-Remove-Item -Path $ZipPath, "$ZipPath.part" -ErrorAction SilentlyContinue
-Invoke-WebRequest -Uri $Url -OutFile "$ZipPath.part" -UseBasicParsing
-Move-Item -Path "$ZipPath.part" -Destination $ZipPath -Force
-
-Write-Host "Extracting $Asset"
-Expand-Archive -Path $ZipPath -DestinationPath (Get-Location) -Force
-Remove-Item -Path $ZipPath -ErrorAction SilentlyContinue
-
-$Installer = Join-Path $Root 'install.ps1'
-if (-not (Test-Path $Installer)) {{
-    throw "Payload did not contain expected installer: $Installer"
-}}
-
-& $Installer @args
-exit $LASTEXITCODE
+chmod +x "$ROOT/install.sh" 2>/dev/null || true
+exec bash "$ROOT/install.sh" "$@"
 """
 
 
@@ -256,11 +200,6 @@ def main() -> int:
     write_executable(
         args.out_dir / "install.sh",
         render_shell(args.version, args.repository, args.package_name),
-    )
-    (args.out_dir / "install.ps1").write_text(
-        render_powershell(args.version, args.repository, args.package_name),
-        encoding="utf-8",
-        newline="\n",
     )
     return 0
 

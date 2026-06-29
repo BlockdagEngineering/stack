@@ -13,6 +13,224 @@ import wait_for_node_sync  # noqa: E402
 
 
 class WaitForNodeSyncTests(unittest.TestCase):
+    def test_stream_node_logs_follows_compose_service_and_prints_lines(self) -> None:
+        calls: list[list[str]] = []
+        chunks = iter(
+            [
+                b"node  | booting node\nnode  | The sync of graph state has ended\n",
+            ]
+        )
+
+        class FakeStdout:
+            def fileno(self) -> int:
+                return 42
+
+        class FakeProc:
+            def __init__(self, command: list[str], **_kwargs: object) -> None:
+                calls.append(command)
+                self.stdout = FakeStdout()
+                self.returncode = None
+
+            def poll(self) -> int | None:
+                return self.returncode
+
+            def terminate(self) -> None:
+                self.returncode = 0
+
+            def wait(self, timeout: float | None = None) -> int:
+                self.returncode = 0
+                return 0
+
+            def kill(self) -> None:
+                self.returncode = -9
+
+        original_popen = wait_for_node_sync.subprocess.Popen
+        original_select = wait_for_node_sync.select.select
+        original_read = wait_for_node_sync.os.read
+        wait_for_node_sync.subprocess.Popen = FakeProc  # type: ignore[assignment]
+        wait_for_node_sync.select.select = lambda read, _write, _error, _timeout: (read, [], [])
+        wait_for_node_sync.os.read = lambda _fd, _size: next(chunks, b"")
+        try:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = wait_for_node_sync.stream_node_logs(timeout=1.0)
+        finally:
+            wait_for_node_sync.subprocess.Popen = original_popen
+            wait_for_node_sync.select.select = original_select
+            wait_for_node_sync.os.read = original_read
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            calls[0],
+            [
+                "docker",
+                "compose",
+                "logs",
+                "--no-color",
+                "-f",
+                "--tail",
+                str(wait_for_node_sync.LOG_LINES),
+                "node",
+            ],
+        )
+        self.assertIn("following node logs from compose service 'node'", output.getvalue())
+        self.assertIn("node  | booting node", output.getvalue())
+        self.assertIn("The sync of graph state has ended", output.getvalue())
+
+    def test_stream_node_logs_fails_on_node_startup_error(self) -> None:
+        chunks = iter(
+            [
+                (
+                    "node  | 2026-06-26|19:22:40.087 [INFO ] Shutdown complete\n"
+                    "node  | 2026-06-26|19:22:40.087 [ERROR] persisted upgrade state AuthorizedMining has no definition\n"
+                ).encode()
+            ]
+        )
+
+        class FakeStdout:
+            def fileno(self) -> int:
+                return 42
+
+        class FakeProc:
+            def __init__(self, _command: list[str], **_kwargs: object) -> None:
+                self.stdout = FakeStdout()
+                self.returncode = None
+
+            def poll(self) -> int | None:
+                return self.returncode
+
+            def terminate(self) -> None:
+                self.returncode = 0
+
+            def wait(self, timeout: float | None = None) -> int:
+                self.returncode = 0
+                return 0
+
+            def kill(self) -> None:
+                self.returncode = -9
+
+        original_popen = wait_for_node_sync.subprocess.Popen
+        original_select = wait_for_node_sync.select.select
+        original_read = wait_for_node_sync.os.read
+        wait_for_node_sync.subprocess.Popen = FakeProc  # type: ignore[assignment]
+        wait_for_node_sync.select.select = lambda read, _write, _error, _timeout: (read, [], [])
+        wait_for_node_sync.os.read = lambda _fd, _size: next(chunks, b"")
+        try:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = wait_for_node_sync.stream_node_logs(timeout=1.0)
+        finally:
+            wait_for_node_sync.subprocess.Popen = original_popen
+            wait_for_node_sync.select.select = original_select
+            wait_for_node_sync.os.read = original_read
+
+        self.assertEqual(result, 1)
+        self.assertIn("persisted upgrade state AuthorizedMining has no definition", output.getvalue())
+        self.assertIn("node exited before sync completed", output.getvalue())
+
+    def test_stream_node_logs_accepts_rpc_synced_after_node_ready(self) -> None:
+        chunks = iter(
+            [
+                (
+                    "node  | 2026-06-26|19:50:20.661 [INFO ] Start BdagChain... module=BDAG\n"
+                    "node  | 2026-06-26|19:50:20.686 [INFO ] prepare evm environment module=CHAIN\n"
+                ).encode()
+            ]
+        )
+        probes = 0
+
+        class FakeStdout:
+            def fileno(self) -> int:
+                return 42
+
+        class FakeProc:
+            def __init__(self, _command: list[str], **_kwargs: object) -> None:
+                self.stdout = FakeStdout()
+                self.returncode = None
+
+            def poll(self) -> int | None:
+                return self.returncode
+
+            def terminate(self) -> None:
+                self.returncode = 0
+
+            def wait(self, timeout: float | None = None) -> int:
+                self.returncode = 0
+                return 0
+
+            def kill(self) -> None:
+                self.returncode = -9
+
+        def synced_probe() -> bool:
+            nonlocal probes
+            probes += 1
+            return True
+
+        original_popen = wait_for_node_sync.subprocess.Popen
+        original_select = wait_for_node_sync.select.select
+        original_read = wait_for_node_sync.os.read
+        wait_for_node_sync.subprocess.Popen = FakeProc  # type: ignore[assignment]
+        wait_for_node_sync.select.select = lambda read, _write, _error, _timeout: (read, [], [])
+        wait_for_node_sync.os.read = lambda _fd, _size: next(chunks, b"")
+        try:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = wait_for_node_sync.stream_node_logs(timeout=1.0, synced_probe=synced_probe)
+        finally:
+            wait_for_node_sync.subprocess.Popen = original_popen
+            wait_for_node_sync.select.select = original_select
+            wait_for_node_sync.os.read = original_read
+
+        self.assertEqual(result, 0)
+        self.assertGreaterEqual(probes, 1)
+        self.assertIn("EVM RPC reports synced", output.getvalue())
+
+    def test_stream_node_logs_probes_rpc_when_startup_marker_not_in_tail(self) -> None:
+        probes = 0
+
+        class FakeStdout:
+            def fileno(self) -> int:
+                return 42
+
+        class FakeProc:
+            def __init__(self, _command: list[str], **_kwargs: object) -> None:
+                self.stdout = FakeStdout()
+                self.returncode = None
+
+            def poll(self) -> int | None:
+                return self.returncode
+
+            def terminate(self) -> None:
+                self.returncode = 0
+
+            def wait(self, timeout: float | None = None) -> int:
+                self.returncode = 0
+                return 0
+
+            def kill(self) -> None:
+                self.returncode = -9
+
+        def synced_probe() -> bool:
+            nonlocal probes
+            probes += 1
+            return True
+
+        original_popen = wait_for_node_sync.subprocess.Popen
+        original_select = wait_for_node_sync.select.select
+        wait_for_node_sync.subprocess.Popen = FakeProc  # type: ignore[assignment]
+        wait_for_node_sync.select.select = lambda _read, _write, _error, _timeout: ([], [], [])
+        try:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = wait_for_node_sync.stream_node_logs(timeout=1.0, synced_probe=synced_probe)
+        finally:
+            wait_for_node_sync.subprocess.Popen = original_popen
+            wait_for_node_sync.select.select = original_select
+
+        self.assertEqual(result, 0)
+        self.assertEqual(probes, 1)
+        self.assertIn("EVM RPC reports synced", output.getvalue())
+
     def test_log_snapshot_parses_sync_gap_from_syncing_graph_state(self) -> None:
         log = "\n".join(
             [

@@ -52,10 +52,9 @@ is the only dashboard source repo for this release line.
 - Preserve data volumes. Destructive reinstall means remove old code/images
   after verification, not deleting chain, peers, accounting, or dashboard Redis
   history.
-- `NODE_DATA_DIR=./data/node` is the only canonical node datadir. The obsolete
-  `BDAG_NODE_DATA_DIR` variable must not appear in final runtime config. Run
-  `scripts/preflight-chain-data.sh` before compose start, and migrate legacy
-  `stack_node-data` into `./data/node` with
+- `NODE_DATA_DIR=./node-data` is the only canonical node datadir. The obsolete
+  `BDAG_NODE_DATA_DIR` variable must not appear in final runtime config. Migrate
+  legacy `stack_node-data` into `./node-data` with
   `scripts/migrate-node-data-volume-to-host.sh` when it is the best preserved
   source.
 
@@ -88,16 +87,14 @@ Run this before stopping mining:
    the upgrade.
 5. Confirm `.env` has `BDAG_NETWORK=mainnet`, production RPC credentials, and
    production DB defaults.
-6. Confirm `.env` has `NODE_DATA_DIR=./data/node` and no
+6. Confirm `.env` has `NODE_DATA_DIR=./node-data` and no
    `BDAG_NODE_DATA_DIR`.
-7. Run `scripts/preflight-chain-data.sh`; resolve any mismatch before the mining
-   freeze.
-8. Confirm `node.conf` has matching `rpcuser` / `rpcpass`, `modules=Blockdag`
+7. Confirm `node.conf` has matching `rpcuser` / `rpcpass`, `modules=Blockdag`
    and `modules=miner` when ASIC mining is expected, and no bypass flags such
    as `--allowminingwhennearlysynced`.
-9. Record `docker ps`, `docker compose ps`, `docker images` for stack images,
+8. Record `docker ps`, `docker compose ps`, `docker images` for stack images,
    and `docker compose config --quiet`.
-10. Check disk/RAM/load with `df -h`, `free -h`, `docker system df`, and
+9. Check disk/RAM/load with `df -h`, `free -h`, `docker system df`, and
    `docker stats --no-stream`.
 11. Record MAC/IP mapping for managed ASICs in the private site checkpoint.
 12. Check live gates before mutation:

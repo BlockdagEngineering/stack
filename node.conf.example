@@ -52,8 +52,8 @@ cache=2048
 cache.database=70
 
 # RPC auth. Must match NODE_RPC_USER / NODE_RPC_PASS in .env.
-rpcuser=test
-rpcpass=test
+rpcuser=bdag_mainnet_rpc
+rpcpass=change-me-mainnet-rpc-password
 
 # Storage paths
 datadir=/var/lib/bdagStack/node

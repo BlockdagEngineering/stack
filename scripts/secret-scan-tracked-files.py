@@ -24,9 +24,7 @@ ALLOWLIST = {
     "scripts/secret-scan-tracked-files.py",
 }
 
-SIGNED_URL_LINE_ALLOWLIST = {
-    ".env.example": (b"BDAG_CHAIN_DB_ARCHIVE_URL=",),
-}
+SIGNED_URL_LINE_ALLOWLIST = {}
 
 
 def remove_allowlisted_lines(rel: str, data: bytes) -> bytes:
