@@ -38,9 +38,8 @@ class RuntimeComposeMigrationTests(unittest.TestCase):
         result = compose_migrations.ensure_pool_submit_hardening_flags(compose)
 
         self.assertTrue(result.changed)
-        self.assertEqual(12, result.inserted_count)
+        self.assertEqual(10, result.inserted_count)
         self.assertIn(
-            "      POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}\n"
             "      POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}\n"
             "      POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD: ${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}\n"
             "      POOL_EXPIRED_JOB_CLIENT_RECONNECT_THRESHOLD: ${POOL_EXPIRED_JOB_CLIENT_RECONNECT_THRESHOLD:-3}\n"
@@ -53,7 +52,6 @@ class RuntimeComposeMigrationTests(unittest.TestCase):
             "  asic-pool-hector:\n"
             "    environment:\n"
             "      NODE_RPC_URLS: http://node:38131\n"
-            "      POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}\n"
             "      POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}\n"
             "      POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD: ${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}\n"
             "      POOL_EXPIRED_JOB_CLIENT_RECONNECT_THRESHOLD: ${POOL_EXPIRED_JOB_CLIENT_RECONNECT_THRESHOLD:-3}\n"
@@ -62,19 +60,11 @@ class RuntimeComposeMigrationTests(unittest.TestCase):
             "      NODE_RPC_USER:",
             result.text,
         )
-        self.assertNotIn(
-            "node:\n"
-            "    environment:\n"
-            "      POOL_SUBMIT_STALE_BLOCK_CANDIDATES",
-            result.text,
-        )
-
     def test_existing_submit_hardening_flags_are_noop(self) -> None:
         compose = """services:
   asic-pool:
     environment:
       NODE_RPC_URLS: http://node:38131
-      POOL_SUBMIT_STALE_BLOCK_CANDIDATES: ${POOL_SUBMIT_STALE_BLOCK_CANDIDATES:-false}
       POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED: ${POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED:-true}
       POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD: ${POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD:-1}
       POOL_EXPIRED_JOB_CLIENT_RECONNECT_THRESHOLD: ${POOL_EXPIRED_JOB_CLIENT_RECONNECT_THRESHOLD:-3}

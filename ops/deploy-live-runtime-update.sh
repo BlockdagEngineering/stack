@@ -291,7 +291,6 @@ migrate_runtime_compose() {
   local key
   local missing=0
   for key in \
-    POOL_SUBMIT_STALE_BLOCK_CANDIDATES \
     POOL_SUBMIT_BLOCK_HEADER_V2_ENABLED \
     POOL_STALE_RACE_CLIENT_RESEND_THRESHOLD
   do
