@@ -29,7 +29,7 @@ jobs:
           - target: linux-amd64
             goarch: amd64
             cc: gcc
-            docker_platform: linux/amd64
+            dock er_platform: linux/amd64
           - target: linux-arm64
             goarch: arm64
             cc: aarch64-linux-gnu-gcc
