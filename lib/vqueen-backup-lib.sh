@@ -203,12 +203,12 @@ require_resolved_under_root() {
   printf '%s\n' "$resolved"
 }
 
-resolve_latest_lkg() {
-  local link_path="${BACKUP_ROOT}/last-known-good/current"
+resolve_latest_known_good() {
+  local found
 
-  [ -L "$link_path" ] || die "latest LKG link missing"
-  refuse_symlink_path "$(dirname -- "$link_path")"
-  require_resolved_under_root "$link_path" "$BACKUP_ROOT/runs"
+  found="$(find "$BACKUP_ROOT/runs" -mindepth 6 -maxdepth 6 -type f -path '*/metadata/known-good.txt' -printf '%T@ %h\n' 2>/dev/null | sort -rn | awk 'NR == 1 { sub(/\/metadata$/, "", $2); print $2 }')"
+  [ -n "$found" ] || die "no known-good backup found"
+  require_completed_backup_run "$found"
 }
 
 validate_backup_id_literal() {
@@ -245,7 +245,7 @@ resolve_completed_backup_run() {
   [ -n "$value" ] || die "backup selector cannot be empty"
   case "$value" in
     latest)
-      require_completed_backup_run "$(resolve_latest_lkg)"
+      require_completed_backup_run "$(resolve_latest_known_good)"
       ;;
     /*)
       require_completed_backup_run "$value"
@@ -289,7 +289,7 @@ require_uint_range() {
 
 validate_resource_config() {
   require_uint "${MIN_FREE_BYTES:-}" "MIN_FREE_BYTES"
-  require_uint "${KEEP_LAST_KNOWN_GOOD:-}" "KEEP_LAST_KNOWN_GOOD"
+  require_uint "${KEEP_KNOWN_GOOD:-}" "KEEP_KNOWN_GOOD"
   require_uint "${CANDIDATE_RETENTION_DAYS:-}" "CANDIDATE_RETENTION_DAYS"
   require_uint "${FAILED_RETENTION_DAYS:-}" "FAILED_RETENTION_DAYS"
   require_uint_range "${RSYNC_NICE:-}" "RSYNC_NICE" 0 19

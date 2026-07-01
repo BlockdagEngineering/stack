@@ -51,7 +51,7 @@ RSYNC_BWLIMIT_KB=""
 LOG_LEVEL="INFO"
 LOG_TO_SYSLOG="0"
 LOG_SYSLOG_TAG="vqueen-nearhot-backup"
-KEEP_LAST_KNOWN_GOOD="3"
+KEEP_KNOWN_GOOD="3"
 CANDIDATE_RETENTION_DAYS="14"
 FAILED_RETENTION_DAYS="14"
 RESTORE_COMPOSE_PROJECT_PREFIX="vqueen-v657-restore"
@@ -71,8 +71,8 @@ VQUEEN_BACKUP_CONF="$conf" "$ROOT/bin/vqueen-nearhot-cycle.sh" --show-plan \
     cat "$TMPDIR/show-plan.err" >&2
     fail "show-plan failed"
   }
-grep -q 'PIPELINE=preflight,container-backup,manifest-verify,restore-proof,verify-only,lkg-promotion-if-full-evidence' "$TMPDIR/show-plan.out" || \
-  fail "show-plan missing guarded promotion pipeline"
+grep -q 'PIPELINE=preflight,container-backup,manifest-verify,restore-proof,verify-only,mark-known-good' "$TMPDIR/show-plan.out" || \
+  fail "show-plan missing known-good pipeline"
 grep -q "OPERATION_LOCK=$ROOT/state/vqueen-v657-nearhot-operation.lock" "$TMPDIR/show-plan.out" || \
   fail "show-plan missing shared operation lock"
 

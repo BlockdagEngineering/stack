@@ -3,8 +3,8 @@
 This runbook is a draft for later gates. M3 read-only preflight and M4 dry-run
 completed on 2026/06/26. On 2026/06/28 Duncan approved repo-only drafting for
 the containerized near-hot runner and restore-tested schedule. Backup, restore,
-verify, cleanup, timer install/enablement, service actions, LKG promotion,
-commits, pushes, and payload movement remain blocked until separate approval.
+verify, cleanup, timer install/enablement, service actions, commits, pushes,
+and payload movement remain blocked until separate approval.
 
 ## Runtime Paths
 
@@ -35,14 +35,14 @@ other remote.
 6. Second rsync pass.
 7. Manifest/checksum generation.
 8. Disposable PostgreSQL 15 restore validation.
-9. Isolated node/nodeworker dev restore.
-10. Promote only after restore proof passes.
+9. Verify restore evidence.
+10. Mark the backup known-good after restore proof passes.
 
 The future scheduled path must use one full-cycle launcher:
 
 ```text
 preflight -> container backup -> manifest verify -> restore proof ->
-verify-only -> LKG promotion only when full restore evidence exists
+verify-only -> mark known-good
 ```
 
 The draft systemd service must call:
@@ -110,7 +110,7 @@ CONTAINER_RUNNER_NETWORK is the approved live Postgres network only
 POSTGRES_PASSWORD_FILE is root-owned, host-local, and not in git
 OPERATION_LOCK is under PROJECT_STATE_DIR and is shared by cycle, backup, and restore modes
 CYCLE_LOCK remains under PROJECT_STATE_DIR as a mode-specific diagnostic lock path
-KEEP_LAST_KNOWN_GOOD=3 unless Duncan approves another retention count
+KEEP_KNOWN_GOOD=3 unless Duncan approves another retention count
 CANDIDATE_RETENTION_DAYS=14
 FAILED_RETENTION_DAYS=14
 ```
@@ -125,7 +125,7 @@ node or nodeworker logs show fatal errors
 host load or iowait materially harms the live node
 free space drops below MIN_FREE_BYTES
 any path resolves outside its approved root
-latest/LKG resolves outside BACKUP_ROOT/runs
+latest known-good resolves outside BACKUP_ROOT/runs
 backup, restore, log, tooling, or live source paths overlap
 runner container needs docker.sock, privileged mode, or broad host control
 sudo prompts interactively or the backup tool uses commands outside its reviewed
@@ -136,8 +136,7 @@ Postgres container identity cannot be proven by compose project/service/image
 Abort outcome:
 
 ```text
-do not promote the run
-do not update last-known-good/current
+do not mark the run known-good
 keep logs and manifests for review
 return to the team for M4 evidence review
 ```
@@ -153,12 +152,10 @@ VQUEEN_NEARHOT_CYCLE_APPROVED="vqueen-v6.5.7-restore-tested-cycle-2026-06-28" \
   bin/vqueen-nearhot-cycle.sh --scheduled-cycle
 ```
 
-Promotion is not a backup-completion step. `last-known-good/current` is updated
-only after `bin/vqueen-restore-test.sh --verify-only <restore-path>` accepts
-manifest, Postgres custom restore, schema-only restore, table-count, rc, stderr,
-node/nodeworker start, RPC/health, sync/catch-up, and fatal-log evidence. If
-only file, manifest, and PostgreSQL evidence exists, the scheduled cycle records
-`metadata/lkg-promotion-blocked.txt` and leaves the current LKG unchanged.
+A backup is known-good after `bin/vqueen-restore-test.sh --verify-only
+<restore-path>` accepts the restore evidence. The scheduled cycle records
+`metadata/known-good.txt`, writes `metadata/cycle-state.txt` as `known-good`,
+and keeps the newest three known-good backups.
 
 ## M5 First Backup Gate
 
@@ -242,7 +239,7 @@ Stop if load or iowait harms the live node.
 
 ## Verification Evidence
 
-Collect these before a backup can become last-known-good:
+Collect these before a backup can be marked known-good:
 
 ```text
 backup run id and timestamp

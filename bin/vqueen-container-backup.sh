@@ -14,7 +14,7 @@ Usage:
   vqueen-container-backup.sh --candidate <run-id>
 
 Runs inside the locked-down near-hot backup container. The host cycle
-orchestrator owns Docker, restore proof, LKG promotion, and retention.
+orchestrator owns Docker, restore proof, known-good marking, and retention.
 USAGE
 }
 

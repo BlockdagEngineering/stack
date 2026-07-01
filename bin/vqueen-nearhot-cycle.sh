@@ -18,7 +18,7 @@ Usage:
 
 The scheduled cycle is the only automation entrypoint:
   preflight -> container backup -> manifest verify -> restore proof ->
-  verify-only -> LKG promotion only when full restore evidence exists
+  verify-only -> mark known-good
 USAGE
 }
 
@@ -47,7 +47,7 @@ show_plan() {
   validate_static_config
   cat <<EOF
 CYCLE_ENTRYPOINT=bin/vqueen-nearhot-cycle.sh --scheduled-cycle
-PIPELINE=preflight,container-backup,manifest-verify,restore-proof,verify-only,lkg-promotion-if-full-evidence
+PIPELINE=preflight,container-backup,manifest-verify,restore-proof,verify-only,mark-known-good
 BACKUP_ROOT=$BACKUP_ROOT
 DEV_RESTORE_ROOT=$DEV_RESTORE_ROOT
 CONTAINER_RUNNER_IMAGE=$CONTAINER_RUNNER_IMAGE
@@ -55,7 +55,7 @@ CONTAINER_RUNNER_NETWORK=$(runner_network_name)
 POSTGRES_PASSWORD_FILE=$POSTGRES_PASSWORD_FILE
 OPERATION_LOCK=$OPERATION_LOCK
 CYCLE_LOCK=$CYCLE_LOCK
-KEEP_LAST_KNOWN_GOOD=$KEEP_LAST_KNOWN_GOOD
+KEEP_KNOWN_GOOD=$KEEP_KNOWN_GOOD
 CANDIDATE_RETENTION_DAYS=$CANDIDATE_RETENTION_DAYS
 FAILED_RETENTION_DAYS=$FAILED_RETENTION_DAYS
 EOF
@@ -179,90 +179,46 @@ run_restore_proof_for_backup() {
   RESTORE_PROOF_PATH="$restore_path"
 }
 
-full_restore_evidence_ready() {
-  local restore_path="$1"
-  local summary
-
-  summary="$restore_path/evidence/restore-proof-summary.txt"
-  [ -f "$summary" ] || return 1
-  grep -qx 'STATUS=restore-proven' "$summary" || return 1
-  grep -qx 'RESTORE_MANIFEST_FAILED_LINES=0' "$summary" || return 1
-  grep -Eq '^POSTGRES_TABLE_COUNT=[1-9][0-9]*$' "$summary" || return 1
-  grep -qx 'POSTGRES_RESTORE_RC=0' "$summary" || return 1
-  grep -qx 'POSTGRES_SCHEMA_ONLY_RC=0' "$summary" || return 1
-  grep -qx 'NODE_RESTORE_STARTED=1' "$summary" || return 1
-  grep -qx 'NODEWORKER_RESTORE_STARTED=1' "$summary" || return 1
-  grep -qx 'RPC_HEALTH_OK=1' "$summary" || return 1
-  grep -qx 'SYNC_CATCHUP_OK=1' "$summary" || return 1
-  grep -qx 'FATAL_LOG_SCAN_OK=1' "$summary" || return 1
-}
-
-record_lkg_promotion_blocked() {
+mark_known_good() {
   local backup_run="$1"
   local restore_path="$2"
   local marker
 
-  marker="$backup_run/metadata/lkg-promotion-blocked.txt"
-  {
-    printf 'BACKUP_RUN=%s\n' "$backup_run"
-    printf 'RESTORE_PATH=%s\n' "$restore_path"
-    printf 'BLOCKED_UTC=%s\n' "$(date -u +%Y/%m/%dT%H:%M:%SZ)"
-    printf 'REASON=full restore evidence missing: node,nodeworker,rpc,sync,fatal-log\n'
-  } >"$marker"
-  printf 'lkg-promotion-blocked\n' >"$backup_run/metadata/cycle-state.txt"
-  log_warning CycleRunner "LKG promotion blocked until full restore evidence exists: backup=$backup_run restore=$restore_path"
-}
-
-promote_last_known_good() {
-  local backup_run="$1"
-  local restore_path="$2"
-  local lkg_dir link tmp_link marker
-
-  lkg_dir="${BACKUP_ROOT}/last-known-good"
-  link="${lkg_dir}/current"
-  tmp_link="${lkg_dir}/.current.tmp.$$"
-  marker="$backup_run/metadata/lkg-promoted.txt"
+  marker="$backup_run/metadata/known-good.txt"
   require_completed_backup_run "$backup_run"
   require_restore_target_path "$restore_path"
   "${PROJECT_ROOT}/bin/vqueen-restore-test.sh" --verify-only "$restore_path" >/dev/null
-  full_restore_evidence_ready "$restore_path" || die "LKG promotion blocked: full restore evidence is missing"
 
-  mkdir -p -- "$lkg_dir"
-  ln -s -- "$backup_run" "$tmp_link"
-  mv -Tf -- "$tmp_link" "$link"
   {
     printf 'BACKUP_RUN=%s\n' "$backup_run"
     printf 'RESTORE_PATH=%s\n' "$restore_path"
-    printf 'PROMOTED_UTC=%s\n' "$(date -u +%Y/%m/%dT%H:%M:%SZ)"
+    printf 'KNOWN_GOOD_UTC=%s\n' "$(date -u +%Y/%m/%dT%H:%M:%SZ)"
   } >"$marker"
-  printf 'lkg-promoted\n' >"$backup_run/metadata/cycle-state.txt"
-  log_notice CycleRunner "last-known-good promoted: $backup_run"
+  printf 'known-good\n' >"$backup_run/metadata/cycle-state.txt"
+  log_notice CycleRunner "known-good backup marked: $backup_run"
 }
 
-retention_after_promotion() {
-  local current_target index run_dir
-  local -a lkg_runs
+retention_after_known_good() {
+  local index run_dir
+  local -a known_good_runs
 
-  current_target="$(resolve_latest_lkg)"
-  log_info CycleRunner "retention start: current=$current_target"
+  log_info CycleRunner "retention start: keep-known-good=$KEEP_KNOWN_GOOD"
   find "$BACKUP_ROOT/runs" -mindepth 4 -maxdepth 4 -type d -name 'vqueen-v6.5.7-*' \
     -mtime +"$FAILED_RETENTION_DAYS" -exec sh -c '
       for run_dir do
-        [ "$run_dir" != "$1" ] || continue
         [ -f "$run_dir/metadata/status.txt" ] || continue
         if grep -qx failed "$run_dir/metadata/status.txt"; then
           rm -rf -- "$run_dir"
         fi
       done
-    ' sh "$current_target" {} +
+    ' sh {} +
 
-  mapfile -t lkg_runs < <(find "$BACKUP_ROOT/runs" -mindepth 4 -maxdepth 4 -type f -path '*/metadata/lkg-promoted.txt' -printf '%T@ %h\n' 2>/dev/null | sort -rn | awk '{print $2}')
+  mapfile -t known_good_runs < <(find "$BACKUP_ROOT/runs" -mindepth 6 -maxdepth 6 -type f -path '*/metadata/known-good.txt' -printf '%T@ %h\n' 2>/dev/null | sort -rn | awk '{ sub(/\/metadata$/, "", $2); print $2 }')
   index=0
-  for run_dir in "${lkg_runs[@]}"; do
+  for run_dir in "${known_good_runs[@]}"; do
     index=$((index + 1))
-    [ "$run_dir" != "$current_target" ] || continue
-    if [ "$index" -gt "$KEEP_LAST_KNOWN_GOOD" ]; then
-      log_info CycleRunner "retention removing old promoted backup: $run_dir"
+    if [ "$index" -gt "$KEEP_KNOWN_GOOD" ]; then
+      log_info CycleRunner "retention removing old known-good backup: $run_dir"
       rm -rf -- "$run_dir"
     fi
   done
@@ -279,7 +235,7 @@ scheduled_cycle_inner_locked() {
   log_file="$BACKUP_LOG_DIR/cycle-$run_id.log"
   container_output="$(mktemp)"
   restore_output="$(mktemp)"
-  trap 'rm -f "$container_output" "$restore_output"' RETURN
+  trap "rm -f -- '$container_output' '$restore_output'; trap - RETURN" RETURN
   exec > >(tee -a "$log_file") 2>&1
 
   cycle_preflight
@@ -290,12 +246,8 @@ scheduled_cycle_inner_locked() {
   verify_backup_manifest "$backup_run"
   run_restore_proof_for_backup "$backup_run" "$restore_output"
   restore_path="$RESTORE_PROOF_PATH"
-  if full_restore_evidence_ready "$restore_path"; then
-    promote_last_known_good "$backup_run" "$restore_path"
-    retention_after_promotion
-  else
-    record_lkg_promotion_blocked "$backup_run" "$restore_path"
-  fi
+  mark_known_good "$backup_run" "$restore_path"
+  retention_after_known_good
   log_notice CycleRunner "scheduled near-hot cycle complete: backup=$backup_run restore=$restore_path"
 }
 

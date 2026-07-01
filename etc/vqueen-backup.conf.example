@@ -61,7 +61,7 @@ RSYNC_BWLIMIT_KB=""
 # The ignored host-local etc/vqueen-backup.conf used for M3 had
 # RSYNC_BWLIMIT_KB="65536". This is the only intended active-config
 # divergence before requesting M4.
-KEEP_LAST_KNOWN_GOOD="3"
+KEEP_KNOWN_GOOD="3"
 CANDIDATE_RETENTION_DAYS="14"
 FAILED_RETENTION_DAYS="14"
 

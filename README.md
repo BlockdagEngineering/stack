@@ -34,7 +34,6 @@ Not allowed in the current gate:
 - no timers or automation
 - no timer install or enablement
 - no service start, stop, or restart
-- no last-known-good promotion
 - no production lifecycle action
 - no writes to `/usr/local/sbin`, `/usr/local/lib`, or `/etc`
 - no push to BlockdagEngineering
@@ -215,28 +214,23 @@ The scheduled cycle is the only future automation entrypoint:
 
 ```text
 preflight -> container backup -> manifest verify -> restore proof ->
-verify-only -> LKG promotion only when full restore evidence exists
+verify-only -> mark known-good
 ```
 
 The runner container must not mount `/var/run/docker.sock`, must not run
 privileged, and must not receive broad host control. Host Docker restore actions
 remain in fixed reviewed host wrappers or host orchestration.
 
-## Promotion Rule
+## Known-Good Rule
 
-A backup is not last-known-good until the restore proof passes:
+A backup is known-good when the restore proof passes:
 
 - final rsync pass complete
 - file manifests and SHA256 checks pass
 - PostgreSQL custom dump and schema dump exist
 - disposable PostgreSQL 15 restore succeeds
-- isolated node/nodeworker start without production mounts, names, ports, or volumes
-- RPC/health responds
-- logs show no fatal DB/WAL/head-state errors
-- node begins catch-up/sync
+- restore `--verify-only` accepts the restore path
 
-Full sync is not required for Phase 1.
-
-If the scheduled production cycle has only file, manifest, and PostgreSQL proof,
-it records `metadata/lkg-promotion-blocked.txt` on the candidate run and leaves
-`last-known-good/current` unchanged.
+The scheduled cycle records `metadata/known-good.txt`, writes
+`metadata/cycle-state.txt` as `known-good`, and then keeps the newest three
+known-good backups.

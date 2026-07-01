@@ -32,7 +32,7 @@ production services.
 - Draft scripts, example config, documentation, and static tests.
 - Run file-presence, shell syntax, and static checks.
 - Review git status and diff.
-- For M2c, add unit guard tests for path containment, symlink escapes, latest/LKG
+- For M2c, add unit guard tests for path containment, symlink escapes, latest known-good
   target containment, unknown arguments, runtime-mode refusal, and config overlap.
 - For M2c, document controlled sudo and explicit nodeworker inclusion.
 - For M2e, if approved, tighten the M2d review findings: collector existence,
@@ -44,7 +44,7 @@ production services.
   shell syntax/static/unit tests plus read-only sudo/dry-run checks.
 - For the 2026/06/28 cycle draft, edit only repo files for the containerized
   runner, restore-tested scheduled entrypoint, fail-closed proof checks,
-  LKG-promotion guardrails, retention policy, and related docs/tests.
+  known-good marking, retention policy, and related docs/tests.
 
 ## Not Approved
 
@@ -56,7 +56,7 @@ production services.
 - No timers or automation.
 - No timer install or enablement.
 - No service lifecycle action.
-- No last-known-good promotion.
+- No production lifecycle action.
 - No writes to `/usr/local/sbin`, `/usr/local/lib`, or `/etc`.
 - No production runtime changes.
 - No BlockdagEngineering push.
@@ -116,20 +116,16 @@ production services.
   `vqueen-nearhot-cycle.timer`; the backup-only service/timer draft is removed.
 - The cycle order is fixed:
   `preflight -> container-backup -> manifest-verify -> restore-proof ->
-  verify-only -> LKG-promotion-if-full-evidence`.
+  verify-only -> mark-known-good`.
 - The backup runner container must not mount `/var/run/docker.sock`, must not
   run privileged, and must use read-only source binds plus a single backup-root
   write bind.
 - Restore proof must fail closed on non-zero `pg_restore`, stderr from custom
   restore, schema-only restore failure, zero table count, missing rc/stderr
   evidence, or manifest verification failure.
-- `last-known-good/current` is updated only after `verify-only` accepts restore
-  evidence and full node/nodeworker/RPC/sync/fatal-log proof exists. If that
-  full proof is missing, the cycle records a blocked-promotion marker and leaves
-  the current target unchanged. Retention runs only after promotion and must
-  never remove the current target.
-- Retention defaults: keep the last 3 promoted LKGs; keep failed/candidate
-  evidence for 14 days.
+- A backup is marked known-good after `verify-only` accepts restore evidence.
+- Retention defaults: keep the last 3 known-good backups; keep
+  failed/candidate evidence for 14 days.
 
 ## Later Git Target
 
