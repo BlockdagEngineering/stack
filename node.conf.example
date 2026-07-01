@@ -20,12 +20,12 @@ evm.ws.port=18546
 # Bootstrap peers (mainnet seed nodes). Add one addpeer=... line per complete
 # BDAG P2P multiaddr. Keep only public peers that are currently reachable.
 #RPC node:
-/ip4/63.182.36.180/tcp/8150/p2p/16Uiu2HAmP8HsTF9ks8JjFamzT9JBZb3ymSiCJ8rkzXBZqYj4yKtP
+addpeer=/ip4/63.182.36.180/tcp/8150/p2p/16Uiu2HAmP8HsTF9ks8JjFamzT9JBZb3ymSiCJ8rkzXBZqYj4yKtP
 #Public pool:
-/ip4/16.28.133.168/tcp/8150/p2p/16Uiu2HAmMzJVJC8jnU8EkFgCDovALykFA7mNJS688niD46Bk8Vww
+addpeer=/ip4/16.28.133.168/tcp/8150/p2p/16Uiu2HAmMzJVJC8jnU8EkFgCDovALykFA7mNJS688niD46Bk8Vww
 
-/ip4/154.70.222.46/tcp/8150/p2p/16Uiu2HAmFnT4RgMchwebsSE6qz45vFjD3F1wzni4M3KcgEzNxncD
-/ip4/172.31.42.61/tcp/8150/p2p/16Uiu2HAmGxNiCJCkyuwLTKmNq1qX2yqoRmLtoDMgHwwiVZzLUyiq
+addpeer=/ip4/154.70.222.46/tcp/8150/p2p/16Uiu2HAmFnT4RgMchwebsSE6qz45vFjD3F1wzni4M3KcgEzNxncD
+addpeer=/ip4/172.31.42.61/tcp/8150/p2p/16Uiu2HAmGxNiCJCkyuwLTKmNq1qX2yqoRmLtoDMgHwwiVZzLUyiq
 
 # Peer limit
 maxpeers=350
