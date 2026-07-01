@@ -19,33 +19,14 @@ evm.ws.port=18546
 
 # Bootstrap peers (mainnet seed nodes). Add one addpeer=... line per complete
 # BDAG P2P multiaddr. Keep only public peers that are currently reachable.
-addpeer=/ip4/3.126.64.13/tcp/8152/p2p/16Uiu2HAmEFxRaBbbf3sRi43CCvMk5Y6zPkuGY9s4uRK2FKJVJkqo
-addpeer=/ip4/63.182.36.180/tcp/8150/p2p/16Uiu2HAmP8HsTF9ks8JjFamzT9JBZb3ymSiCJ8rkzXBZqYj4yKtP
-addpeer=/ip4/16.28.133.168/tcp/8150/p2p/16Uiu2HAm9UcTayJDSajjJYsWwVaN2qqGeczcs9kXse3dMdvGDRjz
-addpeer=/ip4/169.0.254.182/tcp/8150/p2p/16Uiu2HAmGsEDGnDGhvziZR1UQSELTDihXRKYMB6SrbEQ6NsWBVqD
-addpeer=/ip4/102.39.221.179/tcp/8152/p2p/16Uiu2HAm8ebvL9NTNwgLYwm8LEEXSY7QKQhQ7YVcAV7PR6ymsrTm
-addpeer=/ip4/80.141.136.179/tcp/8151/p2p/16Uiu2HAmMZNeDNLgfLXFKzEiWZHFjdDejLSCzhunJMYWoYhdT3gv
-addpeer=/ip4/102.39.221.179/tcp/8150/p2p/16Uiu2HAmNQznwWPjuAUhXnTkP6EuWsEHa4eRnb1aTm3WcZQKsrFn
-addpeer=/ip4/47.156.6.142/tcp/8151/p2p/16Uiu2HAmJz7PTCxSWTnuJhvbf4oXEffFZ1KAE3yNBX9SY72jS1ta
-addpeer=/ip4/218.32.84.82/tcp/8150/p2p/16Uiu2HAmNjFKhP3945Az3afdBSUSRwhgDw1uGRBDsqSvSduStbWJ
-addpeer=/ip4/5.78.193.245/tcp/8150/p2p/16Uiu2HAkwosZsQdtgAQHoJ57MFKpWnyfGJtSpt2R2aJMgR6ywGME
-addpeer=/ip4/13.57.132.47/tcp/8150/p2p/16Uiu2HAmDynYpWjWmgVGf9qVWvDdLnJ3ybVgDmFexizR4zMereus
-addpeer=/ip4/3.218.54.171/tcp/8150/p2p/16Uiu2HAmUZBdpuutiLPuru1UQnX8hf6GyvG7yU2B832sYjvNhmQG
-addpeer=/ip4/102.182.77.21/tcp/8150/p2p/16Uiu2HAm2uPLqM1dfd3ddbzg3FDAmvuvyo3vbBSXpVHurqAsUxWQ
-addpeer=/ip4/121.91.173.235/tcp/8150/p2p/16Uiu2HAkvH1U2kQqQFh6fSVQPGgABaKNHRMT7DceGe6kRtYr6ndY
-addpeer=/ip4/102.182.77.16/tcp/8150/p2p/16Uiu2HAm99a8KYuUkL5LGEQbpRNhz5nzScrwYpEh47BfSaVMCg5G
-addpeer=/ip4/52.8.54.60/tcp/8150/p2p/16Uiu2HAkzUWr4YUM7mAhLdCVZgFoV9He6aQzKTyWWrJ7SWQKRTN7
-addpeer=/ip4/204.236.141.121/tcp/8150/p2p/16Uiu2HAm5qppgbBCjVpTN5nKtjEU5KsSbs2gz4S9uPiSWVSGfNh1
-addpeer=/ip4/54.151.18.92/tcp/8150/p2p/16Uiu2HAmVm91o1JXS2C7P6uTVuVX5empgnRtzuK4UaC8fHmePbKP
-addpeer=/ip4/18.142.70.83/tcp/8150/p2p/16Uiu2HAmBSdn2taoteYwLZJZkDm2iCwL6eQ4UaXYNBBtAwaBU18X
-addpeer=/ip4/54.214.229.250/tcp/8154/p2p/16Uiu2HAm1vZgJXKhUfWWC7nz9wzNpUDiYAid7zCZSKb1hhU7QBNB
+#RPC node:
+/ip4/63.182.36.180/tcp/8150/p2p/16Uiu2HAmP8HsTF9ks8JjFamzT9JBZb3ymSiCJ8rkzXBZqYj4yKtP
+#Public pool:
+/ip4/16.28.133.168/tcp/8150/p2p/16Uiu2HAmMzJVJC8jnU8EkFgCDovALykFA7mNJS688niD46Bk8Vww
 
-addpeer=/ip4/129.121.92.232/tcp/8152/p2p/16Uiu2HAmQSJzJjXUxtyX5rc2bQBAsTvhcjp4GQBPmwqEYu9D8zA5
-addpeer=/ip4/207.244.230.191/tcp/8151/p2p/16Uiu2HAmJKVhyu7yuXTDTkSJGyN4UwKgjqyY9HC6TGTCKjmYKiiT
-addpeer=/ip4/129.121.92.232/tcp/8153/p2p/16Uiu2HAmDtg2PQyuLBJFda4QsSBMcCN5aSc19c1ECWRhQ4KZANRT
-addpeer=/ip4/52.76.239.180/tcp/8150/p2p/16Uiu2HAmMq9zCdQzbUiqzg4dN49cvFck6c8HhjmbBpSChT4ND4Sq
-addpeer=/ip4/79.198.145.73/tcp/8150/p2p/16Uiu2HAmL8X4oQ4nMZfC7R34UfEV1mwCxfALsFg7KmEVH1MyMiZi
-addpeer=/ip4/3.120.205.55/tcp/8150/p2p/16Uiu2HAm8tJ2Loxi1hc7Apg4v5i8mqpNxWyRknn1tZUcx8AvbNYj
+/ip4/154.70.222.46/tcp/8150/p2p/16Uiu2HAmFnT4RgMchwebsSE6qz45vFjD3F1wzni4M3KcgEzNxncD
+/ip4/172.31.42.61/tcp/8150/p2p/16Uiu2HAmGxNiCJCkyuwLTKmNq1qX2yqoRmLtoDMgHwwiVZzLUyiq
+
 # Peer limit
 maxpeers=350
 cache=2048
