@@ -27,6 +27,11 @@ need_dir() {
   [[ -d "$dir" ]] || { echo "missing required directory: $dir" >&2; exit 1; }
 }
 
+git_head_or_unknown() {
+  local dir="$1"
+  git -C "$dir" rev-parse HEAD 2>/dev/null || printf '%s\n' unknown
+}
+
 need_file "$PAYLOAD_SOURCE/bin/blockdag-node"
 need_file "$PAYLOAD_SOURCE/bin/nodeworker"
 need_file "$PAYLOAD_SOURCE/bin/mining-pool"
@@ -53,6 +58,11 @@ BDAG_RELEASE_VERSION=${VERSION}
 BDAG_RELEASE_PAYLOAD_TARGET=${TARGET}
 BDAG_RELEASE_PAYLOAD_ARCH=${GOARCH}
 DOCKER_PLATFORM=${DOCKER_PLATFORM}
+STACK_SOURCE_COMMIT=${STACK_SOURCE_COMMIT:-$(git_head_or_unknown "$ROOT")}
+CORECHAIN_SOURCE_COMMIT=${CORECHAIN_SOURCE_COMMIT:-$(git_head_or_unknown "$ROOT/../blockdag-corechain")}
+POOL_SOURCE_COMMIT=${POOL_SOURCE_COMMIT:-$(git_head_or_unknown "$ROOT/../pool")}
+REDIS_DASH_SOURCE_COMMIT=${REDIS_DASH_SOURCE_COMMIT:-$(git_head_or_unknown "$ROOT/../redis-dash")}
+STACK_RUNTIME_MANIFEST=${STACK_RUNTIME_MANIFEST:-${RELEASE_ROOT}}
 EOF
 
 cp scripts/release/install.sh scripts/release/install-node.sh scripts/release/install.ps1 scripts/release/install.cmd "$STAGE/"

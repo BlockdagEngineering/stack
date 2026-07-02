@@ -58,6 +58,18 @@ RUN set -eu; mkdir -p /out; \
 # Node Runtime Stage (with optional snapshot import)
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS node
+ARG STACK_SOURCE_COMMIT=unknown
+ARG CORECHAIN_SOURCE_COMMIT=unknown
+ARG POOL_SOURCE_COMMIT=unknown
+ARG REDIS_DASH_SOURCE_COMMIT=unknown
+ARG STACK_RUNTIME_MANIFEST=unknown
+LABEL org.opencontainers.image.title="BlockDAG Stack Node" \
+      org.opencontainers.image.revision="${STACK_SOURCE_COMMIT}" \
+      org.blockdag.source.stack="${STACK_SOURCE_COMMIT}" \
+      org.blockdag.source.corechain="${CORECHAIN_SOURCE_COMMIT}" \
+      org.blockdag.source.pool="${POOL_SOURCE_COMMIT}" \
+      org.blockdag.source.redis-dash="${REDIS_DASH_SOURCE_COMMIT}" \
+      org.blockdag.runtime.manifest="${STACK_RUNTIME_MANIFEST}"
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates tzdata curl \
@@ -110,6 +122,18 @@ ENTRYPOINT ["/usr/local/bin/docker-entrypoint-nodeworker.sh", \
 # Pool Runtime Stage
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS pool
+ARG STACK_SOURCE_COMMIT=unknown
+ARG CORECHAIN_SOURCE_COMMIT=unknown
+ARG POOL_SOURCE_COMMIT=unknown
+ARG REDIS_DASH_SOURCE_COMMIT=unknown
+ARG STACK_RUNTIME_MANIFEST=unknown
+LABEL org.opencontainers.image.title="BlockDAG Stack Pool" \
+      org.opencontainers.image.revision="${STACK_SOURCE_COMMIT}" \
+      org.blockdag.source.stack="${STACK_SOURCE_COMMIT}" \
+      org.blockdag.source.corechain="${CORECHAIN_SOURCE_COMMIT}" \
+      org.blockdag.source.pool="${POOL_SOURCE_COMMIT}" \
+      org.blockdag.source.redis-dash="${REDIS_DASH_SOURCE_COMMIT}" \
+      org.blockdag.runtime.manifest="${STACK_RUNTIME_MANIFEST}"
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates tzdata \
  && rm -rf /var/lib/apt/lists/*
@@ -161,24 +185,69 @@ WORKDIR /workspace
 # Watchdog Runtime Stage (containerized repair loop)
 # ----------------------------------------------------------------------------
 FROM ops-runtime AS watchdog
-LABEL org.opencontainers.image.title="BlockDAG Stack Watchdog"
+ARG STACK_SOURCE_COMMIT=unknown
+ARG CORECHAIN_SOURCE_COMMIT=unknown
+ARG POOL_SOURCE_COMMIT=unknown
+ARG REDIS_DASH_SOURCE_COMMIT=unknown
+ARG STACK_RUNTIME_MANIFEST=unknown
+LABEL org.opencontainers.image.title="BlockDAG Stack Watchdog" \
+      org.opencontainers.image.revision="${STACK_SOURCE_COMMIT}" \
+      org.blockdag.source.stack="${STACK_SOURCE_COMMIT}" \
+      org.blockdag.source.corechain="${CORECHAIN_SOURCE_COMMIT}" \
+      org.blockdag.source.pool="${POOL_SOURCE_COMMIT}" \
+      org.blockdag.source.redis-dash="${REDIS_DASH_SOURCE_COMMIT}" \
+      org.blockdag.runtime.manifest="${STACK_RUNTIME_MANIFEST}"
 
 # ----------------------------------------------------------------------------
 # Status Sampler Runtime Stage (shared status and mining imperative loop)
 # ----------------------------------------------------------------------------
 FROM ops-runtime AS status-sampler
-LABEL org.opencontainers.image.title="BlockDAG Stack Status Sampler"
+ARG STACK_SOURCE_COMMIT=unknown
+ARG CORECHAIN_SOURCE_COMMIT=unknown
+ARG POOL_SOURCE_COMMIT=unknown
+ARG REDIS_DASH_SOURCE_COMMIT=unknown
+ARG STACK_RUNTIME_MANIFEST=unknown
+LABEL org.opencontainers.image.title="BlockDAG Stack Status Sampler" \
+      org.opencontainers.image.revision="${STACK_SOURCE_COMMIT}" \
+      org.blockdag.source.stack="${STACK_SOURCE_COMMIT}" \
+      org.blockdag.source.corechain="${CORECHAIN_SOURCE_COMMIT}" \
+      org.blockdag.source.pool="${POOL_SOURCE_COMMIT}" \
+      org.blockdag.source.redis-dash="${REDIS_DASH_SOURCE_COMMIT}" \
+      org.blockdag.runtime.manifest="${STACK_RUNTIME_MANIFEST}"
 
 # ----------------------------------------------------------------------------
 # Sentinel Runtime Stage (last-resort liveness repair loop)
 # ----------------------------------------------------------------------------
 FROM ops-runtime AS sentinel
-LABEL org.opencontainers.image.title="BlockDAG Stack Sentinel"
+ARG STACK_SOURCE_COMMIT=unknown
+ARG CORECHAIN_SOURCE_COMMIT=unknown
+ARG POOL_SOURCE_COMMIT=unknown
+ARG REDIS_DASH_SOURCE_COMMIT=unknown
+ARG STACK_RUNTIME_MANIFEST=unknown
+LABEL org.opencontainers.image.title="BlockDAG Stack Sentinel" \
+      org.opencontainers.image.revision="${STACK_SOURCE_COMMIT}" \
+      org.blockdag.source.stack="${STACK_SOURCE_COMMIT}" \
+      org.blockdag.source.corechain="${CORECHAIN_SOURCE_COMMIT}" \
+      org.blockdag.source.pool="${POOL_SOURCE_COMMIT}" \
+      org.blockdag.source.redis-dash="${REDIS_DASH_SOURCE_COMMIT}" \
+      org.blockdag.runtime.manifest="${STACK_RUNTIME_MANIFEST}"
 
 # ----------------------------------------------------------------------------
 # Dashboard Runtime Stage (Go UI with private Redis live state)
 # ----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS dashboard
+ARG STACK_SOURCE_COMMIT=unknown
+ARG CORECHAIN_SOURCE_COMMIT=unknown
+ARG POOL_SOURCE_COMMIT=unknown
+ARG REDIS_DASH_SOURCE_COMMIT=unknown
+ARG STACK_RUNTIME_MANIFEST=unknown
+LABEL org.opencontainers.image.title="BlockDAG Stack Dashboard" \
+      org.opencontainers.image.revision="${STACK_SOURCE_COMMIT}" \
+      org.blockdag.source.stack="${STACK_SOURCE_COMMIT}" \
+      org.blockdag.source.corechain="${CORECHAIN_SOURCE_COMMIT}" \
+      org.blockdag.source.pool="${POOL_SOURCE_COMMIT}" \
+      org.blockdag.source.redis-dash="${REDIS_DASH_SOURCE_COMMIT}" \
+      org.blockdag.runtime.manifest="${STACK_RUNTIME_MANIFEST}"
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates tzdata curl redis-server redis-tools \
  && rm -rf /var/lib/apt/lists/*

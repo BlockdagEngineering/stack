@@ -54,6 +54,11 @@ $dockerPlatform = "linux/$payloadArch"
 if ($payloadMetadata['DOCKER_PLATFORM'] -and $payloadMetadata['DOCKER_PLATFORM'] -ne $dockerPlatform) {
     throw "release-payload.env has inconsistent DOCKER_PLATFORM=$($payloadMetadata['DOCKER_PLATFORM']); expected $dockerPlatform."
 }
+$env:STACK_SOURCE_COMMIT = $payloadMetadata['STACK_SOURCE_COMMIT']
+$env:CORECHAIN_SOURCE_COMMIT = $payloadMetadata['CORECHAIN_SOURCE_COMMIT']
+$env:POOL_SOURCE_COMMIT = $payloadMetadata['POOL_SOURCE_COMMIT']
+$env:REDIS_DASH_SOURCE_COMMIT = $payloadMetadata['REDIS_DASH_SOURCE_COMMIT']
+$env:STACK_RUNTIME_MANIFEST = $payloadMetadata['STACK_RUNTIME_MANIFEST']
 $installMode = $env:BDAG_INSTALL_MODE
 $deployKind = $env:BDAG_DEPLOY_KIND
 $chainMode = $env:BDAG_CHAIN_MODE

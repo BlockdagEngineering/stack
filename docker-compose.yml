@@ -7,6 +7,11 @@ x-mining-logging: &mining-logging
 
 x-build-args: &build-args
   SNAPSHOT_PATH: ${SNAPSHOT_PATH:-docker/no-snapshot.marker}
+  STACK_SOURCE_COMMIT: ${STACK_SOURCE_COMMIT:-unknown}
+  CORECHAIN_SOURCE_COMMIT: ${CORECHAIN_SOURCE_COMMIT:-unknown}
+  POOL_SOURCE_COMMIT: ${POOL_SOURCE_COMMIT:-unknown}
+  REDIS_DASH_SOURCE_COMMIT: ${REDIS_DASH_SOURCE_COMMIT:-unknown}
+  STACK_RUNTIME_MANIFEST: ${STACK_RUNTIME_MANIFEST:-unknown}
 
 x-dev-source-contexts: &dev-source-contexts
   stack_src: ${STACK_SRC_CONTEXT:-.}
@@ -270,6 +275,8 @@ services:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
       target: watchdog
+      args:
+        <<: *build-args
     restart: unless-stopped
     logging: *mining-logging
     user: "${BDAG_OPS_UID:-1000}:${BDAG_OPS_GID:-1000}"
@@ -349,6 +356,8 @@ services:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
       target: status-sampler
+      args:
+        <<: *build-args
     restart: unless-stopped
     logging: *mining-logging
     user: "${BDAG_OPS_UID:-1000}:${BDAG_OPS_GID:-1000}"
@@ -405,6 +414,8 @@ services:
       context: .
       dockerfile: ${DOCKERFILE:-dockerfile}
       target: sentinel
+      args:
+        <<: *build-args
     restart: unless-stopped
     logging: *mining-logging
     user: "${BDAG_OPS_UID:-1000}:${BDAG_OPS_GID:-1000}"
@@ -496,6 +507,8 @@ services:
       target: dashboard
       additional_contexts:
         <<: *dev-source-contexts
+      args:
+        <<: *build-args
     network_mode: host
     restart: unless-stopped
     logging: *mining-logging
@@ -571,6 +584,10 @@ services:
       BDAG_NODE_RPC_MAX_CONNS_PER_HOST: ${BDAG_NODE_RPC_MAX_CONNS_PER_HOST:-4}
       BDAG_NODE_RPC_MAX_IDLE_CONNS_PER_HOST: ${BDAG_NODE_RPC_MAX_IDLE_CONNS_PER_HOST:-4}
       BDAG_DASHBOARD_HEALTH_STALE_SECONDS: ${BDAG_DASHBOARD_HEALTH_STALE_SECONDS:-20}
+      BDAG_DASHBOARD_EARNINGS_SAMPLER_ENABLED: ${BDAG_DASHBOARD_EARNINGS_SAMPLER_ENABLED:-1}
+      BDAG_DASHBOARD_GLOBAL_SAMPLER_ENABLED: ${BDAG_DASHBOARD_GLOBAL_SAMPLER_ENABLED:-1}
+      BDAG_DASHBOARD_EARNINGS_SAMPLER_INTERVAL_SECONDS: ${BDAG_DASHBOARD_EARNINGS_SAMPLER_INTERVAL_SECONDS:-60}
+      BDAG_DASHBOARD_GLOBAL_SAMPLER_INTERVAL_SECONDS: ${BDAG_DASHBOARD_GLOBAL_SAMPLER_INTERVAL_SECONDS:-60}
       BDAG_DASHBOARD_LOG_SOURCE: ${BDAG_DASHBOARD_LOG_SOURCE:-docker}
       BDAG_DASHBOARD_DOCKER_SOCKET: ${BDAG_DASHBOARD_DOCKER_SOCKET:-/var/run/docker.sock}
       BDAG_WATCHDOG_STATE_FILE: ${BDAG_WATCHDOG_STATE_FILE:-/stack-runtime/watchdog-state.json}

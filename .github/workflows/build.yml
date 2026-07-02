@@ -94,6 +94,17 @@ jobs:
           verify_repo pool src/pool/cmd/pool/main.go
           verify_repo redis-dash src/dashboard/main.go
 
+      - name: Capture source provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "STACK_SOURCE_COMMIT=$(git rev-parse HEAD)"
+            echo "CORECHAIN_SOURCE_COMMIT=$(git -C src/blockdag-node rev-parse HEAD)"
+            echo "POOL_SOURCE_COMMIT=$(git -C src/pool rev-parse HEAD)"
+            echo "REDIS_DASH_SOURCE_COMMIT=$(git -C src/dashboard rev-parse HEAD)"
+          } >> "$GITHUB_ENV"
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -210,6 +221,11 @@ jobs:
           BDAG_RELEASE_PAYLOAD_TARGET=${TARGET}
           BDAG_RELEASE_PAYLOAD_ARCH=${{ matrix.goarch }}
           DOCKER_PLATFORM=${{ matrix.docker_platform }}
+          STACK_SOURCE_COMMIT=${STACK_SOURCE_COMMIT}
+          CORECHAIN_SOURCE_COMMIT=${CORECHAIN_SOURCE_COMMIT}
+          POOL_SOURCE_COMMIT=${POOL_SOURCE_COMMIT}
+          REDIS_DASH_SOURCE_COMMIT=${REDIS_DASH_SOURCE_COMMIT}
+          STACK_RUNTIME_MANIFEST=${PACKAGE_NAME}-${VERSION}-${TARGET}
           EOF
 
           rm -rf "${ROOT}" "${OUT}" "${OUT_SHA256}"
